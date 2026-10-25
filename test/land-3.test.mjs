@@ -10,23 +10,22 @@ test("two landings check and review at the same time, and only their merges take
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.reviewOf = { t2: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, approveAfter: null } };
-  // Neither reviewer answers until both reviews are open at once.
+  // Neither reviewer answers while both landings ask: each asks, records its
+  // land request and stops (t264), the lease never asked for by either.
   f.box.review.approveAfter = null;
-  let together = false, leaseAsks = null;
-  const both = setInterval(() => {
-    if (together || !f.box.review.pending || !f.box.reviewOf.t2.pending) return;
-    together = true;
-    // No lease was asked for by either landing while both were in review.
-    leaseAsks = f.posts("/landing-lease").length;
-    f.box.review.approveAfter = 0;
-    f.box.reviewOf.t2.approveAfter = 0;
-  }, 20);
-  t.after(() => clearInterval(both));
+  const [asked1, asked2] = await Promise.all([f.run(f.checkout, "land", "t1"), f.run(f.checkout, "land", "t2")]);
+  assert.equal(asked1.status, 0, asked1.output);
+  assert.equal(asked2.status, 0, asked2.output);
+  assert.ok(f.box.review.pending && f.box.reviewOf.t2.pending, "the two reviews were never open at the same time");
+  const leaseAsks = f.posts("/landing-lease").length;
+  assert.equal(leaseAsks, 0, "a landing asked for the lease while both were in review");
+  assert.equal(f.posts("/land-job").length, 2);
+  // Both approve; the landings run again, and only their merges take turns.
+  f.box.review.approveAfter = 0;
+  f.box.reviewOf.t2.approveAfter = 0;
   const [one, two] = await Promise.all([f.run(f.checkout, "land", "t1"), f.run(f.checkout, "land", "t2")]);
   assert.equal(one.status, 0, one.output);
   assert.equal(two.status, 0, two.output);
-  assert.ok(together, "the two reviews were never open at the same time");
-  assert.equal(leaseAsks, 0, "a landing asked for the lease while both were in review");
   assert.equal(f.box.states.t1, "merged");
   assert.equal(f.box.states.t2, "merged");
   // The lease went to one landing at a time: every take follows the end of
@@ -60,11 +59,11 @@ test("a landing with no --reviewer prints the reviewer the server chose and why"
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.deepEqual(f.posts("/review-request").at(-1).body, {});
-  assert.match(r.output, /Review requested for codex\/gpt-6-astra: a protected change needs an independent review Frontier reviewer required for security, concurrency or gate work\. From the pool, which goes by review precision, then outcome record, then actor name\. Waiting for the verdict/);
+  assert.match(r.output, /Review requested for codex\/gpt-6-astra \(picked by the server\): a protected change needs an independent review Frontier reviewer required for security, concurrency or gate work\. From the pool, which goes by review precision, then outcome record, then actor name\./);
 });
 
 
-test("--reviewer waits for that review and lands on approval even where the gate needs none", async (t) => {
+test("--reviewer asks that review and lands on an approval given at once even where the gate needs none", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.needed = false;
@@ -136,15 +135,18 @@ test("--reviewer stops the landing on a rejection even where the gate needs no r
 });
 
 
-test("a tier approval that comes first is said and not taken for the gate's verdict; the landing waits for the gate's review alone", async (t) => {
+test("a tier approval that comes first is not the gate's verdict: the landing stops asked, and a rerun lands once the gate's review is in", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.tier = { by: "claude-code/sonnet-5.5", approve: true };
   f.box.review.approveAfter = 2;
+  const first = await f.run(f.checkout, "land", "t1");
+  assert.equal(first.status, 0, first.output);
+  assert.match(first.output, /with its review asked and its land request recorded/);
+  assert.notEqual(f.box.states.t1, "merged");
+  assert.equal(f.box.lease, null);
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /claude-code\/sonnet-5\.5 approved t1 at \w+ as its tier review; the landing still waits for the gate's review\./);
-  assert.match(r.output, /codex\/gpt-6-astra approved t1/);
-  assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.reviewer, "codex/gpt-6-astra");
+  assert.equal(f.posts("/land").filter((x) => x.body.step === "review").at(-1).body.reviewer, "codex/gpt-6-astra");
   assert.equal(f.box.states.t1, "merged");
 });

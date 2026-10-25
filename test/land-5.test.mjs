@@ -53,11 +53,11 @@ const asksStill = async (t, cases) => {
   for (const c of cases) {
     const f = await recordedFixture(t, c);
     const r = await f.run(f.checkout, "land", "t1", ...(c.extra ?? []));
-    assert.notEqual(r.status, 0, `${JSON.stringify(c)}\n${r.output}`);
+    assert.equal(r.status, 0, `${JSON.stringify(c)}\n${r.output}`);
     assert.equal(f.posts("/review-request").length, 1, JSON.stringify(c));
     if (c.extra) assert.deepEqual(f.posts("/review-request")[0].body, { reviewer: c.extra[1], wanted: true });
     assert.doesNotMatch(r.output, /already approved/);
-    assert.match(r.output, /no verdict( from [^ ]+)? within 0 minutes/);
+    assert.match(r.output, /with its review asked and its land request recorded/);
     assert.notEqual(f.box.states.t1, "merged");
   }
 };

@@ -31,8 +31,12 @@ export default async function landCommand() {
     console.log(queued.queued ? `${id} is queued to land on a runner that holds ${name}'s registered checkout and offers the land job.` : `${id} is already queued to land (since ${queued.at}).`);
     return;
   }
-  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
-  if (!p.path || !existsSync(p.path)) die(`land needs ${name}'s registered checkout; this machine records ${p.path ?? "no folder"}. Run atelier init in that checkout first`);
+  // A machine with no registered checkout cannot run the landing; it records
+  // the land request and follows the job a lander takes (t264), which
+  // runLand does.
+  const p = cfg.projects?.[name];
+  const checkout = !!p?.path && existsSync(p.path);
+  const noCheckout = `land needs ${name}'s registered checkout; this machine records ${p?.path ?? "no folder"}. Run atelier init in that checkout first`;
   const workspace = workspacePath(name, id);
   // A request that throws rather than dies, so a landing that already holds
   // the lease can release it before the command ends. Requests are made as
@@ -78,7 +82,7 @@ export default async function landCommand() {
   }
   try {
     await runLand({
-      args, name, id, p, request, git: gitOrThrow, die, owner: OWNER,
+      args, name, id, p, checkout, noCheckout, request, git: gitOrThrow, die, owner: OWNER,
       print: (line) => console.log(line),
       // A stored check log by its reference, for the failure summary (t436).
       readLog: logReader(name, id),

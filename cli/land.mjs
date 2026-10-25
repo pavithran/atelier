@@ -11,10 +11,9 @@ import { excludeScratch } from "./scratch.mjs";
 import { runCommand } from "./ship.mjs";
 import { COMMAND_CAPABILITIES, checkCapabilities } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
-import { assign, liveOffers, unoffered } from "../src/dispatch/rules.ts";
 import { fenceText, prereviewClause } from "../src/dispatch/prereview.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
-import { approvalsMissing, landingVerdict, allSkipped, recordedApproval, rejectionText, reviewStall } from "../src/landing-verdict.ts";
+import { approvalsMissing, landingVerdict, recordedApproval, rejectionText } from "../src/landing-verdict.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
@@ -197,9 +196,9 @@ const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // of a live instance ended a wait that a minute later attached to it).
 const READ_WINDOW_MS = Number(process.env.ATELIER_LAND_READ_WINDOW_MS ?? 5 * 60_000);
 const READ_BACKOFF_MAX_MS = 30_000;
-// The review wait outlasts a build on the runner (its task timeout is 45
-// minutes), since a review queues behind every older build.
-const REVIEW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_REVIEW_TIMEOUT ?? 60 * 60_000);
+// How long a machine with no registered checkout follows the land job before
+// it stops following; the request stays recorded.
+const FOLLOW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_FOLLOW_TIMEOUT ?? 3 * 60 * 60_000);
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
 const LEASE_RENEW_MS = Number(process.env.ATELIER_LAND_RENEW_MS ?? 60_000);
 // How long --wait queues for the landing lease before it gives up, so a
@@ -235,7 +234,7 @@ export async function runLand(io) {
   const { args, name, id, p, request, git, die, print } = io;
   if (args["post-merge"] === undefined && (args.reason !== undefined || args.resolution !== undefined)) die("--reason and --resolution require --post-merge");
   if (args["post-merge"] !== undefined) {
-    if (["dry-run", "release-lease", "no-review", "wait", "reviewer", "workflow", "checks"].some(k => args[k] !== undefined)) die("--post-merge recovery is a separate action; omit the landing flags");
+    if (["dry-run", "release-lease", "no-review", "wait", "no-wait", "quote", "reviewer", "workflow", "checks"].some(k => args[k] !== undefined)) die("--post-merge recovery is a separate action; omit the landing flags");
     const action = args["post-merge"];
     if (!["status", "resume", "retry", "skip", "reconcile"].includes(action)) die("--post-merge takes status, resume, retry, skip or reconcile");
     // The recovery calls the post-merge routes alone, so it asks for their
@@ -261,6 +260,7 @@ export async function runLand(io) {
   const dryRun = args["dry-run"] === true;
   const noReview = args["no-review"] === true;
   const wait = args.wait === true;
+  const noWait = args["no-wait"] === true;
   const releaseLease = args["release-lease"] === true;
   const workflow = args.workflow === true;
   const reviewer = args.reviewer;
@@ -272,11 +272,13 @@ export async function runLand(io) {
   if (args.checks !== undefined && !workflow) die("--checks local is the only mode, and it applies to a Workflow landing; give it with --workflow, or leave it out (the plain landing always runs the checks here, in a clean clone)");
   if (args.checks !== undefined && args.checks !== "local") die(`--checks container is gone: the required checks always run on this machine, in a clean clone (t768). Leave --checks out: atelier land ${id} --workflow`);
   const triageFlags = { triage: args.triage, noTriage: args["no-triage"], override: args["override-triage"] };
-  if (releaseLease && (dryRun || noReview || wait || reviewer !== undefined || workflow || movedOk || Object.values(triageFlags).some((v) => v !== undefined))) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
+  if (releaseLease && (dryRun || noReview || wait || noWait || args.quote !== undefined || reviewer !== undefined || workflow || movedOk || Object.values(triageFlags).some((v) => v !== undefined))) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
   if (workflow && dryRun) die("--dry-run and --workflow together say two things: --dry-run prints what a landing would do and changes nothing, and --workflow starts the landing as a Cloudflare Workflow that does it; give one or the other");
   if (reviewer !== undefined && (typeof reviewer !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(reviewer))) {
     die(`--reviewer needs harness/model, such as codex/gpt-6-astra: atelier land ${id} --reviewer H/M`);
   }
+  if (noWait && (dryRun || noReview || wait || workflow)) die("--no-wait records the land request and returns; it cannot be given with --dry-run, --no-review, --wait or --workflow");
+  if (args.quote !== undefined && (typeof args.quote !== "string" || !args.quote.trim())) die(`--quote needs the words that asked for the landing: atelier land ${id} --quote "TEXT"`);
   if (noReview && reviewer !== undefined) die("--reviewer and --no-review together say two things; name the reviewer, or give --no-review to leave the task submitted");
 
   const itemPath = `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}`;
@@ -330,6 +332,19 @@ export async function runLand(io) {
     if (dryRun) { print(`Post-merge run ${detail.postMerge.id} is ${detail.postMerge.state} at ${detail.postMerge.after}; a resume would execute only pending steps.`); return; }
     await executePostMerge({ request, name, id, env: io.env, print });
     return;
+  }
+
+  // The land request (t264). With --no-wait it is all this command does:
+  // the review is asked for where the task is submitted, the request is
+  // recorded, and the command returns; the land job (a runner holding the
+  // registered checkout, or this command run again) lands it. A machine with
+  // no registered checkout does the same and then follows the job.
+  const hasCheckout = io.checkout ?? !!p?.path;
+  if (noWait || !hasCheckout) {
+    if (!hasCheckout && (dryRun || workflow || wait)) die(io.noCheckout ?? `land needs ${name}'s registered checkout`);
+    if (["merged", "abandoned"].includes(detail.item.state)) die(`${id} is ${detail.item.state}; there is nothing to land.`);
+    if (detail.item.kind === "plan") die(`${id} is a plan, which atelier land does not land: a plan lands with atelier merge ${id} --head INTEGRATION_HEAD`);
+    return followLand(io, { detail, itemPath, noWait });
   }
 
   // The lease is read, not taken, so the checks that only refuse are asked
@@ -460,7 +475,7 @@ export async function runLand(io) {
     print(`  5. submit ${id} with a summary of the merge`);
     print(noReview
       ? "  6. skip the review (--no-review): leave the task submitted for you to settle by hand, never taking the lease"
-      : `  6. ${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs and wait for"} the verdict at the pushed head, for up to ${Math.round(REVIEW_TIMEOUT_MS / 60000)} minutes; a rejection, a failed check or a conflict ends the landing here, the lease never taken`);
+      : `  6. ${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs"} at the pushed head and record a land request${args.quote ? ` (quote: ${args.quote})` : ""}, without waiting for the verdict: with no approval counted yet the landing stops here, and the land job runs once one is; a failed check or a conflict ends the landing here, the lease never taken`);
     if (!noReview) {
       print(`  Then, with the head checked and approved, for the merge alone:`);
       print(`  7. ${waitingOn || queuedAhead ? `wait behind ${[waitingOn ? `${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)})` : null, queuedAhead].filter(Boolean).join(", and ")} (as the lease stands now), then ` : ""}take the project's landing lease for ${id} (one merge at a time in ${name}, in the order the landings queued)`);
@@ -821,7 +836,13 @@ export async function runLand(io) {
         return;
       }
       await triageStillStands(io, { triaged, id, itemPath, head, retry: triageRetry(io, triage, id) });
-      await reviewStep(io, { id, name, itemPath, reviewer, head, record });
+      const reviewed = await reviewStep(io, { id, name, itemPath, reviewer, head, record });
+      await recordLandRequest(io, itemPath, id);
+      if (reviewed === "asked") {
+        print(`${id} is submitted at ${short(head)} with its review asked and its land request recorded. The landing lease was never taken: the stage tick queues the land job once the gate counts an approval, and a runner that holds ${name}'s registered checkout runs it; or run atelier land ${id} again then.`);
+        for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
+        return;
+      }
 
       // The gate as accept will read it, asked before the lease: the head
       // the landing merges must be the one checked and approved, with the
@@ -928,25 +949,74 @@ async function gateStands(io, { id, itemPath, head }) {
   if (d.gate && d.gate.ready === false) throw new StepError(`${id} at ${short(head)} is not ready to accept, so the landing stops before taking the lease: ${(d.gate.blockers ?? []).join("; ") || "the gate gave no reason"}. Nothing was merged`);
 }
 
-// The review the gate needs, asked for and waited for before the lease
-// (t550). A named reviewer is a review the owner asks for, so the server
-// makes the request even where the gate needs none, and refuses, with its
-// reason, where the gate cannot proceed at all. A rejection, a timeout or a
-// request no runner will serve throws, ending the landing with the lease
-// never taken.
+// Asks the server for the review, as the landing does, and says who it is
+// asked of and why (t162: with no --reviewer the server picks, and a failed
+// pick shows each candidate's rejection in the refusal the request carries).
+async function askReview(io, { itemPath, reviewer }) {
+  const ask = await io.request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
+  if (!ask.needed) { io.print(`No review request was needed: ${String(ask.reason ?? "the server gave no reason").replace(/\.*$/, "")}.`); return ask; }
+  io.print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}${reviewer ? "" : " (picked by the server)"}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}.`);
+  return ask;
+}
+
+// A landing that runs no pipeline here (t264): ask for the review where the
+// task is submitted, record the land request, and either return (--no-wait)
+// or follow the job the lander takes until the task merges, a reviewer
+// rejects it, or the follow ends. Running it again records the request once.
+async function followLand(io, { detail, itemPath, noWait }) {
+  const { args, id, request, print } = io;
+  const reviewer = args.reviewer;
+  if (args["no-review"] === true) { print(`--no-review asks for no review; ${id} is left as it is.`); }
+  else if (detail.item.state === "submitted") await askReview(io, { itemPath, reviewer });
+  else if (detail.item.state !== "accepted") print(`${id} is ${detail.item.state}, not submitted, so no review was asked; the land job asks once the task is submitted.`);
+  await recordLandRequest(io, itemPath, id);
+  if (noWait) { print(`Not waiting (--no-wait): run atelier land ${id} again to resume; a runner that holds the registered checkout lands it once the gate counts an approval.`); return; }
+  print(`This machine holds no registered checkout of ${io.name}; following the land job a lander takes.`);
+  const since = new Date().toISOString();
+  let said = null;
+  for (let waited = 0; waited <= FOLLOW_TIMEOUT_MS; waited += POLL_MS) {
+    const d = await request("GET", itemPath);
+    if (d.item.state === "merged" && !(d.postMerge && !["complete", "failed"].includes(d.postMerge.state))) { print(`${id} landed: merged.`); return; }
+    if (d.item.state === "abandoned") throw new Error(`${id} was abandoned; the land job has nothing to land`);
+    const { verdict } = landingVerdict(d.reviews ?? [], d.item.head, since);
+    if (verdict && !verdict.approve) throw new Error(`${verdict.by} rejected ${id} at ${short(d.item.head)}: ${rejectionText(verdict)}. The task goes back to its holder with the findings`);
+    const line = `${id} is ${d.item.state}${d.postMerge ? `, post-merge run ${d.postMerge.state}` : ""}`;
+    if (line !== said) { said = line; print(`${line}; waiting for the land job…`); }
+    await new Promise((ok) => setTimeout(ok, POLL_MS));
+  }
+  throw new Error(`${id} did not merge within ${Math.round(FOLLOW_TIMEOUT_MS / 60000)} minutes of following; the land request stays recorded. Run atelier land ${id} again to follow it`);
+}
+
+// The land request (t264): who asked for the landing and, where given, why,
+// kept on the server as the land job the stage tick and the runners read.
+// Asking again records nothing new, so a rerun says it was already there.
+async function recordLandRequest(io, itemPath, id) {
+  const quote = typeof io.args.quote === "string" ? io.args.quote : undefined;
+  const asked = await io.request("POST", `${itemPath}/land-job`, quote === undefined ? {} : { quote });
+  io.print(asked.queued ? `Land request recorded for ${id} (${asked.by}${asked.quote ? `: ${asked.quote}` : ""}).` : `The land request for ${id} was already recorded (${asked.by}, ${String(asked.at).slice(0, 16).replace("T", " ")} UTC); it is not recorded again.`);
+  return asked;
+}
+
+// The review the gate needs, asked for before the lease (t550) and no longer
+// waited for (t264). A named reviewer is a review the owner asks for, so the
+// server makes the request even where the gate needs none, and refuses, with
+// its reason, where the gate cannot proceed at all. A rejection throws,
+// ending the landing with the lease never taken. Answers "asked" when a
+// request is open and no verdict is in, so the landing stops there and the
+// land job takes it from the approval; otherwise nothing, and it goes on.
 // The reviews the gate needs, one at a time (t143). Where the project states
 // riskReviews, one approval can leave the change short of what its class
 // needs, so the next review is asked only after the last approved, and only
 // for the approvals still missing: the server leaves out every model already
-// counted. A rejection ends the landing at once, so no later reviewer is
-// asked. With --reviewer, or without riskReviews, one review is asked as it
-// always was. REVIEW_PASSES bounds the asks: a class needs at most three
-// approvals, so a gate still short after more has a count this loop cannot
-// move, and the landing stops rather than asking on.
+// counted. With --reviewer, or without riskReviews, one review is asked.
+// REVIEW_PASSES bounds the asks: a class needs at most three approvals, so a
+// gate still short after more has a count this loop cannot move, and the
+// landing stops rather than asking on.
 const REVIEW_PASSES = 4;
 async function reviewStep(io, args) {
   for (let pass = 1; ; pass++) {
-    if (await reviewOnce(io, args) !== "approved" || args.reviewer) return;
+    const result = await reviewOnce(io, args);
+    if (result !== "approved" || args.reviewer) return result;
     const { request, print } = io;
     const missing = approvalsMissing(await request("GET", args.itemPath), args.head);
     if (!missing) return;
@@ -955,15 +1025,16 @@ async function reviewStep(io, args) {
   }
 }
 
-// One review: "approved" when a reviewer approved it, undefined when none was
-// needed or the gate already counted one.
+// One review: "approved" when a reviewer approved it at once, "asked" when a
+// request was made and no verdict is in, undefined when none was needed or
+// the gate already counted an approval.
 async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, record }) {
   const { request, print } = io;
   const t0 = Date.now();
   // A qualifying approval already recorded at the pushed head, which the
   // gate holds ready to accept (what `atelier show` recommends accept on),
   // settles the review before any request (t628): a new request would count
-  // only verdicts given after it, and wait its hour for one.
+  // only verdicts given after it.
   const now = await request("GET", itemPath);
   const held = recordedApproval(now, pushed, reviewer ?? null);
   if (held) {
@@ -986,117 +1057,29 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
     await record("review", Date.now() - t0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) });
     return;
   }
-  const head = ask.head ?? pushed, since = ask.at;
-  // When this landing asked (t613): only a reply with no readable verdict
-  // given since then ends its wait, as the Workflow reads it.
-  const askedAt = new Date().toISOString();
-  // The named reviewer redirected an unclaimed request for another (t627).
+  // Nothing waits for the verdict (t264): the request is asked once and
+  // the landing goes on when the gate counts an approval. The reviewer is
+  // printed with the reason the server gave, so a pick made for the owner
+  // (t162) is seen, and so is each rejection when no model could be picked.
   for (const w of Array.isArray(ask.withdrew) ? ask.withdrew : []) print(`Withdrew the unclaimed review request ${w.request}${w.reviewer ? ` for ${w.reviewer}` : ""}, since --reviewer names ${reviewer}.`);
-  print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}. Waiting for the verdict…`);
-  // While no runner has claimed the request, the landing says what the
-  // runners are busy with and what waits ahead in the queue, once and
-  // again when that changes, so a long wait is explained rather than
-  // silent (a review queues behind every older build on a runner). A
-  // request no live runner offers — a reviewer whose model no runner's
-  // config lists, or a runner that offers no review job — can never be
-  // claimed, however long it waits, and is said as that instead, with
-  // what would change it; a review of t210 routed to fable-5.1 once sat
-  // queued for hours this way (plan t197, 2026-10-07).
-  let busyLine = null;
-  const tierSeen = new Set();
-  const explainWait = async (d) => {
-    const claimed = (d.events ?? []).some((e) => e.kind === "review.claimed" && !e.data?.tier && e.data?.head === head && Date.parse(e.at) >= Date.parse(since));
-    if (claimed) return;
-    let offers = null;
-    try { offers = await request("GET", "/runners"); } catch { /* without the offers the wait is explained as before */ }
-    const slash = (ask.reviewer ?? "").indexOf("/");
-    const asked = slash > 0 ? { to: "home", agent: ask.reviewer.slice(0, slash), model: ask.reviewer.slice(slash + 1), by: "atelier/orchestrator", at: since, note: "", job: "review" } : null;
-    const dead = offers && asked ? unoffered(asked, Array.isArray(offers) ? offers : [], new Date(), name) : null;
-    // Only the jobs the runners that offer this reviewer could also take are
-    // ahead of it (t220): a job for a model or project they do not serve
-    // never delays it. Without the offers every older job is counted; offers
-    // that are known but leave no runner for this project were said as dead.
-    const known = asked && Array.isArray(offers);
-    const servers = known ? liveOffers(offers).filter((o) => assign(asked, o, name) !== null) : [];
-    const servable = (q) => !known || servers.some((o) => q.item?.dispatch && assign(q.item.dispatch, o, q.project) !== null);
-    let line;
-    if (dead) {
-      line = `The review request is not claimed yet, and ${dead}. It will not be claimed until a runner that offers ${ask.reviewer} for the review job asks the server for work. Review it by hand (atelier review ${id} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again with --reviewer H/M to ask a model a live runner offers.`;
-    } else try {
-      const [items, queued] = await Promise.all([request("GET", `/projects/${encodeURIComponent(name)}/items`), request("GET", "/queue")]);
-      const busy = (Array.isArray(items) ? items : []).filter((i) => i.runner && i.state === "claimed" && i.id !== id)
-        .map((i) => `${i.runner} is busy with ${i.id} (${i.dispatch?.job ?? "build"}, ${i.owner}) since ${String(i.updatedAt).slice(0, 16).replace("T", " ")} UTC`);
-      const ahead = (Array.isArray(queued) ? queued : []).filter((q) => !(q.project === name && q.item?.id === id) && (q.item?.dispatch?.at ?? "") < since && servable(q))
-        .map((q) => `${q.project}/${q.item.id} (${q.item.dispatch?.job ?? "build"})`);
-      line = `The review request is not claimed yet. ${busy.length ? busy.join("; ") : "No runner is busy with a job of this project"}; ${ahead.length ? `${ahead.length} job${ahead.length === 1 ? "" : "s"} queued ahead of it: ${ahead.join(", ")}` : "nothing is queued ahead of it"}.`;
-    } catch (error) { line = `The review request is not claimed yet (the queue could not be read: ${error.message}).`; }
-    if (line !== busyLine) { busyLine = line; print(line); }
-  };
-  for (let waited = 0; ; waited += POLL_MS) {
-    const d = await request("GET", itemPath);
-    // The landing waits for the gate's review alone. A tier review
-    // (src/review/tier.ts) beside it is a second opinion: its approval
-    // never satisfies the gate, so it is said and the wait goes on; its
-    // rejection sends the task back as any rejection does.
-    // Any rejection among the fresh verdicts decides, whatever came
-    // after it (src/landing-verdict.ts, which the landing Workflow
-    // shares): a tier rejection and the gate's approval that arrive
-    // between two polls leave the task rejected on the server.
-    const { verdict, tierApprovals } = landingVerdict(d.reviews ?? [], head, since);
-    for (const v of tierApprovals.filter((v) => !tierSeen.has(`${v.by}\n${v.at}`))) {
-      tierSeen.add(`${v.by}\n${v.at}`);
-      print(`${v.by} approved ${id} at ${short(head)} as its tier review; the landing still waits for the gate's review.`);
+  print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}${reviewer ? "" : " (picked by the server)"}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}.`);
+  // One read after the ask, not a wait: a verdict already given since the
+  // request (a reviewer that answered at once) ends the landing's review
+  // step as it always did.
+  const head = ask.head ?? pushed;
+  const d = await request("GET", itemPath);
+  const { verdict } = landingVerdict(d.reviews ?? [], head, ask.at);
+  if (verdict) {
+    if (!verdict.approve) {
+      await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
+      throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${rejectionText(verdict)}. The task goes back to its holder with the findings; the merge of main stays in its workspace, and the landing lease was never taken`);
     }
-    if (verdict) {
-      if (!verdict.approve) {
-        await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
-        throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${rejectionText(verdict)}. The task goes back to its holder with the findings; the merge of main stays in its workspace, and the landing lease was never taken`);
-      }
-      print(`${verdict.by} approved ${id} at ${short(head)}${verdict.topTier ? ", as the gate review and the top tier's" : ""}.`);
-      await record("review", Date.now() - t0, { verdict: "approve", reviewer: verdict.by, resolvedBy: verdict.by });
-      return "approved";
-    }
-    if (d.item.head !== head) throw new StepError(`${id}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
-    // No verdict: the wait goes on only while one can still come (t613, as
-    // the Workflow's reviewStall, t574). The live request and the verdicts
-    // come in one detail, so a verdict that closed the request is seen
-    // above, never taken for a request gone unanswered. A server that does
-    // not send liveReview is not judged on it.
-    const stall = reviewStall(head, askedAt, ask.reviewer ?? null, "liveReview" in d ? d.liveReview ?? null : { reviewer: "" }, d.unparsable ?? []);
-    if (stall) {
-      await record("review", Date.now() - t0, { verdict: stall.kind === "unparsable" ? "unparsable" : "no-request", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) });
-      const byHand = `review by hand (atelier review ${id} --approve --as H/M --note "…"), then atelier accept ${id} and atelier merge ${id}`;
-      if (stall.kind === "unparsable") throw new StepError(`${stall.by} replied to the review of ${id} at ${short(head)} with no verdict the server could read (${stall.note.slice(0, 300) || "no note"}); the reply is kept on the task (atelier show ${id}). The request stays asked of ${stall.by} and ${id} stays submitted. Run atelier land ${id} --reviewer H/M to ask another reviewer, which replaces that request, or ${byHand}`);
-      throw new StepError(`no review request of ${id} at ${short(head)} is open or claimed and no verdict was given, so none will come; ${id} stays submitted. Run atelier land ${id}${ask.reviewer ? ` --reviewer ${ask.reviewer}` : ""} to ask again, or ${byHand}`);
-    }
-    // A review request every runner that offers the reviewer has skipped
-    // will never be claimed, however long the wait runs (t353). Read as
-    // the Workflow reads it: the skips recorded against this very
-    // request, by its number — an earlier request's at the same head
-    // count for nothing — against the live runners offering the
-    // reviewer for the review job; and say so by runner name instead of
-    // waiting out the hour.
-    if (ask.reviewer && typeof ask.request === "number") {
-      const skips = (d.events ?? [])
-        .filter((e) => e.kind === "review.skipped" && e.data?.request === ask.request)
-        .map((e) => ({ runner: e.data?.runner }));
-      if (skips.length) {
-        let offers = null;
-        try { offers = await request("GET", "/runners"); } catch { /* without the offers nothing is known to have skipped */ }
-        const stuck = allSkipped(ask.reviewer, Array.isArray(offers) ? offers : [], skips);
-        if (stuck) {
-          await record("review", Date.now() - t0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck });
-          throw new StepError(`every runner that offers ${ask.reviewer} for the review of ${id} at ${short(head)} has skipped it: ${stuck.join(", ")}. The review request stays open and ${id} stays submitted. Review by hand (atelier review ${id} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again once a runner can serve ${ask.reviewer}`);
-        }
-      }
-    }
-    await explainWait(d);
-    if (waited >= REVIEW_TIMEOUT_MS) {
-      await record("review", Date.now() - t0, { verdict: "timeout", reviewer: ask.reviewer ?? undefined });
-      throw new StepError(`no verdict${ask.reviewer ? ` from ${ask.reviewer}` : ""} within ${Math.round(REVIEW_TIMEOUT_MS / 60000)} minutes; the review request stays open and ${id} stays submitted. Review by hand (atelier review ${id} --approve --as ${ask.reviewer ?? "H/M"} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again to wait once more`);
-    }
-    await new Promise((ok) => setTimeout(ok, POLL_MS));
+    print(`${verdict.by} approved ${id} at ${short(head)}.`);
+    await record("review", Date.now() - t0, { verdict: "approve", reviewer: verdict.by, resolvedBy: verdict.by });
+    return "approved";
   }
+  await record("review", Date.now() - t0, { verdict: "requested", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) });
+  return "asked";
 }
 
 // ── the pieces both landings share (t280) ──────────────────────────────────

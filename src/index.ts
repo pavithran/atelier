@@ -2846,7 +2846,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // checkout (t226, atelier land ID --queue). The developer's alone: a
       // runner or agent token cannot name the verb.
       requireOwner(env, actor);
-      return json(await L.requestLand(id, actor), 201);
+      return json(await L.requestLand(id, actor, typeof body.quote === "string" ? body.quote : undefined), 201);
     }
     case "refresh-lease": {
       // A task refresh's lease (t462, src/refresh/): the integrator's for a

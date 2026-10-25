@@ -18,7 +18,7 @@ async function riskFixture(t, sequence, { reviews = { "docs-or-tests": 0, other:
   f.box.regen = null;
   f.box.policy = { riskReviews: { core: ["work.txt"], reviews } };
   f.box.review.sequence = sequence;
-  f.env = { ATELIER_LAND_POLL_MS: "30", ATELIER_LAND_REVIEW_TIMEOUT: "2000" };
+  f.env = { ATELIER_LAND_POLL_MS: "30" };
   const need = reviews.core;
   Object.defineProperty(f.box, "gate", { get: () => ({ ready: new Set(f.box.reviews.t1.filter((r) => r.approve).map((r) => r.by)).size >= need, outOfScope: [], blockers: [] }) });
   return f;
