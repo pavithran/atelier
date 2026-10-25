@@ -26,6 +26,7 @@ import command_diff from "./diff.mjs";
 import command_dispatch from "./dispatch.mjs";
 import command_done from "./done.mjs";
 import command_edit from "./edit.mjs";
+import command_events from "./events.mjs";
 import command_fast from "./fast.mjs";
 import command_finding from "./finding.mjs";
 import command_finish from "./finish.mjs";
@@ -121,6 +122,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/dispatch.mjs", run: command_dispatch },
   { path: "cli/commands/done.mjs", run: command_done },
   { path: "cli/commands/edit.mjs", run: command_edit },
+  { path: "cli/commands/events.mjs", run: command_events },
   { path: "cli/commands/fast.mjs", run: command_fast },
   { path: "cli/commands/finding.mjs", run: command_finding },
   { path: "cli/commands/finish.mjs", run: command_finish },
