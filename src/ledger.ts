@@ -2222,7 +2222,7 @@ export class Ledger extends DurableObject<Env> {
     let n = 0;
     for (const [id, view] of Object.entries(this.forkPreparations())) {
       const item = this.item(id);
-      if (!forkStalled(view, item, now)) continue;
+      if (!forkStalled(view, item, now, this.mainHead())) continue;
       const toldFork = (fork: string) => recorded.some((e) => e.item === id && e.kind === "stage.told" && e.data.stage === PREPARING && e.data.fork === fork);
       if (forkReplacements(recorded, id) < FORK_REPLACEMENTS) {
         const to = replacementFork(view.fork);
