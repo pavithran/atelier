@@ -2167,7 +2167,7 @@ export class Ledger extends DurableObject<Env> {
         this.replaceReviewClaim(r.id as number);
         this.log(r.item as string, "atelier", "stage.retried", { stage: claimStage, head: r.head as string, request: r.id as number, reviewer: r.claimedBy as string, since, note: `${held}; the claim is released and the review asked again, once.` }, at);
         n++;
-      } else if (!toldFork(view.fork)) {
+      } else if (!told.has(key)) {
         this.log(r.item as string, "atelier", "stage.told", { stage: claimStage, head: r.head as string, request: r.id as number, reviewer: r.claimedBy as string, since, note: `${held}; the review was asked again once at this head, and the tick does not release it again.` }, at);
         n++;
       }

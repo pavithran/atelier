@@ -149,7 +149,7 @@ it("an old told notice for the -r2 fork does not suppress the notice when -r3 st
   const { id, generation } = await stalled("rr-j");
   await tick(31 * MIN);
   await L("rr-j").forkNotReady(id, `rr-j--${id}-r2`, AGENT, generation);
-  await runInDurableObject(L("rr-j"), (ledger: any) => {
+  await (runInDurableObject as unknown as (stub: unknown, fn: (instance: any) => unknown) => Promise<unknown>)(L("rr-j"), (ledger) => {
     ledger.log(id, "atelier", "stage.told", { stage: "preparing", head: "", fork: `rr-j--${id}-r2`, since: new Date().toISOString(), note: "old notice" }, new Date().toISOString());
   });
   await tick(70 * MIN);
@@ -158,7 +158,7 @@ it("an old told notice for the -r2 fork does not suppress the notice when -r3 st
   await L("rr-j").forkNotReady(id, `rr-j--${id}-r3`, AGENT, generation);
   await tick(110 * MIN);
   await tick(111 * MIN);
-  const told = (await stage("rr-j")).filter((e) => e.kind === "stage.told");
+  const told = (await stage("rr-j")).filter((e) => e.kind === "stage.told" && e.data.stage === "preparing");
   expect(told.map((e) => e.data.fork)).toEqual([`rr-j--${id}-r2`, `rr-j--${id}-r3`]);
 });
 
