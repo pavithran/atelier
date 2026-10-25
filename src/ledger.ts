@@ -6575,6 +6575,12 @@ export class Ledger extends DurableObject<Env> {
     const failed = this.evidenceFor(id).filter((e) => e.grade === "observed" && e.passed === false).at(-1) ?? null;
     const rejection = this.reviewsFor(id).filter((r) => !r.approve).at(-1) ?? null;
     const added = addedPart(record, item.partKey);
+    // A blocker on a file the part's scope lacks (t270) rides with the criteria
+    // section, which the brief carries whole, since src/plans/brief.ts has no
+    // field of its own for it.
+    const partGap = reviewScopeGap(item, this.reviewsFor(id));
+    const partScopeNote = partGap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, partGap)}` : "";
+    const partCriteria = [this.criteriaBriefSection(id), partScopeNote].filter(Boolean).join("\n\n");
     return {
       job,
       ...await buildBrief({
@@ -6591,7 +6597,7 @@ export class Ledger extends DurableObject<Env> {
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "", log: failed.log ?? null } : null,
         mergeMain: added ? { head: added.mainHead } : null,
         mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
-        criteriaReview: this.criteriaBriefSection(id) || null,
+        criteriaReview: partCriteria || null,
         proseStandard: project.policy.proseStandard ?? null,
       }),
       proseStandard: project.policy.proseStandard ?? null,
