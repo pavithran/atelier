@@ -227,9 +227,12 @@ export function decideLandQueue(i: LandQueueInput): LandQueueVerdict {
 }
 
 // A fork the tick replaces or tells of: preparing since `since`, with no fork
-// or head recorded for the task, past FORK_REPLACE_MS.
-export function forkStalled(prep: { since: string | null }, item: { fork?: string | null; head?: string | null }, now: Date): boolean {
-  if (!prep.since || item.fork || item.head) return false;
+// or head of the task's own recorded, past FORK_REPLACE_MS. A recorded head
+// that is only a main commit (the commit the task was based on, or main's
+// head) is no head: a run released without a push leaves one (t263).
+export function forkStalled(prep: { since: string | null }, item: { fork?: string | null; head?: string | null; base?: string | null }, now: Date, main?: string | null): boolean {
+  if (!prep.since || item.fork) return false;
+  if (item.head && item.head !== item.base && item.head !== main) return false;
   return now.getTime() - Date.parse(prep.since) > FORK_REPLACE_MS;
 }
 
