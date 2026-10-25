@@ -29,7 +29,7 @@
 //   runner (test/run.mjs, pid ATELIER_TEST_RUNNER) is gone, killed with no
 //   chance to act, while node --test, which never loads this guard and so
 //   never notices, waits on this process for ever; when the file
-//   has run FILE_LIMIT_MS, or when the process is still there EXIT_GRACE_MS
+//   has run FILE_LIMIT_MS (the node pool, POOL_LIMIT_MS), or when the process is still there EXIT_GRACE_MS
 //   after its tests ended (a loop or a handle a test left keeps it alive),
 //   saying why on stderr. It SIGKILLs every tracked group and every process
 //   descended from this one with its group (a sync child the main thread
@@ -37,6 +37,7 @@
 //   watchdog's thread with the rest.)
 import childProcess from "node:child_process";
 import { rmSync } from "node:fs";
+import { basename } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { after } from "node:test";
 import { Worker } from "node:worker_threads";
@@ -57,7 +58,13 @@ process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-te
   process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
 }
 
+// test/node-pool.mjs runs every Node test file, so it is not one file: it has
+// the run's own limit, ATELIER_TEST_TIMEOUT_MS, and each file it starts (a
+// process of its own, loading this guard) keeps FILE_LIMIT_MS. Under load the
+// pool took 609 s and the file limit killed it with no test failing (t260).
 const FILE_LIMIT_MS = Number(process.env.ATELIER_TEST_FILE_LIMIT_MS ?? 10 * 60_000);
+const POOL_LIMIT_MS = Number(process.env.ATELIER_TEST_TIMEOUT_MS ?? 30 * 60_000);
+const LIMIT_MS = basename(process.argv[1] ?? "") === "node-pool.mjs" ? POOL_LIMIT_MS : FILE_LIMIT_MS;
 const SYNC_TIMEOUT_MS = Number(process.env.ATELIER_TEST_SYNC_TIMEOUT_MS ?? 5 * 60_000);
 const EXIT_GRACE_MS = Number(process.env.ATELIER_TEST_EXIT_GRACE_MS ?? 10_000);
 
@@ -165,5 +172,5 @@ const watchdog = new Worker(`
     else if (Date.now() - started > limitMs) end("ran past its limit of " + Math.round(limitMs / 1000) + " s");
     else if (Atomics.load(ended, 0) && Date.now() - Atomics.load(ended, 0) * 1000 > graceMs) end("did not exit " + Math.round(graceMs / 1000) + " s after its tests ended");
   }, 500);
-`, { eval: true, workerData: { pid: process.pid, ppid: process.ppid, runner: Number(process.env.ATELIER_TEST_RUNNER) || 0, limitMs: FILE_LIMIT_MS, graceMs: EXIT_GRACE_MS, live, ended, file: process.argv[1] ?? "node" } });
+`, { eval: true, workerData: { pid: process.pid, ppid: process.ppid, runner: Number(process.env.ATELIER_TEST_RUNNER) || 0, limitMs: LIMIT_MS, graceMs: EXIT_GRACE_MS, live, ended, file: process.argv[1] ?? "node" } });
 watchdog.unref();
