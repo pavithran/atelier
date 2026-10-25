@@ -1,0 +1,31 @@
+atelier atelier/t260 "The Node test pool gets its own time limit"
+accepted head c0b21cef4979b0c2a99ddebcecb3eb46882c7a29
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-25T03:16:23.452Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-25T03:16:26.744Z
+REVIEW approve by codex/gpt-6-astra at c0b21cef4979b0c2a99ddebcecb3eb46882c7a29, recorded by codex/gpt-6-astra
+CHECKED TREE 08bb7d8d06286eaa85211e535d02bd543c84141a: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-25T02:57:52.458Z pavi item.created
+2026-10-25T02:57:52.458Z pavi criteria.revised
+2026-10-25T02:57:57.714Z pavi item.context
+2026-10-25T02:57:58.200Z pavi item.dispatched
+2026-10-25T02:58:04.223Z claude-code/sonnet-5.5 item.claimed
+2026-10-25T02:58:23.237Z claude-code/sonnet-5.5 fork.created
+2026-10-25T03:08:40.955Z claude-code/sonnet-5.5 push.observed
+2026-10-25T03:16:24.450Z claude-code/sonnet-5.5 evidence.observed
+2026-10-25T03:16:26.920Z claude-code/sonnet-5.5 evidence.observed
+2026-10-25T03:16:27.550Z claude-code/sonnet-5.5 item.submitted
+2026-10-25T03:18:06.074Z pavi land.merge
+2026-10-25T03:18:07.037Z pavi land.regenerate
+2026-10-25T03:18:08.747Z pavi land.push
+2026-10-25T03:19:05.832Z pavi land.check
+2026-10-25T03:19:06.227Z claude-code/sonnet-5.5 item.submitted
+2026-10-25T03:19:06.423Z pavi land.submit
+2026-10-25T03:19:06.668Z pavi review.requested
+2026-10-25T03:19:13.126Z codex/gpt-6-astra review.claimed
+2026-10-25T03:20:58.149Z codex/gpt-6-astra review.approved
+2026-10-25T03:21:01.326Z pavi land.review
+2026-10-25T03:21:01.602Z pavi land.lease
+2026-10-25T03:21:03.231Z pavi item.accepted
+2026-10-25T03:21:03.348Z pavi land.accept
