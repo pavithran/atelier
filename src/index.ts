@@ -25,7 +25,7 @@ import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type 
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { cleanCard, cleanCardModel, cleanWithdrawal } from "./models/cards.ts";
-import { suggestionRecords } from "./models/suggestion-records.ts";
+import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
@@ -2628,7 +2628,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
+      const track = reviewer === null ? { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
       return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers(), body.hand === true));
