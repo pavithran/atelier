@@ -14,10 +14,11 @@
 // stall is told. Each is keyed by task, head and stage, and read back from the
 // events, so a repeated tick or a lost reply changes nothing.
 
-import { assign, liveOffers, offering, offersFor, unoffered, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
+import { assign, liveOffers, offering, offersFor, servesProject, unoffered, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
+import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
 import { stageEnteredAt, stageOverrun, tickCanAct, type Item, type StageClock, type TaskStage } from "./rules.ts";
 
-export const STAGE_EVENT_KINDS = ["stage.stuck", "stage.told", "stage.cleared", "stage.rerouted"] as const;
+export const STAGE_EVENT_KINDS = ["stage.stuck", "stage.told", "stage.cleared", "stage.rerouted", "stage.land-queued"] as const;
 // How long a task fork may stay unready, with no commit recorded, before the
 // tick replaces it (t181).
 export const FORK_REPLACE_MS = 30 * 60_000;
@@ -163,6 +164,52 @@ export function decideReroute(i: RerouteInput): RerouteVerdict | null {
     if (live.some((o) => assign({ ...i.dispatch, ...to }, o, i.project))) return { acts: true, from, to, note: says };
   }
   return { acts: false, from, note: `no live runner offers another model to reroute to: ${says}${skipped.length ? `; passed over: ${skipped.join("; ")}` : ""}` };
+}
+
+// A landable task the tick queues a land job for (t253). The job is keyed by
+// task and head, and each queueing is a stage.land-queued event, so a repeated
+// tick or a lost reply queues nothing twice.
+export const LAND_REQUEUES_FOR_MAIN = 2;
+export interface LandQueued { at: string; main: string | null; reason: "first" | "lease-lapsed" | "main-moved" }
+export interface LandQueueInput {
+  item: string;
+  accepted: boolean;                       // the task is accepted at its head
+  fast: boolean;                           // the project is in fast mode
+  lease: LandingLease | null;              // the project's landing lease, if any row stands
+  lander: boolean;                         // a live runner offers the land job and holds this project's checkout
+  queued: readonly LandQueued[];           // the queueings recorded for this task and head, oldest first
+  main: string | null;                     // main's head as last observed
+  now: Date;
+}
+export interface LandQueueVerdict extends ActVerdict { queue?: LandQueued["reason"] }
+
+// Whether a live runner could take a land job for this project: it lists the
+// land job and the project's checkout (under any former name) and serves the
+// project, as the queue route requires. `offers` are already marked for it.
+export function landerLive(offers: readonly SeenOffer[], names: readonly string[]): boolean {
+  return offers.some((o) => servesProject(o) && (o.jobs ?? []).includes("land") && names.some((n) => (o.checkouts ?? []).includes(n)));
+}
+
+// What the tick does with a task found landable past its limit. A task not
+// accepted, outside fast mode, is told to wait for accept. A live lease means
+// a landing is under way. With no lander runner live nothing can run the job,
+// which is told. Otherwise the first queueing is made once; a lease that
+// lapsed since the last queueing queues the job again, and so does main
+// moving, up to LAND_REQUEUES_FOR_MAIN times, after which it is told.
+export function decideLandQueue(i: LandQueueInput): LandQueueVerdict {
+  if (!i.accepted && !i.fast) return { acts: false, note: `${i.item} is landable but not accepted, and the project is not in fast mode; the developer runs atelier accept ${i.item} for the tick to queue its landing` };
+  const lease = i.lease;
+  if (lease && !landingLeaseLapsed(lease, i.now.getTime())) return { acts: true, note: `a landing of ${lease.item} holds the lease` };
+  if (!i.lander) return { acts: false, note: "no live runner offers the land job for this project, so no landing is queued; start a runner that lists land in its jobs and holds the registered checkout, or run atelier land here" };
+  const last = i.queued.at(-1);
+  if (!last) return { acts: true, queue: "first", note: "queued the landing" };
+  if (lease && lease.item === i.item && Date.parse(lease.renewedAt ?? lease.at) > Date.parse(last.at)) return { acts: true, queue: "lease-lapsed", note: "the landing's lease lapsed; queued the landing again" };
+  if (i.main && last.main && i.main !== last.main) {
+    const moved = i.queued.filter((q) => q.reason === "main-moved").length;
+    if (moved >= LAND_REQUEUES_FOR_MAIN) return { acts: false, note: `main moved again after the tick queued the landing ${LAND_REQUEUES_FOR_MAIN} more times for it; the tick queues no more, so the developer decides` };
+    return { acts: true, queue: "main-moved", note: "main moved; queued the landing again" };
+  }
+  return { acts: true, note: "the landing is already queued" };
 }
 
 // A fork the tick replaces or tells of: preparing since `since`, with no fork
