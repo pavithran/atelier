@@ -4331,7 +4331,7 @@ async function taskPage(env: Env, L: ReturnType<typeof ledger>, id: string, form
 async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<ReviewerAvailability> {
   const at = new Date().toISOString();
   try {
-    return { known: true, reviewer: await L.availableReviewer(id, await index(env).models()), source: "model pool", at };
+    return { known: true, reviewer: await L.availableReviewer(id, await index(env).models(), await index(env).runnerOffers()), source: "model pool", at };
   } catch (err) {
     console.error(errorLine(`reviewer availability for ${id}`, err));
     return { known: false, reviewer: null, source: "model pool", at, why: "the model pool could not be read" };

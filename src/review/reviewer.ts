@@ -58,8 +58,10 @@ export interface PickInput {
   assigned?: readonly Assignment[];
   // The runners' offers as the index recorded them: a model no live runner
   // offers for the review job is passed over, since its review would wait
-  // unclaimed (gpt-6-astra's review of t622, finding 6). With no live runner,
-  // or none given, nothing is restricted.
+  // unclaimed (gpt-6-astra's review of t622, finding 6). Offers given with no
+  // live runner among them (none recorded, or all expired) mean no reviewer
+  // is available. Only offers not given (null or absent) leave the choice
+  // unrestricted, for a caller that does not judge availability.
   offers?: readonly SeenOffer[] | null;
   // Where the ledger sends this review to a model: its own destination
   // unless the ledger says otherwise. The offer is judged there, not on any
@@ -251,6 +253,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
 
   const to = input.destination?.(entry) ?? entry.where;
   const reviewOffer = input.offers ? offering({ to, job: "review" }, input.offers) : null;
+  if (input.offers && !reviewOffer) failed.push(`no live runner offers ${actor} for the review job ${to === "home" ? "at home" : "in the cloud"}: no runner is live`);
   if (reviewOffer) {
     // Offered as assign() hands the review job out: the agent and model the
     // request will name, exactly (claimants in src/dispatch/rules.ts).

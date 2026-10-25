@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { liveOffersFor } from "./helpers/live-offers.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { Assignment, AssignmentView } from "../src/models/assignments.ts";
@@ -59,7 +60,7 @@ const body = (change: Record<string, unknown> = {}) => ({
 
 it("the developer records an assignment with checked evidence; the project's selector reads it, and withdrawal restores the fallback", async () => {
   const L = await project("roles-alpha");
-  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  expect(await L.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("antigravity/gemini-4-argon");
   for (const [evidence, why] of [
     [["t1"], /names no project/], [["nowhere/t1"], /no project nowhere/], [["roles-alpha/t9"], /no task t9/], [["roles-alpha/t1#999999"], /no event 999999/],
   ] as const) {
@@ -76,11 +77,11 @@ it("the developer records an assignment with checked evidence; the project's sel
   const a = await made.json() as Assignment;
   expect(a).toMatchObject({ scope: "roles-alpha", role: "review", choices: [{ actor: "codex/gpt-6-astra", model: "gpt-6-astra" }], evidence: ["roles-alpha/t1"], by: "owner", acting: "claude-code/opus-5.5" });
   // The project's ledger has it, and its selector puts astra first.
-  expect(await L.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+  expect(await L.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("codex/gpt-6-astra");
 
   const out = await call("POST", `/model-roles/${a.id}/withdraw`, { note: "Astra is reserved this week." });
   expect(out.status).toBe(200);
-  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  expect(await L.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("antigravity/gemini-4-argon");
   const listed = await (await call("GET", "/model-roles")).json() as { assignments: AssignmentView[]; fallback: Record<string, string> };
   expect(listed.assignments.find((v) => v.id === a.id)).toMatchObject({ status: "withdrawn", evidence: ["roles-alpha/t1"], acting: "claude-code/opus-5.5", withdrawal: { note: "Astra is reserved this week." } });
   expect(listed.fallback.review).toMatch(/previous round's reviewer/);
@@ -99,11 +100,11 @@ it("a second assignment supersedes only by naming the standing one; a retry is a
   const second = await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", choices: ["zcode/glm-5.3"], replaces: first.id }));
   expect(second.status).toBe(201);
   expect(await second.json()).toMatchObject({ supersedes: first.id });
-  expect(await L.availableReviewer("t1", POOL)).toBe("zcode/glm-5.3");
+  expect(await L.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("zcode/glm-5.3");
   // Withdrawing the superseded one is refused; the standing one stays.
   expect((await call("POST", `/model-roles/${first.id}/withdraw`, { note: "old" })).status).toBe(409);
   // roles-gamma's ledger never received roles-beta's assignment.
-  expect(await ledger("roles-gamma").availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  expect(await ledger("roles-gamma").availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("antigravity/gemini-4-argon");
 });
 
 it("a renamed project keeps its assignments and evidence under its key and lists them by its new name; a removed model is skipped", async () => {
@@ -119,7 +120,7 @@ it("a renamed project keeps its assignments and evidence under its key and lists
   expect(await b.json()).toMatchObject({ scope: "roles-old", evidence: ["roles-old/t1"] });
   // Argon gone from the pool: the assignment's next choice reviews.
   const without = POOL.filter((m) => m.id !== "gemini-4-argon");
-  expect(await ledger("roles-old").availableReviewer("t1", without)).toBe("zcode/glm-5.3");
+  expect(await ledger("roles-old").availableReviewer("t1", without, liveOffersFor(without))).toBe("zcode/glm-5.3");
 });
 
 // gpt-6-astra's review of t622 at 53bf739d, finding 1: broadcasts read at
@@ -131,10 +132,10 @@ it("a project's copy refuses a snapshot older than the one it holds", async () =
   const stale = await index().assignmentSnapshotFor("roles-stale");
   expect(stale.assignments.map((x: Assignment) => x.id)).toEqual([a.id]);
   await call("POST", `/model-roles/${a.id}/withdraw`, { note: "withdrawn" });
-  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  expect(await L.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("antigravity/gemini-4-argon");
   // The older broadcast lands late.
   expect(await L.assignmentsChanged(stale)).toBe(false);
-  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  expect(await L.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("antigravity/gemini-4-argon");
 });
 
 // gpt-6-astra's review of t622 at 53bf739d, finding 3 (and Argon's finding 2):
@@ -153,7 +154,7 @@ it("a project initialised after an assignment for every project reads it from th
     const L = ledger(name);
     await L.newItem("Fix the lease race", ["src/lease.ts"], "owner", { accept: ["Works"] });
     await L.claim("t1", "claude-code/opus-5.5");
-    expect(await L.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+    expect(await L.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("codex/gpt-6-astra");
   } finally {
     await call("POST", `/model-roles/${a.id}/withdraw`, { note: "test over" });
   }
@@ -322,18 +323,18 @@ it("a retry sends every project the assignments standing now and says whether it
     // A project the first request's broadcast never reached: registered
     // after it, without the initialisation that seeds a copy.
     const late = await project("roles-repair-b");
-    expect(await late.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+    expect(await late.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("antigravity/gemini-4-argon");
     const again = await call("POST", "/model-roles", first);
     expect(again.status).toBe(200);
     expect(await again.json()).toMatchObject({ id: a.id, retried: true, status: "current", unreached: [] });
-    expect(await late.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+    expect(await late.availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("codex/gpt-6-astra");
   } finally {
     await call("POST", `/model-roles/${a.id}/withdraw`, { note: "test over" });
   }
   // Withdrawn since: the retry says so, and the withdrawal stands everywhere.
   const after = await call("POST", "/model-roles", first);
   expect(await after.json()).toMatchObject({ id: a.id, retried: true, status: "withdrawn" });
-  expect(await ledger("roles-repair-b").availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  expect(await ledger("roles-repair-b").availableReviewer("t1", POOL, liveOffersFor(POOL))).toBe("antigravity/gemini-4-argon");
 });
 
 // gpt-6-astra's third review of t622, finding 4: the acting model was checked
