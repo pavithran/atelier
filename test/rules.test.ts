@@ -2047,11 +2047,11 @@ test("merge warns on eligibility and overlap changes without refusing unrelated 
 
 test("merge compares eligible agents, the overlap rule and checks with the acceptance, and refuses what the accepted item no longer satisfies", () => {
   const context = { contributors: ["codex/gpt-6-astra"], passed: ["npm test"], overlapping: ["t4 (claude-code/opus-5.5)"] };
-  // A contributor eligible at acceptance and not now.
+  // The eligible list is retired: a contributor absent from the stored list is not refused.
   let d = mergePolicyDecision({ ...before, eligible: ["codex"] }, { ...before, eligible: ["claude"] }, ["src/a.ts"], false, context);
   assert.match(d.warning, /eligible:/);
-  assert.match(d.refusal, /its contributors are no longer eligible here: codex\/gpt-6-astra \(eligible: claude\)\. Review the task again on its page and accept again/);
-  // An eligibility change that keeps every contributor: the warning alone.
+  assert.equal(d.refusal, null);
+  assert.equal(mergePolicyDecision({ ...before, eligible: ["claude"] }, { ...before, eligible: ["claude"] }, ["src/a.ts"], false, context).refusal, null);
   assert.equal(mergePolicyDecision({ ...before, eligible: [] }, { ...before, eligible: ["codex", "claude"] }, ["src/a.ts"], false, context).refusal, null);
   // A check required now that was not observed passing at the accepted revision.
   const lint = { ...before, checks: ["npm test", "npm run lint"] };
@@ -2070,7 +2070,7 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
   const after = { ...lint, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true };
   d = mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], false, context);
   assert.match(d.warning, /^Warning: the project's policy changed since acceptance: .+; the required checks changed since acceptance: checks: /);
-  assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; its contributors are no longer eligible here: [^;]+; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
+  assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
   assert.equal(mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], true, context).refusal, null);
 });
 
