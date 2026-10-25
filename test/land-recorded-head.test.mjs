@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { prepareRecordedWorkspace } from '../cli/landing.mjs';
+import { FETCH_LIMIT_MS, prepareRecordedWorkspace } from '../cli/landing.mjs';
 import { recordedHeadStillStands } from '../cli/land.mjs';
 
 function fixture(t) {
@@ -28,14 +28,16 @@ function fixture(t) {
   writeFileSync(join(source, 'work'), 'newer fork tip'); g('commit', '-qam', 'unrecorded');
   const detail = { item: { head, owner: 'codex/test', state: 'submitted' }, policy: { commitIdentity: { name: 'Project', email: 'project@example.invalid' }, prepare: { command: 'npm ci' } } };
   const calls = [], lines = [];
-  const io = { git, name: 'proj', id: 't1', owner: 'owner', p: { path: source, branch: 'main' }, print: s => lines.push(s), request: async (method, path, body) => {
+  // A fake clock: a wait advances it and takes no time.
+  const clock = { at: 0 }, waits = [];
+  const io = { now: () => clock.at, sleep: async ms => { waits.push(ms); clock.at += ms; }, git, name: 'proj', id: 't1', owner: 'owner', p: { path: source, branch: 'main' }, print: s => lines.push(s), request: async (method, path, body) => {
     calls.push({ method, path, body });
     return method === 'POST' ? { remote: source, token: 'SECRET-READ', defaultBranch: 'main' } : detail;
   } };
   const ctx = { dir, itemPath: '/projects/proj/items/t1', detail };
   const local = (...args) => git(args, { cwd: dir });
   const backup = () => join(root, readdirSync(root).find(s => s.startsWith('workspace.backup-')), 'workspace');
-  return { root, source, dir, base, head, detail, io, ctx, local, calls, lines, backup };
+  return { clock, waits, root, source, dir, base, head, detail, io, ctx, local, calls, lines, backup };
 }
 
 for (const state of ['missing', 'behind', 'diverged', 'dirty', 'conflicted']) test(`recorded head recovery preserves ${state} workspace and ignores newer fork tip`, async t => {
@@ -159,6 +161,29 @@ test('a recorded object absent from the fork leaves the workspace untouched', as
   assert.equal(f.local('rev-parse', 'HEAD'), f.head);
   assert.equal(readFileSync(join(f.dir, 'precious'), 'utf8'), 'keep');
   assert.equal(readdirSync(f.root).some(s => s.startsWith('workspace.backup-')), false);
+});
+
+test('a fetch that fails twice then succeeds lands, printing a line per wait', async t => {
+  const f = fixture(t), git = f.io.git; let failed = 0;
+  f.local('reset', '--hard', f.base);
+  f.io.git = (args, opts) => { if (args[0] === 'fetch' && opts.token && failed < 2) { failed++; throw new Error('SECRET-READ'); } return git(args, opts); };
+  await prepareRecordedWorkspace(f.io, f.ctx);
+  assert.equal(f.local('rev-parse', 'HEAD'), f.head);
+  assert.deepEqual(f.waits, [5000, 10000]);
+  assert.equal(f.lines.filter(s => /retrying in/.test(s)).length, 2);
+  assert.doesNotMatch(f.lines.join('\n'), /SECRET-READ/);
+});
+
+test('a fetch that never succeeds stops after the limit with the elapsed time', async t => {
+  const f = fixture(t), git = f.io.git;
+  f.local('reset', '--hard', f.base);
+  writeFileSync(join(f.dir, 'precious'), 'keep');
+  f.io.git = (args, opts) => { if (args[0] === 'fetch' && opts.token) throw new Error('SECRET-READ'); return git(args, opts); };
+  await assert.rejects(prepareRecordedWorkspace(f.io, f.ctx), e => /recorded commit .* is unavailable; the original workspace is untouched \(retried for 300s\)/.test(e.message) && !e.message.includes('SECRET-READ'));
+  assert.equal(f.clock.at, FETCH_LIMIT_MS);
+  assert.ok(f.waits.every(w => w <= 60000));
+  assert.equal(f.lines.filter(s => /retrying in/.test(s)).length, f.waits.length);
+  assert.equal(readFileSync(join(f.dir, 'precious'), 'utf8'), 'keep');
 });
 
 test('dry run leaves an absent workspace absent and requests no token', async t => {
