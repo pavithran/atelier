@@ -79,7 +79,7 @@ import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { rejectionRequest, reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
-import type { SuggestionRecords } from "./models/suggest.ts";
+import type { ReviewerRecords, SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
 import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
@@ -7780,7 +7780,7 @@ export class Ledger extends DurableObject<Env> {
   // `hand` (t694): the developer serves this review by hand (review-claim
   // --runner home:hand), so no live runner need offer it; only the check that
   // one does is waived, every other check on the reviewer stands.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[], hand = false): ReviewAsked {
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: (ReviewerRecords | SuggestionRecords) & { project: string }, offers?: readonly SeenOffer[], hand = false): ReviewAsked {
     // The offers and the pool are kept whatever the answer, as they were
     // before the transaction: the ticks read them.
     offers = this.ownOffers(offers);
@@ -7798,7 +7798,7 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: (SuggestionRecords & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false): ReviewAsked {
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false): ReviewAsked {
     const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
