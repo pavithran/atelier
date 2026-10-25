@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { holdLiveOffers, liveOffersFor } from "./helpers/live-offers.ts";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import { briefFor } from "../src/brief.ts";
@@ -315,11 +316,11 @@ it("decision 2026-10-09: availableReviewer names the reviewer the pool offers, a
     id, harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: T, ...change,
   });
   // A model of another family than the contributor is named.
-  expect(await L.availableReviewer("t1", [entry("gpt-6-astra"), entry("opus-5.5", { harness: "claude-code" })]))
+  expect(await L.availableReviewer("t1", [entry("gpt-6-astra"), entry("opus-5.5", { harness: "claude-code" })], liveOffersFor([entry("gpt-6-astra"), entry("opus-5.5", { harness: "claude-code" })])))
     .toBe("codex/gpt-6-astra");
   // Only the contributor's own model is in the pool: no reviewer of another family.
-  expect(await L.availableReviewer("t1", [entry("opus-5.5", { harness: "claude-code" })])).toBeNull();
-  expect(await L.availableReviewer("t1", [])).toBeNull();
+  expect(await L.availableReviewer("t1", [entry("opus-5.5", { harness: "claude-code" })], liveOffersFor([entry("opus-5.5", { harness: "claude-code" })]))).toBeNull();
+  expect(await L.availableReviewer("t1", [], liveOffersFor([]))).toBeNull();
 });
 
 it("decision 2026-10-09: availableReviewer asks the review tier first for a protected change", async () => {
@@ -336,7 +337,7 @@ it("decision 2026-10-09: availableReviewer asks the review tier first for a prot
   });
   // The tier model is asked first, ahead of the pool's own id order, so one
   // review serves the gate and the tier.
-  expect(await L.availableReviewer("t1", [entry("glm-5.3", { harness: "opencode" }), entry("gpt-6-astra")]))
+  expect(await L.availableReviewer("t1", [entry("glm-5.3", { harness: "opencode" }), entry("gpt-6-astra")], liveOffersFor([entry("glm-5.3", { harness: "opencode" }), entry("gpt-6-astra")])))
     .toBe("codex/gpt-6-astra");
 });
 
@@ -357,6 +358,7 @@ it("decision 2026-10-09: the inbox names the reviewer a land would use for an as
   });
   // A reviewer of another family than the contributor is named on the entry.
   const pool = [entry("gpt-6-astra"), entry("opus-5.5", { harness: "claude-code" })];
+  await holdLiveOffers(L, pool);
   const inbox = await L.inbox(T, pool);
   expect(inbox.map((e) => `${e.itemId}:${e.kind}`)).toEqual(["t1:assess"]);
   expect(inbox[0].reviewer).toBe("codex/gpt-6-astra");
