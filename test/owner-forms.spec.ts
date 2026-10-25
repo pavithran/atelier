@@ -256,6 +256,7 @@ it("criterion 4: an override from the page keeps the reviewer availability in re
 it("criterion 4: an override from the command line keeps the reviewer the pool offered, and the history shows it", async () => {
   const { L, api, view } = await setup("forms-availability-cli");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).putRunnerOffer({ runner: "home:forms", kind: "home", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build", "review"] }, new Date().toISOString());
   await L.confirmOverride("t1", "owner", H1, "secret");
   const res = await api("/items/t1/accept", { head: H1, overrideReview: "Accepting now; the reviewer can follow" });
   expect(res.status, await res.clone().text()).toBe(200);

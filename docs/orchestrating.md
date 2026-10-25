@@ -419,6 +419,8 @@ A runner is offered the oldest review request it can serve, whatever older ones 
 
 The stage tick reroutes a queued dispatch no live runner offers, or one left unclaimed 10 minutes, once to a model a live runner offers (`stage.rerouted`), and replaces a task fork preparing over 30 minutes with no commit recorded once; any second miss is `stage.told` (t245).
 
+The tick also releases a review claim unanswered for 2 hours (`reviewAnswerHours`) and asks again once per task and head (`stage.retried`); the next stale claim at that head is `stage.told`. A checked task whose review request stays unclaimed 10 minutes moves once to another reviewer a live runner offers, of another family than every contributor (`stage.rerouted`); with none, it is `stage.stuck` and `stage.told` (t225).
+
 The stage tick queues one land job (`stage.land-queued`), keyed by task and head, for a task left landable over 5 minutes that is accepted or in a project in fast mode, with no landing lease held. A lease lapsed for 15 minutes queues it again; main moving queues it again at most twice. A landable task not yet accepted is `stage.told` naming `atelier accept`, and with no live runner that lists `land` and holds the checkout it is `stage.stuck` and `stage.told` (t253).
 
 To serve a review by hand, claim it as the reviewer with `atelier
