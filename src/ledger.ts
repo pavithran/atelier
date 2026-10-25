@@ -33,7 +33,7 @@ import {
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
-  forkPreparationView, type ForkPreparation, type ForkPreparationView,
+  forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -8068,6 +8068,9 @@ export class Ledger extends DurableObject<Env> {
   private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers: readonly SeenOffer[] | undefined = this.heldOffers()): void {
     const policy = this.project().policy;
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
+    // A change that needs two or more independent reviews asks no separate
+    // tier review; the independent reviews are the second opinion (t277).
+    if ((riskNeed(need.changedPaths, policy)?.reviews ?? 0) >= 2) return;
     if (this.gateIsTier(item, need, gateReviewer, pool)) return;
     // A request or review for criteria the item no longer has does not count:
     // the tier is asked again for the new ones. A request superseded by a

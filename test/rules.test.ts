@@ -1733,6 +1733,23 @@ test("riskNeed: the files the checks run and the ship files are core beside the 
   assert.equal(riskNeed(["docs/a.md"], policy), null);
 });
 
+// t265 waited an hour: astra's approval, drawn by a tier request, filled the
+// tier slot and counted as no independent review.
+test("a change needing two reviews counts a tier model's approval as independent; one needing one keeps the tier apart (t277)", () => {
+  const core = pass({ changedPaths: ["src/rules.ts"] });
+  const base: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, claimed: true };
+  const tierApproval: Review = { ...base, by: "gemini/gemini-3", tier: true };
+  assert.deepEqual(gateApprovals(item(), riskPolicy, [core], [base, tierApproval]).map((r) => r.by), ["codex/gpt-5.5", "gemini/gemini-3"]);
+  assert.equal(gate(item(), riskPolicy, [core], [base, tierApproval]).ready, true);
+  // A contributor's own tier approval is still no independent review.
+  const contributor = { ...tierApproval, by: "claude-code/opus-5.5", claimed: true };
+  assert.equal(gateApprovals(item(), riskPolicy, [core], [base, contributor]).length, 1);
+  assert.equal(gate(item(), riskPolicy, [core], [base, contributor]).ready, false);
+  // One review needed: the tier approval stays apart.
+  const one: ProjectPolicy = { ...riskPolicy, riskReviews: { core: ATELIER_CORE, reviews: { "docs-or-tests": 0, other: 1, core: 1 } } };
+  assert.deepEqual(gateApprovals(item(), one, [core], [tierApproval]), []);
+});
+
 // This would have caught a docs-only edit inside a protected path asking for
 // the full cross-company review (t631's finding), and a core change landing on one.
 test("the gate counts the approvals a risk class needs; a project without riskReviews keeps today's rule", () => {

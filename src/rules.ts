@@ -1993,7 +1993,11 @@ function approvalsCounted(item: Item, policy: ProjectPolicy, counting: Review[],
   // One approval per model (modelKey): an alias, a profile or another harness
   // of one model is the same reviewer, not a second.
   const seen = new Set<string>();
-  return counting.filter((r) => independentApproval(r, need.as!, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
+  // A change that needs two or more reviews asks no separate tier review: an
+  // approval a tier request drew counts as any other when its model is
+  // independent (t277). With fewer, the tier keeps its own slot.
+  const asIndependent = (r: Review): Review => (need.count >= 2 && r.tier ? { ...r, tier: false } : r);
+  return counting.map(asIndependent).filter((r) => independentApproval(r, need.as!, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
 }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {

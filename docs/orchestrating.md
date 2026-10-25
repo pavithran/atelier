@@ -660,17 +660,17 @@ starts several of them at once and keeps the order.
   before. An approval is bound to the head and the criteria it read: a push,
   or a change of criteria, starts the count again, except where an
   approval is retained (next).
-- **Filling the reviews of a core change.** A core change in a project with
-  a tier needs a tier review and two independent reviews. A tier review by a
-  model that could also have counted as independent leaves one independent
-  slot open: the gate counts that approval as the tier review, not as an
-  independent one, so the landing waits for another independent approval
-  that never comes if no other model is asked. Ask a different top-tier
-  model for the tier review, so that both independent slots go to the
-  models you name with `--reviewer`. Finding, on 2026-10-25: t265 sat an
-  hour with approvals from astra and argon counted as one independent,
-  because astra's approval filled the tier slot; asking glm-5.3 for the tier
-  review let it land.
+- **Filling the reviews of a core change.** When the project's
+  `riskReviews` ask two or more independent reviews for a change, the gate
+  asks no separate tier review: two approvals from different families, none
+  a contributor's, clear it, and a tier model's approval counts as
+  independent when its family is not a contributor's. Name two reviewers of
+  different families with `--reviewer`; a tier model may be one of them.
+  A change that needs none or one independent review keeps the tier as
+  before: a separate tier review's approval is never the independent one.
+  Finding, on 2026-10-25: t265 sat an hour with approvals from astra and
+  argon counted as one independent, because astra's approval filled the tier
+  slot. PAVI decided that two independent families suffice.
 - **Retained approvals.** An approval may stand across a merge of main, and
   the server alone decides, when the push arrives (the review-retention
   rule, t56; [Landing](landing.md) has the conditions): the merge must be
