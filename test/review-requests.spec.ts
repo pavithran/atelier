@@ -748,6 +748,29 @@ it("a protected part's review is routed to a tier model of another family before
   expect((await L.item(partId)).state).toBe("accepted");
 });
 
+// t277: a change that needs two independent reviews asks no separate tier
+// review; one that needs a single review keeps the tier request.
+async function tieredRisk(project: string, core: number) {
+  const { L, partId, builder, sibling } = await tiered(project);
+  await L.setProject({
+    name: project, repo: `${project}--baseline`, createdAt: new Date().toISOString(),
+    policy: { ...policy, protected: ["src/**"], reviewTier: [builder, sibling], riskReviews: { core: ["src/**"], reviews: { "docs-or-tests": 0, other: 1, core } } },
+  }, "owner");
+  await submitPart(L, partId, "a".repeat(40));
+  return { L, partId };
+}
+
+it("a protected core change that needs two independent reviews gets no separate tier request (t277)", async () => {
+  const { L, partId } = await tieredRisk("review-tier-risk-two", 2);
+  expect((await L.reviewRequests(partId)).filter((r) => r.tier)).toEqual([]);
+  expect((await events(L, partId)).filter((e) => e.kind === "review.requested").every((e) => !e.data.tier)).toBe(true);
+});
+
+it("a protected core change that needs one independent review still gets the tier request (t277)", async () => {
+  const { L, partId } = await tieredRisk("review-tier-risk-one", 1);
+  expect((await L.reviewRequests(partId)).filter((r) => r.tier)).toHaveLength(1);
+});
+
 it("a protected part in a project with a review tier gets the gate's request and a tier request that skips the builder's model", async () => {
   const { L, id, partId, sibling } = await tiered("review-tier-requests");
   const head = "a".repeat(40);
