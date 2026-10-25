@@ -1576,8 +1576,9 @@ test("a task given up at the harness rerun cap is released once, with the runner
     workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     async queue() {
       if (++polls === 4) { process.emit("SIGINT"); return []; }
-      // Each poll shows the task as the release left it: a new time.
-      return [{ ...assignment, item: { ...assignment.item, head: String(polls).repeat(40).slice(0, 40), updatedAt: String(polls) } }];
+      // The release moves the head once and each poll shows a new time; a
+      // head that kept changing would clear the skip (t281).
+      return [{ ...assignment, item: { ...assignment.item, head: String(Math.min(polls, 2)).repeat(40), updatedAt: String(polls) } }];
     },
     reportRunSkip: async (body) => { skips.push(body); },
   });

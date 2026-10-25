@@ -3402,7 +3402,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The skips runners reported of the open dispatched tasks among `items`
   // that still stand: under the task's dispatch and at its head (skipHolds).
-  private runSkipsOf(items: readonly Item[]): RunSkip[] & { item: string }[] {
+  private runSkipsOf(items: readonly Item[]): (RunSkip & { item: string })[] {
     const skipped = this.runnerNotes<RunSkip>("run-skip");
     return items.filter((i) => i.state === "open" && !i.owner && i.dispatch).flatMap((i) =>
       (skipped.get(i.id) ?? []).filter((s) => skipHolds(s, i)).map((s) => ({ ...s, item: i.id })));
