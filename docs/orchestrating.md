@@ -653,6 +653,17 @@ starts several of them at once and keeps the order.
   before. An approval is bound to the head and the criteria it read: a push,
   or a change of criteria, starts the count again, except where an
   approval is retained (next).
+- **Filling the reviews of a core change.** A core change in a project with
+  a tier needs a tier review and two independent reviews. A tier review by a
+  model that could also have counted as independent leaves one independent
+  slot open: the gate counts that approval as the tier review, not as an
+  independent one, so the landing waits for another independent approval
+  that never comes if no other model is asked. Ask a different top-tier
+  model for the tier review, so that both independent slots go to the
+  models you name with `--reviewer`. Finding, on 2026-10-25: t265 sat an
+  hour with approvals from astra and argon counted as one independent,
+  because astra's approval filled the tier slot; asking glm-5.3 for the tier
+  review let it land.
 - **Retained approvals.** An approval may stand across a merge of main, and
   the server alone decides, when the push arrives (the review-retention
   rule, t56; [Landing](landing.md) has the conditions): the merge must be
