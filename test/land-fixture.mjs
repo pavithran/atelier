@@ -226,6 +226,13 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       answer = item ? detail(item) : {};
     }
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
+    else if (url.endsWith("/land-job")) {
+      // The land request (t264), recorded once per task like the server's land_jobs row.
+      box.landJobs ??= {};
+      const had = box.landJobs[item];
+      if (!had) box.landJobs[item] = { item, by: "owner", at: new Date().toISOString(), ...(body.quote ? { quote: body.quote } : {}) };
+      answer = { ...box.landJobs[item], queued: !had };
+    }
     else if (url.endsWith("/review-request")) {
       const rv = item !== "t1" && box.reviewOf?.[item] ? box.reviewOf[item] : box.review;
       box.reviewAsks = [...(box.reviewAsks ?? []), { item, head, at: Date.now() }];

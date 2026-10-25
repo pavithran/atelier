@@ -95,3 +95,18 @@ it("astra registered with provider openai (the old live shape), or reached with 
     expect(JSON.stringify(body), label).toMatch(/codex\/gpt-6-astra .*paid per token \(openai\); paid models are not allowed for this review/);
   }
 });
+
+// t264: a pool with no astra registered refuses the pick and shows why each
+// candidate was left out, so the owner sees what to change.
+it("a pool without gpt-6-astra gives no reviewer and shows each candidate's rejection", async () => {
+  const name = "land-no-astra";
+  const id = await landable(name, "claude-code/opus-5.5", liveAstra());
+  await index().removeModel("gpt-6-astra");
+  const res = await land(name, id);
+  const body = await res.json() as { error?: string; detail?: string; message?: string };
+  expect(res.status, JSON.stringify(body)).toBe(409);
+  const text = JSON.stringify(body);
+  expect(text).toMatch(/no_reviewer|no reviewer/);
+  expect(text).toContain("claude-code/opus-5.5 (contributed to this item, and nobody reviews their own work)");
+  expect(text).toContain("codex/gpt-6-astra: not a candidate here (not in the pool, or not offered for this job)");
+});

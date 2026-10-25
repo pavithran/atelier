@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { redactGitArgs } from "../runner.mjs";
-import { runLand } from "../land.mjs";
+import { NOT_LANDED, NOT_LANDED_EXIT, runLand } from "../land.mjs";
 import { OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
 import { serverFetch } from "../server-fetch.mjs";
 import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../land-queue.mjs";
@@ -27,12 +27,16 @@ export default async function landCommand() {
   // runs here.
   if (args.queue !== undefined) {
     if (ids.length > 1) die("--queue acts on one task: atelier land ID --queue");
-    const queued = await call("POST", `${P(name)}/items/${encodeURIComponent(id)}/land-job`, {}, OWNER);
+    const queued = await call("POST", `${P(name)}/items/${encodeURIComponent(id)}/land-job`, typeof args.quote === "string" ? { quote: args.quote } : {}, OWNER);
     console.log(queued.queued ? `${id} is queued to land on a runner that holds ${name}'s registered checkout and offers the land job.` : `${id} is already queued to land (since ${queued.at}).`);
     return;
   }
-  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
-  if (!p.path || !existsSync(p.path)) die(`land needs ${name}'s registered checkout; this machine records ${p.path ?? "no folder"}. Run atelier init in that checkout first`);
+  // A machine with no registered checkout cannot run the landing; it records
+  // the land request and follows the job a lander takes (t264), which
+  // runLand does.
+  const p = cfg.projects?.[name];
+  const checkout = !!p?.path && existsSync(p.path);
+  const noCheckout = `land needs ${name}'s registered checkout; this machine records ${p?.path ?? "no folder"}. Run atelier init in that checkout first`;
   const workspace = workspacePath(name, id);
   // A request that throws rather than dies, so a landing that already holds
   // the lease can release it before the command ends. Requests are made as
@@ -77,8 +81,8 @@ export default async function landCommand() {
     process.exit(summary.status);
   }
   try {
-    await runLand({
-      args, name, id, p, request, git: gitOrThrow, die, owner: OWNER,
+    const ended = await runLand({
+      args, name, id, p, checkout, noCheckout, request, git: gitOrThrow, die, owner: OWNER,
       print: (line) => console.log(line),
       // A stored check log by its reference, for the failure summary (t436).
       readLog: logReader(name, id),
@@ -92,5 +96,8 @@ export default async function landCommand() {
         gitOrThrow(["fetch", "--quiet", "origin"], { cwd: dir });
       },
     });
+    // Under the multi-task pool, a landing that ended without landing says so
+    // by its exit status; run alone it exits 0 as it always did.
+    if (ended === NOT_LANDED && process.env.ATELIER_LAND_POOL === "1") process.exitCode = NOT_LANDED_EXIT;
   } catch (error) { die(error.message); }
 }

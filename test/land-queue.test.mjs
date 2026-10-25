@@ -332,11 +332,27 @@ test("atelier land with several tasks reports each merged task and exits 0", asy
 test("atelier land with several tasks runs the ordinary landing for each, prefixing what each prints, and exits 0 when all land", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
-  const r = await f.run(f.checkout, "land", "t1", "t2", "--no-review", "--parallel", "2");
-  assert.equal(r.status, 0, r.output);
+  f.box.review.approveAfter = null;
+  const r = await f.run(f.checkout, "land", "t1", "t2", "--parallel", "2");
+  assert.equal(r.status, 1, r.output);
   assert.match(r.output, /\[t1\] Pushed \w{8} to t1's fork\./);
   assert.match(r.output, /\[t2\] Pushed \w{8} to t2's fork\./);
-  assert.match(r.output, /^t1 landed\.$/m);
-  assert.match(r.output, /^t2 landed\.$/m);
-  assert.match(r.output, /2 tasks: 2 landed\./);
+  assert.match(r.output, /^t1 asked, not landed:/m);
+  assert.match(r.output, /^t2 asked, not landed:/m);
+  assert.doesNotMatch(r.output, /^t[12] landed\./m);
+  assert.match(r.output, /2 tasks: 2 asked, not landed\./);
+});
+
+test("atelier land with several tasks and --no-review reports each as asked, not landed", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  const r = await f.run(f.checkout, "land", "t1", "t2", "--no-review", "--parallel", "2");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /2 tasks: 2 asked, not landed\./);
+});
+
+test("summarise counts a landing that stopped at the ask as not landed and exits non-zero", () => {
+  const s = summarise({ results: [{ id: "t1", outcome: "landed" }, { id: "t2", outcome: "asked" }], stoppedBy: null, held: null });
+  assert.equal(s.line, "2 tasks: 1 landed, 1 asked, not landed.");
+  assert.equal(s.status, 1);
 });

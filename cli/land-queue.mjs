@@ -12,6 +12,9 @@ import { killTree } from "./group.mjs";
 // running the same command later reads the ledger and carries on.
 
 export const DEFAULT_PARALLEL = 3;
+// The exit status of a landing that ended with the task not landed (its review
+// asked, left to the owner, or only recorded): not a failure, and not a landing.
+export const NOT_LANDED_STATUS = 75;
 const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 // How long a child has to release its lease after the signal reaches it
 // before its whole process tree is killed.
@@ -45,7 +48,7 @@ export function childFlags(multi) {
 
 // The default way to run one landing: `atelier land ID …` as a process group
 // of its own, so a signal to this queue reaches it and everything it started.
-export function spawnLanding(argv, { env = process.env } = {}) {
+export function spawnLanding(argv, { env = { ...process.env, ATELIER_LAND_POOL: "1" } } = {}) {
   const child = spawn(argv[0], argv.slice(1), { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const done = new Promise((resolve) => {
     let ended = false;
@@ -158,6 +161,11 @@ export async function runLandQueue(io) {
         print(`${id} landed.`);
         return;
       }
+      if (end.status === NOT_LANDED_STATUS) {
+        result.outcome = "asked";
+        print(`${id} asked, not landed: it is still submitted, and the land job lands it once the gate counts an approval (or run atelier land ${id} again then).`);
+        return;
+      }
       result.outcome = "failed";
       // Admission pauses from here, before anything else is awaited.
       checking++;
@@ -191,13 +199,14 @@ export async function runLandQueue(io) {
   return { results: [...results.values()], stoppedBy, held };
 }
 
-// The summary line and the exit status: non-zero if any landing failed, a
+// The summary line and the exit status: non-zero if any landing failed or
+// stopped at the ask without landing, a
 // signal stopped the queue or a hold left tasks unstarted.
 export function summarise({ results, stoppedBy, held }) {
   const count = (outcome) => results.filter((r) => r.outcome === outcome).length;
-  const parts = [["landed", "landed"], ["already-merged", "already merged"], ["failed", "failed"], ["not-started", "not started"]]
+  const parts = [["landed", "landed"], ["already-merged", "already merged"], ["asked", "asked, not landed"], ["failed", "failed"], ["not-started", "not started"]]
     .map(([key, label]) => [count(key), label]).filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`);
-  const bad = count("failed") > 0 || count("not-started") > 0;
+  const bad = count("failed") > 0 || count("asked") > 0 || count("not-started") > 0;
   const status = stoppedBy ? 128 + osConstants.signals[stoppedBy] : bad || held ? 1 : 0;
   return { line: `${results.length} task${results.length === 1 ? "" : "s"}: ${parts.join(", ")}.`, status };
 }

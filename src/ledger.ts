@@ -890,6 +890,8 @@ export class Ledger extends DurableObject<Env> {
     // Landings queued for a runner that holds the registered checkout (t226),
     // one row per task, until the task merges or is closed.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS land_jobs (item TEXT PRIMARY KEY, by TEXT NOT NULL, at TEXT NOT NULL)`);
+    // The words that asked for the landing (t264), kept with the request.
+    if (!this.sql.exec(`PRAGMA table_info(land_jobs)`).toArray().some((c) => c.name === "quote")) this.sql.exec(`ALTER TABLE land_jobs ADD COLUMN quote TEXT`);
     // The developer's branches (t641), one row each by name.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS developer_branches (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
@@ -2177,9 +2179,9 @@ export class Ledger extends DurableObject<Env> {
 
   // The tick's land job for a landable task (t253): the same land_jobs row
   // `atelier land --queue` writes, made again with a fresh time when the job
-  // is queued anew, and the stage.land-queued event the next tick reads back.
+  // is queued anew (the owner's actor and quote stay on the row), and the stage.land-queued event the next tick reads back.
   private queueLandFromTick(id: string, head: string, main: string | null, verdict: LandQueueVerdict, at: string): void {
-    this.sql.exec(`INSERT OR REPLACE INTO land_jobs (item, by, at) VALUES (?, ?, ?)`, id, "atelier", at);
+    this.sql.exec(`INSERT INTO land_jobs (item, by, at) VALUES (?, ?, ?) ON CONFLICT(item) DO UPDATE SET at = excluded.at`, id, "atelier", at);
     this.log(id, "atelier", "stage.land-queued", { stage: "landable", head, main, at, reason: verdict.queue, note: verdict.note }, at);
   }
 
@@ -9352,14 +9354,16 @@ export class Ledger extends DurableObject<Env> {
   // Queues a task's landing for a runner that holds the registered checkout
   // (t226, atelier land ID --queue). A task already merged or closed has no
   // landing to run; one already queued keeps its place.
-  requestLand(id: string, by: string): { item: string; by: string; at: string; queued: boolean } {
+  requestLand(id: string, by: string, quote?: string): { item: string; by: string; at: string; quote?: string; queued: boolean } {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409);
     const at = new Date().toISOString();
-    const existing = this.sql.exec(`SELECT by, at FROM land_jobs WHERE item = ?`, id).toArray()[0];
-    if (existing) return { item: id, by: existing.by as string, at: existing.at as string, queued: false };
-    this.sql.exec(`INSERT INTO land_jobs (item, by, at) VALUES (?, ?, ?)`, id, by, at);
-    return { item: id, by, at, queued: true };
+    const existing = this.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
+    if (existing) return { item: id, by: existing.by as string, at: existing.at as string, ...(existing.quote ? { quote: existing.quote as string } : {}), queued: false };
+    const said = quote?.trim().slice(0, 500) || null;
+    this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote) VALUES (?, ?, ?, ?)`, id, by, at, said);
+    this.log(id, by, "land.requested", { by, ...(said ? { quote: said } : {}) }, at);
+    return { item: id, by, at, ...(said ? { quote: said } : {}), queued: true };
   }
 
   // The land jobs a runner is offered (t226): the queued landings, to a
