@@ -118,7 +118,7 @@ const stalled = async (key: string) => {
   return { id, generation };
 };
 
-it("replaces a fork preparing past 30 minutes with no commit once, under a new name, and a second stall is told", async () => {
+it("replaces a fork preparing past 30 minutes with no commit twice, under new names, and a third stall is told", async () => {
   await project("rr-e");
   const { id, generation } = await stalled("rr-e");
   await tick(29 * MIN);
@@ -129,12 +129,17 @@ it("replaces a fork preparing past 30 minutes with no commit once, under a new n
   expect([moved.kind, moved.data.stage, moved.data.from, moved.data.to]).toEqual(["stage.rerouted", "preparing", `rr-e--${id}`, `rr-e--${id}-r2`]);
   expect(await L("rr-e").forkNameFor(id)).toBe(`rr-e--${id}-r2`);
   expect(await L("rr-e").forkPreparations()).toEqual({});
-  // The replacement stalls too: told once, and nothing is replaced again.
+  // The replacement stalls too: one more fork under a new name.
   await L("rr-e").forkNotReady(id, `rr-e--${id}-r2`, AGENT, generation);
   await tick(70 * MIN);
   await tick(71 * MIN);
-  expect(await kinds("rr-e")).toEqual([[id, "stage.rerouted", "preparing"], [id, "stage.told", "preparing"]]);
-  expect(await L("rr-e").forkNameFor(id)).toBe(`rr-e--${id}-r2`);
+  expect(await L("rr-e").forkNameFor(id)).toBe(`rr-e--${id}-r3`);
+  // That one stalls as well: told once, and nothing is replaced again.
+  await L("rr-e").forkNotReady(id, `rr-e--${id}-r3`, AGENT, generation);
+  await tick(110 * MIN);
+  await tick(111 * MIN);
+  expect(await kinds("rr-e")).toEqual([[id, "stage.rerouted", "preparing"], [id, "stage.rerouted", "preparing"], [id, "stage.told", "preparing"]]);
+  expect(await L("rr-e").forkNameFor(id)).toBe(`rr-e--${id}-r3`);
 });
 
 it("leaves a fork with a commit recorded untouched", async () => {

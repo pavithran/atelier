@@ -1,4 +1,5 @@
 import { landingOf } from "./diff.ts";
+import { FORK_REPLACEMENTS, forkReplacements } from "./stuck/forks.ts";
 import { decideLandQueue, decideReroute, findStageOverrun, forkStalled, landerLive, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type LandQueued, type LandQueueVerdict, type RerouteVerdict, type StageFinding } from "./stage-tick.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
@@ -2038,25 +2039,25 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A task fork preparing past the limit with no fork or head recorded: the
-  // first stall moves the task to a fork under a new name (the next claim makes
-  // it) and clears the clock; the old repository is left as it is. A second
-  // stall is told once. Returns how many events it recorded.
+  // first two stalls each move the task to a fork under a new name (the next
+  // claim makes it) and clear the clock; the old repository is left as it is.
+  // A third stall is told once, and `stuck` lists the task (src/stuck/forks.ts). Returns how many events it recorded.
   private replaceStalledForks(now: Date, recorded: readonly { item: string; kind: string; data: Record<string, unknown> }[]): number {
     const at = now.toISOString();
-    const rerouted = recordedKeys(recorded, "stage.rerouted"), told = recordedKeys(recorded, "stage.told");
+    const told = recordedKeys(recorded, "stage.told");
     let n = 0;
     for (const [id, view] of Object.entries(this.forkPreparations())) {
       const item = this.item(id);
       if (!forkStalled(view, item, now)) continue;
       const key = stageKeyOf({ item: id, stage: PREPARING as never, head: "" });
-      if (!rerouted.has(key)) {
+      if (forkReplacements(recorded, id) < FORK_REPLACEMENTS) {
         const to = replacementFork(view.fork);
         this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkNameKey(id), to);
         this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
         this.log(id, "atelier", "stage.rerouted", { stage: PREPARING, head: "", from: view.fork, to, since: view.since, note: `${view.fork} was preparing for ${forkAgeText(view.ageMs)} with no commit recorded; the next claim makes ${to}. Atelier deleted nothing.` }, at);
         n++;
       } else if (!told.has(key)) {
-        this.log(id, "atelier", "stage.told", { stage: PREPARING, head: "", fork: view.fork, since: view.since, note: `${view.fork}, the replacement fork, has not become ready in ${forkAgeText(view.ageMs)} either, and the tick replaces a fork once. Check the repository in Artifacts.` }, at);
+        this.log(id, "atelier", "stage.told", { stage: PREPARING, head: "", fork: view.fork, since: view.since, note: `${view.fork}, the replacement fork, has not become ready in ${forkAgeText(view.ageMs)} either, and the tick has replaced it ${FORK_REPLACEMENTS} times. Check the repository in Artifacts.` }, at);
         n++;
       }
     }
