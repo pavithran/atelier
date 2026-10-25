@@ -530,11 +530,20 @@ export interface RunSkip {
   at: string;
 }
 
+// Whether a runner's reported skip still stands for the task: under the
+// dispatch it was made for, and at the head it was made at, so a new dispatch
+// or a new head clears it, as the runner's own memory clears (cli/runner.mjs).
+// A `skipped` skip also ends with any other change to the task (updatedAt).
+export function skipHolds(s: RunSkip, item: Item): boolean {
+  if (s.dispatchAt !== item.dispatch?.at) return false;
+  if (s.head !== undefined && (s.head ?? null) !== (item.head ?? null)) return false;
+  return s.kind !== "skipped" || !s.updatedAt || sameRevision({ dispatchAt: s.dispatchAt, head: s.head ?? null, updatedAt: s.updatedAt }, item);
+}
+
 export function reportedSkips(skips: readonly RunSkip[], item: Item, offers?: readonly SeenOffer[] | null, now = new Date()): RunSkip[] {
   const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
   const started = startedOf(offers);
-  return skips.filter((s) => s.dispatchAt === item.dispatch?.at
-    && (s.kind !== "skipped" || !s.updatedAt || sameRevision({ dispatchAt: s.dispatchAt, head: s.head ?? null, updatedAt: s.updatedAt }, item))
+  return skips.filter((s) => skipHolds(s, item)
     && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
     .sort((a, b) => a.runner.localeCompare(b.runner));
 }

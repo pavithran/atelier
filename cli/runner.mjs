@@ -3582,6 +3582,27 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   return null;
 }
 
+// A task this runner skipped (2 failed runs, 3 infrastructure failures, or a
+// give-up) stays skipped under its dispatch until the task's head changes
+// (t281): the new head is new work, and the server stops listing the skip at
+// it too (skipHolds in src/dispatch/rules.ts). The head is first noted at the
+// poll after the skip, since giving a claim up pushes and moves it. Returns
+// true when the skip was cleared. A review is keyed by its head already.
+export function clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads }) {
+  const key = failureKey(task);
+  if (task.item.dispatch?.job === "review" || task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) return false;
+  const skipped = (failures.get(key) ?? 0) >= 2 || (infrastructureFailures.get(key) ?? 0) >= 3 || gaveUpTasks.has(taskKey(task));
+  if (!skipped) { skipHeads.delete(key); return false; }
+  const head = task.item.head ?? null;
+  if (!skipHeads.has(key)) { skipHeads.set(key, head); return false; }
+  if (skipHeads.get(key) === head) return false;
+  failures.delete(key);
+  infrastructureFailures.delete(key);
+  gaveUpTasks.delete(taskKey(task));
+  skipHeads.delete(key);
+  return true;
+}
+
 // The file a plan job's harness writes the plan document to, inside the
 // workspace: the runner's reset cleans a stale one away before each run, the
 // harness is told to commit nothing, and the runner reads it back as the
@@ -3954,7 +3975,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), skipHeads = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4510,6 +4531,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
+        for (const task of ordered) {
+          if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
+        }
         const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0))) {
           // A poll can contain the same task more than once. Recheck after
