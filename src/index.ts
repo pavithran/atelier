@@ -190,12 +190,15 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 const STORY_EVENTS = 3000;
 // The most events one page of GET /api/projects/NAME/events carries.
 const EVENTS_PAGE = 500;
+// An Atelier token (src/tokens.ts tokenFromBytes) wherever free text, a brief
+// among it, happens to carry one.
+const ATELIER_TOKEN_TEXT = /atl_[0-9a-f]{16,}/gi;
 const SECRET_KEY = /token|secret|password|passwd|api[_-]?key|credential|authorization/i;
 // A value of an event as the export sends it: strings through the output
 // redaction (commit hashes stay whole), and any string held under a key that names a
 // secret replaced outright.
 function withoutSecrets(value: unknown, key = ""): unknown {
-  if (typeof value === "string") return SECRET_KEY.test(key) ? "[redacted]" : redactedOutput(value);
+  if (typeof value === "string") return SECRET_KEY.test(key) ? "[redacted]" : redactedOutput(value).replace(ATELIER_TOKEN_TEXT, "[redacted]");
   if (Array.isArray(value)) return value.map((v) => withoutSecrets(v, key));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withoutSecrets(v, k)]));
   return value;
