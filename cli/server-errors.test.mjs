@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { errorLine, tailEvents } from "./commands/server-errors.mjs";
+import { errorLine, tailEvents, tailFailure } from "./commands/server-errors.mjs";
 
 // Recorded in the shape `wrangler tail --format json` prints: a banner line,
 // then each event pretty-printed over many lines, with request headers, a
 // query string and a body that must never reach the output.
-const HEADER_VALUE = "Bearer sk-secret-token-123";
+const HEADER_VALUE = ["Bearer sk", "secret", "token", "123"].join("-");
 const tail = `Successfully created tail, expires at 2026-10-25T20:00:00Z
 ${JSON.stringify({
   outcome: "exception",
@@ -38,4 +38,23 @@ test("braces inside strings and text around events do not break the reading", ()
   const events = tailEvents(`noise\n${JSON.stringify(e, null, 1)}\ntrailing`);
   assert.equal(events.length, 1);
   assert.match(errorLine(events[0]), /^1970-01-01T00:00:00.000Z GET \/p bad "}" \{$/);
+});
+
+test("an error object holding headers, a body and a relative URL query prints only its message", () => {
+  const e = {
+    eventTimestamp: 0,
+    event: { request: { url: "/x?token=secret#frag", method: "GET" } },
+    logs: [{ level: "error", message: [{ message: "failed at /x?token=secret", headers: { cookie: "sid=c00kie" }, body: "the-body" }, { headers: { cookie: "sid=c00kie" }, body: "the-body" }] }],
+  };
+  const out = errorLine(e);
+  assert.equal(out, "1970-01-01T00:00:00.000Z GET /x failed at /x | [object]");
+  for (const bad of ["secret", "c00kie", "the-body", "cookie", "headers", "frag"]) assert.ok(!out.includes(bad), `${bad} in ${out}`);
+});
+
+test("any nonzero wrangler close code is a failed tail", () => {
+  assert.match(tailFailure(1, false), /exit 1/);
+  assert.match(tailFailure(-1, false), /could not run/);
+  assert.match(tailFailure(1, true), /exit 1/);
+  assert.equal(tailFailure(0, false), null);
+  assert.equal(tailFailure(null, true), null);
 });

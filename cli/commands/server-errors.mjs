@@ -36,7 +36,8 @@ function scanTail(text) {
 // value after Bearer or Basic are dropped, and the text is put on one line.
 function clean(text) {
   return String(text)
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#]*)[?#]\S*/gi, "$1")
+    .replace(/(\S*\/[^\s?#]*)[?#]\S*/g, "$1")
+    .replace(/[?&#][^\s=]*=\S*/g, "")
     .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [removed]")
     .replace(/\s+/g, " ").trim();
 }
@@ -44,7 +45,17 @@ function clean(text) {
 function part(v) {
   if (typeof v === "string") return v;
   if (v && typeof v === "object" && typeof v.message === "string") return v.message;
-  try { return JSON.stringify(v); } catch { return String(v); }
+  return "[object]";
+}
+
+// Why a finished wrangler process means the tail failed, or null. Any nonzero
+// close code fails it; only the stop this command asked for (SIGINT, so no
+// code or 130) does not.
+export function tailFailure(code, stopped) {
+  if (code === 0 || (stopped && (code === null || code === 130))) return null;
+  return code === -1
+    ? "could not run npx wrangler; run this from a checkout of this repository with npm ci done"
+    : `wrangler tail failed (exit ${code}); no error count is available`;
 }
 
 // One line for an event that logged at error level or threw, else null:
@@ -79,11 +90,14 @@ export default async function serverErrorsCommand() {
     for (const e of scanned.events) { const line = errorLine(e); if (line) { seen++; console.log(line); } }
   };
   child.stdout.on("data", (d) => { pending += d; flush(); });
-  const timer = setTimeout(() => child.kill("SIGINT"), minutes * 60_000);
-  process.once("SIGINT", () => child.kill("SIGINT"));
+  let stopped = false;
+  const stop = () => { stopped = true; child.kill("SIGINT"); };
+  const timer = setTimeout(stop, minutes * 60_000);
+  process.once("SIGINT", stop);
   const code = await new Promise((done) => { child.on("error", () => done(-1)); child.on("close", done); });
   clearTimeout(timer);
   flush();
-  if (code === -1) die("could not run npx wrangler; run this from a checkout of this repository with npm ci done");
+  const failure = tailFailure(code, stopped);
+  if (failure) die(failure);
   console.log(`${seen} error event${seen === 1 ? "" : "s"} in ${minutes} minute${minutes === 1 ? "" : "s"} of tail.`);
 }
