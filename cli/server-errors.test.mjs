@@ -47,7 +47,7 @@ test("an error object holding headers, a body and a relative URL query prints on
     logs: [{ level: "error", message: [{ message: "failed at /x?token=secret", headers: { cookie: "sid=c00kie" }, body: "the-body" }, { headers: { cookie: "sid=c00kie" }, body: "the-body" }] }],
   };
   const out = errorLine(e);
-  assert.equal(out, "1970-01-01T00:00:00.000Z GET /x failed at /x | [object]");
+  assert.equal(out, "1970-01-01T00:00:00.000Z GET /x failed at /x [object]");
   for (const bad of ["secret", "c00kie", "the-body", "cookie", "headers", "frag"]) assert.ok(!out.includes(bad), `${bad} in ${out}`);
 });
 

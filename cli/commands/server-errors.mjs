@@ -70,7 +70,7 @@ export function errorLine(event) {
   if (!texts.length) return null;
   const request = event.event?.request ?? {};
   let path = "-";
-  try { path = new URL(request.url).pathname; } catch {}
+  try { path = new URL(request.url, "http://x").pathname; } catch {}
   const ms = event.eventTimestamp ?? event.exceptions?.[0]?.timestamp ?? event.logs?.[0]?.timestamp;
   const time = Number.isFinite(ms) ? new Date(ms).toISOString() : "-";
   return `${time} ${request.method ?? "-"} ${path} ${texts.map(clean).join(" | ")}`;
