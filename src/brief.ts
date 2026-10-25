@@ -3,6 +3,7 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
+import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { bindingOf, DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, independentReviewerText, mergedBlockers, modelOf, recordedText, singleFamily, stateLabel, type Review } from "./rules.ts";
 import { assertLength } from "./text.ts";
 import { readyToAccept } from "./landing-verdict.ts";
@@ -154,6 +155,8 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
     const shown = gate.outOfScope.slice(0, 3).join(", ");
     lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
+  const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, detail.reviews);
+  if (gap) lines.push({ rank: 0, text: scopeGapText(item, gap) });
   if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Developer acceptance is required.` });
   const single = singleFamily(policy);
   if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
