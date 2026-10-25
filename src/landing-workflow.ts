@@ -64,7 +64,7 @@
 // know. The verdict is judged by src/landing-verdict.ts, which the CLI's
 // landing uses too.
 
-import { suggestionRecords } from "./models/suggestion-records.ts";
+import { reviewerRecords } from "./models/suggestion-records.ts";
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
@@ -655,7 +655,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       if (held) return { needed: false, held: held.by, reason: `${held.by} already approved ${short(head)}, and the gate counts it`, at: "", asked: "", reviewer: null, request: null };
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
-      const records = p.reviewer === null ? { ...await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))), project: (await index.resolveProject(p.project)).key } : undefined;
+      const records = p.reviewer === null ? { ...await reviewerRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`)), p.actor), project: (await index.resolveProject(p.project)).key } : undefined;
       try {
         // A named reviewer is wanted even where the gate needs none; with
         // none named the gate decides, and the Ledger suggests the reviewer
