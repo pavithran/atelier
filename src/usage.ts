@@ -182,6 +182,7 @@ ${OWNER_LANDING}
 \`atelier land ID --queue\` queues the landing for a runner that lists the land job and holds the registered checkout.
 \`atelier land ID\` no longer waits for a review: it asks for one, records the land request (\`--quote TEXT\` names who asked), and the land job runs once the gate counts an approval; \`--no-wait\` records the request and returns.
 The stage tick queues a land job for an accepted task, or any task in fast mode, that stays landable 5 minutes, and tells when it cannot.
+Land retries a recorded commit the fork cannot yet serve for up to 5 minutes, printing a line per wait, then stops with the elapsed time.
 A fork not ready in 30 minutes is replaced twice under new names; if the last stalls too, the task shows in \`atelier stuck\` and \`atelier status\`: refile it with \`atelier new\`, then \`atelier abandon ID\`.
 A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in \`atelier stuck\`, to reroute with \`atelier review-request ID --reviewer H/M\` or withdraw with \`atelier review-withdraw ID --reason TEXT\`.
 
