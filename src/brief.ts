@@ -154,6 +154,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
     const shown = gate.outOfScope.slice(0, 3).join(", ");
     lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
+  // The ledger names a blocking finding on a file the scope lacks (t270).
+  const gap = (detail as Detail & { scopeGap?: string }).scopeGap;
+  if (gap) lines.push({ rank: 0, text: gap });
   if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Developer acceptance is required.` });
   const single = singleFamily(policy);
   if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
