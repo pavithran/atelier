@@ -279,7 +279,7 @@ test("records which keys an event kind was written for", () => {
 });
 
 // t253: what the tick does with a task left landable past its limit.
-import { decideLandQueue, type LandQueueInput } from "../src/stage-tick.ts";
+import { decideLandQueue, landerLive, type LandQueueInput } from "../src/stage-tick.ts";
 
 const land = (over: Partial<LandQueueInput> = {}): LandQueueInput => ({ item: "t1", accepted: true, fast: false, lease: null, lander: true, queued: [], main: "m1", now: at(HOUR), ...over });
 const q = (ms: number, main = "m1", reason: "first" | "lease-lapsed" | "main-moved" = "first") => ({ at: at(ms).toISOString(), main, reason });
@@ -319,4 +319,11 @@ test("with no lander runner live the task is told and nothing is queued", () => 
   const v = decideLandQueue(land({ lander: false }));
   assert.deepEqual([v.queue, v.acts], [undefined, false]);
   assert.match(v.note, /no live runner offers the land job/);
+});
+
+test("a runner scoped to another project is no lander, though it lists the checkout", () => {
+  const base = { runner: "r", kind: "home", agents: [], jobs: ["land"], checkouts: ["p"], forProject: "p" } as never;
+  assert.equal(landerLive([base], ["p"]), true);
+  assert.equal(landerLive([{ ...(base as object), projects: ["other"] } as never], ["p"]), false);
+  assert.equal(landerLive([{ ...(base as object), projects: ["p"] } as never], ["p"]), true);
 });

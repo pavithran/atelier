@@ -1,5 +1,5 @@
 import { landingOf } from "./diff.ts";
-import { decideLandQueue, decideReroute, findStageOverrun, forkStalled, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type LandQueued, type LandQueueVerdict, type RerouteVerdict, type StageFinding } from "./stage-tick.ts";
+import { decideLandQueue, decideReroute, findStageOverrun, forkStalled, landerLive, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type LandQueued, type LandQueueVerdict, type RerouteVerdict, type StageFinding } from "./stage-tick.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
@@ -1973,7 +1973,7 @@ export class Ledger extends DurableObject<Env> {
                 const verdict = decideLandQueue({
                   item: item.id, accepted: item.state === "accepted" && item.acceptedHead === head, fast: this.mode().mode === "fast",
                   lease: landing, main, now,
-                  lander: live.some((o) => (o.jobs ?? []).includes("land") && names.some((n) => (o.checkouts ?? []).includes(n))),
+                  lander: landerLive(live, names),
                   queued: recorded.filter((e) => e.kind === "stage.land-queued" && e.item === item.id && e.data.head === head).map((e) => ({ at: String(e.data.at), main: (e.data.main as string | null) ?? null, reason: e.data.reason as LandQueued["reason"] })),
                 });
                 verdicts.set(key, verdict);

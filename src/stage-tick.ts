@@ -14,7 +14,7 @@
 // stall is told. Each is keyed by task, head and stage, and read back from the
 // events, so a repeated tick or a lost reply changes nothing.
 
-import { assign, liveOffers, offering, offersFor, unoffered, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
+import { assign, liveOffers, offering, offersFor, servesProject, unoffered, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
 import { stageEnteredAt, stageOverrun, tickCanAct, type Item, type StageClock, type TaskStage } from "./rules.ts";
 
@@ -182,6 +182,13 @@ export interface LandQueueInput {
   now: Date;
 }
 export interface LandQueueVerdict extends ActVerdict { queue?: LandQueued["reason"] }
+
+// Whether a live runner could take a land job for this project: it lists the
+// land job and the project's checkout (under any former name) and serves the
+// project, as the queue route requires. `offers` are already marked for it.
+export function landerLive(offers: readonly SeenOffer[], names: readonly string[]): boolean {
+  return offers.some((o) => servesProject(o) && (o.jobs ?? []).includes("land") && names.some((n) => (o.checkouts ?? []).includes(n)));
+}
 
 // What the tick does with a task found landable past its limit. A task not
 // accepted, outside fast mode, is told to wait for accept. A live lease means
