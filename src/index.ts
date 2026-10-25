@@ -1,6 +1,6 @@
 import { stuckBatchRequests } from "./notify.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
-import { parsePostMerge, currentStep } from "./post-merge.ts";
+import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { readRetention } from "./retention.ts";
 import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
@@ -188,6 +188,22 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
+// The most events one page of GET /api/projects/NAME/events carries.
+const EVENTS_PAGE = 500;
+const SECRET_KEY = /token|secret|password|passwd|api[_-]?key|credential|authorization/i;
+// A value of an event as the export sends it: strings through the output
+// redaction (commit hashes stay whole), and any string held under a key that names a
+// secret replaced outright.
+function withoutSecrets(value: unknown, key = ""): unknown {
+  if (typeof value === "string") return SECRET_KEY.test(key) ? "[redacted]" : redactedOutput(value);
+  if (Array.isArray(value)) return value.map((v) => withoutSecrets(v, key));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withoutSecrets(v, k)]));
+  return value;
+}
+function exportedEvent(e: LedgerEvent): LedgerEvent {
+  return { ...e, actor: String(withoutSecrets(e.actor)), data: withoutSecrets(e.data) as Record<string, unknown> };
+}
+
 // How many of each task's own events the "where it stands" view reads.
 const TASK_EVENTS = 300;
 
@@ -2033,6 +2049,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
     }
     throw new RuleError("not_found", "no such route", 404);
+  }
+  // The project's ledger events, newest first, one page at a time: GET
+  // events?limit=N&before=SEQ, for the owner alone. `atelier events` follows
+  // `next` until it is null. No string leaves with a key, token or secret in it.
+  if (parts[2] === "events" && parts.length === 3 && m === "GET") {
+    requireOwner(env, actor);
+    const limit = Math.min(Math.max(Math.floor(Number(c.url.searchParams.get("limit"))) || EVENTS_PAGE, 1), EVENTS_PAGE);
+    const beforeParam = c.url.searchParams.get("before");
+    const before = beforeParam === null ? undefined : Number(beforeParam);
+    if (before !== undefined && !Number.isFinite(before)) throw new RuleError("bad_request", "before is an event number", 400);
+    const page = await L.events(undefined, limit, before);
+    return json({ events: page.map(exportedEvent), next: page.length === limit ? page[page.length - 1].seq : null });
   }
   // Standing decisions (src/decisions.ts): GET lists every one with its
   // status, for the owner and for an agent token (agentRoute); POST records
