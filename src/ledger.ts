@@ -7308,8 +7308,12 @@ export class Ledger extends DurableObject<Env> {
       const pick = named ? null : pickReviewer({
         item: p, pool, policy, allowPaid: approval.allowPaid,
         part, route,
-        // The request goes home, so the offer is judged there.
-        offers: tickOffers, destination: () => "home",
+        // The request goes home, so the offer is judged there. A routed part
+        // is not blocked for want of a runner: with none live, availability
+        // is not judged here and the part waits for one (the plan's own
+        // choice, said explicitly since the selector reads no live runner
+        // as no reviewer).
+        offers: liveOffers(tickOffers, now).length ? tickOffers : null, destination: () => "home",
         previous: need.previousReviewer,
         counted: need.counted,
         // A protected part's review goes to the tier first, so one review
