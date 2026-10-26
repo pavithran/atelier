@@ -4,7 +4,7 @@
 // ran. The forms post to /ui/PROJECT/actions/VERB (actionForm in
 // src/actions-api.ts), with the Origin check every owner form has.
 
-import { ACTION_KINDS, DEFAULT_EXPIRY, type ActionRun, type ApprovalView } from "./actions.ts";
+import { ACTION_KINDS, DEFAULT_EXPIRY, approvalDirection, type ActionRun, type ApprovalView } from "./actions.ts";
 import { stamp } from "./time.ts";
 import { escapeText as e } from "./ui.ts";
 
@@ -41,11 +41,11 @@ export function renderActions(project: string, approvals: ApprovalView[], runs: 
       : "";
     const until = a.status === "active" ? ` · until ${e(stamp(a.expiresAt))}` : a.status === "expired" ? ` · expired ${e(stamp(a.expiresAt))}` : a.consumed ? ` · used ${e(stamp(a.consumed.at))}` : a.withdrawn ? ` · withdrawn ${e(stamp(a.withdrawn.at))}` : "";
     return `<li><code>${e(a.id)}</code><strong>${e(a.kind)} at <code>${e(short(a.commit))}</code></strong><span class="tag${a.status === "active" ? " go" : ""}">${STATUS[a.status]}</span>
-      <div class="meta">approved ${e(stamp(a.at))}${until}${a.note ? ` · ${e(a.note)}` : ""}${withdraw}</div></li>`;
+      <div class="meta">approved ${e(stamp(a.at))}${until}${a.note ? ` · ${e(a.note)}` : ""}${a.quote ? ` · ${e(approvalDirection(a))}` : ""}${withdraw}</div></li>`;
   }).join("");
   // Each row's first cell is the approval the step used, if it needed one.
   const ran = runs.slice(0, 10).map((r) => `<li><code>${e(r.approval ?? "")}</code><strong>${e(r.step)}</strong>${r.passed ? '<span class="tag go">Passed</span>' : '<span class="tag bad">Failed</span>'}
-    <div class="meta">${r.command ? `<code>${e(r.command)}</code> · ` : ""}at <code>${e(short(r.commit))}</code> · ${(r.durationMs / 1000).toFixed(1)}s · ${e(stamp(r.at))}${r.note ? ` · ${e(r.note)}` : ""}</div></li>`).join("");
+    <div class="meta">${r.command ? `<code>${e(r.command)}</code> · ` : ""}at <code>${e(short(r.commit))}</code> · ${(r.durationMs / 1000).toFixed(1)}s · ${e(stamp(r.at))}${r.note ? ` · ${e(r.note)}` : ""}${r.quote ? ` · ${e(approvalDirection(r))}` : ""}</div></li>`).join("");
   return `<section class="standing" id="actions" aria-label="Protected actions">
   <h2 class="section-title">Protected actions</h2>
   <p class="meta">A deploy, a device install, a paid model run or a Photos writeback runs only with your approval for one exact revision of the main line, and each approval is used by one run. Pushing the branch to the project's own remotes is your own act with <code>atelier ship --push</code>, and takes no approval.</p>
