@@ -425,13 +425,15 @@ test("real runner caps reset, claim and finish failures while serving the next t
     execFileSync("git", ["config", "user.email", "runner@example.test"], { cwd: healthy });
     writeFileSync(join(healthy, ".git", "atelier-identity.json"), readFileSync(join(workspace, ".git", "atelier-identity.json")));
     if (failure === "reset") writeFileSync(join(workspace, ".git", "index.lock"), "stale");
-    const claims = [], releases = [], runs = [], finishes = [], logs = [], skips = [];
+    const claims = [], releases = [], runs = [], finishes = [], logs = [], skips = [], unfinished = [];
     let polls = 0, refusedOnce = false;
     await runRunner(args, {
       workspacePath: (_, id) => join(dir, id), wait: () => tick(),
       // t420: infrastructure failures send no run report, so the skip is
       // reported itself; the first attempt fails and is tried again.
       reportRunSkip: async (body, runner) => {
+        // t325: a run that keeps its claim says it ended without a result.
+        if (body.kind === "unfinished") { unfinished.push([runner, body]); return; }
         if (!refusedOnce) { refusedOnce = true; throw new Error("503 busy"); }
         skips.push([runner, body]);
       },
@@ -469,6 +471,8 @@ test("real runner caps reset, claim and finish failures while serving the next t
     assert.ok(attention[0].includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
     if (failure === "reset") assert.equal(readFileSync(join(workspace, ".git", "index.lock"), "utf8"), "stale");
     assert.deepEqual(skips.map(([runner, b]) => [runner, b.item, b.role, b.kind, b.failures]), [["home:studio", "t13", "build", "infrastructure", 3]]);
+    // The two finishes before the give-up kept the claim with nothing submitted.
+    assert.deepEqual(unfinished.map(([runner, b]) => [runner, b.item]), failure === "finish" ? [["home:studio", "t13"], ["home:studio", "t13"]] : []);
     assert.ok(skips[0][1].note.includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
     assert.ok(logs.some((s) => /could not report the run skip for atelier\/t13: 503 busy; trying again next poll/.test(s)));
     assert.ok(logs.includes("reported the run skip for atelier/t13"));
