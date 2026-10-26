@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cliState } from '../cli/atelier.mjs';
 import { hasPreparation } from '../cli/commands/runner.mjs';
-import { runTask, runOutcome, infrastructureFailureCount } from '../cli/runner.mjs';
+import { runTask, runOutcome, infrastructureFailureCount, taskRevisionKey } from '../cli/runner.mjs';
 
 // A fixture credential assembled at run time, so no literal bearer token
 // sits in the tree for the secret scan to flag.
@@ -51,7 +51,7 @@ for (const failure of ['network', 'timeout', 'HTTP 503', 'HTTP 429', 'HTTP 403',
       agents: [{ agent: 'opencode', models: ['model'], command: ['harness'] }],
     }, 'home:test', {
       workspacePath: () => process.cwd(),
-      readValidationBlock: async () => ({ actor: 'opencode/model', head: 'before', detail: 'old blocker' }),
+      readValidationBlock: async () => ({ actor: 'opencode/model', head: 'before', taskKey: taskRevisionKey({ id: 't1' }), detail: 'old blocker' }),
       hasPreparation,
       cli: () => assert.fail('must not claim or release after an unreadable policy'),
       harness: () => assert.fail('must not start a harness'),
