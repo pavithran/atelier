@@ -2,7 +2,7 @@
 // /api/projects/P/actions, and the project page's two forms:
 //
 //   GET  actions               the approvals, newest first, and the latest runs
-//   POST actions               approve {kind, commit, note?, expires?}
+//   POST actions               approve {kind, commit, note?, expires?, quote?}, with the acting model in the request's x-atelier-acting
 //   POST actions/ID/withdraw   withdraw an active approval {note?}
 //   POST actions/consume       use the approval for {kind, commit}: one approval, one run
 //   POST actions/runs          record a step a ship ran
@@ -27,22 +27,22 @@ function owner(actor: string, ownerActor: string): void {
 
 // The checks come before Artifacts is read, so a refusal for the actor or the
 // request's shape costs no read and names its own reason.
-async function approve(L: LedgerStub, body: Record<string, unknown>, actor: string, ownerActor: string, onMainLine: MainLine) {
+async function approve(L: LedgerStub, body: Record<string, unknown>, actor: string, ownerActor: string, onMainLine: MainLine, acting: string | null = null) {
   owner(actor, ownerActor);
-  const { commit } = cleanApprovalInput(body);
+  const { commit } = cleanApprovalInput(body, acting);
   const held = await onMainLine(commit);
   if (held === null) throw new RuleError("ancestry_unverified", `Atelier could not find ${commit.slice(0, 8)} in the part of the main line's history it reads; approve a recent revision, such as the head atelier ship --dry-run names`, 409);
   if (!held) throw new RuleError("not_on_main_line", `${commit.slice(0, 8)} is not on the project's main line as Atelier holds it in the baseline; approve a revision the baseline holds, such as the head atelier ship --dry-run names`, 409);
-  return await L.approveAction(body, actor);
+  return await L.approveAction(body, actor, acting);
 }
 
-export async function actionsApi(L: LedgerStub, method: string, rest: string[], body: Record<string, unknown>, actor: string, ownerActor: string, onMainLine: MainLine): Promise<{ status: number; data: unknown }> {
+export async function actionsApi(L: LedgerStub, method: string, rest: string[], body: Record<string, unknown>, actor: string, ownerActor: string, onMainLine: MainLine, acting: string | null = null): Promise<{ status: number; data: unknown }> {
   owner(actor, ownerActor);
   if (rest.length === 0 && method === "GET") {
     const [approvals, runs] = await Promise.all([L.actionApprovals(), L.actionRuns(20)]);
     return { status: 200, data: { approvals, runs } };
   }
-  if (method === "POST" && rest.length === 0) return { status: 201, data: await approve(L, body, actor, ownerActor, onMainLine) };
+  if (method === "POST" && rest.length === 0) return { status: 201, data: await approve(L, body, actor, ownerActor, onMainLine, acting) };
   if (method === "POST" && rest.length === 1 && rest[0] === "consume") return { status: 200, data: await L.consumeAction(body, actor) };
   if (method === "POST" && rest.length === 1 && rest[0] === "runs") return { status: 201, data: await L.recordActionRun(body, actor) };
   if (method === "POST" && rest.length === 2 && rest[1] === "withdraw") return { status: 200, data: await L.withdrawAction(rest[0], actor, body.note) };

@@ -6,13 +6,12 @@ import { fastRefusal } from "../cli/commands/mode.mjs";
 // without the developer's permission from the Settings page. The refusal
 // keeps the server's words, which name the page and the factor, and adds the
 // command to run again; any other refusal is passed on as it is.
-test("atelier mode fast's refusal says how to confirm and what to run again", () => {
-  const server = 'fast_mode_unconfirmed: fast mode needs the developer\'s confirmation, as an override of the independent review does: open https://a.test/p/demo/settings as the developer, press "Allow fast mode from the command line" giving the server\'s confirmation secret, then run atelier mode fast again within 15 minutes; the developer token alone does not confirm it';
+test("atelier mode fast's refusal says what to run on the developer's yes, and names no page", () => {
+  const server = 'fast_mode_unconfirmed: fast mode needs the developer\'s confirmation, as an override of the independent review does: ask the developer, and on their yes run: atelier mode fast --reason TEXT --quote "the developer\'s words" --as H/M --project demo; the developer token alone does not confirm it';
   const said = fastRefusal(server, "demo", "forks fail");
   assert.ok(said.startsWith(server));
-  assert.match(said, /\nOnce allowed, run: atelier mode fast --reason "forks fail" --project demo\n/);
-  // t629: or, on the developer's direction, the same command with their words and the acting model.
-  assert.match(said, /\nOr, on the developer's direction: atelier mode fast --reason "forks fail" --quote "the developer's words" --as H\/M --project demo$/);
+  assert.match(said, /\nOn the developer's yes, run: atelier mode fast --reason "forks fail" --quote "the developer's words" --as H\/M --project demo$/);
+  assert.doesNotMatch(said, /Settings|Allow fast mode/);
   const forbidden = "fast_mode_forbidden: this project forbids overrides of the independent review (atelier init --no-override), and fast mode lands without that review, so fast mode is refused";
   assert.equal(fastRefusal(forbidden, "demo", "x"), forbidden);
 });
