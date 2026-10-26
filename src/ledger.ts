@@ -46,7 +46,7 @@ import { ago } from "./floor.ts";
 // The note on the release a dispatch makes of a held task; the holder reads it
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -3392,10 +3392,13 @@ export class Ledger extends DurableObject<Env> {
       : null;
     return held.map((i) => {
       const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
-      const skips = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at && (r.kind !== "skipped" || !r.updatedAt || sameRevision({ dispatchAt: r.dispatchAt, head: r.head ?? null, updatedAt: r.updatedAt }, i)));
+      const skips = (skipped.get(i.id) ?? []).filter((r) => skipHolds(r, i));
       const overlap = live ? overlapRefusal(i, live) : null;
-      return refusals.length || skips.length || overlap
-        ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(overlap ? { overlap } : {}) }
+      // Reports made under this dispatch that a new head has ended: the run
+      // reports counted before them are not counted again (unclaimed).
+      const cleared = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch?.at && !skipHolds(r, i));
+      return refusals.length || skips.length || overlap || cleared.length
+        ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(cleared.length ? { clearedSkips: cleared } : {}), ...(overlap ? { overlap } : {}) }
         : i;
     });
   }
@@ -3446,7 +3449,7 @@ export class Ledger extends DurableObject<Env> {
     const busy = this.claimedRows().map(toItem).filter((i) => i.owner && i.runner && i.dispatch
       && !orphanedBy(i, runners, now)
       && !idleMarked(this.runnerMeta<string>(`runner-idle:${i.runner.toLowerCase()}`), now)
-      && !(skipped.get(i.id) ?? []).some((s) => s.dispatchAt === i.dispatch!.at && s.runner.toLowerCase() === i.runner!.toLowerCase()))
+      && !(skipped.get(i.id) ?? []).some((s) => skipHolds(s, i) && s.runner.toLowerCase() === i.runner!.toLowerCase()))
       .map((i) => ({ runner: i.runner!, id: i.id }));
     return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting(), ...this.prereviewWaiting()], busy };
   }
@@ -3480,6 +3483,14 @@ export class Ledger extends DurableObject<Env> {
       out.set(id, [...out.get(id) ?? [], JSON.parse(row.value as string) as T]);
     }
     return out;
+  }
+
+  // The skips runners reported of the open dispatched tasks among `items`
+  // that still stand: under the task's dispatch and at its head (skipHolds).
+  private runSkipsOf(items: readonly Item[]): (RunSkip & { item: string })[] {
+    const skipped = this.runnerNotes<RunSkip>("run-skip");
+    return items.filter((i) => i.state === "open" && !i.owner && i.dispatch).flatMap((i) =>
+      (skipped.get(i.id) ?? []).filter((s) => skipHolds(s, i)).map((s) => ({ ...s, item: i.id })));
   }
 
   // Keeps one runner's note of a task, and drops the task's
@@ -6235,6 +6246,8 @@ export class Ledger extends DurableObject<Env> {
         id: Number(r.id), item: String(r.item), head: String(r.head), dispatch: JSON.parse(r.dispatch as string) as Dispatch,
         ...(reviewStopped(parseStop(r.stopped)) ? { stopped: { at: parseStop(r.stopped)!.at, text: stopText(String(r.item), parseStop(r.stopped)!) } } : {}),
       })),
+      // What runners reported of open dispatched tasks they gave up (t281).
+      runSkips: this.runSkipsOf(items),
       reviews: this.sql.exec(`SELECT id, item, head, state, claimedBy, claimedAt, runner FROM review_requests WHERE state = 'claimed' AND superseded IS NULL`).toArray().map((r) => ({
         id: Number(r.id), item: String(r.item), head: String(r.head),
         claimedBy: String(r.claimedBy), claimedAt: String(r.claimedAt), runner: r.runner as string | null,
