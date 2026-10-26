@@ -1,0 +1,78 @@
+atelier atelier/t322 "Reviewers are never offered a withdrawn or superseded review request"
+accepted head 68a590203562963bcf8909d3d462cada9577d16e
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-26T21:31:48.076Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-26T21:31:55.822Z
+REVIEW approve by codex/gpt-6-astra at 68a590203562963bcf8909d3d462cada9577d16e, recorded by codex/gpt-6-astra
+REVIEW approve by antigravity/gemini-4-argon at 68a590203562963bcf8909d3d462cada9577d16e, recorded by antigravity/gemini-4-argon
+CHECKED TREE a8995e851438b5611aef4ae08a8e9ff511c79d89: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-26T17:26:02.647Z claude-code/opus-5.5 item.created
+2026-10-26T17:26:02.647Z claude-code/opus-5.5 criteria.revised
+2026-10-26T17:31:40.217Z pavi item.edited
+2026-10-26T17:31:57.357Z pavi criteria_review.requested
+2026-10-26T17:32:23.843Z codex/gpt-6-astra criteria_review.claimed
+2026-10-26T17:32:36.731Z codex/gpt-6-astra criteria_review.approved
+2026-10-26T17:34:19.854Z pavi item.dispatched
+2026-10-26T17:43:23.320Z claude-code/opus-5.5 item.claimed
+2026-10-26T17:44:11.286Z claude-code/opus-5.5 fork.created
+2026-10-26T17:58:09.108Z claude-code/opus-5.5 push.observed
+2026-10-26T18:04:47.750Z atelier/orchestrator refresh.queued
+2026-10-26T18:09:47.270Z claude-code/opus-5.5 evidence.observed
+2026-10-26T18:09:51.627Z claude-code/opus-5.5 evidence.observed
+2026-10-26T18:09:52.930Z claude-code/opus-5.5 item.submitted
+2026-10-26T18:20:36.300Z atelier stage.stuck
+2026-10-26T18:20:36.300Z atelier stage.told
+2026-10-26T18:37:49.281Z atelier/orchestrator refresh.queued
+2026-10-26T18:38:35.436Z pavi review.requested
+2026-10-26T18:38:36.082Z pavi land.requested
+2026-10-26T18:38:40.986Z pavi review.withdrawn
+2026-10-26T18:38:40.986Z pavi review.requested
+2026-10-26T18:39:02.144Z antigravity/gemini-4-argon review.claimed
+2026-10-26T18:39:05.379Z antigravity/gemini-4-argon review.diff
+2026-10-26T18:40:36.300Z atelier stage.cleared
+2026-10-26T18:45:12.833Z antigravity/gemini-4-argon review.approved
+2026-10-26T18:45:36.300Z atelier stage.stuck
+2026-10-26T18:45:36.300Z atelier stage.told
+2026-10-26T19:41:51.701Z pavi land.merge
+2026-10-26T19:41:52.846Z pavi land.regenerate
+2026-10-26T19:41:59.630Z claude-code/opus-5.5 push.observed
+2026-10-26T19:41:59.630Z atelier/orchestrator review.not_retained
+2026-10-26T19:42:00.777Z pavi land.push
+2026-10-26T19:45:36.300Z atelier stage.cleared
+2026-10-26T19:54:57.251Z claude-code/opus-5.5 evidence.observed
+2026-10-26T19:55:01.532Z claude-code/opus-5.5 evidence.observed
+2026-10-26T19:55:03.153Z pavi land.check
+2026-10-26T19:55:03.942Z claude-code/opus-5.5 item.submitted
+2026-10-26T19:55:04.333Z pavi land.submit
+2026-10-26T19:55:10.467Z pavi review.requested
+2026-10-26T19:55:10.772Z pavi land.review
+2026-10-26T19:55:18.263Z codex/gpt-6-astra review.claimed
+2026-10-26T19:57:43.414Z codex/gpt-6-astra review.approved
+2026-10-26T20:05:36.300Z atelier stage.stuck
+2026-10-26T20:05:36.300Z atelier stage.told
+2026-10-26T20:43:30.010Z pavi review.requested
+2026-10-26T20:43:35.168Z pavi review.withdrawn
+2026-10-26T20:43:35.168Z pavi review.requested
+2026-10-26T20:44:10.132Z antigravity/gemini-4-argon review.claimed
+2026-10-26T20:45:36.300Z atelier stage.cleared
+2026-10-26T20:47:54.466Z antigravity/gemini-4-argon review.approved
+2026-10-26T20:55:36.300Z atelier stage.stuck
+2026-10-26T20:55:36.300Z atelier stage.told
+2026-10-26T21:18:22.289Z atelier/orchestrator refresh.queued
+2026-10-26T21:18:45.090Z pavi land.merge
+2026-10-26T21:18:46.364Z pavi land.regenerate
+2026-10-26T21:18:52.177Z claude-code/opus-5.5 push.observed
+2026-10-26T21:18:52.177Z atelier/orchestrator review.retained
+2026-10-26T21:18:52.177Z atelier/orchestrator review.retained
+2026-10-26T21:18:53.093Z pavi land.push
+2026-10-26T21:20:36.300Z atelier stage.cleared
+2026-10-26T21:31:52.373Z claude-code/opus-5.5 evidence.observed
+2026-10-26T21:31:56.112Z claude-code/opus-5.5 evidence.observed
+2026-10-26T21:31:57.291Z pavi land.check
+2026-10-26T21:31:57.863Z claude-code/opus-5.5 item.submitted
+2026-10-26T21:31:58.467Z pavi land.submit
+2026-10-26T21:31:58.817Z pavi land.review
+2026-10-26T21:31:59.627Z pavi land.lease
+2026-10-26T21:32:02.065Z pavi item.accepted
+2026-10-26T21:32:02.258Z pavi land.accept
