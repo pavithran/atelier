@@ -1104,9 +1104,24 @@ A runner's build in fast mode claims with a fork, as every build does. The
 fork-less build (t589), which took a dispatched build with `atelier fast
 take` and reported its commit with `atelier fast ready`, was removed in
 t228: forks work since t772, and t18 and t181 handle a stuck one. Fast mode
-is a flag on the one path. Its gates are unchanged: the criteria review is
-skipped, the independent review is owed after the merge, and a merge on a
-clear gate lands.
+is a flag on the one path, and on that path fast mode lands now and reviews
+after (t300). The gate counts a task ready when its required checks pass at
+its head and no secret flag stands; the independent review is not required
+before the merge, so `atelier land` (and the lander that runs it for a
+queued task) asks none, and merges. A rejection already standing at the head
+still blocks, as does a failed check. The criteria review is skipped.
+
+Once the merge is recorded, `atelier land` asks the post-merge review, of
+`--reviewer` or the reviewer the server picks, and it is owed until a
+verdict stands. That reviewer may share the builder's family; the review
+records `same-family (fast mode)`. A rejection files a fix task. If the ask
+fails, the landing says the review is owed and the task stays merged; ask it
+with `atelier review-request tN --reviewer H/M`. A merge made in fast mode by
+`land`, the lander or `atelier merge` is listed by `atelier fast status` and
+by the switch back to full mode, as a landing with a receipt is, and the
+review it is owed may come from the builder's family when the server picks
+the reviewer too. Full mode is unchanged:
+the review comes before the merge.
 
 - The queue marks no build fast. The routes `POST items/tN/fast-take` and
   `fast-ready` remain only for a runner older than t228: each answers 409
