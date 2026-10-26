@@ -1,0 +1,22 @@
+{
+  "allowances": [
+    {
+      "commit": "1acf7deb",
+      "file": "cli/server-errors.test.mjs",
+      "sha256": "83c989bf7f55c8d90056880e513d0290b5d1e7d586feb3def256546d7e15e0a6",
+      "reason": "PAVI 2026-10-25: a fake test value, the sk-secret placeholder"
+    },
+    {
+      "commit": "ae4368a4",
+      "file": "cli/server-errors.test.mjs",
+      "sha256": "83c989bf7f55c8d90056880e513d0290b5d1e7d586feb3def256546d7e15e0a6",
+      "reason": "PAVI 2026-10-25: a fake test value, the sk-secret placeholder"
+    },
+    {
+      "commit": "bcf2c358",
+      "file": "cli/server-errors.test.mjs",
+      "sha256": "83c989bf7f55c8d90056880e513d0290b5d1e7d586feb3def256546d7e15e0a6",
+      "reason": "PAVI 2026-10-25: a fake test value, the sk-secret placeholder"
+    }
+  ]
+}
