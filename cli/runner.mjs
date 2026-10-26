@@ -26,6 +26,7 @@ import { deferredCriteria } from "../src/review/criteria.ts";
 import { stopped as reviewStopped, stopText } from "../src/review/stopped.ts";
 import { historySection } from "../src/review/history.ts";
 import { submission } from "../src/brief.ts";
+import { criteriaOf } from "../src/criteria.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
@@ -1604,11 +1605,20 @@ export const harnessFailureFiles = (cwd) => [
   join(process.env.ATELIER_CACHE ?? join(homedir(), "Library", "Caches", "ai-projects", "cloudflare-git"), "harness-failed", createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 24) + ".json"),
 ];
 
+// The revision of a task a validation-block marker is written against
+// (t316): the criteria binding, the scope list and the brief, as one key. A
+// developer who edits any of them may have settled what the builder was
+// blocked on, so a marker written for an earlier revision is not replayed.
+export function taskRevisionKey(item) {
+  return createHash("sha256").update(JSON.stringify(["atelier-task-revision/1", criteriaOf(item), [...(item.scope ?? [])], item.brief ?? ""])).digest("hex");
+}
+
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
   if (!assignment) { io.log("nothing claimed"); advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
+  const taskKey = taskRevisionKey(item);
   let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, exitOutcome = null, failedRun = null;
   // The build harness's environment, which a validation_blocked run's work
   // in progress is committed with (t557); whether the head the run started
@@ -1652,7 +1662,7 @@ export async function runTask(assignment, config, name, io) {
     // Keep the marker for both the builder and a main-conflict resolver, so
     // a later run cannot resume committed but unverified work as a success.
     const head = await io.head(workspace).catch(() => null);
-    await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
+    await io.writeValidationBlock?.(workspace, { actor, head, taskKey, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
     throw Object.assign(new Error(blocked), { validationBlocked: true });
   };
   // The brief context the server alone holds, fetched the same way before
@@ -1777,8 +1787,21 @@ export async function runTask(assignment, config, name, io) {
     // one after the commit moved on, runs its harness and the checks as usual.
     // A runner with preparation checks the marker afterwards: a successful
     // preparation can repair the environment that an old marker described.
-    const priorBlock = await io.readValidationBlock?.(workspace);
-    if (priorBlock?.actor === actor && priorBlock.head &&
+    // A marker counts only for the task revision it was written against
+    // (t316): after the developer edits the scope, criteria or brief, or for
+    // a marker written before markers recorded the revision, the runner
+    // clears it and the builder runs again. Both replay points below use the
+    // same rule, holds: this actor's marker for this task revision.
+    let priorBlock = await io.readValidationBlock?.(workspace);
+    const holds = (block) => block?.actor === actor && block.taskKey === taskKey;
+    if (priorBlock && priorBlock.taskKey !== taskKey) {
+      io.log(priorBlock.taskKey
+        ? "the task's scope, criteria or brief changed since its validation_blocked report, so the runner clears that report and retries because the task changed"
+        : "the validation_blocked report in the workspace records no task revision (it predates t316), so the runner clears it and retries in case the task changed");
+      await io.clearValidationBlock?.(workspace);
+      priorBlock = null;
+    }
+    if (holds(priorBlock) && priorBlock.head &&
         !(io.hasPreparation ? await io.hasPreparation(project, actor) : !!io.prepare) &&
         priorBlock.head === await io.head(workspace).catch(() => null)) {
       throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true, skipped: true });
@@ -1831,7 +1854,7 @@ export async function runTask(assignment, config, name, io) {
     const prepare = async () => {
       preparation = await io.prepare?.(workspace);
       const currentHead = priorBlock && merges.some((m) => m.state === "merged") ? await io.head(workspace) : before;
-      if (priorBlock?.actor === actor && priorBlock.head === currentHead &&
+      if (holds(priorBlock) && priorBlock.head === currentHead &&
           !preparation?.deferred && (!preparation || (priorBlock.prepared && (!priorBlock.prepareKey || priorBlock.prepareKey === preparation.key)))) {
         throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true });
       }
@@ -4179,7 +4202,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         signal: controller.signal, timeoutMs: preparationTimeoutMs, executeChild, log: io.log });
     },
     clearValidationBlock: async (cwd) => rmSync(join(cwd, ".git", "atelier-validation-blocked"), { force: true }),
-    // { actor, head, detail }; a marker that does not parse holds nothing back.
+    // { actor, head, taskKey, detail }; a marker that does not parse holds nothing back.
     readValidationBlock: async (cwd) => {
       const file = join(cwd, ".git", "atelier-validation-blocked");
       try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null; } catch { return null; }
