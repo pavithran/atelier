@@ -181,6 +181,27 @@ test("a rejected landing that exits 0 is reported rejected with its reason", asy
   assert.ok(!logs.some((l) => l.includes("landed atelier/t9")));
 });
 
+test("a rejection that exits nonzero is reported rejected and not run again until the reviews change", async (t) => {
+  const output = "atelier: astra rejected t9 at aaaaaaaa: the test is missing. The task goes back to its holder with the findings";
+  const { logs, spawned } = await loop(t, { checkouts: ["atelier"], land: { code: 1, output }, task: { state: "submitted", head: HEAD, reviews: [{ by: "astra", at: "1" }] }, polls: 60 });
+  assert.equal(spawned.length, 1);
+  assert.equal(logs.filter((l) => l.includes("rejected, not merged") && l.includes("the test is missing")).length, 1);
+  assert.ok(!logs.some((l) => l.includes("landed atelier/t9")));
+});
+
+test("a nonzero rejection exit waits on the key, and a different failure does not", async () => {
+  let ran = 0;
+  const state = { state: "submitted", key: "h|a@1" };
+  const { io } = jobIo({ taskState: async () => state, land: async () => { ran++; return { code: 1, output: "astra rejected t9 at aaaaaaaa: no" }; } });
+  const first = await runLandJob("t9", io);
+  assert.equal(first.waiting, "rejected");
+  const again = await runLandJob("t9", { ...io, waiting: { key: first.key, kind: first.waiting, reason: first.reason } });
+  assert.equal(again.unchanged, true);
+  assert.equal(ran, 1);
+  const { io: other } = jobIo({ taskState: async () => state, land: async () => ({ code: 1, output: "atelier check failed (exit 1)" }) });
+  assert.equal((await runLandJob("t9", other)).waiting, undefined);
+});
+
 test("a stopped job runs again once the task's review state changes", async () => {
   let state = { state: "submitted", key: "h|a@1" };
   const ran = [];

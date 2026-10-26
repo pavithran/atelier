@@ -282,6 +282,16 @@ export async function runLandJob(id, io) {
     const tail = String(result.output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ");
     return { ok: false, refused: false, waiting: kind, key: now.key, reason: `${kind}, not merged (the task is ${now.state}): ${tail || "the landing stopped before the merge"}` };
   }
+  // A rejection is a nonzero exit: the landing throws at the verdict and
+  // `atelier land` dies with exit 1. It waits like the exit 0 case, on the
+  // key the task has now; a failure that is not a rejection is retried.
+  if (!result.timedOut && io.taskState && new RegExp(`\\brejected ${id}\\b`).test(result.output ?? "")) {
+    const now = await io.taskState().catch(() => null);
+    if (now && now.state !== "merged") {
+      const text = String(result.output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ");
+      return { ok: false, refused: false, waiting: "rejected", key: now.key, reason: `rejected, not merged (the task is ${now.state}): ${text}` };
+    }
+  }
   const output = result.timedOut ? `${result.output}\natelier land failed (timed out)` : result.output;
   return { ok: false, refused: false, reason: failureReport(id, output) };
 }
