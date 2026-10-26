@@ -37,8 +37,9 @@ export interface VerifyInput {
   diffFile?: string | null;           // where the whole change's diff is, inside the verifier's clone
   compare?: string | null;            // the command that prints the whole change, for the verifier to read in its clone
   // The commit the change is measured from. Given, the verifier also says
-  // whether each defect is already present there (PRE-EXISTING); absent, it
-  // cannot, and every defect it confirms blocks.
+  // whether each defect is already present there (PRE-EXISTING), which it may
+  // not do for a defect on or depending on code the change adds or modifies;
+  // absent, it cannot, and every defect it confirms blocks.
   base?: string | null;
   bar?: string | null;                // the project's review bar, when it sets one
 }
@@ -80,7 +81,10 @@ export function verifierBrief(input: VerifyInput): string {
     "- Read the code each finding names, at this head, and follow it far enough to show the defect or fail to.",
     "- A finding is CONFIRMED when the defect is real at this head, wherever it sits: a caller in a file the change did not touch that the change breaks is a regression, and blocks.",
     ...(input.base
-      ? [`- Then ask whether the same defect is already present at the base, commit ${input.base}: read the code there with git show ${input.base}:PATH, and change nothing. If it is present there, the change did not cause it: answer PRE-EXISTING, which does not block. If it appears only with the change, or you cannot tell whether it was there, answer CONFIRMED.`]
+      ? [
+          `- Before you answer PRE-EXISTING, read the change's diff and check three things. Is the line the finding cites inside it? Does the finding name code, an element or a behaviour the diff adds? Does the defect depend on existing code the diff modifies, so that it shows only because of what the change did around or to that code? If any answer is yes, the change introduced or exposed the defect: answer CONFIRMED, however the code looked before. A reviewer may cite a nearby line, so judge by what the finding is about, not by the line number alone.`,
+          `- Only then ask whether the same defect is already present at the base, commit ${input.base}: read the code there with git show ${input.base}:PATH, and change nothing. If it is present there, the diff does not touch the code it rests on, and it does not depend on code the diff modifies, answer PRE-EXISTING, which does not block. If it appears only with the change, or you cannot tell whether it was there, answer CONFIRMED.`,
+        ]
       : []),
     ...(input.bar?.trim() ? ["- The project's review bar says what may block; a finding outside it is NOT CONFIRMED:", block(input.bar.trim())] : []),
     "",
