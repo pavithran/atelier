@@ -3585,22 +3585,36 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
 // A task this runner skipped (2 failed runs, 3 infrastructure failures, or a
 // give-up) stays skipped under its dispatch until the task's head changes
 // (t281): the new head is new work, and the server stops listing the skip at
-// it too (skipHolds in src/dispatch/rules.ts). The head is first noted at the
-// poll after the skip, since giving a claim up pushes and moves it. Returns
-// true when the skip was cleared. A review is keyed by its head already.
+// it too (skipHolds in src/dispatch/rules.ts). The heads the skip began at are
+// noted when it happens (noteSkipHeads), the task's head and the one its
+// release push left, so a fix pushed before the next poll still clears it.
+// Returns true when the skip was cleared. A review is keyed by its head already.
 export function clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads }) {
   const key = failureKey(task);
   if (task.item.dispatch?.job === "review" || task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) return false;
   const skipped = (failures.get(key) ?? 0) >= 2 || (infrastructureFailures.get(key) ?? 0) >= 3 || gaveUpTasks.has(taskKey(task));
   if (!skipped) { skipHeads.delete(key); return false; }
   const head = task.item.head ?? null;
-  if (!skipHeads.has(key)) { skipHeads.set(key, head); return false; }
-  if (skipHeads.get(key) === head) return false;
+  if (!skipHeads.has(key)) { skipHeads.set(key, new Set([head])); return false; }
+  if (skipHeads.get(key).has(head)) return false;
   failures.delete(key);
   infrastructureFailures.delete(key);
   gaveUpTasks.delete(taskKey(task));
   skipHeads.delete(key);
   return true;
+}
+
+// Notes the heads a skip began at: the task's head when the run started, and
+// `released`, the head its give-up push left (null when none was read).
+export function noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads }, released = null) {
+  const key = failureKey(task);
+  if (task.item.dispatch?.job === "review" || task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) return;
+  const skipped = (failures.get(key) ?? 0) >= 2 || (infrastructureFailures.get(key) ?? 0) >= 3 || gaveUpTasks.has(taskKey(task));
+  if (!skipped) return;
+  const heads = skipHeads.get(key) ?? new Set();
+  heads.add(task.item.head ?? null);
+  if (released) heads.add(released);
+  skipHeads.set(key, heads);
 }
 
 // The file a plan job's harness writes the plan document to, inside the
@@ -4663,6 +4677,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // so is one the harness loop gave up on (needsDeveloper).
           if (state.claimHeldAt && gaveUp) {
             if (await giveUpClaim({ io, project: task.project, item: task.item, actor: task.actor, workspace: state.claimHeldAt, reason: state.reason })) gaveUpTasks.add(taskKey(task));
+          }
+          if (gaveUp || state.claimHeldAt) {
+            let released = null;
+            if (state.claimHeldAt && io.head) {
+              try { const read = String(await io.head(state.claimHeldAt) ?? "").trim(); released = /^[0-9a-f]{7,64}$/.test(read) ? read : null; } catch { released = null; }
+            }
+            noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads }, released);
           }
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
