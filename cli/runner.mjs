@@ -4326,17 +4326,21 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       return { code: r.code, output: r.output ?? "" };
     };
     const env = { ...process.env }; delete env.ATELIER_RUNNER_NAME;
-    const cli = (argv) => executeChild([process.execPath, fileURLToPath(new URL("./atelier.mjs", import.meta.url)), ...argv, "--project", project], { cwd: dir, env, capture: true, captureError: true, timeoutMs: 60_000, signal: controller.signal });
+    // The task is read as the developer, as the landing itself is: the
+    // runner's token reads no item it does not hold, and no declared call is
+    // made for it.
+    const taskId = item.id;
+    const asDeveloper = (argv) => executeChild([process.execPath, fileURLToPath(new URL("./atelier.mjs", import.meta.url)), ...argv, "--project", project], { cwd: dir, env, capture: true, captureError: true, timeoutMs: 60_000, signal: controller.signal });
     const result = await runLandJob(item.id, {
       waiting: landWaits.get(taskKey(task)) ?? null,
       // The task's state and head from the listing, and its reviews: the key
       // changes when a push or a review does.
       taskState: async () => {
-        const listed = await cli(["ls", "--all", "--json"]);
+        const listed = await asDeveloper(["ls", "--all", "--json"]);
         if (listed.code !== 0) throw new Error(`atelier ls exited ${listed.code}`);
         const found = JSON.parse(listed.output).find((i) => i.id === item.id);
         if (!found) throw new Error(`${item.id} is not in the listing`);
-        const shown = await cli(["show", item.id, "--json"]);
+        const shown = await asDeveloper(["show", taskId, "--json"]);
         const reviews = shown.code === 0 ? (JSON.parse(shown.output).reviews ?? []).map((r) => `${r.by}@${r.at}`).join(",") : "";
         return { state: found.state, key: `${found.head}|${reviews}` };
       },
