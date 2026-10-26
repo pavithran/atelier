@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../../src/actions.ts";
+import { directionText } from "../../src/rules.ts";
 import { knownKinds } from "../ship.mjs";
-import { OWNER, P, args, at, call, cfg, die, directionArg, project, short } from "../atelier.mjs";
+import { OWNER, P, actingHeaders, args, at, call, cfg, die, directionArg, project, short } from "../atelier.mjs";
 
 // The project owner approves one protected action at one revision of the
 // main line (src/actions.ts). atelier ship uses it once, at that revision only.
@@ -20,11 +21,10 @@ export default async function approveCommand() {
   if (!known.has(kind)) die(`${name} has no action called ${kind}. Atelier knows ${ACTION_KINDS.join(", ")}; ${name}'s ship files name ${[...known].filter((k) => !ACTION_KINDS.includes(k)).join(", ") || "no others"}`);
   const expires = args.expires ?? DEFAULT_EXPIRY;
   try { expirySeconds(expires); } catch (error) { die(`--expires: ${error.message}`); }
-  // --quote keeps the developer's words and the model that acted on them in
-  // the approval's note, beside the revision it is for.
+  // --quote with --as sends the developer's words and the acting model, which
+  // the approval records as fields of their own, apart from the note.
   const { quote } = directionArg(`approve ${kind} --head ${head}`);
-  const by = quote ? ` (recorded by ${args.as ?? process.env.ATELIER_ACTOR})` : "";
-  const note = [args.note, quote ? `developer said: "${quote}"${by}` : ""].filter(Boolean).join("; ");
-  const a = await call("POST", `${P(name)}/actions`, { kind, commit: head, note, expires }, OWNER);
-  console.log(`${a.id}: ${a.kind} approved at ${short(a.commit)} until ${at(a.expiresAt)}. The next atelier ship at that revision uses it, once. To withdraw it: atelier approvals withdraw ${a.id}`);
+  const a = await call("POST", `${P(name)}/actions`, { kind, commit: head, ...(args.note ? { note: args.note } : {}), ...(quote ? { quote } : {}), expires }, OWNER, quote ? actingHeaders() : {});
+  const said = a.quote ? ` on ${directionText(a)}` : "";
+  console.log(`${a.id}: ${a.kind} approved at ${short(a.commit)} until ${at(a.expiresAt)}${said}. The next atelier ship at that revision uses it, once. To withdraw it: atelier approvals withdraw ${a.id}`);
 }
