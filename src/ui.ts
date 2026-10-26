@@ -20,7 +20,7 @@ import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, definingOf, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
-import type { ForkPreparationView } from "./rules";
+import type { ForkPreparationView, ProjectMode } from "./rules";
 import { fenceText, prereviewLines, type PrereviewFence, type PrereviewView } from "./dispatch/prereview.ts";
 import { drawImported } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
@@ -256,6 +256,9 @@ export interface Detail {
   // Where the review of the item's acceptance criteria stands (t438), with
   // every criteria review and resolution; absent from an older server.
   criteriaReview?: CriteriaReviewView;
+  // The project's mode (t300): fast mode counts a task ready on its checks
+  // alone, so the decision reads it; absent from an older server, as full.
+  mode?: ProjectMode;
   events: LedgerEvent[];
   // The events the fast-landing summary reads, by kind and outside the window
   // `events` is (fastLandingEvents in src/ledger.ts, t637); unset where the
@@ -457,7 +460,7 @@ function decisionDetail({ project: p, detail: d, diff }: ReviewContext, lead?: O
   const owner = d.ownerActor ?? DEFAULT_OWNER;
   const single = singleFamily(d.policy);
   const presentation = taskPage(d);
-  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, owner);
+  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, owner, d.mode?.mode === "fast");
   const [word, tone] = lead ? CALL_STATE[lead.call] : [presentation.title, decision.tone];
   // A plan's own call carries its decision in its reason, as the plan item's
   // presentation reads it as a task and knows nothing of its proposal.
@@ -2234,7 +2237,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
   const latest = countingReviews(d.reviews, binding, d.policy, owner);
   const mine = latest.find((r) => r.by === owner) ?? null;
   const live = item.state === "claimed" || item.state === "submitted";
-  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, owner);
+  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, owner, d.mode?.mode === "fast");
 
   // A review of an earlier head or of criteria since changed no longer
   // stands, and the page says so rather than show it as current.
@@ -2382,7 +2385,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     <p class="meta">Criteria binding: ${e(n.criteria || "unknown")}. A reported limitation is superseded only by an observed pass covering the same check and binding.</p>
     ${n.originals.map(r => `<article><p>${e(r.detail)}</p><p class="meta">${e(r.actor)} · ${e(r.runner)} · ${e(r.at)} · Head ${e(r.head || "unknown")} · ${r.superseded ? "Superseded by an observed pass" : "Coverage unconfirmed"}</p></article>`).join("")}</details>`).join("");
   const view = evidenceAt(d.policy, d.evidence, item.head);
-  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
+  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor, d.mode?.mode === "fast");
   const live = item.state === "claimed" || item.state === "submitted";
   const action = (verb: string) => href("ui", p.name, item.id, verb);
   // The criteria the page shows are the ones an approval or rejection from it judged.

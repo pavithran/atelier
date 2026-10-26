@@ -16,6 +16,7 @@ export interface ReviewerSuggestionInput extends Omit<SuggestionInput, "sources"
   sources?: SuggestionInput["sources"];
   runs?: SuggestionInput["runs"];
   previous?: string | null;          // the reviewer of the last rejected round, asked first
+  sameFamilyOk?: boolean;            // a post-merge review of a task merged in fast mode (t300)
   // The review assignments bearing on this review, as the ledger decided
   // them (reviewAssigned, by reviewRolesFor): the suggestion orders by them
   // and decides no roles itself (gpt-6-astra's twenty-second review of
@@ -33,7 +34,7 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
   const precision = precisionOfSummary(summary);
   const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
     allowPaid: false, owner: input.owner, avoid, counted: input.counted, precision, previous: input.previous ?? null, tier: input.tier,
-    offers: input.offers, destination: input.destination,
+    offers: input.offers, destination: input.destination, sameFamilyOk: input.sameFamilyOk,
     assigned: input.assigned ?? [],
     // Preserve outcome order between equal precision terms.
     recordOrder: ordered.map(({ entry }) => actorOf(entry)),
