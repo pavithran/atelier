@@ -6,6 +6,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 
 import { foldPath } from '../src/rules.ts';
 
+// The workspace's Git config key naming the head a landing could not push
+// because the fork refused the workspace token (t317).
+export const LAND_UNPUSHED = 'atelier.land-unpushed';
+
 export const FETCH_LIMIT_MS = 5 * 60 * 1000;
 const FETCH_FIRST_WAIT_MS = 5000, FETCH_MAX_WAIT_MS = 60000;
 
@@ -18,17 +22,25 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
   if (!/^[a-f0-9]{40,64}$/.test(head)) throw new Error(`${id} has an invalid recorded head`);
   const local = existsSync(join(dir, '.git'))
     ? git(['rev-parse', '--verify', 'HEAD'], { cwd: dir, allowFail: true }).stdout?.trim() : null;
-  const configured = local === head && ['project', 'item', 'actor'].every(key => {
+  const descends = !!local && local !== head && git(['merge-base', '--is-ancestor', head, local], { cwd: dir, allowFail: true }).status === 0;
+  // The merge of main a landing made and could not push, the fork refusing
+  // the workspace token (t317), is that landing's own work: the next landing
+  // goes on from it and pushes it, renewing the token.
+  const unpushed = descends && git(['config', '--local', LAND_UNPUSHED], { cwd: dir, allowFail: true }).stdout?.trim() === local;
+  const configured = (local === head || unpushed) && ['project', 'item', 'actor'].every(key => {
     const value = git(['config', '--local', `atelier.${key}`], { cwd: dir, allowFail: true }).stdout?.trim();
     return key === 'actor' ? !!value : value === (key === 'project' ? name : id);
   });
-  if (configured) return false;
+  if (configured) {
+    if (unpushed) print(`${id}'s workspace holds ${local.slice(0, 8)}, the merge an earlier landing made and could not push because the fork refused the workspace token; this landing goes on from it.`);
+    return false;
+  }
   // A workspace that descends from the recorded head holds work the ledger
   // has not seen (an orchestrator's fix committed in it, t549): replacing it
   // would land, and review, the change without that work. Landing stops
   // before the lease and asks for the push instead. A workspace without the
   // recorded object cannot descend from it.
-  if (local && local !== head && git(['merge-base', '--is-ancestor', head, local], { cwd: dir, allowFail: true }).status === 0) {
+  if (descends) {
     const commits = git(['log', '--format=%h %s', `${head}..${local}`], { cwd: dir, allowFail: true }).stdout?.trim() ?? '';
     throw new Error(`${id}'s workspace ${dir} holds ${countCommits(commits)} the recorded head ${head} lacks:\n${indent(commits)}\nPush them with atelier push (in ${dir}), then run atelier land ${id} again; landing stopped with the workspace untouched.`);
   }
