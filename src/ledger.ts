@@ -7568,14 +7568,54 @@ export class Ledger extends DurableObject<Env> {
   // request from the next at the same head and end its skip of the earlier
   // one when a new request is made (t353). Each part is read once, however
   // many requests name it.
+  //
+  // Only a live request is offered (t322): one open, not superseded, at the
+  // head a claim would bind (the task's head, or a merged task's merge
+  // commit), and still needed as the claim reads the need. Before this the
+  // queue offered every open request of a task not abandoned, the claim
+  // found no need, the runner released it as "the review request no longer
+  // needs an answer", and the release opened its successor, offered again.
+  // A request left open at a head the task has left is closed here, as a
+  // claim closes it, and carried to the current head where the gate needs
+  // it, so the review it asked for is still offered.
   reviewWaiting(): (Item & { request: number; stopped?: ReviewStop })[] {
     this.expireReviewClaims();
-    const requests = this.sql.exec(`SELECT id, item, head, dispatch, stopped FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
+    const at = new Date().toISOString();
+    // A merged task with no recorded merge commit has no head a claim binds.
+    const reviewed = new Map<string, Item | null>();
+    const reviewedOf = (id: string): Item | null => {
+      if (!reviewed.has(id)) {
+        try { reviewed.set(id, this.reviewItem(id)); } catch (err) { if (!(err instanceof RuleError)) throw err; reviewed.set(id, null); }
+      }
+      return reviewed.get(id)!;
+    };
+    const open = () => this.sql.exec(`SELECT id, item, head, dispatch, wanted, tier, stopped FROM review_requests WHERE state = 'open' AND superseded IS NULL ORDER BY id`).toArray();
+    let requests = open();
     if (!requests.length) return [];
+    // Closing and carrying a request changes no task, and a carried request
+    // is of the task it was carried from, so the tasks are read once.
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
     const items = new Map(this.withPushActors(rows).map((i) => [i.id, i]));
-    return requests.filter((r) => items.get(r.item as string)?.state !== "abandoned").map((r) => {
+    const moved = new Set(requests.filter((r) => {
+      const item = items.get(r.item as string);
+      const head = item && item.state !== "abandoned" ? reviewedOf(item.id)?.head : null;
+      return !!head && r.head !== head;
+    }).map((r) => r.item as string));
+    for (const id of moved) {
+      const target = reviewedOf(id)!;
+      this.withdrawStaleRequests(id, target.head!, at);
+      if (target.state !== "merged") this.reaskReview(id, at);
+    }
+    if (moved.size) requests = open();
+    return requests.filter((r) => {
+      const item = items.get(r.item as string);
+      if (!item) return true;   // refused as no_item below
+      if (item.state === "abandoned") return false;
+      const target = reviewedOf(item.id);
+      if (!target || r.head !== target.head) return false;
+      return this.claimNeed(target, r.wanted === 1, r.tier === 1, at).needed;
+    }).map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
       const stop = parseStop(r.stopped);
@@ -7811,11 +7851,7 @@ export class Ledger extends DurableObject<Env> {
       if (held === null || lapse < held) await this.ctx.storage.setAlarm(lapse);
     }
     const policy = this.project().policy;
-    const need = reviewNeeded({
-      item, part: item.kind === "part", policy,
-      evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
-      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, postMerge: item.state === "merged", tier, now: new Date(at), owner: this.owner,
-    });
+    const need = this.claimNeed(item, !!row.wanted, tier, at);
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
     return {
@@ -7828,6 +7864,17 @@ export class Ledger extends DurableObject<Env> {
       criteria, request: row.id as number,
       criteriaReviews: this.criteriaReviewsFor(itemId), criteriaResolutions: this.criteriaResolutionsFor(itemId), criteriaRev: this.criteriaRevision(itemId),
     };
+  }
+
+  // The need a claim of a review request reads, for the queue (reviewWaiting)
+  // and the claim alike, so the queue offers only what a claim would serve.
+  // The request itself is left out of `requests`: it is the one being asked.
+  private claimNeed(item: Item, wanted: boolean, tier: boolean, at: string) {
+    return reviewNeeded({
+      item, part: item.kind === "part", policy: this.project().policy,
+      evidence: this.evidenceFor(item.id), reviews: this.reviewsFor(item.id),
+      requests: [], verdicts: this.findingVerdicts(item.id), wanted, postMerge: item.state === "merged", tier, now: new Date(at), owner: this.owner,
+    });
   }
 
   // The evidence a review brief shows (t490): the item's records at the head
