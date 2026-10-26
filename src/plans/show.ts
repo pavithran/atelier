@@ -8,7 +8,7 @@
 import { criteriaOf } from "../criteria.ts";
 import type { Brief, Verdict } from "../brief.ts";
 import { holdRelease, holdText, liveOffers, unoffered, type CoreHold, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
-import type { Item, ItemState } from "../rules.ts";
+import type { GoalNote, Item, ItemState } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
 import type { PartRoute } from "./route.ts";
@@ -71,6 +71,7 @@ export interface PlanView {
   // refresh, or the commit the plan forked from), main's head now as read or
   // last observed, the latest refresh, and whether the integrator holds it.
   refresh?: { taken: string | null; main: string | null; last: PlanRefresh | null; running: boolean };
+  notes?: GoalNote[];             // the goal's open notes: non-blocking review findings (t203), none filed as tasks
   harnessFailure: string | null;  // the release note when the harness failed, shown while the plan waits for the planner
   pastDeadline: boolean;          // an approved plan past its deadline, whose block only stop can lift
   offers?: SeenOffer[] | null;    // the runner offers the Worker read for this view, to judge a routed review against; null when none were read
@@ -254,8 +255,18 @@ export function planText(v: PlanView, project: string, now = new Date()): string
     lines.push("", head ? `Integration branch at ${head.slice(0, 8)}.` : "No part is integrated yet; the integration branch still sits at the commit the plan forked from.");
     lines.push(...refreshLines(v, flag));
   }
+  lines.push(...noteLines(v));
   lines.push("", ...nextSteps(v, flag));
   return lines.join("\n");
+}
+
+// The goal's open notes in one short block: non-blocking review findings,
+// which stay notes until the developer picks one with atelier new.
+function noteLines(v: PlanView): string[] {
+  const notes = v.notes ?? [];
+  if (!notes.length) return [];
+  const shown = notes.slice(0, 10);
+  return ["", `Open notes (${notes.length}):`, ...shown.map((n) => `  ${n.itemId}  ${n.file}${n.line === null ? "" : `:${n.line}`}: ${cut(flat(n.text), 160)}`), ...(notes.length > shown.length ? [`  and ${notes.length - shown.length} more`] : [])];
 }
 
 // How far behind main the plan's branch is, and its latest refresh: one in

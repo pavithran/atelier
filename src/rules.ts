@@ -3080,17 +3080,25 @@ export function applyVerification(findings: readonly Finding[], confirmed: Reado
   });
 }
 
-// The follow-up task a review's pre-existing findings are filed as: one task
-// for the review, the findings its criteria, so nothing the reviewer found
-// is lost for not blocking the change.
-export function preExistingTask(itemId: string, title: string, review: { by: string; head: string; findings?: readonly Finding[] }): { title: string; brief: string; accept: string[] } | null {
-  const found = (review.findings ?? []).filter((f) => f.label === "pre-existing");
+// The notes a review's non-blocking findings are recorded as (t203): every
+// follow-up finding, pre-existing or unverified or neither. A note is not a
+// task; it is filed as one only when the developer picks it or it blocks a
+// later change. Null when the review has no follow-up finding.
+export interface GoalNote { itemId: string; by: string; head: string; file: string; line: number | null; text: string; label?: string }
+export function reviewNotes(itemId: string, review: { by: string; head: string; findings?: readonly Finding[] }): GoalNote[] | null {
+  const found = (review.findings ?? []).filter((f) => f.severity === "follow-up");
   if (!found.length) return null;
-  return {
-    title: `Pre-existing in ${itemId}: ${title}`,
-    brief: `The review of ${itemId} by ${review.by} at ${review.head.slice(0, 12)} found ${found.length === 1 ? "a problem" : "problems"} in code that change did not touch. ${found.length === 1 ? "It" : "They"} did not block ${itemId}; ${found.length === 1 ? "it is" : "they are"} filed here.`.slice(0, 3000),
-    accept: found.map((f) => `${f.file}${f.line === null ? "" : `:${f.line}`}: ${f.text}`.slice(0, 1000)),
-  };
+  return found.map((f) => ({ itemId, by: review.by, head: review.head, file: f.file, line: f.line, text: f.text.slice(0, 1000), ...(f.label ? { label: f.label } : {}) }));
+}
+
+// The goal's open notes: one line each, the same finding noted once however
+// many reviews repeat it, in the order first noted.
+export function openNotes(notes: readonly GoalNote[]): GoalNote[] {
+  const seen = new Set<string>();
+  return notes.filter((n) => {
+    const key = `${n.file}:${n.line}:${n.text}`;
+    return seen.has(key) ? false : (seen.add(key), true);
+  });
 }
 
 // ── fast-build reports ───────────────────────────────────────────────────────
