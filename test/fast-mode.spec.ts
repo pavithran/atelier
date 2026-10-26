@@ -195,7 +195,7 @@ it("a task merged in fast mode through the ordinary route is owed a same-family 
   expect(asked).toMatchObject({ requested: true, reviewer: SONNET });
   expect((await L.fastLandings())[0]).toMatchObject({ owed: false, review: { state: "open" } });
   const claim = await L.claimReview(ok.id, SONNET, RUNNER) as unknown as ReviewClaim;
-  await L.addReview({ itemId: ok.id, by: SONNET, head: C1, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine", at: AT }, undefined, true);
+  await L.addReview({ itemId: ok.id, by: SONNET, head: M1, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine", at: AT }, undefined, true);
   expect((await L.reviewsFor(ok.id))[0]).toMatchObject({ postMerge: true, independence: "same-family (fast mode)" });
   expect(await L.fastLandings()).toEqual([expect.objectContaining({ item: ok.id, owed: false, review: expect.objectContaining({ state: "approved", by: SONNET }) })]);
 
@@ -203,7 +203,7 @@ it("a task merged in fast mode through the ordinary route is owed a same-family 
   await L.requestReview(bad.id, "owner", SONNET, POOL);
   const badClaim = await L.claimReview(bad.id, SONNET, RUNNER) as unknown as ReviewClaim;
   const findings = [{ file: "src/a.ts", line: 3, severity: "blocking" as const, text: "Drops the record" }];
-  await L.addReview({ itemId: bad.id, by: SONNET, head: C1.replace(/c/g, "a"), criteria: badClaim.criteria, request: badClaim.request, approve: false, note: "Drops data", findings, at: AT }, undefined, true);
+  await L.addReview({ itemId: bad.id, by: SONNET, head: M2, criteria: badClaim.criteria, request: badClaim.request, approve: false, note: "Drops data", findings, at: AT }, undefined, true);
   const landed = await L.fastLandings();
   expect(landed.map((l) => l.item)).toEqual([ok.id, bad.id]);
   expect(landed[1]).toMatchObject({ review: { state: "rejected" }, fix: expect.stringMatching(/^t\d+$/) });
