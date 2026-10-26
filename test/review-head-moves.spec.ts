@@ -167,9 +167,11 @@ it("a request left open at an old head is closed by the first claim, which gets 
     state.storage.sql.exec(`UPDATE items SET head = ? WHERE id = ?`, B, id);
   });
   await passes(L, id, B);
-  // addEvidence carried nothing, since nothing was withdrawn; the A request is still offered.
-  expect((await L.reviewWaiting()).map((i) => i.head)).toEqual([A]);
-  // The runner's claim closes it, carries it to B and binds B.
+  // addEvidence carried nothing, since nothing was withdrawn. The queue never
+  // offers the A request (t322): it closes it and offers the one carried to B.
+  expect((await L.reviewWaiting()).map((i) => i.head)).toEqual([B]);
+  expect(await gateRequests(L, id)).toEqual([{ head: A, state: "withdrawn" }, { head: B, state: "open" }]);
+  // The runner's claim binds B.
   expect((await L.claimReview(id, GPT, RUNNER) as unknown as { head: string }).head).toBe(B);
   expect(await gateRequests(L, id)).toEqual([{ head: A, state: "withdrawn" }, { head: B, state: "claimed" }]);
 });

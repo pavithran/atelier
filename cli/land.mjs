@@ -18,7 +18,7 @@ import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
 import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync, findingKey } from "../src/moved-code.ts";
-import { appendMovedCodeRecord, prepareRecordedWorkspace } from "./landing.mjs";
+import { LAND_UNPUSHED, appendMovedCodeRecord, prepareRecordedWorkspace } from "./landing.mjs";
 import { workspaceNotice } from "./review-notice.mjs";
 import { reviewerOffered } from "./review-oneshot.mjs";
 
@@ -210,8 +210,10 @@ const WAIT_TIMEOUT_MS = Number(process.env.ATELIER_LAND_WAIT_TIMEOUT ?? 3 * 60 *
 const TOKEN_WINDOW_MS = Number(process.env.ATELIER_LAND_TOKEN_WINDOW_MS ?? 30 * 60_000);
 // How long the triage model may take before the landing stops for it.
 const TRIAGE_TIMEOUT_MS = Number(process.env.ATELIER_LAND_TRIAGE_TIMEOUT ?? 30 * 60_000);
-// How Artifacts refuses a push whose token has lapsed or was revoked.
-const EXPIRED_TOKEN = /Invalid or expired token/i;
+// How the push step says the fork refused the workspace token: Artifacts's
+// own refusal of a token that lapsed or was revoked, or atelier push's when
+// its own renewal of the token failed (t317).
+const EXPIRED_TOKEN = /Invalid or expired token|refused this workspace's token|this workspace's token expired at/i;
 
 // How many times main may move under the lease before the landing stops
 // (t550): each time it releases the lease, merges main again, checks and
@@ -1468,7 +1470,7 @@ async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
   catch (error) {
     throw new StepError(route
       ? `${id}'s workspace could not be moved from the runner route to its fork, so the landing stops before taking the lease: ${error.message}. Its commits are untouched; settle what that names (the task's holder, its claim, or the workspace's remote), then run atelier land ${id} again`
-      : `${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier claim ${id} in the workspace, then run atelier land ${id} again`);
+      : `${Number.isFinite(at) && at <= Date.now() ? `${id}'s workspace token expired ${recorded.slice(0, 16).replace("T", " ")} UTC, and it` : `${id}'s workspace write token`} could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier push in ${dir}, which renews the token, or atelier claim ${id} in the workspace, then run atelier land ${id} again`);
   }
   const expiry = fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : "";
   io.print(route || fresh.moved
@@ -1478,16 +1480,35 @@ async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
 
 // The landing's push, refreshed and tried once more when the server refuses
 // the token as expired (it lapsed, or was revoked, after the check before
-// the lease). Any other failure, and a second refusal, ends the landing as
-// before.
+// the lease). Any other failure ends the landing as before. A refresh that
+// fails, or a second refusal, ends it saying the workspace token expired and
+// how to recover (t317), and records the head it could not push in the
+// workspace (LAND_UNPUSHED), so the next landing goes on from that merge
+// rather than stopping on commits the recorded head lacks. A push that
+// passes clears the record.
 async function pushRefreshing(io, ctx, push) {
-  try { return await push(); }
+  const { dir, id } = ctx;
+  const pushed = async () => {
+    const r = await push();
+    io.git(["config", "--local", "--unset", LAND_UNPUSHED], { cwd: dir, allowFail: true });
+    return r;
+  };
+  const stop = (error, why) => {
+    const head = io.git(["rev-parse", "HEAD"], { cwd: dir, allowFail: true }).stdout?.trim();
+    if (head) io.git(["config", "--local", LAND_UNPUSHED, head], { cwd: dir, allowFail: true });
+    return new StepError(`${error.message}\n${id}'s workspace token expired, and ${why}. Run atelier push in ${dir}, which renews the token for the task's holder and pushes the merge this landing left there (or have the holder run atelier claim ${id} there), then run atelier land ${id} again`, error.data);
+  };
+  try { return await pushed(); }
   catch (error) {
     if (!EXPIRED_TOKEN.test(error.message)) throw error;
-    io.print(`The push was refused for an expired write token; refreshing ${ctx.id}'s token for its holder and pushing once more…`);
+    io.print(`The push was refused for an expired write token; refreshing ${id}'s token for its holder and pushing once more…`);
     try { await refreshWorkspaceToken(io, ctx); }
-    catch (refresh) { throw new StepError(`${error.message}\n${ctx.id}'s workspace write token could not be refreshed: ${refresh.message}. Have its holder run atelier claim ${ctx.id} in the workspace, then run atelier land ${ctx.id} again`); }
-    return await push();
+    catch (refresh) { throw stop(error, `renewing it for its holder failed: ${refresh.message}`); }
+    try { return await pushed(); }
+    catch (again) {
+      if (!EXPIRED_TOKEN.test(again.message)) throw again;
+      throw stop(again, "the fork refused the renewed token too");
+    }
   }
 }
 
