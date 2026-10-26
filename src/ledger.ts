@@ -5925,12 +5925,13 @@ export class Ledger extends DurableObject<Env> {
       return { ...next, line: modeLine(next) };
     }
     const was = current as Extract<ProjectMode, { mode: "fast" }>;
+    const direction = ownerDirection(quote, acting, "full mode");
     const landed = this.fastLandings(was.since);
     if (was.decision) {
       try { withdrawDecision(this.decisionStore, actor, was.decision, `returned to full mode on ${at.slice(0, 16)} UTC`, at, acting); } catch (err) { if (!(err instanceof RuleError)) throw err; }
     }
     this.sql.exec(`DELETE FROM meta WHERE key = 'mode'`);
-    this.log(null, actor, "mode.full", { since: was.since, reason: was.reason, landed: landed.map((l) => l.item) }, at);
+    this.log(null, actor, "mode.full", { since: was.since, reason: was.reason, landed: landed.map((l) => l.item), ...(direction ?? {}) }, at);
     return { mode: "full", line: modeLine({ mode: "full" }), landed };
   }
 

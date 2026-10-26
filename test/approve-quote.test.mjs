@@ -21,7 +21,8 @@ async function fixture(t) {
     let raw = ""; for await (const chunk of req) raw += chunk;
     requests.push({ method: req.method, path: req.url, acting: req.headers["x-atelier-acting"], body: raw ? JSON.parse(raw) : undefined });
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ id: "a1", kind: "deploy", commit: HEAD, expiresAt: "2026-10-24T12:00:00.000Z" }));
+    const sent = raw ? JSON.parse(raw) : {};
+    res.end(JSON.stringify({ id: "a1", kind: "deploy", commit: HEAD, expiresAt: "2026-10-24T12:00:00.000Z", ...(sent.quote ? { quote: sent.quote, acting: req.headers["x-atelier-acting"] } : {}) }));
   });
   t.after(() => server.close());
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
@@ -50,6 +51,7 @@ test("approve --quote records the developer's words and the acting model with th
   assert.equal(f.requests[0].body.quote, "yes, deploy it");
   assert.equal(f.requests[0].body.note, undefined);
   assert.equal(f.requests[0].acting, "claude-code/opus-5.5");
+  assert.match(r.stdout, /until 2026-10-24 12:00 UTC on the developer's words: \u201cyes, deploy it\u201d, relayed by claude-code\/opus-5.5\./);
 });
 
 test("approve --quote keeps --note beside the quote, and refuses a quote with no acting model", async (t) => {
@@ -70,4 +72,12 @@ test("approve without --quote sends no quote field", async (t) => {
   assert.equal(r.status, 0, r.stderr);
   assert.equal("quote" in f.requests[0].body, false);
   assert.equal(f.requests[0].body.note, "release 12");
+});
+
+test("approve without --quote prints no developer's words", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["approve", "deploy", "--head", HEAD]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /developer's words/);
+  assert.match(r.stdout, /a1: deploy approved at aaaaaaaa until 2026-10-24 12:00 UTC\. /);
 });

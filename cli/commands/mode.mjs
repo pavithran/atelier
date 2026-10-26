@@ -35,6 +35,6 @@ export default async function modeCommand() {
     if (typeof args.reason !== "string" || !args.reason.trim()) die('fast mode needs a reason: atelier mode fast --reason "why"');
     return void await switchMode(name, "fast", args.reason, directionArg("mode fast --reason TEXT"));
   }
-  if (sub === "full" && args._.length === 2) return void await switchMode(name, "full");
+  if (sub === "full" && args._.length === 2) return void await switchMode(name, "full", undefined, directionArg("mode full"));
   die(COMMAND_USAGE.mode);
 }

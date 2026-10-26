@@ -395,3 +395,15 @@ it("a fast landing with no recorded direction reads as before on the task page",
   expect(html).not.toContain("relayed by");
 });
 
+
+it("the switch back to full mode takes the developer's words and the acting model, and records them", async () => {
+  const L = await project("fast-full-quote");
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  await refusal(L.setMode("owner", "full", undefined, "claude-code/opus-5.5", "  "), "bad_quote", /developer's words/);
+  await refusal(L.setMode("owner", "full", undefined, null, "go"), "no_acting", /--as H\/M/);
+  expect(await L.mode()).toMatchObject({ mode: "fast" });
+  await L.setMode("owner", "full", undefined, "claude-code/opus-5.5", " back  to full ");
+  const switched = (await L.events(undefined, 50) as unknown as LedgerEvent[]).find((e) => e.kind === "mode.full")!;
+  expect(switched.data).toMatchObject({ quote: "back to full", acting: "claude-code/opus-5.5" });
+});

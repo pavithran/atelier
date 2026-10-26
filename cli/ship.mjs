@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
-import { matchesAny } from "../src/rules.ts";
+import { directionText, matchesAny } from "../src/rules.ts";
 import { runGroup } from "./group.mjs";
 import { pushCheckoutRemote } from "./checkout-push.mjs";
 
@@ -239,7 +239,7 @@ export function formatApprovals(approvals) {
       : a.status === "consumed" ? `used ${at(a.consumed.at)}`
         : a.status === "withdrawn" ? `withdrawn ${at(a.withdrawn.at)}${a.withdrawn.note ? ` (${a.withdrawn.note})` : ""}`
           : `expired ${at(a.expiresAt)}`;
-    return `${a.id.padEnd(4)} ${a.kind.padEnd(16)} ${short(a.commit)}  ${when}  approved ${at(a.at)}${a.note ? `  note: ${a.note}` : ""}${a.quote ? `  developer said: "${a.quote}" (relayed by ${a.acting})` : ""}`;
+    return `${a.id.padEnd(4)} ${a.kind.padEnd(16)} ${short(a.commit)}  ${when}  approved ${at(a.at)}${a.note ? `  note: ${a.note}` : ""}${a.quote ? `  ${directionText(a)}` : ""}`;
   }).join("\n");
 }
 
@@ -284,7 +284,7 @@ function runNotes(r, approvals, commit) {
 
 function approvalText(approvals, kind, commit) {
   const a = approvalFor(approvals, kind, commit);
-  return a ? `[${kind}: approved as ${a.id} until ${at(a.expiresAt)}${a.quote ? `; developer said: "${a.quote}", relayed by ${a.acting}` : ""}]` : `[${kind}: no approval at this revision]`;
+  return a ? `[${kind}: approved as ${a.id} until ${at(a.expiresAt)}${a.quote ? `; ${directionText(a)}` : ""}]` : `[${kind}: no approval at this revision]`;
 }
 
 // The commands that approve what is missing, one per kind. Push is never

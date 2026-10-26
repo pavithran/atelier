@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
+import { renderActions } from "../src/actions-page.ts";
+import type { ApprovalView } from "../src/actions.ts";
 import { parseRuleError } from "../src/rules.ts";
 import { signIn } from "./signin.ts";
 
@@ -181,4 +183,16 @@ it("the approve route records the developer's words and the acting model, and re
   const plain = await post({ kind: "install", commit: H2 });
   expect(plain.status).toBe(201);
   expect(await plain.json()).not.toHaveProperty("quote");
+});
+
+it("the actions page shows the developer's words on an approval and on the run that used it, escaped, and none on a plain one", () => {
+  const T = "2026-10-26T10:00:00.000Z";
+  const approval = (id: string, extra: object): ApprovalView => ({ id, kind: "deploy", commit: H2, note: "", by: "owner", at: T, expiresAt: "2999-01-01T00:00:00.000Z", status: "active", ...extra });
+  const run = { step: "deploy", kind: "deploy", approval: "a1", command: "make", commit: H2, exitStatus: 0, signal: null, durationMs: 5, passed: true, outputTail: "", ship: "s1", note: "", at: T };
+  const said = { quote: "yes, <deploy> it", acting: "claude-code/opus-5.5" };
+  const html = renderActions("demo", [approval("a1", said), approval("a2", {})], [{ ...run, ...said }], H2);
+  expect(html.split("relayed by claude-code/opus-5.5").length - 1).toBe(2);
+  expect(html).toContain("yes, &lt;deploy&gt; it");
+  expect(html).not.toContain("<deploy>");
+  expect(html.split("the developer&#39;s words").length - 1).toBe(2);
 });

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../../src/actions.ts";
+import { directionText } from "../../src/rules.ts";
 import { knownKinds } from "../ship.mjs";
 import { OWNER, P, actingHeaders, args, at, call, cfg, die, directionArg, project, short } from "../atelier.mjs";
 
@@ -24,6 +25,6 @@ export default async function approveCommand() {
   // the approval records as fields of their own, apart from the note.
   const { quote } = directionArg(`approve ${kind} --head ${head}`);
   const a = await call("POST", `${P(name)}/actions`, { kind, commit: head, ...(args.note ? { note: args.note } : {}), ...(quote ? { quote } : {}), expires }, OWNER, quote ? actingHeaders() : {});
-  const said = a.quote ? ` on the developer's words, "${a.quote}", relayed by ${a.acting}` : "";
+  const said = a.quote ? ` on ${directionText(a)}` : "";
   console.log(`${a.id}: ${a.kind} approved at ${short(a.commit)} until ${at(a.expiresAt)}${said}. The next atelier ship at that revision uses it, once. To withdraw it: atelier approvals withdraw ${a.id}`);
 }

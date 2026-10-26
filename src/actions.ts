@@ -226,8 +226,9 @@ export function recordActionRun(store: ActionStore, actor: string, body: Record<
     }
   }
   const used = run.approval ? rows(store.sql).find((x) => x.id === run.approval) : undefined;
-  store.log("action.ran", { ...run, ...(used?.quote ? { quote: used.quote, acting: used.acting } : {}) });
-  return run;
+  const said = used?.quote ? { quote: used.quote, acting: used.acting } : {};
+  store.log("action.ran", { ...run, ...said });
+  return { ...run, ...said };
 }
 
 // How an approval says it was given on the developer's direction, for every

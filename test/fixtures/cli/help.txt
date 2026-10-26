@@ -17,7 +17,7 @@ Developer  accept ID [--head SHA] [--override-review REASON [--quote WORDS]] [--
            run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT] · served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply] · approve ACTION --head SHA [--note T] [--quote WORDS --as H/M] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
            decide "text" --quote "developer's words" [--project P] [--as H/M] · decisions [--all] [--project P] · decisions withdraw ID --note "why" · events [--from DATE] [--to DATE] [--kind K]... [--project P]
            refreshes [--enqueue] [--json] · ship [--dry-run] [--push]
-           mode [--project P] · mode fast --reason TEXT [--quote WORDS] [--project P] · mode full [--project P]
+           mode [--project P] · mode fast --reason TEXT [--quote WORDS] [--project P] · mode full [--quote WORDS] [--project P]
            fast status [--json] [--project P] · fast close [--project P] · identity [--json] [--project P]
 Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json]
            plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT
