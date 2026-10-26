@@ -64,6 +64,14 @@ test("a reviewer a live runner offers for the review job is left to that runner"
   assert.equal(reviewerOffered([{ ...offer(["review"], [model]), at: new Date(now - 3 * 3600_000).toISOString() }], reviewer, now), false, "a stale offer is no live runner");
 });
 
+test("a runner scoped to other projects is no live reviewer for the landing's project", () => {
+  const now = new Date();
+  const offer = (projects) => ({ runner: "home:a", kind: "home", at: now.toISOString(), jobs: ["review"], projects, agents: [{ agent: "opencode", models: [model] }] });
+  assert.equal(reviewerOffered([offer(["other"])], reviewer, now, "atelier"), false);
+  assert.equal(reviewerOffered([offer(["atelier"])], reviewer, now, "atelier"), true);
+  assert.equal(reviewerOffered([offer(undefined)], reviewer, now, "atelier"), true, "a runner naming no projects serves them all");
+});
+
 test("a reviewer missing from this Mac is named: the config, the harness or the model", (t) => {
   const none = setup(t);
   assert.match(reviewerHere(reviewer, none.configPath).missing, /no runner config at .*runner\.json/);

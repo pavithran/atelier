@@ -1134,7 +1134,7 @@ async function oneShotReview(io, { id, name, reviewer, head }) {
   if (!io.oneShot || !reviewer) return;
   let offers = null;
   try { offers = await io.request("GET", "/runners"); } catch { /* unread: no answer */ }
-  if (reviewerOffered(offers, reviewer) !== false) return;
+  if (reviewerOffered(offers, reviewer, new Date(), name) !== false) return;
   const result = await io.oneShot({ project: name, id, reviewer, log: io.print });
   if (result.missing) throw new StepError(`${result.missing}. No live runner offers it either, so ${id} stays submitted with its review request open; add it to this Mac's runner config, or start a runner that offers ${reviewer}, then run atelier land ${id} again`);
   if (result.phase !== "reviewed") throw new StepError(`the one-shot review by ${reviewer} of ${id} at ${short(head)} recorded no verdict: ${result.reason ?? "the review job failed"}. It released its claim; ${id} stays submitted. Run atelier land ${id} again once that is fixed`);

@@ -3,15 +3,18 @@
 // (runReview in cli/runner.mjs), under the reviewer's own token from this
 // Mac's runner config, with nothing polled and nothing held after the verdict.
 // The landing records no review itself and never uses another identity.
-import { offering } from "../src/dispatch/rules.ts";
+import { offering, offersFor } from "../src/dispatch/rules.ts";
 import { defaultConfigPath, readConfig } from "./runner-config.mjs";
 
 // Whether a live runner offers the reviewer for the review job. `offers` is
 // GET /runners; null when it could not be read, which is no answer either
-// way, so the caller leaves the request to the runners.
-export function reviewerOffered(offers, reviewer, now = new Date()) {
+// way, so the caller leaves the request to the runners. Offers are read for
+// the landing's project (offersFor), so a runner scoped to other projects only
+// is no live reviewer for it.
+export function reviewerOffered(offers, reviewer, now = new Date(), project = undefined) {
   if (!Array.isArray(offers)) return null;
-  return !!offering({ to: "home", job: "review" }, offers, now)?.actors.has(String(reviewer).toLowerCase());
+  const read = project ? offersFor(offers, project) : offers;
+  return !!offering({ to: "home", job: "review" }, read, now)?.actors.has(String(reviewer).toLowerCase());
 }
 
 // The reviewer's harness and model as this Mac's runner config names them, or
