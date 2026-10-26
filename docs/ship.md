@@ -62,9 +62,9 @@ The approval then holds the words as its `quote` field and the model as its
 `acting` field, apart from its `note`, which stays whatever `--note` gave.
 `atelier approvals`, the ship output and the project's actions page show them,
 and a run that used the approval carries them on its `action.ran` event and in
-the record the runs route returns. `atelier status` and `atelier receipt` do
-not list action approvals or runs, so they show nothing of them. `--quote`
-without `--as` is refused.
+the record the runs route returns. Those are the places to read them:
+`atelier status` and `atelier receipt` list no action approvals or runs.
+`--quote` without `--as` is refused.
 
 Run in the registered checkout at the revision to ship, or with the form
 under "Protected actions" on the project's page, which binds the approval to
