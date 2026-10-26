@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Finding } from "../src/rules.ts";
+import { applyVerification, labelPreExisting, preExistingTask, type Finding } from "../src/rules.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 
 // The independent check of blocking findings (t717): on 2026-10-15/16 several
@@ -96,4 +96,69 @@ test("with a base the check may answer PRE-EXISTING, and is told how to read the
   const read = parseVerification("FINDING 1: PRE-EXISTING because x.\nFINDING 2: Pre Existing because y.\nFINDING 3: CONFIRMED because z.\nFINDING 4: PRE-EXISTING because a.\nFINDING 4: CONFIRMED because b.", 4);
   assert.ok(read.ok);
   assert.deepEqual([[...read.confirmed], [...read.preExisting]], [[3], [1, 2]], "an answer given twice is neither");
+});
+
+// t290: astra's review of miqra/t82 reported a keyboard-navigation defect in
+// t82's own new collapsed sections; it was classed pre-existing and t82 landed
+// with the regression.
+const T82_DIFF = [
+  "diff --git a/src/sections.ts b/src/sections.ts",
+  "--- a/src/sections.ts",
+  "+++ b/src/sections.ts",
+  "@@ -40,2 +40,6 @@ export function render() {",
+  "   const open = true;",
+  "+  const collapsed = sections.map((s) => s.collapse());",
+  "+  collapsed.forEach((el) => el.setAttribute('hidden', ''));",
+  "+  // collapsed sections keep their focusable children",
+  "+  return collapsed;",
+  "   return open;",
+  "",
+].join("\n");
+
+const t82: Finding = { file: "src/sections.ts", line: 42, severity: "blocking", text: "Arrow keys focus a link inside a collapsed section." };
+const dependent: Finding = { file: "src/sections.ts", line: 300, severity: "blocking", text: "focusNext walks every element, so it enters the sections render() now collapses." };
+const untouched: Finding = { file: "src/sections.ts", line: 300, severity: "blocking", text: "A dead branch in the date formatter." };
+
+test("the check is told to keep a defect on or depending on the change's code blocking before it may answer PRE-EXISTING", () => {
+  const text = verifierBrief({ item: { id: "t82", title: "Collapsed sections" }, head: "a".repeat(40), findings: [t82, dependent], base: "0".repeat(40) });
+  assert.ok(text.includes("Is the line the finding cites inside it?"));
+  assert.ok(text.includes("name code, an element or a behaviour the diff adds"));
+  assert.ok(text.includes("depend on existing code the diff modifies"));
+  assert.ok(text.includes("answer CONFIRMED, however the code looked before"));
+  assert.ok(text.indexOf("Before you answer PRE-EXISTING") < text.indexOf("Only then ask whether the same defect is already present at the base"), "the diff is read before the base");
+  assert.ok(text.includes("it does not depend on code the diff modifies, answer PRE-EXISTING"), "untouched, independent code can still be pre-existing");
+});
+
+test("the t82 finding on a line the change added is never labelled pre-existing, by the diff or by the check", () => {
+  assert.equal(labelPreExisting([t82], T82_DIFF)[0].severity, "blocking");
+  const confirmed = parseVerification("FINDING 1: CONFIRMED because line 42 is the new collapse code.", 1);
+  assert.ok(confirmed.ok);
+  const out = applyVerification([t82], confirmed.confirmed, confirmed.preExisting)[0];
+  assert.equal(out.severity, "blocking");
+  assert.equal(out.label, undefined);
+});
+
+// The runner's order (settleRejection): placement nominates, every blocker
+// goes to the check, and its reply is applied with the placement.
+function settle(list: Finding[], reply: string): Finding[] {
+  const read = parseVerification(reply, list.length);
+  assert.ok(read.ok);
+  return applyVerification(list, read.confirmed, read.preExisting);
+}
+
+test("a finding far from the diff but depending on modified code stays blocking when the check confirms it; untouched code may be pre-existing", () => {
+  const out = settle([dependent, untouched], "FINDING 1: CONFIRMED because focusNext reaches the collapsed sections.\nFINDING 2: PRE-EXISTING because the branch is dead at the base too.");
+  assert.deepEqual(out.map((f) => [f.severity, f.label]), [["blocking", undefined], ["follow-up", "pre-existing"]]);
+});
+
+test("the dependent finding is not demoted before the check sees it", () => {
+  const out = settle([dependent], "FINDING 1: CONFIRMED because it depends on render().");
+  assert.equal(out[0].severity, "blocking");
+  assert.equal(settle([untouched], "FINDING 1: NOT CONFIRMED because I could not show it.")[0].label, "unverified");
+});
+
+test("a partial reply answering only the second finding leaves the unanswered dependent one unverified, not pre-existing", () => {
+  const out = settle([dependent, untouched], "FINDING 2: PRE-EXISTING because the branch is dead at the base too.");
+  assert.deepEqual(out.map((f) => [f.severity, f.label]), [["follow-up", "unverified"], ["follow-up", "pre-existing"]]);
+  assert.equal(preExistingTask("t82", "Collapsed sections", { by: "a/b", head: "a".repeat(40), findings: out })?.accept.length, 1);
 });
