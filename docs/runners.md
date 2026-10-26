@@ -620,6 +620,16 @@ reviewer. `atelier show ID --reviews` prints the kept replies, and the
 Models page counts each against the reviewer as a review that never reached
 a verdict.
 
+Astra's reviews on miqra on 2026-10-25 (t299) were 51 requests: 25 approved,
+11 unparsable and 14 released without a verdict. The 11 were prose replies
+with no VERDICT line, which the adapter now asks for once more (codex as well
+as opencode). The 14 are not diagnosed: the runner releases a timed-out or
+nonzero-exit harness before it parses anything (`harness timed out`,
+`harness exited N`), so the cause is in those runs' records (`atelier events`,
+t269), which the t299 workspace could not read. What is missing is the
+release reason, exit code and stderr tail of each of the 14 runs. Until they
+are read, criterion 1 of t299 is met for the 11 prose replies only.
+
 `tokens` in the runner config says, per model, where that model's token is
 stored, never the token itself: the name of a Keychain entry (read as
 `atelier.NAME`, the way `keychain` reads a model's key, through the store

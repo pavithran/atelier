@@ -2531,7 +2531,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // that is waiting, in progress or in review offers the block form.
   const blockBox = item.state === "blocked" && item.blocked
     ? `<div class="notice" role="status"><h3>Blocked by ${e(item.blocked.by)} ${when(item.blocked.at)}</h3>
-        <p>${e(item.blocked.reason)}</p>
+        <p>${e(item.blocked.reason)}</p>${item.blocked.quote ? `<p class="meta">On ${e(directionText(item.blocked))}</p>` : ""}
         <p class="meta">It keeps its holder and workspace, is skipped by runners and stuck detection, and cannot be pushed or submitted. Unblocking returns it to ${e(stateLabel[item.blocked.from].toLowerCase())}.</p>
         <form method="post" action="${action("unblock")}">${revision}<button class="primary">Unblock</button></form></div>`
     : live || item.state === "open"
