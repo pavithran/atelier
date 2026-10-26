@@ -165,6 +165,7 @@ it("the Ship tab still draws, without the form, when the main line cannot be rea
 
 it("the approve route records the developer's words and the acting model, and refuses words with no model", async () => {
   await project("actions-quote");
+  expect((await api("PUT", "/models/opus-5.5", "owner", { harness: "claude-code", where: "cloud" })).status).toBe(200);
   const post = (body: unknown, acting?: string) => worker.fetch(new Request("https://atelier.test/api/projects/actions-quote/actions", {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json", ...(acting ? { "x-atelier-acting": acting } : {}) },
     body: JSON.stringify(body),
