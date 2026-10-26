@@ -602,6 +602,8 @@ export function unclaimed(
     overlap?: OverlapRefusal | null;
     refusals?: readonly ClaimRefusal[] | null;
     skips?: readonly RunSkip[] | null;
+    // Reports a new head has ended; the failures they counted are spent.
+    cleared?: readonly RunSkip[] | null;
     offers?: readonly SeenOffer[] | null;
     runs?: readonly RunSeen[] | null;
     project?: string;
@@ -618,7 +620,10 @@ export function unclaimed(
   // an infrastructure skip; the run reports name a runner older than that
   // report, or one whose report did not arrive.
   const reported = reportedSkips(input.skips ?? [], item, input.offers, input.now);
-  const counted = input.runs && input.project ? skippedBy(input.runs, input.project, item.id, input.offers, input.now, item.dispatch?.at) : [];
+  const spent = new Map<string, string>();
+  for (const c of input.cleared ?? []) if (c.at > (spent.get(c.runner) ?? "")) spent.set(c.runner, c.at);
+  const runs = input.runs?.filter((r) => r.at > (spent.get(r.runner) ?? ""));
+  const counted = runs && input.project ? skippedBy(runs, input.project, item.id, input.offers, input.now, item.dispatch?.at) : [];
   const skips = [...reported.map((s) => ({ runner: s.runner, line: reportedSkipLine(s, item) })),
     ...counted.filter((s) => !reported.some((r) => r.runner === s.runner)).map((s) => ({ runner: s.runner, line: skippedReasonLine(s, item) }))];
   for (const s of skips.sort((a, b) => a.runner.localeCompare(b.runner))) out.push({ kind: "skipped", line: s.line });
@@ -663,17 +668,17 @@ function overlapReasonLine(o: OverlapRefusal, item: Item): string {
 }
 
 function skippedReasonLine(s: SkippedBy, item: Item): string {
-  return `Skipped by ${s.runner} after ${s.failures} failed runs under this dispatch (the last ${s.last}); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then ${redispatch(item)}.`;
+  return `Skipped by ${s.runner} after ${s.failures} failed runs under this dispatch (the last ${s.last}); that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the cause, then ${redispatch(item)}.`;
 }
 
 function reportedSkipLine(s: RunSkip, item: Item): string {
   if (s.kind === "skipped") {
-    return `Skipped by ${s.runner}${s.note ? ` (${s.note})` : ""}; that runner passes it by until it changes or the runner restarts: fix the cause, then ${redispatch(item)}.`;
+    return `Skipped by ${s.runner}${s.note ? ` (${s.note})` : ""}; that runner passes it by until it changes (a new head included) or the runner restarts: fix the cause, then ${redispatch(item)}.`;
   }
   const why = s.note ? ` (the last: ${s.note})` : "";
   return s.kind === "infrastructure"
-    ? `Skipped by ${s.runner} after ${s.failures} infrastructure failures in a row under this dispatch${why}; that runner passes it by until it is dispatched again or the runner restarts: fix the runner's workspace, git or harness, then ${redispatch(item)}.`
-    : `Skipped by ${s.runner} after ${s.failures} failed runs under this dispatch${why}; that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then ${redispatch(item)}.`;
+    ? `Skipped by ${s.runner} after ${s.failures} infrastructure failures in a row under this dispatch${why}; that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the runner's workspace, git or harness, then ${redispatch(item)}.`
+    : `Skipped by ${s.runner} after ${s.failures} failed runs under this dispatch${why}; that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the cause, then ${redispatch(item)}.`;
 }
 
 function unofferedReasonLine(dead: string, item: Item): string {

@@ -3576,9 +3576,9 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   if (tooLarge) return `Passed by: its review input (brief ${tooLarge.slice(0, 12)}) was refused for its size; it is tried again at a new head or once this runner is updated and restarted.`;
   if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
   const failed = failures.get(failureKey(task)) ?? 0;
-  if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}), push a new head or restart this runner.`;
   const broken = infrastructureFailures.get(failureKey(task)) ?? 0;
-  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again (atelier dispatch ${task.item.id}), push a new head or restart this runner.`;
   return null;
 }
 

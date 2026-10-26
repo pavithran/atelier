@@ -3394,8 +3394,11 @@ export class Ledger extends DurableObject<Env> {
       const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
       const skips = (skipped.get(i.id) ?? []).filter((r) => skipHolds(r, i));
       const overlap = live ? overlapRefusal(i, live) : null;
-      return refusals.length || skips.length || overlap
-        ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(overlap ? { overlap } : {}) }
+      // Reports made under this dispatch that a new head has ended: the run
+      // reports counted before them are not counted again (unclaimed).
+      const cleared = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch?.at && !skipHolds(r, i));
+      return refusals.length || skips.length || overlap || cleared.length
+        ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(cleared.length ? { clearedSkips: cleared } : {}), ...(overlap ? { overlap } : {}) }
         : i;
     });
   }
@@ -3446,7 +3449,7 @@ export class Ledger extends DurableObject<Env> {
     const busy = this.claimedRows().map(toItem).filter((i) => i.owner && i.runner && i.dispatch
       && !orphanedBy(i, runners, now)
       && !idleMarked(this.runnerMeta<string>(`runner-idle:${i.runner.toLowerCase()}`), now)
-      && !(skipped.get(i.id) ?? []).some((s) => s.dispatchAt === i.dispatch!.at && s.runner.toLowerCase() === i.runner!.toLowerCase()))
+      && !(skipped.get(i.id) ?? []).some((s) => skipHolds(s, i) && s.runner.toLowerCase() === i.runner!.toLowerCase()))
       .map((i) => ({ runner: i.runner!, id: i.id }));
     return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting(), ...this.prereviewWaiting()], busy };
   }
