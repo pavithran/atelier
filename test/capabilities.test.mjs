@@ -669,7 +669,7 @@ test("--quote asks for the developer's direction by name, and a server without i
   const DIRECTION = "projects.developer-direction.v1";
   assert.deepEqual(requiredForCommand("mode", "fast", { reason: "r" }), ["projects.mode.v1"]);
   assert.deepEqual(requiredForCommand("mode", "fast", { reason: "r", quote: "go" }), ["projects.mode.v1", DIRECTION]);
-  assert.deepEqual(requiredForCommand("mode", "full", { quote: "go" }), ["projects.mode.v1"]);
+  assert.deepEqual(requiredForCommand("mode", "full", { quote: "go" }), ["projects.mode.v1", DIRECTION]);
   assert.deepEqual(requiredForCommand("accept", "t1", { "override-review": "r" }), []);
   assert.deepEqual(requiredForCommand("accept", "t1", { "override-review": "r", quote: "go" }), [DIRECTION]);
   assert.ok(!requiredForCommand("merge", "t1", { head: SHA, "override-review": "r" }).includes(DIRECTION));
