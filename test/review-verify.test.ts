@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyVerification, labelPreExisting, type Finding } from "../src/rules.ts";
+import { applyVerification, labelPreExisting, placedPreExisting, type Finding } from "../src/rules.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 
 // The independent check of blocking findings (t717): on 2026-10-15/16 several
@@ -138,11 +138,23 @@ test("the t82 finding on a line the change added is never labelled pre-existing,
   assert.equal(out.label, undefined);
 });
 
-test("a finding far from the diff but depending on modified code stays blocking when the check confirms it; untouched code may be pre-existing", () => {
-  const labelled = labelPreExisting([dependent, untouched], T82_DIFF);
-  assert.deepEqual(labelled.map((f) => f.label), ["pre-existing", "pre-existing"], "the line rule alone cannot see a dependency, so the check decides");
-  const read = parseVerification("FINDING 1: CONFIRMED because focusNext reaches the collapsed sections.\nFINDING 2: PRE-EXISTING because the branch is dead at the base too.", 2);
+// The runner's order (settleRejection): placement nominates, every blocker
+// goes to the check, and its reply is applied with the placement.
+function settle(list: Finding[], reply: string): Finding[] {
+  const placed = placedPreExisting(list, T82_DIFF);
+  const read = parseVerification(reply, list.length);
   assert.ok(read.ok);
-  const out = applyVerification([dependent, untouched], read.confirmed, read.preExisting);
+  return applyVerification(list, read.confirmed, read.preExisting, placed);
+}
+
+test("a finding far from the diff but depending on modified code stays blocking when the check confirms it; untouched code may be pre-existing", () => {
+  assert.deepEqual([...placedPreExisting([dependent, untouched], T82_DIFF)], [1, 2], "the line rule alone cannot tell them apart, so both reach the check");
+  const out = settle([dependent, untouched], "FINDING 1: CONFIRMED because focusNext reaches the collapsed sections.\nFINDING 2: PRE-EXISTING because the branch is dead at the base too.");
   assert.deepEqual(out.map((f) => [f.severity, f.label]), [["blocking", undefined], ["follow-up", "pre-existing"]]);
+});
+
+test("the dependent finding is not demoted before the check sees it", () => {
+  const out = settle([dependent], "FINDING 1: CONFIRMED because it depends on render().");
+  assert.equal(out[0].severity, "blocking");
+  assert.equal(settle([untouched], "FINDING 1: NOT CONFIRMED because I could not show it.")[0].label, "pre-existing");
 });
