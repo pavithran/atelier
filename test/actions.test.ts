@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  approvalStatus, approveAction, cleanApprovalInput, cleanRun, consumeAction, expirySeconds, listApprovals,
+  approvalDirection, approvalStatus, approveAction, cleanApprovalInput, cleanRun, consumeAction, expirySeconds, listApprovals,
   recordActionRun, unrunKinds, withdrawAction, type ActionStore,
 } from "../src/actions.ts";
 import { parseRuleError } from "../src/rules.ts";
@@ -49,7 +49,7 @@ test("an expiry is minutes, hours or days, from a minute to thirty days", () => 
 });
 
 test("an approval request names a kind and the full revision; the note is one line", () => {
-  assert.deepEqual(cleanApprovalInput({ kind: "deploy", commit: H1.toUpperCase(), note: "release\n12\u2028now" }), { kind: "deploy", commit: H1, note: "release 12 now", seconds: 86400 });
+  assert.deepEqual(cleanApprovalInput({ kind: "deploy", commit: H1.toUpperCase(), note: "release\n12\u2028now" }), { kind: "deploy", commit: H1, note: "release 12 now", seconds: 86400, direction: null });
   assert.equal(cleanApprovalInput({ kind: "photos-writeback", commit: "c".repeat(64), expires: "1h" }).seconds, 3600);
   for (const kind of ["Deploy", "", "two words", "-x", "a".repeat(64), 7]) refused(() => cleanApprovalInput({ kind, commit: H1 }), "bad_kind");
   for (const commit of ["abc", "z".repeat(40), H1.slice(1), "a".repeat(65), undefined]) refused(() => cleanApprovalInput({ kind: "deploy", commit }), "bad_revision");
@@ -144,4 +144,38 @@ test("a run record is checked field by field, and may name only an approval its 
     assert.throws(() => cleanRun({ ...run, [field]: value }), new RegExp(`bad_run\\|a run record's ${field} must be`), field);
   }
   assert.throws(() => cleanRun({ ...run, kind: null }), /a run record's kind must be given with an approval/);
+});
+
+test("an approval given on the developer's direction records their words and the acting model as fields", () => {
+  const { store, events } = memory();
+  const plain = approveAction(store, "owner", { kind: "deploy", commit: H1, note: "release" }, T0);
+  assert.equal(plain.quote, undefined);
+  assert.equal(plain.acting, undefined);
+  const said = approveAction(store, "owner", { kind: "install", commit: H1, note: "release", quote: "  yes, install\nit ", }, T0, "claude-code/opus-5.5");
+  assert.equal(said.quote, "yes, install it");
+  assert.equal(said.acting, "claude-code/opus-5.5");
+  assert.equal(said.note, "release");
+  assert.equal(listApprovals(store, T0)[0].quote, "yes, install it");
+  assert.deepEqual(events.at(-1)!.data, { id: "a2", kind: "install", commit: H1, note: "release", quote: "yes, install it", acting: "claude-code/opus-5.5", expiresAt: said.expiresAt });
+  // The run that uses it carries the words into the ship's record.
+  consumeAction(store, "owner", { kind: "install", commit: H1 }, T0);
+  const returned = recordActionRun(store, "owner", { step: "install", kind: "install", approval: "a2", command: "make", commit: H1, exitStatus: 0, signal: null, durationMs: 5, passed: true, outputTail: "", ship: "s1" });
+  const ran = events.at(-1)!;
+  assert.equal(ran.kind, "action.ran");
+  assert.equal(returned.quote, "yes, install it", "the record the runs route returns carries the words");
+  assert.equal(returned.acting, "claude-code/opus-5.5");
+  assert.equal(ran.data.quote, "yes, install it");
+  assert.equal(ran.data.acting, "claude-code/opus-5.5");
+});
+
+test("a quote without the acting model, or a blank one, is refused", () => {
+  const { store } = memory();
+  refused(() => approveAction(store, "owner", { kind: "deploy", commit: H1, quote: "go" }, T0), "no_acting", /--as H\/M/);
+  refused(() => approveAction(store, "owner", { kind: "deploy", commit: H1, quote: "  " }, T0, "claude-code/opus-5.5"), "bad_quote");
+  assert.equal(listApprovals(store, T0).length, 0);
+});
+
+test("approvalDirection words the developer's direction as every surface does, and says nothing without it", () => {
+  assert.equal(approvalDirection({}), "");
+  assert.equal(approvalDirection({ quote: "go", acting: "claude-code/opus-5.5" }), "the developer's words: \u201cgo\u201d, relayed by claude-code/opus-5.5");
 });
