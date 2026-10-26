@@ -138,3 +138,56 @@ it("a push notice finds the first task of a fork by its row, and none for an unk
   const every = await rowsRead(L, (ledger) => ledger.items().find((i: any) => i.fork === "reads-fork--shared")?.id);
   expect(probe.value).toBe(every.value);
 });
+
+it("items() reads rows that grow with the items, not with reviews or events older than each item's head", async () => {
+  const L = await project("reads-items");
+  const ids: string[] = [];
+  for (let n = 0; n < 200; n++) ids.push((await L.newItem(`Task ${n}`, ["src/**"], "owner")).id);
+  const rejection = (id: string, head: string, file: string) => ({ itemId: id, by: "codex/gpt-6-astra", approve: false, head, at: new Date().toISOString(), findings: [{ severity: "blocking", file, line: 1, summary: "s" }] });
+  const review = (instance: any, r: ReturnType<typeof rejection> | (Omit<ReturnType<typeof rejection>, "approve"> & { approve: boolean })) =>
+    instance.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?)`, r.itemId, JSON.stringify(r), r.head, r.approve ? 1 : 0);
+  await inside(L, async (instance: any) => {
+    const at = new Date().toISOString();
+    for (const id of ids) {
+      instance.sql.exec(`UPDATE items SET head = 'head-new' WHERE id = ?`, id);
+      instance.log(id, "codex/gpt-6-astra", "push.observed", { head: "head-new" }, at);
+    }
+    // One current rejection naming a file outside the scope, on the first task.
+    review(instance, rejection(ids[0], "head-new", "cli/other.mjs"));
+  });
+  const before = await rowsRead(L, (ledger) => ledger.items());
+  expect(before.value[0].scopeGap).toContain("cli/other.mjs");
+
+  // Thousands of reviews at older heads, approvals at the current head and
+  // push events, spread over the tasks. The very next read is measured.
+  await inside(L, async (instance: any) => {
+    const at = new Date().toISOString();
+    for (let n = 0; n < 3000; n++) {
+      const id = ids[n % ids.length];
+      review(instance, rejection(id, `head-${n}`, "cli/old.mjs"));
+      instance.log(id, "codex/gpt-6-astra", "push.observed", { head: `head-${n}` }, at);
+    }
+    for (let n = 0; n < 1000; n++) review(instance, { ...rejection(ids[n % ids.length], "head-new", "cli/approved.mjs"), approve: true });
+  });
+  const first = await rowsRead(L, (ledger) => ledger.items());
+  const after = await rowsRead(L, (ledger) => ledger.items());
+  // The read gains at most the cursor's own overhead.
+  expect(first.rows).toBeLessThanOrEqual(before.rows + 2);
+  expect(after.rows).toBeLessThanOrEqual(before.rows + 2);
+  expect(first.value[0].scopeGap).toBe(before.value[0].scopeGap);
+  expect(first.value[5].scopeGap).toBeUndefined();
+  expect(first.value[5].pushActors).toEqual(["codex/gpt-6-astra"]);
+  expect(first.value).toEqual(after.value);
+});
+
+it("items() folds events that reached the log by another route, a batch at a time", async () => {
+  const L = await project("reads-late");
+  const id = (await L.newItem("Task", [], "owner")).id;
+  await inside(L, async (instance: any) => {
+    instance.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, ?, ?)`, id, new Date().toISOString(), "codex/gpt-6-astra", "push.observed", "{}");
+  });
+  const actors = await inside(L, async (instance: any) => instance.items()[0].pushActors);
+  expect(actors).toEqual(["codex/gpt-6-astra"]);
+  // Folded once: a second read leaves the actors as they were.
+  expect(await inside(L, async (instance: any) => instance.items()[0].pushActors)).toEqual(actors);
+});
