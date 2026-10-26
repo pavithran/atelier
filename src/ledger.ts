@@ -4137,9 +4137,10 @@ export class Ledger extends DurableObject<Env> {
       this.reworkPart(item, r, at, proved);
     }
     // Non-blocking findings are notes on the task's goal, not tasks (t203):
-    // the plan when the item is a part, else the item itself. A blocking
-    // finding is the only one filed as a task (below, after a merge).
-    const notes = item.state !== "merged" ? reviewNotes(item.id, r) : null;
+    // the plan when the item is a part, else the item itself, after a merge
+    // as before it. A blocking finding is the only one filed as a task
+    // (below, after a merge).
+    const notes = reviewNotes(item.id, r);
     if (notes) this.log(item.kind === "part" && item.plan ? item.plan : item.id, ORCHESTRATOR, "goal.notes", { itemId: item.id, head: r.head, by: r.by, request: r.request, notes }, at);
     if (!r.approve && !r.postMerge && r.by !== this.owner) this.holdAtRoundCap(r.itemId, at, origin);
     // A rejected post-merge review of a fast landing files its fix task
@@ -6234,6 +6235,13 @@ export class Ledger extends DurableObject<Env> {
     };
   }
 
+  // The goal's open notes, read over all its goal.notes events: events()
+  // keeps only the newest 200, which would drop older notes from the report.
+  goalNotes(id: string): GoalNote[] {
+    const rows = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'goal.notes' ORDER BY seq`, id).toArray();
+    return openNotes(rows.map(eventOf).flatMap((e) => e.data.notes as GoalNote[]));
+  }
+
   events(id?: string, limit = 200, before?: number): LedgerEvent[] {
     const below = before === undefined ? Number.MAX_SAFE_INTEGER : before;
     const rows = id
@@ -6998,7 +7006,7 @@ export class Ledger extends DurableObject<Env> {
         taken: mainTakenOf(record, item), main: mainNow ?? this.mainHead(),
         last: record.refresh ?? null, running: record.refresh?.state === "dispatched" && item.owner === INTEGRATOR,
       },
-      notes: openNotes(this.events(item.id).filter((e) => e.kind === "goal.notes").flatMap((e) => e.data.notes as GoalNote[])),
+      notes: this.goalNotes(item.id),
       harnessFailure,
       pastDeadline: pastDeadline(record, new Date().toISOString()),
     };

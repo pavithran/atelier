@@ -121,3 +121,18 @@ it("a pre-existing finding is recorded as a note and does not block, and a label
   expect(noted.data).toMatchObject({ itemId: id, head: head(1), by: GPT });
   expect((noted.data.notes as { file: string }[]).map((n) => n.file)).toEqual(["src/untouched.ts", "src/land.ts"]);
 });
+
+it("a goal's notes outlast the 200 events events() returns by default (t203)", async () => {
+  const L = await setup("notes-window");
+  const id = await firstSubmission(L);
+  await pushed(L, id, head(1));
+  const note: Finding = { file: "src/untouched.ts", line: 40, severity: "follow-up", label: "pre-existing", text: "Reads a stale value." };
+  await L.requestReview(id, "owner", null, POOL);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: head(1), approve: true, note: "Approved.", findings: [note], at: new Date().toISOString() });
+  for (let i = 0; i < 210; i++) {
+    await L.addEvidence({ itemId: id, claim: `check ${i}`, grade: "observed", head: head(1), passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
+  }
+  expect((await events(L, id)).some((e) => e.kind === "goal.notes")).toBe(false);
+  expect(await L.goalNotes(id)).toEqual([expect.objectContaining({ file: "src/untouched.ts", line: 40, text: "Reads a stale value." })]);
+});
