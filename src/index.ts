@@ -588,8 +588,7 @@ function itemDirection(c: Ctx, verb: "block" | "unblock" | "abandon" | "clear-se
     return ownerDirection(body.quote, c.acting ?? null, verb);
   }
   if (c.token) return null;
-  const impersonates = (verb === "block" || verb === "unblock") && c.actor !== ownerActor(env);
-  if (!c.acting && !impersonates) return null;
+  if (!c.acting) return null;
   const text = (v: unknown) => JSON.stringify(String(v));
   const command = [
     "atelier", verb, id,

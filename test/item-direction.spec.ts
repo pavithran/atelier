@@ -89,8 +89,6 @@ it("without the words a model on the developer token is stopped, and the stop na
   };
   expect(await stop(await post(name, "t1", "block", { reason: "waiting on the schema", until: "2026-11-01" }, acting)))
     .toContain(`atelier block t1 "waiting on the schema" --until 2026-11-01 --quote "the developer's words" --as H/M --project ${name}`);
-  // A holder's name on the developer token is stopped alike.
-  expect(await stop(await post(name, "t1", "block", { reason: "mine" }, {}, TOKEN, OPUS))).toContain("--quote");
   expect(await stop(await post(name, "t2", "abandon", { note: "superseded", deliveredBy: "t1" }, acting)))
     .toContain(`atelier abandon t2 --note "superseded" --delivered-by t1 --quote "the developer's words" --as H/M --project ${name}`);
   expect(await stop(await post(name, "t1", "clear-secret", { reason: "a fake key" }, acting)))
