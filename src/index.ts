@@ -121,6 +121,15 @@ type Settings = {
   // forms, and never gives a session. Behind Access it is not read: the
   // owner's Access identity is the factor there (ownerFactorOf).
   OVERRIDE_SECRET?: string;
+  // The origin this Worker answers on, for links built where there is no
+  // request to read it from, such as the stuck notices the cron sends:
+  // https://atelier.zone in production, https://next.atelier.zone on the
+  // staging copy (wrangler.jsonc, env.staging), https://atelier.zone unset.
+  PUBLIC_ORIGIN?: string;
+  // The Artifacts namespace the ARTIFACTS binding names, whose push events
+  // the queue accepts (pushNotice): "atelier" in production and unset,
+  // "atelier-staging" on the staging copy.
+  ARTIFACTS_NAMESPACE?: string;
 };
 
 // The factor no agent holds, which an override's confirmation rests on
@@ -3513,8 +3522,10 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
 // storage key, which a rename keeps and a released name does not reach, never
 // under its name (t196).
 // The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
-// and the origin the recorded evidence links name.
-const STUCK_CRON = "*/10 * * * *", STUCK_ORIGIN = "https://atelier.zone";
+// and the origin the recorded evidence links name: the PUBLIC_ORIGIN var, so
+// the staging copy links to itself, and production's origin when it is unset.
+const STUCK_CRON = "*/10 * * * *";
+const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.trim().replace(/\/+$/, "") || "https://atelier.zone";
 // Sends the project's due episodes (src/stuck/notices.ts) in as many messages
 // as the channel's body limit needs, and records each message's episodes only
 // when the channel answers it with success. A non-success answer or a failed
@@ -3527,7 +3538,7 @@ async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, n
   const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
   if (!topic) return;
   const due = await I.stuckDue(key, at);
-  for (const { request, episodes } of stuckBatchRequests(topic, STUCK_ORIGIN, name, due)) {
+  for (const { request, episodes } of stuckBatchRequests(topic, stuckOrigin(env), name, due)) {
     try {
       const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
       await response.body?.cancel();
@@ -3546,7 +3557,7 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
     try {
       const ref = await resolveProject(env, p.name);
       if (!ref.registered) continue;
-      const report = await readStuckReport(env, ref, STUCK_ORIGIN, reportLimits(), now);
+      const report = await readStuckReport(env, ref, stuckOrigin(env), reportLimits(), now);
       await I.recordStuckTick(ref.key, report.entries, report.complete, report.observedAt);
       await notifyStuck(env, I, ref.key, p.name, report.observedAt);
     } catch (err) {
@@ -4422,7 +4433,9 @@ export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
-        const notice = pushNotice(message.body);
+        // Events from the namespace this Worker's ARTIFACTS binding names
+        // alone; another namespace's, such as production's on staging, are dropped.
+        const notice = pushNotice(message.body, (env as unknown as Settings).ARTIFACTS_NAMESPACE?.trim() || undefined);
         if (notice) {
           const projects = await index(env).projects();
           for (const project of projects) {
