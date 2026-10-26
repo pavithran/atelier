@@ -679,7 +679,7 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
       stdio: ["pipe", "pipe", "inherit"],
     });
     const more = !again.error && again.status === 0 && typeof again.stdout === "string" ? again.stdout.trim() : "";
-    if (more) answer = `${answer.replace(/\n+$/, "")}\n\n${more}\n`;
+    if (more) answer = joinReplies(answer, more);
     else (io.stderr ?? ((text) => process.stderr.write(text)))(`atelier-${harness}: the reply states no verdict and asking again for it failed${again.error ? `: ${again.error.message}` : ` (exit ${again.status})`}\n`);
   }
   writeFileSync(args.verdict, answer, "utf8");
@@ -752,9 +752,21 @@ function askAgainFromFile(harness, args, setup, brief, { spawn, exe, childEnv, i
   let more = "";
   try { more = !again.error && again.status === 0 ? readFileSync(file, "utf8").trim() : ""; } catch { /* nothing was written */ }
   rmSync(file, { force: true });
-  if (more) writeFileSync(args.verdict, `${first.replace(/\n+$/, "")}\n\n${more}\n`, "utf8");
+  if (more) writeFileSync(args.verdict, joinReplies(first, more), "utf8");
   else (io.stderr ?? ((text) => process.stderr.write(text)))(`atelier-${harness}: the reply states no verdict and asking again for it failed${again.error ? `: ${again.error.message}` : ` (exit ${again.status})`}\n`);
   return 0;
+}
+
+// The first reply and the second joined. The second ask repeats the lines it
+// is given, so a finding the first reply gave as a line would count twice, and
+// the counted parser refuses a count of one with two findings. Each kind of
+// line the second reply gives replaces the first reply's lines of that kind.
+const LINE_KINDS = ["FINDING", "BLOCKING", "CRITERION", "CHECK", "SUMMARY"];
+export function joinReplies(first, more) {
+  const kindOf = (line) => LINE_KINDS.find((k) => new RegExp(`^[\\s>*_#\`-]*${k}(?![A-Za-z])`, "i").test(line));
+  const again = new Set(more.split("\n").map(kindOf).filter(Boolean));
+  const kept = first.split("\n").filter((line) => !again.has(kindOf(line))).join("\n").replace(/\n+$/, "");
+  return `${kept}\n\n${more}\n`;
 }
 
 function noVerdict(answer) {

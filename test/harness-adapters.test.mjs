@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERIFY_DEMAND, VERIFY_DEMAND_BASE, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERIFY_DEMAND, VERIFY_DEMAND_BASE, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, joinReplies, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
 import { runWithLimits } from "../bin/harness/limit.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
@@ -268,6 +268,17 @@ test("a codex review that states no verdict is asked again in its own session, a
   const text = readFileSync(verdict, "utf8");
   assert.ok(text.startsWith(narrative));
   assert.equal(parseVerdict(text).ok, true);
+});
+
+test("a follow-up that repeats a finding the first reply gave does not count it twice", (t) => {
+  const s = setup(t);
+  const first = "I read the diff.\nBLOCKING: 1\nFINDING: blocking src/a.ts:3 it breaks";
+  const { verdict } = run("codex", s, { model: "gpt-6-astra", review: true, env: { FAKE_ANSWER: first, FAKE_FOLLOW_UP: "SUMMARY: broken\nBLOCKING: 1\nFINDING: blocking src/a.ts:3 it breaks\nVERDICT: REJECT" } });
+  const text = readFileSync(verdict, "utf8");
+  const parsed = parseVerdict(text, 0, { counted: true });
+  assert.equal(parsed.ok, true, parsed.error);
+  assert.equal(parsed.findings.length, 1);
+  assert.equal(joinReplies("a\nFINDING: x\nBLOCKING: 1", "VERDICT: APPROVE"), "a\nFINDING: x\nBLOCKING: 1\n\nVERDICT: APPROVE\n");
 });
 
 test("a codex review that states a verdict is not asked again, and one whose second ask fails keeps its first reply", (t) => {
