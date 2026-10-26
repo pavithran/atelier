@@ -4352,6 +4352,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // environment: the command lands as the developer. A runner that is
   // stopped ends the landing, which releases its lease; the journal lets the
   // next run of the job resume.
+  const landWaits = new Map();
   const runLandTask = async (task) => {
     const { project, item } = task, dir = checkouts.includes(project) ? checkoutOf?.(project) : null;
     if (!dir) return { phase: "failed", refused: true, reason: `this runner holds no registered checkout of ${project}` };
@@ -4360,7 +4361,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       return { code: r.code, output: r.output ?? "" };
     };
     const env = { ...process.env }; delete env.ATELIER_RUNNER_NAME;
+    // The task is read as the developer, as the landing itself is: the
+    // runner's token reads no item it does not hold, and no declared call is
+    // made for it.
+    const taskId = item.id;
+    const asDeveloper = (argv) => executeChild([process.execPath, fileURLToPath(new URL("./atelier.mjs", import.meta.url)), ...argv, "--project", project], { cwd: dir, env, capture: true, captureError: true, timeoutMs: 60_000, signal: controller.signal });
     const result = await runLandJob(item.id, {
+      waiting: landWaits.get(taskKey(task)) ?? null,
+      // The task's state and head from the listing, and its reviews: the key
+      // changes when a push or a review does.
+      taskState: async () => {
+        const listed = await asDeveloper(["ls", "--all", "--json"]);
+        if (listed.code !== 0) throw new Error(`atelier ls exited ${listed.code}`);
+        const found = JSON.parse(listed.output).find((i) => i.id === item.id);
+        if (!found) throw new Error(`${item.id} is not in the listing`);
+        const shown = await asDeveloper(["show", taskId, "--json"]);
+        const reviews = shown.code === 0 ? (JSON.parse(shown.output).reviews ?? []).map((r) => `${r.by}@${r.at}`).join(",") : "";
+        return { state: found.state, key: `${found.head}|${reviews}` };
+      },
       checkout: dir, git, hasJournal: () => landJournal(dir),
       baselineHead: async () => (baselineHead ? baselineHead(project, task.actor, controller.signal).catch(() => null) : null),
       samePaired: async (here, base) => {
@@ -4372,8 +4390,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         return { code: r.code, output: [r.output, r.stderr].filter(Boolean).join("\n"), timedOut: r.timedOut };
       },
     }).catch((error) => ({ ok: false, refused: false, reason: `landing ${item.id} failed: ${error.message}` }));
-    if (result.ok) return { phase: "done" };
-    return { phase: "failed", refused: result.refused, reason: result.reason };
+    if (result.ok) { landWaits.delete(taskKey(task)); return { phase: "done" }; }
+    if (result.waiting) landWaits.set(taskKey(task), { key: result.key, kind: result.waiting, reason: result.reason });
+    else landWaits.delete(taskKey(task));
+    return { phase: "failed", refused: result.refused, waiting: result.waiting, reason: result.reason };
   };
   // The reasons already said for a land job, by task, so a failure that
   // repeats is told once; and the poll each failed job is tried again on.
