@@ -2640,7 +2640,15 @@ export function assertFastModeAllowed(policy: Pick<ProjectPolicy, "noOverride">)
   if (policy.noOverride) throw new RuleError("fast_mode_forbidden", "this project forbids overrides of the independent review (atelier init --no-override), and fast mode lands without that review, so fast mode is refused", 403);
 }
 
-export function fastModeConfirmationHint(project: string, origin = "", factor?: OwnerFactor | null): string {
+// What the refusal tells the agent: ask the developer, and on their yes run
+// the command with their words. The Settings page's permission still works,
+// but is not what the refusal sends anyone to.
+export function fastModeConfirmationHint(project: string): string {
+  return `ask the developer, and on their yes run: atelier mode fast --reason TEXT --quote "the developer's words" --as H/M --project ${project}; the developer token alone does not confirm it`;
+}
+
+// The same for the Settings page's own form, which names the page and its factor.
+export function fastModePageHint(project: string, origin = "", factor?: OwnerFactor | null): string {
   const page = `open ${origin}/p/${encodeURIComponent(project)}/settings as the developer, press "Allow fast mode from the command line" ${ownerFactorText(factor)}, then run atelier mode fast again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
   return `${page}; ${DIRECTION_HINT}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
 }

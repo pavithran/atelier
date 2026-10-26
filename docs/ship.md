@@ -58,9 +58,13 @@ When the developer approves in chat, the model records their words with
 atelier approve deploy --head "$(git rev-parse HEAD)" --quote "yes, deploy it" --as claude-code/opus-5.5
 ```
 
-The approval's note then reads `developer said: "yes, deploy it" (recorded by
-claude-code/opus-5.5)`, kept beside the revision. `--quote` without `--as` is
-refused.
+The approval then holds the words as its `quote` field and the model as its
+`acting` field, apart from its `note`, which stays whatever `--note` gave.
+`atelier approvals`, the ship output and the project's actions page show them,
+and a run that used the approval carries them on its `action.ran` event and in
+the record the runs route returns. Those are the places to read them:
+`atelier status` and `atelier receipt` list no action approvals or runs.
+`--quote` without `--as` is refused.
 
 Run in the registered checkout at the revision to ship, or with the form
 under "Protected actions" on the project's page, which binds the approval to
@@ -282,10 +286,10 @@ Each is an event in the project's ledger, with no task id:
 
 | Event | Data |
 |---|---|
-| `action.approved` | id, kind, commit, note, expiry |
+| `action.approved` | id, kind, commit, note, expiry, and, when given on the developer's direction, quote and acting |
 | `action.withdrawn` | id, kind, commit, note |
 | `action.consumed` | id, kind, commit |
-| `action.ran` | step, kind, approval used, command, commit, exit status, signal, duration, passed, output tail, ship id, note |
+| `action.ran` | step, kind, approval used, command, commit, exit status, signal, duration, passed, output tail, ship id, note, and, when the approval it used had them, quote and acting |
 
 There is one `action.ran` for every command, request or step that ran,
 passing or failing, and none for a step that did not run. The ship id is the

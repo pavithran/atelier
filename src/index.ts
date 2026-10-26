@@ -15,7 +15,7 @@ import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mer
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
-import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -143,7 +143,7 @@ function ownerFactorOf(env: Env): OwnerFactor | null {
 // permission for fast mode (Astra's audit of 2026-10-13, finding 3).
 function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: string | null): OwnerFactor {
   const factor = ownerFactorOf(env);
-  const hint = id === null ? fastModeConfirmationHint(project, c.url.origin, factor) : overrideConfirmationHint(project, id, c.url.origin, factor);
+  const hint = id === null ? fastModePageHint(project, c.url.origin, factor) : overrideConfirmationHint(project, id, c.url.origin, factor);
   const [code, what] = id === null ? ["fast_mode_unconfirmed", "fast mode"] : ["override_unconfirmed", "an override of the independent review"];
   if (factor === "access" && c.access) return "access";
   if (factor === "secret") {
@@ -2083,7 +2083,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (m === "POST") {
       try { return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null, body.quote)); } catch (err) {
         const rule = parseRuleError(err);
-        if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project, c.url.origin, ownerFactorOf(env))}`, rule.status);
+        if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, rule.status);
         throw err;
       }
     }
@@ -2113,7 +2113,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
   if (parts[2] === "actions") {
-    const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
+    const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit), c.acting ?? null);
     return json(r.data, r.status);
   }
   if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
@@ -3968,7 +3968,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // page's override permission is: from the developer's own sign-in, with
     // the factor no agent holds (Astra's audit of 2026-10-13, finding 3).
     if (id === "mode" && verb === "allow-fast") {
-      if (!c.signedIn) throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's own sign-in, not the developer token: ${fastModeConfirmationHint(project, c.url.origin, ownerFactorOf(env))}`, 403);
+      if (!c.signedIn) throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's own sign-in, not the developer token: ${fastModePageHint(project, c.url.origin, ownerFactorOf(env))}`, 403);
       await L.confirmFastMode(owner, ownerFactorIn(env, c, form, project, null));
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/settings`, c.url).toString(), 303);
     }
