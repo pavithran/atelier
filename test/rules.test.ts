@@ -1186,6 +1186,10 @@ test("a same-family post-merge review is accepted only for a task landed in fast
   assert.equal(fix.title, "Fix after fast landing of t9: Add a thing");
   assert.deepEqual(fix.accept, ["src/a.ts:4: null deref"]);
   assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
+  // A non-blocking finding is a note on the goal, never a criterion (t203).
+  const followUp = { file: "src/b.ts", line: 9, severity: "follow-up" as const, text: "rename y" };
+  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [followUp, { file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] }).accept, ["src/a.ts:4: null deref"]);
+  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [followUp] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
 });
 
 // ── fast builds (t589) ───────────────────────────────────────────────────────

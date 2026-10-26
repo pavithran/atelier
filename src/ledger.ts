@@ -4144,7 +4144,7 @@ export class Ledger extends DurableObject<Env> {
     if (notes) this.log(item.kind === "part" && item.plan ? item.plan : item.id, ORCHESTRATOR, "goal.notes", { itemId: item.id, head: r.head, by: r.by, request: r.request, notes }, at);
     if (!r.approve && !r.postMerge && r.by !== this.owner) this.holdAtRoundCap(r.itemId, at, origin);
     // A rejected post-merge review of a fast landing files its fix task
-    // (t585), its criteria the review's findings.
+    // (t585), its criteria the review's blocking findings.
     if (fastReceiptOf && !r.approve) {
       const fix = fastFixTask(item.id, item.title, { by: r.by, head: r.head, note: r.note, request: r.request, findings: r.findings });
       const made = this.newItem(shortTitle(fix.title), item.scope, ORCHESTRATOR, { brief: fix.brief, accept: fix.accept });

@@ -2824,9 +2824,10 @@ export function fastLandedLines(landed: readonly { item: string; receipt: { merg
 }
 
 // The fix task a rejected post-merge review of a fast landing files: its
-// criteria are the review's findings, or the note when it gave none.
+// criteria are the review's blocking findings, or the note when it gave none.
+// A non-blocking finding stays a note on the goal (t203), not a criterion.
 export function fastFixTask(itemId: string, title: string, review: { by: string; head: string; note: string; request?: number; findings?: Finding[] }): { title: string; brief: string; accept: string[] } {
-  const findings = review.findings ?? [];
+  const findings = (review.findings ?? []).filter((f) => f.severity === "blocking");
   const accept = findings.length
     ? findings.map((f) => `${f.file}${f.line === null ? "" : `:${f.line}`}: ${f.text}`.slice(0, 1000))
     : [`Resolve the post-merge review's rejection of ${itemId}: ${review.note}`.slice(0, 1000)];
