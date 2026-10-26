@@ -84,7 +84,7 @@ test("the config lists the land job, and the offer names a checkout only when th
 });
 
 // The runner's loop: the offers it polls with and the job it runs.
-async function loop(t, { checkouts, config = {}, git = {}, journal = false, land = { code: 0, output: "ok" }, polls = 1 }) {
+async function loop(t, { checkouts, config = {}, git = {}, journal = false, land = { code: 0, output: "ok" }, polls = 1, task = { state: "merged", head: HEAD, reviews: [] } }) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-land-job-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "runner.json");
@@ -97,6 +97,8 @@ async function loop(t, { checkouts, config = {}, git = {}, journal = false, land
       const key = argv[1];
       return key in git ? git[key] : { code: 0, output: key === "rev-parse" ? `${HEAD}\n` : "" };
     }
+    if (argv[2] === "ls") return { code: 0, output: JSON.stringify([{ id: "t9", state: task.state, head: task.head }]), stderr: "" };
+    if (argv[2] === "show") return { code: 0, output: JSON.stringify({ reviews: task.reviews }), stderr: "" };
     spawned.push({ argv, cwd: options.cwd, env: options.env });
     return { ...land, stderr: "" };
   };
@@ -164,4 +166,33 @@ test("the real runner transport sends an offer that lists land and its checkouts
   const res = await transport.send("queue", {}, { body: offer, actor: "owner" });
   assert.equal(res.ok, true);
   assert.deepEqual(JSON.parse(sent[0].init.body), offer);
+});
+
+test("a landing that exits 0 at the review ask is reported asked, not landed, and not run again", async (t) => {
+  const { logs, spawned } = await loop(t, { checkouts: ["atelier"], land: { code: 0, output: "t9 is submitted at aaaaaaaa with its review asked and its land request recorded." }, task: { state: "submitted", head: HEAD, reviews: [] }, polls: 60 });
+  assert.equal(spawned.length, 1);
+  assert.ok(!logs.some((l) => l.includes("landed atelier/t9")));
+  assert.equal(logs.filter((l) => l.includes("atelier/t9: asked, not merged (the task is submitted)")).length, 1);
+});
+
+test("a rejected landing that exits 0 is reported rejected with its reason", async (t) => {
+  const { logs } = await loop(t, { checkouts: ["atelier"], land: { code: 0, output: "astra rejected t9 at aaaaaaaa: the test is missing" }, task: { state: "submitted", head: HEAD, reviews: [{ by: "astra", at: "1" }] } });
+  assert.ok(logs.some((l) => l.includes("rejected, not merged") && l.includes("the test is missing")));
+  assert.ok(!logs.some((l) => l.includes("landed atelier/t9")));
+});
+
+test("a stopped job runs again once the task's review state changes", async () => {
+  let state = { state: "submitted", key: "h|a@1" };
+  const ran = [];
+  const { io } = jobIo({ taskState: async () => state, land: async () => { ran.push("land"); return { code: 0, output: "review asked" }; } });
+  const first = await runLandJob("t9", io);
+  assert.equal(first.waiting, "asked");
+  const again = await runLandJob("t9", { ...io, waiting: { key: first.key, kind: first.waiting, reason: first.reason } });
+  assert.equal(again.unchanged, true);
+  assert.equal(ran.length, 1);
+  state = { state: "submitted", key: "h|a@1,b@2" };
+  await runLandJob("t9", { ...io, waiting: { key: first.key, kind: first.waiting, reason: first.reason } });
+  assert.equal(ran.length, 2);
+  state = { state: "merged", key: "x" };
+  assert.deepEqual(await runLandJob("t9", io), { ok: true });
 });
