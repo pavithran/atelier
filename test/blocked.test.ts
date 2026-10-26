@@ -7,6 +7,7 @@ import {
 import { assertDispatchable } from "../src/dispatch/rules.ts";
 import { detectStuck } from "../src/stuck/rules.ts";
 import { briefFor } from "../src/brief.ts";
+import { placeTask } from "../src/attention.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 
 // The blocked state as the pure rules read it: what a blocked task refuses,
@@ -103,4 +104,14 @@ test("stuck detection skips a blocked task, however long it has been silent or f
   const silent = item({ state: "claimed", blocked: undefined, lastPushAt: null });
   assert.deepEqual(detectStuck([silent], events, NOW).map((f) => f.suggestion), ["check in with the holder", "hand off"]);
   assert.deepEqual(detectStuck([item({ lastPushAt: null })], events, NOW), []);
+});
+
+test("a block on the developer's words says them in the brief and where status places the task", () => {
+  const i = item();
+  i.blocked = { ...i.blocked!, quote: "park it", acting: "claude-code/opus-5.5" };
+  const words = "the developer's words: \u201cpark it\u201d, relayed by claude-code/opus-5.5";
+  const b = briefFor({ item: i, policy, evidence: [], reviews: [], gate: gate(i, policy, [], []), events: [], ownerActor: "owner" });
+  assert.ok(b.recommendation.reason.includes(`waiting on the API key (${words}). Clear that`), b.recommendation.reason);
+  const placed = placeTask("proj", i, []);
+  assert.ok(placed && "why" in placed && placed.why.endsWith(`waiting on the API key, ${words}`), JSON.stringify(placed));
 });
