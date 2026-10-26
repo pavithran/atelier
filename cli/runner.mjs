@@ -1790,9 +1790,10 @@ export async function runTask(assignment, config, name, io) {
     // A marker counts only for the task revision it was written against
     // (t316): after the developer edits the scope, criteria or brief, or for
     // a marker written before markers recorded the revision, the runner
-    // clears it and the builder runs again. Both replay points below see
-    // only a marker that passed this check.
+    // clears it and the builder runs again. Both replay points below use the
+    // same rule, holds: this actor's marker for this task revision.
     let priorBlock = await io.readValidationBlock?.(workspace);
+    const holds = (block) => block?.actor === actor && block.taskKey === taskKey;
     if (priorBlock && priorBlock.taskKey !== taskKey) {
       io.log(priorBlock.taskKey
         ? "the task's scope, criteria or brief changed since its validation_blocked report, so the runner clears that report and retries because the task changed"
@@ -1800,7 +1801,7 @@ export async function runTask(assignment, config, name, io) {
       await io.clearValidationBlock?.(workspace);
       priorBlock = null;
     }
-    if (priorBlock?.actor === actor && priorBlock.head &&
+    if (holds(priorBlock) && priorBlock.head &&
         !(io.hasPreparation ? await io.hasPreparation(project, actor) : !!io.prepare) &&
         priorBlock.head === await io.head(workspace).catch(() => null)) {
       throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true, skipped: true });
@@ -1853,7 +1854,7 @@ export async function runTask(assignment, config, name, io) {
     const prepare = async () => {
       preparation = await io.prepare?.(workspace);
       const currentHead = priorBlock && merges.some((m) => m.state === "merged") ? await io.head(workspace) : before;
-      if (priorBlock?.actor === actor && priorBlock.head === currentHead &&
+      if (holds(priorBlock) && priorBlock.head === currentHead &&
           !preparation?.deferred && (!preparation || (priorBlock.prepared && (!priorBlock.prepareKey || priorBlock.prepareKey === preparation.key)))) {
         throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true });
       }
