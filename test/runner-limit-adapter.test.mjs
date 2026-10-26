@@ -179,7 +179,7 @@ if (process.argv.includes("mcp")) {
 require("node:fs").readFileSync(0);
 const verdictAt = process.argv.indexOf("--output-last-message");
 if (verdictAt !== -1 && Number(process.env.FAKE_EXIT ?? 0) === 0) {
-  require("node:fs").writeFileSync(process.argv[verdictAt + 1], process.env.FAKE_ANSWER ?? "");
+  require("node:fs").writeFileSync(process.argv[verdictAt + 1], (process.argv.includes("resume") ? process.env.FAKE_FOLLOW_UP_ANSWER : process.env.FAKE_ANSWER) ?? "");
 }
 // The second ask of a reply with no verdict (opencode run --continue, t576).
 process.stdout.write((process.argv.includes("--continue") ? process.env.FAKE_FOLLOW_UP_STDOUT : process.env.FAKE_STDOUT) ?? "");
@@ -210,11 +210,12 @@ for (const name of Object.keys(ADAPTERS)) {
   test(`${name}: real adapter retains review verdicts containing JSON error examples`, (t) => {
     const h = harness(t);
     for (const text of ['{"error":"Too many requests"}', 'VERDICT: APPROVE\nSUMMARY: Tests cover {"error":"Too many requests"}.', failure(name)]) {
-      const r = runBin(h, name, { FAKE_EXIT: "0", FAKE_STDOUT: answer(name, text), FAKE_STDERR: failure(name), FAKE_ANSWER: text, FAKE_FOLLOW_UP_STDOUT: answer(name, FOLLOW_UP) }, { review: true });
+      const r = runBin(h, name, { FAKE_EXIT: "0", FAKE_STDOUT: answer(name, text), FAKE_STDERR: failure(name), FAKE_ANSWER: text, FAKE_FOLLOW_UP_ANSWER: FOLLOW_UP, FAKE_FOLLOW_UP_STDOUT: answer(name, FOLLOW_UP) }, { review: true });
       assert.equal(r.status, 0, r.stderr);
-      // opencode asks once more when a reply states no verdict (t576) and
-      // keeps both replies; a reply with a verdict is kept as it came.
-      const asked = name === "opencode" && !text.includes("VERDICT:");
+      // opencode and codex ask once more when a reply states no verdict
+      // (t576, t299) and keep both replies; a reply with a verdict is kept as
+      // it came.
+      const asked = (name === "opencode" || name === "codex") && !text.includes("VERDICT:");
       assert.equal(readFileSync(h.verdict, "utf8"), asked ? `${text}\n\n${FOLLOW_UP}\n` : text);
       assert.ok(!r.stderr.includes(LIMIT_MARKER));
     }
