@@ -425,12 +425,13 @@ function oldestFirst(commits: Commit[]): Commit[] {
 // not taken to add main's older commits. The scan is bound to `head`, the
 // commit the Ledger recorded, never to the fork's live head: the fork may
 // have moved on since the head was recorded, and a scan of the newer head
-// would be applied to the older one's record. The commit is read by its id, and the scan runs only when the
-// commit read is that one; a fork that cannot show it (a reader that answers
-// with the live head, a commit not reachable) throws, so the scan stays
-// pending and is retried rather than clearing or recording anything for the
-// wrong head. The head's objects are read from the fork first and from the
-// baseline second (pairReader), and any object neither holds throws.
+// would be applied to the older one's record. The commit is read by its id,
+// and the scan runs only when the commit read is that one; a fork that
+// cannot show it (a reader that answers with the live head, a commit not
+// reachable) throws, so the scan stays pending and is retried rather than
+// clearing or recording anything for the wrong head. The head's objects are
+// read from the fork first and from the baseline second (pairReader), and
+// any object neither holds throws.
 export async function scanCommit(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, head: string, forkedFrom: string | null = null): Promise<PushScan & { head: string; base: string }> {
   using fork = await artifacts.get(workspaceRepo);
   using baseline = await artifacts.get(baselineRepo);

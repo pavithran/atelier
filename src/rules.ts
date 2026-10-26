@@ -110,13 +110,14 @@ export interface Block {
 // added, by which of the task's commits (`commit`, absent on a flag recorded
 // before the scan read each commit, t295), at which head, by whom and when,
 // with the fingerprint of the line (fingerprint in src/secret-scan.ts). The
-// matched value is never kept, so only these fields exist. A flag with `unscanned` names a path whose head
-// side the scan could not read as text, with `reason` saying why (binary
-// content, a submodule, an oversized blob, a diff over budget); it has no
-// line, so `line` is 0, and its fingerprint is the hash of the object at the
-// head, so a clearance holds while that object is unchanged. A flag with `cleared`
-// was matched by a clearance the owner recorded (SecretClearance): it is
-// kept as the record of what the scan found, and does not block.
+// matched value is never kept, so only these fields exist. A flag with
+// `unscanned` names a path whose head side the scan could not read as text,
+// with `reason` saying why (binary content, a submodule, an oversized blob, a
+// diff over budget); it has no line, so `line` is 0, and its fingerprint is
+// the hash of the object at the head, so a clearance holds while that object
+// is unchanged. A flag with `cleared` was matched by a clearance the owner
+// recorded (SecretClearance): it is kept as the record of what the scan
+// found, and does not block.
 export interface SecretFlag {
   file: string;
   line: number;
