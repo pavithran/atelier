@@ -25,7 +25,7 @@ export function taskPage(d: Detail) {
   const review = d.criteriaReview;
   if (review?.skipped) unknowns.push(`Criteria review skipped: ${review.skippedReason ?? "the project is in fast mode"}.`);
   if (review?.deadlock) unknowns.push(review.deadlock);
-  const decision = decisionFor(d.item, d.policy, d.evidence, d.reviews, d.ownerActor);
+  const decision = decisionFor(d.item, d.policy, d.evidence, d.reviews, d.ownerActor, d.mode?.mode === "fast");
   const stage = taskStage(d.item, { ready: d.gate.ready });
   let title = decision.title, detail = decision.detail;
   if (stage === "blocked") {
