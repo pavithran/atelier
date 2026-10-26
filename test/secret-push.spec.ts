@@ -19,7 +19,12 @@ const T0 = "a".repeat(40), T1 = "b".repeat(40), T2 = "c".repeat(40), T3 = "9".re
 const B0 = "d".repeat(40), B1 = "e".repeat(40), B2 = "f".repeat(40), B3 = "8".repeat(40);
 const H5 = "5".repeat(40), M1 = "6".repeat(40), H6 = "7".repeat(40), H7 = "56".repeat(20);
 const TM = "57".repeat(20), T6 = "65".repeat(20), T7 = "67".repeat(20), BM = "75".repeat(20);
+const H8 = "78".repeat(20), T8 = "89".repeat(20), TD = "9a".repeat(20), TA = "ab".repeat(20), BA = "bc".repeat(20);
 const FAKE_KEY = ["sk", "proj", "x".repeat(24)].join("-");
+const MAIN_LINE = `export const placeholder = "${FAKE_KEY}";`;
+const hex = async (text: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))), (b) => b.toString(16).padStart(2, "0")).join("");
+// The push scan's allowance list as H8 holds it: main.ts's line, added by H8.
+const ALLOW = JSON.stringify({ allowances: [{ commit: H8.slice(0, 12), file: "main.ts", sha256: await hex(MAIN_LINE), reason: "a fake key main holds" }] });
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
 
 type Commit = { hash: string; parents: string[]; treeHash: string };
@@ -33,7 +38,8 @@ type Opts = { byRef: () => boolean; shows: () => string; faults: Faults; main?: 
 // as H2 left it and no commit of it ever held the key. M1, on H0, is a main
 // commit adding main.ts with a key-shaped line main holds, H6 merges it into
 // H5 cleanly, and H7 merges it into H5 with a file holding the key that
-// neither side has. `main()` names main's head, H0 unless given. `byRef` says whether a read by commit id shows that commit; when
+// neither side has. H8 is H6 with docs/atelier/privacy-allow.json allowing
+// H8's main.ts line. `main()` names main's head, H0 unless given. `byRef` says whether a read by commit id shows that commit; when
 // false the fork answers every read with `shows()`, as a reader that can only
 // show its live head does. `faults.tree` fails a tree read; `faults.missing`
 // names objects neither repository holds, read as null.
@@ -48,6 +54,7 @@ function fakeArtifacts(name: string, branch: () => string, opts: Opts) {
     [M1]: { hash: M1, parents: [H0], treeHash: TM },
     [H6]: { hash: H6, parents: [H5, M1], treeHash: T6 },
     [H7]: { hash: H7, parents: [H5, M1], treeHash: T7 },
+    [H8]: { hash: H8, parents: [H5, M1], treeHash: T8 },
   };
   const trees: Record<string, Record<string, string>> = {
     [T0]: { "README.md": B0 },
@@ -57,13 +64,17 @@ function fakeArtifacts(name: string, branch: () => string, opts: Opts) {
     [TM]: { "README.md": B0, "main.ts": BM },
     [T6]: { "README.md": B0, "keys.ts": B2, "main.ts": BM },
     [T7]: { "README.md": B0, "keys.ts": B2, "main.ts": BM, "evil.ts": B1 },
+    [T8]: { "README.md": B0, "keys.ts": B2, "main.ts": BM, docs: TD },
+    [TD]: { atelier: TA },
+    [TA]: { "privacy-allow.json": BA },
   };
   const blobs: Record<string, string> = {
     [B0]: "# Keys\n",
     [B1]: `export const key = "${FAKE_KEY}";\n`,
     [B2]: "export const key = process.env.KEY ?? \"\";\n",
     [B3]: "import { key } from \"./keys.ts\";\nexport const ok = key.length > 0;\n",
-    [BM]: `export const placeholder = "${FAKE_KEY}";\n`,
+    [BM]: `${MAIN_LINE}\n`,
+    [BA]: `${ALLOW}\n`,
   };
   const missing = (h: string) => opts.faults.missing?.has(h) ?? false;
   const chain = (from: string) => {
@@ -84,7 +95,7 @@ function fakeArtifacts(name: string, branch: () => string, opts: Opts) {
       readTree: async (h: string) => {
         counts.tree++;
         if (opts.faults.tree?.()) throw Object.assign(new Error("repository service unavailable"), { code: "UNAVAILABLE" });
-        return trees[h] && !missing(h) ? Object.entries(trees[h]).map(([n, hash]) => ({ name: n, mode: "100644", hash, type: "blob" })) : null;
+        return trees[h] && !missing(h) ? Object.entries(trees[h]).map(([n, hash]) => (trees[hash] ? { name: n, mode: "40000", hash, type: "tree" } : { name: n, mode: "100644", hash, type: "blob" })) : null;
       },
       readBlob: async (h: string) => (blobs[h] !== undefined && !missing(h) ? new Blob([blobs[h]]) : null),
       [Symbol.dispose]() {},
@@ -391,23 +402,37 @@ it("a key one commit added and a later commit removed is flagged at the head, na
   expect((await detail(call, name)).gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
 });
 
-it("a merge of main is scanned for what it adds against both sides, so main's own lines are not the task's (t295)", async () => {
+it("a merge of main is scanned against each parent, as the push scan reads it, so a key main added is flagged in the merge (t295)", async () => {
   // Main has moved to M1, whose main.ts holds a key-shaped line. H6 merges
-  // M1 into H5 and adds nothing of its own: nothing is flagged.
-  const clean = "secret-merge-clean";
+  // M1 into H5: relative to H5 it adds main.ts, and the push to GitHub sends
+  // H6, so the privacy scan would refuse it and the gate flags it, naming H6.
+  const clean = "secret-merge-main";
   await setup(clean);
   const a = fakeArtifacts(clean, () => H6, { byRef: () => true, shows: () => H6, faults: {}, main: () => M1 });
   const callA = api({ ...testEnv, ARTIFACTS: a.binding } as typeof env);
   const merged = (await (await callA("POST", `/projects/${clean}/items/t1/push`, A, { head: H6 })).json()) as Item;
   expect(merged).toMatchObject({ head: H6 });
   expect(merged.secretScan).toBeUndefined();
-  expect(merged.secret).toBeUndefined();
+  expect(merged.secret).toEqual([expect.objectContaining({ file: "main.ts", line: 1, commit: H6, head: H6 })]);
   // H7 is the same merge with a file neither side holds, carrying the key:
-  // the merge itself added it, and the flag names the merge.
+  // both are flagged, each naming the merge.
   const evil = "secret-merge-evil";
   await setup(evil);
   const b = fakeArtifacts(evil, () => H7, { byRef: () => true, shows: () => H7, faults: {}, main: () => M1 });
   const callB = api({ ...testEnv, ARTIFACTS: b.binding } as typeof env);
   const flagged = (await (await callB("POST", `/projects/${evil}/items/t1/push`, A, { head: H7 })).json()) as Item;
-  expect(flagged.secret).toEqual([expect.objectContaining({ file: "evil.ts", line: 1, commit: H7, head: H7 })]);
+  expect(flagged.secret).toEqual([
+    expect.objectContaining({ file: "evil.ts", line: 1, commit: H7, head: H7 }),
+    expect.objectContaining({ file: "main.ts", line: 1, commit: H7, head: H7 }),
+  ]);
+  // H8 is H6 with an allowance for its main.ts line in the push scan's
+  // allowance list: the push scan would pass it, and the gate does too.
+  const allowed = "secret-merge-allowed";
+  await setup(allowed);
+  const c = fakeArtifacts(allowed, () => H8, { byRef: () => true, shows: () => H8, faults: {}, main: () => M1 });
+  const callC = api({ ...testEnv, ARTIFACTS: c.binding } as typeof env);
+  const passed = (await (await callC("POST", `/projects/${allowed}/items/t1/push`, A, { head: H8 })).json()) as Item;
+  expect(passed).toMatchObject({ head: H8 });
+  expect(passed.secretScan).toBeUndefined();
+  expect(passed.secret).toBeUndefined();
 });
