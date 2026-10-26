@@ -249,6 +249,13 @@ right now can still be watched live — `wrangler tail` from a checkout of this
 repository, or the dashboard's Logs → Live — but the tail shows only what
 arrives while it runs; read the stored logs first.
 
+When only the Worker's errors matter, the developer runs `atelier server-errors
+[--minutes N]` from a checkout of this repository. It tails the Worker
+(`wrangler tail --format json`) for N minutes, 2 by default, and prints one
+line for each event that logged an error or threw: its time, method, path and
+error text. It never prints a header, a query string or a body. It sees only
+what arrives while it runs, so it sits beside the dashboard, not in place of it.
+
 When the queue is slow, `GET /api/queue` (and a runner's POST of the same
 route) answers with a `server-timing` header — `index`, `projects`, `total`,
 in milliseconds — so a slow poll can be measured while it happens.
@@ -653,17 +660,17 @@ starts several of them at once and keeps the order.
   before. An approval is bound to the head and the criteria it read: a push,
   or a change of criteria, starts the count again, except where an
   approval is retained (next).
-- **Filling the reviews of a core change.** A core change in a project with
-  a tier needs a tier review and two independent reviews. A tier review by a
-  model that could also have counted as independent leaves one independent
-  slot open: the gate counts that approval as the tier review, not as an
-  independent one, so the landing waits for another independent approval
-  that never comes if no other model is asked. Ask a different top-tier
-  model for the tier review, so that both independent slots go to the
-  models you name with `--reviewer`. Finding, on 2026-10-25: t265 sat an
-  hour with approvals from astra and argon counted as one independent,
-  because astra's approval filled the tier slot; asking glm-5.3 for the tier
-  review let it land.
+- **Filling the reviews of a core change.** When the project's
+  `riskReviews` ask two or more independent reviews for a change, the gate
+  asks no separate tier review: two approvals from different families, none
+  a contributor's, clear it, and a tier model's approval counts as
+  independent when its family is not a contributor's. Name two reviewers of
+  different families with `--reviewer`; a tier model may be one of them.
+  A change that needs none or one independent review keeps the tier as
+  before: a separate tier review's approval is never the independent one.
+  Finding, on 2026-10-25: t265 sat an hour with approvals from astra and
+  argon counted as one independent, because astra's approval filled the tier
+  slot. PAVI decided that two independent families suffice.
 - **Retained approvals.** An approval may stand across a merge of main, and
   the server alone decides, when the push arrives (the review-retention
   rule, t56; [Landing](landing.md) has the conditions): the merge must be
@@ -1097,9 +1104,24 @@ A runner's build in fast mode claims with a fork, as every build does. The
 fork-less build (t589), which took a dispatched build with `atelier fast
 take` and reported its commit with `atelier fast ready`, was removed in
 t228: forks work since t772, and t18 and t181 handle a stuck one. Fast mode
-is a flag on the one path. Its gates are unchanged: the criteria review is
-skipped, the independent review is owed after the merge, and a merge on a
-clear gate lands.
+is a flag on the one path, and on that path fast mode lands now and reviews
+after (t300). The gate counts a task ready when its required checks pass at
+its head and no secret flag stands; the independent review is not required
+before the merge, so `atelier land` (and the lander that runs it for a
+queued task) asks none, and merges. A rejection already standing at the head
+still blocks, as does a failed check. The criteria review is skipped.
+
+Once the merge is recorded, `atelier land` asks the post-merge review, of
+`--reviewer` or the reviewer the server picks, and it is owed until a
+verdict stands. That reviewer may share the builder's family; the review
+records `same-family (fast mode)`. A rejection files a fix task. If the ask
+fails, the landing says the review is owed and the task stays merged; ask it
+with `atelier review-request tN --reviewer H/M`. A merge made in fast mode by
+`land`, the lander or `atelier merge` is listed by `atelier fast status` and
+by the switch back to full mode, as a landing with a receipt is, and the
+review it is owed may come from the builder's family when the server picks
+the reviewer too. Full mode is unchanged:
+the review comes before the merge.
 
 - The queue marks no build fast. The routes `POST items/tN/fast-take` and
   `fast-ready` remain only for a runner older than t228: each answers 409

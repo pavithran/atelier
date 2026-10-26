@@ -1733,6 +1733,23 @@ test("riskNeed: the files the checks run and the ship files are core beside the 
   assert.equal(riskNeed(["docs/a.md"], policy), null);
 });
 
+// t265 waited an hour: astra's approval, drawn by a tier request, filled the
+// tier slot and counted as no independent review.
+test("a change needing two reviews counts a tier model's approval as independent; one needing one keeps the tier apart (t277)", () => {
+  const core = pass({ changedPaths: ["src/rules.ts"] });
+  const base: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, claimed: true };
+  const tierApproval: Review = { ...base, by: "gemini/gemini-3", tier: true };
+  assert.deepEqual(gateApprovals(item(), riskPolicy, [core], [base, tierApproval]).map((r) => r.by), ["codex/gpt-5.5", "gemini/gemini-3"]);
+  assert.equal(gate(item(), riskPolicy, [core], [base, tierApproval]).ready, true);
+  // A contributor's own tier approval is still no independent review.
+  const contributor = { ...tierApproval, by: "claude-code/opus-5.5", claimed: true };
+  assert.equal(gateApprovals(item(), riskPolicy, [core], [base, contributor]).length, 1);
+  assert.equal(gate(item(), riskPolicy, [core], [base, contributor]).ready, false);
+  // One review needed: the tier approval stays apart.
+  const one: ProjectPolicy = { ...riskPolicy, riskReviews: { core: ATELIER_CORE, reviews: { "docs-or-tests": 0, other: 1, core: 1 } } };
+  assert.deepEqual(gateApprovals(item(), one, [core], [tierApproval]), []);
+});
+
 // This would have caught a docs-only edit inside a protected path asking for
 // the full cross-company review (t631's finding), and a core change landing on one.
 test("the gate counts the approvals a risk class needs; a project without riskReviews keeps today's rule", () => {
@@ -2047,11 +2064,11 @@ test("merge warns on eligibility and overlap changes without refusing unrelated 
 
 test("merge compares eligible agents, the overlap rule and checks with the acceptance, and refuses what the accepted item no longer satisfies", () => {
   const context = { contributors: ["codex/gpt-6-astra"], passed: ["npm test"], overlapping: ["t4 (claude-code/opus-5.5)"] };
-  // A contributor eligible at acceptance and not now.
+  // The eligible list is retired: a contributor absent from the stored list is not refused.
   let d = mergePolicyDecision({ ...before, eligible: ["codex"] }, { ...before, eligible: ["claude"] }, ["src/a.ts"], false, context);
   assert.match(d.warning, /eligible:/);
-  assert.match(d.refusal, /its contributors are no longer eligible here: codex\/gpt-6-astra \(eligible: claude\)\. Review the task again on its page and accept again/);
-  // An eligibility change that keeps every contributor: the warning alone.
+  assert.equal(d.refusal, null);
+  assert.equal(mergePolicyDecision({ ...before, eligible: ["claude"] }, { ...before, eligible: ["claude"] }, ["src/a.ts"], false, context).refusal, null);
   assert.equal(mergePolicyDecision({ ...before, eligible: [] }, { ...before, eligible: ["codex", "claude"] }, ["src/a.ts"], false, context).refusal, null);
   // A check required now that was not observed passing at the accepted revision.
   const lint = { ...before, checks: ["npm test", "npm run lint"] };
@@ -2070,7 +2087,7 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
   const after = { ...lint, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true };
   d = mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], false, context);
   assert.match(d.warning, /^Warning: the project's policy changed since acceptance: .+; the required checks changed since acceptance: checks: /);
-  assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; its contributors are no longer eligible here: [^;]+; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
+  assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
   assert.equal(mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], true, context).refusal, null);
 });
 
@@ -2191,4 +2208,39 @@ test("stageOf puts a standing fast_ready at built, with its head, machine and pa
   assert.equal(stageOf(claimed, { events: [...events, stageEv(3, "item.claimed")] }).stage, "building");
   // A later merge ends it.
   assert.equal(stageOf({ ...claimed, state: "merged" }, { events: [...events, stageEv(3, "item.merged")] }).stage, "landed");
+});
+
+test("fast mode: the gate is ready on passing checks without the independent review, and full mode still asks it (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  assert.deepEqual(gate(item(), policy, [touching], []).blockers, [PROTECTED_NEED]);
+  assert.deepEqual(gate(item(), policy, [touching], [], undefined, { fast: false }).blockers, [PROTECTED_NEED]);
+  const fast = gate(item(), policy, [touching], [], undefined, { fast: true });
+  assert.equal(fast.ready, true);
+  assert.equal(fast.needsAssessor, false);
+});
+
+test("fast mode keeps every other blocker: a failed check, a secret flag and a standing rejection (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  assert.match(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"], passed: false })], [], undefined, { fast: true }).blockers.join(), /failed when observed/);
+  assert.equal(gate({ ...item(), secret: [{ file: "a.txt", line: 1, head: H1 }] } as Item, policy, [touching], [], undefined, { fast: true }).ready, false);
+  const rejection: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: false, note: "broken", at: T };
+  assert.equal(gate(item(), policy, [touching], [rejection], undefined, { fast: true }).ready, false);
+});
+
+test("fast mode: a task is landable on its checks alone, and full mode keeps it reviewed-less (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const facts = { policy, evidence: [touching], reviews: [] as Review[] };
+  assert.notEqual(stageOf(item(), facts).stage, "landable");
+  assert.equal(stageOf(item(), { ...facts, fast: true }).stage, "landable");
+});
+
+test("a post-merge review of a task merged in fast mode may share the builder's family (t300)", () => {
+  assert.equal(postMergeIndependence("claude-code/opus-5.5", ["claude-code/sonnet-5.5"], null, true).independence, SAME_FAMILY_FAST);
+  assert.ok(postMergeIndependence("claude-code/opus-5.5", ["claude-code/sonnet-5.5"], null, false).refusal);
+});
+
+test("the decision on a task page reads the project's mode: fast mode is ready on the checks, full mode waits for the review (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  assert.equal(decisionFor(item(), policy, [touching], [], undefined, true).action, "accept");
+  assert.equal(decisionFor(item(), policy, [touching], []).action, "review");
 });

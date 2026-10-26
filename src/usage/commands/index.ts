@@ -27,6 +27,7 @@ import command_diff from "./diff.ts";
 import command_dispatch from "./dispatch.ts";
 import command_done from "./done.ts";
 import command_edit from "./edit.ts";
+import command_events from "./events.ts";
 import command_fast from "./fast.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
@@ -77,6 +78,7 @@ import command_review_withdraw from "./review-withdraw.ts";
 import command_run_report from "./run-report.ts";
 import command_runner from "./runner.ts";
 import command_served from "./served.ts";
+import command_server_errors from "./server-errors.ts";
 import command_ship from "./ship.ts";
 import command_show from "./show.ts";
 import command_slots from "./slots.ts";
@@ -121,6 +123,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/dispatch.ts", spec: command_dispatch },
   { path: "src/usage/commands/done.ts", spec: command_done },
   { path: "src/usage/commands/edit.ts", spec: command_edit },
+  { path: "src/usage/commands/events.ts", spec: command_events },
   { path: "src/usage/commands/fast.ts", spec: command_fast },
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
@@ -171,6 +174,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/run-report.ts", spec: command_run_report },
   { path: "src/usage/commands/runner.ts", spec: command_runner },
   { path: "src/usage/commands/served.ts", spec: command_served },
+  { path: "src/usage/commands/server-errors.ts", spec: command_server_errors },
   { path: "src/usage/commands/ship.ts", spec: command_ship },
   { path: "src/usage/commands/show.ts", spec: command_show },
   { path: "src/usage/commands/slots.ts", spec: command_slots },

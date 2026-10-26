@@ -29,7 +29,7 @@ import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { assertEligible, DEFAULT_OWNER, independentReviewerText, modelKey, parseRuleError, sameActor, singleFamily, type Item, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, DEFAULT_OWNER, independentReviewerText, modelKey, postMergeIndependence, parseRuleError, sameActor, singleFamily, type Item, type ProjectPolicy } from "../rules.ts";
 import { actorFamily, contributorsOf, describeContributors, familyRefusal } from "./independence.ts";
 
 export interface PickInput {
@@ -67,6 +67,9 @@ export interface PickInput {
   // unless the ledger says otherwise. The offer is judged there, not on any
   // runner (gpt-6-astra's second review of t622, finding 2).
   destination?: (entry: ModelEntry) => "home" | "cloud";
+  // The review is the post-merge review of a task merged in fast mode (t300),
+  // which a model of a contributor's family may give; the same model never.
+  sameFamilyOk?: boolean;
 }
 
 // The invariant: unpicked is null exactly when reviewer is set.
@@ -232,8 +235,9 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   if (contributors.some((c) => names.some((name) => sameActor(name, c)))) failed.push("contributed to this item, and nobody reviews their own work");
   else {
     const single = singleFamily(policy);
-    const family = familyRefusal(actor, contributors, single);
-    if (family) failed.push(family);
+    const family = postMergeIndependence(actor, contributors, single, input.sameFamilyOk === true);
+    if (family.refusal) failed.push(family.refusal);
+    else if (family.independence) passed.push(`${family.independence}: a task merged in fast mode takes a review from a contributor's family`);
     else if (single) passed.push(`A different ${single} model from every contributor, as single-family mode asks: ${describeContributors(contributors)}`);
     else passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
   }

@@ -33,7 +33,7 @@ import {
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
-  forkPreparationView, type ForkPreparation, type ForkPreparationView,
+  forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -75,6 +75,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
+import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
@@ -883,6 +884,25 @@ export class Ledger extends DurableObject<Env> {
     // The showcase counts the whole record by kind (showcaseCounts, t578),
     // reading this index rather than every row.
     this.sql.exec(`CREATE INDEX IF NOT EXISTS events_kind ON events (kind, actor, item_id)`);
+    // items() folds only the events recorded since its last read (itemActors).
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS events_kind_seq ON events (kind, seq)`);
+    // The head a review judged, as a column, so items() reads the reviews at
+    // each item's current head and no others.
+    if (!this.sql.exec(`PRAGMA table_info(reviews)`).toArray().some((c) => c.name === "head")) {
+      this.sql.exec(`ALTER TABLE reviews ADD COLUMN head TEXT`);
+      this.sql.exec(`UPDATE reviews SET head = json_extract(json, '$.head')`);
+    }
+    // Whether it approved, as a column too, so a read for rejections never
+    // loads an approval's JSON.
+    if (!this.sql.exec(`PRAGMA table_info(reviews)`).toArray().some((c) => c.name === "approve")) {
+      this.sql.exec(`ALTER TABLE reviews ADD COLUMN approve INTEGER`);
+      this.sql.exec(`UPDATE reviews SET approve = CASE WHEN json_extract(json, '$.approve') THEN 1 ELSE 0 END`);
+    }
+    this.sql.exec(`DROP INDEX IF EXISTS reviews_item_head`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS reviews_item_head_approve ON reviews (item_id, head, approve)`);
+    // Each item's holders and push actors, folded from its events up to the
+    // sequence in meta 'item-actors-seq' (itemActors).
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS item_actors (item_id TEXT PRIMARY KEY, actors TEXT NOT NULL, holder TEXT)`);
     // The refresh queue (t462): one target per task, and each settled
     // refresh under its key (src/refresh/queue.ts).
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_targets (item TEXT PRIMARY KEY, json TEXT NOT NULL)`);
@@ -1949,7 +1969,7 @@ export class Ledger extends DurableObject<Env> {
             const ready = standingFastReady(events);
             const criteria = this.sql.exec(`SELECT COUNT(*) AS n, MAX(decidedAt) AS at FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, item.id).one();
             const agreed = (criteria.n as number) > 0 && (item.accept?.length ?? 0) > 0;
-            const { stage, detail } = stageOf(item, { events, ready, agreed, policy, evidence, reviews, owner: this.owner });
+            const { stage, detail } = stageOf(item, { events, ready, agreed, policy, evidence, reviews, owner: this.owner, fast: this.mode().mode === "fast" });
             const clock = {
               agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
               reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
@@ -2593,7 +2613,7 @@ export class Ledger extends DurableObject<Env> {
       const g = record ? planGate({
         plan: current, parts: this.integrationViews(parts), integrationHead: record.integrationHead ?? null,
         policy, evidence, reviews: [...reviews, ...parts.flatMap((p) => this.reviewsFor(p.id))], owner: this.owner,
-      }) : gate(current, policy, evidence, reviews, this.owner);
+      }) : gate(current, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" });
       const siblings = item.kind === "part" && item.plan ? this.integrationViews(this.planParts(item.plan)) : [];
       const part = siblings.find((p) => p.id === item.id);
       fact.ready = g.ready && (!part || integrationBlockers(part, siblings, reviews, policy, this.owner).length === 0);
@@ -2816,17 +2836,79 @@ export class Ledger extends DurableObject<Env> {
     return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
   }
 
+  // The scopeGap of a live item's detail, as items() sets it on each item.
+  private scopeGapOf(item: Item, reviews: Review[]): { scopeGap?: string } {
+    const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, reviews);
+    return gap ? { scopeGap: scopeGapText(item, gap) } : {};
+  }
+
+  // Folds events of one item onto its row in item_actors. pushActors is a
+  // fold over events, so a stored state resumes it as a replay of its actors
+  // in order, then the holder (or a release).
+  private foldActors(id: string, events: Parameters<typeof pushActors>[0]): void {
+    const stored = this.sql.exec(`SELECT actors, holder FROM item_actors WHERE item_id = ?`, id).toArray()[0];
+    const was = stored ? { actors: JSON.parse(stored.actors as string) as string[], holder: stored.holder as string | null } : { actors: [], holder: null };
+    const replay = [
+      ...was.actors.map((actor) => ({ actor, kind: "item.claimed", data: {} })),
+      was.holder ? { actor: was.holder, kind: "item.claimed", data: {} } : { actor: "", kind: "item.released", data: {} },
+    ];
+    // The holder after the events: the last claim or handoff target, or none.
+    let holder = was.holder;
+    for (const e of events) {
+      if (e.kind === "item.claimed") holder = e.actor;
+      if (e.kind === "item.handoff") holder = typeof e.data.to === "string" ? e.data.to : null;
+      if (e.kind === "item.released") holder = null;
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO item_actors (item_id, actors, holder) VALUES (?, ?, ?)`, id, JSON.stringify(pushActors([...replay, ...events])), holder);
+  }
+
+  // Every item's holders and push actors. log() folds each event onto
+  // item_actors as it is written and moves the mark 'item-actors-seq' with
+  // it, so a read finds the log folded. Events that reached the log by another
+  // route are folded here, from the mark, a batch at a time, so no read holds
+  // the whole of any history.
+  private itemActors(): Map<string, string[]> {
+    const mark = Number(this.runnerMeta<number>("item-actors-seq") ?? 0);
+    const kinds = ACTOR_EVENT_SQL;
+    let seq = mark;
+    for (;;) {
+      const rows = this.sql.exec(`SELECT seq, item_id, actor, kind, data FROM events WHERE kind IN ${kinds} AND seq > ? ORDER BY seq LIMIT 500`, seq).toArray();
+      if (!rows.length) break;
+      const fresh = new Map<string, Parameters<typeof pushActors>[0]>();
+      for (const row of rows) {
+        const id = row.item_id as string | null;
+        seq = row.seq as number;
+        if (id === null) continue;
+        const list = fresh.get(id) ?? [];
+        list.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
+        fresh.set(id, list);
+      }
+      for (const [id, events] of fresh) this.foldActors(id, events);
+    }
+    if (seq !== mark) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('item-actors-seq', ?)`, JSON.stringify(seq));
+    const out = new Map<string, string[]>();
+    for (const row of this.sql.exec(`SELECT item_id, actors FROM item_actors`).toArray()) out.set(row.item_id as string, JSON.parse(row.actors as string));
+    return out;
+  }
+
   items(): Item[] {
-    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`).toArray();
-    const histories = new Map<string, Parameters<typeof pushActors>[0]>();
-    for (const row of events) {
-      const id = row.item_id as string;
-      const history = histories.get(id) ?? [];
-      history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
-      histories.set(id, history);
+    const actors = this.itemActors();
+    // A blocking finding on a file a live item's scope lacks (t270) rides on
+    // the item as scopeGap, so a list of items (status) can say so. Only the
+    // rejections at each item's current head can make one, and only those
+    // are read.
+    const rejections = new Map<string, Review[]>();
+    for (const row of this.sql.exec(`SELECT r.item_id, r.json FROM items i CROSS JOIN reviews r ON r.item_id = i.id AND r.head = i.head AND r.approve = 0 WHERE i.state NOT IN ('merged', 'abandoned') ORDER BY r.id`).toArray()) {
+      const r = JSON.parse(row.json as string) as Review;
+      if (!r.findings?.length) continue;
+      rejections.set(row.item_id as string, [...(rejections.get(row.item_id as string) ?? []), r]);
     }
     return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray()
-      .map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
+      .map((row) => {
+        const item = toItem(row);
+        const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
+        return { ...item, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+      });
   }
 
   private runnerMeta<T>(key: string): T | null {
@@ -3824,7 +3906,7 @@ export class Ledger extends DurableObject<Env> {
           paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why,
         },
       };
-      this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, item.id, JSON.stringify(carried));
+      this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?)`, item.id, JSON.stringify(carried), carried.head ?? null, carried.approve ? 1 : 0);
       this.log(item.id, ORCHESTRATOR, "review.retained", { by: r.by, from: r.head, head: newHead, source: r.at, main: facts.main, base: facts.base, taskPaths: cap(facts.task), incomingPaths: cap(facts.incoming), exempt: cap(facts.outputs), paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why }, at);
     }
     return { kept: approvals.length, why: verdict.why };
@@ -3981,7 +4063,7 @@ export class Ledger extends DurableObject<Env> {
     if (foreign) throw new RuleError("single_family", `${foreign}: its review is not recorded; return to cross-family review with atelier init --cross-family`, 409);
     const item = this.reviewItem(r.itemId);
     if (admission?.active) {
-      const refusal = familyRefusal(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy));
+      const { refusal } = postMergeIndependence(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy), item.state === "merged" && this.mergedFast(item.id));
       if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403);
     }
     if (item.state === "merged" && r.request === undefined) {
@@ -4040,10 +4122,10 @@ export class Ledger extends DurableObject<Env> {
     // A review answering a gate's request asked of a tier model gives the
     // tier review too (gateServesTier): the gate's review, top tier.
     const topTier = !tierClaim && boundClaims.some((c) => c.tier !== 1 && c.topTier === 1);
-    const fastReceiptOf = item.state === "merged" ? this.landedFastReceipt(item.id) : null;
+    const fastReceiptOf = item.state === "merged" && this.mergedFast(item.id);
     const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
     r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
-    this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
+    this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?)`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0);
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, role: this.reviewRoleOf(item), ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
@@ -4436,7 +4518,7 @@ export class Ledger extends DurableObject<Env> {
           reviews: [...reviews, ...this.planParts(id).flatMap((p) => this.reviewsFor(p.id))],
           owner: this.owner,
         })
-      : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
+      : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" });
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     // Last, once the override would otherwise go through, the owner's
     // confirmation: a forbidden override, a missing reason, nothing to
@@ -4500,7 +4582,7 @@ export class Ledger extends DurableObject<Env> {
     if (expected !== undefined) assertRevision(item, expected);
     if (criteria !== undefined) assertShownCriteria(item, criteria);
     if (item.state !== "submitted" || !item.head) throw new RuleError("not_submitted", `${id} is ${item.state}; an override is allowed only on a submitted revision`, 409);
-    const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
+    const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner, { fast: this.mode().mode === "fast" });
     if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`);
     const now = Date.now(), at = new Date(now).toISOString();
     const confirmation: OverrideConfirmation = { head: item.head, by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
@@ -5572,7 +5654,10 @@ export class Ledger extends DurableObject<Env> {
     if (!post) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
-    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
+    // A merge in fast mode (t300) lands on the checks alone; the independent
+    // review is owed after it, and `fast` marks the event so that review may
+    // be same-family and a rejection files a fix task (mergedFast).
+    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed, ...(this.mode().mode === "fast" ? { fast: true } : {}) }, at);
     // Main is at the merge now, so the record is made for the plans in
     // flight to compare at their next tick. A plan's own merge closes it
     // first, and nothing refreshes a closed plan, so it never takes its own
@@ -5876,12 +5961,27 @@ export class Ledger extends DurableObject<Env> {
   // with its receipt and the state of its post-merge review.
   fastLandings(since: string | null = null): FastLanding[] {
     this.project();
-    const rows = this.sql.exec(`SELECT item_id, data, at FROM events WHERE kind = 'item.landed_fast' ORDER BY seq`).toArray();
-    return rows.filter((r) => since === null || (r.at as string) >= since).map((r) => {
-      const receipt = JSON.parse(r.data as string) as FastReceipt;
-      const id = r.item_id as string;
-      const req = this.sql.exec(`SELECT id, state FROM review_requests WHERE item = ? AND head = ? ORDER BY id DESC LIMIT 1`, id, receipt.mergeCommit).toArray()[0];
-      const review = this.reviewsFor(id).filter((v) => v.head === receipt.mergeCommit).at(-1);
+    const all = this.sql.exec(`SELECT item_id, kind, actor, data, at FROM events WHERE kind IN ('item.landed_fast', 'item.merged') ORDER BY seq`).toArray();
+    const receipted = new Set(all.filter((r) => r.kind === "item.landed_fast").map((r) => `${r.item_id}@${(JSON.parse(r.data as string) as FastReceipt).mergeCommit}`));
+    // A merge made in fast mode through land, the lander or merge (t300) has
+    // no receipt, only the fast mark on its merge event; the receipt shown
+    // for it says what the event records. A landedFast merge is counted once,
+    // by its receipt.
+    const rows = all.flatMap((r): { item_id: string; at: string; receipt: FastReceipt }[] => {
+      if (r.kind === "item.landed_fast") return [{ item_id: r.item_id as string, at: r.at as string, receipt: JSON.parse(r.data as string) as FastReceipt }];
+      const data = JSON.parse(r.data as string) as { mergeCommit?: string; head?: string | null; fast?: boolean };
+      if (data.fast !== true || typeof data.mergeCommit !== "string" || receipted.has(`${r.item_id}@${data.mergeCommit}`)) return [];
+      const item = this.item(r.item_id as string);
+      const head = data.head ?? item.head ?? data.mergeCommit;
+      const mode = this.mode();
+      const receipt: FastReceipt = { commit: head, mergeCommit: data.mergeCommit, testedHead: head, batch: "", builder: contributorsOf(item)[0] ?? (r.actor as string), tests: { command: "required checks at the head", sha256: "" }, reason: mode.mode === "fast" ? mode.reason : "merged in fast mode", at: r.at as string, by: r.actor as string };
+      return [{ item_id: r.item_id as string, at: r.at as string, receipt }];
+    });
+    return rows.filter((r) => since === null || r.at >= since).map((r) => {
+      const receipt = r.receipt;
+      const id = r.item_id;
+      const req = this.sql.exec(`SELECT id, state FROM review_requests WHERE item = ? AND head IN (?, ?) ORDER BY id DESC LIMIT 1`, id, receipt.commit, receipt.mergeCommit).toArray()[0];
+      const review = this.reviewsFor(id).filter((v) => v.head === receipt.mergeCommit || v.head === receipt.commit).at(-1);
       const fix = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.fix_of' AND json_extract(data, '$.itemId') = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const reviewState = review ? (review.approve ? "approved" : "rejected") : req ? (req.state as string) : "not requested";
       return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, owed: postMergeOwed(reviewState), fix: fix ? fix.item_id as string : null };
@@ -6046,6 +6146,13 @@ export class Ledger extends DurableObject<Env> {
   // first. A long record never drops the review a verdict names.
   judgementEvents(id: string): LedgerEvent[] {
     return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected', 'review.finding', ?) ORDER BY seq`, id, SERVED).toArray().map(eventOf);
+  }
+
+  // Whether the task merged in fast mode: by a receipt (landedFast) or by a
+  // merge made while the project was in fast mode (t300). Either way its
+  // review is post-merge and may come from the builder's family.
+  mergedFast(id: string): boolean {
+    return this.events(id, Number.MAX_SAFE_INTEGER).some((x) => x.kind === "item.merged" && x.data.fast === true);
   }
 
   landedFastReceipt(id: string): FastReceipt | null {
@@ -6277,7 +6384,7 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
-    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
+    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -6325,7 +6432,7 @@ export class Ledger extends DurableObject<Env> {
     // override, not the placeholder alone (t395), or null when none in the pool
     // qualifies, which attentionFor places under the owner's override. With no
     // pool given the reviewer is left unset: not read, never "none qualifies".
-    return [...inboxFor(p.name, items, p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p, items), ...this.prereviewEntries(p.name), ...this.gaveUpEntries(p.name, items)]
+    return [...inboxFor(p.name, items, p.policy, all, rv, new Date(now), this.owner, this.mode().mode === "fast"), ...this.planEntries(p.name, now), ...this.shipEntries(p, items), ...this.prereviewEntries(p.name), ...this.gaveUpEntries(p.name, items)]
       .map((e) => (e.kind === "assess" && pool ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
@@ -6517,7 +6624,11 @@ export class Ledger extends DurableObject<Env> {
       // The project's prose standard (t675), which the runner's own brief
       // cannot know: the server holds the policy.
       const prose = proseStandardLine(this.project().policy.proseStandard);
-      const text = [...sections.map((f) => findingsSection(f)), criteria, prose].filter(Boolean).join("\n\n");
+      // A blocking finding on a file the scope lacks cannot be fixed from this
+      // workspace (t270); the brief says so and names the edit that adds it.
+      const gap = reviewScopeGap(item, this.reviewsFor(id));
+      const scopeNote = gap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, gap)}` : "";
+      const text = [...sections.map((f) => findingsSection(f)), scopeNote, criteria, prose].filter(Boolean).join("\n\n");
       // Past findings on the files in scope (t14), beside the text: the
       // runner alone can tell which of those files exist at the commit its
       // build starts from, so it filters and renders them. A field an older
@@ -6561,6 +6672,12 @@ export class Ledger extends DurableObject<Env> {
     const failed = this.evidenceFor(id).filter((e) => e.grade === "observed" && e.passed === false).at(-1) ?? null;
     const rejection = this.reviewsFor(id).filter((r) => !r.approve).at(-1) ?? null;
     const added = addedPart(record, item.partKey);
+    // A blocker on a file the part's scope lacks (t270) rides with the criteria
+    // section, which the brief carries whole, since src/plans/brief.ts has no
+    // field of its own for it.
+    const partGap = reviewScopeGap(item, this.reviewsFor(id));
+    const partScopeNote = partGap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, partGap)}` : "";
+    const partCriteria = [this.criteriaBriefSection(id), partScopeNote].filter(Boolean).join("\n\n");
     return {
       job,
       ...await buildBrief({
@@ -6577,7 +6694,7 @@ export class Ledger extends DurableObject<Env> {
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "", log: failed.log ?? null } : null,
         mergeMain: added ? { head: added.mainHead } : null,
         mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
-        criteriaReview: this.criteriaBriefSection(id) || null,
+        criteriaReview: partCriteria || null,
         proseStandard: project.policy.proseStandard ?? null,
       }),
       proseStandard: project.policy.proseStandard ?? null,
@@ -7605,7 +7722,7 @@ export class Ledger extends DurableObject<Env> {
     if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
     if (admission?.active) {
       actor = admissionActor(actor, admission);
-      const refusal = familyRefusal(admissionActor(actor, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(this.project().policy));
+      const { refusal } = postMergeIndependence(admissionActor(actor, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(this.project().policy), item.state === "merged" && this.mergedFast(itemId));
       if (refusal) throw new RuleError("not_independent", `${actor}: ${refusal}`, 403);
     }
     // A request at a head the item has left is closed before anything else,
@@ -7814,7 +7931,7 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     // A named reviewer is judged even when a request already stands, so a
     // retry with a different name never silently keeps the wrong reviewer.
-    if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
+    if (wanted && reviewer === null && !(item.state === "merged" && this.mergedFast(id))) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
       if (contributed(reviewer, contributorsOf(item))) {
@@ -7824,7 +7941,7 @@ export class Ledger extends DurableObject<Env> {
       // model of the builder's family (t585); any other recorded merge is
       // audited by another family, as the gate would have asked.
       if (item.state === "merged") {
-        const family = postMergeIndependence(reviewer, contributorsOf(item), singleFamily(policy), !!this.landedFastReceipt(id));
+        const family = postMergeIndependence(reviewer, contributorsOf(item), singleFamily(policy), this.mergedFast(id));
         if (family.refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${id} after its merge: ${family.refusal}; only a task landed in fast mode takes a same-family review`, 409);
       }
       this.assertStanding(reviewer, "review", pool);
@@ -7846,7 +7963,7 @@ export class Ledger extends DurableObject<Env> {
         const entry = pool.find((m) => m.id === admission.id);
         if (!entry) throw new RuleError("no_model", `${admission.id} is no longer registered; use atelier models add`, 409);
         reviewer = `${entry.harness}/${entry.id}`;
-        const refusal = familyRefusal(reviewer, contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy));
+        const { refusal } = postMergeIndependence(reviewer, contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy), item.state === "merged" && this.mergedFast(id));
         if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403);
         const dispatch = { ...this.standingDispatch({ to: entry.where, agent: entry.harness, model: entry.id }, "review", ORCHESTRATOR, new Date().toISOString(), pool), job: "review" as const };
         if (!hand && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
@@ -7948,7 +8065,7 @@ export class Ledger extends DurableObject<Env> {
     } else if (records) {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
-      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
+      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, sameFamilyOk: item.state === "merged" && this.mergedFast(id), pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
         previous: need.previousReviewer, counted: need.counted, tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined, assigned: this.reviewAssigned(item, null, need.changedPaths), offers, destination },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
@@ -7956,6 +8073,7 @@ export class Ledger extends DurableObject<Env> {
     } else {
       const pick = pickReviewer({
         item, pool, policy, allowPaid: false,
+        sameFamilyOk: item.state === "merged" && this.mergedFast(id),
         previous: need.previousReviewer,
         // A protected change's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
@@ -8038,6 +8156,9 @@ export class Ledger extends DurableObject<Env> {
   private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers: readonly SeenOffer[] | undefined = this.heldOffers()): void {
     const policy = this.project().policy;
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
+    // A change that needs two or more independent reviews asks no separate
+    // tier review; the independent reviews are the second opinion (t277).
+    if ((riskNeed(need.changedPaths, policy)?.reviews ?? 0) >= 2) return;
     if (this.gateIsTier(item, need, gateReviewer, pool)) return;
     // A request or review for criteria the item no longer has does not count:
     // the tier is asked again for the new ones. A request superseded by a
@@ -9779,13 +9900,26 @@ export class Ledger extends DurableObject<Env> {
     // only an unmarked one, from before, through the aliases (canonicalModel;
     // gpt-6-astra's ninth review of t622, finding 3).
     if (typeof data.acting === "string" && (ACTING_EVENTS as readonly string[]).includes(kind)) data = { ...data, actingExact: true };
-    this.sql.exec(
-      `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?)`,
+    const seq = Number(this.sql.exec(
+      `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq`,
       itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null,
-    );
+    ).one().seq);
+    if (itemId !== null && ACTOR_EVENT_KINDS.includes(kind)) {
+      const mark = Number(this.runnerMeta<number>("item-actors-seq") ?? 0);
+      // Only a log folded up to this event is moved on; one with events
+      // behind it is left for the catch-up in itemActors.
+      if (!this.sql.exec(`SELECT 1 FROM events WHERE kind IN ${ACTOR_EVENT_SQL} AND seq > ? AND seq < ? LIMIT 1`, mark, seq).toArray().length) {
+        this.foldActors(itemId, [{ actor, kind, data }]);
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('item-actors-seq', ?)`, JSON.stringify(seq));
+      }
+    }
     if (kind.startsWith("item.") || kind.startsWith("plan.") || kind === "project.set") this.dispatchWaiting();
   }
 }
+
+// The events that change an item's holder or push actors (itemActors).
+const ACTOR_EVENT_KINDS: readonly string[] = ["item.claimed", "item.handoff", "item.released", "push.observed", "item.refreshed", "item.landed_fast"];
+const ACTOR_EVENT_SQL = `(${ACTOR_EVENT_KINDS.map((k) => `'${k}'`).join(", ")})`;
 
 // Every Ledger call, RPC, alarm or internal, counts itself in flight, so a
 // restart after a deploy fires between requests (t586).
