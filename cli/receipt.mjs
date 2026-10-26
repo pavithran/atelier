@@ -64,6 +64,11 @@ export function receiptJson(project, id, detail) {
   return { project, id, title: flat(detail.item.title), state: detail.item.state, events: receiptEvents(detail) };
 }
 
+// The developer's words an event carries, and the model that relayed them.
+function directionWords(d) {
+  return typeof d.quote === "string" && d.quote ? `; on the developer's words: \u201c${flat(d.quote)}\u201d, relayed by ${flat(d.acting ?? "an unnamed model")}` : "";
+}
+
 // One line for each event of the story, or null for an event the receipt
 // does not tell (the plumbing named above). A review answers with more lines:
 // each finding of its own, and under a finding the owner's verdict on it.
@@ -176,12 +181,18 @@ function linesFor(e, verdicts, used, owner, events) {
       const review = reviewed ? "it skipped the gate; its post-merge review is recorded" : requested ? "it skipped the gate; a post-merge review was requested and is not recorded yet" : "it skipped the gate, and no post-merge review was requested";
       return [`merged in fast mode by ${flat(e.actor)}: ${short(d.head)} merged as ${short(d.mergeCommit)}, ${d.observedOnBaseline === true ? "on the baseline" : "no baseline observation recorded"}; ${review}`];
     }
+    // Block, unblock, abandon and clear-secret on the developer's direction
+    // (t178) say the words and the model that relayed them.
     case "item.abandoned":
-      return [`abandoned by ${flat(e.actor)}${d.note ? `: ${flat(d.note)}` : ""}${d.deliveredBy ? `; delivered by ${flat(d.deliveredBy)}` : ""}`];
+      return [`abandoned by ${flat(e.actor)}${d.note ? `: ${flat(d.note)}` : ""}${d.deliveredBy ? `; delivered by ${flat(d.deliveredBy)}` : ""}${directionWords(d)}`];
     case "item.blocked":
-      return [`blocked by ${flat(e.actor)}: ${flat(d.reason)}`];
+      return [`blocked by ${flat(e.actor)}: ${flat(d.reason)}${directionWords(d)}`];
     case "item.unblocked":
-      return [`unblocked by ${flat(e.actor)}, back to ${flat(d.to)}`];
+      return [`unblocked by ${flat(e.actor)}, back to ${flat(d.to)}${directionWords(d)}`];
+    case "prereview.retried":
+      return !d.quote ? null : [`pre-review fence lifted by ${flat(e.actor)} (request ${flat(d.request)} at ${short(d.head)})${directionWords(d)}`];
+    case "secret.cleared":
+      return !d.quote ? null : [`secret flags cleared by ${flat(e.actor)}: ${flat(d.reason)}${directionWords(d)}`];
     case "item.defect":
       return [`defect recorded by ${flat(e.actor)} at ${short(d.head)}: ${flat(d.note)}${d.foundIn ? ` (found in ${flat(d.foundIn)})` : ""}${d.contradicts && typeof d.contradicts.event === "number" ? `; contradicts the ${flat(d.contradicts.verdict ?? "")} verdict, event ${d.contradicts.event}, on finding ${flat(d.contradicts.finding)}` : ""}`];
     default:

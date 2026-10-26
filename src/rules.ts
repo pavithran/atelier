@@ -98,6 +98,10 @@ export interface Block {
   // block and nothing else: the task stays blocked until it is unblocked or
   // abandoned. Absent on a block recorded without one.
   until?: string;
+  // The developer's words and the model that relayed them, when the block
+  // was recorded on the developer's direction (t178).
+  quote?: string;
+  acting?: string;
 }
 
 // One entry of the secret flag the push scan records: where a key pattern was
@@ -134,6 +138,10 @@ export interface SecretClearance {
   head: string | null;
   by: string;
   at: string;
+  // The developer's words and the model that relayed them, when the
+  // clearance was recorded on the developer's direction (t178).
+  quote?: string;
+  acting?: string;
 }
 
 // What `atelier new` and `atelier edit` set. A field present replaces the
@@ -2241,7 +2249,7 @@ export function inboxFor(
     // with the decisions, below a missing review and above a scope change.
     if (item.state === "blocked") {
       const b = item.blocked;
-      out.push({ ...base, kind: "blocked", reason: `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}; run \`atelier unblock ${item.id}\` when it can go on`, weight: 70 });
+      out.push({ ...base, kind: "blocked", reason: `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}${b?.quote ? `, ${directionText(b)}` : ""}; run \`atelier unblock ${item.id}\` when it can go on`, weight: 70 });
       continue;
     }
     if (item.state === "submitted" && !part) {
@@ -2496,7 +2504,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
   if (item.state === "blocked") {
     const b = item.blocked;
-    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its holder and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
+    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")}${b?.quote ? ` On ${directionText(b)}.` : ""} It keeps its holder and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
   }
   if (item.state === "accepted") {
     const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner, { fast }).overridden;
