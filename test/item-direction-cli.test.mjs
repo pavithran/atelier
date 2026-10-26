@@ -103,12 +103,14 @@ for (const form of FORMS) {
   });
 }
 
-test("a model's call without --quote reaches the server with its acting header, which stops it", async (t) => {
+test("a model's call without --quote reaches the server as the model's own actor, with its acting header on abandon and clear-secret, which stops it", async (t) => {
   const f = await fixture(t);
-  for (const form of FORMS.filter((x) => x.verb === "abandon" || x.verb === "clear-secret")) {
+  for (const form of FORMS) {
     const r = await f.run(form.argv, { ATELIER_ACTOR: OPUS });
     assert.equal(r.status, 0, r.stderr);
   }
-  assert.deepEqual(f.posts().map((p) => p.acting), [OPUS, OPUS]);
+  // Block and unblock name the model as the actor; the server stops a
+  // developer-token call under any actor but the developer's.
+  assert.deepEqual(f.posts().map((p) => [p.actor, p.acting]), [[OPUS, undefined], [OPUS, undefined], ["owner", OPUS], ["owner", OPUS]]);
   assert.ok(f.posts().every((p) => p.body.quote === undefined));
 });

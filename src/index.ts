@@ -588,7 +588,11 @@ function itemDirection(c: Ctx, verb: "block" | "unblock" | "abandon" | "clear-se
     return ownerDirection(body.quote, c.acting ?? null, verb);
   }
   if (c.token) return null;
-  if (!c.acting) return null;
+  // Block and unblock go out under the caller's own actor when no words are
+  // sent, so a session naming a model's actor on the developer token has no
+  // acting header; it is stopped like one that has.
+  const named = (verb === "block" || verb === "unblock") && c.actor !== ownerActor(env);
+  if (!c.acting && !named) return null;
   const text = (v: unknown) => JSON.stringify(String(v));
   const command = [
     "atelier", verb, id,

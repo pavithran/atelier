@@ -12,5 +12,5 @@ export default async function unblockCommand() {
   const who = await actor(OWNER);
   if (said && tokenActor) die("an agent's own token cannot carry the developer's words: --quote goes with the developer token");
   const item = await call("POST", `${I(name, id)}/unblock`, direction, said ? OWNER : who, said ? actingHeaders() : {});
-  console.log(`${id} is unblocked and ${flat(item.state)} again.${said ? ` Recorded on the developer's words, relayed by ${args.as ?? process.env.ATELIER_ACTOR}.` : ""}`);
+  console.log(`${id} is unblocked and ${flat(item.state)} again.${said ? ` Recorded on the developer's words, relayed by ${actingHeaders()["x-atelier-acting"]}.` : ""}`);
 }

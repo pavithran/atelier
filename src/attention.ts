@@ -12,7 +12,7 @@
 
 import { taskStage, type Stage } from "./board.ts";
 import { unoffered, type SeenOffer } from "./dispatch/rules.ts";
-import type { InboxEntry, Item } from "./rules.ts";
+import { directionText, type InboxEntry, type Item } from "./rules.ts";
 
 // The owner's calls, in precedence order: a task that qualifies for two is
 // placed under the first. A flagged secret comes before everything, since
@@ -126,7 +126,7 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   }
   if (item.state === "blocked" || item.blocked) {
     const b = item.blocked;
-    return own("unblock", "Settle what blocks it, then unblock it so it goes on.", `atelier unblock ${item.id}${flag}`, `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}`);
+    return own("unblock", "Settle what blocks it, then unblock it so it goes on.", `atelier unblock ${item.id}${flag}`, `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}${b?.quote ? `, ${directionText(b)}` : ""}`);
   }
   const planBlocked = has("plan-blocked");
   if (planBlocked) return own("decide-plan", "Read the blocked plan and decide how it goes on.", `atelier plan show ${item.id}${flag}`, planBlocked.reason);

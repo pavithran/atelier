@@ -97,6 +97,12 @@ it("without the words a model on the developer token is stopped, and the stop na
   expect(await L.item("t1")).toMatchObject({ state: "open" });
   expect(await L.item("t2")).toMatchObject({ state: "open" });
 
+  // Block and unblock go out under the model's own actor, with no acting
+  // header: they are stopped the same way, held or not.
+  expect(await stop(await post(name, "t1", "block", { reason: "x" }, {}, TOKEN, OPUS))).toContain(`atelier block t1 "x" --quote`);
+  expect(await stop(await post(name, "t1", "unblock", {}, {}, TOKEN, OPUS))).toContain(`atelier unblock t1 --quote`);
+  expect(await L.item("t1")).toMatchObject({ state: "open" });
+
   // The developer's own call, with no model named, goes on as before.
   expect((await post(name, "t1", "block", { reason: "waiting on the schema" })).status).toBe(200);
   expect((await post(name, "t1", "unblock", {})).status).toBe(200);

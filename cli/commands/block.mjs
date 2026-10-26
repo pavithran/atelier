@@ -27,5 +27,5 @@ export default async function blockCommand() {
   const item = await call("POST", `${I(name, id)}/block`, { reason, ...(until ? { until } : {}), ...direction }, said ? OWNER : who, said ? actingHeaders() : {});
   // A server from before --until records the block without the date and says nothing of it.
   if (until && item.blocked?.until !== until) console.log(`The server did not record the expiry ${until}; ${id} is blocked with no expiry until the server is updated.`);
-  console.log(`${id} is blocked: ${flat(item.blocked?.reason ?? reason)}. It keeps its holder and workspace; run atelier unblock ${id} when it can go on.${item.blocked?.until ? ` Status shows it as expired from the day after ${item.blocked.until} (UTC); it stays blocked until then and after.` : ""}${said ? ` Recorded on the developer's words, relayed by ${args.as ?? process.env.ATELIER_ACTOR}.` : ""}`);
+  console.log(`${id} is blocked: ${flat(item.blocked?.reason ?? reason)}. It keeps its holder and workspace; run atelier unblock ${id} when it can go on.${item.blocked?.until ? ` Status shows it as expired from the day after ${item.blocked.until} (UTC); it stays blocked until then and after.` : ""}${said ? ` Recorded on the developer's words, relayed by ${actingHeaders()["x-atelier-acting"]}.` : ""}`);
 }
