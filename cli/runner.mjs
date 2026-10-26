@@ -18,7 +18,7 @@ import { runLandJob } from "./land-queue.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
-import { REVIEW_RENEW_MS, applyVerification, contributorsOf, dropSettled, labelPreExisting, reReviewDiff, reviewedSince } from "../src/rules.ts";
+import { REVIEW_RENEW_MS, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
@@ -2971,9 +2971,9 @@ export async function settleRejection(io, ctx) {
   const { parsed, reply, claimed } = ctx;
   let findings = dropSettled(parsed.findings, claimed.need?.settled ?? settledFindings(claimed.need?.previous ?? [], ownerVerdicts(claimed.events ?? [])));
   const answered = parsed.findings.length - findings.length;
-  // Placement is judged against the whole change, never a diff since an
-  // earlier head, and not at all against a merge's conflict resolution.
-  if (!ctx.merged) findings = labelPreExisting(findings, ctx.diff);
+  // Every blocker goes to the check, which reads the diff for a defect that
+  // depends on code the change modified; only its affirmative PRE-EXISTING
+  // answer makes a finding pre-existing.
   const blockers = findings.flatMap((f, i) => (f.severity === "blocking" ? [i] : []));
   let confirmed = new Set(blockers.map((i) => i + 1));
   let preExisting = new Set();
