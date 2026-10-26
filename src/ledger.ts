@@ -3093,6 +3093,9 @@ export class Ledger extends DurableObject<Env> {
     }
     this.dropRunnerJobs(id);
     if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-idle:${runner.runner.toLowerCase()}`);
+    // A runner claims before every run, so what it said of its last one
+    // here, an end without a result among it, no longer stands (t325).
+    if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `run-skip:${id}:${runner.runner}`);
     if (runnerToken) {
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
     }
@@ -3464,9 +3467,12 @@ export class Ledger extends DurableObject<Env> {
     if (row?.value !== value) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('runner-polls', ?)`, value);
   }
 
+  // With them go the runners' run-skip notes, which say a claim's last run
+  // ended without a result, so that claim holds nothing (t325, endedRun).
   private runnerPolls(): RunnerPolls | null {
     const polls = this.runnerMeta<{ runner: string; at: string }[]>("runner-polls");
-    return polls ? { polls } : null;
+    const ended = [...this.runnerNotes<RunSkip>("run-skip").values()].flat();
+    return polls || ended.length ? { polls: polls ?? [], ended } : null;
   }
 
   // What runners said of dispatched tasks they pass by, by item id (t420):
@@ -3506,6 +3512,8 @@ export class Ledger extends DurableObject<Env> {
     const d = item.dispatch;
     const heldByRunner = item.state === "claimed" && (item.runner ?? "").toLowerCase() === runner.toLowerCase();
     if ((item.state !== "open" || item.owner) && !heldByRunner || !d || d.job === "review") return false;
+    // A run that ended without a result is word only of a claim (t325).
+    if (kind === "unfinished" && !heldByRunner) return false;
     // A held task's skip is the holder's word (t669): the developer token with
     // an X-Atelier-Runner header names any actor, so the report is refused
     // unless it comes from the actor that holds the task.

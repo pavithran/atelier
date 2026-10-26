@@ -245,6 +245,10 @@ export interface CoreBlocker {
   state: ItemState;
   title: string;
   core: string;
+  // What the holder is doing (t325): "running on RUNNER" for a claim a
+  // runner holds, "landing" for the holder of a live landing lease. Absent
+  // for a claim made by hand, whose state and owner say all that is known.
+  doing?: string;
 }
 export interface CoreHold extends CoreBlocker {
   blockers?: CoreBlocker[];
@@ -270,6 +274,9 @@ export const CORE_HOLD_WARNING_MS = 30 * 60_000;
 // a poll does: a long build keeps its claim's hold.
 export interface RunnerPolls {
   polls: readonly { runner: string; at: string }[];
+  // The run-skip notes the runners sent (recordRunSkip in src/ledger.ts),
+  // which say a claim's last run ended without a result (endedRun).
+  ended?: readonly RunSkip[];
 }
 
 // The one limit both the hold (the ledger) and atelier stuck judge an
@@ -296,11 +303,28 @@ export function orphanedBy(o: Pick<Item, "state" | "runner">, runners: RunnerPol
   return { runner: o.runner, lastPoll: last };
 }
 
+// A claim whose last run ended without a result (t325): its runner said so
+// in a run-skip note (validation_blocked, a run with no new commit, a
+// harness that failed, or a give-up whose release failed) and the claim
+// keeps it, so nobody is working on the claim's core files and it holds no
+// other dispatch. The note counts while it names the claim as it stands:
+// the runner and actor that hold it, its dispatch and its head. A push
+// moves the head and a claim by that runner, which starts every run, drops
+// the note (claim in src/ledger.ts), so the hold returns once the holder
+// runs again. Returns the newest such note, or null.
+export function endedRun(o: Pick<Item, "state" | "runner" | "owner" | "head" | "dispatch">, runners: RunnerPolls | null | undefined): RunSkip | null {
+  if (!runners?.ended || o.state !== "claimed" || !o.runner || !o.dispatch) return null;
+  const runner = o.runner.toLowerCase(), at = o.dispatch.at;
+  return runners.ended.filter((s) => s.runner.toLowerCase() === runner && s.actor === o.owner && s.dispatchAt === at && (s.head ?? null) === (o.head ?? null))
+    .sort((a, b) => a.at.localeCompare(b.at)).at(-1) ?? null;
+}
+
 // Claimed builders and the holder of a live landing lease serialize core
 // edits. Submission alone holds nothing. Plan jobs, same-plan work and the
 // owner's overlap override keep their existing exemptions. A claim its
-// runner orphaned holds nothing (coreOrphans names it instead), though the
-// holder of a live landing lease holds whatever its runner does.
+// runner orphaned holds nothing (coreOrphans names it instead), nor does one
+// whose last run ended without a result (endedRun), though the holder of a
+// live landing lease holds whatever its runner does.
 type Overlap = CoreBlocker & { item: Item; landing: boolean };
 function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now: number): Overlap[] {
   const d = item.dispatch;
@@ -312,15 +336,17 @@ function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly st
     if (o.state !== "claimed" && !landing) return [];
     if (o.kind === "plan" && o.state === "claimed") return [];
     const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
-    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core, item: o, landing }] : [];
+    const doing = landing ? "landing" : o.runner ? `running on ${o.runner}` : null;
+    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core, ...(doing ? { doing } : {}), item: o, landing }] : [];
   });
 }
 
 const blockerOf = ({ item: _, landing: __, ...b }: Overlap): CoreBlocker => b;
 const orphan = (b: Overlap, runners: RunnerPolls | null, now: number) => b.landing ? null : orphanedBy(b.item, runners, now);
+const ended = (b: Overlap, runners: RunnerPolls | null) => !b.landing && !!endedRun(b.item, runners);
 
 export function coreBlockers(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now(), runners: RunnerPolls | null = null): CoreBlocker[] {
-  return coreOverlaps(item, items, coreFiles, lease, now).filter((b) => !orphan(b, runners, now)).map(blockerOf);
+  return coreOverlaps(item, items, coreFiles, lease, now).filter((b) => !orphan(b, runners, now) && !ended(b, runners)).map(blockerOf);
 }
 
 // The claims that would hold the dispatch but for their runner having
@@ -365,7 +391,7 @@ export function blockerChains(id: string, graph: ReadonlyMap<string, readonly st
 }
 
 export function holdText(h: CoreHold, project?: string): string {
-  const blockers = (h.blockers ?? [h]).map((b) => `${b.id} (${b.state}${b.owner ? ` by ${b.owner}` : ""}): both scopes reach core file ${b.core}`).join("; ");
+  const blockers = (h.blockers ?? [h]).map((b) => `${b.id} (${b.state}${b.owner ? ` by ${b.owner}` : ""}${b.doing ? `, ${b.doing}` : ""}): both scopes reach core file ${b.core}`).join("; ");
   const age = h.elapsedMs === undefined ? "" : `; held for ${Math.floor(h.elapsedMs / 60_000)}m ${Math.floor(h.elapsedMs / 1000) % 60}s`;
   const chains = (h.chains ?? []).filter((c) => c.deadlock || c.path.length > 2).map((c) => `; ${c.deadlock ? "deadlock" : "blocked chain"}: ${c.path.join(" -> ")}`).join("");
   return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}${h.orphaned?.length ? `; ${orphanText(h.orphaned, project)}` : ""}`;
@@ -393,10 +419,11 @@ export function orphanText(orphaned: readonly OrphanedClaim[], project?: string)
 }
 
 // When the hold lifts: once every blocker stops holding. A claimed item stops
-// when it submits or is released; the item named by the landing lease stops
+// when it submits or is released, and one a runner holds also when its run
+// ends without a result (endedRun); the item named by the landing lease stops
 // when that landing ends (it merges, is cancelled, or its lease expires).
 export function holdRelease(h: CoreHold): string {
-  const ends = (h.blockers ?? [h]).map((b) => b.state === "claimed" ? `${b.id} submits or is released` : `the landing of ${b.id} ends`);
+  const ends = (h.blockers ?? [h]).map((b) => b.state === "claimed" ? `${b.id} ${b.doing ? "submits, is released or its run ends without a result" : "submits or is released"}` : `the landing of ${b.id} ends`);
   return `offered once ${ends.length > 1 ? `${ends.slice(0, -1).join(", ")} and ${ends[ends.length - 1]}` : ends[0]}`;
 }
 
@@ -482,7 +509,7 @@ export function skippedBy(runs: readonly RunSeen[], project: string, item: strin
 // skippedBy never sees them. Kept on the task, it outlasts the index's
 // window of recent run reports. It counts under the dispatch it was
 // reported for, and only from a live runner since its process started.
-export type RunSkipKind = "failures" | "infrastructure" | "skipped";
+export type RunSkipKind = "failures" | "infrastructure" | "skipped" | "unfinished";
 
 // The kinds a runner reports, and the only ones the ledger keeps (t652). The
 // runner sends one place (gaveUp in cli/runner.mjs): `failures` after
@@ -491,9 +518,12 @@ export type RunSkipKind = "failures" | "infrastructure" | "skipped";
 // validation-blocked marker stops it. Each may follow a run that kept its
 // claim, since a run that committed before failing keeps it ("claim
 // preserved"), so each is taken for a task the reporting runner holds as
-// well as for an open one. recordRunSkip took any kind for a held task, so
+// well as for an open one. `unfinished` (t325) is the runner's word that a
+// run of a task it still holds ended without a result; it passes nothing by
+// and is taken only for a held task, where it lifts the core-file hold
+// (endedRun). recordRunSkip took any kind for a held task, so
 // a caller past the route's check could keep a kind no reason line knows.
-export const RUN_SKIP_KINDS: readonly RunSkipKind[] = ["failures", "infrastructure", "skipped"];
+export const RUN_SKIP_KINDS: readonly RunSkipKind[] = ["failures", "infrastructure", "skipped", "unfinished"];
 
 export function isRunSkipKind(kind: unknown): kind is RunSkipKind {
   return typeof kind === "string" && (RUN_SKIP_KINDS as readonly string[]).includes(kind);
@@ -533,7 +563,7 @@ export interface RunSkip {
 export function reportedSkips(skips: readonly RunSkip[], item: Item, offers?: readonly SeenOffer[] | null, now = new Date()): RunSkip[] {
   const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
   const started = startedOf(offers);
-  return skips.filter((s) => s.dispatchAt === item.dispatch?.at
+  return skips.filter((s) => s.kind !== "unfinished" && s.dispatchAt === item.dispatch?.at
     && (s.kind !== "skipped" || !s.updatedAt || sameRevision({ dispatchAt: s.dispatchAt, head: s.head ?? null, updatedAt: s.updatedAt }, item))
     && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
     .sort((a, b) => a.runner.localeCompare(b.runner));

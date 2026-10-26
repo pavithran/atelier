@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, lostToHold, giveUpClaim } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, lostToHold, giveUpClaim, unfinishedReport } from "../cli/runner.mjs";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
 import { MAX_HARNESS_RERUNS } from "../cli/runner-failure.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -1558,6 +1558,48 @@ test("a runner that gives a task up after two failed runs pushes its commit, rel
   assert.equal(argvs.filter((a) => a[0] === "push").length, 1);
   assert.ok(argvs.findIndex((a) => a[0] === "push") < argvs.findIndex((a) => a[0] === "release"), "the commit is pushed before the claim is let go");
   assert.ok(logs.some((l) => l.includes("needs the developer's attention after 2 failures")));
+});
+
+
+// t325: while t313 looped on a kept claim, five dispatches waited behind it on
+// cli/runner.mjs. A run that ends without a result and keeps its claim says
+// so to the server, once, so that claim holds no core files until the next run.
+test("a run that keeps its claim without a result reports it as unfinished, once (t325)", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-unfinished-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const { io, calls, logs } = fixture({ head: "after", code: 1, marker: null });
+  let polls = 0;
+  const skips = [];
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), now: hourlyClock(),
+    async queue() {
+      if (++polls === 2) { process.emit("SIGINT"); return []; }
+      return [assignment];
+    },
+    reportRunSkip: async (body, runner) => { skips.push([runner, body]); },
+  });
+  const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
+  assert.equal(argvs.filter((a) => a[0] === "release").length, 0, "the committed work keeps its claim");
+  assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "unfinished", 1]]);
+  assert.ok(skips[0][1].note);
+  assert.ok(logs.some((l) => l.includes("ended without a result; its claim holds no core files until it runs again")), logs.join("\n"));
+});
+
+test("only a build that kept its claim without a result is reported unfinished (t325)", () => {
+  const task = { project: "atelier", actor: "codex/gpt-6", item: { id: "t13", dispatch: { at: "x" } } };
+  const kept = { phase: "failed", claimHeldAt: "/w", reason: "harness made no new commit", taskFailure: true };
+  assert.deepEqual(unfinishedReport(task, kept), { project: "atelier", item: "t13", actor: "codex/gpt-6", role: "build", kind: "unfinished", failures: 1, note: "stalled: harness made no new commit" });
+  assert.equal(unfinishedReport(task, { ...kept, validationBlocked: true, reason: "tests failed" }).note, "validation_blocked: tests failed");
+  // A released claim, a give-up (its own report goes), a closed task, a
+  // provider's limit, and jobs that are not builds send nothing.
+  assert.equal(unfinishedReport(task, { ...kept, claimHeldAt: undefined }), null);
+  assert.equal(unfinishedReport(task, kept, "failures"), null);
+  assert.equal(unfinishedReport(task, { ...kept, terminalState: "merged" }), null);
+  assert.equal(unfinishedReport(task, { ...kept, providerLimit: { harness: "codex" } }), null);
+  for (const job of ["review", "criteria-review", "plan", "land", "integrate"]) assert.equal(unfinishedReport({ ...task, item: { ...task.item, dispatch: { at: "x", job } } }, kept), null, job);
+  assert.equal(unfinishedReport({ ...task, item: { ...task.item, dispatch: { at: "x", job: "merge-main" } } }, kept).kind, "unfinished");
 });
 
 
