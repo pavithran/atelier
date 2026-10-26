@@ -1569,7 +1569,7 @@ test("a task given up at the harness rerun cap is released once, with the runner
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
-  const { io, calls } = fixture({ head: "before", code: 0, marker: { reruns: MAX_HARNESS_RERUNS, actor: assignment.actor, reason: "harness exited 1" } });
+  const { io, calls } = fixture({ head: "2".repeat(40), code: 0, marker: { reruns: MAX_HARNESS_RERUNS, actor: assignment.actor, reason: "harness exited 1" } });
   let polls = 0;
   const skips = [];
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
