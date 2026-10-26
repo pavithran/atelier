@@ -68,7 +68,7 @@ fs.appendFileSync(${JSON.stringify(record)} + ".calls", JSON.stringify({ argv, i
 // the continued session (opencode run --continue).
 // FAKE_FOLLOW_UP=@template answers the second ask as a reviewer who follows
 // it to the letter: with the ask's own verdict-format lines, and no other.
-const template = (ask) => ask.split("\\n").filter((l) => /^(?:SUMMARY|FINDING|CRITERION \\d+|VERDICT):/.test(l)).join("\\n");
+const template = (ask) => ask.split("\\n").filter((l) => /^(?:SUMMARY|BLOCKING|FINDING|CRITERION \\d+|VERDICT):/.test(l)).join("\\n");
 const followUp = process.env.FAKE_FOLLOW_UP === "@template" ? template(input) : process.env.FAKE_FOLLOW_UP;
 const answer = !process.env.FAKE_ANSWER ? "VERDICT: APPROVE\\nSUMMARY: fine" : argv.includes("--continue") || argv.includes("resume") ? followUp : process.env.FAKE_ANSWER;
 const at = argv.indexOf("--output-last-message");
@@ -236,7 +236,10 @@ test("an opencode review's second ask, on a task with acceptance criteria, asks 
   const calls = readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(calls.length, 2);
   assert.match(calls[1].input, /one CRITERION line for each of the 2 acceptance criteria/);
-  const parsed = parseVerdict(readFileSync(verdict, "utf8"), 2);
+  // The runner reads a review as counted, which refuses a reply without a
+  // BLOCKING line, so the template carries one.
+  assert.match(calls[1].input, /^BLOCKING: 0$/m);
+  const parsed = parseVerdict(readFileSync(verdict, "utf8"), 2, { counted: true });
   assert.equal(parsed.ok, true, parsed.error);
   assert.equal(parsed.verdict, "approve");
   // Without criteria in the brief the ask names none.

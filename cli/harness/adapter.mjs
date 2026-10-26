@@ -162,6 +162,7 @@ export function verdictFollowUp(criteria) {
     `Reply with only these lines: a SUMMARY: line on what you checked, a BLOCKING: N line with the number of blocking findings (0 for none), one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), one CRITERION line for each of the ${count} acceptance criteria, numbered as the brief's reply format numbers them, saying met or unmet (or deferred, only where the brief allows it) and then how you proved it: what you did and what you saw, from your review above (an approval needs every criterion met), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.`,
     "In this shape, with your own words after each colon and dash:",
     "SUMMARY: What you checked, in one sentence.",
+    "BLOCKING: 0",
     ...Array.from({ length: count }, (_, i) => `CRITERION ${i + 1}: met — What you did to prove criterion ${i + 1} met, and what you saw.`),
     "VERDICT: APPROVE",
   ].join("\n");
