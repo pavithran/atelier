@@ -2,7 +2,7 @@
 import type { Item } from "../rules.ts";
 import type { Dispatch } from "../dispatch/rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
-import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
+import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, reportedSkips, RUNNER_GONE_MS, shellWord, type RunSkip, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { SIZE_FIX, SIZE_REFUSED } from "../large-diff.ts";
@@ -31,7 +31,7 @@ export const REVIEW_OFFER_MINUTES = 15;
 export interface Snapshot {
   items: Item[]; events: LedgerEvent[]; coreFiles?: string[]; lease: LandingLease | null;
   workflows: { item: string; record: LandingWorkflowRecord; status?: string }[];
-  reviews: ReviewObservation[]; openReviewItems?: string[]; openRequests?: RequestObservation[];
+  reviews: ReviewObservation[]; openReviewItems?: string[]; runSkips?: (RunSkip & { item: string })[]; openRequests?: RequestObservation[];
 }
 export interface Entry { kind: string; subject: string; reason: string; since: string; ageMs: number; evidence: string; recovery: string }
 export function stuckReport(project: string, origin: string, now: Date, limits: ReportLimits, snapshot: Snapshot | null,
@@ -161,6 +161,17 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
         add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, `Land the blocker with ${landing}; or, if the overlap is harmless, ${command(heldDispatch(item))}`, `${base}/${blocker.id}`);
     }
     const waiting = live.filter((i) => i.state === "open" && i.dispatch);
+    // A task a live runner gave up after its failed runs or infrastructure
+    // failures passes by that runner until it is dispatched again or its head
+    // changes; the runner's own log was the only other place that said so (t281).
+    for (const item of waiting) {
+      const skips = reportedSkips((snapshot.runSkips ?? []).filter((s) => s.item === item.id), item, offers, now);
+      if (!skips.length) continue;
+      const said = (k: RunSkip) => k.kind === "skipped" ? `skipped by ${k.runner}${k.note ? `: ${k.note}` : ""}`
+        : `skipped by ${k.runner} after ${k.failures} ${k.kind === "infrastructure" ? "infrastructure failures in a row" : "failed runs"}${k.note ? ` (the last: ${k.note})` : ""}`;
+      add("runner-skip", item.id, skips.map(said).join("; "), skips.map((k) => k.at).sort()[0],
+        `fix the cause, then ${command(redispatch(item, false))}; a push to the task's head clears the skip too`);
+    }
     for (const item of live) {
       const gone = orphanedBy(item, runners, time);
       if (!gone) continue;
