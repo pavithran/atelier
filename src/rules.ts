@@ -3072,7 +3072,9 @@ export function labelPreExisting(findings: readonly Finding[], diff: string): Fi
 // pre-existing follow-ups, in a touched file or not. A blocking finding in
 // neither is made an unverified follow-up, since a blocker is proved, not
 // assumed. A position in both stays blocking: when the check is torn, the
-// finding blocks.
+// finding blocks. Pre-existing needs the check's affirmative answer: a finding
+// it left unanswered may depend on code the change modified, so it stays
+// unverified however far its line is from the diff (t290).
 export function applyVerification(findings: readonly Finding[], confirmed: ReadonlySet<number>, preExisting: ReadonlySet<number> = new Set()): Finding[] {
   return findings.map((f, i) => {
     if (f.severity !== "blocking" || confirmed.has(i + 1)) return f;

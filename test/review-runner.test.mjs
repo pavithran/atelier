@@ -2056,15 +2056,35 @@ test("a rejection no blocking finding of which stands cannot be recorded as an a
   assert.ok(!posted(calls));
 });
 
-test("a blocking finding on lines the change did not touch is a pre-existing follow-up that blocks nothing and needs no check", async () => {
+test("a blocking finding on lines the change did not touch is a pre-existing follow-up only after the check, which sees it, calls it pre-existing", async () => {
   const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried."), blockingAt(300, "Drops a row."), PROOF]);
-  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: PRE-EXISTING because the base reads the same.\nFINDING 2: PRE-EXISTING because the base reads the same." });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "approve");
-  assert.equal(verifierBriefs(calls).length, 0, "nothing blocking is left to check");
+  assert.equal(verifierBriefs(calls).length, 1, "placement only nominates: the check sees both findings");
   const found = findingsOf(posted(calls));
   assert.deepEqual(found.map((f) => [f.file, f.line, f.severity, f.label]), [["src/review/needed.ts", 88, "follow-up", "pre-existing"], ["src/review/needed.ts", 300, "follow-up", "pre-existing"]]);
   assert.match(posted(calls)[posted(calls).indexOf("--note") + 1], /2 pre-existing/);
+});
+
+// t290: a finding on an untouched line that depends on code the change
+// modifies must reach the check before it is classed pre-existing.
+test("a finding far from the hunk that depends on modified code reaches the check and stays blocking when confirmed; an independent one is pre-existing", async () => {
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: Two bugs.", blockingAt(300, "focusNext walks every element, so it enters the sections the change now collapses."), blockingAt(400, "A dead branch in the date formatter."), PROOF]);
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: CONFIRMED because focusNext reaches the new collapsed sections.\nFINDING 2: PRE-EXISTING because the base has the same dead branch." });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.verdict, "reject");
+  assert.equal(verifierBriefs(calls).length, 1);
+  assert.ok(verifierBriefs(calls)[0].brief.includes("focusNext walks every element"), "the dependent finding is shown to the check");
+  assert.deepEqual(findingsOf(posted(calls)).map((f) => [f.line, f.severity, f.label]), [[300, "blocking", undefined], [400, "follow-up", "pre-existing"]]);
+});
+
+test("a finding on a line the change added, confirmed by the check, is never a pre-existing follow-up (the t82 case)", async () => {
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "Arrow keys focus a link inside a collapsed section."), PROOF]);
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: CONFIRMED because line 11 is the new collapse code." });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.verdict, "reject");
+  assert.deepEqual(findingsOf(posted(calls)).map((f) => [f.severity, f.label]), [["blocking", undefined]]);
 });
 
 test("a finding a diff cannot place keeps blocking: the stand-in diff has no hunk, and the finding is checked, not waved through", async () => {
@@ -2262,7 +2282,7 @@ test("a finding the developer refuted is not raised again on a later head even w
 
 test("a rejection with an unmet criterion and only pre-existing findings is recorded as a rejection naming both, not released", async () => {
   const reply = withCount(["VERDICT: REJECT", "SUMMARY: The criterion is not met.", blockingAt(88, "A lapsed claim is never retried."), blockingAt(300, "Drops a row."), "CRITERION 1: unmet — No test covers the change."]);
-  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: PRE-EXISTING because x.\nFINDING 2: PRE-EXISTING because y." });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.phase, "reviewed");
   assert.equal(state.verdict, "reject");
