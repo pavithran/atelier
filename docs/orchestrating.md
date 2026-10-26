@@ -1116,7 +1116,11 @@ Once the merge is recorded, `atelier land` asks the post-merge review, of
 verdict stands. That reviewer may share the builder's family; the review
 records `same-family (fast mode)`. A rejection files a fix task. If the ask
 fails, the landing says the review is owed and the task stays merged; ask it
-with `atelier review-request tN --reviewer H/M`. Full mode is unchanged:
+with `atelier review-request tN --reviewer H/M`. A merge made in fast mode by
+`land`, the lander or `atelier merge` is listed by `atelier fast status` and
+by the switch back to full mode, as a landing with a receipt is, and the
+review it is owed may come from the builder's family when the server picks
+the reviewer too. Full mode is unchanged:
 the review comes before the merge.
 
 - The queue marks no build fast. The routes `POST items/tN/fast-take` and

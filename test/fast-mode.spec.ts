@@ -167,6 +167,59 @@ it("a rejected post-merge review of a fast landing files a fix task from its fin
   expect(full.landed).toEqual([expect.objectContaining({ item: "t1", review: expect.objectContaining({ state: "rejected" }), fix: "t2" })]);
 });
 
+// A merge made in fast mode through the ordinary route (land, the lander,
+// merge) leaves no receipt, only the fast mark on its merge event (t300). It
+// is owed its review all the same, the review may be same-family, and a
+// rejection files a fix task.
+async function mergedInFastMode(L: Awaited<ReturnType<typeof project>>, title: string, commit: string, mergeCommit: string) {
+  const item = await L.newItem(title, ["src/**"], "owner", { accept: ["Works"] });
+  await L.claim(item.id, OPUS);
+  await L.setFork(item.id, `${item.id}--fork`, START, OPUS);
+  await L.recordPush(item.id, OPUS, commit, commit);
+  await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: commit, passed: true, by: "owner", at: AT, changedPaths: ["src/a/x.ts"] });
+  await L.submit(item.id, OPUS);
+  await L.accept(item.id, "owner", commit);
+  await L.merged(item.id, "owner", mergeCommit, true);
+  return item;
+}
+
+it("a task merged in fast mode through the ordinary route is owed a same-family review, listed, and a rejection files a fix task", async () => {
+  const L = await project("fast-merged");
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  const ok = await mergedInFastMode(L, "Merged fast", C1, M1);
+  expect(await L.mergedFast(ok.id)).toBe(true);
+  expect((await L.fastLandings())[0]).toMatchObject({ item: ok.id, owed: true, review: { state: "not requested" }, receipt: { mergeCommit: M1, builder: OPUS } });
+  // The pool holds only the builder's family: the pick still finds a reviewer.
+  const asked = await L.requestReview(ok.id, "owner", null, [POOL[0], POOL[1]]);
+  expect(asked).toMatchObject({ requested: true, reviewer: SONNET });
+  expect((await L.fastLandings())[0]).toMatchObject({ owed: false, review: { state: "open" } });
+  const claim = await L.claimReview(ok.id, SONNET, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ itemId: ok.id, by: SONNET, head: C1, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine", at: AT }, undefined, true);
+  expect((await L.reviewsFor(ok.id))[0]).toMatchObject({ postMerge: true, independence: "same-family (fast mode)" });
+  expect(await L.fastLandings()).toEqual([expect.objectContaining({ item: ok.id, owed: false, review: expect.objectContaining({ state: "approved", by: SONNET }) })]);
+
+  const bad = await mergedInFastMode(L, "Merged fast, rejected", C1.replace(/c/g, "a"), M2);
+  await L.requestReview(bad.id, "owner", SONNET, POOL);
+  const badClaim = await L.claimReview(bad.id, SONNET, RUNNER) as unknown as ReviewClaim;
+  const findings = [{ file: "src/a.ts", line: 3, severity: "blocking" as const, text: "Drops the record" }];
+  await L.addReview({ itemId: bad.id, by: SONNET, head: C1.replace(/c/g, "a"), criteria: badClaim.criteria, request: badClaim.request, approve: false, note: "Drops data", findings, at: AT }, undefined, true);
+  const landed = await L.fastLandings();
+  expect(landed.map((l) => l.item)).toEqual([ok.id, bad.id]);
+  expect(landed[1]).toMatchObject({ review: { state: "rejected" }, fix: expect.stringMatching(/^t\d+$/) });
+  expect(await L.item(landed[1].fix!)).toMatchObject({ accept: ["src/a.ts:3: Drops the record"] });
+  // Full mode lists both and keeps the record.
+  expect((await L.setMode("owner", "full", undefined)).landed?.map((l) => l.item)).toEqual([ok.id, bad.id]);
+});
+
+it("a merge in full mode is not listed as a fast landing and takes no same-family review", async () => {
+  const L = await project("fast-merged-full");
+  const item = await mergedInFastMode(L, "Merged in full mode", C1, M1);
+  expect(await L.mergedFast(item.id)).toBe(false);
+  expect(await L.fastLandings()).toEqual([]);
+  await refusal(L.requestReview(item.id, "owner", SONNET, POOL), "not_independent", /same family.*fast mode/);
+});
+
 // Astra's audit of 2026-10-13, finding 3: the switch to fast mode and a fast
 // landing took the developer token alone, though fast mode lands without the
 // gate, so they skipped the confirmation an override of the independent

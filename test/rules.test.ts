@@ -2238,3 +2238,9 @@ test("a post-merge review of a task merged in fast mode may share the builder's 
   assert.equal(postMergeIndependence("claude-code/opus-5.5", ["claude-code/sonnet-5.5"], null, true).independence, SAME_FAMILY_FAST);
   assert.ok(postMergeIndependence("claude-code/opus-5.5", ["claude-code/sonnet-5.5"], null, false).refusal);
 });
+
+test("the decision on a task page reads the project's mode: fast mode is ready on the checks, full mode waits for the review (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  assert.equal(decisionFor(item(), policy, [touching], [], undefined, true).action, "accept");
+  assert.equal(decisionFor(item(), policy, [touching], []).action, "review");
+});
