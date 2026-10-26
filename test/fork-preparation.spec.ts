@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { FORK_STUCK_MS, taskForkMark } from "../src/rules.ts";
+import { FORK_REPLACE_MS, FORK_REQUEST_MS, FORK_STUCK_MS, taskForkMark } from "../src/rules.ts";
 import { setForkWaitMs, setRetryBaseMs } from "../src/transient.ts";
 
 // t18, from the finding on 2026-10-11 (t496): every claim of one task for half
@@ -27,11 +27,12 @@ type Repo = { ready: boolean; description?: string };
 
 // `repos` holds each repository; one not `ready` answers its head read with
 // FORK_IN_PROGRESS. `forks` and `deletes` list what was made and deleted, in
-// order. `onHead` runs before each head read.
+// order. `onHead` runs before each head read, and `onFork` after each fork is
+// made, before the fork call answers.
 function fakeArtifacts(name: string) {
   const repos = new Map<string, Repo>([[name, { ready: true }]]);
   const forks: string[] = [], deletes: string[] = [];
-  const hooks: { onHead?: (repo: string) => Promise<void> | void; readyOnFork: boolean; heads: Map<string, string> } = { readyOnFork: false, heads: new Map() };
+  const hooks: { onHead?: (repo: string) => Promise<void> | void; onFork?: (repo: string) => Promise<void> | void; readyOnFork: boolean; heads: Map<string, string> } = { readyOnFork: false, heads: new Map() };
   let tokens = 0;
   const minted: string[] = [];
   const artifacts = {
@@ -43,6 +44,7 @@ function fakeArtifacts(name: string) {
           if (repos.has(forked)) throw artifactsError("ALREADY_EXISTS", `repo already exists: ${forked}`);
           repos.set(forked, { ready: hooks.readyOnFork, description: opts?.description });
           forks.push(forked);
+          await hooks.onFork?.(forked);
         },
         log: async () => {
           await hooks.onHead?.(repo);
@@ -141,7 +143,7 @@ it("a fork that is not ready is remembered across retries and becomes ready on a
   expect(fa.deletes).toEqual([]);
 });
 
-it("a fork still not ready after the limit is reported once, with the repository and the remedy by hand, and is never deleted", async () => {
+it("a fork still not ready after the limit is reported once, with the repository and what the next claims do, and is never deleted", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const { L, fa, fork, claim, owner } = await setup("fork-prep-stuck");
   expect((await claim()).status).toBe(503);
@@ -151,14 +153,14 @@ it("a fork still not ready after the limit is reported once, with the repository
   const detail = (await answer(res)).detail!;
   expect(detail).toContain(`${fork} has not become ready in`);
   expect(detail).toContain("Atelier deletes no fork");
-  expect(detail).toContain(`delete the Artifacts repository ${fork} by hand and claim t1 again`);
+  expect(detail).toContain("the next claim of t1 makes a fork under a new name");
   // However often it is claimed, the stuck fork is recorded once.
   await claim();
   await claim();
   const events = ((await L.events("t1")) as { kind: string; data: { fork: string; next: string } }[]).filter((e) => e.kind === "fork.stuck");
   expect(events.length).toBe(1);
   expect(events[0].data.fork).toBe(fork);
-  expect(events[0].data.next).toContain(`delete the Artifacts repository ${fork} by hand`);
+  expect(events[0].data.next).toContain("nothing needs deleting by hand");
   expect(fa.deletes).toEqual([]);
   expect(fa.forks).toEqual([fork]);
   // The item's detail, the project record `atelier status` reads and the standing `atelier status --project` reads say how long and what next.
@@ -172,7 +174,7 @@ it("a fork still not ready after the limit is reported once, with the repository
   const standing = await (await owner("GET", "/projects/fork-prep-stuck/standing")).json() as { preparing?: { id: string; fork: string; next: string }[] };
   expect(standing.preparing).toHaveLength(1);
   expect(standing.preparing![0]).toMatchObject({ id: "t1", fork, action: "stuck" });
-  expect(standing.preparing![0].next).toContain(`delete the Artifacts repository ${fork} by hand`);
+  expect(standing.preparing![0].next).toContain("the next claim of t1 makes a fork under a new name");
 });
 
 it("a fork found already there, as the t496 fork was, is reported too, and kept", async () => {
@@ -198,7 +200,7 @@ it("a stuck fork of a task with a recorded head is not offered for deletion, sin
   expect(res.status).toBe(503);
   const detail = (await answer(res)).detail!;
   expect(detail).toContain("may hold the task's commits: do not delete it");
-  expect(detail).not.toContain("by hand");
+  expect(detail).not.toContain("a fork under a new name");
   const event = ((await L.events("t1")) as { kind: string; data: { next: string } }[]).find((e) => e.kind === "fork.stuck")!;
   expect(event.data.next).toContain("do not delete it");
   expect(fa.deletes).toEqual([]);
@@ -267,4 +269,106 @@ it("a task claimed again after its branch moved, whose fork made again stays unr
   fa.hooks.heads.set(fork, H1);
   expect((await claim()).status).toBe(200);
   expect(await L.forkPreparations()).toEqual({});
+});
+
+// t286, from 2026-10-25 in miqra: three claims timed out after 60 s while
+// their forks were being made, and every later claim answered not_ready for
+// half an hour and more, the remedy being to delete each repository by hand.
+// Here the first claim's fork call makes the repository, which never becomes
+// ready, and never answers; the claim is given up as the CLI gave it up.
+
+// Ages a stored record of t1 by `ms`: the fork request's note or the first
+// not_ready time.
+async function older(L: unknown, key: "fork-request" | "fork-prep", field: "at" | "since", ms: number) {
+  await inside(L, (instance) => {
+    const row = instance.sql.exec(`SELECT value FROM meta WHERE key = ?`, `${key}:t1`).toArray()[0];
+    const value = JSON.parse(row.value as string);
+    value[field] = new Date(Date.parse(value[field]) - ms).toISOString();
+    instance.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify(value), `${key}:t1`);
+  });
+}
+
+// The first claim: its fork call never answers, and the caller stops waiting.
+async function timedOutClaim(fa: ReturnType<typeof fakeArtifacts>, claim: () => Promise<Response>) {
+  fa.hooks.onFork = () => new Promise<never>(() => {});
+  const gaveUp = await Promise.race([claim().then(() => false), new Promise<boolean>((ok) => setTimeout(() => ok(true), 50))]);
+  expect(gaveUp).toBe(true);
+  fa.hooks.onFork = undefined;
+  // Every later fork Artifacts makes is ready, as t82 to t87's were.
+  fa.hooks.readyOnFork = true;
+}
+
+const rerouted = async (L: any) => ((await L.events("t1")) as { kind: string; data: Record<string, unknown> }[]).filter((e) => e.kind === "stage.rerouted");
+
+it("a claim whose fork request timed out is followed by a claim that makes a new fork and succeeds, with nothing deleted", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, claim, actor } = await setup("fork-cut-off");
+  await timedOutClaim(fa, claim);
+  // The timed-out claim left the task held, the fork made but never ready,
+  // and the request unanswered.
+  expect(await L.item("t1")).toMatchObject({ owner: actor, state: "claimed", fork: null });
+  expect(fa.repos.get(fork)).toMatchObject({ ready: false });
+  // A claim soon after may still be racing the first, so it waits as before.
+  const soon = await claim();
+  expect(soon.status).toBe(503);
+  expect((await answer(soon)).error).toBe("not_ready");
+  expect(fa.forks).toEqual([fork]);
+  // Once the request has gone unanswered past the limit, the next claim makes
+  // a fork under a new name and takes it.
+  await older(L, "fork-request", "at", FORK_REQUEST_MS);
+  const next = await claim();
+  expect(next.status).toBe(200);
+  expect(await L.item("t1")).toMatchObject({ state: "claimed", owner: actor, fork: `${fork}-r2`, base: H0 });
+  expect(fa.forks).toEqual([fork, `${fork}-r2`]);
+  expect(fa.minted).toContain(`${fork}-r2`);
+  expect(fa.deletes).toEqual([]);
+  expect(fa.repos.has(fork)).toBe(true);
+  const [moved] = await rerouted(L);
+  expect(moved.data).toMatchObject({ stage: "preparing", from: fork, to: `${fork}-r2` });
+  expect(moved.data.note).toContain("had no answer");
+  expect(await L.forkPreparations()).toEqual({});
+  expect(await L.forkNameFor("t1")).toBe(`${fork}-r2`);
+});
+
+it("a fork whose request was answered is not replaced for being slow, until it has been preparing past the tick's limit", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, claim } = await setup("fork-answered");
+  expect((await claim()).status).toBe(503);
+  // Artifacts answered the fork request, so a slow fork is waited for, past the request limit and past the stuck limit.
+  await older(L, "fork-prep", "since", FORK_STUCK_MS + 60_000);
+  expect((await claim()).status).toBe(503);
+  expect(await rerouted(L)).toEqual([]);
+  // Past the tick's limit the claim replaces it itself, whether or not the tick has run.
+  fa.hooks.readyOnFork = true;
+  await older(L, "fork-prep", "since", FORK_REPLACE_MS);
+  const res = await claim();
+  expect(res.status).toBe(200);
+  expect(await L.item("t1")).toMatchObject({ fork: `${fork}-r2` });
+  expect((await rerouted(L)).map((e) => e.data.from)).toEqual([fork]);
+  expect(fa.deletes).toEqual([]);
+});
+
+it("a claim makes at most two replacement forks, as the tick does, and then reports the fork as before", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, claim } = await setup("fork-cut-off-thrice");
+  await timedOutClaim(fa, claim);
+  // Every fork Artifacts makes from here on stays unready too.
+  fa.hooks.readyOnFork = false;
+  // The cut-off request gets -r2, which Artifacts answers but never readies.
+  await older(L, "fork-request", "at", FORK_REQUEST_MS);
+  const second = await claim();
+  expect(second.status).toBe(503);
+  expect((await answer(second)).detail).toContain(`${fork}-r2 is still being prepared`);
+  // -r2 preparing past the tick's limit gets -r3, which stalls as well.
+  await older(L, "fork-prep", "since", FORK_REPLACE_MS + 60_000);
+  const third = await claim();
+  expect(third.status).toBe(503);
+  expect((await answer(third)).detail).toContain(`${fork}-r3 is still being prepared`);
+  await older(L, "fork-prep", "since", FORK_REPLACE_MS + 60_000);
+  const last = await claim();
+  expect(last.status).toBe(503);
+  expect((await answer(last)).detail).toContain(`${fork}-r3 has not become ready`);
+  expect(fa.forks).toEqual([fork, `${fork}-r2`, `${fork}-r3`]);
+  expect((await rerouted(L)).length).toBe(2);
+  expect(fa.deletes).toEqual([]);
 });
