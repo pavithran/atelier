@@ -245,6 +245,14 @@ export const HARNESSES = {
       // a writable root, and a build has to commit.
       return { argv: [...common, "--sandbox", "workspace-write", "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify([join(args.workspace, ".git")])}`, "-"], verdictFrom: "stdout" };
     },
+    // A review that states no verdict is asked once more in the same session
+    // (t299): codex keeps the review's session under its scratch folder, which
+    // is unique to the run, so --last resumes that review and no other. The
+    // second reply goes to its own file, since the first is already written.
+    followUp(args, kind, setup, file) {
+      return [...setup.noMcp, "exec", "resume", "--last", "--model", args.model, "--skip-git-repo-check", "-c", "sandbox_mode=\"workspace-write\"", "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "--output-last-message", file, "-"];
+    },
+    followUpCwd: (args, setup) => setup.scratch,
   },
   opencode: {
     executable: "opencode",
@@ -654,7 +662,7 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   const result = limit ? runLimited(spawn, exe, harnessArgv, options, { ms: io.limitMs ?? limit.ms, err, harness }) : spawn(exe, harnessArgv, options);
   if (result.error) return fail(result.error.code === "ETIMEDOUT" && limit ? `${exe} was stopped after its time limit of ${Math.round((io.limitMs ?? limit.ms) / 1000)} s` : `could not run ${exe}: ${result.error.message}`);
   if (result.status !== 0) return result.status ?? 1;
-  if (!capture) return 0;
+  if (!capture) return verdictFrom === "file" && kind === "review" ? askAgainFromFile(harness, args, setup, brief, { spawn, exe, childEnv, io }) : 0;
   let answer = result.stdout ?? "";
   if (verdictFrom === "agy-json") {
     try { answer = JSON.parse(answer.trim()).response; } catch { return fail(`${exe} printed no JSON`); }
@@ -724,6 +732,29 @@ function endGroup(pid) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
   }
   return alive();
+}
+
+// The same second ask for a harness that writes its reply to a file, which is
+// how a codex review answers (t299): astra's reply was kept as it stood, with
+// no second ask, and a prose reply with no VERDICT line was released. The
+// second reply is read from a file of its own and appended to the first.
+function askAgainFromFile(harness, args, setup, brief, { spawn, exe, childEnv, io }) {
+  const adapter = HARNESSES[harness];
+  if (!adapter.followUp || isVerification(brief)) return 0;
+  let first;
+  try { first = readFileSync(args.verdict, "utf8"); } catch { return 0; }
+  if (!first.trim() || !noVerdict(first)) return 0;
+  const file = `${args.verdict}.again`;
+  const again = spawn(exe, adapter.followUp(args, "review", setup, file), {
+    cwd: adapter.followUpCwd(args, setup), env: childEnv, input: verdictFollowUp(criteriaAsked(brief)), encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    stdio: ["pipe", "inherit", "inherit"],
+  });
+  let more = "";
+  try { more = !again.error && again.status === 0 ? readFileSync(file, "utf8").trim() : ""; } catch { /* nothing was written */ }
+  rmSync(file, { force: true });
+  if (more) writeFileSync(args.verdict, `${first.replace(/\n+$/, "")}\n\n${more}\n`, "utf8");
+  else (io.stderr ?? ((text) => process.stderr.write(text)))(`atelier-${harness}: the reply states no verdict and asking again for it failed${again.error ? `: ${again.error.message}` : ` (exit ${again.status})`}\n`);
+  return 0;
 }
 
 function noVerdict(answer) {

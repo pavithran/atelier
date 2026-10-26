@@ -70,7 +70,7 @@ fs.appendFileSync(${JSON.stringify(record)} + ".calls", JSON.stringify({ argv, i
 // it to the letter: with the ask's own verdict-format lines, and no other.
 const template = (ask) => ask.split("\\n").filter((l) => /^(?:SUMMARY|FINDING|CRITERION \\d+|VERDICT):/.test(l)).join("\\n");
 const followUp = process.env.FAKE_FOLLOW_UP === "@template" ? template(input) : process.env.FAKE_FOLLOW_UP;
-const answer = !process.env.FAKE_ANSWER ? "VERDICT: APPROVE\\nSUMMARY: fine" : argv.includes("--continue") ? followUp : process.env.FAKE_ANSWER;
+const answer = !process.env.FAKE_ANSWER ? "VERDICT: APPROVE\\nSUMMARY: fine" : argv.includes("--continue") || argv.includes("resume") ? followUp : process.env.FAKE_ANSWER;
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
 else if (argv.includes("--format") && argv[argv.indexOf("--format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "text", part: { text: answer } }));
@@ -251,6 +251,33 @@ test("an opencode review whose second ask also states no verdict keeps both repl
   const parsed = parseVerdict(readFileSync(verdict, "utf8"));
   assert.equal(parsed.ok, false);
   assert.match(parsed.error, /states no verdict/);
+});
+
+// Astra's reviews on miqra on 2026-10-25 (t299): 11 replies in prose with no
+// VERDICT line. Only opencode was asked again; a codex review writes its reply
+// to a file, which took no second ask.
+test("a codex review that states no verdict is asked again in its own session, and both replies are kept", (t) => {
+  const s = setup(t);
+  const narrative = "I read the diff and ran the tests; all holds.";
+  const { verdict } = run("codex", s, { model: "gpt-6-astra", review: true, env: { FAKE_ANSWER: narrative, FAKE_FOLLOW_UP: "SUMMARY: read the diff\nBLOCKING: 0\nVERDICT: APPROVE" } });
+  const calls = readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(calls.length, 2, "the review and one second ask");
+  const again = calls.at(-1).argv;
+  assert.deepEqual(again.slice(again.indexOf("exec"), again.indexOf("exec") + 3), ["exec", "resume", "--last"]);
+  assert.match(calls.at(-1).input, /states no verdict/);
+  const text = readFileSync(verdict, "utf8");
+  assert.ok(text.startsWith(narrative));
+  assert.equal(parseVerdict(text).ok, true);
+});
+
+test("a codex review that states a verdict is not asked again, and one whose second ask fails keeps its first reply", (t) => {
+  const s = setup(t);
+  run("codex", s, { model: "gpt-6-astra", review: true, env: {} });
+  assert.equal(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").filter((l) => JSON.parse(l).argv.includes("resume")).length, 0);
+  const t2 = setup(t);
+  const { verdict } = run("codex", t2, { model: "gpt-6-astra", review: true, env: { FAKE_ANSWER: "Looks fine to me.", FAKE_FOLLOW_UP: "Still fine." } });
+  assert.equal(readFileSync(`${t2.record}.calls`, "utf8").trim().split("\n").filter((l) => JSON.parse(l).argv.includes("resume")).length, 1, "asked once more, not again");
+  assert.match(parseVerdict(readFileSync(verdict, "utf8")).error, /states no verdict/);
 });
 
 test("the harnesses are started with their own permission rules", (t) => {
