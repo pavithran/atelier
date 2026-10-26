@@ -3,7 +3,7 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { bindingOf, DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, independentReviewerText, mergedBlockers, modelOf, recordedText, singleFamily, stateLabel, type Review } from "./rules.ts";
+import { bindingOf, DEFAULT_OWNER, directionText, evidenceAt, countingReviews, gate as gateOf, independentReviewerText, mergedBlockers, modelOf, recordedText, singleFamily, stateLabel, type Review } from "./rules.ts";
 import { assertLength } from "./text.ts";
 import { readyToAccept } from "./landing-verdict.ts";
 import { criteriaOf } from "./criteria.ts";
@@ -270,7 +270,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   if (item.state === "blocked") {
     const b = item.blocked;
     const reason = (b?.reason ?? "no reason recorded").replace(/[.\s]*$/, "");
-    return { verdict: "decide", reason: `${b?.by ?? "Nobody"} blocked it: ${clip(reason, 200)}. Clear that, then run atelier unblock ${item.id}; or close it with atelier abandon ${item.id}.` };
+    return { verdict: "decide", reason: `${b?.by ?? "Nobody"} blocked it: ${clip(reason, 200)}${b?.quote ? ` (${directionText(b)})` : ""}. Clear that, then run atelier unblock ${item.id}; or close it with atelier abandon ${item.id}.` };
   }
   if (item.state !== "submitted") {
     return { verdict: "wait", reason: `The task is ${state} and has not been submitted for a decision.` };

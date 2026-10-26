@@ -30,7 +30,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
   forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
@@ -4278,7 +4278,7 @@ export class Ledger extends DurableObject<Env> {
   // go on, and either unblocks it. The task keeps its owner, workspace and
   // dispatch record meanwhile; unblocking returns it to the state it was in.
   // An open task has no holder, so only the owner blocks or unblocks it.
-  block(id: string, actor: string, reason: unknown, proved = false, until?: unknown): Item {
+  block(id: string, actor: string, reason: unknown, proved = false, until?: unknown, direction: OwnerDirection | null = null): Item {
     const text = blockReason(reason);
     const now = new Date();
     const day = blockUntil(until, now);
@@ -4286,9 +4286,10 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) assertOwner(item, actor);
     assertBlockable(item);
     const at = now.toISOString();
-    const record: Block = { reason: text, by: actor, at, from: item.state, ...(day ? { until: day } : {}) };
+    const said = direction ? { quote: direction.quote, acting: direction.acting } : {};
+    const record: Block = { reason: text, by: actor, at, from: item.state, ...(day ? { until: day } : {}), ...said };
     this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
-    this.log(id, actor, "item.blocked", { reason: text, from: item.state, ...(day ? { until: day } : {}) }, at, proved);
+    this.log(id, actor, "item.blocked", { reason: text, from: item.state, ...(day ? { until: day } : {}), ...(direction ? { confirmed: "direction", ...said } : {}) }, at, proved);
     return this.item(id);
   }
 
@@ -4296,19 +4297,20 @@ export class Ledger extends DurableObject<Env> {
   // Unblocking is also the explicit retry after a blocking pre-review
   // (t524): it lifts the fence on the task's landing, so atelier land may
   // queue it again; the builder or the owner says the findings are dealt with.
-  unblock(id: string, actor: string, proved = false): Item {
+  unblock(id: string, actor: string, proved = false, direction: OwnerDirection | null = null): Item {
     const item = this.item(id);
     const fence = this.prereviewFence(id);
     if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`);
     if (actor !== this.owner) assertOwner(item, actor);
     const at = new Date().toISOString();
+    const said = direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {};
     if (fence) {
       this.sql.exec(`DELETE FROM meta WHERE key = ?`, `prereview-fence:${id}`);
-      this.log(id, actor, "prereview.retried", { request: fence.request, head: fence.head, current: item.head }, at, proved);
+      this.log(id, actor, "prereview.retried", { request: fence.request, head: fence.head, current: item.head, ...said }, at, proved);
     }
     if (item.state !== "blocked" || !item.blocked) return this.item(id);
     this.update(id, { state: item.blocked.from, blocked: null }, at);
-    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, at, proved);
+    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from, ...said }, at, proved);
     return this.item(id);
   }
 
@@ -4383,7 +4385,7 @@ export class Ledger extends DurableObject<Env> {
   // same file records it as cleared rather than blocking the push again; the
   // flags themselves stay on the item, marked cleared, as the record of what
   // the scan found.
-  clearSecret(id: string, actor: string, reason: unknown, proved = false): Item {
+  clearSecret(id: string, actor: string, reason: unknown, proved = false, direction: OwnerDirection | null = null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer clears a secret flag", 403);
     const text = secretClearReason(reason);
     const item = this.item(id);
@@ -4398,13 +4400,14 @@ export class Ledger extends DurableObject<Env> {
     if (!standing.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409);
     const at = new Date().toISOString();
     const clearances = [...(item.secretClearances ?? [])];
+    const said = direction ? { quote: direction.quote, acting: direction.acting } : {};
     for (const f of standing) {
       if (!f.fingerprint || clearances.some((c) => c.file === f.file && c.fingerprint === f.fingerprint)) continue;
-      clearances.push({ file: f.file, fingerprint: f.fingerprint, reason: text, head: item.head, by: actor, at } satisfies SecretClearance);
+      clearances.push({ file: f.file, fingerprint: f.fingerprint, reason: text, head: item.head, by: actor, at, ...said } satisfies SecretClearance);
     }
     const flags = (item.secret ?? []).map((f): SecretFlag => (f.cleared ? f : { ...f, cleared: true }));
     this.update(id, { secret: JSON.stringify(flags), secret_cleared: JSON.stringify(clearances) }, at);
-    this.log(id, actor, "secret.cleared", { reason: text, head: item.head, flags: standing.map((f) => ({ file: f.file, line: f.line })) }, at, proved);
+    this.log(id, actor, "secret.cleared", { reason: text, head: item.head, flags: standing.map((f) => ({ file: f.file, line: f.line })), ...(direction ? { confirmed: "direction", ...said } : {}) }, at, proved);
     return this.item(id);
   }
 
@@ -5685,14 +5688,14 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  abandon(id: string, actor: string, note: string, token?: string | null, deliveredBy?: string): Item {
+  abandon(id: string, actor: string, note: string, token?: string | null, deliveredBy?: string, direction: OwnerDirection | null = null): Item {
     this.abandonAllowed(id, actor, note, deliveredBy);
     this.dropToken(id, token);
     // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
-    this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}) }, at);
+    this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}), ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {}) }, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
