@@ -1078,19 +1078,19 @@ test("the project is in full mode unless a fast record stands, and only the owne
 // and a fast landing are refused under noOverride, and the switch needs the
 // permission the developer gives on the Settings page with the factor no
 // agent holds, as an override from the command line does.
-import { assertFastModeAllowed, assertFastModeConfirmed, fastModeConfirmationHint } from "../src/rules.ts";
+import { assertFastModeAllowed, assertFastModeConfirmed, fastModeConfirmationHint, fastModePageHint } from "../src/rules.ts";
 
 test("fast mode is refused where overrides are, and the switch needs the developer's confirmation, not the token", () => {
   assert.throws(() => assertFastModeAllowed({ noOverride: true }), (e: RuleError) => e.code === "fast_mode_forbidden" && /forbids overrides/.test(e.detail) && /--no-override/.test(e.detail));
   assertFastModeAllowed({});
   const now = Date.parse("2026-10-13T14:00:00.000Z");
   const given = { by: "owner", at: "2026-10-13T13:50:00.000Z", until: "2026-10-13T14:05:00.000Z", factor: "secret" as const };
-  assert.throws(() => assertFastModeConfirmed(null, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed" && e.status === 403 && /Allow fast mode from the command line/.test(e.detail) && /developer token alone/.test(e.detail));
+  assert.throws(() => assertFastModeConfirmed(null, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed" && e.status === 403 && /on their yes run: atelier mode fast --reason TEXT --quote "the developer's words" --as H\/M --project proj/.test(e.detail) && !/Settings|\/p\/proj/.test(e.detail) && /developer token alone/.test(e.detail));
   assert.throws(() => assertFastModeConfirmed({ ...given, until: "2026-10-13T13:59:00.000Z" }, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed");
   assert.throws(() => assertFastModeConfirmed({ ...given, by: "codex/gpt-6" }, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed");
   assertFastModeConfirmed(given, now, "owner", "proj");
-  assert.match(fastModeConfirmationHint("proj", "https://a.test", "access"), /^open https:\/\/a\.test\/p\/proj\/settings as the developer, press "Allow fast mode from the command line" under your Cloudflare Access sign-in/);
-  assert.match(fastModeConfirmationHint("proj", "", null), /this server can take no confirmation/);
+  assert.match(fastModePageHint("proj", "https://a.test", "access"), /^open https:\/\/a\.test\/p\/proj\/settings as the developer, press "Allow fast mode from the command line" under your Cloudflare Access sign-in/);
+  assert.match(fastModePageHint("proj", "", null), /this server can take no confirmation/);
 });
 
 // t629 reverses t596's confirmation for the command line (Astra's audit of
@@ -1111,8 +1111,8 @@ test("the developer's direction is their quoted words and the model acting on th
   const fast = { mode: "fast" as const, since: "2026-10-13T14:05:00.000Z", reason: "forks fail", by: "owner", decision: "d1" };
   assert.equal(modeLine(fast), "Mode: fast since 2026-10-13 14:05 UTC (forks fail)");
   assert.equal(modeLine({ ...fast, quote: "go fast", acting: "claude-code/opus-5.5" }), "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: \u201cgo fast\u201d, relayed by claude-code/opus-5.5");
-  // Both refusals name the direction as the other way to confirm.
-  assert.match(fastModeConfirmationHint("proj"), /Allow fast mode from the command line.*; or run it again with --quote "the developer's words" and --as H\/M naming the model acting on them/);
+  // The fast mode refusal names the command to run on the developer's yes, not a page; the override's names the direction as the other way.
+  assert.match(fastModeConfirmationHint("proj"), /^ask the developer, and on their yes run: atelier mode fast --reason TEXT --quote "the developer's words" --as H\/M --project proj;/);
   assert.match(overrideConfirmationHint("proj", "t1"), /Allow an override from the command line.*; or run it again with --quote "the developer's words" and --as H\/M naming the model acting on them/);
 });
 

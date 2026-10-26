@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
+import { renderActions } from "../src/actions-page.ts";
+import type { ApprovalView } from "../src/actions.ts";
 import { parseRuleError } from "../src/rules.ts";
 import { signIn } from "./signin.ts";
 
@@ -161,4 +163,36 @@ it("the Ship tab still draws, without the form, when the main line cannot be rea
   const html = await res.text();
   expect(html).toContain("The main line's head could not be read");
   expect(html).not.toContain('action="/ui/actions-dark/actions/approve"');
+});
+
+it("the approve route records the developer's words and the acting model, and refuses words with no model", async () => {
+  await project("actions-quote");
+  expect((await api("PUT", "/models/opus-5.5", "owner", { harness: "claude-code", where: "cloud" })).status).toBe(200);
+  const post = (body: unknown, acting?: string) => worker.fetch(new Request("https://atelier.test/api/projects/actions-quote/actions", {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json", ...(acting ? { "x-atelier-acting": acting } : {}) },
+    body: JSON.stringify(body),
+  }), testEnv);
+  const bare = await post({ kind: "deploy", commit: H2, quote: "ship it" });
+  expect(bare.status).toBe(400);
+  expect(await bare.json()).toMatchObject({ error: "no_acting" });
+  const ok = await post({ kind: "deploy", commit: H2, quote: "ship it" }, "claude-code/opus-5.5");
+  expect(ok.status).toBe(201);
+  expect(await ok.json()).toMatchObject({ id: "a1", quote: "ship it", acting: "claude-code/opus-5.5", note: "" });
+  const listed = await (await api("GET", "/projects/actions-quote/actions", "owner")).json() as { approvals: { quote?: string }[] };
+  expect(listed.approvals[0].quote).toBe("ship it");
+  const plain = await post({ kind: "install", commit: H2 });
+  expect(plain.status).toBe(201);
+  expect(await plain.json()).not.toHaveProperty("quote");
+});
+
+it("the actions page shows the developer's words on an approval and on the run that used it, escaped, and none on a plain one", () => {
+  const T = "2026-10-26T10:00:00.000Z";
+  const approval = (id: string, extra: object): ApprovalView => ({ id, kind: "deploy", commit: H2, note: "", by: "owner", at: T, expiresAt: "2999-01-01T00:00:00.000Z", status: "active", ...extra });
+  const run = { step: "deploy", kind: "deploy", approval: "a1", command: "make", commit: H2, exitStatus: 0, signal: null, durationMs: 5, passed: true, outputTail: "", ship: "s1", note: "", at: T };
+  const said = { quote: "yes, <deploy> it", acting: "claude-code/opus-5.5" };
+  const html = renderActions("demo", [approval("a1", said), approval("a2", {})], [{ ...run, ...said }], H2);
+  expect(html.split("relayed by claude-code/opus-5.5").length - 1).toBe(2);
+  expect(html).toContain("yes, &lt;deploy&gt; it");
+  expect(html).not.toContain("<deploy>");
+  expect(html.split("the developer&#39;s words").length - 1).toBe(2);
 });

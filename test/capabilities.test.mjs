@@ -148,7 +148,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "board", "branch", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["abandon", "accept", "block", "board", "branch", "claim", "clear-secret", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "unblock", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
@@ -165,6 +165,8 @@ test("each command that relies on a named capability declares it in its module",
   // mode fast, accept and merge send the developer's direction with --quote (t629).
   assert.deepEqual(COMMAND_CAPABILITIES.mode, ["projects.mode.v1", "projects.developer-direction.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.accept, ["projects.developer-direction.v1"]);
+  // block, unblock, abandon and clear-secret send it with --quote (t178).
+  for (const command of ["block", "unblock", "abandon", "clear-secret"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["items.developer-direction.v1"], command);
   assert.deepEqual(COMMAND_CAPABILITIES.fast, ["projects.mode.v1", "runners.fast-build.v1"]);
   // stuck reads the owner's stuck report route (t441).
   assert.deepEqual(COMMAND_CAPABILITIES.stuck, ["projects.stuck.v1"]);
@@ -669,7 +671,7 @@ test("--quote asks for the developer's direction by name, and a server without i
   const DIRECTION = "projects.developer-direction.v1";
   assert.deepEqual(requiredForCommand("mode", "fast", { reason: "r" }), ["projects.mode.v1"]);
   assert.deepEqual(requiredForCommand("mode", "fast", { reason: "r", quote: "go" }), ["projects.mode.v1", DIRECTION]);
-  assert.deepEqual(requiredForCommand("mode", "full", { quote: "go" }), ["projects.mode.v1"]);
+  assert.deepEqual(requiredForCommand("mode", "full", { quote: "go" }), ["projects.mode.v1", DIRECTION]);
   assert.deepEqual(requiredForCommand("accept", "t1", { "override-review": "r" }), []);
   assert.deepEqual(requiredForCommand("accept", "t1", { "override-review": "r", quote: "go" }), [DIRECTION]);
   assert.ok(!requiredForCommand("merge", "t1", { head: SHA, "override-review": "r" }).includes(DIRECTION));

@@ -3,7 +3,7 @@ import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./s
 import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { readRetention } from "./retention.ts";
-import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
+import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, type OwnerDirection } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
@@ -15,7 +15,7 @@ import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mer
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
-import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -143,7 +143,7 @@ function ownerFactorOf(env: Env): OwnerFactor | null {
 // permission for fast mode (Astra's audit of 2026-10-13, finding 3).
 function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: string | null): OwnerFactor {
   const factor = ownerFactorOf(env);
-  const hint = id === null ? fastModeConfirmationHint(project, c.url.origin, factor) : overrideConfirmationHint(project, id, c.url.origin, factor);
+  const hint = id === null ? fastModePageHint(project, c.url.origin, factor) : overrideConfirmationHint(project, id, c.url.origin, factor);
   const [code, what] = id === null ? ["fast_mode_unconfirmed", "fast mode"] : ["override_unconfirmed", "an override of the independent review"];
   if (factor === "access" && c.access) return "access";
   if (factor === "secret") {
@@ -570,6 +570,40 @@ function movedTo(url: URL, parts: string[]): Response {
 
 function requireOwner(env: Env, actor: string) {
   if (actor !== ownerActor(env)) throw new RuleError("not_project_owner", "only the developer can do this", 403);
+}
+
+// The developer's direction for block, unblock, abandon and clear-secret
+// (t178), as accept and fast mode take it (t629): `quote` with the acting
+// model, on the developer token alone, recorded with the event. The
+// developer's token without words is refused when a model is acting with it,
+// or, for block and unblock, when it names a holder's actor instead of the
+// developer's own; the answer is the one command to run on the developer's
+// yes. An agent's own token never carries the words. The developer's own call
+// with no model named goes on as before.
+function itemDirection(c: Ctx, verb: "block" | "unblock" | "abandon" | "clear-secret", id: string, project: string, env: Env): OwnerDirection | null {
+  const body = c.body as Record<string, unknown>;
+  if (body.quote !== undefined) {
+    if (c.token) throw new RuleError("owner_token_required", `${verb} on the developer's words needs the developer token; an agent's own token cannot carry them`, 403);
+    if (c.actor !== ownerActor(env)) throw new RuleError("bad_quote", `${verb} on the developer's direction is recorded under the developer's actor, not ${c.actor}`, 400);
+    return ownerDirection(body.quote, c.acting ?? null, verb);
+  }
+  if (c.token) return null;
+  // Block and unblock go out under the caller's own actor when no words are
+  // sent, so a session naming a model's actor on the developer token has no
+  // acting header; it is stopped like one that has.
+  const named = (verb === "block" || verb === "unblock") && c.actor !== ownerActor(env);
+  if (!c.acting && !named) return null;
+  const text = (v: unknown) => JSON.stringify(String(v));
+  const command = [
+    "atelier", verb, id,
+    verb === "block" ? text(body.reason ?? "") : "",
+    verb === "block" && typeof body.until === "string" ? `--until ${body.until}` : "",
+    verb === "abandon" && typeof body.note === "string" && body.note ? `--note ${text(body.note)}` : "",
+    verb === "abandon" && typeof body.deliveredBy === "string" ? `--delivered-by ${body.deliveredBy}` : "",
+    verb === "clear-secret" ? `--note ${text(body.reason ?? "")}` : "",
+    `--quote "the developer's words" --as H/M --project ${project}`,
+  ].filter(Boolean).join(" ");
+  throw new RuleError("direction_needed", `${verb} by a model on the developer token needs the developer's yes. Once they have said it, run: ${command}`, 403);
 }
 
 function codeOf(err: unknown): string {
@@ -2047,7 +2081,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (m === "POST") {
       try { return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null, body.quote)); } catch (err) {
         const rule = parseRuleError(err);
-        if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project, c.url.origin, ownerFactorOf(env))}`, rule.status);
+        if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, rule.status);
         throw err;
       }
     }
@@ -2077,7 +2111,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
   if (parts[2] === "actions") {
-    const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
+    const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit), c.acting ?? null);
     return json(r.data, r.status);
   }
   if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
@@ -2503,12 +2537,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
-      return json(await L.block(id, actor, body.reason, !!c.token, body.until));
+      return json(await L.block(id, actor, body.reason, !!c.token, body.until, itemDirection(c, "block", id, ref.name, env)));
     case "unblock":
-      return json(await L.unblock(id, actor, !!c.token));
+      return json(await L.unblock(id, actor, !!c.token, itemDirection(c, "unblock", id, ref.name, env)));
     case "clear-secret":
       requireOwner(env, actor);
-      return json(await L.clearSecret(id, actor, body.reason, !!c.token));
+      return json(await L.clearSecret(id, actor, body.reason, !!c.token, itemDirection(c, "clear-secret", id, ref.name, env)));
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
@@ -3150,13 +3184,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "abandon": {
       requireOwner(env, actor);
       const note = String(body.note ?? "");
+      const direction = itemDirection(c, "abandon", id, ref.name, env);
       if (body.deliveredBy !== undefined && (typeof body.deliveredBy !== "string" || !/^t\d+$/.test(body.deliveredBy))) throw new RuleError("bad_delivered_by", "deliveredBy must be a task id such as t5", 400);
       const deliveredBy = body.deliveredBy as string | undefined;
       const oldToken = await L.tokenId(id);
       await L.checkAbandon(id, actor, note, deliveredBy);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.abandon(id, actor, note, oldToken, deliveredBy);
+      const item = await L.abandon(id, actor, note, oldToken, deliveredBy, direction);
       return json(item);
     }
     case "defect": {
@@ -3931,7 +3966,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // page's override permission is: from the developer's own sign-in, with
     // the factor no agent holds (Astra's audit of 2026-10-13, finding 3).
     if (id === "mode" && verb === "allow-fast") {
-      if (!c.signedIn) throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's own sign-in, not the developer token: ${fastModeConfirmationHint(project, c.url.origin, ownerFactorOf(env))}`, 403);
+      if (!c.signedIn) throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's own sign-in, not the developer token: ${fastModePageHint(project, c.url.origin, ownerFactorOf(env))}`, 403);
       await L.confirmFastMode(owner, ownerFactorIn(env, c, form, project, null));
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/settings`, c.url).toString(), 303);
     }

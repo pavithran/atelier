@@ -1422,16 +1422,22 @@ it("the holder blocks and unblocks through the API, only the owner edits the fra
   expect((await call("POST", "/projects/routes-c/items", "owner", { title: "Bad", nonGoals: "no b" })).status).toBe(400);
   const at = (verb: string) => `/projects/routes-c/items/${created.id}/${verb}`;
 
+  // The holder acts on its own token: the developer's token under a model's
+  // actor is stopped for block and unblock (t178).
+  const holderToken = (await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6", projects: ["routes-c"] })).json() as { token: string }).token;
+  const holder = (verb: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api${at(verb)}`, {
+    method: "POST", headers: { authorization: `Bearer ${holderToken}`, "content-type": "application/json" }, body: JSON.stringify(body),
+  }), testEnv);
   await L.claim(created.id, "codex/gpt-6");
-  expect((await call("POST", at("block"), "codex/gpt-6", {})).status).toBe(400);
-  const blocked = await call("POST", at("block"), "codex/gpt-6", { reason: "waiting on the developer" });
+  expect((await holder("block", {})).status).toBe(400);
+  const blocked = await holder("block", { reason: "waiting on the developer" });
   expect(blocked.status).toBe(200);
   expect((await blocked.json() as { state: string; blocked: { by: string } })).toMatchObject({ state: "blocked", blocked: { by: "codex/gpt-6" } });
-  const submit = await call("POST", at("submit"), "codex/gpt-6", {});
+  const submit = await holder("submit", {});
   expect(submit.status).toBe(409);
   expect((await submit.json() as { error: string; detail: string })).toMatchObject({ error: "blocked", detail: `${created.id} is blocked: waiting on the developer. Run atelier unblock ${created.id} first` });
 
-  expect((await call("POST", at("edit"), "codex/gpt-6", { nextGate: "x" })).status).toBe(403);
+  expect((await holder("edit", { nextGate: "x" })).status).toBe(403);
   const edited = await call("POST", at("edit"), "owner", { stopWhen: ["a test is red"], nextGate: null });
   expect(edited.status).toBe(200);
   expect(await edited.json() as { nonGoals: string[]; stopWhen: string[]; nextGate: string | null }).toMatchObject({ nonGoals: ["no b"], stopWhen: ["a test is red"], nextGate: null });
