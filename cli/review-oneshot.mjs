@@ -37,20 +37,20 @@ export function reviewerHere(reviewer, configPath, read = readConfig) {
 // token (reviewToken); a job that fails releases its claim before it returns,
 // so nothing is held when this does. Answers { missing } when the model is
 // not on this Mac (nothing was claimed), otherwise { phase, verdict?, reason? }.
-// deps: configPath, read, runRunner, runReview, api, workspacePath, checkoutOf,
-// taskIO (tests replace them).
+// deps, which the command wires from the CLI (cli/commands/land.mjs): runRunner
+// and runReview of cli/runner.mjs, api ({ server, I }), workspacePath and
+// checkoutOf; configPath, read and taskIO are for tests. This module imports
+// none of them, since the runner reaches it and may not reach the CLI's helpers.
 export async function runOneShotReview({ project, id, reviewer, log = () => {}, deps = {} }) {
   const here = reviewerHere(reviewer, deps.configPath ?? defaultConfigPath(), deps.read);
   if (here.missing) return { missing: here.missing };
-  const runtime = deps.runRunner ? deps : { ...(await import("./atelier.mjs").then((m) => ({ api: { server: m.server, I: m.I }, workspacePath: m.workspacePath, checkoutOf: (name) => m.cfg.projects?.[name]?.path ?? null }))), ...deps };
-  const { runRunner, runReview } = deps.runRunner ? { runRunner: deps.runRunner, runReview: deps.runReview } : await import("./runner.mjs");
   const name = `home:oneshot-${id}-${process.pid}`;
   const actor = `${here.agent}/${here.model}`;
   log(`no live runner offers ${reviewer}: running its review of ${id} once on this Mac as ${name}`);
   // No runner token: the review job's calls carry the reviewer's own token,
   // and the landing's token goes to none of them.
-  return runRunner({ _: ["runner"], multi: { name: [name] }, name, config: here.configPath }, {
-    credential: null, taskIO: deps.taskIO, api: runtime.api, workspacePath: runtime.workspacePath, checkoutOf: runtime.checkoutOf,
-    oneShot: ({ io, config, name: runner }) => runReview({ project, item: { id }, agent: here.agent, model: here.model, actor }, config, runner, io),
+  return deps.runRunner({ _: ["runner"], multi: { name: [name] }, name, config: here.configPath }, {
+    credential: null, taskIO: deps.taskIO, api: deps.api, workspacePath: deps.workspacePath, checkoutOf: deps.checkoutOf,
+    oneShot: ({ io, config, name: runner }) => deps.runReview({ project, item: { id }, agent: here.agent, model: here.model, actor }, config, runner, io),
   });
 }
