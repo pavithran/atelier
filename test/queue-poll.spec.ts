@@ -154,7 +154,7 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   expect(kinds(free.id)).toEqual(["skipped"]);
   expect(kinds(nobody.id)).toEqual(["unoffered"]);
   const line = (id: string, kind: string) => (all.find((q) => q.project === name && q.item.id === id)?.item.why ?? []).find((r) => r.kind === kind)?.line ?? "";
-  expect(line(free.id, "skipped")).toBe(`Skipped by home:why after 2 failed runs under this dispatch (the last timed-out); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch ${free.id} --to home --agent opencode.`);
+  expect(line(free.id, "skipped")).toBe(`Skipped by home:why after 2 failed runs under this dispatch (the last timed-out); that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the cause, then atelier dispatch ${free.id} --to home --agent opencode.`);
   expect(line(nobody.id, "unoffered")).toMatch(new RegExp(`^No live runner can take it: .*atelier dispatch ${nobody.id} --agent H --model M`));
   expect(line(refused.id, "overlap")).toMatch(new RegExp(`^Overlap refused: ${live.id} \\(claimed by ${A}\\) holds a scope`));
   const heldLine = (all.find((q) => q.project === name && q.item.id === held.id)?.item.why ?? []).find((r) => r.kind === "held")?.line ?? "";
