@@ -244,10 +244,23 @@ export function failureReport(id, output) {
 //   baselineHead async () => the baseline's head commit, or null
 //   hasJournal   () => whether a landing journal exists for the checkout
 //   land         async () => { code, output, timedOut } of `atelier land ID`
+//   taskState    async () => { state, key } of the task, key naming its head
+//                and review state; throws when it cannot be read
+//   waiting      what the last run of this job stopped on, { key, kind,
+//                reason }, or null
+// A landing that exits 0 has landed only if the task is merged afterwards
+// (t285): `atelier land` also exits 0 when it stops at the review ask or a
+// rejection. Such a run resolves { ok: false, waiting: "asked" | "rejected",
+// reason, key }, and while the task's key is the one it stopped on the job
+// does not run again.
 // Resolves { ok: true } or { ok: false, refused, reason } where refused is
 // true when the job was not started.
 export async function runLandJob(id, io) {
   const { checkout, git, baselineHead, hasJournal, land } = io;
+  if (io.waiting && io.taskState && !hasJournal()) {
+    const now = await io.taskState().catch(() => null);
+    if (now && now.state !== "merged" && now.key === io.waiting.key) return { ok: false, refused: false, waiting: io.waiting.kind, reason: io.waiting.reason, key: now.key, unchanged: true };
+  }
   if (!hasJournal()) {
     const status = await git(["status", "--porcelain"]);
     if (status.code !== 0) return { ok: false, refused: true, reason: `the checkout ${checkout} cannot be read: git status exited ${status.code}` };
@@ -260,7 +273,25 @@ export async function runLandJob(id, io) {
     if (here !== base && !await io.samePaired?.(here, base)) return { ok: false, refused: true, reason: `main in the checkout ${checkout} is at ${here.slice(0, 8)}, not at the baseline's ${base.slice(0, 8)}; run atelier sync there, and the landing of ${id} runs on the next poll` };
   }
   const result = await land();
-  if (result.code === 0 && !result.timedOut) return { ok: true };
+  if (result.code === 0 && !result.timedOut) {
+    if (!io.taskState) return { ok: true };
+    let now;
+    try { now = await io.taskState(); } catch (error) { return { ok: false, refused: false, reason: `landing ${id} exited 0, but the task's state could not be read to confirm the merge: ${error.message}` }; }
+    if (now.state === "merged") return { ok: true };
+    const kind = /\brejected\b/.test(result.output) ? "rejected" : "asked";
+    const tail = String(result.output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ");
+    return { ok: false, refused: false, waiting: kind, key: now.key, reason: `${kind}, not merged (the task is ${now.state}): ${tail || "the landing stopped before the merge"}` };
+  }
+  // A rejection is a nonzero exit: the landing throws at the verdict and
+  // `atelier land` dies with exit 1. It waits like the exit 0 case, on the
+  // key the task has now; a failure that is not a rejection is retried.
+  if (!result.timedOut && io.taskState && new RegExp(`\\brejected ${id}\\b`).test(result.output ?? "")) {
+    const now = await io.taskState().catch(() => null);
+    if (now && now.state !== "merged") {
+      const text = String(result.output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ");
+      return { ok: false, refused: false, waiting: "rejected", key: now.key, reason: `rejected, not merged (the task is ${now.state}): ${text}` };
+    }
+  }
   const output = result.timedOut ? `${result.output}\natelier land failed (timed out)` : result.output;
   return { ok: false, refused: false, reason: failureReport(id, output) };
 }
