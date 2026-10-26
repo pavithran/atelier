@@ -1,0 +1,63 @@
+atelier atelier/t308 "atelier mode fast says how fast mode lands now, not 'merge finished tasks…"
+accepted head 3f06b282ee9c4cfeb680bdac410b9154bbcbb23b
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-26T22:13:05.375Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-26T22:13:11.341Z
+REVIEW approve by antigravity/gemini-4-argon at 3f06b282ee9c4cfeb680bdac410b9154bbcbb23b, recorded by antigravity/gemini-4-argon
+REVIEW approve by opencode/glm-5.3 at 3f06b282ee9c4cfeb680bdac410b9154bbcbb23b, recorded by opencode/glm-5.3
+CHECKED TREE cafe0b1082e1d5c93db402affdaa15828c6bd2e9: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-26T05:10:52.120Z claude-code/opus-5.5 item.created
+2026-10-26T05:10:52.120Z claude-code/opus-5.5 criteria.revised
+2026-10-26T14:42:26.987Z pavi criteria_review.requested
+2026-10-26T14:50:00.745Z codex/gpt-6-astra criteria_review.claimed
+2026-10-26T14:50:12.402Z codex/gpt-6-astra criteria_review.approved
+2026-10-26T15:09:46.771Z pavi item.dispatched
+2026-10-26T15:20:36.300Z atelier stage.stuck
+2026-10-26T15:20:36.300Z atelier stage.told
+2026-10-26T18:20:11.604Z claude-code/opus-5.5 item.claimed
+2026-10-26T18:20:36.300Z atelier stage.cleared
+2026-10-26T18:20:44.072Z claude-code/opus-5.5 fork.created
+2026-10-26T18:37:44.136Z claude-code/opus-5.5 push.observed
+2026-10-26T18:37:49.281Z atelier/orchestrator refresh.queued
+2026-10-26T18:46:11.604Z claude-code/opus-5.5 evidence.observed
+2026-10-26T18:46:15.078Z claude-code/opus-5.5 evidence.observed
+2026-10-26T18:46:16.134Z claude-code/opus-5.5 item.submitted
+2026-10-26T19:00:36.300Z atelier stage.stuck
+2026-10-26T19:00:36.300Z atelier stage.told
+2026-10-26T20:43:28.512Z pavi review.requested
+2026-10-26T20:43:29.090Z pavi land.requested
+2026-10-26T20:43:35.384Z pavi review.withdrawn
+2026-10-26T20:43:35.384Z pavi review.requested
+2026-10-26T20:43:35.384Z pavi review.requested
+2026-10-26T20:45:36.300Z atelier stage.cleared
+2026-10-26T20:47:40.380Z antigravity/gemini-4-argon review.claimed
+2026-10-26T20:55:36.300Z atelier stage.stuck
+2026-10-26T20:55:36.300Z atelier stage.told
+2026-10-26T20:58:49.508Z antigravity/gemini-4-argon review.approved
+2026-10-26T21:00:36.300Z atelier stage.cleared
+2026-10-26T21:05:36.300Z atelier stage.stuck
+2026-10-26T21:05:36.300Z atelier stage.told
+2026-10-26T21:18:22.289Z atelier/orchestrator refresh.queued
+2026-10-26T21:22:13.444Z opencode/glm-5.3 review.claimed
+2026-10-26T21:32:32.514Z atelier/orchestrator refresh.queued
+2026-10-26T21:34:06.053Z opencode/glm-5.3 review.approved
+2026-10-26T21:35:36.300Z atelier stage.cleared
+2026-10-26T21:45:36.300Z atelier stage.stuck
+2026-10-26T21:45:36.300Z atelier stage.told
+2026-10-26T21:59:13.694Z pavi land.merge
+2026-10-26T21:59:14.839Z pavi land.regenerate
+2026-10-26T21:59:19.757Z claude-code/opus-5.5 push.observed
+2026-10-26T21:59:19.757Z atelier/orchestrator review.retained
+2026-10-26T21:59:19.757Z atelier/orchestrator review.retained
+2026-10-26T21:59:20.750Z pavi land.push
+2026-10-26T22:00:36.300Z atelier stage.cleared
+2026-10-26T22:13:06.365Z claude-code/opus-5.5 evidence.observed
+2026-10-26T22:13:11.686Z claude-code/opus-5.5 evidence.observed
+2026-10-26T22:13:12.685Z pavi land.check
+2026-10-26T22:13:13.117Z claude-code/opus-5.5 item.submitted
+2026-10-26T22:13:13.396Z pavi land.submit
+2026-10-26T22:13:14.123Z pavi land.review
+2026-10-26T22:13:14.620Z pavi land.lease
+2026-10-26T22:13:16.551Z pavi item.accepted
+2026-10-26T22:13:16.731Z pavi land.accept
