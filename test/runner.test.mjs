@@ -747,8 +747,8 @@ test("passedBy says why the loop passes an offered task by, with what lets it th
   assert.match(passedBy({ ...assignment, item: { ...assignment.item, dispatch: { job: "review" } } }, ["build"], empty), /^Not taken here: a review job, which this runner's config does not offer; add it to the config's jobs/);
   assert.match(passedBy(assignment, ["build"], { ...empty, refused: new Set([refusedKey(assignment)]) }), /^Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes/);
   assert.equal(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 1]]) }), null, "one failure is not yet a skip");
-  assert.match(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 2]]) }), /^Skipped after 2 failed runs under this dispatch; fix the cause, then dispatch it again \(atelier dispatch t13\) or restart this runner\.$/);
-  assert.match(passedBy(assignment, ["build"], { ...empty, infrastructureFailures: new Map([[taskKey(assignment), 3]]) }), /^Skipped after 3 infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again \(atelier dispatch t13\) or restart this runner\.$/);
+  assert.match(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 2]]) }), /^Skipped after 2 failed runs under this dispatch; fix the cause, then dispatch it again \(atelier dispatch t13\), push a new head or restart this runner\.$/);
+  assert.match(passedBy(assignment, ["build"], { ...empty, infrastructureFailures: new Map([[taskKey(assignment), 3]]) }), /^Skipped after 3 infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again \(atelier dispatch t13\), push a new head or restart this runner\.$/);
   // A task the server closed under this runner (t476) is passed by for good.
   assert.match(passedBy(assignment, ["build"], { ...empty, terminalTasks: new Map([[taskKey(assignment), "abandoned"]]) }), /^Not taken again: the server says it is closed \(state: abandoned\)/);
 });
