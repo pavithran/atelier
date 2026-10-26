@@ -3059,29 +3059,19 @@ export function labelPreExisting(findings: readonly Finding[], diff: string): Fi
   return findings.map((f) => f.severity === "blocking" && isPreExisting(f, touched) ? { ...f, severity: "follow-up", label: "pre-existing" } : f);
 }
 
-// The one-based positions in `findings` that labelPreExisting would make
-// pre-existing by placement. They are only candidates: the line rule cannot
-// see a finding that depends on code the change modified or added, so each
-// still goes to the independent check, which reads the diff, before it is
-// classed pre-existing (t290).
-export function placedPreExisting(findings: readonly Finding[], diff: string): Set<number> {
-  const labelled = labelPreExisting(findings, diff);
-  return new Set(labelled.flatMap((f, i) => (f.label === "pre-existing" && findings[i].severity === "blocking" ? [i + 1] : [])));
-}
-
 // `findings` after the independent check. `confirmed` holds the one-based
 // positions in `findings` it confirmed: they keep blocking. `preExisting`
 // holds those it showed were already present at the task's base: they are
 // pre-existing follow-ups, in a touched file or not. A blocking finding in
 // neither is made an unverified follow-up, since a blocker is proved, not
 // assumed. A position in both stays blocking: when the check is torn, the
-// finding blocks. `placed` holds the positions placed outside the change's
-// lines (placedPreExisting): one the check neither confirmed nor refuted is
-// pre-existing, not unverified, since the check had the diff to say otherwise.
-export function applyVerification(findings: readonly Finding[], confirmed: ReadonlySet<number>, preExisting: ReadonlySet<number> = new Set(), placed: ReadonlySet<number> = new Set()): Finding[] {
+// finding blocks. Pre-existing needs the check's affirmative answer: a finding
+// it left unanswered may depend on code the change modified, so it stays
+// unverified however far its line is from the diff (t290).
+export function applyVerification(findings: readonly Finding[], confirmed: ReadonlySet<number>, preExisting: ReadonlySet<number> = new Set()): Finding[] {
   return findings.map((f, i) => {
     if (f.severity !== "blocking" || confirmed.has(i + 1)) return f;
-    return { ...f, severity: "follow-up", label: preExisting.has(i + 1) || placed.has(i + 1) ? "pre-existing" : "unverified" };
+    return { ...f, severity: "follow-up", label: preExisting.has(i + 1) ? "pre-existing" : "unverified" };
   });
 }
 
