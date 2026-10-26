@@ -239,7 +239,7 @@ export function formatApprovals(approvals) {
       : a.status === "consumed" ? `used ${at(a.consumed.at)}`
         : a.status === "withdrawn" ? `withdrawn ${at(a.withdrawn.at)}${a.withdrawn.note ? ` (${a.withdrawn.note})` : ""}`
           : `expired ${at(a.expiresAt)}`;
-    return `${a.id.padEnd(4)} ${a.kind.padEnd(16)} ${short(a.commit)}  ${when}  approved ${at(a.at)}${a.note ? `  note: ${a.note}` : ""}`;
+    return `${a.id.padEnd(4)} ${a.kind.padEnd(16)} ${short(a.commit)}  ${when}  approved ${at(a.at)}${a.note ? `  note: ${a.note}` : ""}${a.quote ? `  developer said: "${a.quote}" (relayed by ${a.acting})` : ""}`;
   }).join("\n");
 }
 
@@ -284,7 +284,7 @@ function runNotes(r, approvals, commit) {
 
 function approvalText(approvals, kind, commit) {
   const a = approvalFor(approvals, kind, commit);
-  return a ? `[${kind}: approved as ${a.id} until ${at(a.expiresAt)}]` : `[${kind}: no approval at this revision]`;
+  return a ? `[${kind}: approved as ${a.id} until ${at(a.expiresAt)}${a.quote ? `; developer said: "${a.quote}", relayed by ${a.acting}` : ""}]` : `[${kind}: no approval at this revision]`;
 }
 
 // The commands that approve what is missing, one per kind. Push is never

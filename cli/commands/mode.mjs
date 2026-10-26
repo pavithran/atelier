@@ -6,14 +6,12 @@ import { OWNER, P, RequestError, actingHeaders, args, call, die, directionArg, p
 // What landed in fast mode, one line per task, with its post-merge review.
 export const landedLines = fastLandedLines;
 
-// The switch to fast mode needs the developer's confirmation (Astra's audit
-// of 2026-10-13, finding 3): their direction, --quote with the acting model
-// (t629), or their permission from the project's Settings page. The
-// server's refusal names the page and the factor it takes; this adds the
-// command to run again either way.
+// The switch to fast mode needs the developer's direction: --quote with
+// the acting model (t629). The server's refusal says so; this adds the
+// command the agent runs on the developer's yes, with this reason.
 export function fastRefusal(message, name, reason) {
   if (!/^fast_mode_unconfirmed:/.test(message)) return message;
-  return `${message}\nOnce allowed, run: atelier mode fast --reason ${JSON.stringify(reason)} --project ${name}\nOr, on the developer's direction: atelier mode fast --reason ${JSON.stringify(reason)} --quote "the developer's words" --as H/M --project ${name}`;
+  return `${message}\nOn the developer's yes, run: atelier mode fast --reason ${JSON.stringify(reason)} --quote "the developer's words" --as H/M --project ${name}`;
 }
 
 export async function switchMode(name, to, reason, direction = {}) {

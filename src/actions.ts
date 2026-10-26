@@ -15,7 +15,7 @@
 // of its record. The CLI imports the same constants and the expiry parser, so
 // a kind or an expiry the CLI accepts is one the Worker accepts.
 
-import { RuleError } from "./rules.ts";
+import { RuleError, ownerDirection, directionText } from "./rules.ts";
 
 // The kinds Atelier knows by name. A project's own ship files may name others
 // (cli/ship.mjs knownKinds); the Worker accepts any kind written this way.
@@ -45,6 +45,10 @@ export interface ActionApproval {
   kind: string;
   commit: string;        // the full revision of the main line it is bound to
   note: string;
+  // The developer's words and the model acting on them, when the approval
+  // was given on their direction (atelier approve --quote WORDS --as H/M).
+  quote?: string;
+  acting?: string;
   by: string;
   at: string;
   expiresAt: string;
@@ -75,6 +79,8 @@ export interface ActionRun {
   outputTail: string;        // the end of the output, redacted before it was sent
   ship: string;              // one id for every step of one ship
   note: string;
+  quote?: string;            // the developer's words on the approval the step used, when it had them
+  acting?: string;           // the model that relayed them
 }
 
 // Text a person typed, kept to one line without control characters.
@@ -84,8 +90,9 @@ const line = (v: unknown, max: number) =>
 const short = (sha: string) => sha.slice(0, 8);
 
 // What an approval request says, checked before anything is read or written:
-// a kind, the full revision, an optional note and an optional expiry.
-export function cleanApprovalInput(body: Record<string, unknown>): { kind: string; commit: string; note: string; seconds: number } {
+// a kind, the full revision, an optional note, an optional expiry and an
+// optional direction: the developer's words, which need the acting model.
+export function cleanApprovalInput(body: Record<string, unknown>, acting: string | null = null): { kind: string; commit: string; note: string; seconds: number; direction: { quote: string; acting: string } | null } {
   const kind = typeof body.kind === "string" ? body.kind.trim() : "";
   if (!KIND.test(kind)) throw new RuleError("bad_kind", "name the action in lower case letters, digits and dashes, such as deploy, install, push, paid-run or photos-writeback", 400);
   const commit = typeof body.commit === "string" ? body.commit.trim().toLowerCase() : "";
@@ -94,7 +101,7 @@ export function cleanApprovalInput(body: Record<string, unknown>): { kind: strin
   let seconds: number;
   try { seconds = expirySeconds(body.expires === undefined || body.expires === "" ? DEFAULT_EXPIRY : body.expires); }
   catch (err) { throw new RuleError("bad_expiry", (err as Error).message, 400); }
-  return { kind, commit, note: line(body.note, NOTE_MAX), seconds };
+  return { kind, commit, note: line(body.note, NOTE_MAX), seconds, direction: ownerDirection(body.quote, acting, "an approval") };
 }
 
 // What a run record says, checked field by field; a field out of shape is
@@ -155,18 +162,18 @@ export function listApprovals(store: ActionStore, now: string): ApprovalView[] {
 // the revision on the main line (actionsApi in src/actions-api.ts); a second
 // active approval for the same kind and revision is refused, so what one
 // approval allows is never in doubt.
-export function approveAction(store: ActionStore, actor: string, body: Record<string, unknown>, now: string): ApprovalView {
+export function approveAction(store: ActionStore, actor: string, body: Record<string, unknown>, now: string, acting: string | null = null): ApprovalView {
   ownerOnly(store, actor, "approves a protected action");
-  const { kind, commit, note, seconds } = cleanApprovalInput(body);
+  const { kind, commit, note, seconds, direction } = cleanApprovalInput(body, acting);
   const all = rows(store.sql);
   const same = all.find((a) => a.kind === kind && a.commit === commit && approvalStatus(a, now) === "active");
   if (same) {
     throw new RuleError("already_approved", `${kind} at ${short(commit)} is already approved as ${same.id}, until ${same.expiresAt}. To change its note or expiry, withdraw it first: atelier approvals withdraw ${same.id}`, 409);
   }
   const n = all.length + 1;
-  const approval: ActionApproval = { id: `a${n}`, kind, commit, note, by: actor, at: now, expiresAt: new Date(Date.parse(now) + seconds * 1000).toISOString() };
+  const approval: ActionApproval = { id: `a${n}`, kind, commit, note, ...(direction ?? {}), by: actor, at: now, expiresAt: new Date(Date.parse(now) + seconds * 1000).toISOString() };
   store.sql.exec(`INSERT INTO action_approvals (n, id, json) VALUES (?, ?, ?)`, n, approval.id, JSON.stringify(approval));
-  store.log("action.approved", { id: approval.id, kind, commit, note, expiresAt: approval.expiresAt });
+  store.log("action.approved", { id: approval.id, kind, commit, note, ...(direction ?? {}), expiresAt: approval.expiresAt });
   return view(approval, now);
 }
 
@@ -218,8 +225,15 @@ export function recordActionRun(store: ActionStore, actor: string, body: Record<
       throw new RuleError("bad_run", `${run.approval} was not used for ${run.kind} at ${short(run.commit)}`, 400);
     }
   }
-  store.log("action.ran", { ...run });
+  const used = run.approval ? rows(store.sql).find((x) => x.id === run.approval) : undefined;
+  store.log("action.ran", { ...run, ...(used?.quote ? { quote: used.quote, acting: used.acting } : {}) });
   return run;
+}
+
+// How an approval says it was given on the developer's direction, for every
+// place it is shown; empty when it was not.
+export function approvalDirection(a: { quote?: string; acting?: string }): string {
+  return a.quote ? directionText(a) : "";
 }
 
 // The latest runs, newest first, as the event log holds them.

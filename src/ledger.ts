@@ -6182,9 +6182,9 @@ export class Ledger extends DurableObject<Env> {
     return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
   }
 
-  approveAction(body: Record<string, unknown>, actor: string): ApprovalView {
+  approveAction(body: Record<string, unknown>, actor: string, acting: string | null = null): ApprovalView {
     this.project();
-    return approveAction(this.actionStore, actor, body, new Date().toISOString());
+    return approveAction(this.actionStore, actor, body, new Date().toISOString(), acting);
   }
 
   actionApprovals(): ApprovalView[] {

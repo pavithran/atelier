@@ -162,3 +162,22 @@ it("the Ship tab still draws, without the form, when the main line cannot be rea
   expect(html).toContain("The main line's head could not be read");
   expect(html).not.toContain('action="/ui/actions-dark/actions/approve"');
 });
+
+it("the approve route records the developer's words and the acting model, and refuses words with no model", async () => {
+  await project("actions-quote");
+  const post = (body: unknown, acting?: string) => worker.fetch(new Request("https://atelier.test/api/projects/actions-quote/actions", {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json", ...(acting ? { "x-atelier-acting": acting } : {}) },
+    body: JSON.stringify(body),
+  }), testEnv);
+  const bare = await post({ kind: "deploy", commit: H2, quote: "ship it" });
+  expect(bare.status).toBe(400);
+  expect(await bare.json()).toMatchObject({ error: "no_acting" });
+  const ok = await post({ kind: "deploy", commit: H2, quote: "ship it" }, "claude-code/opus-5.5");
+  expect(ok.status).toBe(201);
+  expect(await ok.json()).toMatchObject({ id: "a1", quote: "ship it", acting: "claude-code/opus-5.5", note: "" });
+  const listed = await (await api("GET", "/projects/actions-quote/actions", "owner")).json() as { approvals: { quote?: string }[] };
+  expect(listed.approvals[0].quote).toBe("ship it");
+  const plain = await post({ kind: "install", commit: H2 });
+  expect(plain.status).toBe(201);
+  expect(await plain.json()).not.toHaveProperty("quote");
+});

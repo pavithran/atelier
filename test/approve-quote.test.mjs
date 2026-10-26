@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 // `atelier approve deploy --quote WORDS --as H/M` against a stand-in server:
-// the developer's words and the acting model travel in the approval's note,
-// beside the revision, and a quote without a model is refused before any request.
+// the developer's words and the acting model travel as fields of their own,
+// apart from the note, and a quote without a model is refused before any request.
 
 const cli = resolve("cli/atelier.mjs");
 const HEAD = "a".repeat(40);
@@ -47,16 +47,27 @@ test("approve --quote records the developer's words and the acting model with th
   assert.equal(f.requests.length, 1);
   assert.equal(f.requests[0].path, "/api/projects/proj/actions");
   assert.equal(f.requests[0].body.commit, HEAD);
-  assert.equal(f.requests[0].body.note, 'developer said: "yes, deploy it" (recorded by claude-code/opus-5.5)');
+  assert.equal(f.requests[0].body.quote, "yes, deploy it");
+  assert.equal(f.requests[0].body.note, undefined);
+  assert.equal(f.requests[0].acting, "claude-code/opus-5.5");
 });
 
 test("approve --quote keeps --note beside the quote, and refuses a quote with no acting model", async (t) => {
   const f = await fixture(t);
   const noted = await f.run(["approve", "deploy", "--head", HEAD, "--note", "release 12", "--quote", "go", "--as", "claude-code/opus-5.5"]);
   assert.equal(noted.status, 0, noted.stderr);
-  assert.equal(f.requests[0].body.note, 'release 12; developer said: "go" (recorded by claude-code/opus-5.5)');
+  assert.equal(f.requests[0].body.note, "release 12");
+  assert.equal(f.requests[0].body.quote, "go");
   const bare = await f.run(["approve", "deploy", "--head", HEAD, "--quote", "go"]);
   assert.equal(bare.status, 1);
   assert.match(bare.stderr, /--quote needs the model acting on the developer's words/);
   assert.equal(f.requests.length, 1);
+});
+
+test("approve without --quote sends no quote field", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["approve", "install", "--head", HEAD, "--note", "release 12"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal("quote" in f.requests[0].body, false);
+  assert.equal(f.requests[0].body.note, "release 12");
 });

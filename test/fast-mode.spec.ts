@@ -261,7 +261,7 @@ it("the switch to fast mode needs the developer's confirmation from the Settings
   expect(await L.mode()).toMatchObject({ mode: "fast" });
   // Switching back to full needs no confirmation; switching to fast again needs a new one.
   expect(await L.setMode("owner", "full", undefined)).toMatchObject({ mode: "full" });
-  await refusal(L.setMode("owner", "fast", "again"), "fast_mode_unconfirmed", /Allow fast mode from the command line/);
+  await refusal(L.setMode("owner", "fast", "again"), "fast_mode_unconfirmed", /on their yes run: atelier mode fast --reason TEXT --quote/);
 });
 
 it("a project that forbids overrides refuses the switch to fast mode and every fast landing", async () => {
