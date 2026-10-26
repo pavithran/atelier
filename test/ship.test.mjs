@@ -492,6 +492,13 @@ test("ship source binding replaces caller input without exposing Atelier credent
   assert.deepEqual(stepEnv({ PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_TOKEN: "owner-secret", ATELIER_SHIP_HEAD: "spoofed" }, head), { PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_SHIP_HEAD: head });
 });
 
+test("no step gets CLOUDFLARE_ENV, Atelier's own steps included (t344)", () => {
+  const env = { PATH: "/bin", CLOUDFLARE_ENV: "staging", CLOUDFLARE_API_TOKEN: "provider-secret", ATELIER_TOKEN: "owner-secret" };
+  assert.deepEqual(stepEnv(env, "a".repeat(40)), { PATH: "/bin", CLOUDFLARE_API_TOKEN: "provider-secret", ATELIER_SHIP_HEAD: "a".repeat(40) });
+  assert.deepEqual(stepEnv(env, null), { PATH: "/bin", CLOUDFLARE_API_TOKEN: "provider-secret" });
+  assert.deepEqual(stepEnv(env, null, true), { PATH: "/bin", CLOUDFLARE_API_TOKEN: "provider-secret", ATELIER_TOKEN: "owner-secret" });
+});
+
 for (const matches of [true, false]) test(`canonical ship source verification ${matches ? "passes" : "stops wrap and push on mismatch"} (t182)`, async (t) => {
   // The deploy and verify wiring alone: the fixture has no package.json or live version, so the added steps and the deploy's condition are left out.
   const { typecheck, scan, baseline, studio, ...canonical } = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
@@ -499,13 +506,16 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
   const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: { "scripts/ship-worker.mjs": readFileSync(resolve("scripts/ship-worker.mjs"), "utf8") } });
   const bin = join(f.dir, "tools"); mkdirSync(bin);
   const argsFile = join(f.dir, "deploy-args.txt");
-  writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$@" > "$DEPLOY_ARGS"\n`);
+  // The stand-in npx records its arguments, then CLOUDFLARE_ENV as it saw it.
+  writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$@" > "$DEPLOY_ARGS"\nprintf 'CLOUDFLARE_ENV=%s\\n' "\${CLOUDFLARE_ENV-unset}" >> "$DEPLOY_ARGS"\n`);
   chmodSync(join(bin, "npx"), 0o755);
   const preload = join(f.dir, "version-response.mjs");
   writeFileSync(preload, `const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
-  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed" });
+  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed", CLOUDFLARE_ENV: "staging" });
   assert.ok(existsSync(argsFile), r.stderr + r.stdout);
-  assert.deepEqual(readFileSync(argsFile, "utf8").trim().split("\n"), ["wrangler", "deploy", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`]);
+  // CLOUDFLARE_ENV=staging in the owner's shell neither reaches Wrangler nor
+  // outranks the empty --env that names the production Worker (t344).
+  assert.deepEqual(readFileSync(argsFile, "utf8").split("\n").slice(0, -1), ["wrangler", "deploy", "--env", "", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`, "CLOUDFLARE_ENV=unset"]);
   const verified = f.state.runs.find(run => run.step === "verify-delivery");
   assert.equal(verified.passed, matches);
   if (matches) {

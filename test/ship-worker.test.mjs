@@ -23,7 +23,7 @@ test("t182 canonical deployment binds the captured source and preserves vars", (
   assert.equal(deployWorker({ ...f, run(command, args, options) {
     calls++;
     assert.equal(command, process.platform === "win32" ? "npx.cmd" : "npx");
-    assert.deepEqual(args, ["wrangler", "deploy", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`]);
+    assert.deepEqual(args, ["wrangler", "deploy", "--env", "", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`]);
     assert.equal(options.cwd, f.cwd); assert.equal(options.env.ATELIER_SHIP_HEAD, f.head);
     return { status: 0 };
   } }), f.head);

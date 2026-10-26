@@ -19,7 +19,9 @@ export function sourceHead({ cwd = process.cwd(), env = process.env } = {}) {
 
 export function deployWorker({ cwd = process.cwd(), env = process.env, run = spawnSync } = {}) {
   const head = sourceHead({ cwd, env });
-  const result = run(process.platform === "win32" ? "npx.cmd" : "npx", ["wrangler", "deploy", "--keep-vars", "--var", `DEPLOYED_MAIN:${head}`], { cwd, env, stdio: "inherit" });
+  // An empty --env names the top-level (production) Worker and takes
+  // precedence over a CLOUDFLARE_ENV in the environment.
+  const result = run(process.platform === "win32" ? "npx.cmd" : "npx", ["wrangler", "deploy", "--env", "", "--keep-vars", "--var", `DEPLOYED_MAIN:${head}`], { cwd, env, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Wrangler deployment failed (${result.signal ?? result.status ?? "no exit status"}).`);
   // A concurrent source change must fail delivery even if Wrangler returned zero.
