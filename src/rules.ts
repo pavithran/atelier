@@ -61,7 +61,9 @@ export interface Item {
   // the line are kept, never the matched value. It stands while it names the
   // current head and is not cleared, and stops the gate from accepting or
   // merging; the project owner clears it with a reason (secret.cleared) or a
-  // later push that removes the line clears it.
+  // later push whose commits add no such line clears it. A commit that only
+  // removes the line does not, since the commit that added it stays in the
+  // task's history (t295).
   secret?: SecretFlag[] | null;
   // Every clearance the owner has recorded on the item (t332): the file and
   // fingerprint of each line judged safe, with the reason, the head it was
@@ -105,19 +107,22 @@ export interface Block {
 }
 
 // One entry of the secret flag the push scan records: where a key pattern was
-// added, at which head, by whom and when, with the fingerprint of the line
-// (fingerprint in src/secret-scan.ts). The matched value is never kept, so
-// only these fields exist. A flag with `unscanned` names a path whose head
-// side the scan could not read as text, with `reason` saying why (binary
-// content, a submodule, an oversized blob, a diff over budget); it has no
-// line, so `line` is 0, and its fingerprint is the hash of the object at the
-// head, so a clearance holds while that object is unchanged. A flag with `cleared`
-// was matched by a clearance the owner recorded (SecretClearance): it is
-// kept as the record of what the scan found, and does not block.
+// added, by which of the task's commits (`commit`, absent on a flag recorded
+// before the scan read each commit, t295), at which head, by whom and when,
+// with the fingerprint of the line (fingerprint in src/secret-scan.ts). The
+// matched value is never kept, so only these fields exist. A flag with
+// `unscanned` names a path whose head side the scan could not read as text,
+// with `reason` saying why (binary content, a submodule, an oversized blob, a
+// diff over budget); it has no line, so `line` is 0, and its fingerprint is
+// the hash of the object at the head, so a clearance holds while that object
+// is unchanged. A flag with `cleared` was matched by a clearance the owner
+// recorded (SecretClearance): it is kept as the record of what the scan
+// found, and does not block.
 export interface SecretFlag {
   file: string;
   line: number;
   fingerprint: string;
+  commit?: string;
   head: string;
   by: string;
   at: string;
@@ -1934,9 +1939,10 @@ export interface Gate {
   overridden?: ReviewOverride;  // set when the owner's override stands in for a missing independent review
 }
 
-// The blockers a standing secret flag raises, one per file and line. The
-// message names the flag, never the matched value, so the owner and the
-// gate's message both show where the key pattern is without printing it.
+// The blockers a standing secret flag raises, one per commit, file and line.
+// The message names the flag, and the commit that added the line when that
+// is not the head, never the matched value, so the owner and the gate's
+// message both show where the key pattern is without printing it.
 // A flag on any other head than the item's current one has been superseded by
 // a later push and stands no longer. A scan still pending for the current
 // head blocks the same way, with its own message: the push is not known to
@@ -1944,9 +1950,20 @@ export interface Gate {
 export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan">): string[] {
   const flags = (item.secret ?? [])
     .filter((f) => f.head === item.head && !f.cleared)
-    .map((f) => f.unscanned
-      ? `secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; clear it with a reason or push a revision that removes the line`
-      : `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
+    .map((f) => {
+      // A line the head commit itself added goes when a revision of that
+      // commit removes it. One an earlier commit added stays in the task's
+      // history whatever later commits do (t295), so the message names that
+      // commit, as scripts/privacy-scan.mjs does at the push to GitHub. A
+      // flag recorded before the scan read each commit names none.
+      if (!f.commit || f.commit === item.head) return f.unscanned
+        ? `secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; clear it with a reason or push a revision that removes the line`
+        : `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`;
+      const commit = f.commit.slice(0, 12);
+      return f.unscanned
+        ? `secret scan could not read ${f.file} in full as commit ${commit} left it${f.reason ? ` (${f.reason})` : ""}; clear it with a reason or push a revision whose commits do not add it`
+        : `secret flagged in ${f.file}:${f.line}, added by commit ${commit}; clear it with a reason or push a revision whose commits do not add the line`;
+    });
   if (item.head && item.secretScan === item.head) {
     flags.push(`secret scan pending for ${item.head.slice(0, 8)}; it is retried until it completes, and atelier push runs it again`);
   }
