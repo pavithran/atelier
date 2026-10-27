@@ -96,18 +96,19 @@ test('a file that is not a dump is refused before anything is sent', () => {
 });
 
 test('bookmark prints each Ledger with the command that restores them', () => {
-  const text = formatBookmark({ id: 'b1', project: 'demo', at: '2026-10-27T10:00:00Z', ledgers: [{ name: 'project:demo', bookmark: '0000-0001' }, { name: '__index', bookmark: '0000-0002' }] });
-  assert.match(text, /demo: bookmark b1 recorded/);
+  const text = formatBookmark({ id: 'b1@atelier.zone', server: 'atelier.zone', project: 'demo', at: '2026-10-27T10:00:00Z', ledgers: [{ name: 'project:demo', bookmark: '0000-0001' }, { name: '__index', bookmark: '0000-0002' }] });
+  assert.match(text, /demo: bookmark b1@atelier.zone recorded at .* on atelier.zone/);
   assert.match(text, /project:demo +0000-0001/);
   assert.match(text, /__index +0000-0002/);
-  assert.match(text, /atelier ledger restore --bookmark b1 --project demo/);
+  assert.match(text, /atelier ledger restore --bookmark b1@atelier.zone --project demo/);
 });
 
 test('restore says each Ledger restores on its next start and how to undo it', () => {
-  const text = formatRestore({ project: 'demo', bookmark: 'b1', recordedAt: '2026-10-27T10:00:00Z', undo: 'b2', restoring: [{ name: 'project:demo', bookmark: '0000-0001' }, { name: '__index', bookmark: '0000-0002' }] });
+  const text = formatRestore({ project: 'demo', server: 'atelier.zone', bookmark: 'b1@atelier.zone', recordedAt: '2026-10-27T10:00:00Z', undo: 'b4@atelier.zone', restoring: [{ name: 'project:demo', bookmark: '0000-0001' }, { name: '__index', bookmark: '0000-0002' }] });
   assert.match(text, /project:demo restores to 0000-0001 on its next start/);
   assert.match(text, /__index restores to 0000-0002 on its next start/);
-  assert.match(text, /atelier ledger restore --bookmark b2 --project demo/);
+  assert.match(text, /atelier ledger restore --bookmark b4@atelier.zone --project demo/);
+  assert.match(text, /demo: restoring on atelier.zone to bookmark b1@atelier.zone/);
 });
 
 test('dump and import report the rows, the schema version and any token replaced', () => {

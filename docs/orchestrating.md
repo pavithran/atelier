@@ -1119,8 +1119,10 @@ To roll back production after the switch:
 
 1. Deploy the version you switched from.
 2. Restore each project: `atelier ledger restore --project P --bookmark
-   b1`. Only a bookmark `atelier ledger bookmark` recorded for that project
-   is taken. Each Ledger restores to it on its next start, which it is
+   b1@SERVER`. The command prints the server and waits for its name to be
+   typed back. A bookmark id names the server that recorded it, and another
+   server refuses it. Only a bookmark `atelier ledger bookmark` recorded for
+   that project is taken. Each Ledger restores to it on its next start, which it is
    asked to make at once; the command says which. Everything written since
    the bookmark is gone, in the project's Ledger and in the index, and the
    index is every project's: restore every project to bookmarks recorded

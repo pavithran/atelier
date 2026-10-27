@@ -22,8 +22,8 @@ const staging = {
 } as unknown as typeof env;
 
 type Json = Record<string, any>;
-const send = async (bindings: typeof env, method: string, path: string, body?: unknown, bearer: string | null = OWNER, actor: string | null = "owner") => {
-  const res = await worker.fetch(new Request(`https://atelier.test/api${path}`, {
+const send = async (bindings: typeof env, method: string, path: string, body?: unknown, bearer: string | null = OWNER, actor: string | null = "owner", host = "atelier.test") => {
+  const res = await worker.fetch(new Request(`https://${host}/api${path}`, {
     method,
     headers: { ...(bearer === null ? {} : { authorization: `Bearer ${bearer}` }), ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -195,7 +195,8 @@ it("records each Ledger's bookmark, restores only a recorded one on the next sta
   const recorded = await send(prod, "POST", "/projects/wb-mark/ledger/bookmark");
   expect(recorded.status).toBe(201);
   const b = recorded.body;
-  expect(b.id).toBe("b1");
+  expect(b.id).toBe("b1@atelier.test");
+  expect(b.server).toBe("atelier.test");
   expect(b.ledgers.map((l: Json) => l.name)).toEqual(["project:wb-mark", "__index"]);
   for (const l of b.ledgers) expect(l.bookmark).toMatch(/^[0-9a-f]+(-[0-9a-f]+)+$/);
 
@@ -210,19 +211,36 @@ it("records each Ledger's bookmark, restores only a recorded one on the next sta
     });
   }
 
-  const unknown = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b9" });
+  const unknown = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b9@atelier.test", server: "atelier.test" });
   expect(unknown.status).toBe(404);
   expect(unknown.body.error).toBe("unknown_bookmark");
-  // A raw bookmark, even this project's own, is not a recorded one.
-  expect((await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: b.ledgers[0].bookmark })).body.error).toBe("unknown_bookmark");
+  // A raw bookmark, even this project's own, is not a recorded one, with a server or without.
+  expect((await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: b.ledgers[0].bookmark })).body.error).toBe("bad_bookmark");
+  expect((await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: `${b.ledgers[0].bookmark}@atelier.test`, server: "atelier.test" })).body.error).toBe("unknown_bookmark");
   expect(asked).toEqual([]);
 
-  const restored = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b1" });
+  // The server's name is asked for, and a bookmark of another server or
+  // with no server is refused, before any Ledger is touched.
+  const unconfirmed = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b1@atelier.test" });
+  expect(unconfirmed.status).toBe(409);
+  expect(unconfirmed.body.error).toBe("confirm_server");
+  expect(unconfirmed.body.detail).toMatch(/on atelier\.test also rolls back the index, which is every project's/);
+  expect((await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b1@atelier.test", server: "staging.atelier.test" })).body.error).toBe("confirm_server");
+  const elsewhere = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b1@staging.atelier.test", server: "atelier.test" });
+  expect([elsewhere.status, elsewhere.body.error]).toEqual([409, "wrong_server"]);
+  expect(elsewhere.body.detail).toMatch(/recorded on staging\.atelier\.test, and this server is atelier\.test/);
+  const bare = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b1", server: "atelier.test" });
+  expect([bare.status, bare.body.error]).toEqual([400, "bad_bookmark"]);
+  expect(asked).toEqual([]);
+
+  const restored = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b1@atelier.test", server: "atelier.test" });
   expect(restored.status).toBe(200);
+  expect(restored.body.server).toBe("atelier.test");
   expect(restored.body.restoring).toEqual(b.ledgers);
   expect(asked).toEqual(b.ledgers.map((l: Json) => l.bookmark));
-  expect(restored.body.detail).toMatch(/restore to b1 .* on their next start/);
-  expect(restored.body.undo).toBe("b2");
+  expect(restored.body.detail).toMatch(/restore to b1@atelier\.test .* on their next start/);
+  // One undo bookmark per Ledger as each accepts, then the one that undoes both.
+  expect(restored.body.undo).toBe("b4@atelier.test");
   // Each Ledger restarts once idle; wait until both have, so no later call
   // meets the restart. A stub that saw the restart stays broken, so each try
   // takes a fresh one, and a restarted Ledger no longer has the stand-in.
@@ -236,7 +254,7 @@ it("records each Ledger's bookmark, restores only a recorded one on the next sta
   }
   // Another project cannot restore this one's bookmark.
   await setup("wb-other");
-  expect((await send(prod, "POST", "/projects/wb-other/ledger/restore", { bookmark: "b1" })).status).toBe(404);
+  expect((await send(prod, "POST", "/projects/wb-other/ledger/restore", { bookmark: "b1@atelier.test", server: "atelier.test" })).status).toBe(404);
 });
 
 it("refuses every bookmark, restore, dump and import request without the developer's token with 403", async () => {
@@ -246,7 +264,7 @@ it("refuses every bookmark, restore, dump and import request without the develop
   const runner = await ok(send(prod, "POST", "/tokens", { runner: "home:guard", projects: ["wb-guard"] }));
   const routes: [string, string, unknown?][] = [
     ["POST", "/projects/wb-guard/ledger/bookmark"],
-    ["POST", "/projects/wb-guard/ledger/restore", { bookmark: "b1" }],
+    ["POST", "/projects/wb-guard/ledger/restore", { bookmark: "b1@atelier.test", server: "atelier.test" }],
     ["GET", "/projects/wb-guard/ledger/dump"],
     ["GET", "/projects/wb-guard/ledger/dump?table=items&after=0"],
     ["POST", "/projects/wb-guard/ledger/import", { step: "begin", manifest: { format: LEDGER_DUMP_FORMAT, project: "wb-guard", tables: [] } }],
@@ -266,5 +284,36 @@ it("refuses every bookmark, restore, dump and import request without the develop
     }
   }
   // The developer's own: the bookmark recorded above stands, and nothing else was recorded.
-  expect((await send(prod, "POST", "/projects/wb-guard/ledger/bookmark")).body.id).toBe("b2");
+  expect((await send(prod, "POST", "/projects/wb-guard/ledger/bookmark")).body.id).toBe("b2@atelier.test");
+});
+
+it("records the first Ledger's undo bookmark when the second refuses the restore", async () => {
+  await setup("wb-partial");
+  const b = (await send(prod, "POST", "/projects/wb-partial/ledger/bookmark")).body;
+  // The project's Ledger takes the bookmark; the index's storage refuses.
+  await runInDurableObject(ledgerOf("wb-partial"), async (instance: Json, state: DurableObjectState) => {
+    instance.standIn = true;
+    state.storage.onNextSessionRestoreBookmark = async () => "00001-00000001";
+  });
+  await runInDurableObject(INDEX(), async (instance: Json, state: DurableObjectState) => {
+    instance.standIn = true;
+    state.storage.onNextSessionRestoreBookmark = async () => { throw new Error("older than 30 days"); };
+  });
+  const failed = await send(prod, "POST", "/projects/wb-partial/ledger/restore", { bookmark: b.id, server: "atelier.test" });
+  expect([failed.status, failed.body.error]).toEqual([500, "restore_partial"]);
+  expect(failed.body.detail).toMatch(/__index did not take the bookmark/);
+  expect(failed.body.detail).toContain("project:wb-partial b2@atelier.test");
+  // The undo is on record, not only in the error text.
+  const recorded = await runInDurableObject(env.LEDGER.get(env.LEDGER.idFromName("__ledger-bookmarks")), async (instance: Json) => instance.bookmarkRecord("wb-partial", "b2"));
+  expect(recorded.ledgers).toEqual([{ name: "project:wb-partial", bookmark: "00001-00000001" }]);
+  expect(recorded.undoes).toBe("b1");
+  expect(recorded.restores).toBeUndefined();
+  const first = await runInDurableObject(env.LEDGER.get(env.LEDGER.idFromName("__ledger-bookmarks")), async (instance: Json) => instance.bookmarkRecord("wb-partial", "b1"));
+  expect(first.restores).toHaveLength(1);
+  for (let i = 0; ; i++) {
+    const restarted = await runInDurableObject(ledgerOf("wb-partial"), async (instance: Json) => !instance.standIn).catch(() => false);
+    if (restarted) break;
+    if (i > 200) throw new Error("the Ledger did not restart");
+    await new Promise((r) => setTimeout(r, 50));
+  }
 });

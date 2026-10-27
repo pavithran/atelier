@@ -1,9 +1,10 @@
 // atelier ledger. Its forms, flags and help are declared in src/usage/commands/ledger.ts.
+import { createInterface } from "node:readline/promises";
 import { readFileSync, writeFileSync } from "node:fs";
 import { LEDGER_DUMP_FORMAT } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectDump, importDump, parseDump } from "../ledger-dump.mjs";
-import { OWNER, P, args, call, die, project } from "../atelier.mjs";
+import { OWNER, P, args, call, die, project, server } from "../atelier.mjs";
 
 // The developer's way back from a switch of the server (t342):
 // docs/orchestrating.md, "Before a switch of the server", says when to run each.
@@ -22,7 +23,9 @@ export default async function ledgerCommand() {
   }
   if (sub === "restore") {
     if (typeof args.bookmark !== "string" || !args.bookmark.trim()) die(`name the bookmark to restore: atelier ledger restore --bookmark ID --project ${name}`);
-    const r = await call("POST", `${path}/restore`, { bookmark: args.bookmark.trim() }, OWNER);
+    const host = new URL(server()).host;
+    await confirmRestore(host, name, args.bookmark.trim());
+    const r = await call("POST", `${path}/restore`, { bookmark: args.bookmark.trim(), server: host }, OWNER);
     console.log(formatRestore(r));
     return;
   }
@@ -45,12 +48,24 @@ export default async function ledgerCommand() {
   console.log(formatImport(dump, done, name));
 }
 
+// Names the server and waits for its name to be typed back. The index is
+// every project's, so a restore sent to the wrong server (ATELIER_SERVER
+// unset, say) rolls back the wrong one's registrations, tokens and pool.
+async function confirmRestore(host, name, bookmark) {
+  const prompt = `Restoring ${name} to ${bookmark} on ${host} also rolls back the index, which is every project's, on ${host}.\nType the server's name (${host}) to go on: `;
+  if (!process.stdin.isTTY) die(`restore asks for confirmation in a terminal; ${prompt.split("\n")[0]}`);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    if ((await rl.question(prompt)).trim() !== host) die("not confirmed; nothing was restored");
+  } finally { rl.close(); }
+}
+
 const rowsOf = (counts) => Object.values(counts).reduce((n, c) => n + c, 0);
 
 export function formatBookmark(b) {
   const width = Math.max(...b.ledgers.map((l) => l.name.length));
   return [
-    `${b.project}: bookmark ${b.id} recorded at ${b.at}:`,
+    `${b.project}: bookmark ${b.id} recorded at ${b.at} on ${b.server}:`,
     ...b.ledgers.map((l) => `  ${l.name.padEnd(width)}  ${l.bookmark}`),
     `Restore them with: atelier ledger restore --bookmark ${b.id} --project ${b.project}`,
     "Cloudflare keeps a Ledger's history for 30 days; a bookmark older than that cannot be restored.",
@@ -59,7 +74,7 @@ export function formatBookmark(b) {
 
 export function formatRestore(r) {
   return [
-    `${r.project}: restoring to bookmark ${r.bookmark}, recorded at ${r.recordedAt}.`,
+    `${r.project}: restoring on ${r.server} to bookmark ${r.bookmark}, recorded at ${r.recordedAt}.`,
     ...r.restoring.map((l) => `  ${l.name} restores to ${l.bookmark} on its next start, which it was asked to make once idle.`),
     "The index is every project's: what it holds (registrations, tokens, the pool) returns to that time for all of them.",
     `To undo this restore: atelier ledger restore --bookmark ${r.undo} --project ${r.project}`,
