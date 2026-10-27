@@ -405,4 +405,13 @@ it("a claim makes at most two replacement forks, as the tick does, and then repo
   expect(fa.forks).toEqual([fork, `${fork}-r2`, `${fork}-r3`]);
   expect((await rerouted(L)).length).toBe(2);
   expect(fa.deletes).toEqual([]);
+  // The way out `atelier stuck` names: release the task, claim it again. The
+  // release starts the count again, so the claim replaces the stalled fork.
+  await inside(L, (i) => i.release("t1", "owner", "Fresh fork after the replacements stalled"));
+  const fresh = await claim();
+  expect(fresh.status).toBe(503);
+  expect((await answer(fresh)).detail).toContain(`${fork}-r4 is still being prepared`);
+  expect(fa.forks).toEqual([fork, `${fork}-r2`, `${fork}-r3`, `${fork}-r4`]);
+  expect((await rerouted(L)).length).toBe(3);
+  expect(fa.deletes).toEqual([]);
 });

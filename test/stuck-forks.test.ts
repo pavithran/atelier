@@ -41,13 +41,13 @@ test("a task with a fork or head recorded, or closed, is not listed", () => {
     assert.deepEqual(stalledForks([item(over)], events, NOW), []);
 });
 
-test("stuck lists the task with its forks, ages and the refile recovery", () => {
+test("stuck lists the task with its forks, ages and the fresh-fork recovery", () => {
   const snapshot = { items: [item()], events, lease: null, workflows: [], reviews: [] };
   const report = stuckReport("p", "https://x", NOW, reportLimits(), snapshot, [], [], []);
   const [e] = report.entries.filter((x) => x.kind === "fork-stalled");
   assert.equal(e.subject, "t1");
   assert.match(e.reason, /p--t1 \(40 min\), p--t1-r2 \(35 min\), p--t1-r3 \(35 min\)/);
-  assert.match(e.recovery, /atelier new .*then atelier abandon t1 /);
+  assert.match(e.recovery, /atelier release t1 --note .* --project p, then claim it again with atelier start t1 --as H\/M --project p/);
 });
 
 test("an old notice for -r2 does not list the task once -r3 replaced it, until -r3 is told", () => {
@@ -59,4 +59,12 @@ test("an old notice for -r2 does not list the task once -r3 replaced it, until -
   const [f] = stalledForks([item()], [...old, told("2026-10-24T11:55:00.000Z", "p--t1-r3", "2026-10-24T11:25:00.000Z")], NOW);
   assert.equal(f.forks.at(-1)!.name, "p--t1-r3");
   assert.equal(Math.round(f.forks.at(-1)!.ageMs / 60_000), 35);
+});
+
+test("a release starts the count of replacements again, so the claim after it may replace the fork", () => {
+  const released = ev("item.released", "2026-10-24T12:00:00.000Z", { from: "a/b", note: "" });
+  assert.equal(forkReplacements([...events, released], "t1"), 0);
+  const again = moved("2026-10-24T12:40:00.000Z", "p--t1-r3", "p--t1-r4", "2026-10-24T12:05:00.000Z");
+  assert.equal(forkReplacements([...events, released, again], "t1"), 1);
+  assert.equal(forkReplacements([...events, released], "t2"), 0);
 });

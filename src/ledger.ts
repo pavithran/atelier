@@ -2244,8 +2244,10 @@ export class Ledger extends DurableObject<Env> {
     for (const [id, view] of Object.entries(this.forkPreparations())) {
       const item = this.item(id);
       if (!forkStalled(view, item, now, this.mainHead())) continue;
+      const forkEvents = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE item_id = ? AND kind IN ('stage.rerouted', 'item.released') ORDER BY seq`, id).toArray()
+        .map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
       const toldFork = (fork: string) => recorded.some((e) => e.item === id && e.kind === "stage.told" && e.data.stage === PREPARING && e.data.fork === fork);
-      if (forkReplacements(recorded, id) < FORK_REPLACEMENTS) {
+      if (forkReplacements(forkEvents, id) < FORK_REPLACEMENTS) {
         const to = replacementFork(view.fork);
         this.replaceFork(id, view.fork, view.since, `${view.fork} was preparing for ${forkAgeText(view.ageMs)} with no commit recorded; the next claim makes ${to}. Atelier deleted nothing.`, at);
         n++;
@@ -3815,7 +3817,7 @@ export class Ledger extends DurableObject<Env> {
     const cutOff = request?.fork === fork && forkStalled({ since: request.at }, item, now, this.mainHead(), FORK_REQUEST_MS);
     const stalled = prep?.fork === fork && forkStalled(prep, item, now, this.mainHead());
     if (!cutOff && !stalled) return null;
-    const replaced = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE item_id = ? AND kind = 'stage.rerouted'`, id).toArray()
+    const replaced = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE item_id = ? AND kind IN ('stage.rerouted', 'item.released') ORDER BY seq`, id).toArray()
       .map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
     if (forkReplacements(replaced, id) >= FORK_REPLACEMENTS) return null;
     const since = cutOff ? request!.at : prep!.since!;
