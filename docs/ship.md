@@ -167,7 +167,7 @@ Atelier's own:
 | `verify-install` | what verify-delivery runs after install: installable and hybrid |
 | `deploy` | what the deploy step runs: web and hybrid |
 | `verify-deploy` | what verify-delivery runs after deploy: web and hybrid |
-| `push` | `{"remote": NAME, "branch": NAME}`; left out, the push goes to the branch's tracked upstream |
+| `push` | `{"remote": NAME, "branch": NAME}`; left out, the push goes to the branch's tracked upstream; `false`, the order has no push step, `scan`, `baseline` and `studio` are refused, and `--push` is refused |
 | `typecheck` | optional: runs before the first delivery step (or before wrap, with none) |
 | `scan` | optional: runs just before the push, with `--push`; a failure stops the ship before anything is pushed |
 | `baseline` | optional: runs just after the push, with `--push` |
@@ -204,10 +204,48 @@ Atelier's own helper checks that the checkout is still clean at
 `--keep-vars --var DEPLOYED_MAIN:HEAD` to Wrangler, preserving existing
 variables while updating that source binding. Verification refuses redirects
 and requires HTTP 200 from `https://atelier.zone/api/version` with `commit`
-equal to the captured HEAD. The endpoint's `main` field describes the ledger,
+equal to the captured HEAD. The ship file can point both at another Worker:
+`deploy --env NAME` passes `--env NAME` to Wrangler, deploying that
+environment of `wrangler.jsonc`, and `verify --version-url URL` reads an https
+URL in place of production's. Without them the helper deploys and verifies
+production, as above; it still passes `--env` to Wrangler, with an empty value
+that names the top-level Worker, so a `CLOUDFLARE_ENV` left in the shell cannot
+send a production ship elsewhere; ship strips the `ATELIER_` variables from the steps, so
+the ship file's arguments are the only way to choose. The endpoint's `main` field describes the ledger,
 so it cannot establish which source was deployed. Failure stops the ship
 before wrap or push. Tests use local process and response fixtures; live
 variable preservation and source readback are checked at an authorised release.
+
+## Production and staging
+
+Since the release split (PAVI, 2026-10-26), Atelier runs as two Workers that
+share no state: production at `atelier.zone`, frozen at 1.0, and a staging
+copy at `next.atelier.zone`, where 1.1 is built. The staging copy is the
+`env.staging` block of `wrangler.jsonc`: the Worker `atelier-staging`, the
+Artifacts namespace `atelier-staging`, the R2 bucket `atelier-large-staging`,
+the workflow `landing-staging`, its own Ledger objects, and no cron triggers.
+Its vars `PUBLIC_ORIGIN` and `ARTIFACTS_NAMESPACE` give the origin the stuck
+notices link to and the namespace whose push events the queue takes.
+
+Each line ships from its own branch with its own ship file, and ship reads
+only `docs/atelier/ship.json`:
+
+- **Production ships from `release/1.0`.** That branch keeps
+  `docs/atelier/ship.json` as it is: deploy the top-level Worker, verify at
+  `https://atelier.zone/api/version`, then, with `--push`, scan, push,
+  baseline and studio. Run `atelier ship` in a checkout of `release/1.0`.
+- **Main ships to staging.** `docs/atelier/ship-staging.json` holds the
+  staging order: typecheck, `node scripts/ship-worker.mjs deploy --env
+  staging`, then `verify --version-url https://next.atelier.zone/api/version`,
+  with `"push": false` and no scan, baseline or studio step. The release cut
+  copies it over main's `docs/atelier/ship.json`, so from then on `atelier
+  ship` on main deploys and verifies the staging Worker and never production.
+  Until the cut, main's `ship.json` is production's and `ship-staging.json`
+  is not read.
+
+Before the first staging deploy the owner creates its R2 bucket with `npx
+wrangler r2 bucket create atelier-large-staging`; Wrangler adds the
+`next.atelier.zone` custom domain on deploy.
 
 ## What a ship does, in order
 

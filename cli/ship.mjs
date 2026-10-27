@@ -57,11 +57,14 @@ function readJson(top, path) {
 // { step, verifies?, runs: [{ label, argv | request, status?, timeoutMs, kind }], push? }.
 // A run's kind is the approval it needs, or null. `problems` lists what stops
 // a ship before it runs anything; `notes` what the owner should know.
-export function composeShip(top) {
+// `file` is for reading another order in the same schema, such as
+// docs/atelier/ship-staging.json, which a release cut copies over the ship
+// file (docs/ship.md); atelier ship itself reads SHIP_FILE alone.
+export function composeShip(top, file = SHIP_FILE) {
   const problems = [], notes = [];
   let doc;
-  try { doc = readJson(top, SHIP_FILE); } catch (error) { return { source: SHIP_FILE, steps: [], problems: [error.message], notes }; }
-  if (doc !== undefined) return atelierShip(doc, problems, notes);
+  try { doc = readJson(top, file); } catch (error) { return { source: file, steps: [], problems: [error.message], notes }; }
+  if (doc !== undefined) return atelierShip(doc, problems, notes, file);
   return { source: null, steps: [], notes, problems: [`this project has no ship file: atelier ship reads only ${SHIP_FILE}, and no longer reads ControlPlane's ship policy or adapter. Add ${SHIP_FILE}; docs/ship.md in Atelier gives its schema`] };
 }
 
@@ -101,25 +104,32 @@ const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "in
 const RUN_KEYS = new Set(["run", "request", "status", "timeout_seconds", "approval", "description", "if_changed", "retries"]);
 const DELIVERY_FIELDS = { install: ["installable", "hybrid"], "verify-install": ["installable", "hybrid"], deploy: ["web", "hybrid"], "verify-deploy": ["web", "hybrid"] };
 
-function atelierShip(doc, problems, notes) {
+function atelierShip(doc, problems, notes, file) {
   if (!isObject(doc) || doc.kind !== "atelier.ship" || doc.schema_version !== 1) {
-    problems.push(`${SHIP_FILE} must be an object with "kind": "atelier.ship" and "schema_version": 1`);
-    return { source: SHIP_FILE, steps: [], problems, notes };
+    problems.push(`${file} must be an object with "kind": "atelier.ship" and "schema_version": 1`);
+    return { source: file, steps: [], problems, notes };
   }
-  for (const key of Object.keys(doc)) if (!SHIP_KEYS.has(key)) problems.push(`${SHIP_FILE} has a field atelier ship does not read: ${key}`);
+  for (const key of Object.keys(doc)) if (!SHIP_KEYS.has(key)) problems.push(`${file} has a field atelier ship does not read: ${key}`);
   const order = ORDERS[doc.class];
-  if (!order) problems.push(`${SHIP_FILE} needs "class": web, installable, hybrid or other`);
+  if (!order) problems.push(`${file} needs "class": web, installable, hybrid or other`);
   for (const [field, classes] of Object.entries(DELIVERY_FIELDS)) {
-    if (order && doc[field] !== undefined && !classes.includes(doc.class)) problems.push(`${SHIP_FILE} gives ${field}, which a ${doc.class} project's order has no step for`);
+    if (order && doc[field] !== undefined && !classes.includes(doc.class)) problems.push(`${file} gives ${field}, which a ${doc.class} project's order has no step for`);
   }
   let push = { upstream: true };
-  if (doc.push !== undefined) {
+  // "push": false: an order with no push, such as the staging order, whose
+  // revision reaches GitHub from the production line; the steps that run
+  // with the push have nothing to run with.
+  if (doc.push === false) {
+    push = null;
+    for (const step of ["scan", "baseline", "studio"]) if (doc[step] !== undefined) problems.push(`${file} gives ${step}, which runs with the push, and "push" is false`);
+  }
+  else if (doc.push !== undefined) {
     const named = (v) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/.test(v) && !v.includes("..");
     if (isObject(doc.push) && named(doc.push.remote) && named(doc.push.branch) && Object.keys(doc.push).every((k) => k === "remote" || k === "branch")) push = { remote: doc.push.remote, branch: doc.push.branch };
-    else { problems.push(`${SHIP_FILE} "push" must be {"remote": NAME, "branch": NAME}, or left out to push to the branch's tracked upstream`); push = null; }
+    else { problems.push(`${file} "push" must be {"remote": NAME, "branch": NAME}, false for no push step, or left out to push to the branch's tracked upstream`); push = null; }
   }
-  const hint = Object.fromEntries(["install", "deploy", "verify-install", "verify-deploy", ...ADDED].map((f) => [f, `give "${f}" in ${SHIP_FILE}`]));
-  return { source: SHIP_FILE, class: doc.class, ...buildSteps(withAdded(order ?? [], doc), (field) => parseRuns(doc[field], field, problems), hint, push, problems), problems, notes };
+  const hint = Object.fromEntries(["install", "deploy", "verify-install", "verify-deploy", ...ADDED].map((f) => [f, `give "${f}" in ${file}`]));
+  return { source: file, class: doc.class, ...buildSteps(withAdded(order ?? [], doc), (field) => parseRuns(doc[field], field, problems, file), hint, push, problems), problems, notes };
 }
 
 // The class's order with the added steps the file names: typecheck before the
@@ -149,10 +159,10 @@ function parseIfChanged(v, where, problems) {
 
 // One run, or a list of them: {"run": [argv...]} or {"request": URL, "status": 200},
 // each with an optional timeout_seconds and approval kind.
-function parseRuns(value, field, problems) {
+function parseRuns(value, field, problems, file) {
   const list = value === undefined ? [] : Array.isArray(value) ? value : [value];
   return list.map((r, i) => {
-    const where = `${SHIP_FILE} ${field}${list.length > 1 ? `[${i}]` : ""}`;
+    const where = `${file} ${field}${list.length > 1 ? `[${i}]` : ""}`;
     if (!isObject(r)) { problems.push(`${where} must be an object`); return null; }
     for (const key of Object.keys(r)) if (!RUN_KEYS.has(key)) { problems.push(`${where} has a field atelier ship does not read: ${key}`); return null; }
     if (r.approval !== undefined && (typeof r.approval !== "string" || !KIND.test(r.approval))) { problems.push(`${where} "approval" must be a kind such as deploy or photos-writeback`); return null; }
@@ -417,7 +427,7 @@ export async function ship(ctx) {
   if (pushStep) {
     try { target = resolvePush(pushStep.push, { git, cwd, branch }); }
     catch (error) { if (ctx.push) refusals.push(error.message); }
-  }
+  } else if (ctx.push && !plan.problems.length) refusals.push(`--push was given and ${SHIP_FILE} has no push step ("push": false); ship without --push`);
   const { approvals } = commit ? await request("GET", `${P}/actions`) : { approvals: [] };
   // A dry run lists what would refuse beside the steps; a ship stops on it.
   print(formatPlan({ name, plan, branch, head, commit: commit ?? head, approvals, push: ctx.push, target, refusals: ctx.dryRun ? refusals : [] }));
