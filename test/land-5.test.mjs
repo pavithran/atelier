@@ -47,6 +47,27 @@ test("an approval already recorded at the head, which the gate counts, lands wit
 });
 
 
+test("--reviewer X lands a task another reviewer's counted approval already clears, and says what became of X's request (t313)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  // miqra t86: gemini-4-argon's approval stood at the head, yet landing with
+  // --reviewer codex/gpt-6-astra looped on the named reviewer's open request.
+  const approver = "antigravity/gemini-3.1-pro", named = "claude-code/opus-5.5";
+  for (const open of [true, false]) {
+    const f = await recordedFixture(t, { reviews: [{ by: approver, request: 1 }] });
+    if (open) f.box.review.liveReview = { request: 7, reviewer: named };
+    const r = await f.run(f.checkout, "land", "t1", "--reviewer", named);
+    assert.equal(r.status, 0, r.output);
+    assert.match(r.output, new RegExp(`${approver} already approved t1 at \\w{8}, and the gate counts it, so t1 lands without waiting for ${named}`));
+    if (open) {
+      assert.match(r.output, new RegExp(`${named}'s review request 7 on t1 was withdrawn\\.`));
+      assert.deepEqual(f.posts("/review-withdraw").map((x) => x.body.request), [7]);
+    } else assert.match(r.output, new RegExp(`${named} has no open review request on t1`));
+    assert.equal(f.posts("/review-request").length, 0);
+    assert.equal(f.box.states.t1, "merged");
+  }
+});
+
+
 // Each case here an approval the gate sets aside, at a head the gate holds
 // ready for another reason; the landing asks for the review as before.
 const asksStill = async (t, cases) => {
@@ -68,9 +89,7 @@ test("a recorded approval the gate does not count is never taken for the review,
   // gpt-6-astra's and gemini-3.1-pro-argon's reviews of t628: readiness alone
   // took any approval at the head. Each case fails if it does.
   await asksStill(t, [
-    // A's claimed approval makes the gate ready; B's, recorded with the
-    // developer token answering no claimed request, is not B's review.
-    { extra: ["--reviewer", "claude-code/opus-5.5"], reviews: [{ by: "antigravity/gemini-3.1-pro" }, { by: "claude-code/opus-5.5", claimed: false }] },
+    // A named reviewer's unclaimed approval is not theirs; another reviewer's counted one settles the review (t313).
     // Of the holder's family (openai), so never independent of it.
     { reviews: [{ by: "codex/gpt-5.5" }] },
     // The holder's own approval.
@@ -81,12 +100,11 @@ test("a recorded approval the gate does not count is never taken for the review,
 });
 
 
-test("guard: another reviewer named, a withdrawn or tier approval, or a gate not ready still asks for the review (t628)", async (t) => {
+test("guard: a withdrawn or tier approval, or a gate not ready still asks for the review (t628)", async (t) => {
   if (!canInspectSlots(t)) return;
   // A guard against a looser shortcut; the landing before t628 asked in
   // every one of these cases too.
   await asksStill(t, [
-    { extra: ["--reviewer", "claude-code/opus-5.5"], reviews: [{ by: "antigravity/gemini-3.1-pro" }] },
     { reviews: [{ by: "antigravity/gemini-3.1-pro", withdrawn: { at: "2026-10-13T11:00:00.000Z" } }] },
     { reviews: [{ by: "claude-code/sonnet-5.5", tier: true }] },
     { reviews: [{ by: "antigravity/gemini-3.1-pro" }], gate: { ready: false, needsAssessor: true, outOfScope: [], blockers: ["needs an independent approval"] } },
