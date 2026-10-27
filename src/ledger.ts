@@ -26,7 +26,7 @@ import {
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, blockUntil, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
-  standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead,
+  standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead, countingReviews, independentApproval,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
@@ -5741,7 +5741,41 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     this.afterPlanChange(id);
+    this.askPostMergeReview(id, at);
     return this.item(id);
+  }
+
+  // A task merged in fast mode landed on its checks alone, so its
+  // independent review is owed after the merge (t331). The server asks it
+  // here, as the merge is recorded, whatever recorded it: atelier land,
+  // accept then merge, or record-merge. Before this only atelier land asked
+  // (cli/land.mjs), and miqra/t130, accepted and merged without it on
+  // 2026-10-26, was never reviewed. Nothing is asked when an approval the
+  // gate counts already stands at the merged head. The pool picks the
+  // reviewer, who may be of the builder's family (mergedFast), preferring
+  // one a live runner offers; when no runner is live at the merge, the pick
+  // is made without the offers, and the request waits for a runner, as the
+  // stuck report says. A refused ask (no reviewer in the pool, say) leaves
+  // the review owed, as fastLandings reports it, and a review.unasked event
+  // says why; the merge stands either way.
+  private askPostMergeReview(id: string, at: string): void {
+    if (!this.mergedFast(id)) return;
+    const item = this.item(id);
+    const policy = this.project().policy;
+    const counted = countingReviews(this.reviewsFor(id), bindingOf(item), policy, this.owner)
+      .some((r) => independentApproval(r, "coordinated", contributorsOf(item), this.owner, singleFamily(policy)));
+    if (counted) return;
+    const ask = (offers: readonly SeenOffer[] | undefined) => this.ctx.storage.transactionSync(() => this.askReview(id, ORCHESTRATOR, null, this.poolStanding(), true, false, undefined, offers));
+    try {
+      try { ask(this.heldOffers()); }
+      catch (err) {
+        if (!(err instanceof RuleError && err.code === "no_reviewer")) throw err;
+        ask(undefined);
+      }
+    } catch (err) {
+      const reason = err instanceof RuleError ? err.detail : String((err as Error)?.message ?? err);
+      this.log(id, ORCHESTRATOR, "review.unasked", { via: "post-merge", reason }, at);
+    }
   }
 
   abandon(id: string, actor: string, note: string, token?: string | null, deliveredBy?: string, direction: OwnerDirection | null = null): Item {
@@ -6043,10 +6077,12 @@ export class Ledger extends DurableObject<Env> {
     return rows.filter((r) => since === null || r.at >= since).map((r) => {
       const receipt = r.receipt;
       const id = r.item_id;
-      const req = this.sql.exec(`SELECT id, state FROM review_requests WHERE item = ? AND head IN (?, ?) ORDER BY id DESC LIMIT 1`, id, receipt.commit, receipt.mergeCommit).toArray()[0];
+      const req = this.sql.exec(`SELECT id, state, stopped FROM review_requests WHERE item = ? AND head IN (?, ?) ORDER BY id DESC LIMIT 1`, id, receipt.commit, receipt.mergeCommit).toArray()[0];
       const review = this.reviewsFor(id).filter((v) => v.head === receipt.mergeCommit || v.head === receipt.commit).at(-1);
       const fix = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.fix_of' AND json_extract(data, '$.itemId') = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
-      const reviewState = review ? (review.approve ? "approved" : "rejected") : req ? (req.state as string) : "not requested";
+      // A request that ended without a verdict STOP_LIMIT times stands open,
+      // but no runner serves it again, so the review is owed (t331).
+      const reviewState = review ? (review.approve ? "approved" : "rejected") : req ? (reviewStopped(parseStop(req.stopped)) ? "stopped without a verdict" : req.state as string) : "not requested";
       return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, owed: postMergeOwed(reviewState), fix: fix ? fix.item_id as string : null };
     });
   }
@@ -6157,7 +6193,9 @@ export class Ledger extends DurableObject<Env> {
       // leaves what is stored; the other paths move it.
       if (item.kind !== "part" && baseline.tip && /^[a-f0-9]{40,64}$/.test(baseline.tip) && this.mainHead() === null) this.setMainHead(baseline.tip, at);
       this.log(id, actor, "item.merge_recorded", { ...record, ...(item.head && item.head !== item.base && item.head !== record.commit ? { recordedHead: item.head } : {}) }, at);
-      this.log(id, actor, "item.merged", { mergeCommit: record.mergeCommit, head: record.commit, observedOnBaseline: true, outside: true }, at);
+      // In fast mode the merge is marked fast, as merged() marks one, so its
+      // post-merge review is asked below and may be same-family (t331).
+      this.log(id, actor, "item.merged", { mergeCommit: record.mergeCommit, head: record.commit, observedOnBaseline: true, outside: true, ...(this.mode().mode === "fast" ? { fast: true } : {}) }, at);
       // The developer says the declared protected actions already ran (t754):
       // one run of each declared kind is recorded after the merge event, which
       // is what retires the ship reminder, as a run of atelier ship does. It
@@ -6169,6 +6207,7 @@ export class Ledger extends DurableObject<Env> {
       }
     });
     this.afterPlanChange(id);
+    this.askPostMergeReview(id, at);
     return { item: this.item(id), record };
   }
 
@@ -6298,9 +6337,9 @@ export class Ledger extends DurableObject<Env> {
       openReviewItems: this.sql.exec(`SELECT DISTINCT r.item FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND r.head = i.head`).toArray().map((r) => String(r.item)),
       // The open requests with the reviewer each asks and when it was made,
       // for the report's check that some live runner offers the reviewer (t220).
-      openRequests: this.sql.exec(`SELECT r.id, r.item, r.head, r.dispatch, r.stopped FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND i.state != 'abandoned' AND (i.state = 'merged' OR r.head = i.head) ORDER BY r.id`).toArray().map((r) => ({
+      openRequests: this.sql.exec(`SELECT r.id, r.item, r.head, r.dispatch, r.stopped, i.state FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND i.state != 'abandoned' AND (i.state = 'merged' OR r.head = i.head) ORDER BY r.id`).toArray().map((r) => ({
         id: Number(r.id), item: String(r.item), head: String(r.head), dispatch: JSON.parse(r.dispatch as string) as Dispatch,
-        ...(reviewStopped(parseStop(r.stopped)) ? { stopped: { at: parseStop(r.stopped)!.at, text: stopText(String(r.item), parseStop(r.stopped)!) } } : {}),
+        ...(reviewStopped(parseStop(r.stopped)) ? { stopped: { at: parseStop(r.stopped)!.at, text: stopText(String(r.item), parseStop(r.stopped)!, r.state === "merged") } } : {}),
       })),
       // What runners reported of open dispatched tasks they gave up (t281).
       runSkips: this.runSkipsOf(items),
@@ -6454,7 +6493,7 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
-    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
+    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -7705,13 +7744,21 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The Workflow follows the live gate request across lease generations.
+  // The live request the task's detail reads: at its head, or for a merged
+  // task at its merge commit, where the post-merge review is asked, so
+  // atelier land sees the one the server opened at the merge (t331).
+  private liveReviewOf(item: Item): ReturnType<Ledger["liveReviewRequest"]> {
+    const head = item.state === "merged" ? landingOf(item, this.events(item.id, Number.MAX_SAFE_INTEGER).toReversed())?.commit ?? item.head : item.head;
+    return head ? this.liveReviewRequest(item.id, head) : null;
+  }
+
   liveReviewRequest(item: string, head: string): { request: number; reviewer: string; stopped?: string } | null {
     this.expireReviewClaims();
-    const row = this.sql.exec(`SELECT id, dispatch, stopped FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, item, head).toArray()[0];
+    const row = this.sql.exec(`SELECT r.id, r.dispatch, r.stopped, i.state FROM review_requests r JOIN items i ON i.id = r.item WHERE r.item = ? AND r.head = ? AND r.tier IS NULL AND r.state IN ('open', 'claimed') ORDER BY r.id DESC LIMIT 1`, item, head).toArray()[0];
     if (!row) return null;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
     const stop = parseStop(row.stopped);
-    return { request: row.id as number, reviewer: `${dispatch.agent}/${dispatch.model}`, ...(reviewStopped(stop) ? { stopped: stopText(item, stop) } : {}) };
+    return { request: row.id as number, reviewer: `${dispatch.agent}/${dispatch.model}`, ...(reviewStopped(stop) ? { stopped: stopText(item, stop, row.state === "merged") } : {}) };
   }
 
   // The review claims held on the task now, each with the runner the claim
@@ -7878,7 +7925,7 @@ export class Ledger extends DurableObject<Env> {
     // A request stopped at this head (t238) is claimed by no runner, however
     // it asks; the developer's decision, or a new request, lifts it.
     const stop = tier ? null : parseStop(row.stopped);
-    if (reviewStopped(stop)) throw new RuleError("review_stopped", stopText(itemId, stop), 409);
+    if (reviewStopped(stop)) throw new RuleError("review_stopped", stopText(itemId, stop, item.state === "merged"), 409);
     if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
     const [harness, model] = actor.split("/");
     if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403);

@@ -119,3 +119,107 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
   expect(reviews[0]).toMatchObject({ by: ASTRA, head: M1, approve: true, postMerge: true });
   expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, receipt: { mergeCommit: M1 }, review: { state: "approved", by: ASTRA } });
 });
+
+// t331: the post-merge review the server asks at a fast-mode merge, served
+// by the runner, with the reply shape that ended nine of miqra's eleven
+// post-merge reviews on 2026-10-26 without a verdict: the reviewer could not
+// run the checks in its sandbox, found no blocking defect, declared the
+// criterion it could not prove unmet and wrote no VERDICT line. The runner
+// gives the audit the clean-clone run, reads the reply as the rejection the
+// format makes it, and the verdict is recorded at the merge commit.
+it("a post-merge reply that declares a criterion unmet and states no verdict is recorded as a rejection", async () => {
+  const name = "fast-review-withheld";
+  const index: any = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  const L: any = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  const record = { name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: [] }, createdAt: AT };
+  await L.setProject(record, "owner");
+  await index.registerProject(record);
+  await index.putModel(entry("gpt-6-astra", "codex"));
+  await index.putModel(entry("opus-5.5", "claude-code"));
+  await L.poolChanged([entry("gpt-6-astra", "codex"), entry("opus-5.5", "claude-code")]);
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  // Built by Opus, accepted and merged in fast mode without atelier land.
+  const item = await L.newItem("Built fast", ["src/**"], "owner", { accept: ["The page measures right"] });
+  await L.claim(item.id, OPUS);
+  await L.setFork(item.id, `${name}--${item.id}`, BASE, OPUS);
+  await L.recordPush(item.id, OPUS, C1, C1);
+  await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: C1, passed: true, by: "owner", at: AT, changedPaths: ["src/a.ts"] });
+  await L.submit(item.id, OPUS);
+  await L.accept(item.id, "owner", C1);
+  await L.merged(item.id, "owner", M1, true);
+  // The server asked the post-merge review of Astra at the merge commit.
+  expect(await L.liveReviewRequest(item.id, M1)).toMatchObject({ reviewer: ASTRA });
+
+  const artifacts = { get: async (repo: string) => ({
+    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
+    createToken: async (_scope: string, ttl: number) => ({ id: "tok", plaintext: `read-${repo}`, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }),
+    revokeToken: async () => true,
+    [Symbol.dispose]() {},
+  }) } as unknown as Artifacts;
+  const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as typeof env;
+  const request = (method: string, path: string, token: string, actor: string, body?: unknown, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }), bindings);
+  const issued = await request("POST", "/tokens", OWNER, "owner", { actor: ASTRA, projects: [name] });
+  const agentToken = (await issued.json() as { token: string }).token;
+  const flag = (argv: string[], f: string) => argv.includes(f) ? argv[argv.indexOf(f) + 1] : undefined;
+  const calls: string[][] = [];
+  const cli = async (argv: string[], _cwd: unknown, options: { token: string }) => {
+    calls.push(argv);
+    const verb = argv[0], id = argv[1];
+    const post = (route: string, body: unknown, headers?: Record<string, string>) => request("POST", `/projects/${name}/items/${id}/${route}`, options.token, ASTRA, body, headers);
+    let res: Response;
+    if (verb === "review-claim") res = await post("review-claim", {}, { "x-atelier-runner": flag(argv, "--runner")! });
+    else if (verb === "baseline-token") res = await request("POST", `/projects/${name}/baseline-token`, options.token, ASTRA, {});
+    else if (verb === "review") res = await post("review", { approve: argv.includes("--approve"), note: flag(argv, "--note"), head: flag(argv, "--head"), criteria: flag(argv, "--criteria"), request: Number(flag(argv, "--request")), ...(flag(argv, "--findings") ? { findings: JSON.parse(flag(argv, "--findings")!) } : {}) });
+    else if (verb === "review-release" || verb === "review-renew") res = await post(verb, { note: flag(argv, "--note") ?? "", request: Number(flag(argv, "--request")) });
+    else throw new Error(`unexpected call ${verb}`);
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${verb}: ${res.status} ${text}`);
+    return text;
+  };
+  // The reply as codex/gpt-6-astra wrote it for miqra/t144 on 2026-10-26.
+  const reply = [
+    "The audit cannot produce a verdict because sandbox restrictions prevented visual verification. I found no verified blocking defect in the landed diff.",
+    "SUMMARY: Inspected the landed change and verified the ownership retry logic; browser criteria remain unproved.",
+    "BLOCKING: 0",
+    "CRITERION 1: unmet — npm run verify:visual stopped during runtime preparation with EPERM; no exact-head observed runs were supplied.",
+  ].join("\n");
+  let held = false;
+  const evidenceAsked: { head: string }[] = [];
+  const io = {
+    cli, log: () => {}, stopped: () => false, env: {}, ownerTokens: () => [], readSecret: () => agentToken,
+    workspacePath: () => "/work/t1",
+    clone: async () => {},
+    hasCommit: async () => held,
+    fetch: async (_dir: string, remote: string) => { if (remote.includes("--baseline")) held = true; },
+    checkout: async (_dir: string, head: string) => { if (!held || head !== M1) throw new Error(`fatal: unable to read tree (${head})`); },
+    revParse: async (_dir: string, spec: string) => spec === `${M1}^@` ? `${PARENT}\n${C1}` : spec === "FETCH_HEAD" ? M1 : "",
+    show: async () => { throw new Error("no override"); },
+    diff: async () => "diff --git a/src/a.ts b/src/a.ts\n+export const a = 1;\n",
+    brief: async () => ({ file: "/work/brief.txt" }), removeBrief: async () => {},
+    writeDiff: async () => ({ file: "/work/diff.txt" }), removeDiff: () => {},
+    verdictPath: () => "/work/verdict.txt",
+    readVerdict: () => reply,
+    runnerEvidence: async (args: { head: string }) => { evidenceAsked.push(args); return null; },
+    harness: async () => ({ code: 0, timedOut: false }),
+    dataHome: async () => null, removeDataHome: async () => {},
+  };
+  const config = { agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{brief_file}", "{diff_file}", "{verdict_file}"] }], tokens: { "gpt-6-astra": "agent.astra" } };
+  const assignment = { project: name, item: { id: item.id, dispatch: { job: "review" } }, agent: "codex", model: "gpt-6-astra", actor: ASTRA };
+
+  const state = await runReview(assignment, config, "home:studio", io);
+  expect(state, JSON.stringify(state)).toMatchObject({ phase: "reviewed", verdict: "reject" });
+  expect(calls.map((c) => c[0])).not.toContain("review-unparsable");
+  // The audit was given the clean-clone run of the merge commit.
+  expect(evidenceAsked.map((a) => a.head)).toEqual([M1]);
+  // The rejection is on the ledger at the merge commit, as the post-merge review.
+  const reviews = await L.reviewsFor(item.id);
+  expect(reviews).toEqual([expect.objectContaining({ by: ASTRA, head: M1, approve: false, postMerge: true })]);
+  expect(reviews[0].note).toMatch(/^Rejected: the reviewer declared criterion 1 unmet and wrote no VERDICT line/);
+  const landed = (await L.fastLandings())[0];
+  expect(landed).toMatchObject({ item: item.id, owed: false, review: { state: "rejected", by: ASTRA }, fix: expect.stringMatching(/^t\d+$/) });
+  expect(await L.unparsableFor(item.id)).toEqual([]);
+});

@@ -27,6 +27,24 @@ test("in fast mode a landing with a named reviewer asks that reviewer after the 
   assert.deepEqual(f.posts("/review-request").map((x) => x.body), [{ reviewer: "codex/gpt-6-astra", wanted: true }]);
 });
 
+// t331: the server asks the post-merge review itself as it records the
+// merge; land then asks nothing, whether or not it names a reviewer.
+test("in fast mode atelier land asks no second post-merge review when the server already opened one", async (t) => {
+  if (!canInspectSlots(t)) return;
+  for (const named of [[], ["--reviewer", "claude-code/sonnet-5"]]) {
+    const f = await landFixture(t);
+    f.box.mode = { mode: "fast", since: "2026-10-19T09:00:00.000Z", reason: "Artifacts fails", by: "owner", decision: null };
+    // The server's request at the merge commit, read once the task is merged.
+    Object.defineProperty(f.box.review, "liveReview", { enumerable: true, get: () => f.box.states.t1 === "merged" ? { request: 7, reviewer: "codex/gpt-6-astra" } : null });
+    const r = await f.run(f.checkout, "land", "t1", ...named);
+    assert.equal(r.status, 0, r.output);
+    assert.equal(f.box.states.t1, "merged");
+    assert.deepEqual(f.posts("/review-request"), [], "land asks no review when the server's request stands");
+    assert.match(r.output, /Post-merge review of t1 was requested by the server of codex\/gpt-6-astra \(request 7\); it is owed until a verdict stands\./);
+    if (named.length) assert.match(r.output, /To ask claude-code\/sonnet-5 instead, run atelier review-request t1 --reviewer claude-code\/sonnet-5\./);
+  }
+});
+
 test("in full mode atelier land asks the review before the merge and no post-merge review", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);

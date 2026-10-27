@@ -951,10 +951,16 @@ export async function runLand(io) {
 // A task merged in fast mode owes its independent review (t300): asked once
 // the merge is recorded, of the reviewer named or the one the server picks,
 // who may be of the builder's family. A failed ask does not undo the merge;
-// it says the review is owed and how to ask it.
+// it says the review is owed and how to ask it. The server asks it itself as
+// it records the merge (t331); when that request stands, this asks nothing,
+// so a named reviewer does not replace it.
 async function askPostMergeReview(io, { itemPath, id, reviewer }) {
   const d = await io.request("GET", itemPath);
   if (d.mode?.mode !== "fast" || d.item?.state !== "merged") return;
+  if (d.liveReview) {
+    io.print(`Post-merge review of ${id} was requested by the server of ${d.liveReview.reviewer} (request ${d.liveReview.request}); it is owed until a verdict stands.${reviewer && reviewer !== d.liveReview.reviewer ? ` To ask ${reviewer} instead, run atelier review-request ${id} --reviewer ${reviewer}.` : ""}`);
+    return;
+  }
   try {
     const ask = await io.request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
     io.print(`Post-merge review of ${id} requested${ask.reviewer ? ` of ${ask.reviewer}` : ""}${ask.requested === false ? " (a request was already open)" : ""}; it is owed until a verdict stands.`);
