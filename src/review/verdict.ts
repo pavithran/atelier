@@ -53,11 +53,21 @@ export type ParsedVerdict =
 // not is refused, so the request is released and asked again. Unset, none of
 // this is read, which is how a criteria review, a pre-review and a
 // verification, whose briefs ask for no count, are read as they were.
+//
+// `postMerge` (t331) is set for the reply to a post-merge audit. A REJECT
+// whose only ground is a criterion the reply declares unmet is read as the
+// rejection it says, with `unmet` naming those criteria, since a post-merge
+// audit is not settled and REJECT otherwise needs a blocking finding. A
+// reply with no verdict is refused, post-merge or not: on 2026-10-26 nine of
+// miqra's eleven post-merge replies gave none because the reviewer's sandbox
+// could not run the checks, and a reply held back by the environment is a
+// failed review, owed and asked again, never a rejection (REVIEW_RULES).
 export interface VerdictOptions {
   counted?: boolean;
   checks?: boolean;
   deferred?: readonly number[];
   settled?: readonly Finding[];
+  postMerge?: boolean;
 }
 
 // A reply longer than `reply` is refused rather than scanned. A list of more
@@ -229,6 +239,8 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   const json = jsonStatements(reply, withChecks);
   const lines = lineStatements(reply, criteria, withChecks);
   const verdicts = new Set([...json.map((s) => s.verdict), ...lines.verdicts]);
+  // The criteria a post-merge reply declares unmet, as the brief numbers them.
+  const declared = options.postMerge && criteria ? [...lines.criteria].filter(([n, state]) => state === "unmet" && n <= criteria).map(([n]) => n).sort((a, b) => a - b) : [];
   if (!verdicts.size) refuse(NO_VERDICT);
   // Lowercase approve and reject are ordinary words in a review of code that
   // approves and rejects things, so only the capitalised keywords count as
@@ -271,6 +283,7 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
       else verdict = "approve";
     }
   }
+  if (verdict === "reject" && declared.length && !findings.some((f) => f.severity === "blocking")) unmet = declared;
   const blocking = findings.filter((f) => f.severity === "blocking").length;
   if (verdict === "reject" && !blocking && !unmet) refuse("a rejection must name at least one blocking finding; every other finding is a follow-up");
   if (verdict === "approve" && blocking) refuse(`an approval cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`);

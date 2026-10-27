@@ -12,6 +12,7 @@ import { largeKey } from "../src/large.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, settledFindings, ownerVerdicts, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
 import { criteriaAsked, DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, replyFormat, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
+import { modeLineWithOwed, OWED_NAMED, owedReviewsText } from "../src/review/owed.ts";
 
 const H0 = "0".repeat(40);
 const H1 = "a".repeat(40);
@@ -1432,4 +1433,53 @@ test("reviewNeeded under riskReviews: a non-protected core part built by sonnet 
   assert.deepEqual(one.counted, [OPUS]);
   // Two approvals that pass the gate but not the protected test (the builder's own family) leave integration without its one independent review: asked on.
   assert.ok(part([review(OPUS, true), review("claude-code/haiku-4.5", true)]).needed);
+});
+
+// t331: on 2026-10-26 nine of miqra's eleven post-merge replies were refused
+// as stating no verdict. Each reviewer could not run the checks, wrote
+// BLOCKING: 0, declared the criteria it could not prove unmet and gave no
+// VERDICT line. A reply held back by the environment is a failed review, not
+// a rejection, so it is refused, post-merge or not; a post-merge REJECT
+// whose only ground is an unmet criterion is recorded as given.
+const WITHHELD = [
+  "Review could not be completed because the read-only sandbox prevented visual verification.",
+  "SUMMARY: Inspected the landed diff; full visual verification remains unproved.",
+  "BLOCKING: 0",
+  "FINDING: follow-up src/page.ts:63 The assertion omits the font-family check.",
+  "CRITERION 1: met — Read the markup.",
+  "CRITERION 2: unmet — The browser could not launch, so the measurements are unavailable.",
+].join("\n");
+const NO_VERDICT_ERROR = { ok: false, error: "the reply states no verdict: it has no VERDICT line and no JSON verdict" };
+
+test("parseVerdict: a post-merge reply that declares a criterion unmet and states no verdict is refused, not read as a rejection", () => {
+  assert.deepEqual(parseVerdict(WITHHELD, 2, { counted: true, postMerge: true }), NO_VERDICT_ERROR);
+  assert.deepEqual(parseVerdict(WITHHELD, 2, { counted: true }), NO_VERDICT_ERROR);
+  // A post-merge REJECT whose only ground is the unmet criterion is recorded as given.
+  const said = parseVerdict(`VERDICT: REJECT\n${WITHHELD}`, 2, { counted: true, postMerge: true });
+  assert.ok(said.ok);
+  assert.deepEqual([said.verdict, said.unmet, said.findings.map((f) => f.severity)], ["reject", [2], ["follow-up"]]);
+  // The same REJECT to a pre-merge review still needs a blocking finding.
+  assert.equal(parseVerdict(`VERDICT: REJECT\n${WITHHELD}`, 2, { counted: true }).ok, false);
+  // A post-merge APPROVE with every criterion met is recorded as given.
+  const approved = parseVerdict(`VERDICT: APPROVE\n${WITHHELD.replace("CRITERION 2: unmet", "CRITERION 2: met")}`, 2, { counted: true, postMerge: true });
+  assert.deepEqual(approved.ok && approved.verdict, "approve");
+});
+
+test("reviewBrief: a post-merge audit is told to judge with the clean-clone run and that an environment-limited reply is a failed audit", () => {
+  const text = brief({ item: item({ state: "merged" }) });
+  assert.match(text, /^Post-merge audit of the recorded merge /);
+  assert.match(text, /Judge the criteria with the clean-clone run and the observed results this brief gives, and end with a VERDICT line\. If environment limits still prevent a verdict, explain them without a VERDICT line, so the audit is recorded as failed and asked again, rather than rejecting the change\./);
+  assert.doesNotMatch(text, /is a rejection, written VERDICT: REJECT/);
+  assert.doesNotMatch(brief(), /Judge the criteria with the clean-clone run/);
+});
+
+test("owedReviewsText: names each task whose post-merge review is owed, with its state, after the fast-mode line", () => {
+  const landed = (item: string, owed: boolean, state: string) => ({ item, owed, review: { state } });
+  assert.equal(owedReviewsText([landed("t1", false, "approved")]), null);
+  assert.equal(modeLineWithOwed({ mode: "fast", line: "Mode: fast since x (y)" }, [landed("t1", false, "open"), landed("t2", true, "stopped without a verdict"), landed("t3", true, "not requested")]),
+    "Mode: fast since x (y). Post-merge review owed: t2 (stopped without a verdict), t3 (not requested); ask one with atelier review-request ID --reviewer H/M");
+  // Full mode's line is printed by no status, and is left as it is.
+  assert.equal(modeLineWithOwed({ mode: "full", line: "Mode: full" }, [landed("t2", true, "not requested")]), "Mode: full");
+  const many = Array.from({ length: OWED_NAMED + 2 }, (_, i) => landed(`t${i + 1}`, true, "withdrawn"));
+  assert.match(owedReviewsText(many)!, new RegExp(`t${OWED_NAMED} \\(withdrawn\\), and 2 more, which atelier fast status lists;`));
 });

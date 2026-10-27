@@ -272,7 +272,11 @@ export function reviewBrief(input: BriefInput): string {
   // The criteria the reply must prove, numbered across both lists.
   const criteria = criteriaCount(item, input.plan);
   const out: string[] = [];
-  if (item.state === "merged") out.push(`Post-merge audit of the recorded merge ${head}. Judge the landed change against its criteria. The original merge and any developer override remain historical records; blocking findings will create a linked defect task.`);
+  // A post-merge reviewer whose sandbox could not run the checks withheld
+  // its verdict (t331: miqra, 2026-10-26). The audit now carries the
+  // clean-clone run of the merge commit to judge with; a reply the
+  // environment still holds back stays a failed review, as REVIEW_RULES says.
+  if (item.state === "merged") out.push(`Post-merge audit of the recorded merge ${head}. Judge the landed change against its criteria. The original merge and any developer override remain historical records; blocking findings will create a linked defect task. Judge the criteria with the clean-clone run and the observed results this brief gives, and end with a VERDICT line. If environment limits still prevent a verdict, explain them without a VERDICT line, so the audit is recorded as failed and asked again, rather than rejecting the change.`);
   const section = (...lines: string[]) => out.push(lines.join("\n"));
 
   // Why this is a later round: a model rejected an earlier head and the

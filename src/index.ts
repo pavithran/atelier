@@ -226,7 +226,11 @@ const TASK_EVENTS = 300;
 async function standingOf(env: Env, key: string): Promise<Standing> {
   const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const L = ledger(env, key);
-  const standing = await readStanding(L as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date(), () => acceptedOf(env, L));
+  const read = await readStanding(L as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date(), () => acceptedOf(env, L));
+  // The fast-mode line atelier status --project prints names the post-merge
+  // reviews still owed (t331), as GET mode's line does.
+  const line = read.mode ? await L.statusModeLine({ mode: "fast", line: read.mode }).catch(() => null) : null;
+  const standing = line ? { ...read, mode: line } : read;
   // The task forks Artifacts is still preparing, with their age and next
   // action (t18), only while there are any; `atelier status --project` prints them.
   const preparing = Object.entries(await L.forkPreparations().catch(() => ({}))).map(([id, view]) => ({ id, ...view }));
@@ -2186,7 +2190,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // GET also lists the builds runners made in fast mode and reported ready
   // (t589), which atelier fast status prints as tN=SHA.
   if (parts[2] === "mode" && parts.length === 3) {
-    if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
+    if (m === "GET") {
+      // The line atelier status prints names the post-merge reviews still owed (t331).
+      const [mode, landed] = await Promise.all([L.mode(), L.fastLandings()]);
+      return json({ ...mode, line: await L.statusModeLine(mode), landed, ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
+    }
     requireOwner(env, actor);
     // The switch to fast mode takes the developer's direction, `quote` with
     // the acting model (t629, projects.developer-direction.v1), or their

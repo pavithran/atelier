@@ -2481,8 +2481,12 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // The changed tests and the typecheck in a clean clone (t732). A failure
     // to collect it is 'not run' in the brief, never a pass; an io with no
     // collector (an older wiring) leaves the section out.
+    // A post-merge audit gets the run too (t331): a merge in fast mode has
+    // no check recorded at the merge commit, and the reviewers of miqra's
+    // merges on 2026-10-26, whose sandboxes could not run the tests, had
+    // nothing else to prove a criterion with.
     let runnerEvidence;
-    if (io.runnerEvidence && !claimed.landed) {
+    if (io.runnerEvidence) {
       try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from }); }
       catch (error) {
         if (io.stopped()) throw new Error("interrupted");
@@ -2590,7 +2594,11 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // criteria the criteria review flagged as checks after deploy (t457),
     // which the brief let the reviewer defer, are named to the parser from
     // the same claim the brief read them from.
-    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { counted: true, deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0) });
+    // A post-merge audit's REJECT whose only ground is a criterion it
+    // declares unmet is recorded as given (t331). A reply with no verdict,
+    // as one held back by the reviewer's environment, is refused below and
+    // the review stays owed.
+    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { counted: true, deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0), postMerge: !!claimed.landed });
     if (!parsed.ok) {
       // The reply is kept on the task, its last VERDICT_LIMITS.reply
       // characters with the reviewer and the head it judged, as the request
@@ -2619,6 +2627,11 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // nothing left to block on is posted as the approval it comes to. A
     // post-merge audit is not settled: its findings open defect tasks.
     let posted = parsed;
+    if (claimed.landed && parsed.unmet) {
+      const names = `${parsed.unmet.length === 1 ? "criterion" : "criteria"} ${parsed.unmet.join(", ")}`;
+      posted = { ...parsed, summary: `Rejected: the reviewer declared ${names} unmet; an unproved criterion is unmet, and unmet blocks. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) };
+      io.log(`post-merge review: ${names} declared unmet, recorded as a rejection`);
+    }
     if (parsed.verdict === "reject" && !claimed.landed) {
       if (renewalFailure) throw renewalFailure;
       const settled = await settleRejection(io, {
