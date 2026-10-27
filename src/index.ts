@@ -1143,8 +1143,11 @@ async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
       return false;
     });
+    // A claim that finds the fork already there drops the note it made just
+    // now, so an answered fork is not taken for one whose request was cut off.
     if (made || noted) await L.forkAnswered(t.id, t.name);
-    else await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
+    // A fork found under the name is taken only as this task's own (t641).
+    if (!made) await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
     return { name: t.name, head: await headOf(env, t.name) };
   } catch (err) {
     if (!replaced && parseRuleError(err)?.code === "not_ready") {

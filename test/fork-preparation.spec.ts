@@ -189,6 +189,18 @@ it("a fork found already there, as the t496 fork was, is reported too, and kept"
   expect(fa.repos.has(fork)).toBe(true);
 });
 
+it("a repository already there under the fork's name, made for something else, is refused, though the claim noted a request for it", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, claim } = await setup("fork-prep-foreign", { ready: true, description: "something else" });
+  const res = await claim();
+  expect(res.status).toBe(409);
+  expect((await answer(res)).error).toBe("repo_foreign");
+  expect(fa.minted).not.toContain(fork);
+  expect(await L.item("t1")).toMatchObject({ fork: null });
+  const noted = await inside(L, (instance) => instance.sql.exec(`SELECT value FROM meta WHERE key = ?`, "fork-request:t1").toArray().length);
+  expect(noted).toBe(0);
+});
+
 it("a stuck fork of a task with a recorded head is not offered for deletion, since it may hold the task's commits", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const { L, fa, fork, claim } = await setup("fork-prep-pushed");
