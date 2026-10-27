@@ -6088,10 +6088,11 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
-  // The mode line atelier status prints: in fast mode, with the post-merge
-  // reviews still owed named after it (t331).
-  statusModeLine(): string {
-    return modeLineWithOwed(this.mode(), this.fastLandings());
+  // The mode line atelier status prints, given the mode as the caller read
+  // it: in fast mode, with the post-merge reviews still owed named after it
+  // (t331).
+  statusModeLine(mode: { mode: string; line: string }): string {
+    return modeLineWithOwed(mode, this.fastLandings());
   }
 
   // The owner records a task landed in fast mode: its receipt, and the item

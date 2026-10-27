@@ -220,7 +220,7 @@ async function standingOf(env: Env, key: string): Promise<Standing> {
   const read = await readStanding(L as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date(), () => acceptedOf(env, L));
   // The fast-mode line atelier status --project prints names the post-merge
   // reviews still owed (t331), as GET mode's line does.
-  const line = read.mode ? await L.statusModeLine().catch(() => null) : null;
+  const line = read.mode ? await L.statusModeLine({ mode: "fast", line: read.mode }).catch(() => null) : null;
   const standing = line ? { ...read, mode: line } : read;
   // The task forks Artifacts is still preparing, with their age and next
   // action (t18), only while there are any; `atelier status --project` prints them.
@@ -2094,8 +2094,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "mode" && parts.length === 3) {
     if (m === "GET") {
       // The line atelier status prints names the post-merge reviews still owed (t331).
-      const [mode, landed, line] = await Promise.all([L.mode(), L.fastLandings(), L.statusModeLine()]);
-      return json({ ...mode, line, landed, ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
+      const [mode, landed] = await Promise.all([L.mode(), L.fastLandings()]);
+      return json({ ...mode, line: await L.statusModeLine(mode), landed, ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
     }
     requireOwner(env, actor);
     // The switch to fast mode takes the developer's direction, `quote` with
