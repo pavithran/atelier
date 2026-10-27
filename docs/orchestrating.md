@@ -1090,10 +1090,13 @@ Before the switch:
    keeps; a token pasted into a brief, a note, or the project's title or
    policy is replaced with `[redacted]`. When it has read every table, the
    dump checks each one's rows against a checksum of the table as it stands
-   then, and fails, writing nothing, if any row was added, updated,
-   replaced or removed while it read, even when the count held; stop the
-   runners and dump again. The file is the project's whole record: keep it
-   as you would the owner token.
+   then, and fails, writing nothing, if the rows it read differ from that
+   final state, even when the count held. It does not catch every write
+   made while it read: a row added to a page not yet read is read with the
+   rest and passes, since the dump then matches the Ledger as it stood at
+   the end, and a change undone before the check goes unseen. So stop the
+   runners before you dump, and if the dump fails, dump again. The file is the project's whole record: keep it as you would
+   the owner token.
 
 Rehearse the switch on staging before production:
 
