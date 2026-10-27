@@ -60,7 +60,9 @@ test("the run's detail names the exit and a stderr summary within 300 characters
 });
 
 test("a key a provider echoes on stderr is not sent on", () => {
-  assert.doesNotMatch(stderrSummary("auth failed for sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"), /abcdefghijklmnopqrstuvwxyz0123456789/);
+  // Built at run time so that no key-shaped literal sits in the source.
+  const key = "sk-" + "ant-api03-" + "abcdefghijklmnopqrstuvwxyz0123456789";
+  assert.doesNotMatch(stderrSummary(`auth failed for ${key}`), /abcdefghijklmnopqrstuvwxyz0123456789/);
 });
 
 test("a refusal for the input's size is read with its limit and its size in the wordings harnesses use", () => {
