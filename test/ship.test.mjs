@@ -44,6 +44,8 @@ const CP_FILES = {
 };
 const WEB_SHIP = { schema_version: 1, kind: "atelier.ship", class: "web", deploy: { run: ["./atelier-deploy"] }, "verify-deploy": { run: ["./atelier-verify"] } };
 
+// On release/1.0 the order ships production as project atelier-1.0 and
+// pushes and fast-forwards release/1.0 (the v1.0 cut, 2026-10-27).
 test("Atelier's own ship file composes its deploy, the live check and the push to github", () => {
   const p = composeShip(resolve("."));
   assert.deepEqual(p.problems, []);
@@ -52,12 +54,12 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.deepEqual(outline(p), [
     ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-worker.mjs deploy [deploy]"],
     ["verify-delivery", "node scripts/ship-worker.mjs verify"], ["wrap"],
-    ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
-    ["baseline", "node cli/atelier.mjs sync --project atelier"], ["studio", "node scripts/studio-ff.mjs --remote origin --branch main --checkout /Users/pavi/ai-projects/atelier --host studio"],
+    ["scan", "node scripts/privacy-scan.mjs --remote github --branch release/1.0 --project atelier-1.0"], ["push"],
+    ["baseline", "node cli/atelier.mjs sync --project atelier-1.0"], ["studio", "node scripts/studio-ff.mjs --remote origin --branch release/1.0 --checkout /Users/pavi/ai-projects/atelier-1.0 --host studio"],
   ]);
   const by = Object.fromEntries(p.steps.map((s) => [s.step, s]));
   assert.equal(by["verify-delivery"].runs[0].timeoutMs, 45_000);
-  assert.deepEqual(by.push.push, { remote: "github", branch: "main" });
+  assert.deepEqual(by.push.push, { remote: "github", branch: "release/1.0" });
   assert.equal(by.deploy.runs[0].timeoutMs, 1200_000);
   assert.equal(by.deploy.runs[0].retries, 1, "the deploy is retried once");
   assert.equal(by.deploy.runs[0].ifChanged.since, "https://atelier.zone/api/version");
