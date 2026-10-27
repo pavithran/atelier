@@ -327,9 +327,12 @@ and the round is asked again.
   blocking; the independent check judges it.
   The check also decides by the base: told the task's base commit, it says
   whether a defect it confirms is already present there. Present at the base
-  means `pre-existing` (a follow-up task, in a touched file or not); present
-  only with the change, or undecidable, means it blocks, wherever it sits. The review records one follow-up task with each
-  pre-existing finding as a criterion, so nothing found is lost.
+  means `pre-existing` (a follow-up note, in a touched file or not); present
+  only with the change, or undecidable, means it blocks, wherever it sits.
+  Every non-blocking finding is recorded as a note on the task's goal (the
+  plan for a part), not filed as a task: it becomes a task only when the
+  developer picks it or it blocks a later change. `atelier plan show` lists
+  the goal's open notes in one short block.
 - **A blocking finding blocks only when a second check confirms it.** The
   runner asks another model on the runner, of another family than the
   reviewer where there is one and never a contributor, to read the code and

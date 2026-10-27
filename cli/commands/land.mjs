@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { redactGitArgs } from "../runner.mjs";
+import { runOneShotReview } from "../review-oneshot.mjs";
 import { NOT_LANDED, NOT_LANDED_EXIT, runLand } from "../land.mjs";
-import { OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { I, OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
 import { serverFetch } from "../server-fetch.mjs";
 import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../land-queue.mjs";
 
@@ -86,6 +87,11 @@ export default async function landCommand() {
       print: (line) => console.log(line),
       // A stored check log by its reference, for the failure summary (t436).
       readLog: logReader(name, id),
+      // The review of a reviewer no live runner offers, run once on this Mac (t273).
+      oneShot: async (job) => {
+        const { runRunner, runReview } = await import("../runner.mjs");
+        return runOneShotReview({ ...job, deps: { runRunner, runReview, api: { server, I }, workspacePath, checkoutOf: (n) => cfg.projects?.[n]?.path ?? null } });
+      },
       workspacePath, atelier: fileURLToPath(new URL("../atelier.mjs", import.meta.url)), env: { ...process.env, ATELIER_TEST_PRIORITY: "release" },
       redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
       // The token a landing's re-claim minted, kept as claimWorkspace keeps

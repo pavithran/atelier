@@ -1237,6 +1237,8 @@ it("a runner reviews an overridden merge, preserves its landing and records its 
   await refusal(L.addReview({ itemId: id, by: GPT, head, criteria: claim.criteria, request: claim.request, approve: true, note: "Wrong revision", at: AT }), "stale_head", /older head/);
   const findings = [{ file: "src/a/x.ts", line: 2, severity: "follow-up" as const, text: "Consider a clearer message" }];
   await L.addReview({ itemId: id, by: GPT, head: merge, criteria: claim.criteria, request: claim.request, approve: true, note: "Merge keeps data", findings, at: AT }, undefined, true);
+  // A non-blocking finding after the merge is a note on the goal, not a task (t203).
+  expect(await L.goalNotes(id)).toEqual([expect.objectContaining({ file: "src/a/x.ts", line: 2, text: "Consider a clearer message" })]);
   expect((await L.item(id))).toMatchObject({ state: "merged", head, acceptedHead: head, reviewOverride: expect.anything() });
   expect(await L.reviewWaiting()).toEqual([]);
   expect((await L.reviewsFor(id))[0]).toMatchObject({ postMerge: true });

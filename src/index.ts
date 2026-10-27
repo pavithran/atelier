@@ -3831,7 +3831,7 @@ const listedApart = (item: Item): boolean => LISTED_APART.has(item.dispatch?.job
 // src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
 // meant for another. A review or pre-review request, and a task refresh's
 // job, is listed apart, so it carries none.
-async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null, busy: ReadonlyMap<string, string> | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
+async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[]; clearedSkips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null, busy: ReadonlyMap<string, string> | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
   // Each waiting dispatch's build runs since it was dispatched, read task by
   // task, so the newest reports of other tasks never push its failures out.
   const asks = queued.flatMap(({ project, item }) => item.dispatch && !listedApart(item) ? [{ project, item: item.id, since: item.dispatch.at }] : []);
@@ -3844,7 +3844,7 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
     if (listedApart(item)) return { project, item: runner ? runnerWhyItem(item, undefined) : item };
-    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer, busy });
+    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), cleared: mine(item.clearedSkips), offers, runs: reports, project, offer, busy });
     if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this
     // listing from an older server's, which carries `held` alone.
