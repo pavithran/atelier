@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import { deployWorker, sourceHead, verifyWorker, VERSION_URL } from "../scripts/ship-worker.mjs";
 
@@ -23,11 +23,26 @@ test("t182 canonical deployment binds the captured source and preserves vars", (
   assert.equal(deployWorker({ ...f, run(command, args, options) {
     calls++;
     assert.equal(command, process.platform === "win32" ? "npx.cmd" : "npx");
-    assert.deepEqual(args, ["wrangler", "deploy", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`]);
+    assert.deepEqual(args, ["wrangler", "deploy", "--env", "", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`]);
     assert.equal(options.cwd, f.cwd); assert.equal(options.env.ATELIER_SHIP_HEAD, f.head);
     return { status: 0 };
   } }), f.head);
   assert.equal(calls, 1);
+});
+
+test("a named environment deploys with that --env, and a bad name never invokes deployment (t344)", (t) => {
+  const f = fixture(t); const seen = [];
+  assert.equal(deployWorker({ ...f, environment: "staging", run(command, args) { seen.push(args); return { status: 0 }; } }), f.head);
+  assert.deepEqual(seen, [["wrangler", "deploy", "--env", "staging", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`]]);
+  for (const environment of ["Staging", "-x", "a b", "--env", null]) assert.throws(() => deployWorker({ ...f, environment, run() { seen.push(environment); return { status: 0 }; } }), /environment name/);
+  assert.equal(seen.length, 1);
+});
+
+for (const [args, usage] of [[["deploy", "--env"], true], [["deploy", "--env", ""], true], [["deploy", "staging"], true], [["verify", "--env", "staging"], true], [["deploy", "--env", "staging"], false]]) test(`ship-worker.mjs ${args.join(" ") || "''"} ${usage ? "is refused with its usage" : "reaches the source check"} (t344)`, (t) => {
+  const f = fixture(t);
+  const r = spawnSync(process.execPath, [resolve("scripts/ship-worker.mjs"), ...args], { cwd: f.cwd, env: { PATH: process.env.PATH }, encoding: "utf8" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, usage ? /^Usage: / : /ATELIER_SHIP_HEAD/);
 });
 
 test("missing, invalid, stale and dirty source bindings never invoke deployment", (t) => {

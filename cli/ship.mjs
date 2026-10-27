@@ -320,9 +320,12 @@ export function shipSecrets(env, given = []) {
 // Atelier token. Only the validated source HEAD is added back for delivery.
 // The scan and baseline steps are Atelier's own commands (the privacy scan and
 // atelier sync), which need the owner's ATELIER_TOKEN, ATELIER_CONFIG_DIR and
-// ATELIER_SERVER as wrap does, so they keep the whole environment.
+// ATELIER_SERVER as wrap does, so they keep the rest of the environment, and
+// so does wrap.
+// No step gets CLOUDFLARE_ENV: a value left in the owner's shell would send
+// Wrangler to another Worker than the one the ship order names (t344).
 export function stepEnv(env, head, internal = false) {
-  const filtered = internal ? { ...env } : Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("ATELIER_")));
+  const filtered = Object.fromEntries(Object.entries(env).filter(([k]) => k !== "CLOUDFLARE_ENV" && (internal || !k.startsWith("ATELIER_"))));
   return head ? { ...filtered, ATELIER_SHIP_HEAD: head } : filtered;
 }
 
@@ -400,7 +403,7 @@ export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
 //   stage(text)                names the step a refusal ends, or clears it with null
 //   fail(message)              ends the command with the message
 //   print(line)                standard output
-//   wrap(summary)              runs atelier wrap in the checkout: { status, output, durationMs }
+//   wrap(summary, env)         runs atelier wrap in the checkout with env: { status, output, durationMs }
 //   env, secrets, redact       the environment, the values to cut and the cutter
 //   dryRun, push               the flags
 //   identity                   the project's commitIdentity, read when pushing
@@ -466,7 +469,7 @@ export async function ship(ctx) {
       // What wrap prints next speaks for the wrap alone: its "not pushed" and
       // "nothing deployed" lines are about what wrap itself did.
       print(`wrap: running atelier wrap ${quote(summary)}; its own output follows`);
-      const r = await ctx.wrap(summary);
+      const r = await ctx.wrap(summary, stepEnv(ctx.env, null, true));
       results.push({ ...r, command: `atelier wrap ${quote(summary)}`, passed: r.status === 0 });
     } else if (s.step === "push") {
       const started = Date.now();

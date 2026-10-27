@@ -182,7 +182,7 @@ function prereviewClaim(r, extra = {}) {
   };
 }
 
-function fixture(r, { claim = prereviewClaim(r), verdict, timedOut = false } = {}) {
+function fixture(r, { claim = prereviewClaim(r), verdict, timedOut = false, code = 0, stderr = "" } = {}) {
   const calls = [], logs = [], kept = [];
   const reply = verdict ?? ["VERDICT: APPROVE", "SUMMARY: Ran the queue test on the merged tree.", "CRITERION 1: met — test/queue.test.mjs fails without the change."].join("\n");
   const io = {
@@ -205,7 +205,7 @@ function fixture(r, { claim = prereviewClaim(r), verdict, timedOut = false } = {
     async writeDiff(workspace, text) { calls.push({ writeDiff: text }); return { file: join(r.root, "diff.txt") }; },
     verdictPath: () => join(r.root, "verdict.txt"),
     readVerdict: () => reply,
-    async harness(argv, cwd) { calls.push({ harness: argv, cwd }); return { code: 0, timedOut }; },
+    async harness(argv, cwd) { calls.push({ harness: argv, cwd }); return { code, timedOut, stderr }; },
     async removeBrief() {}, removeDiff() {}, removeFile() {},
     removeTree: (dir) => kept.push(dir),
   };
@@ -295,6 +295,20 @@ test("a reply with no verdict is kept as malformed, and a harness timeout is rel
   const slow = fixture(r, { timedOut: true });
   assert.equal((await runPrereview(assignment(r.head), config, "home:studio", slow.io)).reason, "harness timed out");
   assert.equal(parseOutcomeNote(argOf(slow.calls.find((c) => c.argv?.[0] === "review-release").argv, "--note")).outcome, "timeout");
+});
+
+// t323: a reviewer's harness refusing its input for its size is recorded as
+// that, with the limit and the size, never as a bare exit.
+test("a pre-review whose harness refuses its input for its size is released naming the limit and the size, and skipped", async (t) => {
+  const r = repos(t);
+  const { io, calls } = fixture(r, { code: 1, stderr: "Error: Input exceeds the maximum length of 1048576 characters (got 1500000)." });
+  const state = await runPrereview(assignment(r.head), config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(state.skipped, true);
+  assert.equal(state.harnessExit, undefined, "not a refused run of the model's");
+  const note = parseOutcomeNote(argOf(calls.find((c) => c.argv?.[0] === "review-release").argv, "--note"));
+  assert.equal(note.outcome, "runner");
+  assert.match(note.detail, /refused the review input for its size \(limit 1048576; actual 1500000\)/);
 });
 
 test("a claim that binds the task's gate review instead is served as that review, never as a pre-review", async (t) => {

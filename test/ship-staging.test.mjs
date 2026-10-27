@@ -85,9 +85,9 @@ test("ship --push refuses an order with no push step", async (t) => {
 });
 
 test("ship-worker's arguments: deploy takes --env, verify takes --version-url, and neither is needed", () => {
-  assert.deepEqual(parseArgs(["deploy"]), { action: "deploy", wranglerEnv: undefined });
+  assert.deepEqual(parseArgs(["deploy"]), { action: "deploy", environment: "" });
   assert.deepEqual(parseArgs(["verify"]), { action: "verify", versionUrl: undefined });
-  assert.deepEqual(parseArgs(["deploy", "--env", "staging"]), { action: "deploy", wranglerEnv: "staging" });
+  assert.deepEqual(parseArgs(["deploy", "--env", "staging"]), { action: "deploy", environment: "staging" });
   assert.deepEqual(parseArgs(["verify", "--version-url", STAGING_URL]), { action: "verify", versionUrl: STAGING_URL });
   for (const argv of [[], ["ship"], ["deploy", "--env"], ["deploy", "staging"], ["deploy", "--env", "Staging"], ["deploy", "--env", "--keep-vars"], ["deploy", "--version-url", STAGING_URL],
     ["verify", "--env", "staging"], ["verify", "--version-url"], ["verify", "--version-url", "http://next.atelier.zone/api/version"], ["verify", "--version-url", "not a url"], ["deploy", "--env", "staging", "extra"]]) {
@@ -95,17 +95,25 @@ test("ship-worker's arguments: deploy takes --env, verify takes --version-url, a
   }
 });
 
-test("deployWorker passes --env to wrangler when given, and production's arguments otherwise", (t) => {
+test("deployWorker passes --env to wrangler when given, and an empty --env for production otherwise", (t) => {
   const f = repo(t);
   const env = { ATELIER_SHIP_HEAD: f.head };
   const seen = [];
   const run = (command, args) => { seen.push(args); return { status: 0 }; };
-  assert.equal(deployWorker({ cwd: f.cwd, env, run, wranglerEnv: "staging" }), f.head);
+  assert.equal(deployWorker({ cwd: f.cwd, env, run, environment: "staging" }), f.head);
   assert.equal(deployWorker({ cwd: f.cwd, env, run }), f.head);
   assert.deepEqual(seen, [
     ["wrangler", "deploy", "--env", "staging", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`],
-    ["wrangler", "deploy", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`],
+    ["wrangler", "deploy", "--env", "", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`],
   ]);
+});
+
+test("a production deploy passes an empty --env even with CLOUDFLARE_ENV=staging in the environment", (t) => {
+  const f = repo(t);
+  const seen = [];
+  const run = (command, args, options) => { seen.push([args, options.env.CLOUDFLARE_ENV]); return { status: 0 }; };
+  assert.equal(deployWorker({ cwd: f.cwd, env: { ATELIER_SHIP_HEAD: f.head, CLOUDFLARE_ENV: "staging" }, run }), f.head);
+  assert.deepEqual(seen, [[["wrangler", "deploy", "--env", "", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`], "staging"]]);
 });
 
 test("verifyWorker reads the version URL it is given, and production's otherwise", async (t) => {

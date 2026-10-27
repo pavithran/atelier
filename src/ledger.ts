@@ -24,7 +24,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, blockUntil, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -4371,12 +4371,14 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The secret flag a push scan records or clears (t332). `hits` names the
-  // file, line and fingerprint of every added line that held a key pattern
-  // at `head`, and `unscanned` names every path whose head side the scan
-  // could not read as text, with why and the hash of its object; an empty list of
-  // both clears the flag, so a later push that removes the line clears it.
-  // Only the file, line and fingerprint ever reach the Ledger, never the
-  // value.
+  // file, line, fingerprint and commit of every line a commit of the task up
+  // to `head` added that held a key pattern, and `unscanned` names every path
+  // a commit changed and the scan could not read as text, with why and the
+  // hash of its object; an empty list of both clears the flag. A later commit
+  // that removes the line does not: the commit that added it is still in the
+  // task's history, and the push to GitHub sends it (t295).
+  // Only the file, line, fingerprint and commit ever reach the Ledger, never
+  // the value.
   //
   // A finding whose file and fingerprint the owner has cleared before
   // (clearSecret) is recorded as cleared: it is kept, so the record shows the
@@ -4398,8 +4400,8 @@ export class Ledger extends DurableObject<Env> {
     const clearances = item.secretClearances ?? [];
     const cleared = (file: string, fingerprint: string) => !!fingerprint && clearances.some((c) => c.file === file && c.fingerprint === fingerprint);
     const flags: SecretFlag[] = [
-      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, fingerprint: h.fingerprint, head, by: actor, at, ...(cleared(h.file, h.fingerprint) ? { cleared: true as const } : {}) })),
-      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, head, by: actor, at, unscanned: true, ...(u.reason ? { reason: u.reason } : {}), ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
+      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, fingerprint: h.fingerprint, ...(h.commit ? { commit: h.commit } : {}), head, by: actor, at, ...(cleared(h.file, h.fingerprint) ? { cleared: true as const } : {}) })),
+      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, ...(u.commit ? { commit: u.commit } : {}), head, by: actor, at, unscanned: true, ...(u.reason ? { reason: u.reason } : {}), ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
     ];
     const done: Record<string, string | null> = item.secretScan === head ? { secret_scan: null } : {};
     // A re-scan of the same head with the same findings changes nothing but
@@ -4408,7 +4410,7 @@ export class Ledger extends DurableObject<Env> {
     // its own head — and keeps blocking — rather than left naming a
     // superseded one.
     const prev = item.secret ?? [];
-    const same = (f: SecretFlag, p: SecretFlag) => f.file === p.file && f.line === p.line && f.fingerprint === p.fingerprint
+    const same = (f: SecretFlag, p: SecretFlag) => f.file === p.file && f.line === p.line && f.fingerprint === p.fingerprint && (f.commit ?? "") === (p.commit ?? "")
       && (f.unscanned ?? false) === (p.unscanned ?? false) && (f.reason ?? "") === (p.reason ?? "") && (f.cleared ?? false) === (p.cleared ?? false);
     const unchanged = prev.length === flags.length && flags.every((f, i) => same(f, prev[i])) && prev.every((f) => f.head === head);
     if (unchanged) {
@@ -4421,7 +4423,7 @@ export class Ledger extends DurableObject<Env> {
       return this.item(id);
     }
     this.update(id, { secret: JSON.stringify(flags), ...done }, at);
-    const where = (f: SecretFlag) => ({ file: f.file, line: f.line });
+    const where = (f: SecretFlag) => ({ file: f.file, line: f.line, ...(f.commit ? { commit: f.commit } : {}) });
     const standing = flags.filter((f) => !f.cleared), held = flags.filter((f) => f.cleared);
     this.log(id, actor, "secret.flagged", {
       head,
@@ -4515,9 +4517,23 @@ export class Ledger extends DurableObject<Env> {
 
   release(id: string, actor: string, note: string, proved = false, token?: string | null, providerLimit = false): Item {
     const item = this.releaseAllowed(id, actor, note);
+    // The holder's release of a build that ended validation_blocked (t326)
+    // blocks the task instead, as block() would: it keeps its owner, runner
+    // and dispatch, and waits on the developer. Unblocking returns it to its
+    // holder, whose runner the queue offers it to again (heldJobs). The
+    // write token goes as on any release; the next claim makes a new one.
+    const blocks = note.startsWith(VALIDATION_BLOCKED) && actor === item.owner && !providerLimit;
+    const reason = blocks ? validationBlockReason(note) : "";
+    if (blocks) assertBlockable(item);
     this.dropToken(id, token);
     this.dropRunnerJobs(id);
     const at = new Date().toISOString();
+    if (blocks) {
+      const record: Block = { reason, by: actor, at, from: item.state };
+      this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
+      this.log(id, actor, "item.blocked", { reason, from: item.state, validationBlocked: true, note }, at, proved);
+      return this.item(id);
+    }
     this.update(id, { owner: null, state: "open" }, at);
     this.log(id, actor, "item.released", { from: item.owner, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
     this.afterPlanChange(id);
@@ -10161,7 +10177,7 @@ function toItem(r: Row): Item {
     // Only a blocked item carries the record; unblocking and abandoning clear it.
     ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
     // Only an item whose push scan flagged a secret carries the array; a push
-    // that removes the line or a clear clears it.
+    // whose commits add no such line, or a clear, clears it.
     ...(r.secret ? { secret: JSON.parse(r.secret as string) as SecretFlag[] } : {}),
     // Only an item whose push scan has not completed carries the head it is
     // pending for; the scan's own result clears it.

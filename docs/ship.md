@@ -208,7 +208,9 @@ equal to the captured HEAD. The ship file can point both at another Worker:
 `deploy --env NAME` passes `--env NAME` to Wrangler, deploying that
 environment of `wrangler.jsonc`, and `verify --version-url URL` reads an https
 URL in place of production's. Without them the helper deploys and verifies
-production, as above; ship strips the `ATELIER_` variables from the steps, so
+production, as above; it still passes `--env` to Wrangler, with an empty value
+that names the top-level Worker, so a `CLOUDFLARE_ENV` left in the shell cannot
+send a production ship elsewhere; ship strips the `ATELIER_` variables from the steps, so
 the ship file's arguments are the only way to choose. The endpoint's `main` field describes the ledger,
 so it cannot establish which source was deployed. Failure stops the ship
 before wrap or push. Tests use local process and response fixtures; live

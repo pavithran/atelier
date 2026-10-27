@@ -17,6 +17,10 @@ export function sourceHead({ cwd = process.cwd(), env = process.env } = {}) {
   return expected;
 }
 
+// The Wrangler environment a ship order names: none for production, or one
+// such as staging given as deploy --env staging.
+const ENVIRONMENT = /^[a-z0-9][a-z0-9_-]*$/;
+
 // The wrangler environment to deploy (wrangler.jsonc's env block) and the
 // version URL to verify against, as the ship file gives them: `deploy --env
 // staging`, `verify --version-url https://next.atelier.zone/api/version`.
@@ -27,23 +31,26 @@ export function parseArgs(argv) {
   const flag = action === "deploy" ? "--env" : action === "verify" ? "--version-url" : null;
   if (!flag || !(rest.length === 0 || (rest.length === 2 && rest[0] === flag))) throw new Error(usage);
   if (action === "deploy") {
-    const wranglerEnv = rest[1];
-    if (wranglerEnv !== undefined && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(wranglerEnv)) throw new Error(`--env must name a wrangler environment, such as staging. ${usage}`);
-    return { action, wranglerEnv };
+    const environment = rest[1] ?? "";
+    if (rest.length && !ENVIRONMENT.test(environment)) throw new Error(`${usage}\n--env must name a wrangler environment, such as staging.`);
+    return { action, environment };
   }
   const versionUrl = rest[1];
   if (versionUrl !== undefined) {
     let url;
     try { url = new URL(versionUrl); } catch { /* refused below */ }
-    if (url?.protocol !== "https:") throw new Error(`--version-url must be an https URL. ${usage}`);
+    if (url?.protocol !== "https:") throw new Error(`${usage}\n--version-url must be an https URL.`);
   }
   return { action, versionUrl };
 }
 
-export function deployWorker({ cwd = process.cwd(), env = process.env, run = spawnSync, wranglerEnv } = {}) {
+export function deployWorker({ cwd = process.cwd(), env = process.env, run = spawnSync, environment = "" } = {}) {
+  if (environment !== "" && !(typeof environment === "string" && ENVIRONMENT.test(environment))) throw new Error(`Not a Wrangler environment name: ${JSON.stringify(environment)}.`);
   const head = sourceHead({ cwd, env });
-  const target = wranglerEnv === undefined ? [] : ["--env", wranglerEnv];
-  const result = run(process.platform === "win32" ? "npx.cmd" : "npx", ["wrangler", "deploy", ...target, "--keep-vars", "--var", `DEPLOYED_MAIN:${head}`], { cwd, env, stdio: "inherit" });
+  // --env is always given: an empty one names the top-level (production)
+  // Worker, and either takes precedence over a CLOUDFLARE_ENV in the
+  // environment.
+  const result = run(process.platform === "win32" ? "npx.cmd" : "npx", ["wrangler", "deploy", "--env", environment, "--keep-vars", "--var", `DEPLOYED_MAIN:${head}`], { cwd, env, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Wrangler deployment failed (${result.signal ?? result.status ?? "no exit status"}).`);
   // A concurrent source change must fail delivery even if Wrangler returned zero.
@@ -65,8 +72,8 @@ export async function verifyWorker({ cwd = process.cwd(), env = process.env, fet
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { action, wranglerEnv, versionUrl } = parseArgs(process.argv.slice(2));
-    const head = action === "deploy" ? deployWorker({ wranglerEnv }) : await verifyWorker({ versionUrl });
+    const { action, environment, versionUrl } = parseArgs(process.argv.slice(2));
+    const head = action === "deploy" ? deployWorker({ environment }) : await verifyWorker({ versionUrl });
     console.log(`${action === "deploy" ? "Deployed" : "Verified deployed source"}: ${head}`);
   } catch (error) {
     console.error(error.message);
