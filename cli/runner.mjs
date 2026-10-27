@@ -2206,6 +2206,22 @@ export async function runTask(assignment, config, name, io) {
   return state;
 }
 
+// The run-skip report a build sends when its run ended without a result and
+// it kept the claim (t325): validation_blocked, no new commit, a failed or
+// timed-out harness, or a step that failed after the claim. The server keeps
+// it on the task, and while it names the claim as it stands the claim holds
+// no core files (endedRun in src/dispatch/rules.ts). Null for a run that
+// released its claim, a task given up (its own report goes), a task the
+// server closed, and any job but a build or a task's merge of main.
+export function unfinishedReport(task, state, gaveUp = null) {
+  const job = task.item.dispatch?.job;
+  if (!state.claimHeldAt || gaveUp || state.terminalState || state.providerLimit) return null;
+  if (job && job !== "merge-main") return null;
+  const outcome = runOutcome(state);
+  const why = state.reason ?? "";
+  return { project: task.project, item: task.item.id, actor: task.actor, role: "build", kind: "unfinished", failures: 1, note: outcome && !why.startsWith(outcome) ? `${outcome}: ${why}` : why };
+}
+
 // A runner that gives a task up (t584) lets go of the claim, so the core-file
 // hold on other dispatches lifts at once and the developer's inbox, status and
 // stuck report carry the task (the note starts with GAVE_UP). It pushes what it
@@ -4895,6 +4911,17 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
             await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, note: state.reason ?? "" }, 0, "run");
+          }
+          // A build that ended without a result and kept its claim says so
+          // (t325), so the claim stops holding other dispatches off its core
+          // files until this runner claims it again for the next run. Sent
+          // once, never retried: a late report would land after that claim.
+          const unfinished = unfinishedReport(task, state, gaveUp);
+          if (unfinished && reportRunSkip) {
+            try {
+              await reportRunSkip(unfinished, offer.runner, controller.signal);
+              io.log(`reported ${task.project}/${task.item.id}'s run as ended without a result; its claim holds no core files until it runs again`);
+            } catch (error) { if (!controller.signal.aborted) io.log(`could not report ${task.project}/${task.item.id}'s run as ended without a result: ${error.message}`); }
           }
           // Closure survives changes to the head or updatedAt in later polls
           // (t476). Remember its exact state for this process, by the task
