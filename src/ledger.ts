@@ -46,7 +46,7 @@ import { ago } from "./floor.ts";
 // The note on the release a dispatch makes of a held task; the holder reads it
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -3101,6 +3101,12 @@ export class Ledger extends DurableObject<Env> {
         throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
       }
     }
+    // A claim whose last run ended without a result held nothing, so another
+    // task may have claimed core files it reaches since. Renewing it would
+    // run both at once: it is refused while that hold stands, and its note
+    // is kept, so it goes on holding nothing (t325).
+    const lapsed = this.lapsedClaimHold(item);
+    if (lapsed) throw new RuleError("held", heldClaimText(id, lapsed), 409);
     this.dropRunnerJobs(id);
     if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-idle:${runner.runner.toLowerCase()}`);
     // A runner claims before every run, so what it said of its last one
@@ -3637,10 +3643,31 @@ export class Ledger extends DurableObject<Env> {
   // committed, instead of the claim sitting with no one to end it. The claim
   // itself stays as it was: only the asking runner matches, compared without
   // case as claim() compares it.
-  heldJobs(runner: string): Item[] {
+  // A claim whose last run ended without a result, and which another claim
+  // now holds off a core file, carries that hold, so the queue does not
+  // offer it until the hold clears (lapsedClaimHold).
+  heldJobs(runner: string): (Item & { held?: CoreHold })[] {
     const mine = this.claimedRows().filter((r) => ((r.runner as string | null) ?? "").toLowerCase() === runner.toLowerCase());
-    return this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
+    const jobs = this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)));
+    // Every item is read only when a claim ended its run, so a poll reads
+    // the claimed rows alone as before (t762).
+    const polls = jobs.length ? this.runnerPolls() : null;
+    if (!jobs.some((item) => endedRun(item, polls))) return jobs;
+    const items = this.items();
+    return jobs.map((item) => {
+      const held = this.lapsedClaimHold(item, items, polls);
+      return held ? { ...item, held } : item;
+    });
+  }
+
+  // The core-file hold on a claim whose last run ended without a result
+  // (endedRun): such a claim holds nothing, so another may have claimed its
+  // core files since, and the claim may not run again while that one holds.
+  // Null for any other claim, or when nothing holds it.
+  private lapsedClaimHold(item: Item, items = this.items(), polls = this.runnerPolls()): CoreHold | null {
+    if (!endedRun(item, polls)) return null;
+    return coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), polls);
   }
 
   // The claimed rows that carry a dispatch, in id order, read from the items

@@ -94,3 +94,24 @@ it("a claim released after an unfinished run names no skip on the open task", as
   expect(t1).toBeDefined();
   expect(t1?.skips).toBeUndefined();
 });
+
+it("a claim whose run ended is not renewed, nor offered back to its runner, while a claim made since holds its core files", async () => {
+  const L = await setup("core-hold-ended-renew");
+  const OTHER = { runner: "home:laptop", kind: "home" as const };
+  expect(await L.recordRunSkip("t1", RUNNER.runner, A, "unfinished", 1, "no commit")).toBe(true);
+  await L.claim("t2", A, OTHER);
+  await L.recordRunnerPolls([{ runner: RUNNER.runner, at: new Date().toISOString() }, { runner: OTHER.runner, at: new Date().toISOString() }]);
+
+  expect((await L.heldJobs(RUNNER.runner)).map((j) => [j.id, j.held?.id ?? null])).toEqual([["t1", "t2"]]);
+  const refused = await L.claim("t1", A, RUNNER).then(() => null, (e: unknown) => String(e));
+  expect(refused).toMatch(/409\|held\|t1 is held: .*waits on t2 \(claimed by claude-code\/opus-5\.5, running on home:laptop\)/);
+  // The refused renewal keeps the note, so t1 still holds nothing.
+  expect((await L.item("t1")).state).toBe("claimed");
+  expect((await L.heldJobs(OTHER.runner)).map((j) => [j.id, j.held ?? null])).toEqual([["t2", null]]);
+
+  // Once t2 lets go, t1 runs again.
+  await L.release("t2", A, "done with it");
+  expect((await L.heldJobs(RUNNER.runner)).map((j) => [j.id, j.held ?? null])).toEqual([["t1", null]]);
+  await L.claim("t1", A, RUNNER);
+  expect((await L.waiting()).find((w) => w.id === "t2")?.held?.id).toBe("t1");
+});
