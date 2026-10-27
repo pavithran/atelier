@@ -25,12 +25,11 @@
 
 import { assign, liveOffers, offering, offersFor, servesProject, unoffered, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
-import { stageEnteredAt, stageOverrun, tickCanAct, type Item, type StageClock, type TaskStage } from "./rules.ts";
+import { FORK_REPLACE_MS, stageEnteredAt, stageOverrun, tickCanAct, type Item, type StageClock, type TaskStage } from "./rules.ts";
+
+export { FORK_REPLACE_MS };
 
 export const STAGE_EVENT_KINDS = ["stage.stuck", "stage.told", "stage.cleared", "stage.rerouted", "stage.retried", "stage.land-queued"] as const;
-// How long a task fork may stay unready, with no commit recorded, before the
-// tick replaces it (t181).
-export const FORK_REPLACE_MS = 30 * 60_000;
 // The stage name a stalled fork is keyed by; it is not a TaskStage.
 export const PREPARING = "preparing";
 // The stage name a stale review claim is keyed by; it is not a TaskStage.
@@ -227,13 +226,14 @@ export function decideLandQueue(i: LandQueueInput): LandQueueVerdict {
 }
 
 // A fork the tick replaces or tells of: preparing since `since`, with no fork
-// or head of the task's own recorded, past FORK_REPLACE_MS. A recorded head
+// or head of the task's own recorded, past FORK_REPLACE_MS, or the limit a
+// claim judges a cut-off fork request by (t286). A recorded head
 // that is only a main commit (the commit the task was based on, or main's
 // head) is no head: a run released without a push leaves one (t263).
-export function forkStalled(prep: { since: string | null }, item: { fork?: string | null; head?: string | null; base?: string | null }, now: Date, main?: string | null): boolean {
+export function forkStalled(prep: { since: string | null }, item: { fork?: string | null; head?: string | null; base?: string | null }, now: Date, main?: string | null, limitMs = FORK_REPLACE_MS): boolean {
   if (!prep.since || item.fork) return false;
   if (item.head && item.head !== item.base && item.head !== main) return false;
-  return now.getTime() - Date.parse(prep.since) > FORK_REPLACE_MS;
+  return now.getTime() - Date.parse(prep.since) > limitMs;
 }
 
 // The name of the replacement for a fork: the same name with a numbered
