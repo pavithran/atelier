@@ -24,7 +24,7 @@ export type Severity = Finding["severity"];
 // (t457): read only when the reply was asked for CHECK lines
 // (VerdictOptions.checks), empty otherwise.
 export type ParsedVerdict =
-  | { ok: true; verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[]; unmet?: number[]; withheld?: true }
+  | { ok: true; verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[]; unmet?: number[] }
   | { ok: false; error: string };
 
 // What a reply was asked for beyond the verdict, summary and findings.
@@ -54,18 +54,14 @@ export type ParsedVerdict =
 // this is read, which is how a criteria review, a pre-review and a
 // verification, whose briefs ask for no count, are read as they were.
 //
-// `postMerge` (t331) is set for the reply to a post-merge audit. On
-// 2026-10-26 nine of miqra's eleven post-merge replies were refused as
-// stating no verdict, and each had the same shape: the reviewer's sandbox
-// could not run the checks (EPERM creating a temporary directory), no check
-// result was recorded at the merge, so it wrote BLOCKING: 0, declared the
-// criteria it could not prove unmet, and withheld the VERDICT line, since
-// the reply format says an unproved criterion is unmet and blocks while
-// REJECT needs a blocking finding. Such a reply is read as the rejection the
-// format makes it: `unmet` names the criteria it declared unmet, and
-// `withheld` says the reviewer gave no verdict line. A REJECT whose only
-// ground is an unmet criterion is read the same way. A pre-merge reply is
-// read as before.
+// `postMerge` (t331) is set for the reply to a post-merge audit. A REJECT
+// whose only ground is a criterion the reply declares unmet is read as the
+// rejection it says, with `unmet` naming those criteria, since a post-merge
+// audit is not settled and REJECT otherwise needs a blocking finding. A
+// reply with no verdict is refused, post-merge or not: on 2026-10-26 nine of
+// miqra's eleven post-merge replies gave none because the reviewer's sandbox
+// could not run the checks, and a reply held back by the environment is a
+// failed review, owed and asked again, never a rejection (REVIEW_RULES).
 export interface VerdictOptions {
   counted?: boolean;
   checks?: boolean;
@@ -211,7 +207,7 @@ const SEVERITIES: Record<string, Severity> = {
 // must belong to a parsed object, or the reply is refused.
 const JSON_ATTEMPTS = 100;
 
-type Statement = { verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[]; unmet?: number[]; withheld?: true };
+type Statement = { verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[]; unmet?: number[] };
 class Refusal extends Error {}
 function refuse(message: string): never {
   throw new Refusal(message);
@@ -245,8 +241,6 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   const verdicts = new Set([...json.map((s) => s.verdict), ...lines.verdicts]);
   // The criteria a post-merge reply declares unmet, as the brief numbers them.
   const declared = options.postMerge && criteria ? [...lines.criteria].filter(([n, state]) => state === "unmet" && n <= criteria).map(([n]) => n).sort((a, b) => a - b) : [];
-  const withheld = !verdicts.size && declared.length > 0 && !json.length;
-  if (withheld) verdicts.add("reject");
   if (!verdicts.size) refuse(NO_VERDICT);
   // Lowercase approve and reject are ordinary words in a review of code that
   // approves and rejects things, so only the capitalised keywords count as
@@ -315,7 +309,7 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
     if (missing.length) refuse(`an approval needs a CRITERION line for each of the ${criteria} acceptance criteria: ${missing.length === 1 ? "criterion" : "criteria"} ${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} none`);
     if (unmet.length) refuse(`an approval cannot declare ${unmet.length === 1 ? "criterion" : "criteria"} ${unmet.join(", ")} unmet; an unmet criterion is a correctness fault, so reject with a blocking finding`);
   }
-  return { verdict, summary, findings, checks, ...(unmet ? { unmet } : {}), ...(withheld ? { withheld: true as const } : {}) };
+  return { verdict, summary, findings, checks, ...(unmet ? { unmet } : {}) };
 }
 
 // Line breaks become \n. C0 and C1 controls other than tabs become spaces,

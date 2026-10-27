@@ -2537,8 +2537,10 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // criteria the criteria review flagged as checks after deploy (t457),
     // which the brief let the reviewer defer, are named to the parser from
     // the same claim the brief read them from.
-    // A post-merge audit's reply that declares criteria unmet is the
-    // rejection the format makes it, with or without a VERDICT line (t331).
+    // A post-merge audit's REJECT whose only ground is a criterion it
+    // declares unmet is recorded as given (t331). A reply with no verdict,
+    // as one held back by the reviewer's environment, is refused below and
+    // the review stays owed.
     const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { counted: true, deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0), postMerge: !!claimed.landed });
     if (!parsed.ok) {
       // The reply is kept on the task, its last VERDICT_LIMITS.reply
@@ -2570,8 +2572,8 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     let posted = parsed;
     if (claimed.landed && parsed.unmet) {
       const names = `${parsed.unmet.length === 1 ? "criterion" : "criteria"} ${parsed.unmet.join(", ")}`;
-      posted = { ...parsed, summary: `Rejected: the reviewer declared ${names} unmet${parsed.withheld ? " and wrote no VERDICT line" : ""}; an unproved criterion is unmet, and unmet blocks. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) };
-      io.log(`post-merge review: ${names} declared unmet${parsed.withheld ? " with no VERDICT line" : ""}, recorded as a rejection`);
+      posted = { ...parsed, summary: `Rejected: the reviewer declared ${names} unmet; an unproved criterion is unmet, and unmet blocks. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) };
+      io.log(`post-merge review: ${names} declared unmet, recorded as a rejection`);
     }
     if (parsed.verdict === "reject" && !claimed.landed) {
       if (renewalFailure) throw renewalFailure;

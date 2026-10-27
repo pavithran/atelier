@@ -121,14 +121,14 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
 });
 
 // t331: the post-merge review the server asks at a fast-mode merge, served
-// by the runner, with the reply shape that ended nine of miqra's eleven
-// post-merge reviews on 2026-10-26 without a verdict: the reviewer could not
-// run the checks in its sandbox, found no blocking defect, declared the
-// criterion it could not prove unmet and wrote no VERDICT line. The runner
-// gives the audit the clean-clone run, reads the reply as the rejection the
-// format makes it, and the verdict is recorded at the merge commit.
-it("a post-merge reply that declares a criterion unmet and states no verdict is recorded as a rejection", async () => {
-  const name = "fast-review-withheld";
+// by the runner. On 2026-10-26 nine of miqra's eleven post-merge reviews
+// ended without a verdict: the runner gave a post-merge audit no clean-clone
+// run, the reviewer's sandbox could not run the checks, and it wrote no
+// VERDICT line. The runner now gives the audit the clean-clone run of the
+// merge commit against its original base. A reply with a verdict line is
+// recorded as given; a reply the environment still holds back is a failed
+// review, kept on the task, and the review stays owed.
+async function fastMerged(name: string) {
   const index: any = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   const L: any = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const record = { name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: [] }, createdAt: AT };
@@ -166,6 +166,8 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
   const agentToken = (await issued.json() as { token: string }).token;
   const flag = (argv: string[], f: string) => argv.includes(f) ? argv[argv.indexOf(f) + 1] : undefined;
   const calls: string[][] = [];
+  // The files the runner writes through io.brief: the brief, and a reply it keeps.
+  const files = new Map<string, string>();
   const cli = async (argv: string[], _cwd: unknown, options: { token: string }) => {
     calls.push(argv);
     const verb = argv[0], id = argv[1];
@@ -174,19 +176,13 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
     if (verb === "review-claim") res = await post("review-claim", {}, { "x-atelier-runner": flag(argv, "--runner")! });
     else if (verb === "baseline-token") res = await request("POST", `/projects/${name}/baseline-token`, options.token, ASTRA, {});
     else if (verb === "review") res = await post("review", { approve: argv.includes("--approve"), note: flag(argv, "--note"), head: flag(argv, "--head"), criteria: flag(argv, "--criteria"), request: Number(flag(argv, "--request")), ...(flag(argv, "--findings") ? { findings: JSON.parse(flag(argv, "--findings")!) } : {}) });
+    else if (verb === "review-unparsable") res = await post("review-unparsable", { head: flag(argv, "--head"), note: flag(argv, "--note"), reply: files.get(flag(argv, "--reply-file")!), request: Number(flag(argv, "--request")) });
     else if (verb === "review-release" || verb === "review-renew") res = await post(verb, { note: flag(argv, "--note") ?? "", request: Number(flag(argv, "--request")) });
     else throw new Error(`unexpected call ${verb}`);
     const text = await res.text();
     if (!res.ok) throw new Error(`${verb}: ${res.status} ${text}`);
     return text;
   };
-  // The reply as codex/gpt-6-astra wrote it for miqra/t144 on 2026-10-26.
-  const reply = [
-    "The audit cannot produce a verdict because sandbox restrictions prevented visual verification. I found no verified blocking defect in the landed diff.",
-    "SUMMARY: Inspected the landed change and verified the ownership retry logic; browser criteria remain unproved.",
-    "BLOCKING: 0",
-    "CRITERION 1: unmet — npm run verify:visual stopped during runtime preparation with EPERM; no exact-head observed runs were supplied.",
-  ].join("\n");
   let held = false;
   const evidenceAsked: { head: string; from: string }[] = [];
   const briefs: string[] = [];
@@ -200,10 +196,11 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
     revParse: async (_dir: string, spec: string) => spec === `${M1}^@` ? `${PARENT}\n${C1}` : spec === "FETCH_HEAD" ? M1 : "",
     show: async () => { throw new Error("no override"); },
     diff: async () => "diff --git a/src/a.ts b/src/a.ts\n+export const a = 1;\n",
-    brief: async (_dir: string, text: string) => { briefs.push(text); return { file: "/work/brief.txt" }; }, removeBrief: async () => {},
+    brief: async (_dir: string, text: string) => { const file = `/work/file-${files.size}.txt`; files.set(file, text); briefs.push(text); return { file }; }, removeBrief: async () => {},
     writeDiff: async () => ({ file: "/work/diff.txt" }), removeDiff: () => {},
     verdictPath: () => "/work/verdict.txt",
-    readVerdict: () => reply,
+    readVerdict: () => io.reply,
+    reply: "",
     // The clean clone's run of the merge commit: the changed test passed.
     runnerEvidence: async (args: { head: string; from: string }) => {
       evidenceAsked.push(args);
@@ -214,9 +211,29 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
   };
   const config = { agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{brief_file}", "{diff_file}", "{verdict_file}"] }], tokens: { "gpt-6-astra": "agent.astra" } };
   const assignment = { project: name, item: { id: item.id, dispatch: { job: "review" } }, agent: "codex", model: "gpt-6-astra", actor: ASTRA };
+  const run = (reply: string) => { io.reply = reply; held = false; return runReview(assignment, config, "home:studio", io); };
+  return { L, item, request, calls, briefs, evidenceAsked, run };
+}
 
-  const state = await runReview(assignment, config, "home:studio", io);
-  expect(state, JSON.stringify(state)).toMatchObject({ phase: "reviewed", verdict: "reject" });
+// The reply as codex/gpt-6-astra wrote it for miqra/t144 on 2026-10-26: the
+// sandbox stopped the checks, and it wrote no VERDICT line.
+const LIMITED = [
+  "The audit cannot produce a verdict because sandbox restrictions prevented visual verification. I found no verified blocking defect in the landed diff.",
+  "SUMMARY: Inspected the landed change and verified the ownership retry logic; browser criteria remain unproved.",
+  "BLOCKING: 0",
+  "CRITERION 1: unmet — npm run verify:visual stopped during runtime preparation with EPERM; no exact-head observed runs were supplied.",
+].join("\n");
+
+it("a post-merge audit is given the clean-clone run of the merge commit, and its reply with a verdict line is recorded at the merge", async () => {
+  const { L, item, calls, briefs, evidenceAsked, run } = await fastMerged("fast-review-verdict");
+  const reply = [
+    "SUMMARY: The clean-clone run passes at the merge commit and the landed change meets its criterion.",
+    "BLOCKING: 0",
+    "CRITERION 1: met — The clean-clone run of test/a.spec.ts passed at the merge commit.",
+    "VERDICT: APPROVE",
+  ].join("\n");
+  const state = await run(reply);
+  expect(state, JSON.stringify(state)).toMatchObject({ phase: "reviewed", verdict: "approve" });
   expect(calls.map((c) => c[0])).not.toContain("review-unparsable");
   // The audit was given the clean-clone run of the merge commit, against
   // its original base (the merge's first parent), and the brief carries it.
@@ -225,12 +242,31 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
   expect(briefs[0]).toContain(`Run by the review runner in a clean clone of \`${M1}\``);
   expect(briefs[0]).toContain("- Changed tests: passed (`npx vitest run test/a.spec.ts`).");
   expect(briefs[0]).toContain("- Typecheck: passed (`npm run typecheck`).");
-  expect(briefs[0]).toContain("The audit always ends with a VERDICT line");
-  // The rejection is on the ledger at the merge commit, as the post-merge review.
-  const reviews = await L.reviewsFor(item.id);
-  expect(reviews).toEqual([expect.objectContaining({ by: ASTRA, head: M1, approve: false, postMerge: true })]);
-  expect(reviews[0].note).toMatch(/^Rejected: the reviewer declared criterion 1 unmet and wrote no VERDICT line/);
-  const landed = (await L.fastLandings())[0];
-  expect(landed).toMatchObject({ item: item.id, owed: false, review: { state: "rejected", by: ASTRA }, fix: expect.stringMatching(/^t\d+$/) });
+  expect(briefs[0]).toContain("Judge the criteria with the clean-clone run and the observed results this brief gives, and end with a VERDICT line.");
+  // The verdict is on the ledger at the merge commit, as the post-merge review.
+  expect(await L.reviewsFor(item.id)).toEqual([expect.objectContaining({ by: ASTRA, head: M1, approve: true, postMerge: true })]);
+  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: false, review: { state: "approved", by: ASTRA } });
   expect(await L.unparsableFor(item.id)).toEqual([]);
+});
+
+it("a post-merge reply held back by sandbox limits is a failed review, not a rejection, and twice leaves the review owed", async () => {
+  const name = "fast-review-limited";
+  const { L, item, request, calls, run } = await fastMerged(name);
+  const first = await run(LIMITED);
+  expect(first, JSON.stringify(first)).toMatchObject({ phase: "failed", reason: "the reply states no verdict: it has no VERDICT line and no JSON verdict" });
+  expect(calls.map((c) => c[0])).toEqual(["review-claim", "baseline-token", "review-unparsable"]);
+  // No verdict is recorded, no fix task is opened, and the reply is kept on the task.
+  expect(await L.reviewsFor(item.id)).toEqual([]);
+  expect(await L.unparsableFor(item.id)).toHaveLength(1);
+  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: false, review: { state: "open" }, fix: null });
+
+  // The second reply of the same shape stops the request: the review is owed,
+  // and atelier status names the task.
+  const second = await run(LIMITED);
+  expect(second, JSON.stringify(second)).toMatchObject({ phase: "failed" });
+  expect(await L.reviewsFor(item.id)).toEqual([]);
+  expect(await L.unparsableFor(item.id)).toHaveLength(2);
+  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: true, review: { state: "stopped without a verdict" }, fix: null });
+  const mode = await (await request("GET", `/projects/${name}/mode`, OWNER, "owner")).json() as { line: string };
+  expect(mode.line).toContain(`Post-merge review owed: ${item.id} (stopped without a verdict)`);
 });

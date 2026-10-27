@@ -1438,8 +1438,9 @@ test("reviewNeeded under riskReviews: a non-protected core part built by sonnet 
 // t331: on 2026-10-26 nine of miqra's eleven post-merge replies were refused
 // as stating no verdict. Each reviewer could not run the checks, wrote
 // BLOCKING: 0, declared the criteria it could not prove unmet and gave no
-// VERDICT line. A post-merge reply of that shape is the rejection the format
-// makes it; a pre-merge one is refused as before.
+// VERDICT line. A reply held back by the environment is a failed review, not
+// a rejection, so it is refused, post-merge or not; a post-merge REJECT
+// whose only ground is an unmet criterion is recorded as given.
 const WITHHELD = [
   "Review could not be completed because the read-only sandbox prevented visual verification.",
   "SUMMARY: Inspected the landed diff; full visual verification remains unproved.",
@@ -1448,27 +1449,28 @@ const WITHHELD = [
   "CRITERION 1: met — Read the markup.",
   "CRITERION 2: unmet — The browser could not launch, so the measurements are unavailable.",
 ].join("\n");
+const NO_VERDICT_ERROR = { ok: false, error: "the reply states no verdict: it has no VERDICT line and no JSON verdict" };
 
-test("parseVerdict: a post-merge reply that declares a criterion unmet and states no verdict is a rejection on it", () => {
-  const read = parseVerdict(WITHHELD, 2, { counted: true, postMerge: true });
-  assert.deepEqual(read, { ok: true, verdict: "reject", summary: "Inspected the landed diff; full visual verification remains unproved.", findings: [{ file: "src/page.ts", line: 63, severity: "follow-up", text: "The assertion omits the font-family check." }], checks: [], unmet: [2], withheld: true });
-  // The same reply to a pre-merge review is refused, as it was.
-  assert.deepEqual(parseVerdict(WITHHELD, 2, { counted: true }), { ok: false, error: "the reply states no verdict: it has no VERDICT line and no JSON verdict" });
-  // A post-merge REJECT whose only ground is the unmet criterion is recorded too.
+test("parseVerdict: a post-merge reply that declares a criterion unmet and states no verdict is refused, not read as a rejection", () => {
+  assert.deepEqual(parseVerdict(WITHHELD, 2, { counted: true, postMerge: true }), NO_VERDICT_ERROR);
+  assert.deepEqual(parseVerdict(WITHHELD, 2, { counted: true }), NO_VERDICT_ERROR);
+  // A post-merge REJECT whose only ground is the unmet criterion is recorded as given.
   const said = parseVerdict(`VERDICT: REJECT\n${WITHHELD}`, 2, { counted: true, postMerge: true });
   assert.ok(said.ok);
-  assert.deepEqual([said.verdict, said.unmet, said.withheld], ["reject", [2], undefined]);
-  // A post-merge reply with no verdict and every criterion met is still refused: nothing says reject.
-  assert.deepEqual(parseVerdict(WITHHELD.replace("CRITERION 2: unmet", "CRITERION 2: met"), 2, { counted: true, postMerge: true }).ok, false);
-  // An APPROVE in capitals beside the withheld verdict is ambiguous, and refused.
-  assert.match(String((parseVerdict(`${WITHHELD}\nI would APPROVE otherwise.`, 2, { counted: true, postMerge: true }) as { error?: string }).error), /both APPROVE and REJECT/);
+  assert.deepEqual([said.verdict, said.unmet, said.findings.map((f) => f.severity)], ["reject", [2], ["follow-up"]]);
+  // The same REJECT to a pre-merge review still needs a blocking finding.
+  assert.equal(parseVerdict(`VERDICT: REJECT\n${WITHHELD}`, 2, { counted: true }).ok, false);
+  // A post-merge APPROVE with every criterion met is recorded as given.
+  const approved = parseVerdict(`VERDICT: APPROVE\n${WITHHELD.replace("CRITERION 2: unmet", "CRITERION 2: met")}`, 2, { counted: true, postMerge: true });
+  assert.deepEqual(approved.ok && approved.verdict, "approve");
 });
 
-test("reviewBrief: a post-merge audit is told it always ends with a verdict, and how to write an unproved criterion", () => {
+test("reviewBrief: a post-merge audit is told to judge with the clean-clone run and that an environment-limited reply is a failed audit", () => {
   const text = brief({ item: item({ state: "merged" }) });
   assert.match(text, /^Post-merge audit of the recorded merge /);
-  assert.match(text, /The audit always ends with a VERDICT line: a criterion you could not prove met, because a check could not run here or for any other reason, is unmet, and a reply that declares a criterion unmet is a rejection, written VERDICT: REJECT, with BLOCKING: 0 when you found no blocking finding\./);
-  assert.doesNotMatch(brief(), /The audit always ends with a VERDICT line/);
+  assert.match(text, /Judge the criteria with the clean-clone run and the observed results this brief gives, and end with a VERDICT line\. If environment limits still prevent a verdict, explain them without a VERDICT line, so the audit is recorded as failed and asked again, rather than rejecting the change\./);
+  assert.doesNotMatch(text, /is a rejection, written VERDICT: REJECT/);
+  assert.doesNotMatch(brief(), /Judge the criteria with the clean-clone run/);
 });
 
 test("owedReviewsText: names each task whose post-merge review is owed, with its state, after the fast-mode line", () => {
