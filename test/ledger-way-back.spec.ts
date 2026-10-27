@@ -43,8 +43,11 @@ const importInto = (bindings: typeof env, name: string, dump: Json) => importDum
 const ledgerOf = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 const INDEX = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 
-async function setup(name: string) {
-  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
+async function setup(name: string, pasted?: string) {
+  const record = {
+    name, repo: name, createdAt: new Date().toISOString(),
+    ...(pasted ? { title: `The project, ${pasted} pasted`, policy: { checks: ["npm test", `deploy --token ${pasted}`], protected: [] } } : { policy: { checks: ["npm test"], protected: [] } }),
+  };
   const L = ledgerOf(name);
   await L.setProject(record as never, "owner");
   await INDEX().registerProject(record as never);
@@ -55,10 +58,11 @@ async function setup(name: string) {
 // plan and tokens: a write token's id on the item, a runner's Git grant and
 // an agent token's record, each by its hash, and a token pasted into a brief.
 async function seed(name: string) {
-  const L = await setup(name);
+  const pasted = tokenFromBytes(new Uint8Array(32).fill(7));
+  // A token pasted into the project's title and policy too.
+  const L = await setup(name, pasted);
   const issued = await ok(send(prod, "POST", "/tokens", { actor: AGENT, projects: [name] }));
   const hash = await sha256(issued.token);
-  const pasted = tokenFromBytes(new Uint8Array(32).fill(7));
   await L.newItem("Build the thing", [], "owner");
   await L.newItem(`Brief with a pasted ${pasted} in it`, [], "owner");
   await runInDurableObject(L, async (_: unknown, state: DurableObjectState) => {
@@ -99,6 +103,12 @@ it("dumps every table with its schema version, keeps token hashes as hashes, and
   expect(text).not.toContain(pasted);
   expect(text).toContain("[redacted]");
   expect(dump.redacted).toBeGreaterThan(0);
+  // The project's record in the manifest is scrubbed as its meta row is.
+  expect(dump.record.title).toBe("The project, [redacted] pasted");
+  expect(dump.record.policy.checks).toEqual(["npm test", "deploy --token [redacted]"]);
+  const manifestText = JSON.stringify(await ok(send(prod, "GET", "/projects/wb-dump/ledger/dump")));
+  expect(manifestText).not.toContain(pasted);
+  expect(manifestText).toContain("[redacted]");
   // The manifest's counts match the rows read.
   const manifest = await ok(send(prod, "GET", "/projects/wb-dump/ledger/dump"));
   expect(manifest.tables.find((t: Json) => t.name === "items").count).toBe(2);
@@ -155,6 +165,29 @@ it("reads a table larger than one page a page at a time", async () => {
   expect(first.next).not.toBeNull();
   const dump = await dumpOf(prod, "wb-pages");
   expect(dump.tables.find((t: Json) => t.name === "runs").rows.map((r: unknown[]) => JSON.parse(r[1] as string).n)).toEqual([0, 1, 2, 3, 4]);
+});
+
+it("fails a dump whose rows were updated between pages though the count held", async () => {
+  const L = await setup("wb-moved");
+  await runInDurableObject(L, async (_: unknown, state: DurableObjectState) => {
+    for (let i = 0; i < 3; i++) state.storage.sql.exec(`INSERT INTO runs (json) VALUES (?)`, JSON.stringify({ n: i, state: "old", text: "x".repeat(900_000) }));
+  });
+  let pages = 0;
+  const read = async (table?: string, after?: number) => {
+    if (table === "runs" && pages++ === 1) {
+      // After the first page of runs, a write updates the first row and the
+      // last, as a runner would: the count stays 3.
+      await runInDurableObject(L, async (_: unknown, state: DurableObjectState) => {
+        state.storage.sql.exec(`UPDATE runs SET json = replace(json, '"old"', '"new"') WHERE rowid IN (SELECT MIN(rowid) FROM runs UNION SELECT MAX(rowid) FROM runs)`);
+      });
+    }
+    return ok(send(prod, "GET", table === undefined ? "/projects/wb-moved/ledger/dump" : `/projects/wb-moved/ledger/dump?table=${table}&after=${after}`));
+  };
+  await expect(collectDump(read)).rejects.toThrow(/runs changed while the dump read it/);
+  expect(pages).toBe(2);
+  // With nothing written meanwhile, the dump holds the new rows.
+  const dump = await dumpOf(prod, "wb-moved");
+  expect(dump.tables.find((t: Json) => t.name === "runs").rows.map((r: unknown[]) => JSON.parse(r[1] as string).state)).toEqual(["new", "old", "new"]);
 });
 
 it("records each Ledger's bookmark, restores only a recorded one on the next start, and records the undo", async () => {

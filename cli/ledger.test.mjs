@@ -3,21 +3,29 @@ import assert from 'node:assert/strict';
 import { HANDLERS } from './atelier.mjs';
 import ledgerCommand, { formatBookmark, formatDump, formatImport, formatRestore } from './commands/ledger.mjs';
 import { collectDump, importDump, IMPORT_CHUNK_BYTES, manifestOf, parseDump } from './ledger-dump.mjs';
-import { LEDGER_DUMP_FORMAT } from '../src/rules.ts';
+import { dumpChecksum, LEDGER_DUMP_FORMAT } from '../src/rules.ts';
 import { commandUsage, helpText } from '../src/usage.ts';
 import { requiredForCommand } from '../src/route-level.ts';
 
 // atelier ledger (t342): the pages it reads and sends, and what it prints.
 // The routes themselves are tested in test/ledger-way-back.spec.ts.
 
-// A Ledger of `n` rows in one table, served `size` rows a page as the route does.
-const served = (n, size, grow = false) => {
+// A Ledger of `n` rows in one table, served `size` rows a page as the route
+// does, with the manifest's count and checksum of the rows as they stand.
+// `change(reads)` runs before each page is served, as a write between pages.
+const served = (n, size, change = () => {}) => {
   const rows = Array.from({ length: n }, (_, i) => [i + 1, `row ${i + 1}`]);
   let reads = 0;
   const read = async (table, after) => {
-    if (table === undefined) return { format: LEDGER_DUMP_FORMAT, project: 'demo', schemaVersion: 'abc', tables: [{ name: 'events', columns: [{ name: 'seq' }, { name: 'data' }], count: n + (grow && reads++ ? 1 : 0) }] };
-    const page = rows.filter((r) => r[0] > after).slice(0, size);
-    return { rows: page, next: page.length === size && page.at(-1)[0] < n ? page.at(-1)[0] : null, redacted: 0 };
+    if (table === undefined) {
+      const sum = dumpChecksum();
+      for (const row of rows) sum.add(row);
+      return { format: LEDGER_DUMP_FORMAT, project: 'demo', schemaVersion: 'abc', tables: [{ name: 'events', columns: [{ name: 'seq' }, { name: 'data' }], count: rows.length, checksum: sum.value() }] };
+    }
+    change(reads++, rows);
+    const page = rows.filter((r) => r[0] > after).slice(0, size).map((r) => [...r]);
+    const last = rows.at(-1)[0];
+    return { rows: page, next: page.length === size && page.at(-1)[0] < last ? page.at(-1)[0] : null, redacted: 0 };
   };
   return { rows, read };
 };
@@ -39,7 +47,22 @@ test('a dump reads every page of every table and swaps each count for the rows',
 });
 
 test('a dump fails when a table changed while it was read', async () => {
-  await assert.rejects(collectDump(served(10, 3, true).read), /events changed while the dump read it; stop the runners/);
+  // A row removed from a page already read.
+  await assert.rejects(collectDump(served(10, 3, (n, rows) => { if (n === 1) rows.shift(); }).read), /events changed while the dump read it; stop the runners/);
+  // A row added after the pages read so far is read with the rest: the dump
+  // is the Ledger as it stood at the end.
+  const grown = served(10, 3, (n, rows) => { if (n === 1) rows.push([11, 'row 11']); });
+  assert.equal((await collectDump(grown.read)).tables[0].rows.length, 11);
+});
+
+test('a dump fails when rows were updated between pages though the count held', async () => {
+  // Two rows, a page each: the first page reads row 1 old, then both rows
+  // are updated before the second page reads row 2 new. The count stays 2.
+  const { read } = served(2, 1, (n, rows) => { if (n === 1) { rows[0][1] = 'new'; rows[1][1] = 'new'; } });
+  await assert.rejects(collectDump(read), /events changed while the dump read it/);
+  // As when a row is replaced by another under the same count.
+  const replaced = served(4, 2, (n, rows) => { if (n === 1) rows.splice(0, 1, [1, 'other']); });
+  await assert.rejects(collectDump(replaced.read), /events changed/);
 });
 
 test('an import begins, sends each table in chunks under the limit, and finishes', async () => {

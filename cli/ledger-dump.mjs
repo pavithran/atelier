@@ -1,21 +1,26 @@
 // The pages of a Ledger dump and import (t342), apart from the command so a
-// Worker test can drive them against the routes: it imports nothing.
+// Worker test can drive them against the routes. It imports only the
+// checksum the dump route computes, from src/rules.ts.
 //
 // A dump file is the manifest the dump route answers (format, schema
 // version, the code that wrote it, the project's record, every table with its
 // definition and columns, the indexes, triggers and AUTOINCREMENT counters)
-// with each table's rows in place of its count.
+// with each table's rows in place of its count and checksum.
+import { dumpChecksum } from "../src/rules.ts";
 
 // The most JSON one import request carries, well under a request body's limit.
 export const IMPORT_CHUNK_BYTES = 2_000_000;
 
 // Every table of the project's Ledger, read a page at a time with `read`:
 // read() answers the manifest and read(table, after) a page of rows ({ rows,
-// next }). The manifest is read again at the end, and a table whose count
-// moved meanwhile fails the dump: the rows were written while it read them.
+// next }). The manifest is read again at the end, and every table's rows
+// must match the checksum it answers then, so the dump holds the Ledger as
+// it stood at that moment; a table any row of which was added, updated,
+// replaced or removed while the dump read it fails the dump, whatever its
+// count.
 export async function collectDump(read) {
   const manifest = await read();
-  const tables = [];
+  const tablesRead = [];
   let redacted = 0;
   for (const t of manifest.tables) {
     const rows = [];
@@ -27,14 +32,22 @@ export async function collectDump(read) {
       if (page.next === null || page.next === undefined || page.next <= after) break;
       after = page.next;
     }
-    const { count, ...rest } = t;
-    tables.push({ ...rest, rows });
+    tablesRead.push({ name: t.name, rows });
   }
   const again = await read();
-  const counted = new Map(again.tables.map((t) => [t.name, t.count]));
-  const moved = tables.filter((t) => counted.get(t.name) !== manifest.tables.find((m) => m.name === t.name).count);
-  if (moved.length) throw new Error(`${moved.map((t) => t.name).join(", ")} changed while the dump read ${moved.length === 1 ? "it" : "them"}; stop the runners and dump again`);
-  return { ...manifest, tables, redacted };
+  const rowsOf = new Map(tablesRead.map((t) => [t.name, t.rows]));
+  const moved = again.tables.filter((t) => {
+    const rows = rowsOf.get(t.name);
+    if (!rows || typeof t.checksum !== "string") return true;
+    const sum = dumpChecksum();
+    for (const row of rows) sum.add(row);
+    return sum.value() !== t.checksum;
+  }).map((t) => t.name);
+  const gone = tablesRead.filter((t) => !again.tables.some((a) => a.name === t.name)).map((t) => t.name);
+  const changed = [...moved, ...gone];
+  if (changed.length) throw new Error(`${changed.join(", ")} changed while the dump read ${changed.length === 1 ? "it" : "them"}; stop the runners and dump again`);
+  const tables = again.tables.map(({ count, checksum, ...t }) => ({ ...t, rows: rowsOf.get(t.name) }));
+  return { ...again, tables, redacted: redacted + (again.redacted ?? 0) };
 }
 
 // What the import's first step carries: the dump without its rows.

@@ -16,7 +16,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpValue, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type LedgerBookmark, type TaskStage } from "./rules";
+import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type LedgerBookmark, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -10070,12 +10070,30 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`PRAGMA table_info("${table}")`).toArray().map((c) => ({ name: c.name as string, type: c.type as string, notnull: c.notnull as number, dflt_value: c.dflt_value, pk: c.pk as number }));
   }
 
+  // A table's rows as a dump writes them, in rowid order from after `after`,
+  // without the import mark.
+  private *dumpCursor(table: string, columns: string[], after: number, count: { redacted: number }): Generator<[number, unknown[]]> {
+    const cursor = this.sql.exec(`SELECT rowid, ${columns.map((c) => `"${c}"`).join(", ")} FROM "${table}" WHERE rowid > ? ORDER BY rowid`, after).raw();
+    for (const [rowid, ...values] of cursor) {
+      if (table === "meta" && values[columns.indexOf("key")] === LEDGER_IMPORT_MARK) continue;
+      yield [rowid as number, values.map((v) => dumpValue(v, count))];
+    }
+  }
+
   // What a dump holds apart from the rows: every table with its definition,
-  // columns and row count; the indexes and triggers; the AUTOINCREMENT
-  // counters; the project's record; and the schema version, a hash of every
-  // table's name and columns, which an import compares table by table.
+  // columns, row count and the checksum of its rows (dumpChecksum); the
+  // indexes and triggers; the AUTOINCREMENT counters; the project's record,
+  // its pasted tokens replaced as the rows' are; and the schema version, a
+  // hash of every table's name and columns, which an import compares table
+  // by table. Everything is read before the first await, so it is one
+  // moment's state.
   async dumpManifest(): Promise<Record<string, unknown>> {
-    const tables = this.dumpTables().map((t) => ({ ...t, columns: this.tableColumns(t.name), count: Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n) }));
+    const tables = this.dumpTables().map((t) => {
+      const columns = this.tableColumns(t.name);
+      const sum = dumpChecksum();
+      for (const [, row] of this.dumpCursor(t.name, columns.map((c) => c.name), 0, { redacted: 0 })) sum.add(row);
+      return { ...t, columns, count: Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n), checksum: sum.value() };
+    });
     const names = new Set(tables.map((t) => t.name));
     const objects = this.sql.exec(`SELECT type, name, tbl_name AS "table", sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name`).toArray()
       .filter((o) => names.has(o.table as string));
@@ -10083,9 +10101,11 @@ export class Ledger extends DurableObject<Env> {
       ? this.sql.exec(`SELECT name, seq FROM sqlite_sequence ORDER BY name`).toArray().filter((s) => names.has(s.name as string)) : [];
     const shape = tables.map((t) => `${t.name}(${t.columns.map((c) => `${c.name} ${c.type}`).sort().join(", ")})`).join("\n");
     const project = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
+    const count = { redacted: 0 };
+    const record = project ? dumpJson(JSON.parse(project.value as string), count) : null;
     return {
       format: LEDGER_DUMP_FORMAT, schemaVersion: (await sha256(shape)).slice(0, 16), deployed: this.deployed, at: new Date().toISOString(),
-      record: project ? JSON.parse(project.value as string) : null, tables, objects, sequences,
+      record, redacted: count.redacted, tables, objects, sequences,
     };
   }
 
@@ -10098,15 +10118,12 @@ export class Ledger extends DurableObject<Env> {
     const count = { redacted: 0 };
     const rows: unknown[][] = [];
     let bytes = 0, last = after, next: number | null = null;
-    const cursor = this.sql.exec(`SELECT rowid, ${columns.map((c) => `"${c}"`).join(", ")} FROM "${table}" WHERE rowid > ? ORDER BY rowid`, after).raw();
-    for (const [rowid, ...values] of cursor) {
-      if (table === "meta" && values[columns.indexOf("key")] === LEDGER_IMPORT_MARK) { last = rowid as number; continue; }
-      const row = values.map((v) => dumpValue(v, count));
+    for (const [rowid, row] of this.dumpCursor(table, columns, after, count)) {
       const size = JSON.stringify(row).length;
       if (rows.length && bytes + size > DUMP_PAGE_BYTES) { next = last; break; }
       rows.push(row);
       bytes += size;
-      last = rowid as number;
+      last = rowid;
     }
     return { table, columns, rows, next, redacted: count.redacted };
   }

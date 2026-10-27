@@ -1087,10 +1087,13 @@ Before the switch:
    The file holds every table of the project's Ledger with its rows, the
    schema version (a hash of every table's columns) and the commit that
    wrote it. Tokens appear only as their hashes, which is all the Ledger
-   keeps; a token pasted into a brief or a note is replaced with
-   `[redacted]`. The dump fails, writing nothing, if a table changed while
-   it read; stop the runners and dump again. The file is the project's
-   whole record: keep it as you would the owner token.
+   keeps; a token pasted into a brief, a note, or the project's title or
+   policy is replaced with `[redacted]`. When it has read every table, the
+   dump checks each one's rows against a checksum of the table as it stands
+   then, and fails, writing nothing, if any row was added, updated,
+   replaced or removed while it read, even when the count held; stop the
+   runners and dump again. The file is the project's whole record: keep it
+   as you would the owner token.
 
 Rehearse the switch on staging before production:
 

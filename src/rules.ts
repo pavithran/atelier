@@ -3538,6 +3538,38 @@ export function dumpValue(value: unknown, count: { redacted: number }): unknown 
   return value;
 }
 
+// A parsed JSON value (the project's record) as a dump writes it: every
+// string in it without a pasted token.
+export function dumpJson(value: unknown, count: { redacted: number }): unknown {
+  if (typeof value === "string") return dumpValue(value, count);
+  if (Array.isArray(value)) return value.map((v) => dumpJson(v, count));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, dumpJson(v, count)]));
+  return value;
+}
+
+// A checksum of a table's rows as a dump writes them, in order: two 32-bit
+// lanes over each row's JSON, then the count. The dump route answers it for
+// each table, and the dump compares it with the rows it read
+// (cli/ledger-dump.mjs), so a row updated, replaced or added while it read
+// fails the dump whatever the count. It finds a change, not a forgery.
+export function dumpChecksum(): { add(row: unknown[]): void; value(): string } {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57, n = 0;
+  const mix = (code: number) => { h1 = Math.imul(h1 ^ code, 2654435761); h2 = Math.imul(h2 ^ code, 1597334677); };
+  return {
+    add(row) {
+      const text = JSON.stringify(row);
+      for (let i = 0; i < text.length; i++) mix(text.charCodeAt(i));
+      mix(0x1e);
+      n++;
+    },
+    value() {
+      const a = (Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)) >>> 0;
+      const b = (Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)) >>> 0;
+      return `${n}:${a.toString(16).padStart(8, "0")}${b.toString(16).padStart(8, "0")}`;
+    },
+  };
+}
+
 // A dumped value back as the import stores it.
 export function importValue(value: unknown): string | number | null | ArrayBuffer {
   if (value === null || typeof value === "string" || typeof value === "number") return value;
