@@ -1,5 +1,6 @@
-// The secret scan a push runs: it reads the diff's added lines and reports
-// the file and line of each that holds a key pattern, never the value itself.
+// The secret scan a push runs: it reads the lines each of the task's commits
+// adds and reports the commit, file and line of each that holds a key
+// pattern, never the value itself.
 // The patterns come from Pullboard's pre-commit scan, narrowed to what a task
 // can accidentally push: cloud and model-provider API keys, private key
 // blocks, bearer tokens, and `.env`-style assignments of long secrets.
@@ -12,11 +13,14 @@ import { changedEntries, diffLines, isBinary, pairReader, splitLines, strictRead
 
 // What one matched line is reported as: the file it was added to, the 1-based
 // line number in the new file, and a fingerprint of the line (below). The
-// matched text is never kept.
+// matched text is never kept. `commit` names the commit that added the line
+// when the scan read a history (scanCommit); a scan of two trees alone
+// (scanTrees) leaves it out.
 export interface SecretHit {
   file: string;
   line: number;
   fingerprint: string;
+  commit?: string;
 }
 
 // A path whose head side the scan could not read as text (a binary blob, a
@@ -28,6 +32,7 @@ export interface UnscannedFile {
   file: string;
   fingerprint: string;
   reason: string;
+  commit?: string;
 }
 
 // The fingerprint of a flagged line: the SHA-256, as hex, of the line's text
@@ -41,7 +46,11 @@ export interface UnscannedFile {
 // reader who already has a candidate key could confirm it against the
 // digest, which is the trade made for a clearance that survives a push.
 export async function fingerprint(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text.trim()));
+  return sha256(text.trim());
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
@@ -240,6 +249,12 @@ export interface PushScan {
 }
 
 export async function scanTrees(reader: Reader, baseTree: string, headTree: string): Promise<PushScan> {
+  return scanPair(reader, baseTree, headTree, async () => false);
+}
+
+// scanTrees with `allowed`, which is asked of each key-shaped added line
+// (its file and exact text) and drops the line from the hits when it says so.
+async function scanPair(reader: Reader, baseTree: string, headTree: string, allowed: (file: string, text: string) => Promise<boolean>): Promise<PushScan> {
   const r = strictReader(reader);
   const scan: PushScan = { hits: [], unscanned: [] };
   if (baseTree === headTree) return scan;
@@ -251,29 +266,201 @@ export async function scanTrees(reader: Reader, baseTree: string, headTree: stri
     const result = await addedLines(r, base, head);
     if ("reason" in result) { scan.unscanned.push({ file: head.path, fingerprint: head.hash, reason: result.reason }); continue; }
     for (const [line, text] of result.added) {
-      if (scanLine(text)) scan.hits.push({ file: head.path, line, fingerprint: await fingerprint(text) });
+      if (scanLine(text) && !(await allowed(head.path, text))) scan.hits.push({ file: head.path, line, fingerprint: await fingerprint(text) });
     }
   }
   return scan;
 }
 
-// The scan of the commit a push recorded, against the repository the item is
-// measured against (main's head as it is now, see againstMain in
-// src/diff.ts). It is bound to `head`, the commit the Ledger recorded, never
-// to the fork's live head: the fork may have moved on since the head was
-// recorded, and a scan of the newer head would be applied to the older one's
-// record. The commit is read by its id, and the scan runs only when the
-// commit read is that one; a fork that cannot show it (a reader that answers
-// with the live head, a commit not reachable) throws, so the scan stays
-// pending and is retried rather than clearing or recording anything for the
-// wrong head. The head's objects are read from the fork first and from the
-// baseline second (pairReader), and any object neither holds throws.
-export async function scanCommit(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, head: string): Promise<PushScan & { head: string; base: string }> {
+// ── the task's history ─────────────────────────────────────────────────────
+//
+// The gate scans every commit the task adds, as scripts/privacy-scan.mjs does
+// before the push to GitHub, so a key one commit added and a later one
+// removed is still found: the push to GitHub sends every commit, and the
+// removed key is in one of them (t295). A scan of the head's tree against
+// main's alone missed it.
+//
+// The task's commits are those the head reaches and main does not: the walk
+// follows every parent from the head and stops at any commit main's history
+// holds. Each is scanned against its parent, and a root commit against the
+// empty tree. A merge is scanned against each parent in turn, and a line it
+// adds relative to any parent is a finding, as the push scan's
+// `git log -p --diff-merges=separate` reads it: a merge of main into the
+// task adds main's newer lines relative to the task's side, and the push
+// sends that merge, so a key main's commits added is found again in it.
+//
+// A finding the push scan's allowance list permits (docs/atelier/
+// privacy-allow.json, read by parseAllowances below with the same rules as
+// readAllowances in scripts/privacy-scan.mjs) is not flagged: its commit
+// starts with the allowance's commit, its file is the allowance's file, and
+// the SHA-256 of the exact added line is the allowance's. The list is read
+// from the head's tree, which is the list the push of the landed task reads,
+// and only once a key-shaped line is found: a scan that finds none reads no
+// more than it did before the list was honoured.
+
+// The most commits of main's history read to know where the task's begin,
+// and the most commits of the task's own the scan reads. A task over the
+// second throws, and the scan stays pending.
+const MAIN_COMMITS = 1000;
+const TASK_COMMITS = 1000;
+const LOG_PAGE = 100;
+
+// The empty tree, the base a root commit is scanned against. No repository
+// need hold it: the reader answers it as empty.
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+function withEmptyTree(r: Reader): Reader {
+  return { tree: async (h) => (h === EMPTY_TREE ? [] : r.tree(h)), blob: (h) => r.blob(h) };
+}
+
+type Commit = Pick<ArtifactsCommitMetadata, "hash" | "treeHash" | "parents">;
+
+// The commits the head reaches that are not in `onMain`, newest first. Every
+// commit is read from the fork by its id; one the fork cannot show throws.
+async function taskCommits(fork: ArtifactsRepo, head: Commit, onMain: Set<string>): Promise<Commit[]> {
+  const read = new Map<string, Commit>([[head.hash, head]]);
+  const found = new Map<string, Commit>();
+  const next = [head.hash];
+  while (next.length) {
+    const hash = next.shift()!;
+    if (onMain.has(hash) || found.has(hash)) continue;
+    if (found.size >= TASK_COMMITS) throw new Error(`secret scan: the task adds more than ${TASK_COMMITS} commits, more than the scan reads`);
+    if (!read.has(hash)) for (const c of await fork.log({ ref: hash, limit: LOG_PAGE })) read.set(c.hash, c);
+    const commit = read.get(hash);
+    if (!commit) throw new Error(`secret scan: the fork did not show commit ${hash.slice(0, 8)}`);
+    found.set(hash, commit);
+    next.push(...(commit.parents ?? []));
+  }
+  return [...found.values()];
+}
+
+// The path of the push scan's allowance list in a project's tree.
+export const ALLOW_PATH = "docs/atelier/privacy-allow.json";
+
+// One reviewed allowance: a commit (a hash prefix of at least 7 characters),
+// a file, the SHA-256 of the exact added line, and why the line is allowed.
+export interface PrivacyAllowance { commit: string; file: string; sha256: string; reason: string }
+
+// The allowances in the text of an allowance list, checked as readAllowances
+// in scripts/privacy-scan.mjs checks them. Text that is not JSON, has no
+// list or has a malformed entry throws, which fails closed: the scan stays
+// pending rather than reading the list as empty.
+export function parseAllowances(text: string, path = ALLOW_PATH): PrivacyAllowance[] {
+  const list = JSON.parse(text).allowances;
+  if (!Array.isArray(list)) throw new Error(`${path} has no allowances list`);
+  for (const a of list) {
+    if (!/^[0-9a-f]{7,64}$/.test(a?.commit) || typeof a.file !== "string" || !a.file || !/^[0-9a-f]{64}$/.test(a.sha256) || typeof a.reason !== "string" || !a.reason) {
+      throw new Error(`${path} has an allowance without a commit, file, sha256 and reason`);
+    }
+  }
+  return list;
+}
+
+// The allowances in the tree `tree` holds at ALLOW_PATH, none when the path
+// is absent. A path that is there and is not a readable file throws.
+async function readAllowanceList(reader: Reader, tree: string): Promise<PrivacyAllowance[]> {
+  const r = strictReader(reader);
+  const names = ALLOW_PATH.split("/");
+  let at = tree;
+  for (const [i, name] of names.entries()) {
+    const entry = (await r.tree(at))!.find((e) => e.name === name);
+    if (!entry) return [];
+    const last = i === names.length - 1;
+    if (entry.type !== (last ? "blob" : "tree")) throw new Error(`secret scan: ${ALLOW_PATH} is not a file`);
+    at = entry.hash;
+  }
+  return parseAllowances(decoder.decode((await r.blob(at))!));
+}
+
+// What one commit adds: its scan against its parent, or against each parent
+// of a merge with every side's findings kept once each, each named with the
+// commit. A line an allowance permits for this commit is left out; the list
+// is asked for only when a key-shaped line is found.
+async function scanAdded(r: Reader, commit: Commit, trees: Map<string, string>, allowances: () => Promise<PrivacyAllowance[]>): Promise<PushScan> {
+  const parents = commit.parents?.length ? commit.parents : [null];
+  const allowed = async (file: string, text: string) => {
+    const mine = (await allowances()).filter((a) => commit.hash.startsWith(a.commit));
+    if (!mine.some((a) => a.file === file)) return false;
+    const digest = await sha256(text);
+    return mine.some((a) => a.file === file && a.sha256 === digest);
+  };
+  const hits = new Map<string, SecretHit>(), unscanned = new Map<string, UnscannedFile>();
+  for (const parent of parents) {
+    if (parent !== null && !trees.has(parent)) throw new Error(`secret scan: the tree of commit ${parent.slice(0, 8)} is not known`);
+    const side = await scanPair(r, parent === null ? EMPTY_TREE : trees.get(parent)!, commit.treeHash, allowed);
+    for (const h of side.hits) hits.set(`${h.file}\0${h.line}\0${h.fingerprint}`, { ...h, commit: commit.hash });
+    for (const u of side.unscanned) unscanned.set(`${u.file}\0${u.fingerprint}`, { ...u, commit: commit.hash });
+  }
+  return { hits: [...hits.values()], unscanned: [...unscanned.values()] };
+}
+
+// The scan of `commits`, the commits a task adds in any order, oldest first
+// in the result. `trees` holds the tree of every commit named and of every
+// parent of one; `allowances` are the push scan's (parseAllowances), or a
+// function that reads them, called at most once and only when a key-shaped
+// line is found.
+export async function scanHistory(r: Reader, commits: Commit[], trees: Map<string, string>, allowances: PrivacyAllowance[] | (() => Promise<PrivacyAllowance[]>)): Promise<PushScan> {
+  const scan: PushScan = { hits: [], unscanned: [] };
+  let list: Promise<PrivacyAllowance[]> | null = null;
+  const read = () => (list ??= typeof allowances === "function" ? allowances() : Promise.resolve(allowances));
+  for (const c of oldestFirst(commits)) {
+    const added = await scanAdded(r, c, trees, read);
+    scan.hits.push(...added.hits);
+    scan.unscanned.push(...added.unscanned);
+  }
+  return scan;
+}
+
+// `commits` with each after every one of its parents among them.
+function oldestFirst(commits: Commit[]): Commit[] {
+  const byHash = new Map(commits.map((c) => [c.hash, c]));
+  const out: Commit[] = [], placed = new Set<string>();
+  const place = (c: Commit) => {
+    if (placed.has(c.hash)) return;
+    placed.add(c.hash);
+    for (const p of c.parents ?? []) { const parent = byHash.get(p); if (parent) place(parent); }
+    out.push(c);
+  };
+  commits.forEach(place);
+  return out;
+}
+
+// The scan of the commit a push recorded and every commit of the task behind
+// it, against the repository the item is measured against (main's history as
+// it is now, see againstMain in src/diff.ts), oldest commit first.
+// `forkedFrom`, the commit the item's fork started at, also ends the walk,
+// so a task that forked from a commit older than the main history read is
+// not taken to add main's older commits. The scan is bound to `head`, the
+// commit the Ledger recorded, never to the fork's live head: the fork may
+// have moved on since the head was recorded, and a scan of the newer head
+// would be applied to the older one's record. The commit is read by its id,
+// and the scan runs only when the commit read is that one; a fork that
+// cannot show it (a reader that answers with the live head, a commit not
+// reachable) throws, so the scan stays pending and is retried rather than
+// clearing or recording anything for the wrong head. The head's objects are
+// read from the fork first and from the baseline second (pairReader), and
+// any object neither holds throws.
+export async function scanCommit(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, head: string, forkedFrom: string | null = null): Promise<PushScan & { head: string; base: string }> {
   using fork = await artifacts.get(workspaceRepo);
   using baseline = await artifacts.get(baselineRepo);
-  const [[commit], [main]] = await Promise.all([fork.log({ ref: head, limit: 1 }), baseline.log({ limit: 1 })]);
+  const [[commit], history] = await Promise.all([fork.log({ ref: head, limit: 1 }), baseline.log({ limit: MAIN_COMMITS })]);
   if (!commit || commit.hash !== head) throw new Error(`secret scan: ${workspaceRepo} did not show the recorded head ${head.slice(0, 8)}${commit ? ` (read ${commit.hash.slice(0, 8)})` : ""}`);
+  const main = history[0];
   if (!main) throw new Error(`secret scan: ${baselineRepo} has no commits to scan against`);
-  const scan = await scanTrees(pairReader(fork, baseline), main.treeHash, commit.treeHash);
+  const onMain = new Set(history.map((c) => c.hash));
+  if (forkedFrom) onMain.add(forkedFrom);
+  const commits = await taskCommits(fork, commit, onMain);
+  // A parent's tree is read from its commit: the task's own from the walk,
+  // main's from main's history, any other from the fork by its id.
+  const trees = new Map<string, string>([...history, ...commits].map((c) => [c.hash, c.treeHash]));
+  for (const c of commits) {
+    for (const p of c.parents ?? []) {
+      if (trees.has(p)) continue;
+      const parent = await fork.readCommit(p);
+      if (!parent) throw new Error(`secret scan: ${workspaceRepo} did not show commit ${p.slice(0, 8)}`);
+      trees.set(p, parent.treeHash);
+    }
+  }
+  const r = withEmptyTree(pairReader(fork, baseline));
+  const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, commit.treeHash));
   return { ...scan, head: commit.hash, base: main.hash };
 }

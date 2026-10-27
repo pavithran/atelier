@@ -17,38 +17,64 @@ const A = "claude-code/opus-5.5";
 const H0 = "0".repeat(40), H1 = "1".repeat(40), H2 = "2".repeat(40), H3 = "3".repeat(40), H4 = "4".repeat(40);
 const T0 = "a".repeat(40), T1 = "b".repeat(40), T2 = "c".repeat(40), T3 = "9".repeat(40);
 const B0 = "d".repeat(40), B1 = "e".repeat(40), B2 = "f".repeat(40), B3 = "8".repeat(40);
+const H5 = "5".repeat(40), M1 = "6".repeat(40), H6 = "7".repeat(40), H7 = "56".repeat(20);
+const TM = "57".repeat(20), T6 = "65".repeat(20), T7 = "67".repeat(20), BM = "75".repeat(20);
+const H8 = "78".repeat(20), T8 = "89".repeat(20), TD = "9a".repeat(20), TA = "ab".repeat(20), BA = "bc".repeat(20);
 const FAKE_KEY = ["sk", "proj", "x".repeat(24)].join("-");
+const MAIN_LINE = `export const placeholder = "${FAKE_KEY}";`;
+const hex = async (text: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))), (b) => b.toString(16).padStart(2, "0")).join("");
+// The push scan's allowance list as H8 holds it: main.ts's line, added by H8.
+const ALLOW = JSON.stringify({ allowances: [{ commit: H8.slice(0, 12), file: "main.ts", sha256: await hex(MAIN_LINE), reason: "a fake key main holds" }] });
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
 
 type Commit = { hash: string; parents: string[]; treeHash: string };
 type Faults = { tree?: () => boolean; missing?: Set<string> };
+type Opts = { byRef: () => boolean; shows: () => string; faults: Faults; main?: () => string };
 
 // A baseline at H0 and a fork whose branch stands at `branch()`: H1 adds
 // keys.ts holding the fake key, H2 on top of it replaces the key with a
 // placeholder, H3, also on H1, keeps keys.ts as H1 had it beside a new
-// file, and H4 on H3 replaces the key as H2 does. `byRef` says whether a read by commit id shows that commit; when
+// file, and H4 on H3 replaces the key as H2 does. H5, on H0, holds keys.ts
+// as H2 left it and no commit of it ever held the key. M1, on H0, is a main
+// commit adding main.ts with a key-shaped line main holds, H6 merges it into
+// H5 cleanly, and H7 merges it into H5 with a file holding the key that
+// neither side has. H8 is H6 with docs/atelier/privacy-allow.json allowing
+// H8's main.ts line. `main()` names main's head, H0 unless given. `byRef` says whether a read by commit id shows that commit; when
 // false the fork answers every read with `shows()`, as a reader that can only
 // show its live head does. `faults.tree` fails a tree read; `faults.missing`
 // names objects neither repository holds, read as null.
-function fakeArtifacts(name: string, branch: () => string, opts: { byRef: () => boolean; shows: () => string; faults: Faults }) {
+function fakeArtifacts(name: string, branch: () => string, opts: Opts) {
   const commits: Record<string, Commit> = {
     [H0]: { hash: H0, parents: [], treeHash: T0 },
     [H1]: { hash: H1, parents: [H0], treeHash: T1 },
     [H2]: { hash: H2, parents: [H1], treeHash: T2 },
     [H3]: { hash: H3, parents: [H1], treeHash: T3 },
     [H4]: { hash: H4, parents: [H3], treeHash: T2 },
+    [H5]: { hash: H5, parents: [H0], treeHash: T2 },
+    [M1]: { hash: M1, parents: [H0], treeHash: TM },
+    [H6]: { hash: H6, parents: [H5, M1], treeHash: T6 },
+    [H7]: { hash: H7, parents: [H5, M1], treeHash: T7 },
+    [H8]: { hash: H8, parents: [H5, M1], treeHash: T8 },
   };
   const trees: Record<string, Record<string, string>> = {
     [T0]: { "README.md": B0 },
     [T1]: { "README.md": B0, "keys.ts": B1 },
     [T2]: { "README.md": B0, "keys.ts": B2 },
     [T3]: { "README.md": B0, "keys.ts": B1, "use.ts": B3 },
+    [TM]: { "README.md": B0, "main.ts": BM },
+    [T6]: { "README.md": B0, "keys.ts": B2, "main.ts": BM },
+    [T7]: { "README.md": B0, "keys.ts": B2, "main.ts": BM, "evil.ts": B1 },
+    [T8]: { "README.md": B0, "keys.ts": B2, "main.ts": BM, docs: TD },
+    [TD]: { atelier: TA },
+    [TA]: { "privacy-allow.json": BA },
   };
   const blobs: Record<string, string> = {
     [B0]: "# Keys\n",
     [B1]: `export const key = "${FAKE_KEY}";\n`,
     [B2]: "export const key = process.env.KEY ?? \"\";\n",
     [B3]: "import { key } from \"./keys.ts\";\nexport const ok = key.length > 0;\n",
+    [BM]: `${MAIN_LINE}\n`,
+    [BA]: `${ALLOW}\n`,
   };
   const missing = (h: string) => opts.faults.missing?.has(h) ?? false;
   const chain = (from: string) => {
@@ -61,7 +87,7 @@ function fakeArtifacts(name: string, branch: () => string, opts: { byRef: () => 
     get: async (repo: string) => ({
       info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
       log: async ({ ref, limit }: { ref?: string; limit?: number } = {}) => {
-        if (repo === name) return chain(H0).slice(0, limit ?? 50);
+        if (repo === name) return chain(ref ?? opts.main?.() ?? H0).slice(0, limit ?? 50);
         const from = ref === undefined ? branch() : opts.byRef() ? ref : opts.shows();
         return chain(from).slice(0, limit ?? 50);
       },
@@ -69,7 +95,7 @@ function fakeArtifacts(name: string, branch: () => string, opts: { byRef: () => 
       readTree: async (h: string) => {
         counts.tree++;
         if (opts.faults.tree?.()) throw Object.assign(new Error("repository service unavailable"), { code: "UNAVAILABLE" });
-        return trees[h] && !missing(h) ? Object.entries(trees[h]).map(([n, hash]) => ({ name: n, mode: "100644", hash, type: "blob" })) : null;
+        return trees[h] && !missing(h) ? Object.entries(trees[h]).map(([n, hash]) => (trees[hash] ? { name: n, mode: "40000", hash, type: "tree" } : { name: n, mode: "100644", hash, type: "blob" })) : null;
       },
       readBlob: async (h: string) => (blobs[h] !== undefined && !missing(h) ? new Blob([blobs[h]]) : null),
       [Symbol.dispose]() {},
@@ -132,7 +158,7 @@ it("a push event whose scan fails is retried with the gate blocked, and the rede
   expect(q.counts).toEqual({ acks: 1, retries: 1 });
   const item = await L.item("t1");
   expect(item.secretScan).toBeUndefined();
-  expect(item.secret).toMatchObject([{ file: "keys.ts", line: 1, head: H1 }]);
+  expect(item.secret).toMatchObject([{ file: "keys.ts", line: 1, commit: H1, head: H1 }]);
   d = await detail(call, name);
   expect(d.gate.blockers).toContain("secret flagged in keys.ts:1; clear it with a reason or push a revision that removes the line");
   expect(d.gate.blockers.some((b) => b.startsWith("secret scan pending"))).toBe(false);
@@ -178,7 +204,7 @@ it("a reader that shows another commit than the recorded head leaves the scan pe
   const q = queue(bindings, name, H1);
   await q.send();
   expect(q.counts).toEqual({ acks: 1, retries: 0 });
-  expect(await L.item("t1")).toMatchObject({ head: H1, secret: [{ file: "keys.ts", line: 1, head: H1 }] });
+  expect(await L.item("t1")).toMatchObject({ head: H1, secret: [{ file: "keys.ts", line: 1, commit: H1, head: H1 }] });
   expect((await L.item("t1")).secretScan).toBeUndefined();
   d = await detail(call, name);
   expect(d.gate.blockers).toContainEqual(expect.stringMatching(/^secret flagged in keys\.ts:1/));
@@ -204,7 +230,7 @@ it("a push whose scan fails answers with the scan pending; pushing again at the 
   expect(second.status).toBe(200);
   const answered = (await second.json()) as Item;
   expect(answered.secretScan).toBeUndefined();
-  expect(answered.secret).toMatchObject([{ file: "keys.ts", line: 1, head: H1 }]);
+  expect(answered.secret).toMatchObject([{ file: "keys.ts", line: 1, commit: H1, head: H1 }]);
   expect(answered).toEqual(await L.item("t1"));
   expect(JSON.stringify(answered)).not.toContain(FAKE_KEY);
 });
@@ -212,20 +238,20 @@ it("a push whose scan fails answers with the scan pending; pushing again at the 
 it("a push with none of the patterns answers scanned and clean, and records no flag", async () => {
   const name = "secret-push-clean";
   const L = await setup(name);
-  // The branch stands at H2, whose keys.ts holds no key pattern.
-  const { binding } = fakeArtifacts(name, () => H2, { byRef: () => true, shows: () => H2, faults: {} });
+  // The branch stands at H5, whose commits never held a key pattern.
+  const { binding } = fakeArtifacts(name, () => H5, { byRef: () => true, shows: () => H5, faults: {} });
   const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
   const call = api(bindings);
-  const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H2 });
+  const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H5 });
   expect(res.status).toBe(200);
   const pushed = (await res.json()) as Item;
-  expect(pushed.head).toBe(H2);
+  expect(pushed.head).toBe(H5);
   expect(pushed.secretScan).toBeUndefined();
   expect(pushed.secret).toBeUndefined();
   expect((await detail(call, name)).gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
   expect((await events(L)).some((e) => e.kind.startsWith("secret."))).toBe(false);
   // Seen again through the queue, the scanned head is acknowledged untouched.
-  const q = queue(bindings, name, H2);
+  const q = queue(bindings, name, H5);
   await q.send();
   expect(q.counts).toEqual({ acks: 1, retries: 0 });
   expect((await L.item("t1")).secretScan).toBeUndefined();
@@ -250,15 +276,18 @@ it("a result for a head the fork has moved past is dropped, and the newer head's
   expect(await L.setSecret("t1", "atelier/events", H1, [{ file: "keys.ts", line: 1, fingerprint: "f".repeat(64) }])).toMatchObject({ head: H2, secretScan: H2 });
   expect((await L.item("t1")).secret).toBeUndefined();
   expect((await detail(call, name)).gate.blockers).toContainEqual(expect.stringMatching(/^secret scan pending for 22222222/));
-  // The event for H2 completes H2's scan: clean, so nothing blocks.
+  // The event for H2 completes H2's own scan, which reads H1 as a commit of
+  // the task: the key H1 added is recorded for H2, naming H1 (t295).
   failing = false;
   const q = queue(bindings, name, H2);
   await q.send();
   expect(q.counts).toEqual({ acks: 1, retries: 0 });
   const item = await L.item("t1");
   expect(item.secretScan).toBeUndefined();
-  expect(item.secret).toBeUndefined();
-  expect((await detail(call, name)).gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
+  expect(item.secret).toEqual([expect.objectContaining({ file: "keys.ts", line: 1, commit: H1, head: H2 })]);
+  expect((await detail(call, name)).gate.blockers.filter((b) => b.startsWith("secret"))).toEqual([
+    "secret flagged in keys.ts:1, added by commit 111111111111; clear it with a reason or push a revision whose commits do not add the line",
+  ]);
 });
 
 it("a flag the owner cleared stays cleared when a later push keeps the same line, and the gate is not blocked by it", async () => {
@@ -269,7 +298,7 @@ it("a flag the owner cleared stays cleared when a later push keeps the same line
   const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
   const call = api(bindings);
   expect((await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 })).status).toBe(200);
-  expect((await L.item("t1")).secret).toMatchObject([{ file: "keys.ts", line: 1, head: H1 }]);
+  expect((await L.item("t1")).secret).toMatchObject([{ file: "keys.ts", line: 1, commit: H1, head: H1 }]);
   const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts" });
   expect(clear.status).toBe(200);
   // H3 keeps keys.ts exactly as H1 had it, and adds a file that uses it: the
@@ -278,20 +307,21 @@ it("a flag the owner cleared stays cleared when a later push keeps the same line
   const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H3 });
   expect(res.status).toBe(200);
   const pushed = (await res.json()) as Item;
-  expect(pushed).toMatchObject({ head: H3, secret: [{ file: "keys.ts", line: 1, head: H3, cleared: true }] });
+  expect(pushed).toMatchObject({ head: H3, secret: [{ file: "keys.ts", line: 1, commit: H1, head: H3, cleared: true }] });
   expect(pushed.secretScan).toBeUndefined();
   expect(pushed.secretClearances).toMatchObject([{ file: "keys.ts", head: H1, by: "owner", reason: "a fake key, built from fake parts" }]);
   const d = await detail(call, name);
   expect(d.gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
   // Neither the flag, the clearance nor the events hold the value.
   expect(JSON.stringify([pushed, await events(L)])).not.toContain(FAKE_KEY);
-  // H4 replaces the line with a placeholder: no finding, and the cleared one
-  // is gone with the line; the clearance stays recorded.
+  // H4 replaces the line with a placeholder, but H1 still added it: the
+  // finding stands at H4, cleared by the same clearance, and blocks nothing.
   branch = H4;
   expect((await call("POST", `/projects/${name}/items/t1/push`, A, { head: H4 })).status).toBe(200);
-  const resolved = await L.item("t1");
-  expect(resolved.secret).toBeUndefined();
-  expect(resolved.secretClearances).toHaveLength(1);
+  const kept = await L.item("t1");
+  expect(kept.secret).toMatchObject([{ file: "keys.ts", line: 1, commit: H1, head: H4, cleared: true }]);
+  expect(kept.secretClearances).toHaveLength(1);
+  expect((await detail(call, name)).gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
 });
 
 it("a blob the head names and no repository holds leaves the scan pending and the gate blocked", async () => {
@@ -319,7 +349,7 @@ it("a blob the head names and no repository holds leaves the scan pending and th
   missing.clear();
   await q.send();
   expect(q.counts).toEqual({ acks: 1, retries: 1 });
-  expect(await L.item("t1")).toMatchObject({ secret: [{ file: "keys.ts", line: 1, head: H1 }] });
+  expect(await L.item("t1")).toMatchObject({ secret: [{ file: "keys.ts", line: 1, commit: H1, head: H1 }] });
   d = await detail(call, name);
   expect(d.gate.blockers).toContainEqual(expect.stringMatching(/^secret flagged in keys\.ts:1/));
 });
@@ -346,4 +376,63 @@ it("a tree the head names and no repository holds leaves the scan pending and th
   expect(await L.item("t1")).toMatchObject({ head: H1, secretScan: H1 });
   const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key" });
   expect(clear.status).toBe(409);
+});
+
+it("a key one commit added and a later commit removed is flagged at the head, naming the commit that added it (t295)", async () => {
+  const name = "secret-history";
+  const L = await setup(name);
+  // H2's tree holds no key, but its parent H1 added one: the push to GitHub
+  // sends H1, so the gate refuses H2 as the privacy scan would.
+  const { binding } = fakeArtifacts(name, () => H2, { byRef: () => true, shows: () => H2, faults: {} });
+  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const call = api(bindings);
+  const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H2 });
+  expect(res.status).toBe(200);
+  const pushed = (await res.json()) as Item;
+  expect(pushed.secretScan).toBeUndefined();
+  expect(pushed.secret).toEqual([expect.objectContaining({ file: "keys.ts", line: 1, commit: H1, head: H2 })]);
+  const d = await detail(call, name);
+  expect(d.gate.ready).toBe(false);
+  expect(d.gate.blockers).toContain("secret flagged in keys.ts:1, added by commit 111111111111; clear it with a reason or push a revision whose commits do not add the line");
+  const flagged = (await events(L)).find((e) => e.kind === "secret.flagged")!;
+  expect(flagged.data).toMatchObject({ head: H2, hits: [{ file: "keys.ts", line: 1, commit: H1 }] });
+  expect(JSON.stringify([pushed, d, await events(L)])).not.toContain(FAKE_KEY);
+  // The owner's clearance holds for the line, so the gate no longer refuses on it.
+  expect((await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts" })).status).toBe(200);
+  expect((await detail(call, name)).gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
+});
+
+it("a merge of main is scanned against each parent, as the push scan reads it, so a key main added is flagged in the merge (t295)", async () => {
+  // Main has moved to M1, whose main.ts holds a key-shaped line. H6 merges
+  // M1 into H5: relative to H5 it adds main.ts, and the push to GitHub sends
+  // H6, so the privacy scan would refuse it and the gate flags it, naming H6.
+  const clean = "secret-merge-main";
+  await setup(clean);
+  const a = fakeArtifacts(clean, () => H6, { byRef: () => true, shows: () => H6, faults: {}, main: () => M1 });
+  const callA = api({ ...testEnv, ARTIFACTS: a.binding } as typeof env);
+  const merged = (await (await callA("POST", `/projects/${clean}/items/t1/push`, A, { head: H6 })).json()) as Item;
+  expect(merged).toMatchObject({ head: H6 });
+  expect(merged.secretScan).toBeUndefined();
+  expect(merged.secret).toEqual([expect.objectContaining({ file: "main.ts", line: 1, commit: H6, head: H6 })]);
+  // H7 is the same merge with a file neither side holds, carrying the key:
+  // both are flagged, each naming the merge.
+  const evil = "secret-merge-evil";
+  await setup(evil);
+  const b = fakeArtifacts(evil, () => H7, { byRef: () => true, shows: () => H7, faults: {}, main: () => M1 });
+  const callB = api({ ...testEnv, ARTIFACTS: b.binding } as typeof env);
+  const flagged = (await (await callB("POST", `/projects/${evil}/items/t1/push`, A, { head: H7 })).json()) as Item;
+  expect(flagged.secret).toEqual([
+    expect.objectContaining({ file: "evil.ts", line: 1, commit: H7, head: H7 }),
+    expect.objectContaining({ file: "main.ts", line: 1, commit: H7, head: H7 }),
+  ]);
+  // H8 is H6 with an allowance for its main.ts line in the push scan's
+  // allowance list: the push scan would pass it, and the gate does too.
+  const allowed = "secret-merge-allowed";
+  await setup(allowed);
+  const c = fakeArtifacts(allowed, () => H8, { byRef: () => true, shows: () => H8, faults: {}, main: () => M1 });
+  const callC = api({ ...testEnv, ARTIFACTS: c.binding } as typeof env);
+  const passed = (await (await callC("POST", `/projects/${allowed}/items/t1/push`, A, { head: H8 })).json()) as Item;
+  expect(passed).toMatchObject({ head: H8 });
+  expect(passed.secretScan).toBeUndefined();
+  expect(passed.secret).toBeUndefined();
 });
