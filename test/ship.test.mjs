@@ -516,8 +516,8 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
   writeFileSync(preload, `import { appendFileSync } from "node:fs"; appendFileSync(process.env.SEEN_FILE, process.argv[2] + " " + (process.env.CLOUDFLARE_ENV ?? "unset") + "\\n"); const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
   const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, SEEN_FILE: seenFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed", CLOUDFLARE_ENV: "staging" });
   assert.ok(existsSync(argsFile), r.stderr + r.stdout);
-  // CLOUDFLARE_ENV in the owner's shell never reaches Wrangler (t344); main's
-  // order names the staging Worker since the v1.0 cut (t364).
+  // CLOUDFLARE_ENV in the owner's shell never reaches Wrangler, and main's
+  // order names the staging Worker.
   assert.deepEqual(readFileSync(argsFile, "utf8").split("\n").slice(0, -1), ["wrangler", "deploy", "--env", "staging", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`, "CLOUDFLARE_ENV=unset"]);
   const verified = f.state.runs.find(run => run.step === "verify-delivery");
   assert.equal(verified.passed, matches);

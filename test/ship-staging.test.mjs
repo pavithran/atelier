@@ -2,8 +2,8 @@
 // docs/atelier/ship-staging.json, read with ship's own loader, and the
 // wrangler env and version URL scripts/ship-worker.mjs takes from it.
 // Main's order, docs/atelier/ship.json, keeps its own tests in
-// test/ship.test.mjs and test/ship-worker.test.mjs. Since the v1.0 cut it
-// deploys staging too; production ships from release/1.0 (t364).
+// test/ship.test.mjs and test/ship-worker.test.mjs; it deploys staging too,
+// and production ships from release/1.0.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -44,9 +44,9 @@ test("the staging ship file composes with ship's loader: typecheck, deploy --env
   assert.doesNotMatch(JSON.stringify(p.steps), /https:\/\/atelier\.zone/);
 });
 
-// Main must never deploy production after the v1.0 cut (t364): its ship
-// file and npm run deploy both name the staging Worker.
-test("ship reads docs/atelier/ship.json unless told otherwise, and main's order deploys and verifies staging, with the push the staging file lacks (t364)", () => {
+// Main never deploys production: its ship file and npm run deploy both name
+// the staging Worker.
+test("ship reads docs/atelier/ship.json unless told otherwise, and main's order deploys and verifies staging, with the push the staging file lacks", () => {
   const main = composeShip(resolve("."));
   assert.equal(main.source, "docs/atelier/ship.json");
   assert.ok(main.steps.some((s) => s.step === "push"));
@@ -56,6 +56,8 @@ test("ship reads docs/atelier/ship.json unless told otherwise, and main's order 
   assert.deepEqual(main.steps.find((s) => s.step === "verify-delivery").runs[0].argv, ["node", "scripts/ship-worker.mjs", "verify", "--version-url", STAGING_URL]);
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.match(pkg.scripts.deploy, /^wrangler deploy --env staging /);
+  // No run of main's order reaches production.
+  assert.doesNotMatch(JSON.stringify(main.steps), /https:\/\/atelier\.zone/);
 });
 
 test('"push": false leaves the push step out, and refuses the steps that run with it', (t) => {

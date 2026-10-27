@@ -190,17 +190,19 @@ route with a domain on your own account, or remove `routes` and set
 fails, so the first command creates it, once. Then choose a server token (a
 random one is fine, kept where you can paste it from), deploy, and give the
 Worker the token as a secret; wrangler reads it from the prompt, so it is not
-written on a command line:
+written on a command line. Deploy from a release branch, not from main:
 
 ```sh
+git checkout release/1.0
 npx wrangler r2 bucket create atelier-large
 openssl rand -hex 32
 npm run deploy
 npx wrangler secret put ATELIER_TOKEN
 ```
 
-`npm run deploy` runs `wrangler deploy` and records the commit it deployed,
-which `GET /api/version` reports with the server's route level. `atelier
+On a release branch, `npm run deploy` runs `wrangler deploy` and records the
+commit it deployed, which `GET /api/version` reports with the server's route
+level. On main it deploys the staging Worker instead (`--env staging`). `atelier
 land` refuses to run against a server whose route level is below the CLI's.
 
 The server token is not enough for everything. Overriding a review that no

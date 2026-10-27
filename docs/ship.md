@@ -234,14 +234,16 @@ only `docs/atelier/ship.json`:
   `docs/atelier/ship.json` as it is: deploy the top-level Worker, verify at
   `https://atelier.zone/api/version`, then, with `--push`, scan, push,
   baseline and studio. Run `atelier ship` in a checkout of `release/1.0`.
-- **Main ships to staging.** `docs/atelier/ship-staging.json` holds the
-  staging order: typecheck, `node scripts/ship-worker.mjs deploy --env
-  staging`, then `verify --version-url https://next.atelier.zone/api/version`,
-  with `"push": false` and no scan, baseline or studio step. The release cut
-  copies it over main's `docs/atelier/ship.json`, so from then on `atelier
-  ship` on main deploys and verifies the staging Worker and never production.
-  Until the cut, main's `ship.json` is production's and `ship-staging.json`
-  is not read.
+- **Main ships to staging.** Main's `docs/atelier/ship.json` deploys with
+  `node scripts/ship-worker.mjs deploy --env staging`, checks for Worker
+  changes against `https://next.atelier.zone/api/version` and verifies there
+  with `verify --version-url https://next.atelier.zone/api/version`; with
+  `--push` it then scans, pushes main to GitHub, updates the baseline and
+  fast-forwards the Studio checkout. `npm run deploy` on main names
+  `--env staging` too. Neither ever deploys production.
+- **`docs/atelier/ship-staging.json`** is the staging order without the
+  push steps (`"push": false`, no scan, baseline or studio), for shipping
+  staging from a checkout that must not push.
 
 Before the first staging deploy the owner creates its R2 bucket with `npx
 wrangler r2 bucket create atelier-large-staging`; Wrangler adds the
