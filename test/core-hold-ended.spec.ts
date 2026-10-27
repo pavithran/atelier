@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 // t325: a claim whose runner reports that its last run ended without a
 // result holds no other dispatch off its core files, through the ledger's
@@ -46,4 +46,51 @@ it("an unfinished report is taken only for a claim the reporting runner holds", 
   expect(await L.recordRunSkip("t2", RUNNER.runner, A, "unfinished", 1, "no commit")).toBe(false);
   expect(await L.recordRunSkip("t1", "home:other", A, "unfinished", 1, "no commit")).toBe(false);
   expect((await L.waiting())[0].held?.id).toBe("t1");
+});
+
+it("an ended run on one claim lifts no other claim of the same runner and actor that shares its dispatch time and head", async () => {
+  const name = "core-hold-ended-shared";
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  const at = new Date().toISOString();
+  const record = { name, repo: name, createdAt: at, policy: { checks: [], protected: [], coreFiles: ["cli/runner.mjs"] } };
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  await L.newItem("Ended", ["src/**"], "owner");
+  await L.newItem("Running", ["cli/**"], "owner");
+  await L.newItem("Waiting", ["cli/runner.mjs"], "owner");
+  // One dispatch time for both claims, as a batch dispatch gives them.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(at));
+  try {
+    await L.dispatch("t1", "owner", {});
+    await L.dispatch("t2", "owner", {});
+  } finally {
+    vi.useRealTimers();
+  }
+  expect((await L.item("t1")).dispatch?.at).toBe((await L.item("t2")).dispatch?.at);
+  await L.claim("t1", A, RUNNER);
+  await L.claim("t2", A, RUNNER);
+  await L.dispatch("t3", "owner", {});
+  await L.recordRunnerPolls([{ runner: RUNNER.runner, at }]);
+  expect(await L.recordRunSkip("t1", RUNNER.runner, A, "unfinished", 1, "no commit")).toBe(true);
+  const [waiting] = await L.waiting();
+  expect(waiting.id).toBe("t3");
+  expect(waiting.held?.id).toBe("t2");
+});
+
+it("a runner's claim drops its unfinished note whatever the case of the runner's name", async () => {
+  const L = await setup("core-hold-ended-case");
+  expect(await L.recordRunSkip("t1", "Home:Studio", A, "unfinished", 1, "no commit")).toBe(true);
+  expect((await L.waiting())[0].held).toBeUndefined();
+  await L.claim("t1", A, { ...RUNNER, runner: "HOME:studio" });
+  expect((await L.waiting())[0].held?.id).toBe("t1");
+});
+
+it("a claim released after an unfinished run names no skip on the open task", async () => {
+  const L = await setup("core-hold-ended-released");
+  expect(await L.recordRunSkip("t1", RUNNER.runner, A, "unfinished", 1, "no commit")).toBe(true);
+  await L.release("t1", A, "giving it back");
+  const t1 = (await L.waiting()).find((w) => w.id === "t1");
+  expect(t1).toBeDefined();
+  expect(t1?.skips).toBeUndefined();
 });

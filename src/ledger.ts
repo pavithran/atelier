@@ -3095,7 +3095,9 @@ export class Ledger extends DurableObject<Env> {
     if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-idle:${runner.runner.toLowerCase()}`);
     // A runner claims before every run, so what it said of its last one
     // here, an end without a result among it, no longer stands (t325).
-    if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `run-skip:${id}:${runner.runner}`);
+    // Runner names compare without case, and a note kept before its key was
+    // lowercased may not be.
+    if (runner) this.sql.exec(`DELETE FROM meta WHERE lower(key) = ?`, `run-skip:${id}:${runner.runner}`.toLowerCase());
     if (runnerToken) {
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
     }
@@ -3395,7 +3397,7 @@ export class Ledger extends DurableObject<Env> {
       : null;
     return held.map((i) => {
       const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
-      const skips = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at && (r.kind !== "skipped" || !r.updatedAt || sameRevision({ dispatchAt: r.dispatchAt, head: r.head ?? null, updatedAt: r.updatedAt }, i)));
+      const skips = (skipped.get(i.id) ?? []).filter((r) => r.kind !== "unfinished" && r.dispatchAt === i.dispatch!.at && (r.kind !== "skipped" || !r.updatedAt || sameRevision({ dispatchAt: r.dispatchAt, head: r.head ?? null, updatedAt: r.updatedAt }, i)));
       const overlap = live ? overlapRefusal(i, live) : null;
       return refusals.length || skips.length || overlap
         ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(overlap ? { overlap } : {}) }
@@ -3471,7 +3473,7 @@ export class Ledger extends DurableObject<Env> {
   // ended without a result, so that claim holds nothing (t325, endedRun).
   private runnerPolls(): RunnerPolls | null {
     const polls = this.runnerMeta<{ runner: string; at: string }[]>("runner-polls");
-    const ended = [...this.runnerNotes<RunSkip>("run-skip").values()].flat();
+    const ended = [...this.runnerNotes<RunSkip>("run-skip")].flatMap(([id, notes]) => notes.map((n) => ({ ...n, id })));
     return polls || ended.length ? { polls: polls ?? [], ended } : null;
   }
 
@@ -3494,7 +3496,7 @@ export class Ledger extends DurableObject<Env> {
     for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:${id}:%`).toArray()) {
       if ((JSON.parse(row.value as string) as { dispatchAt: string }).dispatchAt !== dispatchAt) this.sql.exec(`DELETE FROM meta WHERE key = ?`, row.key);
     }
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `${prefix}:${id}:${runner}`, JSON.stringify(note));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `${prefix}:${id}:${runner.toLowerCase()}`, JSON.stringify(note));
   }
 
   // Records a runner's word that it gives up a dispatched build or plan job

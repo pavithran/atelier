@@ -17,11 +17,11 @@ const item = (id: string, over: Partial<Item> = {}): Item => ({
   acceptedHead: null, createdAt: AT, updatedAt: AT, lastPushAt: null, dispatch: makeDispatch({}, "owner", AT), ...over,
 });
 const holder = item("t313", { state: "claimed", owner: "claude-code/opus-5.5", runner: RUNNER, head: HEAD });
-const note = (over: Partial<RunSkip> = {}): RunSkip => ({
-  runner: RUNNER, actor: "claude-code/opus-5.5", kind: "unfinished", failures: 1, note: "validation_blocked: the suite timed out",
+const note = (over: Partial<RunSkip & { id: string }> = {}): RunSkip & { id: string } => ({
+  id: "t313", runner: RUNNER, actor: "claude-code/opus-5.5", kind: "unfinished", failures: 1, note: "validation_blocked: the suite timed out",
   dispatchAt: AT, head: HEAD, updatedAt: AT, at: "2026-10-26T10:30:00.000Z", ...over,
 });
-const runners = (...ended: RunSkip[]): RunnerPolls => ({ polls: [{ runner: RUNNER, at: new Date(NOW - 30_000).toISOString() }], ended });
+const runners = (...ended: (RunSkip & { id: string })[]): RunnerPolls => ({ polls: [{ runner: RUNNER, at: new Date(NOW - 30_000).toISOString() }], ended });
 
 test("a claim whose last run ended without a result holds no core files", () => {
   const waiting = ["t273", "t275", "t286", "t177", "t203"].map((id) => item(id));
@@ -49,6 +49,9 @@ test("the hold stands while the note does not name the claim as it stands", () =
   assert.equal(held(note({ actor: "codex/gpt-6" })), "t313");
   assert.equal(held(note({ dispatchAt: "2026-10-25T10:00:00.000Z" })), "t313");
   assert.equal(held(note({ head: "b".repeat(40) })), "t313");
+  // Another task's note, though it shares the runner, actor, dispatch time
+  // and head (a batch dispatch, say): that task's run ended, not this one's.
+  assert.equal(held(note({ id: "t314" })), "t313");
   // A claim by hand names no runner, so no runner's word ends its hold.
   assert.equal(coreHold(waiting, [{ ...holder, runner: null }], core, null, NOW, runners(note()))?.id, "t313");
   // The holder of a live landing lease holds whatever its runner said.
@@ -63,6 +66,13 @@ test("of several holders, only the one whose run ended stops holding", () => {
   const other = item("t300", { state: "claimed", owner: "codex/gpt-6", runner: "home:mini" });
   const blockers = coreBlockers(item("t273"), [holder, other], core, null, NOW, runners(note()));
   assert.deepEqual(blockers.map((b) => b.id), ["t300"]);
+});
+
+test("an ended run on one claim lifts no other claim of the same runner, actor, dispatch time and head", () => {
+  const second = item("t314", { state: "claimed", owner: holder.owner, runner: RUNNER, head: HEAD, dispatch: holder.dispatch });
+  const blockers = coreBlockers(item("t273"), [holder, second], core, null, NOW, runners(note()));
+  assert.deepEqual(blockers.map((b) => b.id), ["t314"]);
+  assert.equal(endedRun(second, runners(note())), null);
 });
 
 test("the held line names each holder's state", () => {

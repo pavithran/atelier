@@ -275,8 +275,9 @@ export const CORE_HOLD_WARNING_MS = 30 * 60_000;
 export interface RunnerPolls {
   polls: readonly { runner: string; at: string }[];
   // The run-skip notes the runners sent (recordRunSkip in src/ledger.ts),
-  // which say a claim's last run ended without a result (endedRun).
-  ended?: readonly RunSkip[];
+  // which say a claim's last run ended without a result (endedRun), each
+  // with the id of the task it was sent of.
+  ended?: readonly (RunSkip & { id: string })[];
 }
 
 // The one limit both the hold (the ledger) and atelier stuck judge an
@@ -308,14 +309,16 @@ export function orphanedBy(o: Pick<Item, "state" | "runner">, runners: RunnerPol
 // harness that failed, or a give-up whose release failed) and the claim
 // keeps it, so nobody is working on the claim's core files and it holds no
 // other dispatch. The note counts while it names the claim as it stands:
-// the runner and actor that hold it, its dispatch and its head. A push
+// the task, the runner and actor that hold it, its dispatch and its head
+// (two claims of one runner and actor may share a dispatch time and a
+// head, so the task is matched by id as well). A push
 // moves the head and a claim by that runner, which starts every run, drops
 // the note (claim in src/ledger.ts), so the hold returns once the holder
 // runs again. Returns the newest such note, or null.
-export function endedRun(o: Pick<Item, "state" | "runner" | "owner" | "head" | "dispatch">, runners: RunnerPolls | null | undefined): RunSkip | null {
+export function endedRun(o: Pick<Item, "id" | "state" | "runner" | "owner" | "head" | "dispatch">, runners: RunnerPolls | null | undefined): RunSkip | null {
   if (!runners?.ended || o.state !== "claimed" || !o.runner || !o.dispatch) return null;
   const runner = o.runner.toLowerCase(), at = o.dispatch.at;
-  return runners.ended.filter((s) => s.runner.toLowerCase() === runner && s.actor === o.owner && s.dispatchAt === at && (s.head ?? null) === (o.head ?? null))
+  return runners.ended.filter((s) => s.id === o.id && s.runner.toLowerCase() === runner && s.actor === o.owner && s.dispatchAt === at && (s.head ?? null) === (o.head ?? null))
     .sort((a, b) => a.at.localeCompare(b.at)).at(-1) ?? null;
 }
 
