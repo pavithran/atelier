@@ -54,8 +54,8 @@ export const stopped = (stop: ReviewStop | null | undefined): stop is ReviewStop
 
 // What the stuck report and the landing say, with the decision it needs.
 // A merged task's request is its post-merge review (t331), which stays owed
-// until a verdict stands, so the text says it is owed and names the task:
-// atelier status prints it from the stuck report.
+// until a verdict stands, so the text says it is owed and names the task.
+// atelier status names it through the fast-mode line (statusModeLine).
 export function stopText(item: string, stop: ReviewStop, postMerge = false): string {
   const why = stop.reason === STOP_TIMEOUT ? "the harness timed out" : stop.reason === STOP_NO_VERDICT ? "it ended without a verdict" : stop.reason;
   if (postMerge) return `the post-merge review of ${item} at ${stop.head.slice(0, 8)} is owed: it stopped after ${stop.count} releases (${why}; last: ${stop.last || "no reason"}); ask another reviewer with atelier review-request ${item} --reviewer H/M, or record the developer's own verdict (atelier review ${item} --approve or --reject, as the developer)`;

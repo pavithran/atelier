@@ -78,6 +78,7 @@ import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
+import { modeLineWithOwed } from "./review/owed.ts";
 import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { rejectionRequest, reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { ReviewerRecords, SuggestionRecords } from "./models/suggest.ts";
@@ -6087,6 +6088,12 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  // The mode line atelier status prints: in fast mode, with the post-merge
+  // reviews still owed named after it (t331).
+  statusModeLine(): string {
+    return modeLineWithOwed(this.mode(), this.fastLandings());
+  }
+
   // The owner records a task landed in fast mode: its receipt, and the item
   // merged at the merge commit. Main on the server has not seen the commit
   // yet (the owner publishes after), so the merge is not observed on the
@@ -7743,7 +7750,6 @@ export class Ledger extends DurableObject<Env> {
     this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
   }
 
-  // The Workflow follows the live gate request across lease generations.
   // The live request the task's detail reads: at its head, or for a merged
   // task at its merge commit, where the post-merge review is asked, so
   // atelier land sees the one the server opened at the merge (t331).
@@ -7752,6 +7758,7 @@ export class Ledger extends DurableObject<Env> {
     return head ? this.liveReviewRequest(item.id, head) : null;
   }
 
+  // The Workflow follows the live gate request across lease generations.
   liveReviewRequest(item: string, head: string): { request: number; reviewer: string; stopped?: string } | null {
     this.expireReviewClaims();
     const row = this.sql.exec(`SELECT r.id, r.dispatch, r.stopped, i.state FROM review_requests r JOIN items i ON i.id = r.item WHERE r.item = ? AND r.head = ? AND r.tier IS NULL AND r.state IN ('open', 'claimed') ORDER BY r.id DESC LIMIT 1`, item, head).toArray()[0];

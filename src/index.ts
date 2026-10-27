@@ -52,7 +52,6 @@ import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor, type Attention } from "./attention.ts";
 import { readAccepted } from "./accepted-main.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
-import { modeLineWithOwed } from "./review/owed.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
@@ -221,8 +220,8 @@ async function standingOf(env: Env, key: string): Promise<Standing> {
   const read = await readStanding(L as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date(), () => acceptedOf(env, L));
   // The fast-mode line atelier status --project prints names the post-merge
   // reviews still owed (t331), as GET mode's line does.
-  const landed = read.mode ? await L.fastLandings().catch(() => null) : null;
-  const standing = read.mode && landed ? { ...read, mode: modeLineWithOwed({ mode: "fast", line: read.mode }, landed) } : read;
+  const line = read.mode ? await L.statusModeLine().catch(() => null) : null;
+  const standing = line ? { ...read, mode: line } : read;
   // The task forks Artifacts is still preparing, with their age and next
   // action (t18), only while there are any; `atelier status --project` prints them.
   const preparing = Object.entries(await L.forkPreparations().catch(() => ({}))).map(([id, view]) => ({ id, ...view }));
@@ -2095,8 +2094,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "mode" && parts.length === 3) {
     if (m === "GET") {
       // The line atelier status prints names the post-merge reviews still owed (t331).
-      const [mode, landed] = await Promise.all([L.mode(), L.fastLandings()]);
-      return json({ ...mode, line: modeLineWithOwed(mode, landed), landed, ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
+      const [mode, landed, line] = await Promise.all([L.mode(), L.fastLandings(), L.statusModeLine()]);
+      return json({ ...mode, line, landed, ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
     }
     requireOwner(env, actor);
     // The switch to fast mode takes the developer's direction, `quote` with
