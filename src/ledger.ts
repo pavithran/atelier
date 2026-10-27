@@ -11,7 +11,7 @@ import type { BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { inScope, runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, dispatchActor, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
+import { actorStanding, dispatchActor, modelState, redactKeys, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -3552,7 +3552,7 @@ export class Ledger extends DurableObject<Env> {
     // an X-Atelier-Runner header names any actor, so the report is refused
     // unless it comes from the actor that holds the task.
     if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403);
-    const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
+    const skip: RunSkip = { runner, actor, kind, failures, note: redactKeys(note.replace(TEXT_CONTROLS, " ")).slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("run-skip", id, runner, d.at, skip);
     // A task the runner released before it decided to give up (an ordinary
     // stall, twice) carries no word of it (t584): the give-up is recorded here,

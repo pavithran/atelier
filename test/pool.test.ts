@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, familyOf, hasModelRole, latestNote, LOCAL_BUILD, modelState, noteLine, offThePool, actorStanding, withStanding, type ModelEntry } from "../src/models/pool.ts";
+import { redactKeys, cleanEntry, cleanModelSet, cleanNote, cleanStatus, familyOf, hasModelRole, latestNote, LOCAL_BUILD, modelState, noteLine, offThePool, actorStanding, withStanding, type ModelEntry } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
 
@@ -216,4 +216,11 @@ test("a status report is one of four states, with what was served", () => {
   for (const fine of ["gemini.API_KEY", "ai-studio.OMLX_API_KEY", "deepseek.API_KEY", "flask_app", "task-runner.KEY", "desk_top.API"]) assert.doesNotThrow(() => cleanEntry({ id: "x", harness: "codex", where: "cloud", keychain: fine }, "pavi", AT));
   for (const fine of ["https://api.deepseek.com/v1", "https://generativelanguage.googleapis.com/v1beta/openai", "https://openrouter.ai/api/v1", "http://10.0.0.110:8000/v1", "https://api.example.com/ask-me/v1", "https://x.test/task-model/v1"])
     assert.doesNotThrow(() => cleanEntry({ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: fine }, "pavi", AT));
+});
+
+test("redactKeys removes the value of a TOKEN, KEY, SECRET or PASSWORD assignment and keeps the name", () => {
+  assert.equal(redactKeys("API_TOKEN=abc123def456 failed"), "API_TOKEN=[key removed] failed");
+  assert.equal(redactKeys("PASSWORD=hunter2"), "PASSWORD=[key removed]");
+  assert.equal(redactKeys('client_secret = "two words" next'), 'client_secret = [key removed] next');
+  assert.equal(redactKeys("TOKENS=1 and keyboard=us and MODE=fast"), "TOKENS=[key removed] and keyboard=[key removed] and MODE=fast");
 });

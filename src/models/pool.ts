@@ -249,8 +249,13 @@ const keyInPath = (path: string) => path.split("/").some((seg) => LOOKS_LIKE_KEY
 // A long mixed run, with any dotted parts that follow it (id.secret), goes as one.
 const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 
+// An assignment whose name holds TOKEN, KEY, SECRET or PASSWORD (API_TOKEN=abc,
+// password: "x y") loses its value; the name stays so the note still reads.
+const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*\s*=\s*)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
+
 export function redactKeys(s: string): string {
-  return s.replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
+  return s.replace(SECRET_ASSIGNMENT, "$1[key removed]")
+    .replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
     .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));
 }
 
