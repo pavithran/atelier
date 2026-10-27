@@ -2363,10 +2363,20 @@ export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
 // gives the item back, so nothing in the claim remembers how long the fork
 // has been stuck. The Ledger keeps the record below per item, outside the
 // claim, from the first not_ready answer until the fork is recorded.
-// Atelier only reports a stuck fork: it deletes no repository.
+// Atelier deletes no repository: a fork that stays unready is replaced by a
+// fork under a new name (t245, t286), and the old one is left as it is.
 //   since:      the first not_ready answer for the repository;
 //   reportedAt: the stuck fork was recorded as an event.
 export const FORK_STUCK_MS = 10 * 60_000;
+// How long a task fork may stay unready, with no commit recorded, before the
+// tick or the next claim replaces it (t181, t245, t286).
+export const FORK_REPLACE_MS = 30 * 60_000;
+// How long a fork request may go without its answer before a claim takes it
+// for one that was cut off (t286): longer than any claim request runs, so a
+// claim still waiting on Artifacts is never taken for one.
+export const FORK_REQUEST_MS = 2 * 60_000;
+// How many forks under new names a task gets beyond its first (t254).
+export const FORK_REPLACEMENTS = 2;
 
 export type ForkPreparation = { fork: string; since: string | null; reportedAt: string | null };
 export type ForkPreparationView = { fork: string; since: string; ageMs: number; action: "wait" | "stuck"; next: string };
@@ -2378,10 +2388,11 @@ export function forkAgeText(ms: number): string {
 
 // How long a fork has been preparing, and what the developer or the next
 // claim should do. Before the limit the next claim tries again. After it the
-// fork is stuck, and the remedy is by hand: Atelier does not delete it. The
-// remedy says to delete the repository only when the Ledger records no fork
-// and no head for the task, so nothing shows commits in it; when it does
-// record one, the fork may hold the task's commits and must not be deleted.
+// fork is stuck. When the Ledger records no fork and no head for the task,
+// nothing shows commits in it, and a claim or the tick replaces it with a
+// fork under a new name once it has been preparing FORK_REPLACE_MS (t286);
+// when the Ledger records one, the fork may hold the task's commits and must
+// not be deleted.
 export function forkPreparationView(prep: ForkPreparation & { since: string }, item: { id: string; fork?: string | null; head?: string | null }, now: number): ForkPreparationView {
   const ageMs = Math.max(0, now - Date.parse(prep.since));
   const base = { fork: prep.fork, since: prep.since, ageMs };
@@ -2393,7 +2404,7 @@ export function forkPreparationView(prep: ForkPreparation & { since: string }, i
   if (item.fork || item.head) {
     return { ...base, action: "stuck", next: `${stuck} The Ledger records ${item.fork ? "a fork" : "a head"} for ${item.id}, so the repository may hold the task's commits: do not delete it; check it in Artifacts.` };
   }
-  return { ...base, action: "stuck", next: `${stuck} The Ledger records no commit for ${item.id}. The developer can check the repository and, if it holds none, delete the Artifacts repository ${prep.fork} by hand and claim ${item.id} again; Atelier then makes a new fork.` };
+  return { ...base, action: "stuck", next: `${stuck} The Ledger records no commit for ${item.id}, so once it has been preparing ${FORK_REPLACE_MS / 60_000} minutes, the next claim of ${item.id} makes a fork under a new name, at most ${FORK_REPLACEMENTS} times; nothing needs deleting by hand.` };
 }
 export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
 const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;

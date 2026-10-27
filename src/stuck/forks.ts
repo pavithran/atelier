@@ -6,7 +6,7 @@
 import type { Item } from "../rules.ts";
 import type { LedgerEvent } from "../ledger.ts";
 
-export const FORK_REPLACEMENTS = 2;
+export { FORK_REPLACEMENTS } from "../rules.ts";
 
 export interface StalledFork { name: string; ageMs: number }
 export interface StalledForks { item: string; forks: StalledFork[]; since: string }
