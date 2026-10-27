@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "atelier.ship",
+  "class": "web",
+  "description": "Atelier's staging delivery, which the release cut copies over main's ship.json: type-check; deploy the captured source commit to the staging Worker (wrangler env staging) when Worker code changed since the one live there, then verify it at next.atelier.zone. No scan, push, baseline or studio step: production ships from release/1.0.",
+  "typecheck": {
+    "run": ["npm", "run", "typecheck"],
+    "timeout_seconds": 600
+  },
+  "deploy": {
+    "run": [
+      "node",
+      "scripts/ship-worker.mjs",
+      "deploy",
+      "--env",
+      "staging"
+    ],
+    "timeout_seconds": 1200,
+    "retries": 1,
+    "if_changed": {
+      "paths": ["src/**", "wrangler.jsonc", "package.json", "package-lock.json", "worker-configuration.d.ts", "tsconfig.json"],
+      "since": "https://next.atelier.zone/api/version"
+    }
+  },
+  "verify-deploy": {
+    "run": [
+      "node",
+      "scripts/ship-worker.mjs",
+      "verify",
+      "--version-url",
+      "https://next.atelier.zone/api/version"
+    ],
+    "timeout_seconds": 45
+  },
+  "push": false
+}
