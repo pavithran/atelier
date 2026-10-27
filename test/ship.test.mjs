@@ -510,8 +510,11 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
   writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$@" > "$DEPLOY_ARGS"\nprintf 'CLOUDFLARE_ENV=%s\\n' "\${CLOUDFLARE_ENV-unset}" >> "$DEPLOY_ARGS"\n`);
   chmodSync(join(bin, "npx"), 0o755);
   const preload = join(f.dir, "version-response.mjs");
-  writeFileSync(preload, `const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
-  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed", CLOUDFLARE_ENV: "staging" });
+  // Every Node process the ship starts, wrap's included, records its command
+  // and the CLOUDFLARE_ENV it saw.
+  const seenFile = join(f.dir, "cloudflare-env.txt");
+  writeFileSync(preload, `import { appendFileSync } from "node:fs"; appendFileSync(process.env.SEEN_FILE, process.argv[2] + " " + (process.env.CLOUDFLARE_ENV ?? "unset") + "\\n"); const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
+  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, SEEN_FILE: seenFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed", CLOUDFLARE_ENV: "staging" });
   assert.ok(existsSync(argsFile), r.stderr + r.stdout);
   // CLOUDFLARE_ENV=staging in the owner's shell neither reaches Wrangler nor
   // outranks the empty --env that names the production Worker (t344).
@@ -522,12 +525,38 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
     assert.equal(r.status, 0, r.stderr + r.stdout);
     assert.ok(f.state.runs.some(run => run.step === "wrap"));
     assert.ok(f.state.runs.some(run => run.step === "push"));
+    // Only ship itself saw the owner's CLOUDFLARE_ENV; wrap did not (t344).
+    const seen = readFileSync(seenFile, "utf8").trim().split("\n");
+    assert.ok(seen.includes("wrap unset"), seen.join("\n"));
+    assert.deepEqual(seen.filter((line) => !line.endsWith(" unset")), ["ship staging"]);
   } else {
     assert.notEqual(r.status, 0);
     assert.match(r.stderr + r.stdout, /live deployed commit does not match/);
     assert.ok(!f.state.runs.some(run => ["wrap", "push"].includes(run.step)));
     assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
   }
+});
+
+// A staging ship order: the same helper, deploying with --env staging, and
+// verified at the stand-in's /live for want of a staging version route.
+const STAGING = (url) => ({
+  schema_version: 1, kind: "atelier.ship", class: "web",
+  description: "Staging delivery: deploy the captured source commit to the staging Worker.",
+  deploy: { run: ["node", "scripts/ship-worker.mjs", "deploy", "--env", "staging"], timeout_seconds: 1200 },
+  "verify-deploy": { request: `${url}/live`, status: 200 },
+  push: { remote: "github", branch: "main" },
+});
+
+for (const shell of ["unset", "production"]) test(`the staging ship order deploys with --env staging, CLOUDFLARE_ENV ${shell} (t344)`, async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: STAGING, extra: { "scripts/ship-worker.mjs": readFileSync(resolve("scripts/ship-worker.mjs"), "utf8") } });
+  const bin = join(f.dir, "tools"); mkdirSync(bin);
+  const argsFile = join(f.dir, "deploy-args.txt");
+  writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$@" > "$DEPLOY_ARGS"\nprintf 'CLOUDFLARE_ENV=%s\\n' "\${CLOUDFLARE_ENV-unset}" >> "$DEPLOY_ARGS"\n`);
+  chmodSync(join(bin, "npx"), 0o755);
+  const r = await f.run(["ship"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, ...(shell === "unset" ? {} : { CLOUDFLARE_ENV: shell }) });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.deepEqual(readFileSync(argsFile, "utf8").split("\n").slice(0, -1), ["wrangler", "deploy", "--env", "staging", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`, "CLOUDFLARE_ENV=unset"]);
+  assert.match(r.stdout, /deploy: running node scripts\/ship-worker\.mjs deploy --env staging/);
 });
 
 // ── the steps beyond deploy and push: typecheck, scan, baseline, studio ──────
