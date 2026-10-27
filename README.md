@@ -182,18 +182,20 @@ Workers runtime tests assert as an uncaught rejection, so those lines are the
 refusals under test, not failures; the summary at the end says whether
 anything failed ([Local development](docs/setup.md#local-development)).
 
-**2. Deploy the Worker.** `wrangler.jsonc` routes the Worker to atelier.zone
-as a custom domain and turns `workers.dev` off. In your copy, replace the
+**2. Deploy the Worker.** Deploy from a release branch, not from main: run
+`git checkout release/1.0` first, before you edit anything, since on main
+`npm run deploy` deploys the staging Worker. `wrangler.jsonc` routes the
+Worker to atelier.zone as a custom domain and turns `workers.dev` off. In
+your copy, replace the
 route with a domain on your own account, or remove `routes` and set
 `workers_dev` to `true`. The Worker binds the R2 bucket `atelier-large`
 (`r2_buckets` in `wrangler.jsonc`), and a deploy whose bucket does not exist
 fails, so the first command creates it, once. Then choose a server token (a
 random one is fine, kept where you can paste it from), deploy, and give the
 Worker the token as a secret; wrangler reads it from the prompt, so it is not
-written on a command line. Deploy from a release branch, not from main:
+written on a command line:
 
 ```sh
-git checkout release/1.0
 npx wrangler r2 bucket create atelier-large
 openssl rand -hex 32
 npm run deploy

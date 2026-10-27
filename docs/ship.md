@@ -133,7 +133,7 @@ request to the live site, before `atelier ship` runs for it.
 
 ### From `docs/atelier/ship.json`
 
-Atelier's own:
+Atelier's own, as main holds it. Main deploys and verifies the staging Worker; release/1.0's copy deploys with no `--env`, compares with and verifies at `https://atelier.zone/api/version`, and scans, pushes and fast-forwards `release/1.0` under the project `atelier-1.0`.
 
 ```json
 {
@@ -143,13 +143,13 @@ Atelier's own:
   "description": "Atelier's own delivery.",
   "typecheck": { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 },
   "deploy": {
-    "run": ["node", "scripts/ship-worker.mjs", "deploy"], "timeout_seconds": 1200, "retries": 1,
+    "run": ["node", "scripts/ship-worker.mjs", "deploy", "--env", "staging"], "timeout_seconds": 1200, "retries": 1,
     "if_changed": {
       "paths": ["src/**", "wrangler.jsonc", "package.json", "package-lock.json", "worker-configuration.d.ts", "tsconfig.json"],
-      "since": "https://atelier.zone/api/version"
+      "since": "https://next.atelier.zone/api/version"
     }
   },
-  "verify-deploy": { "run": ["node", "scripts/ship-worker.mjs", "verify"], "timeout_seconds": 45 },
+  "verify-deploy": { "run": ["node", "scripts/ship-worker.mjs", "verify", "--version-url", "https://next.atelier.zone/api/version"], "timeout_seconds": 45 },
   "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"], "timeout_seconds": 300 },
   "push": { "remote": "github", "branch": "main" },
   "baseline": { "run": ["node", "cli/atelier.mjs", "sync", "--project", "atelier"], "timeout_seconds": 300 },
@@ -282,8 +282,9 @@ It then prints the steps and runs them:
   and updates the baseline; a failing check stops the ship there.
 - **typecheck** runs Atelier's `npm run typecheck` before the deploy, so a
   failing type-check stops the ship before an approval is spent.
-- **deploy** runs only when Worker code changed since the commit
-  `https://atelier.zone/api/version` reports as live (`src/**`, the Wrangler
+- **deploy** runs only when Worker code changed since the commit the
+  `if_changed.since` URL reports as live (on main staging's, on
+  `release/1.0` production's; `src/**`, the Wrangler
   config, `package.json` and the lock file, the generated types and
   `tsconfig.json`), and is tried once more if it fails. This replaces the old
   `last-deployed` marker file: the live site says what was last deployed.
