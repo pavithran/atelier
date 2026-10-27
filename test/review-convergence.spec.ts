@@ -99,7 +99,7 @@ it("a task under the cap, and a round that approves, start no hold", async () =>
   expect((await events(L, id)).some((e) => e.kind === "review.round_cap")).toBe(false);
 });
 
-it("a pre-existing finding is filed as a follow-up task and does not block, and a label on a blocking finding is refused", async () => {
+it("a pre-existing finding is recorded as a note and does not block, and a label on a blocking finding is refused", async () => {
   const L = await setup("pre-existing");
   const id = await firstSubmission(L);
   await pushed(L, id, head(1));
@@ -114,10 +114,25 @@ it("a pre-existing finding is filed as a follow-up task and does not block, and 
   await L.addReview({ ...review, findings: [preExisting, unverified] });
   expect((await events(L, id)).filter((e) => e.kind === "review.rejected")).toEqual([]);
 
-  const filed = (await events(L, id)).find((e) => e.kind === "item.followup_filed")!;
-  expect(filed.data).toMatchObject({ head: head(1), by: GPT });
-  const task = await L.item(filed.data.foundIn as string);
-  expect(task.title).toMatch(/^Pre-existing in /);
-  expect((await events(L, task.id)).find((e) => e.kind === "item.followup_of")).toMatchObject({ data: { itemId: id, head: head(1), by: GPT } });
-  expect(task.accept).toEqual(["src/untouched.ts:40: Reads a stale value."]);
+  // Non-blocking findings are notes on the goal, not tasks (t203).
+  expect((await events(L, id)).some((e) => e.kind === "item.followup_filed")).toBe(false);
+  expect((await L.items()).map((i) => i.title).some((t) => /^Pre-existing in /.test(t))).toBe(false);
+  const noted = (await events(L, id)).find((e) => e.kind === "goal.notes")!;
+  expect(noted.data).toMatchObject({ itemId: id, head: head(1), by: GPT });
+  expect((noted.data.notes as { file: string }[]).map((n) => n.file)).toEqual(["src/untouched.ts", "src/land.ts"]);
+});
+
+it("a goal's notes outlast the 200 events events() returns by default (t203)", async () => {
+  const L = await setup("notes-window");
+  const id = await firstSubmission(L);
+  await pushed(L, id, head(1));
+  const note: Finding = { file: "src/untouched.ts", line: 40, severity: "follow-up", label: "pre-existing", text: "Reads a stale value." };
+  await L.requestReview(id, "owner", null, POOL);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: head(1), approve: true, note: "Approved.", findings: [note], at: new Date().toISOString() });
+  for (let i = 0; i < 210; i++) {
+    await L.addEvidence({ itemId: id, claim: `check ${i}`, grade: "observed", head: head(1), passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
+  }
+  expect((await events(L, id)).some((e) => e.kind === "goal.notes")).toBe(false);
+  expect(await L.goalNotes(id)).toEqual([expect.objectContaining({ file: "src/untouched.ts", line: 40, text: "Reads a stale value." })]);
 });

@@ -30,7 +30,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, reviewNotes, openNotes, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
   forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
@@ -4147,18 +4147,15 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "merged" && item.kind === "part" && !r.approve && (r.findings ?? []).some((f) => f.severity === "blocking")) {
       this.reworkPart(item, r, at, proved);
     }
-    // Findings the reviewer called blocking on code the change did not touch
-    // were made pre-existing follow-ups before the review reached the ledger
-    // (t717); they are filed as a task, so not blocking loses none of them.
-    const preExisting = item.state !== "merged" ? preExistingTask(item.id, item.title, r) : null;
-    if (preExisting) {
-      const made = this.newItem(shortTitle(preExisting.title), item.scope, ORCHESTRATOR, { brief: preExisting.brief, accept: preExisting.accept });
-      this.log(made.id, ORCHESTRATOR, "item.followup_of", { itemId: item.id, head: r.head, by: r.by, request: r.request }, at);
-      this.log(item.id, ORCHESTRATOR, "item.followup_filed", { foundIn: made.id, head: r.head, by: r.by }, at);
-    }
+    // Non-blocking findings are notes on the task's goal, not tasks (t203):
+    // the plan when the item is a part, else the item itself, after a merge
+    // as before it. A blocking finding is the only one filed as a task
+    // (below, after a merge).
+    const notes = reviewNotes(item.id, r);
+    if (notes) this.log(item.kind === "part" && item.plan ? item.plan : item.id, ORCHESTRATOR, "goal.notes", { itemId: item.id, head: r.head, by: r.by, request: r.request, notes }, at);
     if (!r.approve && !r.postMerge && r.by !== this.owner) this.holdAtRoundCap(r.itemId, at, origin);
     // A rejected post-merge review of a fast landing files its fix task
-    // (t585), its criteria the review's findings.
+    // (t585), its criteria the review's blocking findings.
     if (fastReceiptOf && !r.approve) {
       const fix = fastFixTask(item.id, item.title, { by: r.by, head: r.head, note: r.note, request: r.request, findings: r.findings });
       const made = this.newItem(shortTitle(fix.title), item.scope, ORCHESTRATOR, { brief: fix.brief, accept: fix.accept });
@@ -6255,6 +6252,13 @@ export class Ledger extends DurableObject<Env> {
     };
   }
 
+  // The goal's open notes, read over all its goal.notes events: events()
+  // keeps only the newest 200, which would drop older notes from the report.
+  goalNotes(id: string): GoalNote[] {
+    const rows = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'goal.notes' ORDER BY seq`, id).toArray();
+    return openNotes(rows.map(eventOf).flatMap((e) => e.data.notes as GoalNote[]));
+  }
+
   events(id?: string, limit = 200, before?: number): LedgerEvent[] {
     const below = before === undefined ? Number.MAX_SAFE_INTEGER : before;
     const rows = id
@@ -7019,6 +7023,7 @@ export class Ledger extends DurableObject<Env> {
         taken: mainTakenOf(record, item), main: mainNow ?? this.mainHead(),
         last: record.refresh ?? null, running: record.refresh?.state === "dispatched" && item.owner === INTEGRATOR,
       },
+      notes: this.goalNotes(item.id),
       harnessFailure,
       pastDeadline: pastDeadline(record, new Date().toISOString()),
     };
