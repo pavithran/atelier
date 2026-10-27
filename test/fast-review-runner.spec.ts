@@ -188,7 +188,8 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
     "CRITERION 1: unmet — npm run verify:visual stopped during runtime preparation with EPERM; no exact-head observed runs were supplied.",
   ].join("\n");
   let held = false;
-  const evidenceAsked: { head: string }[] = [];
+  const evidenceAsked: { head: string; from: string }[] = [];
+  const briefs: string[] = [];
   const io = {
     cli, log: () => {}, stopped: () => false, env: {}, ownerTokens: () => [], readSecret: () => agentToken,
     workspacePath: () => "/work/t1",
@@ -199,11 +200,15 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
     revParse: async (_dir: string, spec: string) => spec === `${M1}^@` ? `${PARENT}\n${C1}` : spec === "FETCH_HEAD" ? M1 : "",
     show: async () => { throw new Error("no override"); },
     diff: async () => "diff --git a/src/a.ts b/src/a.ts\n+export const a = 1;\n",
-    brief: async () => ({ file: "/work/brief.txt" }), removeBrief: async () => {},
+    brief: async (_dir: string, text: string) => { briefs.push(text); return { file: "/work/brief.txt" }; }, removeBrief: async () => {},
     writeDiff: async () => ({ file: "/work/diff.txt" }), removeDiff: () => {},
     verdictPath: () => "/work/verdict.txt",
     readVerdict: () => reply,
-    runnerEvidence: async (args: { head: string }) => { evidenceAsked.push(args); return null; },
+    // The clean clone's run of the merge commit: the changed test passed.
+    runnerEvidence: async (args: { head: string; from: string }) => {
+      evidenceAsked.push(args);
+      return { head: args.head, tests: { status: "pass", command: "npx vitest run test/a.spec.ts", files: ["test/a.spec.ts"], passed: 3, failed: 0 }, typecheck: { status: "pass", command: "npm run typecheck" } };
+    },
     harness: async () => ({ code: 0, timedOut: false }),
     dataHome: async () => null, removeDataHome: async () => {},
   };
@@ -213,8 +218,14 @@ it("a post-merge reply that declares a criterion unmet and states no verdict is 
   const state = await runReview(assignment, config, "home:studio", io);
   expect(state, JSON.stringify(state)).toMatchObject({ phase: "reviewed", verdict: "reject" });
   expect(calls.map((c) => c[0])).not.toContain("review-unparsable");
-  // The audit was given the clean-clone run of the merge commit.
-  expect(evidenceAsked.map((a) => a.head)).toEqual([M1]);
+  // The audit was given the clean-clone run of the merge commit, against
+  // its original base (the merge's first parent), and the brief carries it.
+  expect(evidenceAsked.map(({ head, from }) => ({ head, from }))).toEqual([{ head: M1, from: PARENT }]);
+  expect(briefs[0]).toContain("## Clean-clone run");
+  expect(briefs[0]).toContain(`Run by the review runner in a clean clone of \`${M1}\``);
+  expect(briefs[0]).toContain("- Changed tests: passed (`npx vitest run test/a.spec.ts`).");
+  expect(briefs[0]).toContain("- Typecheck: passed (`npm run typecheck`).");
+  expect(briefs[0]).toContain("The audit always ends with a VERDICT line");
   // The rejection is on the ledger at the merge commit, as the post-merge review.
   const reviews = await L.reviewsFor(item.id);
   expect(reviews).toEqual([expect.objectContaining({ by: ASTRA, head: M1, approve: false, postMerge: true })]);
