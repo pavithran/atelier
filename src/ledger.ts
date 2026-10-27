@@ -16,7 +16,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, forkAgeText, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type TaskStage } from "./rules";
+import { assertBaselineName, forkAgeText, FORK_REQUEST_MS, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -2246,9 +2246,7 @@ export class Ledger extends DurableObject<Env> {
       const toldFork = (fork: string) => recorded.some((e) => e.item === id && e.kind === "stage.told" && e.data.stage === PREPARING && e.data.fork === fork);
       if (forkReplacements(recorded, id) < FORK_REPLACEMENTS) {
         const to = replacementFork(view.fork);
-        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkNameKey(id), to);
-        this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
-        this.log(id, "atelier", "stage.rerouted", { stage: PREPARING, head: "", from: view.fork, to, since: view.since, note: `${view.fork} was preparing for ${forkAgeText(view.ageMs)} with no commit recorded; the next claim makes ${to}. Atelier deleted nothing.` }, at);
+        this.replaceFork(id, view.fork, view.since, `${view.fork} was preparing for ${forkAgeText(view.ageMs)} with no commit recorded; the next claim makes ${to}. Atelier deleted nothing.`, at);
         n++;
       } else if (!toldFork(view.fork)) {
         this.log(id, "atelier", "stage.told", { stage: PREPARING, head: "", fork: view.fork, since: view.since, note: `${view.fork}, the replacement fork, has not become ready in ${forkAgeText(view.ageMs)} either, and the tick has replaced it ${FORK_REPLACEMENTS} times. Check the repository in Artifacts.` }, at);
@@ -2258,8 +2256,20 @@ export class Ledger extends DurableObject<Env> {
     return n;
   }
 
-  // The name a task's next fork is made under when the tick replaced a stalled
-  // one, or null for the usual name.
+  // Moves a task to a fork under a new name (replacementFork), which its next
+  // claim makes, and records it as stage.rerouted, stage "preparing", which
+  // counts against FORK_REPLACEMENTS whether the tick or a claim made it. The
+  // old repository is left as it is. Returns the new name.
+  private replaceFork(id: string, from: string, since: string, note: string, at: string): string {
+    const to = replacementFork(from);
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkNameKey(id), to);
+    this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
+    this.log(id, "atelier", "stage.rerouted", { stage: PREPARING, head: "", from, to, since, note }, at);
+    return to;
+  }
+
+  // The name a task's next fork is made under when the tick or a claim
+  // replaced an unready one, or null for the usual name.
   forkNameFor(id: string): string | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, forkNameKey(id)).toArray()[0];
     return row ? (row.value as string) : null;
@@ -3674,7 +3684,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409);
     }
     this.update(id, { fork, base, head: base }, at);
-    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
+    this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
     this.log(id, actor, "fork.created", { fork, base }, at, proved);
     // A plan forks from the baseline, so its base is main's head as it
     // stands now.
@@ -3720,6 +3730,55 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "fork.stuck", { fork, since, minutes: Math.floor(view.ageMs / 60_000), next: view.next }, at, proved);
     }
     return view;
+  }
+
+  // A request to Artifacts to make the task's fork (t286). The claim notes it
+  // before it asks, and drops the note once Artifacts answers that it made
+  // the fork (forkAnswered). A note that outlives FORK_REQUEST_MS belongs to
+  // a request cut off before its answer came: on 2026-10-25 three claims in
+  // miqra timed out after 60 s while their forks were being made, and each
+  // fork then stayed preparing. The first note for a name is kept, so a later
+  // claim that finds the fork already there does not restart its clock.
+  // Returns whether this request made a new note: a request that finds the
+  // fork already there drops the note it made (forkAnswered), since the
+  // request that made the fork had its answer, and only a note left by a
+  // request cut off before its answer outlives the claim.
+  forkRequested(id: string, fork: string, actor: string, generation: number): boolean {
+    if (!this.claimHeld(id, actor, generation) || this.forkRequest(id)?.fork === fork) return false;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkRequestKey(id), JSON.stringify({ fork, at: new Date().toISOString() }));
+    return true;
+  }
+
+  forkAnswered(id: string, fork: string): void {
+    if (this.forkRequest(id)?.fork === fork) this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkRequestKey(id));
+  }
+
+  private forkRequest(id: string): { fork: string; at: string } | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, forkRequestKey(id)).toArray()[0];
+    return row ? JSON.parse(row.value as string) as { fork: string; at: string } : null;
+  }
+
+  // A claim found the task's new fork still unready (t286). When the request
+  // that made it never had its answer and is older than FORK_REQUEST_MS, or
+  // the fork has been preparing past FORK_REPLACE_MS, the claim does what
+  // the tick would do at that limit (replaceStalledForks), without waiting
+  // for the tick: it moves the task to a fork under a new name and returns
+  // the name, which the claim then makes. Null, and nothing changes, when the
+  // claim no longer holds the task, a commit of its own is recorded, neither
+  // holds, or the task has had FORK_REPLACEMENTS replacements already.
+  replaceUnreadyFork(id: string, fork: string, actor: string, generation: number): string | null {
+    if (!this.claimHeld(id, actor, generation)) return null;
+    const now = new Date(), item = this.item(id);
+    const request = this.forkRequest(id), prep = this.forkPrep(id);
+    const cutOff = request?.fork === fork && forkStalled({ since: request.at }, item, now, this.mainHead(), FORK_REQUEST_MS);
+    const stalled = prep?.fork === fork && forkStalled(prep, item, now, this.mainHead());
+    if (!cutOff && !stalled) return null;
+    const replaced = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE item_id = ? AND kind = 'stage.rerouted'`, id).toArray()
+      .map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
+    if (forkReplacements(replaced, id) >= FORK_REPLACEMENTS) return null;
+    const since = cutOff ? request!.at : prep!.since!;
+    const why = cutOff ? `the request that made ${fork} had no answer, and it was still preparing ${forkAgeText(now.getTime() - Date.parse(since))} later` : `${fork} was preparing for ${forkAgeText(now.getTime() - Date.parse(since))}`;
+    return this.replaceFork(id, fork, since, `${why}, with no commit recorded; this claim makes ${replacementFork(fork)}. Atelier deleted nothing.`, now.toISOString());
   }
 
   // A read of the task's recorded fork found it ready: it is no longer being
@@ -9986,6 +10045,7 @@ gateMethods(Ledger.prototype, (self) => GATES.get(self));
 
 const forkPrepKey = (id: string) => `fork-prep:${id}`;
 const forkNameKey = (id: string) => `fork-name:${id}`;
+const forkRequestKey = (id: string) => `fork-request:${id}`;
 
 function toEvent(r: Row): LedgerEvent {
   return {
