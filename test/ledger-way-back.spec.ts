@@ -155,6 +155,37 @@ it("round-trips a dump through an import into an empty Ledger on another server,
   expect((await send(staging, "POST", "/projects/wb-shape/ledger/import", { step: "rows", import: "nope", table: "items", columns: ["id"], rows: [] })).body.error).toBe("no_import");
 });
 
+it("resumes an import that failed partway from its recorded progress, and aborts one", async () => {
+  await seed("wb-part");
+  const dump = await dumpOf(prod, "wb-part");
+  const url = "/projects/wb-part/ledger/import";
+  const items = dump.tables.find((t: Json) => t.name === "items");
+  const begun = await ok(send(staging, "POST", url, { step: "begin", manifest: manifestOf(dump) }));
+  const columns = items.columns.map((c: Json) => c.name);
+  // The import fails after one row of items.
+  await ok(send(staging, "POST", url, { step: "rows", import: begun.import, table: "items", columns, rows: items.rows.slice(0, 1) }));
+  const retry = await send(staging, "POST", url, { step: "begin", manifest: manifestOf(dump) });
+  expect(retry.body.error).toBe("import_in_progress");
+  expect(retry.body.detail ?? JSON.stringify(retry.body)).toContain(begun.import);
+  expect((await ok(send(staging, "POST", url, { step: "resume", import: begun.import }))).loaded).toEqual({ items: 1 });
+  // A retry continues from it and the Ledger ends as the dump was.
+  const done = await importDump(dump, (body: unknown) => ok(send(staging, "POST", url, body)), () => {}, begun.import);
+  expect(done.counts.items).toBe(2);
+  expect(rowsByTable(await dumpOf(staging, "wb-part"))).toEqual(rowsByTable(dump));
+  // Another import fails partway and is aborted: what it wrote is gone, and a new import may begin.
+  await seed("wb-abort");
+  const second = await dumpOf(prod, "wb-abort");
+  const first = await ok(send(staging, "POST", "/projects/wb-abort/ledger/import", { step: "begin", manifest: manifestOf(second) }));
+  const table = second.tables.find((t: Json) => t.name === "items");
+  await ok(send(staging, "POST", "/projects/wb-abort/ledger/import", { step: "rows", import: first.import, table: "items", columns: table.columns.map((c: Json) => c.name), rows: table.rows }));
+  const aborted = await ok(send(staging, "POST", "/projects/wb-abort/ledger/import", { step: "abort", import: first.import }));
+  expect(aborted.removed.items).toBe(2);
+  expect((await send(staging, "POST", "/projects/wb-abort/ledger/import", { step: "resume", import: first.import })).body.error).toBe("no_import");
+  const again = await importDump(second, (body: unknown) => ok(send(staging, "POST", "/projects/wb-abort/ledger/import", body)));
+  expect(again.counts.items).toBe(2);
+  expect(rowsByTable(await dumpOf(staging, "wb-abort"))).toEqual(rowsByTable(second));
+});
+
 it("reads a table larger than one page a page at a time", async () => {
   const L = await setup("wb-pages");
   await runInDurableObject(L, async (_: unknown, state: DurableObjectState) => {
