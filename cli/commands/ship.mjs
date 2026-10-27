@@ -37,8 +37,9 @@ export default async function shipCommand() {
     stage: (text) => { cliState.doneStep = text ?? undefined; },
     fail: (message) => die(message),
     print: (line) => console.log(line),
-    // The wrap step is atelier wrap itself, run in the checkout as the owner would.
-    wrap: (summary) => runCommand([process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), "wrap", summary, "--project", name], { cwd, env: process.env }),
+    // The wrap step is atelier wrap itself, run in the checkout as the owner
+    // would, with the environment ship gives it (stepEnv in cli/ship.mjs).
+    wrap: (summary, env) => runCommand([process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), "wrap", summary, "--project", name], { cwd, env }),
     env: process.env,
     secrets: shipSecrets(process.env, [apiToken(), ...workspaceTokens(cwd)]),
     redact,
