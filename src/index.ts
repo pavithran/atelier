@@ -1132,9 +1132,18 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
 // fork has been preparing and what to do next, and after FORK_STUCK_MS a
 // fork.stuck event names the repository and the remedy. Atelier deletes no
 // fork. A claim that is no longer held when the answer comes records nothing.
+//
+// A fork whose request was cut off before Artifacts answered, as a claim that
+// timed out after 60 s left three in miqra on 2026-10-25, could stay
+// preparing for good (t286). The Ledger notes each request until its answer
+// comes; a claim that finds the fork unready with a request unanswered past
+// FORK_REQUEST_MS, or the fork preparing past FORK_REPLACE_MS, moves the task
+// to a fork under a new name and makes that one in the same claim
+// (Ledger.replaceUnreadyFork). Returns the name of the fork made and its head.
 type TaskFork = { id: string; name: string; from: string; project: string; names: string[]; actor: string; generation: number; proved: boolean };
-async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork): Promise<string | null> {
+async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork, replaced = false): Promise<{ name: string; head: string | null }> {
   try {
+    const noted = await L.forkRequested(t.id, t.name, t.actor, t.generation);
     const made = await artifactsStep(`fork ${t.from} as ${t.name}`, async () => {
       using base = await env.ARTIFACTS.get(t.from);
       await base.fork(t.name, { description: taskForkMark(t.name), defaultBranchOnly: true });
@@ -1143,9 +1152,17 @@ async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
       return false;
     });
+    // A claim that finds the fork already there drops the note it made just
+    // now, so an answered fork is not taken for one whose request was cut off.
+    if (made || noted) await L.forkAnswered(t.id, t.name);
+    // A fork found under the name is taken only as this task's own (t641).
     if (!made) await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
-    return await headOf(env, t.name);
+    return { name: t.name, head: await headOf(env, t.name) };
   } catch (err) {
+    if (!replaced && parseRuleError(err)?.code === "not_ready") {
+      const to = await L.replaceUnreadyFork(t.id, t.name, t.actor, t.generation);
+      if (to) return readyTaskFork(env, L, { ...t, name: to }, true);
+    }
     return reportNotReady(L, t, err);
   }
 }
@@ -2234,7 +2251,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         if (needsFork) {
           // Forks are named after the key, like the baseline, whatever the project is called now,
           // unless the stage tick replaced a stalled one under a new name (t245).
-          const name = fork = (await L.forkNameFor(id)) ?? repoName(ref.key, id);
+          const usual = (await L.forkNameFor(id)) ?? repoName(ref.key, id);
           try {
             // A part forks from its plan's fork at its current head, not from the
             // baseline (docs/orchestrator.md, section 5).
@@ -2244,7 +2261,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
             // (t349): no fork is recorded for the item, so no token was ever
             // made for it, and it is taken as this claim's fork. One that stays
             // unready is reported (t18).
-            const head = await readyTaskFork(env, L, { id, name, from, project: p.name, names: [...new Set([p.name, ...ref.names])], actor, generation, proved: !!c.token });
+            // The fork made may be under a new name, when the one under `usual` was unready (t286).
+            const { name, head } = await readyTaskFork(env, L, { id, name: usual, from, project: p.name, names: [...new Set([p.name, ...ref.names])], actor, generation, proved: !!c.token });
+            fork = name;
             await L.setFork(id, name, head, actor, !!c.token, generation);
           } catch (err) {
             // A give-up that fails is logged, and the claim's own failure is
