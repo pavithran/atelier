@@ -999,10 +999,12 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
 }
 
 // The push's secret scan (t332), run for the head the Ledger recorded with a
-// scan pending: every object that exact commit changes against the repository
-// the item is measured against, read by commit id (scanCommit), and its
-// findings recorded against that head alone (setSecret, which drops them if
-// the head has moved on). A scan that cannot be read throws, and the pending mark
+// scan pending: every commit the task adds up to that exact commit, each
+// against each of its parents, down to the history of the repository the
+// item is measured against or the commit its fork started at (t295), read by
+// commit id (scanCommit), and its findings recorded against that head alone
+// (setSecret, which drops them if the head has moved on). A scan that cannot
+// be read throws, and the pending mark
 // stands, so the gate keeps refusing until a retry of the push event or of
 // `atelier push` completes it; nothing is cleared or recorded for a head
 // other than the one scanned. Returns the item as the scan left it, or as it
@@ -1011,7 +1013,7 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
   if (!item.fork || !item.head || item.secretScan !== item.head) return item;
   const head = item.head;
   const p = await L.project();
-  const scan = await scanCommit(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head);
+  const scan = await scanCommit(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head, item.base);
   if (scan.head !== head) throw new Error(`secret scan: ${item.id}'s scan read ${scan.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
 }

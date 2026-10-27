@@ -24,7 +24,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, blockUntil, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead, countingReviews, independentApproval,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -46,7 +46,7 @@ import { ago } from "./floor.ts";
 // The note on the release a dispatch makes of a held task; the holder reads it
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -3102,8 +3102,19 @@ export class Ledger extends DurableObject<Env> {
         throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
       }
     }
+    // A claim whose last run ended without a result held nothing, so another
+    // task may have claimed core files it reaches since. Renewing it would
+    // run both at once: it is refused while that hold stands, and its note
+    // is kept, so it goes on holding nothing (t325).
+    const lapsed = this.lapsedClaimHold(item);
+    if (lapsed) throw new RuleError("held", heldClaimText(id, lapsed), 409);
     this.dropRunnerJobs(id);
     if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-idle:${runner.runner.toLowerCase()}`);
+    // A runner claims before every run, so what it said of its last one
+    // here, an end without a result among it, no longer stands (t325).
+    // Runner names compare without case, and a note kept before its key was
+    // lowercased may not be.
+    if (runner) this.sql.exec(`DELETE FROM meta WHERE lower(key) = ?`, `run-skip:${id}:${runner.runner}`.toLowerCase());
     if (runnerToken) {
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
     }
@@ -3403,11 +3414,14 @@ export class Ledger extends DurableObject<Env> {
       : null;
     return held.map((i) => {
       const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
-      const skips = (skipped.get(i.id) ?? []).filter((r) => skipHolds(r, i));
+      // An unfinished note is of a claim's run (endedRun), not a skip of the
+      // open task, so it is left out here as reportedSkips leaves it out.
+      const reports = (skipped.get(i.id) ?? []).filter((r) => r.kind !== "unfinished");
+      const skips = reports.filter((r) => skipHolds(r, i));
       const overlap = live ? overlapRefusal(i, live) : null;
       // Reports made under this dispatch that a new head has ended: the run
       // reports counted before them are not counted again (unclaimed).
-      const cleared = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch?.at && !skipHolds(r, i));
+      const cleared = reports.filter((r) => r.dispatchAt === i.dispatch?.at && !skipHolds(r, i));
       return refusals.length || skips.length || overlap || cleared.length
         ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(cleared.length ? { clearedSkips: cleared } : {}), ...(overlap ? { overlap } : {}) }
         : i;
@@ -3478,9 +3492,12 @@ export class Ledger extends DurableObject<Env> {
     if (row?.value !== value) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('runner-polls', ?)`, value);
   }
 
+  // With them go the runners' run-skip notes, which say a claim's last run
+  // ended without a result, so that claim holds nothing (t325, endedRun).
   private runnerPolls(): RunnerPolls | null {
     const polls = this.runnerMeta<{ runner: string; at: string }[]>("runner-polls");
-    return polls ? { polls } : null;
+    const ended = [...this.runnerNotes<RunSkip>("run-skip")].flatMap(([id, notes]) => notes.map((n) => ({ ...n, id })));
+    return polls || ended.length ? { polls: polls ?? [], ended } : null;
   }
 
   // What runners said of dispatched tasks they pass by, by item id (t420):
@@ -3498,10 +3515,11 @@ export class Ledger extends DurableObject<Env> {
 
   // The skips runners reported of the open dispatched tasks among `items`
   // that still stand: under the task's dispatch and at its head (skipHolds).
+  // An unfinished note is of a claim's run, not a skip (endedRun).
   private runSkipsOf(items: readonly Item[]): (RunSkip & { item: string })[] {
     const skipped = this.runnerNotes<RunSkip>("run-skip");
     return items.filter((i) => i.state === "open" && !i.owner && i.dispatch).flatMap((i) =>
-      (skipped.get(i.id) ?? []).filter((s) => skipHolds(s, i)).map((s) => ({ ...s, item: i.id })));
+      (skipped.get(i.id) ?? []).filter((s) => s.kind !== "unfinished" && skipHolds(s, i)).map((s) => ({ ...s, item: i.id })));
   }
 
   // Keeps one runner's note of a task, and drops the task's
@@ -3510,7 +3528,7 @@ export class Ledger extends DurableObject<Env> {
     for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:${id}:%`).toArray()) {
       if ((JSON.parse(row.value as string) as { dispatchAt: string }).dispatchAt !== dispatchAt) this.sql.exec(`DELETE FROM meta WHERE key = ?`, row.key);
     }
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `${prefix}:${id}:${runner}`, JSON.stringify(note));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `${prefix}:${id}:${runner.toLowerCase()}`, JSON.stringify(note));
   }
 
   // Records a runner's word that it gives up a dispatched build or plan job
@@ -3528,6 +3546,8 @@ export class Ledger extends DurableObject<Env> {
     const d = item.dispatch;
     const heldByRunner = item.state === "claimed" && (item.runner ?? "").toLowerCase() === runner.toLowerCase();
     if ((item.state !== "open" || item.owner) && !heldByRunner || !d || d.job === "review") return false;
+    // A run that ended without a result is word only of a claim (t325).
+    if (kind === "unfinished" && !heldByRunner) return false;
     // A held task's skip is the holder's word (t669): the developer token with
     // an X-Atelier-Runner header names any actor, so the report is refused
     // unless it comes from the actor that holds the task.
@@ -3624,10 +3644,31 @@ export class Ledger extends DurableObject<Env> {
   // committed, instead of the claim sitting with no one to end it. The claim
   // itself stays as it was: only the asking runner matches, compared without
   // case as claim() compares it.
-  heldJobs(runner: string): Item[] {
+  // A claim whose last run ended without a result, and which another claim
+  // now holds off a core file, carries that hold, so the queue does not
+  // offer it until the hold clears (lapsedClaimHold).
+  heldJobs(runner: string): (Item & { held?: CoreHold })[] {
     const mine = this.claimedRows().filter((r) => ((r.runner as string | null) ?? "").toLowerCase() === runner.toLowerCase());
-    return this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
+    const jobs = this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)));
+    // Every item is read only when a claim ended its run, so a poll reads
+    // the claimed rows alone as before (t762).
+    const polls = jobs.length ? this.runnerPolls() : null;
+    if (!jobs.some((item) => endedRun(item, polls))) return jobs;
+    const items = this.items();
+    return jobs.map((item) => {
+      const held = this.lapsedClaimHold(item, items, polls);
+      return held ? { ...item, held } : item;
+    });
+  }
+
+  // The core-file hold on a claim whose last run ended without a result
+  // (endedRun): such a claim holds nothing, so another may have claimed its
+  // core files since, and the claim may not run again while that one holds.
+  // Null for any other claim, or when nothing holds it.
+  private lapsedClaimHold(item: Item, items = this.items(), polls = this.runnerPolls()): CoreHold | null {
+    if (!endedRun(item, polls)) return null;
+    return coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), polls);
   }
 
   // The claimed rows that carry a dispatch, in id order, read from the items
@@ -4372,12 +4413,14 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The secret flag a push scan records or clears (t332). `hits` names the
-  // file, line and fingerprint of every added line that held a key pattern
-  // at `head`, and `unscanned` names every path whose head side the scan
-  // could not read as text, with why and the hash of its object; an empty list of
-  // both clears the flag, so a later push that removes the line clears it.
-  // Only the file, line and fingerprint ever reach the Ledger, never the
-  // value.
+  // file, line, fingerprint and commit of every line a commit of the task up
+  // to `head` added that held a key pattern, and `unscanned` names every path
+  // a commit changed and the scan could not read as text, with why and the
+  // hash of its object; an empty list of both clears the flag. A later commit
+  // that removes the line does not: the commit that added it is still in the
+  // task's history, and the push to GitHub sends it (t295).
+  // Only the file, line, fingerprint and commit ever reach the Ledger, never
+  // the value.
   //
   // A finding whose file and fingerprint the owner has cleared before
   // (clearSecret) is recorded as cleared: it is kept, so the record shows the
@@ -4399,8 +4442,8 @@ export class Ledger extends DurableObject<Env> {
     const clearances = item.secretClearances ?? [];
     const cleared = (file: string, fingerprint: string) => !!fingerprint && clearances.some((c) => c.file === file && c.fingerprint === fingerprint);
     const flags: SecretFlag[] = [
-      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, fingerprint: h.fingerprint, head, by: actor, at, ...(cleared(h.file, h.fingerprint) ? { cleared: true as const } : {}) })),
-      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, head, by: actor, at, unscanned: true, ...(u.reason ? { reason: u.reason } : {}), ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
+      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, fingerprint: h.fingerprint, ...(h.commit ? { commit: h.commit } : {}), head, by: actor, at, ...(cleared(h.file, h.fingerprint) ? { cleared: true as const } : {}) })),
+      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, ...(u.commit ? { commit: u.commit } : {}), head, by: actor, at, unscanned: true, ...(u.reason ? { reason: u.reason } : {}), ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
     ];
     const done: Record<string, string | null> = item.secretScan === head ? { secret_scan: null } : {};
     // A re-scan of the same head with the same findings changes nothing but
@@ -4409,7 +4452,7 @@ export class Ledger extends DurableObject<Env> {
     // its own head — and keeps blocking — rather than left naming a
     // superseded one.
     const prev = item.secret ?? [];
-    const same = (f: SecretFlag, p: SecretFlag) => f.file === p.file && f.line === p.line && f.fingerprint === p.fingerprint
+    const same = (f: SecretFlag, p: SecretFlag) => f.file === p.file && f.line === p.line && f.fingerprint === p.fingerprint && (f.commit ?? "") === (p.commit ?? "")
       && (f.unscanned ?? false) === (p.unscanned ?? false) && (f.reason ?? "") === (p.reason ?? "") && (f.cleared ?? false) === (p.cleared ?? false);
     const unchanged = prev.length === flags.length && flags.every((f, i) => same(f, prev[i])) && prev.every((f) => f.head === head);
     if (unchanged) {
@@ -4422,7 +4465,7 @@ export class Ledger extends DurableObject<Env> {
       return this.item(id);
     }
     this.update(id, { secret: JSON.stringify(flags), ...done }, at);
-    const where = (f: SecretFlag) => ({ file: f.file, line: f.line });
+    const where = (f: SecretFlag) => ({ file: f.file, line: f.line, ...(f.commit ? { commit: f.commit } : {}) });
     const standing = flags.filter((f) => !f.cleared), held = flags.filter((f) => f.cleared);
     this.log(id, actor, "secret.flagged", {
       head,
@@ -4516,9 +4559,23 @@ export class Ledger extends DurableObject<Env> {
 
   release(id: string, actor: string, note: string, proved = false, token?: string | null, providerLimit = false): Item {
     const item = this.releaseAllowed(id, actor, note);
+    // The holder's release of a build that ended validation_blocked (t326)
+    // blocks the task instead, as block() would: it keeps its owner, runner
+    // and dispatch, and waits on the developer. Unblocking returns it to its
+    // holder, whose runner the queue offers it to again (heldJobs). The
+    // write token goes as on any release; the next claim makes a new one.
+    const blocks = note.startsWith(VALIDATION_BLOCKED) && actor === item.owner && !providerLimit;
+    const reason = blocks ? validationBlockReason(note) : "";
+    if (blocks) assertBlockable(item);
     this.dropToken(id, token);
     this.dropRunnerJobs(id);
     const at = new Date().toISOString();
+    if (blocks) {
+      const record: Block = { reason, by: actor, at, from: item.state };
+      this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
+      this.log(id, actor, "item.blocked", { reason, from: item.state, validationBlocked: true, note }, at, proved);
+      return this.item(id);
+    }
     this.update(id, { owner: null, state: "open" }, at);
     this.log(id, actor, "item.released", { from: item.owner, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
     this.afterPlanChange(id);
@@ -10216,7 +10273,7 @@ function toItem(r: Row): Item {
     // Only a blocked item carries the record; unblocking and abandoning clear it.
     ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
     // Only an item whose push scan flagged a secret carries the array; a push
-    // that removes the line or a clear clears it.
+    // whose commits add no such line, or a clear, clears it.
     ...(r.secret ? { secret: JSON.parse(r.secret as string) as SecretFlag[] } : {}),
     // Only an item whose push scan has not completed carries the head it is
     // pending for; the scan's own result clears it.

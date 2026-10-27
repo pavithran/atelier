@@ -85,7 +85,7 @@ test("the t463 case: the runner stopped after claiming, and six dispatches wait 
   const hold = coreHold(waiting[0], [held, live], core, null, NOW, fresh)!;
   assert.equal(hold.id, "t500");
   const text = holdText({ ...hold, orphaned: coreOrphans(waiting[0], [held, live], core, null, NOW, fresh) });
-  assert.match(text, /^waits on t500 \(claimed by codex\/gpt-6\)/);
+  assert.match(text, /^waits on t500 \(claimed by codex\/gpt-6, running on home:studio-1\)/);
   assert.match(text, /t463 \(claimed by opencode\/glm-5\.3-flash\) is orphaned, not a blocker/);
   assert.doesNotMatch(text, /waits on t463/);
 });

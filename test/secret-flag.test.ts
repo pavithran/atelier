@@ -85,3 +85,17 @@ test("a scan pending for the current head blocks the gate with its own message, 
   // A flag and a pending scan at the same head both stand.
   assert.equal(secretBlockers(item({ secret: [flag], secretScan: H1 })).length, 2);
 });
+
+test("a flag an earlier commit of the task added names that commit; one the head added reads as before (t295)", () => {
+  const C = "c".repeat(40);
+  assert.deepEqual(secretBlockers(item({ secret: [{ ...flag, commit: C }] })), [
+    "secret flagged in src/keys.ts:12, added by commit cccccccccccc; clear it with a reason or push a revision whose commits do not add the line",
+  ]);
+  assert.deepEqual(secretBlockers(item({ secret: [{ ...flag, commit: C, line: 0, unscanned: true, reason: "binary content" }] })), [
+    "secret scan could not read src/keys.ts in full as commit cccccccccccc left it (binary content); clear it with a reason or push a revision whose commits do not add it",
+  ]);
+  assert.deepEqual(secretBlockers(item({ secret: [{ ...flag, commit: H1 }] })), [
+    "secret flagged in src/keys.ts:12; clear it with a reason or push a revision that removes the line",
+  ]);
+  assert.equal(gate(item({ secret: [{ ...flag, commit: C }] }), policy, passing, []).ready, false);
+});

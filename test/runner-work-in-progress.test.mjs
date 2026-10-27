@@ -42,7 +42,7 @@ function fixture({ heads = ["before"], wip = "wip0123456789", fail, message = ""
 }
 const commands = (calls) => calls.filter((c) => c.argv).map((c) => c.argv[0]);
 
-test("a validation_blocked run's uncommitted work is committed, pushed unsubmitted and released for the next run", async () => {
+test("a validation_blocked run's uncommitted work is committed, pushed unsubmitted and the task blocked with it for the next run", async () => {
   const { io, calls, logs } = fixture();
   const state = await runTask(assignment, config, "home:studio", io);
   assert.equal(runOutcome(state), "validation_blocked");
@@ -57,17 +57,18 @@ test("a validation_blocked run's uncommitted work is committed, pushed unsubmitt
   assert.match(commit.commitWork.join("\n\n"), /listen EPERM/);
   assert.deepEqual(calls.find((c) => c.argv?.[0] === "push").argv, ["push", "t13", "--project", "atelier", "--as", actor]);
   const release = calls.find((c) => c.argv?.[0] === "release").argv;
-  assert.match(release.at(-1), /committed as wip01234 and pushed unsubmitted for the next run to continue/);
-  assert.ok(logs.includes("released: work in progress wip01234 pushed unsubmitted for the next run"));
+  assert.match(release.at(-1), /^validation_blocked: .*committed as wip01234 and pushed unsubmitted for the next run to continue/);
+  assert.ok(logs.includes("blocked for the developer: work in progress wip01234 pushed unsubmitted for the run after the unblock"));
   assert.ok(!commands(calls).includes("finish"));
 });
 
-test("a validation_blocked run with nothing uncommitted is released as no new commit", async () => {
+test("a validation_blocked run with nothing uncommitted blocks the task with no new commit", async () => {
   const { io, calls, logs } = fixture({ wip: null });
   const state = await runTask(assignment, config, "home:studio", io);
   assert.equal(runOutcome(state), "validation_blocked");
   assert.deepEqual(commands(calls), ["claim", "release"]);
-  assert.ok(logs.includes("released: no new commit"));
+  assert.match(calls.find((c) => c.argv?.[0] === "release").argv.at(-1), /^validation_blocked: /);
+  assert.ok(logs.includes("blocked for the developer: validation_blocked with no new commit"));
 });
 
 test("work in progress whose push fails stays committed under the claim", async () => {
@@ -172,16 +173,16 @@ test("edits a builder leaves after a clean merge onto work in progress, ending v
   assert.equal(state.workInProgress, "kept0123456789");
   assert.ok(calls.some((c) => c.commitWork), "the edits are committed as work in progress");
   assert.deepEqual(commands(calls).filter((c) => c === "push" || c === "release" || c === "finish"), ["push", "release"]);
-  assert.ok(logs.includes("released: work in progress kept0123 pushed unsubmitted for the next run"));
+  assert.ok(logs.includes("blocked for the developer: work in progress kept0123 pushed unsubmitted for the run after the unblock"));
   // Nothing uncommitted: the merge is the head the builder started from, so
-  // the run is released as no new commit rather than holding the claim.
+  // the task is blocked with no new commit rather than the claim held.
   const idle = fixture({ message, wip: null });
   idle.io.head = io.head; idle.io.fetch = io.fetch; idle.io.mergeMain = io.mergeMain; idle.io.conflicts = io.conflicts;
   const idleCli = idle.io.cli;
   idle.io.cli = async (argv, cwd) => (argv[0] === "base-token" ? JSON.stringify({ remote: "https://artifacts.example/base", token: "t", defaultBranch: "main" }) : idleCli(argv, cwd));
   head = "wip0123456789";
   await runTask(job, config, "home:studio", idle.io);
-  assert.ok(idle.logs.includes("released: no new commit"));
+  assert.ok(idle.logs.includes("blocked for the developer: validation_blocked with no new commit"));
 });
 
 test("a validation_blocked run inside a conflicted merge of main commits nothing for the builder", async () => {
@@ -199,7 +200,7 @@ test("a validation_blocked run inside a conflicted merge of main commits nothing
   assert.ok(calls.some((c) => c.harness));
   assert.ok(!calls.some((c) => c.commitWork), "a merge's resolution in progress is not the builder's commit to make");
   assert.ok(!commands(calls).includes("push"));
-  assert.ok(logs.includes("released: no new commit"));
+  assert.ok(logs.includes("blocked for the developer: validation_blocked with no new commit"));
 });
 
 test("commitWorkInProgress commits every uncommitted file and nothing when there is none", async (t) => {

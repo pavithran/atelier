@@ -90,7 +90,7 @@ it("the 2026-10-12 case: a holder back between the offer and the claim loses the
   const answer = await lost.json() as { error: string; detail: string };
   expect(lost.status, JSON.stringify(answer)).toBe(409);
   expect(answer.error).toBe("held");
-  expect(answer.detail).toContain(`t1 (claimed by ${A})`);
+  expect(answer.detail).toContain(`t1 (claimed by ${A}, running on home:orphan-agreement-race-held)`);
   // atelier queue and atelier stuck say the same at that moment: t1 holds t2
   // and is orphaned no more.
   expect(await diagnostics(name)).toEqual({ held: "t1", orphaned: [], stuckOrphans: [] });
