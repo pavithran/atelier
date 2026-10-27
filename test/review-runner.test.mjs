@@ -2314,3 +2314,94 @@ test("a review released without a verdict under two request numbers at one head 
   assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
   assert.ok(logs.some((l) => /needs the developer's attention after 2 failures/.test(l)), logs.join("\n"));
 });
+
+// t323: opencode/glm-5.3 exited 1 on atelier t173 334 times on 2026-10-22,
+// each run released and the request claimed again. After two runs on one
+// request end with the same harness exit, the runner takes it no more,
+// reports the run without a result naming the exit and its stderr, and
+// reports the skip, so the server leaves the request for another model.
+test("two identical harness exits on one review request stop this runner taking it, and the run is reported with the exit and its stderr", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const stderr = "starting opencode 0.9.1\nError: provider returned 500 at 2026-10-22T01:02:03Z\nexiting";
+  const { io, calls, logs } = fixture({ code: 1, stderr });
+  const runs = [], skips = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const head = "a".repeat(40);
+  // Each release makes the request anew under another number, as the server does.
+  const task = (request) => ({ ...assignment, item: { ...assignment.item, head, request, dispatch: { job: "review" } } });
+  let polls = 0;
+  // Each run's stderr names another time, which leaves the exit the same.
+  let run = 0;
+  const harness = io.harness;
+  io.harness = async (...a) => ({ ...(await harness(...a)), stderr: stderr.replace("01:02:03", `01:0${++run}:00`) });
+  await runRunner(args, {
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportRun(body) { runs.push(body); },
+    async reportReviewSkip(body) { skips.push(body); },
+    async queue() {
+      polls++;
+      if (polls <= 4) return [task(polls)];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2, "claimed twice, then never again");
+  assert.deepEqual(runs.map((r) => [r.role, r.outcome]), [["review", "refused"], ["review", "refused"]], "each run is reported as one without a result");
+  assert.match(runs[0].detail, /^harness exit code 1; stderr: .*provider returned 500/);
+  assert.match(runs[1].detail, /same harness exit 2 times in a row on this review request; this runner takes it no more and leaves it for another model/);
+  assert.match(runs[1].detail, /exit code 1/);
+  assert.match(runs[1].detail, /provider returned 500 at 2026-10-22T01:02:00Z \/ exiting$/);
+  assert.ok(runs.every((r) => r.detail.length <= 300), "within what the server keeps");
+  // Each release says the exit alone, which the server's stop counts
+  // whatever the stderr says; that stops the request for every runner of the model.
+  const notes = calls.filter((c) => c.argv?.[0] === "review-release").map((c) => c.argv[c.argv.indexOf("--note") + 1]);
+  assert.deepEqual(notes, ["harness exited 1", "harness exited 1"]);
+  assert.equal(skips.length, 1, "the skip is reported once");
+  assert.equal(skips[0].request, 2);
+  assert.match(skips[0].note, /leaves it for another model/);
+  assert.ok(logs.some((l) => /t21 review: the same harness exit 2 times in a row/.test(l)), logs.join("\n"));
+});
+
+test("two different harness exits on one review request do not stop it as the same exit", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls } = fixture({ code: 1 });
+  const runs = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  let run = 0;
+  io.harness = async () => ({ code: ++run === 1 ? 1 : 2, timedOut: false, stderr: run === 1 ? "first failure" : "another failure", output: "" });
+  let polls = 0;
+  await runRunner(args, {
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportRun(body) { runs.push(body); },
+    async reportReviewSkip() {},
+    async queue() {
+      if (++polls <= 2) return [{ ...assignment, item: { ...assignment.item, head: H1, request: polls, dispatch: { job: "review" } } }];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+  assert.ok(runs.every((r) => !/same harness exit/.test(r.detail)), JSON.stringify(runs));
+  assert.match(runs[1].detail, /exit code 2; stderr: another failure/);
+});
+
+// t323: a harness's refusal of the review input for its size is recorded as
+// such, with the limit and the size, and never as a bare refusal.
+test("a review harness refusing its input over a 1,048,576-character limit is released naming the limit and the size, with no refused run", async (t) => {
+  const args = runnerConfig(t);
+  const { io, calls, logs } = fixture({ code: 1, stderr: "error: prompt too long: 1,200,000 > 1,048,576" });
+  const runs = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  await runRunner(args, {
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
+    async reportRun(body) { runs.push(body); }, async reportReviewSkip() {},
+  });
+  const note = calls.find((c) => c.argv?.[0] === "review-release").argv;
+  const text = note[note.indexOf("--note") + 1];
+  assert.match(text, /refused the review input for its size \(limit 1048576; actual 1200000\)/);
+  assert.deepEqual(runs, [], "a size refusal is the harness's limit, not a run the model left without a result");
+  assert.ok(!logs.some((l) => / refused: harness /.test(l)), "no bare refusal is logged");
+});

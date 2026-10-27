@@ -42,6 +42,7 @@ import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
+import { redactKeys } from "../src/models/pool.ts";
 
 // The runner's one way to the server (t478): every call the runner process
 // makes itself goes through `send`, under a name RUNNER_CALLS in
@@ -2549,7 +2550,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       // model's verdict (t230): reported once with the limit and the size, and
       // skipped, so it is neither tried again as it is nor counted against
       // the model.
-      const tooLarge = sizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
       if (tooLarge) {
         const diffText = ownDiff === null ? shown : `${shown}${ownDiff}`;
         const why = sizeRefusalReason(actor, tooLarge, text.length + diffText.length);
@@ -2557,6 +2558,9 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
         io.log(`review released: ${why}`);
         return { phase: "failed", reason: why, skipped: true, inputTooLarge: true, briefHash: createHash("sha256").update(text).update(diffText).digest("hex") };
       }
+      // The release says the exit alone: the server's stop (src/review/stopped.ts)
+      // reads the note's words, which a harness's stderr must not change. The
+      // stderr goes with the run report and the skip instead (t323).
       await release(`harness exited ${result.code}`);
       return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
     }
@@ -2778,6 +2782,15 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
       return { phase: "failed", reason: "harness timed out", taskFailure: true, harnessExit: failedExitOf(result) };
     }
     if (result.code !== 0) {
+      // A refusal for the input's size is recorded as one, with the limit and
+      // the size (t323), and skipped as a review's is: not the model's failure.
+      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      if (tooLarge) {
+        const why = sizeRefusalReason(actor, tooLarge, claimed.brief.length);
+        await fail(why);
+        io.log(`criteria review failed: ${why}`);
+        return { phase: "failed", reason: why, skipped: true };
+      }
       await fail(`harness exited ${result.code}`);
       return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
     }
@@ -2959,6 +2972,14 @@ export async function runPrereview(assignment, config, name, runnerIO) {
       return failed("harness timed out", { taskFailure: true, harnessExit: failedExitOf(result) });
     }
     if (result.code !== 0) {
+      // A refusal for the input's size is recorded as one (t323), as a review's is.
+      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      if (tooLarge) {
+        const why = sizeRefusalReason(actor, tooLarge, text.length + diff.length);
+        await end({ outcome: "runner", detail: why });
+        io.log(`pre-review released: ${why}`);
+        return failed(why, { skipped: true });
+      }
       await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}` });
       return failed(`harness exited ${result.code}`, { taskFailure: true, harnessExit: failedExitOf(result) });
     }
@@ -3527,12 +3548,89 @@ export function refusedAfter(entry, state, nowMs) {
 }
 
 // The text logged for a refused run: the job, the harness, the exit and the
-// last 20 lines of its stderr.
+// last 20 lines of its stderr. A refusal of the input for its size says so,
+// with the limit and the size, rather than a bare exit (t323).
 export function refusedLog(task, state) {
   const exit = state.harnessExit;
-  const how = exit.kind === "exited" ? `exit code ${exit.code}` : exit.kind === "signalled" ? "killed by a signal" : "timed out";
   const tail = String(exit.stderr ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).join("\n");
-  return `${task.project}/${task.item.id} ${task.item.dispatch?.job ?? "build"} refused: harness ${task.agent}, ${how}; stderr (last 20 lines): ${tail || "(none)"}`;
+  const size = inputSizeRefusal(exit.stderr);
+  return `${task.project}/${task.item.id} ${task.item.dispatch?.job ?? "build"} refused: harness ${task.agent}, ${exitText(exit)}${size ? `, ${sizeText(size)}` : ""}; stderr (last 20 lines): ${tail || "(none)"}`;
+}
+
+const exitText = (exit) => exit.kind === "exited" ? `exit code ${exit.code}` : exit.kind === "signalled" ? "killed by a signal" : "timed out";
+const sizeText = (size) => `refused its input for its size (limit ${size.limit ?? "not stated"}; size ${size.actual ?? "not stated"})`;
+
+// A harness's refusal of its input for its size (t323), read by sizeRefusal
+// (src/large-diff.ts) and, beside it, the wordings it misses: "max N",
+// "N > M", and an input that exceeds a limit in so many words. Before this a
+// reviewer's harness refused miqra t48's input over its 1,048,576-character
+// limit 658 times in a day, logged each time as a bare refusal. Returns
+// { limit, actual } (either may be null) or null for any other failure.
+export function inputSizeRefusal(text) {
+  const s = String(text ?? "");
+  const found = sizeRefusal(s);
+  if (!found && !/\b(?:input|prompt|request|message|context)\b[^\n]{0,80}?\b(?:exceeds?|exceeded|over|larger than|above)\b[^\n]{0,40}?\b(?:limit|max(?:imum)?)\b/i.test(s)) return null;
+  const num = (v) => v ? Number(v.replace(/,/g, "")) : null;
+  const pair = /(\d[\d,]*)\s*(?:characters|chars|bytes|tokens)?\s*>\s*(\d[\d,]*)/i.exec(s);
+  const limit = (pair ? num(pair[2]) : null) ?? num(/(\d[\d,]*)[- ]?(?:characters?|chars?|bytes?|tokens?)[- ]limit\b/i.exec(s)?.[1]) ?? found?.limit
+    ?? num(/\bmax(?:imum)?\b[^0-9\n]{0,30}?(\d[\d,]*)/i.exec(s)?.[1]) ?? num(/\blimit\b[^0-9\n]{0,30}?(\d[\d,]*)/i.exec(s)?.[1]);
+  const actual = (pair ? num(pair[1]) : null) ?? found?.actual ?? num(/\b(?:got|received|requested|actual|you sent|was)\b[^0-9\n]{0,30}?(\d[\d,]*)/i.exec(s)?.[1]);
+  return { limit, actual: actual !== null && actual !== limit ? actual : null };
+}
+
+// A one-line summary of a harness's stderr for a note or a run report: its
+// last three non-empty lines, joined, keeping the end, where a harness says
+// what failed, when it is longer than `max`. It goes to the server, so a key
+// a provider echoed back is removed first, as the server removes one from a
+// usage report (redactKeys).
+export function stderrSummary(stderr, max = 180) {
+  const lines = String(stderr ?? "").replace(/\r/g, "").split("\n").map((l) => redactKeys(oneLine(l).replace(/\s+/g, " ").trim())).filter(Boolean).slice(-3);
+  const text = lines.join(" / ");
+  return text.length > max ? `…${text.slice(-(max - 1))}` : text;
+}
+
+// What a run report says of a harness exit (t323): the exit, a size refusal
+// with its limit and size where it was one, and the stderr's summary, within
+// the RUN_DETAIL_MAX characters the server keeps.
+export const RUN_DETAIL_MAX = 300;
+export function exitDetail(exit, lead = null) {
+  const size = inputSizeRefusal(exit.stderr);
+  const head = `${lead ? `${lead}: ` : ""}harness ${exitText(exit)}${size ? `, ${sizeText(size)}` : ""}; stderr: `;
+  return `${head}${stderrSummary(exit.stderr, Math.max(40, RUN_DETAIL_MAX - head.length)) || "(none)"}`.slice(0, RUN_DETAIL_MAX);
+}
+
+// Two runs on one review request that end with the same harness exit (t323):
+// the runner takes that request no more, reports the run without a result
+// naming the exit and its stderr, and leaves the request for another model.
+// opencode/glm-5.3 exited 1 on atelier t173 334 times on 2026-10-22, each run
+// released and claimed again. A request is kept by failureKey, the task and
+// head of a review whatever number each release gives it. An exit is the same
+// when its kind, its code and its stderr's last lines are, numbers aside (a
+// time, a size or an id differs from run to run). A timeout is no exit: the
+// server stops those itself (src/review/stopped.ts).
+export const SAME_EXIT_LIMIT = 2;
+const SAME_EXIT_JOBS = new Set(["review", "criteria-review", PREREVIEW_JOB]);
+export function exitSignature(exit) {
+  const tail = String(exit.stderr ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).join("\n");
+  return JSON.stringify([exit.kind, exit.code ?? null, tail.replace(/\b[0-9a-f]{8,}\b/gi, "#").replace(/\d+/g, "#")]);
+}
+// The entry kept for a request after a run, or undefined when the run clears
+// it: a different exit starts the count again, a run that ended otherwise
+// (a verdict, a stopped review) clears it, and a run that never reached the
+// harness, or met a provider's limit, leaves it as it was.
+export function sameExitAfter(entry, task, state) {
+  if (!SAME_EXIT_JOBS.has(task.item.dispatch?.job)) return undefined;
+  if (state.providerLimit) return entry;
+  const exit = state.harnessExit;
+  if (!exit) return state.phase === "failed" && !state.taskFailure ? entry : undefined;
+  if (exit.kind === "timed-out") return undefined;
+  const signature = exitSignature(exit);
+  return { signature, exit, count: entry?.signature === signature ? entry.count + 1 : 1 };
+}
+export const sameExitStopped = (entry) => !!entry && entry.count >= SAME_EXIT_LIMIT;
+// The run report's detail, the log line and the skip note for the run that stops it.
+export function sameExitText(entry) {
+  return exitDetail(entry.exit, `the same harness exit ${entry.count} times in a row on this review request; this runner takes it no more and leaves it for another model`);
 }
 
 export function backoffAfter(entry, state, poll) {
@@ -3604,9 +3702,11 @@ export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? 
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
+  const same = SAME_EXIT_JOBS.has(task.item.dispatch?.job) ? sameExits.get(failureKey(task)) : null;
+  if (sameExitStopped(same)) return `Passed by: its harness exited the same way ${same.count} times in a row (${exitDetail(same.exit)}); this runner takes this request no more, and it is left for another model. It is tried again at a new head or once this runner restarts.`;
   const preparing = notReady.get(notReadyKey(task));
   if (preparing && (preparing.expired || nowMs - preparing.since >= NOT_READY_LIMIT_MS)) return `Skipped: ${notReadyGiveUp(task, preparing)}`;
   if (preparing && poll < preparing.due) return `Passed by: its fork is still being prepared (not_ready, ${preparing.tries} ${preparing.tries === 1 ? "try" : "tries"}); it is tried again in ${preparing.due - poll} poll${preparing.due - poll === 1 ? "" : "s"}.`;
@@ -4049,7 +4149,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), skipHeads = new Map();
+  // Review requests whose harness exited the same way run after run (t323),
+  // by failureKey: the exit, its signature and the count (sameExitAfter).
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), skipHeads = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4639,7 +4741,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         for (const task of ordered) {
           if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
         }
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, sameExits, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0))) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4691,12 +4793,23 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (outcome === "refused") io.log(refusedLog(task, state));
           const refusedRun = refusedAfter(refusedRuns.get(failureKey(task)), state, now());
           if (refusedRun) refusedRuns.set(failureKey(task), refusedRun); else refusedRuns.delete(failureKey(task));
+          // A review's harness that exits the same way twice on one request
+          // stops this runner taking it (t323); the run is reported with the
+          // exit and its stderr, and the review skip below leaves the request
+          // to the server, which stops it for every runner of this model and
+          // re-points it, unclaimed, to another model (the stage tick).
+          const same = sameExitAfter(sameExits.get(failureKey(task)), task, state);
+          if (same) sameExits.set(failureKey(task), same); else sameExits.delete(failureKey(task));
+          const sameStopped = sameExitStopped(same) && state.harnessExit === same.exit;
+          if (sameStopped) io.log(`${task.project}/${task.item.id} ${task.item.dispatch?.job}: ${sameExitText(same)}`);
           if (outcome && reportRun) {
             try {
               // The report names the job that ran: a plan, a review (a
-              // criteria review counts as one), or a build.
+              // criteria review counts as one), or a build. A review's
+              // harness exit is named with its stderr (t323).
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : (task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) ? "review" : "build";
-              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.detail ?? state.reason }, offer.runner, controller.signal);
+              const detail = sameStopped ? sameExitText(same) : same && outcome === "refused" ? exitDetail(same.exit) : state.detail ?? state.reason;
+              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }
@@ -4754,8 +4867,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
             }
           } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
-          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
-            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
+          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3 || sameStopped) && !missReported && !state.fetchFailed && reportReviewSkip) {
+            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: sameStopped ? sameExitText(same) : state.reason });
           }
           // A build or plan job given up under this dispatch, after its
           // failed runs or infrastructure failures in a row, is reported as
