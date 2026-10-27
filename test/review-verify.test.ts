@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyVerification, labelPreExisting, preExistingTask, type Finding } from "../src/rules.ts";
+import { applyVerification, labelPreExisting, reviewNotes, type Finding } from "../src/rules.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 
 // The independent check of blocking findings (t717): on 2026-10-15/16 several
@@ -160,5 +160,6 @@ test("the dependent finding is not demoted before the check sees it", () => {
 test("a partial reply answering only the second finding leaves the unanswered dependent one unverified, not pre-existing", () => {
   const out = settle([dependent, untouched], "FINDING 2: PRE-EXISTING because the branch is dead at the base too.");
   assert.deepEqual(out.map((f) => [f.severity, f.label]), [["follow-up", "unverified"], ["follow-up", "pre-existing"]]);
-  assert.equal(preExistingTask("t82", "Collapsed sections", { by: "a/b", head: "a".repeat(40), findings: out })?.accept.length, 1);
+  // Both are notes on the goal, each with its label, and neither is a task (t203).
+  assert.deepEqual(reviewNotes("t82", { by: "a/b", head: "a".repeat(40), findings: out })?.map((n) => n.label), ["unverified", "pre-existing"]);
 });

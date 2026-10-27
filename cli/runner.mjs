@@ -3978,7 +3978,7 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady, oneShot }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -4369,6 +4369,17 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     },
     ...taskIO,
   };
+  // A one-shot review (t273, cli/review-oneshot.mjs) takes the io above and
+  // the config and runs one job in this process: it polls nothing, offers
+  // nothing and holds nothing when it returns. The signal handlers and the
+  // exit hook go with it, so the landing that called it keeps its own.
+  if (oneShot) {
+    try { return await oneShot({ io, config, name: offer.runner }); }
+    finally {
+      for (const signal of signals) process.off(signal, stop);
+      process.off("exit", killGroups);
+    }
+  }
   // A land job (t226): `atelier land ID` run in the project's registered
   // checkout, as its own process, so the landing lease and the landing
   // journal are the command's. The runner's own token is left out of its

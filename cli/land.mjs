@@ -20,6 +20,7 @@ import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary,
 import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync, findingKey } from "../src/moved-code.ts";
 import { LAND_UNPUSHED, appendMovedCodeRecord, prepareRecordedWorkspace } from "./landing.mjs";
 import { workspaceNotice } from "./review-notice.mjs";
+import { reviewerOffered } from "./review-oneshot.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -850,7 +851,7 @@ export async function runLand(io) {
       // review is asked after it (askPostMergeReview), and owed until a
       // verdict stands.
       const fast = d0.mode?.mode === "fast";
-      const reviewed = fast ? undefined : await reviewStep(io, { id, name, itemPath, reviewer, head, record });
+      const reviewed = fast ? undefined : await reviewStep(io, { id, name, itemPath, reviewer, head, record, oneShot: !noWait });
       if (fast) {
         print(`${name} is in fast mode: ${id} lands on its passing checks, and its independent review is asked after the merge.`);
         await record("review", 0, { skipped: true, fast: true });
@@ -1094,7 +1095,7 @@ async function reviewStep(io, args) {
 // One review: "approved" when a reviewer approved it at once, "asked" when a
 // request was made and no verdict is in, undefined when none was needed or
 // the gate already counted an approval.
-async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, record }) {
+async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, record, oneShot = false }) {
   const { request, print } = io;
   const t0 = Date.now();
   // A qualifying approval already recorded at the pushed head, which the
@@ -1128,6 +1129,9 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
   // (t162) is seen, and so is each rejection when no model could be picked.
   for (const w of Array.isArray(ask.withdrew) ? ask.withdrew : []) print(`Withdrew the unclaimed review request ${w.request}${w.reviewer ? ` for ${w.reviewer}` : ""}, since --reviewer names ${reviewer}.`);
   print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}${reviewer ? "" : " (picked by the server)"}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}.`);
+  // No live runner offers the reviewer (t273): the review runs once here, on
+  // this Mac, as the reviewer, so the verdict read below is the reviewer's own.
+  if (oneShot) await oneShotReview(io, { id, name, reviewer: reviewer ?? ask.reviewer, head: ask.head ?? pushed });
   // One read after the ask, not a wait: a verdict already given since the
   // request (a reviewer that answered at once) ends the landing's review
   // step as it always did.
@@ -1145,6 +1149,21 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
   }
   await record("review", Date.now() - t0, { verdict: "requested", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) });
   return "asked";
+}
+
+// The one-shot review (t273, cli/review-oneshot.mjs). Run only where the
+// landing's caller wired io.oneShot, for a reviewer the server named and no
+// live runner offers; the offers unread, or a reviewer offered, leave the
+// request to the runners as it was. A reviewer missing from this Mac stops
+// the landing naming it, with the request left open for a runner elsewhere.
+async function oneShotReview(io, { id, name, reviewer, head }) {
+  if (!io.oneShot || !reviewer) return;
+  let offers = null;
+  try { offers = await io.request("GET", "/runners"); } catch { /* unread: no answer */ }
+  if (reviewerOffered(offers, reviewer, new Date(), name) !== false) return;
+  const result = await io.oneShot({ project: name, id, reviewer, log: io.print });
+  if (result.missing) throw new StepError(`${result.missing}. No live runner offers it either, so ${id} stays submitted with its review request open; add it to this Mac's runner config, or start a runner that offers ${reviewer}, then run atelier land ${id} again`);
+  if (result.phase !== "reviewed") throw new StepError(`the one-shot review by ${reviewer} of ${id} at ${short(head)} recorded no verdict: ${result.reason ?? "the review job failed"}. It released its claim; ${id} stays submitted. Run atelier land ${id} again once that is fixed`);
 }
 
 // ── the pieces both landings share (t280) ──────────────────────────────────
