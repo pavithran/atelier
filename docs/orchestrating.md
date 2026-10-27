@@ -69,7 +69,13 @@ points at it and states the review path (it does not edit the file).
   plain misses before the expensive review does.
 - Land with `atelier land ID --reviewer H/M`, where `H/M` names a reviewer
   of another family than every contributor; the command merges main, checks,
-  submits, waits for the independent review, then accepts and merges. Land a
+  submits, waits for the independent review, then accepts and merges. When no
+  live runner offers that reviewer, the landing runs a one-shot review on this
+  Mac: it claims the request and runs the reviewer's model from this Mac's
+  runner config, so the reviewer records its own verdict under its own token,
+  never you under its name. A model missing from the config is named and the
+  landing stops with the request open; a same-family reviewer is refused as
+  before; the one-shot runner exits after one verdict and holds no claim. Land a
   wave with `atelier land ID ID…`, which runs several of these side by
   side, up to `--parallel N`, while the project's landing lease lets one
   merge into main at a time. An override while accepting is the developer's

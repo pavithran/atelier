@@ -1,0 +1,59 @@
+// The one-shot review (t273). A landing that asks for a review no live runner
+// offers runs the reviewer here, on this Mac: one review job of the runner
+// (runReview in cli/runner.mjs), under the reviewer's own token from this
+// Mac's runner config, with nothing polled and nothing held after the verdict.
+// The landing records no review itself and never uses another identity.
+import { offering, offersFor } from "../src/dispatch/rules.ts";
+import { defaultConfigPath, readConfig } from "./runner-config.mjs";
+
+// Whether a live runner offers the reviewer for the review job. `offers` is
+// GET /runners; null when it could not be read, which is no answer either
+// way, so the caller leaves the request to the runners. Offers are read for
+// the landing's project (offersFor), so a runner scoped to other projects only
+// is no live reviewer for it.
+export function reviewerOffered(offers, reviewer, now = new Date(), project = undefined) {
+  if (!Array.isArray(offers)) return null;
+  const read = project ? offersFor(offers, project) : offers;
+  return !!offering({ to: "home", job: "review" }, read, now)?.actors.has(String(reviewer).toLowerCase());
+}
+
+// The reviewer's harness and model as this Mac's runner config names them, or
+// the one that is missing. Named by what is missing: no config, the harness,
+// or the model of a harness the config has.
+export function reviewerHere(reviewer, configPath, read = readConfig) {
+  const [harness, model] = String(reviewer).split("/");
+  let config;
+  try { config = read(configPath); }
+  catch (error) {
+    const none = error?.code === "ENOENT";
+    return { missing: none ? `${reviewer} cannot be run on this Mac: there is no runner config at ${configPath}` : `${reviewer} cannot be run on this Mac: the runner config at ${configPath} is unusable (${error.message})` };
+  }
+  const harnesses = config.agents.filter((a) => a.agent.toLowerCase() === harness.toLowerCase());
+  if (!harnesses.length) return { missing: `the harness ${harness} is missing: ${configPath} lists ${[...new Set(config.agents.map((a) => a.agent))].join(", ")}, so ${reviewer} cannot be run on this Mac` };
+  const entry = harnesses.find((a) => a.models.some((m) => m.toLowerCase() === model.toLowerCase()));
+  if (!entry) return { missing: `the model ${model} is missing: ${configPath} lists ${harnesses.flatMap((a) => a.models).join(", ")} for ${harness}, so ${reviewer} cannot be run on this Mac` };
+  return { config, agent: entry.agent, model: entry.models.find((m) => m.toLowerCase() === model.toLowerCase()), configPath };
+}
+
+// Claims the review request and runs the reviewer once. The claim, the
+// verdict and any release are the review job's, made with the reviewer's own
+// token (reviewToken); a job that fails releases its claim before it returns,
+// so nothing is held when this does. Answers { missing } when the model is
+// not on this Mac (nothing was claimed), otherwise { phase, verdict?, reason? }.
+// deps, which the command wires from the CLI (cli/commands/land.mjs): runRunner
+// and runReview of cli/runner.mjs, api ({ server, I }), workspacePath and
+// checkoutOf; configPath, read and taskIO are for tests. This module imports
+// none of them, since the runner reaches it and may not reach the CLI's helpers.
+export async function runOneShotReview({ project, id, reviewer, log = () => {}, deps = {} }) {
+  const here = reviewerHere(reviewer, deps.configPath ?? defaultConfigPath(), deps.read);
+  if (here.missing) return { missing: here.missing };
+  const name = `home:oneshot-${id}-${process.pid}`;
+  const actor = `${here.agent}/${here.model}`;
+  log(`no live runner offers ${reviewer}: running its review of ${id} once on this Mac as ${name}`);
+  // No runner token: the review job's calls carry the reviewer's own token,
+  // and the landing's token goes to none of them.
+  return deps.runRunner({ _: ["runner"], multi: { name: [name] }, name, config: here.configPath }, {
+    credential: null, taskIO: deps.taskIO, api: deps.api, workspacePath: deps.workspacePath, checkoutOf: deps.checkoutOf,
+    oneShot: ({ io, config, name: runner }) => deps.runReview({ project, item: { id }, agent: here.agent, model: here.model, actor }, config, runner, io),
+  });
+}

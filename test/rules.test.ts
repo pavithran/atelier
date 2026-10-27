@@ -17,7 +17,7 @@ import {
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, foldPath, harnessRefusal, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   riskClass, riskNeed, parseRiskReviews, retainableApprovals, retentionVerdict,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
-  applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
+  applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, reviewNotes, openNotes, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
   stageOf, type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride, type RetentionFacts,
 } from "../src/rules.ts";
 
@@ -1186,6 +1186,10 @@ test("a same-family post-merge review is accepted only for a task landed in fast
   assert.equal(fix.title, "Fix after fast landing of t9: Add a thing");
   assert.deepEqual(fix.accept, ["src/a.ts:4: null deref"]);
   assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
+  // A non-blocking finding is a note on the goal, never a criterion (t203).
+  const followUp = { file: "src/b.ts", line: 9, severity: "follow-up" as const, text: "rename y" };
+  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [followUp, { file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] }).accept, ["src/a.ts:4: null deref"]);
+  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [followUp] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
 });
 
 // ── fast builds (t589) ───────────────────────────────────────────────────────
@@ -1615,16 +1619,16 @@ test("a blocking finding blocks only when an independent check confirmed it; the
   assert.deepEqual(findings[0], { file: "a.ts", line: 1, severity: "blocking", text: "one" }, "the reviewer's own findings are not changed");
 });
 
-test("the follow-up task for pre-existing findings names each, and there is none without one", () => {
+test("non-blocking findings become notes, not tasks, and a repeated one is listed once", () => {
   const findings: Finding[] = [
     { file: "src/untouched.ts", line: 4, severity: "follow-up", label: "pre-existing", text: "Reads a stale value." },
-    { file: "src/a.ts", line: 11, severity: "follow-up", label: "unverified", text: "Maybe wrong." },
     { file: "src/a.ts", line: 12, severity: "follow-up", text: "Naming." },
+    { file: "src/b.ts", line: 3, severity: "blocking", text: "Breaks." },
   ];
-  const task = preExistingTask("t717", "Review rounds converge", { by: "codex/gpt-6-astra", head: sha("a"), findings })!;
-  assert.deepEqual(task.accept, ["src/untouched.ts:4: Reads a stale value."]);
-  assert.match(task.title, /t717/);
-  assert.equal(preExistingTask("t717", "x", { by: "a/b", head: sha("a"), findings: findings.slice(1) }), null);
+  const notes = reviewNotes("t717", { by: "codex/gpt-6-astra", head: sha("a"), findings })!;
+  assert.deepEqual(notes.map((n) => [n.file, n.line, n.label ?? null]), [["src/untouched.ts", 4, "pre-existing"], ["src/a.ts", 12, null]]);
+  assert.equal(reviewNotes("t717", { by: "a/b", head: sha("a"), findings: findings.slice(2) }), null);
+  assert.equal(openNotes([...notes, ...notes]).length, 2);
 });
 
 // Astra's review of round 1 (head 3a817817): git gives a mode change, a binary
