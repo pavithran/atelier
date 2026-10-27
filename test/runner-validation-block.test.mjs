@@ -43,13 +43,20 @@ for (const [point, prepared] of [["before the claim", false], ["after preparatio
     const first = await w.run(item, { prepared, harness: blocked });
     assert.equal(runOutcome(first.state), "validation_blocked");
     assert.equal(w.disk.marker.taskKey, taskRevisionKey(item));
-    for (let i = 0; i < 3; i++) {
+    // A replay after the claim releases the task as validation_blocked,
+    // which blocks it (t326): the queue offers it no more until the
+    // developer unblocks it (test/runner-validation-blocked-task.test.mjs),
+    // so it is replayed once here.
+    for (let i = 0; i < (prepared ? 1 : 3); i++) {
       const again = await w.run(item, { prepared, harness: () => assert.fail("a genuinely blocked task must not rerun its builder") });
       assert.equal(again.state.validationBlocked, true);
       assert.equal(again.built, false);
       assert.equal(again.claimed, prepared, prepared ? "the replay comes after the claim and preparation" : "the replay comes before the claim");
       assert.match(again.state.reason, /needs a scope change/);
       assert.ok(!again.logs.some((line) => RETRY.test(line)));
+      const release = again.calls.find((c) => c.argv?.[0] === "release");
+      if (prepared) assert.match(release.argv.at(-1), /^validation_blocked: .*needs a scope change/);
+      else assert.equal(release, undefined);
     }
     assert.notEqual(w.disk.marker, null);
   });
