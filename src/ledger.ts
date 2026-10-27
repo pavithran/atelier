@@ -80,7 +80,7 @@ import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
 import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
-import { rejectionRequest, reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { ReviewerRecords, SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
@@ -4236,7 +4236,7 @@ export class Ledger extends DurableObject<Env> {
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
-    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at);
+    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, r.approve ? boundClaims.map((c) => c.id as number) : undefined);
     // A rejection sends the change back for rework, so a tier request at the
     // head no runner has claimed yet is no longer asked for; a claimed one is
     // left to finish, and its findings join the rework.
@@ -7720,9 +7720,10 @@ export class Ledger extends DurableObject<Env> {
   // The review requests for one part, oldest first, as reviewNeeded reads them.
   reviewRequests(item: string): ReviewRequestView[] {
     this.expireReviewClaims();
-    return this.sql.exec(`SELECT head, state, claimedBy, claimedAt, tier FROM review_requests WHERE item = ? ORDER BY id`, item).toArray()
+    return this.sql.exec(`SELECT head, state, claimedBy, claimedAt, tier, dispatch FROM review_requests WHERE item = ? ORDER BY id`, item).toArray()
       .map((r) => ({
         head: r.head as string,
+        ...reviewerOf(r.dispatch as string),
         state: r.state as ReviewRequestView["state"],
         ...(r.claimedBy ? { claimedBy: r.claimedBy as string } : {}),
         ...(r.claimedAt ? { claimedAt: r.claimedAt as string } : {}),
@@ -8223,11 +8224,21 @@ export class Ledger extends DurableObject<Env> {
     // A claimed request is being served and stays: review_requested below.
     const withdrew: { request: number; reviewer: string | null }[] = [];
     if (reviewer !== null && item.head) {
-      const open = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL`, id, item.head).toArray();
+      const open = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL ORDER BY id`, id, item.head).toArray();
+      // A change that still needs several reviews keeps the other reviewers'
+      // requests, as many as its missing reviews leave room for beside the
+      // named one's; only the oldest beyond that are redirected (t374).
+      const missing = this.missingReviews(item, policy);
+      const others = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL`, id, item.head).toArray()
+        .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
+        .filter((d) => !(d.agent && d.model && sameActor(`${d.agent}/${d.model}`, reviewer!))).length;
+      let surplus = surplusRequests(missing, others);
       for (const r of open) {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         if (asked && sameActor(asked, reviewer)) continue;
+        if (surplus <= 0) continue;
+        surplus--;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, request: r.id as number, reason: `the developer named ${reviewer} to review it` }, at, proved);
         withdrew.push({ request: r.id as number, reviewer: asked });
@@ -8251,10 +8262,13 @@ export class Ledger extends DurableObject<Env> {
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
       requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, postMerge: item.state === "merged", now: new Date(at), owner: this.owner,
+      ...(reviewer !== null ? { reviewer } : {}),
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
-    const live = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
+    // The named reviewer's own request, when it has one, comes first (t374).
+    const liveRows = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC`, id, item.head).toArray();
+    const live = (reviewer === null ? undefined : liveRows.find((r) => { const d = JSON.parse(r.dispatch as string) as Dispatch; return !!d.agent && !!d.model && sameActor(`${d.agent}/${d.model}`, reviewer); })) ?? liveRows[0];
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
@@ -8361,7 +8375,21 @@ export class Ledger extends DurableObject<Env> {
   // Only requests for the criteria the review judged are answered: a request
   // made or claimed for other criteria (none stay live once the criteria
   // change, but a request records them) is not.
-  private answerReviewRequest(itemId: string, head: string, criteria: string, at: string): void {
+  // An approval that answers a request it claimed answers that one only
+  // (`only`), so the other reviewer's request stays open while the change
+  // still needs its review (t374).
+  // How many reviews the change at this head still needs, one when the
+  // gate needs no count (src/review/needed.ts, missingReviews).
+  private missingReviews(item: Item, policy: ProjectPolicy): number {
+    const need = reviewNeeded({ item, part: item.kind === "part", policy, evidence: this.evidenceFor(item.id), reviews: this.reviewsFor(item.id), requests: [], verdicts: this.findingVerdicts(item.id), wanted: true, now: new Date(), owner: this.owner });
+    return need.needed ? missingReviews(need) : 1;
+  }
+
+  private answerReviewRequest(itemId: string, head: string, criteria: string, at: string, only: number[] = []): void {
+    if (only.length) {
+      for (const id of only) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ? AND state = 'claimed'`, id);
+      return;
+    }
     this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL AND (criteria IS NULL OR criteria = ?)`, itemId, head, criteria);
   }
 

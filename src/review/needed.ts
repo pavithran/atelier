@@ -16,7 +16,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, gateApprovals, modelKey, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, riskNeed, roundCapHold, singleFamily,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, gateApprovals, modelKey, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, riskNeed, roundCapHold, sameActor, singleFamily,
   type ChangeClass, type RiskClass, type Evidence, type EvidenceView, type Finding, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
@@ -35,6 +35,27 @@ export interface ReviewRequestView {
   claimedBy?: string | null;
   claimedAt?: string | null;   // server-clock time of the last claim renewal
   tier?: boolean;
+  reviewer?: string | null;   // who it asks
+}
+
+// The reviewer a stored request's dispatch asks, as the view carries it.
+export function reviewerOf(dispatch: string): { reviewer?: string } {
+  const d = JSON.parse(dispatch) as { agent?: string; model?: string };
+  return d.agent && d.model ? { reviewer: `${d.agent}/${d.model}` } : {};
+}
+
+// The reviews a needed review still lacks: what the change's class needs less
+// the approvals counted, at least one.
+export function missingReviews(need: ReviewRequired): number {
+  return need.risk ? Math.max(1, need.risk.reviews - need.risk.have) : 1;
+}
+
+// How many of the other reviewers' live requests a named reviewer's request
+// replaces (t374): those beyond the room the missing reviews leave beside it.
+// One missing review leaves none, so the named reviewer replaces them all, as
+// it did before a change needed two.
+export function surplusRequests(missing: number, others: number): number {
+  return Math.max(0, others - Math.max(0, missing - 1));
 }
 
 // The message for a rejection, built on the task's ordinary notification: the
@@ -180,6 +201,9 @@ export interface NeedInput {
   // gate counts, or the owner's override, does not end: the tier reviews
   // beside the gate, so only what stops a review at all ends it.
   tier?: boolean;
+  // The reviewer the developer names (t374): a live request of another
+  // reviewer holds the item only while it leaves no review missing.
+  reviewer?: string;
   now: Date;
   owner?: string;
 }
@@ -275,7 +299,11 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // The ledger recovers expired claims before supplying this view. A live
   // gate request holds the item; a tier request beside it holds nothing.
   const live = (input.requests ?? []).filter((r) => r.head === head && !r.tier && (r.state === "open" || r.state === "claimed"));
-  const waiting = live[0];
+  // A named reviewer without a request of its own is asked beside the live
+  // ones while the change still lacks more reviews than they will give.
+  const own = input.reviewer ? live.some((r) => r.reviewer && sameActor(r.reviewer, input.reviewer!)) : true;
+  const room = !own && live.length < (risk ? Math.max(1, (basis === "part" ? Math.max(1, risk.reviews) : risk.reviews) - counted.length) : 1);
+  const waiting = room ? undefined : live[0];
   if (waiting) {
     return no(waiting.state === "open"
       ? `a review request for ${short(head)} is open`
