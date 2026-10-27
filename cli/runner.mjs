@@ -3699,10 +3699,45 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   if (tooLarge) return `Passed by: its review input (brief ${tooLarge.slice(0, 12)}) was refused for its size; it is tried again at a new head or once this runner is updated and restarted.`;
   if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
   const failed = failures.get(failureKey(task)) ?? 0;
-  if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}), push a new head or restart this runner.`;
   const broken = infrastructureFailures.get(failureKey(task)) ?? 0;
-  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again (atelier dispatch ${task.item.id}), push a new head or restart this runner.`;
   return null;
+}
+
+// A task this runner skipped (2 failed runs, 3 infrastructure failures, or a
+// give-up) stays skipped under its dispatch until the task's head changes
+// (t281): the new head is new work, and the server stops listing the skip at
+// it too (skipHolds in src/dispatch/rules.ts). The heads the skip began at are
+// noted when it happens (noteSkipHeads), the task's head and the one its
+// release push left, so a fix pushed before the next poll still clears it.
+// Returns true when the skip was cleared. A review is keyed by its head already.
+export function clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads }) {
+  const key = failureKey(task);
+  if (task.item.dispatch?.job === "review" || task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) return false;
+  const skipped = (failures.get(key) ?? 0) >= 2 || (infrastructureFailures.get(key) ?? 0) >= 3 || gaveUpTasks.has(taskKey(task));
+  if (!skipped) { skipHeads.delete(key); return false; }
+  const head = task.item.head ?? null;
+  if (!skipHeads.has(key)) { skipHeads.set(key, new Set([head])); return false; }
+  if (skipHeads.get(key).has(head)) return false;
+  failures.delete(key);
+  infrastructureFailures.delete(key);
+  gaveUpTasks.delete(taskKey(task));
+  skipHeads.delete(key);
+  return true;
+}
+
+// Notes the heads a skip began at: the task's head when the run started, and
+// `released`, the head its give-up push left (null when none was read).
+export function noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads }, released = null) {
+  const key = failureKey(task);
+  if (task.item.dispatch?.job === "review" || task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) return;
+  const skipped = (failures.get(key) ?? 0) >= 2 || (infrastructureFailures.get(key) ?? 0) >= 3 || gaveUpTasks.has(taskKey(task));
+  if (!skipped) return;
+  const heads = skipHeads.get(key) ?? new Set();
+  heads.add(task.item.head ?? null);
+  if (released) heads.add(released);
+  skipHeads.set(key, heads);
 }
 
 // The file a plan job's harness writes the plan document to, inside the
@@ -4043,7 +4078,7 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady, oneShot }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -4079,7 +4114,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // kept for this process so no later poll takes them again.
   // Review requests whose harness exited the same way run after run (t323),
   // by failureKey: the exit, its signature and the count (sameExitAfter).
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), skipHeads = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4436,6 +4471,17 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     },
     ...taskIO,
   };
+  // A one-shot review (t273, cli/review-oneshot.mjs) takes the io above and
+  // the config and runs one job in this process: it polls nothing, offers
+  // nothing and holds nothing when it returns. The signal handlers and the
+  // exit hook go with it, so the landing that called it keeps its own.
+  if (oneShot) {
+    try { return await oneShot({ io, config, name: offer.runner }); }
+    finally {
+      for (const signal of signals) process.off(signal, stop);
+      process.off("exit", killGroups);
+    }
+  }
   // A land job (t226): `atelier land ID` run in the project's registered
   // checkout, as its own process, so the landing lease and the landing
   // journal are the command's. The runner's own token is left out of its
@@ -4655,6 +4701,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
+        for (const task of ordered) {
+          if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
+        }
         const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, sameExits, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0))) {
           // A poll can contain the same task more than once. Recheck after
@@ -4795,6 +4844,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // so is one the harness loop gave up on (needsDeveloper).
           if (state.claimHeldAt && gaveUp) {
             if (await giveUpClaim({ io, project: task.project, item: task.item, actor: task.actor, workspace: state.claimHeldAt, reason: state.reason })) gaveUpTasks.add(taskKey(task));
+          }
+          if (gaveUp || state.claimHeldAt) {
+            let released = null;
+            if (state.claimHeldAt && io.head) {
+              try { const read = String(await io.head(state.claimHeldAt) ?? "").trim(); released = /^[0-9a-f]{7,64}$/.test(read) ? read : null; } catch { released = null; }
+            }
+            noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads }, released);
           }
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
