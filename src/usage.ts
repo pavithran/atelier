@@ -332,7 +332,14 @@ Standing rules:
   submits, waits for the independent review, then accepts and merges;
   \`--reviewer H/M\` names a reviewer of another family than every
   contributor, or in single-family mode a different model of the selected
-  company from every contributor. Land a wave with \`atelier land ID ID…\`:
+  company from every contributor. When no live runner offers that reviewer,
+  the landing runs a one-shot review on this Mac: it claims the request and
+  runs the reviewer's model from this Mac's runner config, so the reviewer
+  records its own verdict under its own token (the \`tokens\` entry for its
+  model), never you under its name. A model missing from the config is
+  named and the landing stops with the request open; a same-family reviewer
+  is refused as before; the one-shot runner exits after one verdict and holds
+  no claim. Land a wave with \`atelier land ID ID…\`:
   it runs several landings side by side (\`--parallel N\` bounds them),
   asks only the approvals the project's risk reviews still lack, and takes
   the landing lease for one merge at a time. Land retries a transient
