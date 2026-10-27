@@ -10246,11 +10246,48 @@ export class Ledger extends DurableObject<Env> {
     return [...held, ...(meta.length ? [`meta (${meta.slice(0, 5).join(", ")}${meta.length > 5 ? ", …" : ""})`] : [])];
   }
 
-  private importMark(id: unknown): { id: string; sequences: { name: string; seq: number }[]; record: ProjectRecord | null } {
+  private importMark(id: unknown): { id: string; sequences: { name: string; seq: number }[]; record: ProjectRecord | null; created: string[]; startup: { key: string; value: string }[]; loaded: Record<string, number> } {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray()[0];
     const mark = row ? JSON.parse(row.value as string) : null;
     if (!mark || mark.id !== id) throw new RuleError("no_import", "no import with that id is in progress on this Ledger; start again with atelier ledger import", 409);
-    return mark;
+    return { created: [], startup: [], loaded: {}, ...mark };
+  }
+
+  private writeImportMark(mark: object): void {
+    this.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify(mark), LEDGER_IMPORT_MARK);
+  }
+
+  // The rows of each table an import in progress has loaded, so a retry of
+  // a failed import sends only the rest (cli/ledger-dump.mjs importDump).
+  importProgress(id: string): { import: string; loaded: Record<string, number> } {
+    return { import: id, loaded: this.importMark(id).loaded };
+  }
+
+  // Takes an import in progress back: the rows it wrote are deleted, the
+  // tables it made are dropped, the counters and meta rows the Ledger had at
+  // begin are set again, and the mark is cleared, so the Ledger is empty as
+  // it was and a new import may begin.
+  importAbort(id: string): { import: string; removed: Record<string, number> } {
+    const mark = this.importMark(id);
+    const removed: Record<string, number> = {};
+    this.ctx.storage.transactionSync(() => {
+      for (const t of this.dumpTables()) {
+        if (mark.created.includes(t.name)) continue;
+        const triggers = this.sql.exec(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, t.name).toArray();
+        for (const g of triggers) this.sql.exec(`DROP TRIGGER "${g.name}"`);
+        const n = Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n);
+        this.sql.exec(`DELETE FROM "${t.name}"`);
+        if (n && t.name !== "meta") removed[t.name] = n;
+        for (const g of triggers) this.sql.exec(g.sql as string);
+      }
+      for (const name of mark.created) {
+        this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+        removed[name] = mark.loaded[name] ?? 0;
+      }
+      this.sql.exec(`DELETE FROM sqlite_sequence`);
+      for (const r of mark.startup) this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, r.key, r.value);
+    });
+    return { import: id, removed };
   }
 
   // The first step of an import (cli/ledger-dump.mjs importDump): refuses a
@@ -10260,8 +10297,10 @@ export class Ledger extends DurableObject<Env> {
   // progress under `id`, which every later step names.
   importBegin(manifest: { format?: unknown; tables?: unknown; objects?: unknown; sequences?: unknown; record?: unknown }, id: string): { import: string; created: string[] } {
     if (manifest?.format !== LEDGER_DUMP_FORMAT || !Array.isArray(manifest.tables)) throw new RuleError("bad_dump", `the file is not a Ledger dump (${LEDGER_DUMP_FORMAT})`, 400);
-    if (this.sql.exec(`SELECT 1 FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray().length) {
-      throw new RuleError("import_in_progress", "another import into this Ledger has begun and not finished; it already holds some of that dump's rows", 409);
+    const begun = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray()[0];
+    if (begun) {
+      const open = JSON.parse(begun.value as string).id;
+      throw new RuleError("import_in_progress", `import ${open} into this Ledger has begun and not finished; it already holds some of that dump's rows. Resume it with step resume, or abort it with step abort, naming ${open}`, 409);
     }
     const held = this.heldRows();
     if (held.length) throw new RuleError("ledger_not_empty", `this Ledger is not empty: ${held.join(", ")} hold rows. An import loads a dump into an empty Ledger only, so nothing was imported`, 409);
@@ -10291,7 +10330,8 @@ export class Ledger extends DurableObject<Env> {
       for (const t of create) this.sql.exec(t.sql);
       for (const o of indexes) this.sql.exec(o.sql as string);
       const record = manifest.record && typeof manifest.record === "object" ? manifest.record : null;
-      this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, LEDGER_IMPORT_MARK, JSON.stringify({ id, at: new Date().toISOString(), sequences, record }));
+      const startup = this.sql.exec(`SELECT key, value FROM meta`).toArray().map((r) => ({ key: r.key as string, value: r.value as string }));
+      this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, LEDGER_IMPORT_MARK, JSON.stringify({ id, at: new Date().toISOString(), sequences, record, created: [...made], startup, loaded: {} }));
     });
     return { import: id, created: [...made] };
   }
@@ -10309,6 +10349,7 @@ export class Ledger extends DurableObject<Env> {
     const keyAt = columns.indexOf("key");
     const insert = `INSERT ${table === "meta" ? "OR REPLACE " : ""}INTO "${table}" (${(columns as string[]).map((c) => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
     let inserted = 0;
+    const mark = this.importMark(id);
     this.ctx.storage.transactionSync(() => {
       const triggers = this.sql.exec(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, table).toArray();
       for (const t of triggers) this.sql.exec(`DROP TRIGGER "${t.name}"`);
@@ -10318,6 +10359,8 @@ export class Ledger extends DurableObject<Env> {
         inserted++;
       }
       for (const t of triggers) this.sql.exec(t.sql as string);
+      // Progress counts the rows sent, in the transaction that wrote them.
+      this.writeImportMark({ ...mark, loaded: { ...mark.loaded, [table]: (mark.loaded[table] ?? 0) + (rows as unknown[]).length } });
     });
     return { table, inserted };
   }
