@@ -24,7 +24,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, blockUntil, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -4531,9 +4531,23 @@ export class Ledger extends DurableObject<Env> {
 
   release(id: string, actor: string, note: string, proved = false, token?: string | null, providerLimit = false): Item {
     const item = this.releaseAllowed(id, actor, note);
+    // The holder's release of a build that ended validation_blocked (t326)
+    // blocks the task instead, as block() would: it keeps its owner, runner
+    // and dispatch, and waits on the developer. Unblocking returns it to its
+    // holder, whose runner the queue offers it to again (heldJobs). The
+    // write token goes as on any release; the next claim makes a new one.
+    const blocks = note.startsWith(VALIDATION_BLOCKED) && actor === item.owner && !providerLimit;
+    const reason = blocks ? validationBlockReason(note) : "";
+    if (blocks) assertBlockable(item);
     this.dropToken(id, token);
     this.dropRunnerJobs(id);
     const at = new Date().toISOString();
+    if (blocks) {
+      const record: Block = { reason, by: actor, at, from: item.state };
+      this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
+      this.log(id, actor, "item.blocked", { reason, from: item.state, validationBlocked: true, note }, at, proved);
+      return this.item(id);
+    }
     this.update(id, { owner: null, state: "open" }, at);
     this.log(id, actor, "item.released", { from: item.owner, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
     this.afterPlanChange(id);
