@@ -2152,11 +2152,11 @@ test("the merge context names the item's contributors, the checks observed passi
     assert.match(v.next, /claim t1 again/);
   });
 
-  test("a fork unready at the limit is stuck, and the remedy is by hand", () => {
+  test("a fork unready at the limit is stuck, and a later claim replaces it with nothing deleted by hand (t286)", () => {
     const v = forkPreparationView(prep, open, at(FORK_STUCK_MS));
     assert.equal(v.action, "stuck");
     assert.match(v.next, /Atelier deletes no fork/);
-    assert.match(v.next, /delete the Artifacts repository demo--t1 by hand and claim t1 again/);
+    assert.match(v.next, /once it has been preparing 30 minutes, the next claim of t1 makes a fork under a new name, at most 2 times; nothing needs deleting by hand/);
   });
 
   test("a stuck fork of a task with a recorded fork or head is not offered for deletion", () => {

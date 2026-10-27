@@ -17,9 +17,17 @@ export function sourceHead({ cwd = process.cwd(), env = process.env } = {}) {
   return expected;
 }
 
-export function deployWorker({ cwd = process.cwd(), env = process.env, run = spawnSync } = {}) {
+// The Wrangler environment a ship order names: none for production, or one
+// such as staging given as deploy --env staging.
+const ENVIRONMENT = /^[a-z0-9][a-z0-9_-]*$/;
+
+export function deployWorker({ cwd = process.cwd(), env = process.env, run = spawnSync, environment = "" } = {}) {
+  if (environment !== "" && !(typeof environment === "string" && ENVIRONMENT.test(environment))) throw new Error(`Not a Wrangler environment name: ${JSON.stringify(environment)}.`);
   const head = sourceHead({ cwd, env });
-  const result = run(process.platform === "win32" ? "npx.cmd" : "npx", ["wrangler", "deploy", "--keep-vars", "--var", `DEPLOYED_MAIN:${head}`], { cwd, env, stdio: "inherit" });
+  // --env is always given: an empty one names the top-level (production)
+  // Worker, and either takes precedence over a CLOUDFLARE_ENV in the
+  // environment.
+  const result = run(process.platform === "win32" ? "npx.cmd" : "npx", ["wrangler", "deploy", "--env", environment, "--keep-vars", "--var", `DEPLOYED_MAIN:${head}`], { cwd, env, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Wrangler deployment failed (${result.signal ?? result.status ?? "no exit status"}).`);
   // A concurrent source change must fail delivery even if Wrangler returned zero.
@@ -41,9 +49,10 @@ export async function verifyWorker({ cwd = process.cwd(), env = process.env, fet
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const action = process.argv[2];
-    if (!["deploy", "verify"].includes(action) || process.argv.length !== 3) throw new Error("Usage: node scripts/ship-worker.mjs deploy|verify");
-    const head = action === "deploy" ? deployWorker() : await verifyWorker();
+    const [action, ...rest] = process.argv.slice(2);
+    const staged = action === "deploy" && rest.length === 2 && rest[0] === "--env" && rest[1] !== "";
+    if (!["deploy", "verify"].includes(action) || (rest.length && !staged)) throw new Error("Usage: node scripts/ship-worker.mjs deploy [--env NAME] | verify");
+    const head = action === "deploy" ? deployWorker({ environment: staged ? rest[1] : "" }) : await verifyWorker();
     console.log(`${action === "deploy" ? "Deployed" : "Verified deployed source"}: ${head}`);
   } catch (error) {
     console.error(error.message);
