@@ -14,13 +14,20 @@ export function fastRefusal(message, name, reason) {
   return `${message}\nOn the developer's yes, run: atelier mode fast --reason ${JSON.stringify(reason)} --quote "the developer's words" --as H/M --project ${name}`;
 }
 
+// What the switch to fast mode prints after the mode line. Since t300 fast
+// mode lands through atelier land, or the lander for a queued task, once the
+// required checks pass, and the independent review comes after the merge.
+export function fastSwitchedLine(decision) {
+  return `Recorded as decision ${decision}. Tasks land through atelier land, or the lander, once their required checks pass; each is reviewed after the merge. Switch back with atelier mode full.`;
+}
+
 export async function switchMode(name, to, reason, direction = {}) {
   let r;
   try { r = await request("POST", `${P(name)}/mode`, { mode: to, ...(reason !== undefined ? { reason } : {}), ...direction }, OWNER, actingHeaders()); }
   catch (error) { if (error instanceof RequestError) die(fastRefusal(error.message, name, reason), error.code); throw error; }
   console.log(r.line);
   if (to === "full") for (const line of landedLines(r.landed)) console.log(line);
-  else console.log(`Recorded as decision ${r.decision}. Merge finished tasks yourself and record each with atelier record-merge; switch back with atelier mode full.`);
+  else console.log(fastSwitchedLine(r.decision));
   return r;
 }
 
