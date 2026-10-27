@@ -599,8 +599,8 @@ function bookmarks(env: Env) {
 // dump into the project's Ledger when it is empty, and registers the project
 // when this server does not list it yet; the import records the rows loaded
 // per table, so { step: resume, import } answers them for a retry to go on
-// from, and { step: abort, import } deletes what it wrote and clears it. cli/ledger-dump.mjs reads and
-// writes the pages.
+// from, and { step: abort, import } deletes what it wrote and clears it.
+// cli/ledger-dump.mjs reads and writes the pages.
 async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Response> {
   const { env, req, body, actor } = c;
   const m = req.method;
