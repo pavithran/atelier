@@ -983,6 +983,32 @@ async function gateStands(io, { id, itemPath, head }) {
   if (d.gate && d.gate.ready === false) throw new StepError(`${id} at ${short(head)} is not ready to accept, so the landing stops before taking the lease: ${(d.gate.blockers ?? []).join("; ") || "the gate gave no reason"}. Nothing was merged`);
 }
 
+// The approval that settles the review (t313): the named reviewer's when it
+// is recorded at the head, otherwise any the gate counts, since --reviewer
+// decides who is asked and must not hold back a landing the gate allows.
+// Says so when another reviewer's approval stands in, and what became of the
+// named reviewer's request: withdrawn when it was open and unclaimed, left
+// open when it was claimed or the withdrawal was refused.
+async function settledByRecorded(io, { detail, itemPath, head, reviewer }) {
+  const own = reviewer ? recordedApproval(detail, head, reviewer) : null;
+  const held = own ?? recordedApproval(detail, head, null);
+  if (!held) return null;
+  const { id, print, request } = io;
+  if (own || !reviewer) { print(`${held.by} already approved ${id} at ${short(head)}, and the gate counts it: no review request was needed.`); return held; }
+  print(`${held.by} already approved ${id} at ${short(head)}, and the gate counts it, so ${id} lands without waiting for ${reviewer}: no review request was needed.`);
+  const live = detail.liveReview;
+  if (!live || !sameActor(live.reviewer, reviewer)) print(`${reviewer} has no open review request on ${id} at ${short(head)}; none was made.`);
+  else {
+    try {
+      await request("POST", `${itemPath}/review-withdraw`, { request: live.request, reason: `${held.by} already approved ${id} at ${short(head)}; the landing does not wait for ${reviewer}` });
+      print(`${reviewer}'s review request ${live.request} on ${id} was withdrawn.`);
+    } catch (error) {
+      print(`${reviewer}'s review request ${live.request} on ${id} was left open: ${String(error.message ?? error).replace(/\.*$/, "")}.`);
+    }
+  }
+  return held;
+}
+
 // Asks the server for the review, as the landing does, and says who it is
 // asked of and why (t162: with no --reviewer the server picks, and a failed
 // pick shows each candidate's rejection in the refusal the request carries).
@@ -1005,9 +1031,8 @@ async function followLand(io, { detail, itemPath, noWait }) {
   else if (detail.item.state === "submitted") {
     // An approval by the named reviewer already recorded at the head settles
     // the review, as the landing's own review step does: no request is posted.
-    const held = reviewer ? recordedApproval(detail, detail.item.head, reviewer) : null;
-    if (held) print(`${held.by} already approved ${id} at ${short(detail.item.head)}, and the gate counts it: no review request was needed.`);
-    else ask = await askReview(io, { itemPath, reviewer });
+    const held = await settledByRecorded(io, { detail, itemPath, head: detail.item.head, reviewer });
+    if (!held) ask = await askReview(io, { itemPath, reviewer });
   } else if (detail.item.state !== "accepted") print(`${id} is ${detail.item.state}, not submitted, so no review was asked; the land job asks once the task is submitted.`);
   const asked = await recordLandRequest(io, itemPath, id);
   if (noWait) { print(`Not waiting (--no-wait): run atelier land ${id} again to resume; a runner that holds the registered checkout lands it once the gate counts an approval.`); return NOT_LANDED; }
@@ -1077,9 +1102,8 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
   // settles the review before any request (t628): a new request would count
   // only verdicts given after it.
   const now = await request("GET", itemPath);
-  const held = recordedApproval(now, pushed, reviewer ?? null);
+  const held = await settledByRecorded(io, { detail: now, itemPath, head: pushed, reviewer });
   if (held) {
-    print(`${held.by} already approved ${id} at ${short(pushed)}, and the gate counts it: no review request was needed.`);
     await record("review", Date.now() - t0, { verdict: "approve", reviewer: held.by, resolvedBy: held.by, reason: "approval recorded at the head before the landing asked for a review" });
     return;
   }
