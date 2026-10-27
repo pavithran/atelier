@@ -159,7 +159,8 @@ it("a rejected post-merge review of a fast landing files a fix task from its fin
   await L.landedFast(item.id, "owner", receipt(C1, M2));
   await L.requestReview(item.id, "owner", GPT, POOL);
   const claim = await L.claimReview(item.id, GPT, RUNNER) as unknown as ReviewClaim;
-  const findings = [{ file: "src/a.ts", line: 3, severity: "blocking" as const, text: "Drops the record" }];
+  // The follow-up stays a note on the goal; only the blocking finding is a criterion (t203).
+  const findings = [{ file: "src/a.ts", line: 3, severity: "blocking" as const, text: "Drops the record" }, { file: "src/b.ts", line: 7, severity: "follow-up" as const, text: "Rename the helper" }];
   await L.addReview({ itemId: item.id, by: GPT, head: M2, criteria: claim.criteria, request: claim.request, approve: false, note: "Drops data", findings, at: AT }, undefined, true);
   const fix = await L.item("t2");
   expect(fix).toMatchObject({ title: expect.stringMatching(/^Fix after fast landing of t1: Risky/), state: "open", accept: ["src/a.ts:3: Drops the record"] });
