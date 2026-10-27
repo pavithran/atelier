@@ -3470,3 +3470,83 @@ export function mergePolicyDecision(before: PolicyFields, after: PolicyFields, p
       ? `${reasons.join("; ")}. Review the task again on its page and accept again, or use --policy-changed-ok after reviewing this policy change.` : null,
   };
 }
+
+// ── the Ledger's way back (t342) ─────────────────────────────────────────────
+//
+// Before a switch of the server (1.0 to 1.1, say), the developer records a
+// point-in-time bookmark of a project's Ledgers, which restores them if the
+// switch goes wrong, and dumps the project's Ledger to a file, which a staging
+// server imports to rehearse the switch on production's rows. The routes are
+// in src/index.ts (ledgerWayBack), the storage side in src/ledger.ts and the
+// CLI in cli/commands/ledger.mjs; docs/orchestrating.md says when to use them.
+
+// What a dump file and the dump route say they are.
+export const LEDGER_DUMP_FORMAT = "atelier-ledger-dump.v1";
+
+// The most JSON one page of a table's rows carries, so a page stays well
+// under the limits of a Durable Object call and of a request body.
+export const DUMP_PAGE_BYTES = 2_000_000;
+
+// The meta rows a Ledger writes for itself when it starts or restarts. A
+// Ledger holding these and nothing else is empty: an import may fill it.
+export const LEDGER_STARTUP_META: readonly string[] = ["item-briefs", "review-provenance", "part-acceptance", "deployed-main", "ledger-restart"];
+
+// The meta row an import in progress keeps (Ledger.importBegin), never
+// dumped and never imported.
+export const LEDGER_IMPORT_MARK = "ledger-import";
+
+// A table a dump reads and an import writes: a plain name, and none of
+// SQLite's own (sqlite_) or Cloudflare's (_cf_).
+export function dumpableTable(name: unknown): name is string {
+  return typeof name === "string" && /^[A-Za-z][A-Za-z0-9_]*$/.test(name) && !/^sqlite_/i.test(name) && !/^_cf_/i.test(name);
+}
+
+// A Durable Object bookmark as the storage API writes it: hex groups joined
+// by hyphens.
+export const LEDGER_BOOKMARK = /^[0-9a-f]+(?:-[0-9a-f]+)+$/i;
+
+// One recorded bookmark of a project's Ledgers: its own Ledger and the
+// index, which holds the project's registration, the tokens and the pool.
+// `undoes` names the restore whose undo bookmarks it holds.
+export interface LedgerBookmark {
+  id: string;
+  project: string;
+  at: string;
+  by: string;
+  ledgers: { name: string; bookmark: string }[];
+  undoes?: string;
+  restores?: { at: string; by: string }[];
+}
+
+// The Ledger never holds a token, only its hash; a token pasted into free
+// text (a brief, a note) is the one secret value its rows can carry, and a
+// dump replaces it, as the push scan finds it (src/secret-scan.ts).
+const PASTED_TOKEN = /(?<![A-Za-z0-9_])atl_(?:[0-9a-f]{2}){32,}(?![A-Za-z0-9_])/g;
+
+// One stored value as a dump writes it: a string without a pasted token, a
+// blob as base64 under $blob, anything else as it is. `redacted` counts the
+// tokens replaced.
+export function dumpValue(value: unknown, count: { redacted: number }): unknown {
+  if (typeof value === "string") {
+    return value.replace(PASTED_TOKEN, () => { count.redacted++; return "[redacted]"; });
+  }
+  if (value instanceof ArrayBuffer) {
+    let text = "";
+    for (const byte of new Uint8Array(value)) text += String.fromCharCode(byte);
+    return { $blob: btoa(text) };
+  }
+  return value;
+}
+
+// A dumped value back as the import stores it.
+export function importValue(value: unknown): string | number | null | ArrayBuffer {
+  if (value === null || typeof value === "string" || typeof value === "number") return value;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (value && typeof value === "object" && typeof (value as { $blob?: unknown }).$blob === "string") {
+    const text = atob((value as { $blob: string }).$blob);
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    return bytes.buffer;
+  }
+  throw new RuleError("bad_dump", "a dumped value is text, a number, null or a $blob", 400);
+}

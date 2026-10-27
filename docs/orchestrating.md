@@ -1063,6 +1063,71 @@ or the Worker log says a Ledger "predates ledgerVersion", stop every runner
 for 70 s and start them again. From then on every Ledger runs code that
 restarts itself on the first call after a deploy.
 
+### Before a switch of the server
+
+The Ledger's schema only moves forward: a deploy adds tables and columns
+(src/ledger.ts, the constructor) and never takes them away, and
+`atelier events` exports the events alone, not the items, reviews, plans,
+tokens and models the other tables hold. A switch of the server, such as
+1.0 to 1.1, therefore needs a way back recorded before it starts. Since
+t342 the developer has four commands for it, each refused with 403 to an
+agent's or a runner's token, or a request without one.
+
+Before the switch:
+
+1. Stop the runners, so nothing writes while you read.
+2. Record a bookmark of each project:
+   `atelier ledger bookmark --project P`. It records the point-in-time
+   bookmark of the project's Ledger and of the index (which holds every
+   project's registration, the tokens and the pool), prints both, and
+   prints the id, `b1` say, that restores them. Keep the id with the
+   switch's notes. Cloudflare keeps a Durable Object's history for 30
+   days, so a bookmark is a way back for 30 days.
+3. Dump each project: `atelier ledger dump --project P --file P.json`.
+   The file holds every table of the project's Ledger with its rows, the
+   schema version (a hash of every table's columns) and the commit that
+   wrote it. Tokens appear only as their hashes, which is all the Ledger
+   keeps; a token pasted into a brief or a note is replaced with
+   `[redacted]`. The dump fails, writing nothing, if a table changed while
+   it read; stop the runners and dump again. The file is the project's
+   whole record: keep it as you would the owner token.
+
+Rehearse the switch on staging before production:
+
+1. On a staging server that runs the same code as production, import the
+   dump: `ATELIER_SERVER=https://staging… atelier ledger import --project
+   P --file P.json`. The import refuses a Ledger that already holds
+   anything, a dump of another project, and a dump whose tables have
+   other columns than the server's (`schema_mismatch`: import into a
+   server running the code that wrote the dump, then deploy the new code
+   there). It registers the project when staging does not list it yet.
+   An import that stops halfway leaves its rows behind, and a second one
+   is refused; rehearse again under a project staging has not had.
+2. Deploy the new version to staging and watch the Ledger migrate the
+   imported rows: open the project's pages, run `atelier status --project
+   P` and `atelier stuck --project P`, and compare what they show with
+   production.
+3. Switch production only when staging shows nothing missing.
+
+To roll back production after the switch:
+
+1. Deploy the version you switched from.
+2. Restore each project: `atelier ledger restore --project P --bookmark
+   b1`. Only a bookmark `atelier ledger bookmark` recorded for that project
+   is taken. Each Ledger restores to it on its next start, which it is
+   asked to make at once; the command says which. Everything written since
+   the bookmark is gone, in the project's Ledger and in the index, and the
+   index is every project's: restore every project to bookmarks recorded
+   together, or the other projects lose what the index gained for them
+   since.
+3. The restore records a bookmark of the state just before it, and prints
+   the command that returns to it, should the rollback itself be the
+   mistake.
+
+The local runtime keeps no history, so the tests cannot restore a
+bookmark: they stand in for the storage's restore call. Try a restore on
+staging before the first switch that may need one.
+
 ## Fast mode
 
 Atelier has two modes. Full mode is the default: every task is claimed,

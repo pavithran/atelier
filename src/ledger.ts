@@ -16,7 +16,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, forkAgeText, FORK_REQUEST_MS, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type TaskStage } from "./rules";
+import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpValue, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type LedgerBookmark, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -10012,6 +10012,208 @@ export class Ledger extends DurableObject<Env> {
     const from = "head" in fields ? (this.sql.exec(`SELECT head FROM items WHERE id = ?`, id).toArray()[0]?.head as string | null | undefined) ?? null : null;
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), at, id);
     if ("head" in fields && fields.head && fields.head !== from) this.withdrawStaleRequests(id, fields.head, at);
+  }
+
+  // ── the way back: bookmarks, dump and import (t342) ──────────────────────
+  //
+  // The routes (ledgerWayBack in src/index.ts) are the developer's alone and
+  // check that before they call any of these.
+
+  // This Ledger's storage now, as a point-in-time bookmark (Cloudflare's
+  // SQLite-backed Durable Object recovery, which reaches back 30 days).
+  storageBookmark(): Promise<string> {
+    return this.ctx.storage.getCurrentBookmark();
+  }
+
+  // Restores this Ledger to `bookmark` when it next starts, and asks for
+  // that start now: the restart gate aborts it once no call is in flight.
+  // Answers the bookmark of the storage just before the restore, which
+  // undoes it.
+  async restoreBookmark(bookmark: string): Promise<{ undo: string }> {
+    if (typeof bookmark !== "string" || !LEDGER_BOOKMARK.test(bookmark)) throw new RuleError("bad_bookmark", "a Ledger bookmark is hex groups joined by hyphens", 400);
+    let undo: string;
+    try { undo = await this.ctx.storage.onNextSessionRestoreBookmark(bookmark); } catch (error) {
+      throw new RuleError("restore_unavailable", `this Ledger's storage did not take the bookmark: ${String((error as Error)?.message ?? error).slice(0, 300)}`, 501);
+    }
+    GATES.get(this)?.request(`Ledger restoring to bookmark ${bookmark}`);
+    return { undo };
+  }
+
+  // The bookmarks recorded for a project, kept in a Ledger of their own that
+  // no restore touches (src/index.ts, BOOKMARKS), one meta row each.
+  recordBookmark(key: string, record: Omit<LedgerBookmark, "id">): LedgerBookmark {
+    const prefix = `bookmark:${key}:`;
+    const n = Number(this.sql.exec(`SELECT COUNT(*) AS n FROM meta WHERE substr(key, 1, ?) = ?`, prefix.length, prefix).one().n) + 1;
+    const saved: LedgerBookmark = { id: `b${n}`, ...record };
+    this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, prefix + saved.id, JSON.stringify(saved));
+    return saved;
+  }
+
+  bookmarkRecord(key: string, id: string): LedgerBookmark | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `bookmark:${key}:${id}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) as LedgerBookmark : null;
+  }
+
+  noteRestore(key: string, id: string, restore: { at: string; by: string }): void {
+    const record = this.bookmarkRecord(key, id);
+    if (!record) return;
+    this.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, restores: [...record.restores ?? [], restore] }), `bookmark:${key}:${id}`);
+  }
+
+  // Every table a dump reads, with its definition.
+  private dumpTables(): { name: string; sql: string }[] {
+    return this.sql.exec(`SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name`).toArray()
+      .filter((t) => dumpableTable(t.name)).map((t) => ({ name: t.name as string, sql: t.sql as string }));
+  }
+
+  private tableColumns(table: string): { name: string; type: string; notnull: number; dflt_value: unknown; pk: number }[] {
+    return this.sql.exec(`PRAGMA table_info("${table}")`).toArray().map((c) => ({ name: c.name as string, type: c.type as string, notnull: c.notnull as number, dflt_value: c.dflt_value, pk: c.pk as number }));
+  }
+
+  // What a dump holds apart from the rows: every table with its definition,
+  // columns and row count; the indexes and triggers; the AUTOINCREMENT
+  // counters; the project's record; and the schema version, a hash of every
+  // table's name and columns, which an import compares table by table.
+  async dumpManifest(): Promise<Record<string, unknown>> {
+    const tables = this.dumpTables().map((t) => ({ ...t, columns: this.tableColumns(t.name), count: Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n) }));
+    const names = new Set(tables.map((t) => t.name));
+    const objects = this.sql.exec(`SELECT type, name, tbl_name AS "table", sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name`).toArray()
+      .filter((o) => names.has(o.table as string));
+    const sequences = this.sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'`).toArray().length
+      ? this.sql.exec(`SELECT name, seq FROM sqlite_sequence ORDER BY name`).toArray().filter((s) => names.has(s.name as string)) : [];
+    const shape = tables.map((t) => `${t.name}(${t.columns.map((c) => `${c.name} ${c.type}`).sort().join(", ")})`).join("\n");
+    const project = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
+    return {
+      format: LEDGER_DUMP_FORMAT, schemaVersion: (await sha256(shape)).slice(0, 16), deployed: this.deployed, at: new Date().toISOString(),
+      record: project ? JSON.parse(project.value as string) : null, tables, objects, sequences,
+    };
+  }
+
+  // One page of a table's rows, in storage order from after `after` (a
+  // rowid), up to DUMP_PAGE_BYTES of JSON; `next` is where the following
+  // page starts, null after the last. The import mark is never dumped.
+  dumpRows(table: string, after = 0): { table: string; columns: string[]; rows: unknown[][]; next: number | null; redacted: number } {
+    if (!this.dumpTables().some((t) => t.name === table)) throw new RuleError("no_table", `this Ledger has no table ${String(table).slice(0, 80)}`, 404);
+    const columns = this.tableColumns(table).map((c) => c.name);
+    const count = { redacted: 0 };
+    const rows: unknown[][] = [];
+    let bytes = 0, last = after, next: number | null = null;
+    const cursor = this.sql.exec(`SELECT rowid, ${columns.map((c) => `"${c}"`).join(", ")} FROM "${table}" WHERE rowid > ? ORDER BY rowid`, after).raw();
+    for (const [rowid, ...values] of cursor) {
+      if (table === "meta" && values[columns.indexOf("key")] === LEDGER_IMPORT_MARK) { last = rowid as number; continue; }
+      const row = values.map((v) => dumpValue(v, count));
+      const size = JSON.stringify(row).length;
+      if (rows.length && bytes + size > DUMP_PAGE_BYTES) { next = last; break; }
+      rows.push(row);
+      bytes += size;
+      last = rowid as number;
+    }
+    return { table, columns, rows, next, redacted: count.redacted };
+  }
+
+  // The tables that hold a row, meta's own rows apart from those a Ledger
+  // writes when it starts: what makes this Ledger not empty.
+  private heldRows(): string[] {
+    const held = this.dumpTables().filter((t) => t.name !== "meta" && this.sql.exec(`SELECT 1 FROM "${t.name}" LIMIT 1`).toArray().length).map((t) => t.name);
+    const meta = this.sql.exec(`SELECT key FROM meta`).toArray().map((r) => r.key as string).filter((k) => !LEDGER_STARTUP_META.includes(k));
+    return [...held, ...(meta.length ? [`meta (${meta.slice(0, 5).join(", ")}${meta.length > 5 ? ", …" : ""})`] : [])];
+  }
+
+  private importMark(id: unknown): { id: string; sequences: { name: string; seq: number }[]; record: ProjectRecord | null } {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray()[0];
+    const mark = row ? JSON.parse(row.value as string) : null;
+    if (!mark || mark.id !== id) throw new RuleError("no_import", "no import with that id is in progress on this Ledger; start again with atelier ledger import", 409);
+    return mark;
+  }
+
+  // The first step of an import (cli/ledger-dump.mjs importDump): refuses a
+  // Ledger that holds anything, and a dump whose tables have columns other
+  // than this Ledger's; makes the tables (and their indexes) this Ledger has
+  // not made yet, since some are made on first use; and marks the import in
+  // progress under `id`, which every later step names.
+  importBegin(manifest: { format?: unknown; tables?: unknown; objects?: unknown; sequences?: unknown; record?: unknown }, id: string): { import: string; created: string[] } {
+    if (manifest?.format !== LEDGER_DUMP_FORMAT || !Array.isArray(manifest.tables)) throw new RuleError("bad_dump", `the file is not a Ledger dump (${LEDGER_DUMP_FORMAT})`, 400);
+    if (this.sql.exec(`SELECT 1 FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray().length) {
+      throw new RuleError("import_in_progress", "another import into this Ledger has begun and not finished; it already holds some of that dump's rows", 409);
+    }
+    const held = this.heldRows();
+    if (held.length) throw new RuleError("ledger_not_empty", `this Ledger is not empty: ${held.join(", ")} hold rows. An import loads a dump into an empty Ledger only, so nothing was imported`, 409);
+    const existing = new Map(this.dumpTables().map((t) => [t.name, new Set(this.tableColumns(t.name).map((c) => c.name))]));
+    const tables = manifest.tables as { name?: unknown; sql?: unknown; columns?: unknown }[];
+    const create: { name: string; sql: string }[] = [];
+    for (const t of tables) {
+      if (!dumpableTable(t?.name) || !Array.isArray(t.columns)) throw new RuleError("bad_dump", "a dumped table needs a plain name and its columns", 400);
+      const columns = (t.columns as { name?: unknown }[]).map((c) => String(c?.name));
+      const have = existing.get(t.name);
+      if (have) {
+        const missing = columns.filter((c) => !have.has(c)), extra = [...have].filter((c) => !columns.includes(c));
+        if (missing.length || extra.length) {
+          throw new RuleError("schema_mismatch", `table ${t.name} differs between the dump and this Ledger (${[missing.length ? `only the dump has ${missing.join(", ")}` : "", extra.length ? `only this Ledger has ${extra.join(", ")}` : ""].filter(Boolean).join("; ")}): import a dump into a server running the code that wrote it, then deploy the new code there`, 409);
+        }
+      } else {
+        if (typeof t.sql !== "string" || t.sql.includes(";") || !new RegExp(`^CREATE TABLE "?${t.name}"?\\s*\\(`, "i").test(t.sql)) throw new RuleError("bad_dump", `the dump's definition of ${t.name} is not a single CREATE TABLE of it`, 400);
+        create.push({ name: t.name, sql: t.sql });
+      }
+    }
+    const made = new Set(create.map((t) => t.name));
+    const indexes = (Array.isArray(manifest.objects) ? manifest.objects as { type?: unknown; name?: unknown; table?: unknown; sql?: unknown }[] : [])
+      .filter((o) => o?.type === "index" && made.has(o.table as string) && dumpableTable(o.name) && typeof o.sql === "string" && !o.sql.includes(";") && /^CREATE (?:UNIQUE )?INDEX /i.test(o.sql));
+    const sequences = (Array.isArray(manifest.sequences) ? manifest.sequences as { name?: unknown; seq?: unknown }[] : [])
+      .filter((s) => dumpableTable(s?.name) && Number.isInteger(s.seq)).map((s) => ({ name: s.name as string, seq: s.seq as number }));
+    this.ctx.storage.transactionSync(() => {
+      for (const t of create) this.sql.exec(t.sql);
+      for (const o of indexes) this.sql.exec(o.sql as string);
+      const record = manifest.record && typeof manifest.record === "object" ? manifest.record : null;
+      this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, LEDGER_IMPORT_MARK, JSON.stringify({ id, at: new Date().toISOString(), sequences, record }));
+    });
+    return { import: id, created: [...made] };
+  }
+
+  // Rows of one table, as dumpRows wrote them, into an import in progress.
+  // The triggers that guard a table against writes outside the Ledger's own
+  // methods (items' owner) are dropped for the insert and made again, in one
+  // transaction. meta's rows replace those the Ledger wrote when it started.
+  importRows(id: string, table: string, columns: unknown, rows: unknown): { table: string; inserted: number } {
+    this.importMark(id);
+    if (!dumpableTable(table) || !this.dumpTables().some((t) => t.name === table)) throw new RuleError("no_table", `this Ledger has no table ${String(table).slice(0, 80)}`, 404);
+    const have = new Set(this.tableColumns(table).map((c) => c.name));
+    if (!Array.isArray(columns) || !columns.length || columns.some((c) => typeof c !== "string" || !have.has(c))) throw new RuleError("bad_dump", `the columns given are not ${table}'s`, 400);
+    if (!Array.isArray(rows) || rows.some((r) => !Array.isArray(r) || r.length !== columns.length)) throw new RuleError("bad_dump", `each row of ${table} needs one value per column`, 400);
+    const keyAt = columns.indexOf("key");
+    const insert = `INSERT ${table === "meta" ? "OR REPLACE " : ""}INTO "${table}" (${(columns as string[]).map((c) => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+    let inserted = 0;
+    this.ctx.storage.transactionSync(() => {
+      const triggers = this.sql.exec(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, table).toArray();
+      for (const t of triggers) this.sql.exec(`DROP TRIGGER "${t.name}"`);
+      for (const row of rows as unknown[][]) {
+        if (table === "meta" && row[keyAt] === LEDGER_IMPORT_MARK) continue;
+        this.sql.exec(insert, ...row.map(importValue));
+        inserted++;
+      }
+      for (const t of triggers) this.sql.exec(t.sql as string);
+    });
+    return { table, inserted };
+  }
+
+  // The last step: sets the AUTOINCREMENT counters as the dump had them, so
+  // a row added after the import never takes a number the source had used,
+  // clears the mark, and sets the alarm, which a dump does not carry, so an
+  // approved plan's deadline and a claimed review's lapse are kept (alarm()
+  // sets it again for the next). Answers each table's row count and the
+  // project's record the dump carried.
+  async importFinish(id: string): Promise<{ counts: Record<string, number>; record: ProjectRecord | null }> {
+    const mark = this.importMark(id);
+    this.ctx.storage.transactionSync(() => {
+      for (const s of mark.sequences) {
+        if (!this.dumpTables().some((t) => t.name === s.name)) continue;
+        this.sql.exec(`DELETE FROM sqlite_sequence WHERE name = ?`, s.name);
+        this.sql.exec(`INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)`, s.name, s.seq);
+      }
+      this.sql.exec(`DELETE FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK);
+    });
+    const counts = Object.fromEntries(this.dumpTables().map((t) => [t.name, Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n)]));
+    await this.ctx.storage.setAlarm(Date.now() + 1000);
+    return { counts, record: mark.record };
   }
 
   private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
