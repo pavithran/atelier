@@ -58,13 +58,30 @@ export function deployWorker({ cwd = process.cwd(), env = process.env, run = spa
   return head;
 }
 
-export async function verifyWorker({ cwd = process.cwd(), env = process.env, fetchImpl = fetch, versionUrl = VERSION_URL } = {}) {
+// A deploy returns before every edge serves the new version, so a commit
+// mismatch is retried with back-off until the window closes. Any other
+// failure (HTTP status, malformed body, unreachable service) fails at once.
+export const VERIFY_WINDOW_MS = 60_000;
+const sleepFor = (ms) => new Promise((done) => setTimeout(done, ms));
+
+export async function verifyWorker({ cwd = process.cwd(), env = process.env, fetchImpl = fetch, versionUrl = VERSION_URL, sleep = sleepFor, now = Date.now, windowMs = VERIFY_WINDOW_MS } = {}) {
   const head = sourceHead({ cwd, env });
-  const response = await fetchImpl(versionUrl, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(30_000) });
-  if (response.status !== 200) throw new Error(`Deployment verification returned HTTP ${response.status}; expected 200.`);
-  const version = await response.json();
-  if (!version || typeof version !== "object" || Array.isArray(version) || version.commit !== head) {
-    throw new Error("The live deployed commit does not match the source captured by atelier ship.");
+  const deadline = now() + windowMs;
+  let delay = 1000;
+  for (;;) {
+    const response = await fetchImpl(versionUrl, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(30_000) });
+    if (response.status !== 200) throw new Error(`Deployment verification returned HTTP ${response.status}; expected 200.`);
+    const version = await response.json();
+    if (!version || typeof version !== "object" || Array.isArray(version)) {
+      throw new Error("The live deployed version is not a JSON object.");
+    }
+    if (version.commit === head) break;
+    const remaining = deadline - now();
+    if (remaining <= 0) {
+      throw new Error(`The live deployed commit ${version.commit} does not match the source ${head} captured by atelier ship, after retrying for ${Math.round(windowMs / 1000)} s.`);
+    }
+    await sleep(Math.min(delay, remaining));
+    delay = Math.min(delay * 2, 10_000);
   }
   sourceHead({ cwd, env });
   return head;
