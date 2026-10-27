@@ -294,7 +294,9 @@ async function scanPair(reader: Reader, baseTree: string, headTree: string, allo
 // readAllowances in scripts/privacy-scan.mjs) is not flagged: its commit
 // starts with the allowance's commit, its file is the allowance's file, and
 // the SHA-256 of the exact added line is the allowance's. The list is read
-// from the head's tree, which is the list the push of the landed task reads.
+// from the head's tree, which is the list the push of the landed task reads,
+// and only once a key-shaped line is found: a scan that finds none reads no
+// more than it did before the list was honoured.
 
 // The most commits of main's history read to know where the task's begin,
 // and the most commits of the task's own the scan reads. A task over the
@@ -371,11 +373,12 @@ async function readAllowanceList(reader: Reader, tree: string): Promise<PrivacyA
 
 // What one commit adds: its scan against its parent, or against each parent
 // of a merge with every side's findings kept once each, each named with the
-// commit. A line an allowance permits for this commit is left out.
-async function scanAdded(r: Reader, commit: Commit, trees: Map<string, string>, allowances: PrivacyAllowance[]): Promise<PushScan> {
+// commit. A line an allowance permits for this commit is left out; the list
+// is asked for only when a key-shaped line is found.
+async function scanAdded(r: Reader, commit: Commit, trees: Map<string, string>, allowances: () => Promise<PrivacyAllowance[]>): Promise<PushScan> {
   const parents = commit.parents?.length ? commit.parents : [null];
-  const mine = allowances.filter((a) => commit.hash.startsWith(a.commit));
   const allowed = async (file: string, text: string) => {
+    const mine = (await allowances()).filter((a) => commit.hash.startsWith(a.commit));
     if (!mine.some((a) => a.file === file)) return false;
     const digest = await sha256(text);
     return mine.some((a) => a.file === file && a.sha256 === digest);
@@ -392,11 +395,15 @@ async function scanAdded(r: Reader, commit: Commit, trees: Map<string, string>, 
 
 // The scan of `commits`, the commits a task adds in any order, oldest first
 // in the result. `trees` holds the tree of every commit named and of every
-// parent of one; `allowances` are the push scan's (parseAllowances).
-export async function scanHistory(r: Reader, commits: Commit[], trees: Map<string, string>, allowances: PrivacyAllowance[]): Promise<PushScan> {
+// parent of one; `allowances` are the push scan's (parseAllowances), or a
+// function that reads them, called at most once and only when a key-shaped
+// line is found.
+export async function scanHistory(r: Reader, commits: Commit[], trees: Map<string, string>, allowances: PrivacyAllowance[] | (() => Promise<PrivacyAllowance[]>)): Promise<PushScan> {
   const scan: PushScan = { hits: [], unscanned: [] };
+  let list: Promise<PrivacyAllowance[]> | null = null;
+  const read = () => (list ??= typeof allowances === "function" ? allowances() : Promise.resolve(allowances));
   for (const c of oldestFirst(commits)) {
-    const added = await scanAdded(r, c, trees, allowances);
+    const added = await scanAdded(r, c, trees, read);
     scan.hits.push(...added.hits);
     scan.unscanned.push(...added.unscanned);
   }
@@ -454,6 +461,6 @@ export async function scanCommit(artifacts: Artifacts, baselineRepo: string, wor
     }
   }
   const r = withEmptyTree(pairReader(fork, baseline));
-  const scan = await scanHistory(r, commits, trees, await readAllowanceList(r, commit.treeHash));
+  const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, commit.treeHash));
   return { ...scan, head: commit.hash, base: main.hash };
 }

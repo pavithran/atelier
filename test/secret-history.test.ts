@@ -47,7 +47,7 @@ function repo(t: { after: (fn: () => void) => void }) {
     },
   };
   // The gate's scan of what HEAD adds over `base`, as "commit file" texts.
-  const gate = async (base: string, allowances: PrivacyAllowance[]) => {
+  const gate = async (base: string, allowances: PrivacyAllowance[] | (() => Promise<PrivacyAllowance[]>)) => {
     const commits = git("log", "--format=%H %T %P", "HEAD", "--not", base).split("\n").map((l) => {
       const [hash, treeHash, ...parents] = l.split(" ");
       return { hash, treeHash, parents };
@@ -99,6 +99,26 @@ test("a merge of main into the task is flagged for main's key relative to the ta
   const both = [...forMain, { commit: merge.slice(0, 8), file: "main.ts", sha256: sha(MAIN_KEY), reason: "a fake key" }];
   assert.deepEqual(await gate(base, both), []);
   assert.deepEqual(push(base, both), []);
+});
+
+test("the gate reads the allowance list only once a key-shaped line is found", async (t) => {
+  const { git, commit, gate } = repo(t);
+  const base = commit("README.md", "# Keys", "root");
+  git("checkout", "-q", "-b", "task");
+  commit("task.ts", "export const ok = true;", "task work");
+  // A history with no key-shaped line never asks for the list, so a reader
+  // without one (as the tests' fakes of Artifacts are) scans it clean.
+  let reads = 0;
+  const list = async () => { reads++; return []; };
+  assert.deepEqual(await gate(base, list), []);
+  assert.equal(reads, 0);
+  // Two commits adding key-shaped lines ask for it once, and a list that
+  // cannot be read fails the scan.
+  const first = commit("keys.ts", KEY, "add the key");
+  const second = commit("main.ts", MAIN_KEY, "add another");
+  assert.deepEqual(await gate(base, list), [`${first.slice(0, 12)} keys.ts`, `${second.slice(0, 12)} main.ts`].sort());
+  assert.equal(reads, 1);
+  await assert.rejects(gate(base, async () => { throw new Error("docs/atelier/privacy-allow.json has no allowances list"); }), /no allowances list/);
 });
 
 test("the gate reads the allowance list with the push scan's rules", (t) => {
