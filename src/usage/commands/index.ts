@@ -42,6 +42,7 @@ import command_init from "./init.ts";
 import command_integrated from "./integrated.ts";
 import command_integration_failed from "./integration-failed.ts";
 import command_land from "./land.ts";
+import command_ledger from "./ledger.ts";
 import command_login from "./login.ts";
 import command_ls from "./ls.ts";
 import command_merge from "./merge.ts";
@@ -138,6 +139,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/integrated.ts", spec: command_integrated },
   { path: "src/usage/commands/integration-failed.ts", spec: command_integration_failed },
   { path: "src/usage/commands/land.ts", spec: command_land },
+  { path: "src/usage/commands/ledger.ts", spec: command_ledger },
   { path: "src/usage/commands/login.ts", spec: command_login },
   { path: "src/usage/commands/ls.ts", spec: command_ls },
   { path: "src/usage/commands/merge.ts", spec: command_merge },

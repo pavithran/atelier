@@ -41,6 +41,7 @@ import command_init from "./init.mjs";
 import command_integrated from "./integrated.mjs";
 import command_integration_failed from "./integration-failed.mjs";
 import command_land from "./land.mjs";
+import command_ledger from "./ledger.mjs";
 import command_login from "./login.mjs";
 import command_ls from "./ls.mjs";
 import command_merge from "./merge.mjs";
@@ -137,6 +138,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/integrated.mjs", run: command_integrated },
   { path: "cli/commands/integration-failed.mjs", run: command_integration_failed },
   { path: "cli/commands/land.mjs", run: command_land },
+  { path: "cli/commands/ledger.mjs", run: command_ledger },
   { path: "cli/commands/login.mjs", run: command_login },
   { path: "cli/commands/ls.mjs", run: command_ls },
   { path: "cli/commands/merge.mjs", run: command_merge },
