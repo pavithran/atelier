@@ -597,7 +597,9 @@ function bookmarks(env: Env) {
 // holds apart from the rows, and ledger/dump?table=T&after=N a page of a
 // table's rows; POST ledger/import { step: begin | rows | finish } loads a
 // dump into the project's Ledger when it is empty, and registers the project
-// when this server does not list it yet. cli/ledger-dump.mjs reads and
+// when this server does not list it yet; the import records the rows loaded
+// per table, so { step: resume, import } answers them for a retry to go on
+// from, and { step: abort, import } deletes what it wrote and clears it. cli/ledger-dump.mjs reads and
 // writes the pages.
 async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Response> {
   const { env, req, body, actor } = c;
@@ -654,6 +656,8 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
       }
       return json(await L.importBegin(manifest, crypto.randomUUID()), 201);
     }
+    if (body.step === "resume") return json(await L.importProgress(body.import));
+    if (body.step === "abort") return json({ project, ...(await L.importAbort(body.import)) });
     if (body.step === "rows") return json(await L.importRows(body.import, body.table, body.columns, body.rows));
     if (body.step === "finish") {
       const { counts, record } = await L.importFinish(body.import);
@@ -661,7 +665,7 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
       if (registered) await index(env).registerProject({ ...(record as ProjectRecord), name: project });
       return json({ project, counts, registered });
     }
-    throw new RuleError("bad_request", "step is begin, rows or finish", 400);
+    throw new RuleError("bad_request", "step is begin, resume, rows, finish or abort", 400);
   }
   throw new RuleError("not_found", "no such route", 404);
 }
