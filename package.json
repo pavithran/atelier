@@ -7,7 +7,7 @@
     "pretypecheck": "wrangler types",
     "typecheck": "tsc -p . && tsc -p test",
     "dev": "wrangler dev --var DEPLOYED_MAIN:$(git rev-parse HEAD)",
-    "deploy": "wrangler deploy --var DEPLOYED_MAIN:$(git rev-parse HEAD)",
+    "deploy": "wrangler deploy --env staging --var DEPLOYED_MAIN:$(git rev-parse HEAD)",
     "types": "wrangler types",
     "design:capture": "node scripts/design/capture.ts"
   },

@@ -50,8 +50,8 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(p.source, "docs/atelier/ship.json");
   assert.equal(p.class, "web");
   assert.deepEqual(outline(p), [
-    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-worker.mjs deploy [deploy]"],
-    ["verify-delivery", "node scripts/ship-worker.mjs verify"], ["wrap"],
+    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-worker.mjs deploy --env staging [deploy]"],
+    ["verify-delivery", "node scripts/ship-worker.mjs verify --version-url https://next.atelier.zone/api/version"], ["wrap"],
     ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
     ["baseline", "node cli/atelier.mjs sync --project atelier"], ["studio", "node scripts/studio-ff.mjs --remote origin --branch main --checkout /Users/pavi/ai-projects/atelier --host studio"],
   ]);
@@ -60,7 +60,7 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.deepEqual(by.push.push, { remote: "github", branch: "main" });
   assert.equal(by.deploy.runs[0].timeoutMs, 1200_000);
   assert.equal(by.deploy.runs[0].retries, 1, "the deploy is retried once");
-  assert.equal(by.deploy.runs[0].ifChanged.since, "https://atelier.zone/api/version");
+  assert.equal(by.deploy.runs[0].ifChanged.since, "https://next.atelier.zone/api/version");
   assert.ok(by.deploy.runs[0].ifChanged.paths.includes("src/**"));
   assert.deepEqual(neededKinds(p.steps), ["deploy"], "only the deploy needs an approval");
 });
@@ -513,12 +513,12 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
   // Every Node process the ship starts, wrap's included, records its command
   // and the CLOUDFLARE_ENV it saw.
   const seenFile = join(f.dir, "cloudflare-env.txt");
-  writeFileSync(preload, `import { appendFileSync } from "node:fs"; appendFileSync(process.env.SEEN_FILE, process.argv[2] + " " + (process.env.CLOUDFLARE_ENV ?? "unset") + "\\n"); const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
+  writeFileSync(preload, `import { appendFileSync } from "node:fs"; appendFileSync(process.env.SEEN_FILE, process.argv[2] + " " + (process.env.CLOUDFLARE_ENV ?? "unset") + "\\n"); const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
   const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, SEEN_FILE: seenFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed", CLOUDFLARE_ENV: "staging" });
   assert.ok(existsSync(argsFile), r.stderr + r.stdout);
-  // CLOUDFLARE_ENV=staging in the owner's shell neither reaches Wrangler nor
-  // outranks the empty --env that names the production Worker (t344).
-  assert.deepEqual(readFileSync(argsFile, "utf8").split("\n").slice(0, -1), ["wrangler", "deploy", "--env", "", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`, "CLOUDFLARE_ENV=unset"]);
+  // CLOUDFLARE_ENV in the owner's shell never reaches Wrangler (t344); main's
+  // order names the staging Worker since the v1.0 cut (t364).
+  assert.deepEqual(readFileSync(argsFile, "utf8").split("\n").slice(0, -1), ["wrangler", "deploy", "--env", "staging", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`, "CLOUDFLARE_ENV=unset"]);
   const verified = f.state.runs.find(run => run.step === "verify-delivery");
   assert.equal(verified.passed, matches);
   if (matches) {

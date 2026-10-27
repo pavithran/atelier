@@ -1,12 +1,13 @@
 // The staging ship order (release split, PAVI 2026-10-26):
 // docs/atelier/ship-staging.json, read with ship's own loader, and the
 // wrangler env and version URL scripts/ship-worker.mjs takes from it.
-// Production's order, docs/atelier/ship.json, keeps its own tests in
-// test/ship.test.mjs and test/ship-worker.test.mjs.
+// Main's order, docs/atelier/ship.json, keeps its own tests in
+// test/ship.test.mjs and test/ship-worker.test.mjs. Since the v1.0 cut it
+// deploys staging too; production ships from release/1.0 (t364).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { composeShip, ship } from "../cli/ship.mjs";
@@ -43,11 +44,18 @@ test("the staging ship file composes with ship's loader: typecheck, deploy --env
   assert.doesNotMatch(JSON.stringify(p.steps), /https:\/\/atelier\.zone/);
 });
 
-test("ship reads docs/atelier/ship.json unless told otherwise, and the production order is not the staging one", () => {
-  const production = composeShip(resolve("."));
-  assert.equal(production.source, "docs/atelier/ship.json");
-  assert.ok(production.steps.some((s) => s.step === "push"));
-  assert.deepEqual(production.steps.find((s) => s.step === "deploy").runs[0].argv, ["node", "scripts/ship-worker.mjs", "deploy"]);
+// Main must never deploy production after the v1.0 cut (t364): its ship
+// file and npm run deploy both name the staging Worker.
+test("ship reads docs/atelier/ship.json unless told otherwise, and main's order deploys and verifies staging, with the push the staging file lacks (t364)", () => {
+  const main = composeShip(resolve("."));
+  assert.equal(main.source, "docs/atelier/ship.json");
+  assert.ok(main.steps.some((s) => s.step === "push"));
+  const deploy = main.steps.find((s) => s.step === "deploy").runs[0];
+  assert.deepEqual(deploy.argv, ["node", "scripts/ship-worker.mjs", "deploy", "--env", "staging"]);
+  assert.equal(deploy.ifChanged.since, STAGING_URL);
+  assert.deepEqual(main.steps.find((s) => s.step === "verify-delivery").runs[0].argv, ["node", "scripts/ship-worker.mjs", "verify", "--version-url", STAGING_URL]);
+  const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+  assert.match(pkg.scripts.deploy, /^wrangler deploy --env staging /);
 });
 
 test('"push": false leaves the push step out, and refuses the steps that run with it', (t) => {
