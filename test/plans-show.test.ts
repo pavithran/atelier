@@ -277,3 +277,12 @@ test("a held part names every blocker outside the plan and when each stops holdi
   assert.equal(line([a, b]), `      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): ${reach}; t10 (claimed by zcode/glm-5.3): ${reach}; offered once t9 submits or is released and t10 submits or is released`);
   assert.equal(line([a, l1]), `      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): ${reach}; t11 (submitted by claude-code/opus-5.5): ${reach}; offered once t9 submits or is released and the landing of t11 ends`);
 });
+
+test("plan show lists the goal's open notes in one short block, and nothing without any", () => {
+  assert.ok(!planText(proposed, "demo").includes("Open notes"));
+  const note = (n: number) => ({ itemId: "t2", by: "codex/gpt-6-astra", head: "a".repeat(40), file: `src/f${n}.ts`, line: n, text: `Finding ${n}.` });
+  const lines = planText({ ...proposed, notes: Array.from({ length: 12 }, (_, i) => note(i + 1)) }, "demo").split("\n");
+  assert.ok(lines.includes("Open notes (12):"));
+  assert.ok(lines.includes("  t2  src/f1.ts:1: Finding 1."));
+  assert.ok(lines.includes("  and 2 more"));
+});
