@@ -2131,10 +2131,11 @@ export async function runTask(assignment, config, name, io) {
       try { head = await io.head(workspace, { cleanup: true }); } catch { /* Unknown commit status preserves the claim. */ }
       // A validation_blocked builder's uncommitted work (t557) is committed
       // and pushed unsubmitted, and the task blocked with it (t326), so the
-      // run after the unblock, wherever it runs, continues from it. Not after a failed harness (its marker
-      // stands), and not a merge's resolution in progress, which is no
-      // commit of the builder's to make; and a commit whose push fails stays
-      // local, under the claim, as any other commit does.
+      // run after the unblock, wherever it runs, continues from it. Not
+      // after a failed harness (its marker stands), and not a merge's
+      // resolution in progress, which is no commit of the builder's to make;
+      // and a commit whose push fails stays local, under the claim, as any
+      // other commit does.
       let kept = null, unstaged = false;
       if (head === startedAt() && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
           !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
