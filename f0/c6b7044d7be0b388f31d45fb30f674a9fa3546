@@ -9,11 +9,6 @@ OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-1
 REVIEW approve by codex/gpt-6-astra at 3f327800e4cbc3bc7ef56c066e8d395139dacbc1, recorded by codex/gpt-6-astra
 REVIEW approve by antigravity/gemini-4-argon at 3f327800e4cbc3bc7ef56c066e8d395139dacbc1, recorded by antigravity/gemini-4-argon
 CHECKED TREE a0c74223f09fd3b68f95cdfca2eed78c1c7511ce: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
-2026-10-26T12:11:47.428Z pavi land.submit
-2026-10-26T12:11:50.428Z pavi land.review
-2026-10-26T12:28:39.352Z pavi land.merge
-2026-10-26T12:28:40.113Z pavi land.regenerate
-2026-10-26T12:28:42.674Z pavi land.push
 2026-10-26T12:29:49.076Z pavi land.check
 2026-10-26T12:29:49.435Z claude-code/sonnet-5.5 item.submitted
 2026-10-26T12:29:49.581Z pavi land.submit
@@ -209,3 +204,8 @@ CHECKED TREE a0c74223f09fd3b68f95cdfca2eed78c1c7511ce: the merge produced exactl
 2026-10-27T02:04:52.584Z pavi land.lease
 2026-10-27T02:04:54.783Z pavi item.accepted
 2026-10-27T02:04:55.004Z pavi land.accept
+2026-10-27T02:05:18.447Z pavi land.merged
+2026-10-27T02:05:18.626Z pavi land.release
+2026-10-27T02:10:36.300Z atelier stage.stuck
+2026-10-27T02:10:36.300Z atelier stage.land-queued
+2026-10-27T02:36:43.501Z pavi land.lease
