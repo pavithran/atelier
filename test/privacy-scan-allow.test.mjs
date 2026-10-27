@@ -79,12 +79,19 @@ test("a real key is not allowed by an allowance for another line", (t) => {
   assert.equal(scan(dir, [allow(id, "cli/a.test.mjs", LINE)]).problems.length, 1);
 });
 
-test("the shipped allowance list holds the three t266 commits and no key text", () => {
+// Three entries for a placeholder in cli/server-errors.test.mjs, then seven
+// for the made-up key in test/runner-same-exit.test.mjs; each names the
+// developer's decision in its reason.
+test("the shipped allowance list holds the three t266 commits, the seven t323 ones and no key text", () => {
   const list = readAllowances();
-  assert.deepEqual(list.map((a) => a.commit), ["1acf7deb", "ae4368a4", "bcf2c358"]);
-  for (const a of list) {
+  assert.deepEqual(list.map((a) => a.commit), ["1acf7deb", "ae4368a4", "bcf2c358", ...["7304c123","e0c69f61","cea43fa7","a46f9404","0b092bd9","573fb054","83fade85"]]);
+  for (const a of list.slice(0, 3)) {
     assert.equal(a.file, "cli/server-errors.test.mjs");
     assert.match(a.reason, /^PAVI 2026-10-25/);
+  }
+  for (const a of list.slice(3)) {
+    assert.equal(a.file, "test/runner-same-exit.test.mjs");
+    assert.match(a.reason, /^PAVI 2026-10-27/);
   }
   assert.ok(!JSON.stringify(list).includes("Bearer"));
 });

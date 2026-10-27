@@ -182,8 +182,11 @@ Workers runtime tests assert as an uncaught rejection, so those lines are the
 refusals under test, not failures; the summary at the end says whether
 anything failed ([Local development](docs/setup.md#local-development)).
 
-**2. Deploy the Worker.** `wrangler.jsonc` routes the Worker to atelier.zone
-as a custom domain and turns `workers.dev` off. In your copy, replace the
+**2. Deploy the Worker.** Deploy from a release branch, not from main: run
+`git checkout release/1.0` first, before you edit anything, since on main
+`npm run deploy` deploys the staging Worker. `wrangler.jsonc` routes the
+Worker to atelier.zone as a custom domain and turns `workers.dev` off. In
+your copy, replace the
 route with a domain on your own account, or remove `routes` and set
 `workers_dev` to `true`. The Worker binds the R2 bucket `atelier-large`
 (`r2_buckets` in `wrangler.jsonc`), and a deploy whose bucket does not exist
@@ -199,8 +202,9 @@ npm run deploy
 npx wrangler secret put ATELIER_TOKEN
 ```
 
-`npm run deploy` runs `wrangler deploy` and records the commit it deployed,
-which `GET /api/version` reports with the server's route level. `atelier
+On a release branch, `npm run deploy` runs `wrangler deploy` and records the
+commit it deployed, which `GET /api/version` reports with the server's route
+level. On main it deploys the staging Worker instead (`--env staging`). `atelier
 land` refuses to run against a server whose route level is below the CLI's.
 
 The server token is not enough for everything. Overriding a review that no
