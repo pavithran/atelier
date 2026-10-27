@@ -72,7 +72,7 @@ it("the 2026-10-24 case: a claim refused as t1 wins the core-file hold is answer
   const answer = await res.json() as { error: string; detail: string };
   expect(res.status, JSON.stringify(answer)).toBe(409);
   expect(answer.error).toBe("held");
-  expect(answer.detail).toContain(`t1 (claimed by ${A})`);
+  expect(answer.detail).toContain(`t1 (claimed by ${A}, running on home:claim-hold-race-winner)`);
   expect(answer.detail).toContain("core file src/ledger.ts");
   const t2 = (await L.waiting()).find((i) => i.id === "t2")!;
   expect(t2.held?.id).toBe("t1");
