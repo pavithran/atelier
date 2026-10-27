@@ -121,6 +121,15 @@ type Settings = {
   // forms, and never gives a session. Behind Access it is not read: the
   // owner's Access identity is the factor there (ownerFactorOf).
   OVERRIDE_SECRET?: string;
+  // The origin this Worker answers on, for links built where there is no
+  // request to read it from, such as the stuck notices the cron sends:
+  // https://atelier.zone in production, https://next.atelier.zone on the
+  // staging copy (wrangler.jsonc, env.staging), https://atelier.zone unset.
+  PUBLIC_ORIGIN?: string;
+  // The Artifacts namespace the ARTIFACTS binding names, whose push events
+  // the queue accepts (pushNotice): "atelier" in production and unset,
+  // "atelier-staging" on the staging copy.
+  ARTIFACTS_NAMESPACE?: string;
 };
 
 // The factor no agent holds, which an override's confirmation rests on
@@ -570,6 +579,91 @@ function movedTo(url: URL, parts: string[]): Response {
     status: 301,
     headers: { location: `/${parts.map(encodeURIComponent).join("/")}${url.search}`, "cache-control": "no-store" },
   });
+}
+
+// The recorded bookmarks of every project's Ledgers (t342) live in a Ledger
+// of their own, which no restore touches: restoring a project's Ledger, or
+// the index, to a bookmark never forgets the bookmarks recorded after it.
+const BOOKMARKS = "__ledger-bookmarks";
+function bookmarks(env: Env) {
+  return guardLedger(env.LEDGER.get(env.LEDGER.idFromName(BOOKMARKS)), BOOKMARKS, (env as unknown as Settings).DEPLOYED_MAIN);
+}
+
+// The way back from a switch of the server (t342), the developer's alone:
+// POST ledger/bookmark records a point-in-time bookmark of the project's
+// Ledger and of the index; POST ledger/restore { bookmark } restores both to
+// one it recorded, on their next start, which it asks for at once, and
+// records the bookmarks that undo it; GET ledger/dump answers what a dump
+// holds apart from the rows, and ledger/dump?table=T&after=N a page of a
+// table's rows; POST ledger/import { step: begin | rows | finish } loads a
+// dump into the project's Ledger when it is empty, and registers the project
+// when this server does not list it yet. cli/ledger-dump.mjs reads and
+// writes the pages.
+async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Response> {
+  const { env, req, body, actor } = c;
+  const m = req.method;
+  requireOwner(env, actor);
+  const L = ledger(env, ref.key);
+  const project = ref.name;
+  if (step !== "import" && !ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+  const own = `project:${ref.key}`;
+  const stubOf = (name: string) => name === "__index" ? index(env) : name === own ? L : null;
+  if (step === "bookmark" && m === "POST") {
+    const ledgers = [{ name: own, bookmark: await L.storageBookmark() }, { name: "__index", bookmark: await index(env).storageBookmark() }];
+    return json(await bookmarks(env).recordBookmark(ref.key, { project, at: new Date().toISOString(), by: actor, ledgers }), 201);
+  }
+  if (step === "restore" && m === "POST") {
+    if (typeof body.bookmark !== "string" || !body.bookmark) throw new RuleError("bad_bookmark", "name the bookmark to restore: atelier ledger restore --bookmark ID", 400);
+    const record = await bookmarks(env).bookmarkRecord(ref.key, body.bookmark);
+    if (!record) throw new RuleError("unknown_bookmark", `no bookmark ${body.bookmark.slice(0, 80)} was recorded for ${project}, so nothing was restored; atelier ledger bookmark --project ${project} records one`, 404);
+    const at = new Date().toISOString();
+    const restored: { name: string; bookmark: string; undo: string }[] = [];
+    for (const l of record.ledgers) {
+      const stub = stubOf(l.name);
+      if (!stub) throw new RuleError("bad_bookmark", `bookmark ${record.id} names ${l.name}, which is not ${project}'s Ledger or the index`, 409);
+      try { restored.push({ ...l, undo: (await stub.restoreBookmark(l.bookmark)).undo }); } catch (error) {
+        if (!restored.length) throw error;
+        const rule = parseRuleError(error);
+        throw new RuleError("restore_partial", `${restored.map((r) => r.name).join(" and ")} restore${restored.length === 1 ? "s" : ""} to ${record.id} on ${restored.length === 1 ? "its" : "their"} next start, but ${l.name} did not take the bookmark (${rule?.detail ?? String(error)}); the bookmarks that undo the first: ${restored.map((r) => `${r.name} ${r.undo}`).join(", ")}`, 500);
+      }
+    }
+    const B = bookmarks(env);
+    await B.noteRestore(ref.key, record.id, { at, by: actor });
+    const undo = await B.recordBookmark(ref.key, { project, at, by: actor, ledgers: restored.map((r) => ({ name: r.name, bookmark: r.undo })), undoes: record.id });
+    return json({
+      project, bookmark: record.id, recordedAt: record.at, restoring: restored.map(({ name, bookmark }) => ({ name, bookmark })), undo: undo.id,
+      detail: `${restored.map((r) => r.name).join(" and ")} restore to ${record.id} (${record.at}) on their next start, which each was asked to make once idle; bookmark ${undo.id} undoes it`,
+    });
+  }
+  if (step === "dump" && m === "GET") {
+    const table = c.url.searchParams.get("table");
+    if (table === null) return json({ ...(await L.dumpManifest() as Record<string, unknown>), project, key: ref.key, ledger: own });
+    const after = Number(c.url.searchParams.get("after") ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0) throw new RuleError("bad_request", "after is a row number", 400);
+    return json(await L.dumpRows(table, after));
+  }
+  if (step === "import" && m === "POST") {
+    if (body.step === "begin") {
+      const manifest = body.manifest;
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new RuleError("bad_dump", "begin carries the dump's manifest", 400);
+      if (manifest.project !== project) throw new RuleError("project_mismatch", `the dump is of ${String(manifest.project).slice(0, 80)}, not ${project}; import it as ${String(manifest.project).slice(0, 80)}`, 409);
+      const record = manifest.record as ProjectRecord | null;
+      if (!ref.registered) {
+        if (!record || typeof record.repo !== "string") throw new RuleError("bad_dump", `the dump carries no project record, so ${project} cannot be registered here`, 400);
+        await index(env).assertRepoAvailable(project, record.repo);
+      }
+      return json(await L.importBegin(manifest, crypto.randomUUID()), 201);
+    }
+    if (body.step === "rows") return json(await L.importRows(body.import, body.table, body.columns, body.rows));
+    if (body.step === "finish") {
+      const { counts, record } = await L.importFinish(body.import);
+      const registered = !ref.registered && record !== null;
+      if (registered) await index(env).registerProject({ ...(record as ProjectRecord), name: project });
+      return json({ project, counts, registered });
+    }
+    throw new RuleError("bad_request", "step is begin, rows or finish", 400);
+  }
+  throw new RuleError("not_found", "no such route", 404);
 }
 
 function requireOwner(env: Env, actor: string) {
@@ -1673,6 +1767,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (!ref) throw new RuleError("not_found", "no such route", 404);
   const project = ref.name;
   const L = ledger(env, ref.key);
+
+  if (parts[2] === "ledger" && parts.length === 4) return ledgerWayBack(c, ref, parts[3]);
 
   if (parts[2] === "stuck" && parts.length === 3 && m === "GET") {
     requireOwner(env, actor);
@@ -3542,8 +3638,10 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
 // storage key, which a rename keeps and a released name does not reach, never
 // under its name (t196).
 // The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
-// and the origin the recorded evidence links name.
-const STUCK_CRON = "*/10 * * * *", STUCK_ORIGIN = "https://atelier.zone";
+// and the origin the recorded evidence links name: the PUBLIC_ORIGIN var, so
+// the staging copy links to itself, and production's origin when it is unset.
+const STUCK_CRON = "*/10 * * * *";
+const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.trim().replace(/\/+$/, "") || "https://atelier.zone";
 // Sends the project's due episodes (src/stuck/notices.ts) in as many messages
 // as the channel's body limit needs, and records each message's episodes only
 // when the channel answers it with success. A non-success answer or a failed
@@ -3556,7 +3654,7 @@ async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, n
   const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
   if (!topic) return;
   const due = await I.stuckDue(key, at);
-  for (const { request, episodes } of stuckBatchRequests(topic, STUCK_ORIGIN, name, due)) {
+  for (const { request, episodes } of stuckBatchRequests(topic, stuckOrigin(env), name, due)) {
     try {
       const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
       await response.body?.cancel();
@@ -3575,7 +3673,7 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
     try {
       const ref = await resolveProject(env, p.name);
       if (!ref.registered) continue;
-      const report = await readStuckReport(env, ref, STUCK_ORIGIN, reportLimits(), now);
+      const report = await readStuckReport(env, ref, stuckOrigin(env), reportLimits(), now);
       await I.recordStuckTick(ref.key, report.entries, report.complete, report.observedAt);
       await notifyStuck(env, I, ref.key, p.name, report.observedAt);
     } catch (err) {
@@ -4451,7 +4549,9 @@ export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
-        const notice = pushNotice(message.body);
+        // Events from the namespace this Worker's ARTIFACTS binding names
+        // alone; another namespace's, such as production's on staging, are dropped.
+        const notice = pushNotice(message.body, (env as unknown as Settings).ARTIFACTS_NAMESPACE?.trim() || undefined);
         if (notice) {
           const projects = await index(env).projects();
           for (const project of projects) {
@@ -4575,6 +4675,9 @@ export default {
           // a caller without a token is told that before it is told the
           // route needs one, as api() tells a signed-in caller.
           if (!API_PATHS.has(parts[1] ?? "")) return json({ error: "not_found", detail: "no such route" }, 404);
+          // The Ledger's way back (t342) answers 403 to a request without
+          // the developer's token, as it does to an agent's or a runner's.
+          if (parts[1] === "projects" && parts[3] === "ledger") return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
           return json({ error: "unauthorised" }, 401);
         }
         const token = typeof how === "object" && how ? how : undefined;

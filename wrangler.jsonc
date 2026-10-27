@@ -42,7 +42,12 @@
     // no account; unset, the gateway figures are not read.
     // The gateway runners send their calls through, whose figures the
     // Models page reads from the GraphQL Analytics API.
-    "AI_GATEWAY_ID": "atelier"
+    "AI_GATEWAY_ID": "atelier",
+    // The origin the stuck notices link to, sent from the cron where no
+    // request names one, and the Artifacts namespace whose push events the
+    // queue accepts: the ARTIFACTS binding's below.
+    "PUBLIC_ORIGIN": "https://atelier.zone",
+    "ARTIFACTS_NAMESPACE": "atelier"
   },
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
@@ -73,5 +78,47 @@
     { "tag": "v2", "new_sqlite_classes": ["CheckRunner"] },
     // t768 removed the container check; this deletes the class and its data.
     { "tag": "v3", "deleted_classes": ["CheckRunner"] }
-  ]
+  ],
+  // The staging copy (release split, PAVI 2026-10-26): Atelier 1.1 is built
+  // at next.atelier.zone while 1.0 stays in production. It shares no state
+  // with production, so every binding names its own resource: wrangler does
+  // not carry artifacts, durable_objects, workflows, r2_buckets or vars into
+  // an environment, and it does carry triggers, so each is stated here.
+  // `npx wrangler deploy --env staging` deploys it; docs/ship.md says how
+  // ship runs that. test/staging-env.test.mjs holds each name apart from
+  // production's.
+  "env": {
+    "staging": {
+      "name": "atelier-staging",
+      "routes": [{ "pattern": "next.atelier.zone", "custom_domain": true }],
+      "workers_dev": false,
+      // No crons: the stuck notices, stage ticks and model snapshots run in
+      // production alone. Left out, production's three would be inherited.
+      "triggers": { "crons": [] },
+      "vars": {
+        // The same gateway as production: the Models page only reads its
+        // figures, and the runners choose the gateway they send through.
+        "AI_GATEWAY_ID": "atelier",
+        "PUBLIC_ORIGIN": "https://next.atelier.zone",
+        "ARTIFACTS_NAMESPACE": "atelier-staging"
+      },
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier-staging", "remote": true }],
+      // Created by the owner before the first staging deploy: npx wrangler r2
+      // bucket create atelier-large-staging.
+      "r2_buckets": [{ "binding": "LARGE", "bucket_name": "atelier-large-staging" }],
+      // No script_name: the binding names this Worker's own Ledger objects.
+      // A script_name of "atelier" would bind production's ledgers.
+      "durable_objects": {
+        "bindings": [
+          { "name": "LEDGER", "class_name": "Ledger" }
+        ]
+      },
+      "workflows": [{ "name": "landing-staging", "binding": "LANDING_WORKFLOW", "class_name": "LandingWorkflow" }],
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["Ledger"] },
+        { "tag": "v2", "new_sqlite_classes": ["CheckRunner"] },
+        { "tag": "v3", "deleted_classes": ["CheckRunner"] }
+      ]
+    }
+  }
 }
