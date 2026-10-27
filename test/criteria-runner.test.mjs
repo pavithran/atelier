@@ -42,7 +42,7 @@ function fixture(options = {}) {
     async brief(workspace, text) { calls.push({ brief: text, workspace }); return { file: `/cache/work/atelier/brief-${calls.length}.txt` }; },
     verdictPath: () => "/cache/work/atelier/verdict.txt",
     readVerdict: () => verdict,
-    async harness(argv, cwd, env) { calls.push({ harness: argv, cwd, env }); return { code: options.code ?? 0, timedOut: options.timedOut ?? false }; },
+    async harness(argv, cwd, env) { calls.push({ harness: argv, cwd, env }); return { code: options.code ?? 0, timedOut: options.timedOut ?? false, stderr: options.stderr ?? "" }; },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
     removeFile: (file) => calls.push({ removedFile: file }),
     removeTree: (dir) => calls.push({ removedTree: dir }),
@@ -110,6 +110,18 @@ test("a rejection carries its findings; an unparsable reply, a failing harness a
     assert.match(failed[failed.indexOf("--note") + 1], reason);
     assert.ok(!calls.some((c) => c.argv?.[0] === "criteria-verdict"), "no verdict is posted");
   }
+});
+
+// t323: a criteria reviewer's harness refusing its input for its size is
+// recorded as that, with the limit and the size, never as a bare exit.
+test("a criteria review whose harness refuses its input for its size records the limit and the size, and is skipped", async () => {
+  const { io, calls } = fixture({ code: 1, stderr: "error: prompt too long: 1,200,000 > 1,048,576" });
+  const state = await runCriteriaReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(state.skipped, true);
+  assert.equal(state.harnessExit, undefined, "not a refused run of the model's");
+  const failed = calls.find((c) => c.argv?.[0] === "criteria-review-failed").argv;
+  assert.match(failed[failed.indexOf("--note") + 1], /refused the review input for its size \(limit 1048576; actual 1200000\)/);
 });
 
 // The code review job carries the criteria reviews the claim gives into the
