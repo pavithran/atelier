@@ -3588,7 +3588,7 @@ export class Ledger extends DurableObject<Env> {
     const why = error === "runner_forbidden" && token ? this.runnerClaimWhy(token, item, actor) ?? detail : detail;
     // Kept with the task's head and last change, the runner's refusedKey, so
     // a change that lets the runner claim afresh ends it (sameRevision).
-    const refusal: ClaimRefusal = { runner, actor, error, detail: why.slice(0, 300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
+    const refusal: ClaimRefusal = { runner, actor, error, detail: redactKeys(why).slice(0, 300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("claim-refused", id, runner, d.at, refusal);
     return null;
   }
