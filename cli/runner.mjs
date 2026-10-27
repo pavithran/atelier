@@ -18,7 +18,7 @@ import { runLandJob } from "./land-queue.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
-import { REVIEW_RENEW_MS, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
+import { REVIEW_RENEW_MS, VALIDATION_BLOCKED as BLOCKED_NOTE, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
@@ -598,6 +598,20 @@ export const removeBrief = ({ file }) => rmSync(file, { force: true });
 // instead of refused and the claim is not left held on an over-long note.
 const NOTE_MAX = 2000;
 const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
+
+// The release of a build that ended validation_blocked (t326): its note
+// starts with BLOCKED_NOTE (VALIDATION_BLOCKED in src/rules.ts), and the
+// Ledger blocks the task with it for the developer instead of putting it
+// back in the queue. The marker in the workspace then records the block
+// (markBlocked), so a run offered the task again, which only an unblock
+// does, clears it and runs the builder.
+const blockNote = (reason) => `${BLOCKED_NOTE}${String(reason ?? "")}`.slice(0, NOTE_MAX);
+async function markBlocked(io, workspace) {
+  try {
+    const block = await io.readValidationBlock?.(workspace);
+    if (block) await io.writeValidationBlock?.(workspace, { ...block, blocked: true });
+  } catch (error) { io.log(`the validation_blocked report could not record the block: ${error.message}`); }
+}
 
 // The diff a review job writes for the reviewer: REVIEW_DIFF inside the
 // review's own clone, under .scratch/, which the clone's .git/info/exclude
@@ -1619,7 +1633,7 @@ export async function runTask(assignment, config, name, io) {
   if (!assignment) { io.log("nothing claimed"); advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
   const taskKey = taskRevisionKey(item);
-  let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, exitOutcome = null, failedRun = null;
+  let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, unblocked = false, exitOutcome = null, failedRun = null;
   // The build harness's environment, which a validation_blocked run's work
   // in progress is committed with (t557); whether the head the run started
   // from is such work in progress; and the head the harness of such a run
@@ -1794,6 +1808,16 @@ export async function runTask(assignment, config, name, io) {
     // same rule, holds: this actor's marker for this task revision.
     let priorBlock = await io.readValidationBlock?.(workspace);
     const holds = (block) => block?.actor === actor && block.taskKey === taskKey;
+    // A marker whose report blocked the task (t326) was answered by the
+    // developer's unblock, the only way the task is offered again: the
+    // builder runs, and nothing the blocked run committed is finished
+    // without it (unblocked).
+    if (priorBlock?.blocked && item.state !== "blocked") {
+      io.log("the developer unblocked the task since its validation_blocked report, so the runner clears that report and runs the builder");
+      await io.clearValidationBlock?.(workspace);
+      priorBlock = null;
+      unblocked = true;
+    }
     if (priorBlock && priorBlock.taskKey !== taskKey) {
       io.log(priorBlock.taskKey
         ? "the task's scope, criteria or brief changed since its validation_blocked report, so the runner clears that report and retries because the task changed"
@@ -1843,7 +1867,7 @@ export async function runTask(assignment, config, name, io) {
     if (failedRun) failedRun = { ...failedRun, reruns: Math.max(onFile?.reruns ?? 0, inMemory?.reruns ?? 0) };
     continuing = io.headMessage ? isWorkInProgress(await io.headMessage(workspace).catch(() => "")) : false;
     if (continuing) io.log(`the head ${String(before).slice(0, 8)} is work in progress a validation_blocked run committed; the builder continues from it`);
-    resumed = !continuing && item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
+    resumed = !continuing && !unblocked && item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
     if (failedRun) {
       if (failedRun.reruns >= MAX_HARNESS_RERUNS) {
         throw Object.assign(new Error(`the harness failed ${failedRun.reruns} times in a row in this workspace, so the runner stops rerunning it; this task needs the developer (a broken environment or a corrupt failure marker)`), { needsDeveloper: true });
@@ -2105,12 +2129,13 @@ export async function runTask(assignment, config, name, io) {
     } else if (claimed && before) {
       let head;
       try { head = await io.head(workspace, { cleanup: true }); } catch { /* Unknown commit status preserves the claim. */ }
-      // A validation_blocked builder's uncommitted work (t557) is committed,
-      // pushed unsubmitted and released with it, so the next run, wherever
-      // it runs, continues from it. Not after a failed harness (its marker
-      // stands), and not a merge's resolution in progress, which is no
-      // commit of the builder's to make; and a commit whose push fails stays
-      // local, under the claim, as any other commit does.
+      // A validation_blocked builder's uncommitted work (t557) is committed
+      // and pushed unsubmitted, and the task blocked with it (t326), so the
+      // run after the unblock, wherever it runs, continues from it. Not
+      // after a failed harness (its marker stands), and not a merge's
+      // resolution in progress, which is no commit of the builder's to make;
+      // and a commit whose push fails stays local, under the claim, as any
+      // other commit does.
       let kept = null, unstaged = false;
       if (head === startedAt() && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
           !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
@@ -2139,19 +2164,25 @@ export async function runTask(assignment, config, name, io) {
         state = { ...state, workInProgress: kept };
         const note = `${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} and pushed unsubmitted for the next run to continue`;
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(note)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", blockNote(note)], workspace);
           released = true;
-          io.log(`released: work in progress ${kept.slice(0, 8)} pushed unsubmitted for the next run`);
+          state = { ...state, blocked: true };
+          await markBlocked(io, workspace);
+          io.log(`blocked for the developer: work in progress ${kept.slice(0, 8)} pushed unsubmitted for the run after the unblock`);
         }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else if (head === startedAt() && !unstaged) {
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", error.validationBlocked ? blockNote(state.reason) : releaseNote(state.reason)], workspace);
           // The task is released with nothing committed: nothing is owed.
           await io.clearHarnessFailure?.(workspace).catch((clearError) => io.log(`could not clear the failure marker: ${clearError.message}`));
           unsavedFailures.delete(obligationKey());
           released = true;
-          io.log("released: no new commit");
+          if (error.validationBlocked) {
+            state = { ...state, blocked: true };
+            await markBlocked(io, workspace);
+            io.log("blocked for the developer: validation_blocked with no new commit");
+          } else io.log("released: no new commit");
         }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else if (!unstaged) io.log("claim preserved: a commit exists or commit status is unknown");
@@ -2164,7 +2195,7 @@ export async function runTask(assignment, config, name, io) {
     } else io.log("claim not released: claim or commit status is unknown");
     // The one line that says what became of the task (t664): before it, a
     // refused run after a good claim left only "nothing claimed" in the log.
-    if (claimed || claimAttempted) io.log(`${project}/${item.id}: run ended (${state.reason ?? error.message}); claim ${released ? "released" : "kept"}`);
+    if (claimed || claimAttempted) io.log(`${project}/${item.id}: run ended (${state.reason ?? error.message}); claim ${state.blocked ? "kept, the task blocked for the developer" : released ? "released" : "kept"}`);
     // A claim this run still holds is the loop's to give up if it gives the
     // task up (giveUpClaim), so the state says where the workspace is.
     if (claimed && !released && workspace) state = { ...state, claimHeldAt: workspace };
@@ -2182,15 +2213,21 @@ export async function runTask(assignment, config, name, io) {
 // work left in a workspace, and the note says if the push failed. A harness
 // that failed leaves its marker in the workspace, so a runner that claims the
 // task again runs the harness again.
-export async function giveUpClaim({ io, project, item, actor, workspace, reason }) {
+export async function giveUpClaim({ io, project, item, actor, workspace, reason, validationBlocked = false }) {
   const at = ["--project", project, "--as", actor];
   let pushed = "";
   try { await io.cli(["push", item.id, ...at], workspace); }
   catch (error) { pushed = ` (its commits are not pushed: ${String(error.message).split("\n")[0].slice(0, 120)})`; }
-  const note = `${GAVE_UP}${String(reason ?? "").slice(-(NOTE_MAX - GAVE_UP.length - pushed.length))}${pushed}`;
+  // A validation_blocked build is blocked for the developer, not given up
+  // to the queue (t326): the same release, with its note marked.
+  const prefix = validationBlocked ? BLOCKED_NOTE : GAVE_UP;
+  const note = `${prefix}${String(reason ?? "").slice(-(NOTE_MAX - prefix.length - pushed.length))}${pushed}`;
   try {
     await io.cli(["release", item.id, ...at, "--note", note], workspace);
-    io.log(`released ${project}/${item.id}: the runner gave it up${pushed}`);
+    if (validationBlocked) {
+      await markBlocked(io, workspace);
+      io.log(`blocked ${project}/${item.id} for the developer: its build ended validation_blocked${pushed}`);
+    } else io.log(`released ${project}/${item.id}: the runner gave it up${pushed}`);
     return true;
   } catch (error) {
     io.log(`claim preserved: giving up ${project}/${item.id} could not release it: ${error.message}`);
@@ -4728,9 +4765,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // as the code review has its skip, so neither goes to run-skip.
           const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : state.skipped || state.needsDeveloper ? "skipped" : null;
           // The claim a given-up task still holds is let go at once (t584), and
-          // so is one the harness loop gave up on (needsDeveloper).
+          // so is one the harness loop gave up on (needsDeveloper). A
+          // validation_blocked build's is blocked for the developer instead
+          // (t326), and is not passed by as given up: an unblock offers it again.
           if (state.claimHeldAt && gaveUp) {
-            if (await giveUpClaim({ io, project: task.project, item: task.item, actor: task.actor, workspace: state.claimHeldAt, reason: state.reason })) gaveUpTasks.add(taskKey(task));
+            const blocking = !!state.validationBlocked;
+            if (await giveUpClaim({ io, project: task.project, item: task.item, actor: task.actor, workspace: state.claimHeldAt, reason: state.reason, validationBlocked: blocking }) && !blocking) gaveUpTasks.add(taskKey(task));
           }
           if (gaveUp || state.claimHeldAt) {
             let released = null;

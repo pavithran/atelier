@@ -1428,6 +1428,22 @@ export function blockReason(value: unknown): string {
   return reason;
 }
 
+// What a release note starts with when a runner's build ended
+// validation_blocked (t326). The required checks could not run where the
+// runner is, which only the developer can change, so the Ledger blocks the
+// task with the note as its reason instead of putting it back in the queue:
+// released, it came straight back to the same runner, which replayed the
+// same report, thousands of times over days (atelier-old t358, t541; t313).
+export const VALIDATION_BLOCKED = "validation_blocked: ";
+
+// The reason such a release blocks the task with: the note, kept whole in
+// the event, cut here to what a block holds, with the report's start kept,
+// where it says why the checks could not run.
+export function validationBlockReason(note: string): string {
+  const reason = line(note);
+  return blockReason(reason.length > REASON_MAX ? `${reason.slice(0, REASON_MAX - 1)}…` : reason);
+}
+
 const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const utcDay = (now: Date): string => now.toISOString().slice(0, 10);
 
