@@ -1134,7 +1134,7 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
 type TaskFork = { id: string; name: string; from: string; project: string; names: string[]; actor: string; generation: number; proved: boolean };
 async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork, replaced = false): Promise<{ name: string; head: string | null }> {
   try {
-    await L.forkRequested(t.id, t.name, t.actor, t.generation);
+    const noted = await L.forkRequested(t.id, t.name, t.actor, t.generation);
     const made = await artifactsStep(`fork ${t.from} as ${t.name}`, async () => {
       using base = await env.ARTIFACTS.get(t.from);
       await base.fork(t.name, { description: taskForkMark(t.name), defaultBranchOnly: true });
@@ -1143,7 +1143,7 @@ async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
       return false;
     });
-    if (made) await L.forkAnswered(t.id, t.name);
+    if (made || noted) await L.forkAnswered(t.id, t.name);
     else await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
     return { name: t.name, head: await headOf(env, t.name) };
   } catch (err) {

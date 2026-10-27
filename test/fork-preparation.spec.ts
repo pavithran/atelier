@@ -278,10 +278,11 @@ it("a task claimed again after its branch moved, whose fork made again stays unr
 // ready, and never answers; the claim is given up as the CLI gave it up.
 
 // Ages a stored record of t1 by `ms`: the fork request's note or the first
-// not_ready time.
+// not_ready time. A record that is not there is left so.
 async function older(L: unknown, key: "fork-request" | "fork-prep", field: "at" | "since", ms: number) {
   await inside(L, (instance) => {
     const row = instance.sql.exec(`SELECT value FROM meta WHERE key = ?`, `${key}:t1`).toArray()[0];
+    if (!row) return;
     const value = JSON.parse(row.value as string);
     value[field] = new Date(Date.parse(value[field]) - ms).toISOString();
     instance.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify(value), `${key}:t1`);
@@ -346,6 +347,27 @@ it("a fork whose request was answered is not replaced for being slow, until it h
   expect(await L.item("t1")).toMatchObject({ fork: `${fork}-r2` });
   expect((await rerouted(L)).map((e) => e.data.from)).toEqual([fork]);
   expect(fa.deletes).toEqual([]);
+});
+
+it("a fork whose request was answered is not taken for cut off by a later claim that finds it already there", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, claim } = await setup("fork-answered-retried");
+  // The first claim's request is answered; the fork is still preparing.
+  expect((await claim()).status).toBe(503);
+  // A second claim finds the fork already there and notes no request of its own.
+  expect((await claim()).status).toBe(503);
+  expect(fa.forks).toEqual([fork]);
+  const noted = await inside(L, (instance) => instance.sql.exec(`SELECT value FROM meta WHERE key = ?`, "fork-request:t1").toArray().length);
+  expect(noted).toBe(0);
+  // Two minutes and more pass, for every record there is, and a further claim still waits for the fork.
+  await older(L, "fork-request", "at", FORK_REQUEST_MS + 60_000);
+  await older(L, "fork-prep", "since", FORK_REQUEST_MS + 60_000);
+  const third = await claim();
+  expect(third.status).toBe(503);
+  expect((await answer(third)).detail).toContain(`${fork} is still being prepared`);
+  expect(await rerouted(L)).toEqual([]);
+  expect(fa.forks).toEqual([fork]);
+  expect(await L.item("t1")).toMatchObject({ fork: null });
 });
 
 it("a claim makes at most two replacement forks, as the tick does, and then reports the fork as before", async () => {

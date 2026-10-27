@@ -3728,9 +3728,14 @@ export class Ledger extends DurableObject<Env> {
   // miqra timed out after 60 s while their forks were being made, and each
   // fork then stayed preparing. The first note for a name is kept, so a later
   // claim that finds the fork already there does not restart its clock.
-  forkRequested(id: string, fork: string, actor: string, generation: number): void {
-    if (!this.claimHeld(id, actor, generation) || this.forkRequest(id)?.fork === fork) return;
+  // Returns whether this request made a new note: a request that finds the
+  // fork already there drops the note it made (forkAnswered), since the
+  // request that made the fork had its answer, and only a note left by a
+  // request cut off before its answer outlives the claim.
+  forkRequested(id: string, fork: string, actor: string, generation: number): boolean {
+    if (!this.claimHeld(id, actor, generation) || this.forkRequest(id)?.fork === fork) return false;
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkRequestKey(id), JSON.stringify({ fork, at: new Date().toISOString() }));
+    return true;
   }
 
   forkAnswered(id: string, fork: string): void {
