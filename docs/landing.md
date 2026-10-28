@@ -73,6 +73,28 @@ to record it. A merge the server has already recorded, or can no longer
 record because the task is not accepted at that revision, leaves only the
 journal, which the cancel removes.
 
+### The checkout lease (G9)
+
+The merge runs in the registered checkout, and so does `atelier ship`
+(docs/ship.md). Once a deploy raced the lander there. So `atelier merge`,
+which `atelier land` runs for its merge step, and `atelier merge --cancel`
+take the project's checkout lease before they touch the checkout and free it
+when they end, however they end; a process killed outright leaves it to lapse after 15 minutes without
+a heartbeat. While a ship holds it, the merge waits and says who holds it.
+A holder that stalled past the limit and was taken over stops at its next
+step (before the local merge, before publishing, before post-merge steps),
+saying so as a fact with a `next`, so nothing more of it touches the
+checkout. The server keeps the lease (`GET /api/projects/P/checkout-lease`: holder,
+kind, task, machine, process and since) beside the landing lease, which
+guards the baseline rather than the checkout.
+
+A deploy by hand outside `atelier ship` cannot be prevented. So the lease
+also keeps the checkout's head as the last merge or ship left it, and the next
+take compares it with the head now. A different head is reported as a fact,
+never as an error to retry (`Fact: P's registered checkout is at X, not at Y
+where t3's merge left it ...`, then `next:`), and recorded as a
+`checkout.moved` event; the landing goes on.
+
 While a merge holds the landing lease, the task cannot be abandoned, since the
 merge may already be on the baseline: finish it with `atelier merge t9`, or
 end it with `atelier merge t9 --cancel` while it is not on the baseline, then

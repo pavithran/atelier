@@ -449,8 +449,13 @@ export async function ship(ctx) {
     outputTail: ctx.redact(r.output ?? "", ctx.secrets).slice(-TAIL), ship: id, note: extra ?? "",
   });
   const rest = (from) => plan.steps.slice(from).map((s) => s.step).filter((s) => !WITH_PUSH.has(s) || ctx.push);
+  // The deploy record (G9): once the ship has begun it records itself, the
+  // head, who and the result, whether it ships or fails.
+  ctx.began?.({ ship: id, head: commit });
   for (const [i, s] of plan.steps.entries()) {
     if (WITH_PUSH.has(s.step) && !ctx.push) continue;
+    // Each step starts only while the ship still holds the checkout (G9).
+    await ctx.checkpoint?.(s.step, ran);
     ctx.stage(`ship at ${s.step}`);
     // Each kind this step needs takes its approval now, before anything of
     // the step runs: one approval, one run. The push needs none: it is the
@@ -508,15 +513,18 @@ export async function ship(ctx) {
     // A run that failed and then passed on a retry does not stop the ship.
     const failed = results.at(-1)?.passed === false ? results.at(-1) : null;
     if (failed) {
+      const how = `${failed.command ?? s.step} ${failed.signal ? `ended by ${failed.signal}` : failed.status !== null && failed.status !== undefined ? `exited ${failed.status}` : "failed"}`;
+      await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: s.step, ran, note: how.slice(0, 1000) });
       const usedText = Object.entries(used).map(([k, a]) => `${a} for ${k}`).join(", ");
       fail([
-        `ship stopped at ${s.step}: ${failed.command ?? s.step} ${failed.signal ? `ended by ${failed.signal}` : failed.status !== null && failed.status !== undefined ? `exited ${failed.status}` : "failed"}.`,
+        `ship stopped at ${s.step}: ${how}.`,
         `Ran before it: ${ran.join(", ") || "nothing"}. Not run: ${rest(i + 1).join(", ") || "nothing"}. Each step that ran is recorded on the ledger.`,
         usedText ? `The approval used here (${usedText}) is spent; after fixing the cause, the developer approves again: ${Object.keys(used).map((k) => `atelier approve ${k} --head ${commit} --project ${quote(name)}`).join(" and ")}` : "",
       ].filter(Boolean).join("\n"));
     }
     ran.push(s.runs.length && s.runs.every((r) => r.skip) ? `${s.step} (skipped)` : s.step);
   }
+  await ctx.deployed?.({ ship: id, head: commit, result: "shipped", ran });
   print(`Shipped ${name} at ${short(commit)}: ${ran.join(", ")} ran, each recorded on the ledger.`);
   if (pushStep && !ctx.push) {
     print(target

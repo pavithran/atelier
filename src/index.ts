@@ -2310,6 +2310,28 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor, instance));
   }
+  // The checkout lease (G9, src/checkout-lease.ts): GET reads the live
+  // lease, the head the last holder left the checkout at and the newest
+  // deploy. POST { action: "take", id, kind, item?, host?, pid?, head? }
+  // takes it for atelier merge (kind landing) or atelier ship, refusing with
+  // checkout_lease while another live holder has it and reporting a head
+  // changed outside the lease as a fact; { action: "renew", id } is the
+  // holder's heartbeat; { action: "release", id, head } frees it.
+  if (parts[2] === "checkout-lease" && parts.length === 3) {
+    if (m === "GET") return json(await L.readCheckoutLease());
+    requireOwner(env, actor);
+    if (body.action === "take") return json(await L.takeCheckoutLease(actor, body));
+    if (body.action === "renew") return json(await L.renewCheckoutLease(actor, body));
+    if (body.action === "release") return json(await L.releaseCheckoutLease(actor, body));
+    throw new RuleError("bad_action", "action is take, renew or release", 400);
+  }
+  // The deploys atelier ship records (G9): POST records one run, shipped or
+  // failed, with the head and who; GET lists the newest.
+  if (parts[2] === "deploys" && parts.length === 3) {
+    if (m === "GET") return json({ deploys: await L.deploys() });
+    requireOwner(env, actor);
+    return json(await L.recordDeploy(actor, body), 201);
+  }
   if (parts[2] === "post-merge" && parts.length === 4) {
     const item = parts[3];
     if (m === "GET") return json({ run: await L.postMergeRun(item) });

@@ -14,6 +14,7 @@ import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
 import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, request, saveConfig, server, short } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
+import { holdCheckout, stayHeld } from "../checkout-hold.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
@@ -86,7 +87,10 @@ export default async function mergeCommand() {
     const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
     let unlock;
     try { unlock = landingLock(landing); } catch (error) { die(error.message); }
+    // The cancel may reset or abort in the checkout, so it takes the checkout lease too (G9).
+    let checkoutLease;
     try {
+      checkoutLease = await holdCheckout({ project: name, kind: "landing", item: id, what: `${id}'s merge --cancel`, cwd });
       let journal;
       try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id }); } catch (error) { die(error.message); }
       const item = (await call("GET", I(name, id), undefined, OWNER)).item;
@@ -153,7 +157,7 @@ export default async function mergeCommand() {
       if (landed) return console.log(`${id}: the landing in this checkout is cancelled. ${id} at ${short(head)} is already on the baseline through another merge commit, so its landing lease is left for that merge to be recorded.`);
       if (ours) return console.log(`${id}: the merge is cancelled; its holder can push a new revision.`);
       return console.log(`${id}: the landing in this checkout is cancelled. ${id} is ${now}, and nothing changed on the server${item.state === "accepted" ? `; merge its accepted revision with: atelier merge ${id}` : ""}.`);
-    } finally { unlock(); }
+    } finally { await checkoutLease?.release(); unlock(); }
   }
   if (args.head !== undefined) {
     if (!/^[a-f0-9]{40,64}$/.test(args.head)) die(COMMAND_USAGE.merge);
@@ -171,7 +175,10 @@ export default async function mergeCommand() {
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
   let unlock;
   try { unlock=landingLock(landing); } catch (error) { die(error.message); }
+  // The checkout lease (G9): the merge step never uses the checkout beside atelier ship.
+  let checkoutLease;
   try {
+    checkoutLease=await holdCheckout({project:name,kind:'landing',item:id,cwd});
     try { adoptOldLanding(gitDir,landing); } catch (error) { die(error.message); }
     const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
     // A landing begun at an acceptance that has since been withdrawn or
@@ -226,6 +233,7 @@ export default async function mergeCommand() {
     const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
     const decision = mergePolicyDecision(acceptedPolicy, nowPolicy, paths, args['policy-changed-ok'] === true, context);
     if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
+    await stayHeld(checkoutLease); // G9: the local merge starts only under the checkout lease
     const local=git(['rev-parse','HEAD'],{cwd});
     const owners=[...new Set(d.events.filter(e=>['item.claimed','item.handoff'].includes(e.kind)).map(e=>e.data.to??e.actor))];
     const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
@@ -322,6 +330,7 @@ export default async function mergeCommand() {
     // stops a push over this revision until the merge is recorded.
     // A refusal ends the command here with the server's reason; the local
     // merge commit is kept for reconciliation.
+    await stayHeld(checkoutLease); // G9: and so does the publishing
     await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
     const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily,checkedTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead,mergeCommit)});
@@ -384,7 +393,7 @@ export default async function mergeCommand() {
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
     else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
     await cleanWorkspace(name, id, p.branch, cwd);
-    if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
+    if (recorded.postMerge || d.policy.postMerge || d.postMerge) { await stayHeld(checkoutLease); await postMerge(name, id); }
     else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
-  } finally { unlock(); }
+  } finally { await checkoutLease?.release(); unlock(); }
 }

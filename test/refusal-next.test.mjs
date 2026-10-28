@@ -11,12 +11,12 @@ import { test } from "node:test";
 // Each exempt code is input validation, whose detail says what to send, or
 // names the route it guards, where no other command applies.
 const VALIDATION = [
-    "acting_owner_only", "ambiguous_acting", "bad_acting", "bad_actor", "bad_agent", "bad_allow_paid",
+    "acting_owner_only", "ambiguous_acting", "bad_acting", "bad_action", "bad_actor", "bad_agent", "bad_allow_paid",
     "bad_bookmark", "bad_branch", "bad_card", "bad_check_limit", "bad_check_paths", "bad_check_silence", "bad_checks", "bad_choices", "bad_claim",
     "bad_commit", "bad_contradicts", "bad_decision", "bad_declaration", "bad_delivered_by", "bad_dispatch",
     "bad_dump", "bad_event", "bad_evidence", "bad_expiry", "bad_failures", "bad_field", "bad_finding",
     "bad_findings", "bad_goal", "bad_hash", "bad_head", "bad_host", "bad_identity", "bad_item", "bad_kind",
-    "bad_label", "bad_limit", "bad_task", "bad_list", "bad_main", "bad_mode", "bad_model", "bad_ms", "bad_name", "bad_note",
+    "bad_label", "bad_lease", "bad_limit", "bad_task", "bad_list", "bad_main", "bad_mode", "bad_model", "bad_ms", "bad_name", "bad_note",
     "bad_outcome", "bad_post_merge", "bad_prepare", "bad_private", "bad_projects", "bad_prose_standard",
     "bad_quote", "bad_reason", "bad_receipt", "bad_record", "bad_ref", "bad_regenerate", "bad_release",
     "bad_replaces", "bad_report", "bad_request", "bad_request_id", "bad_reset", "bad_resolve", "bad_resolver",

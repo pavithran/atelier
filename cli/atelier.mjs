@@ -1001,6 +1001,11 @@ export const REPEATABLE_WRITES = [
   // A check result: the same result posted again is recorded once
   // (addEvidence in src/ledger.ts), and one for an older head is refused.
   /^POST \/projects\/[^/]+\/items\/[^/]+\/evidence$/,
+  // The checkout lease (G9): a take, renewal or release names the lease's
+  // id, and the same id again is the same call; a deploy record is kept once
+  // per ship id.
+  /^POST \/projects\/[^/]+\/checkout-lease$/,
+  /^POST \/projects\/[^/]+\/deploys$/,
 ];
 const repeatable = (method, path) => REPEATABLE_WRITES.some((r) => r.test(`${method} ${path}`));
 
