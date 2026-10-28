@@ -29,12 +29,12 @@ const temp = (label) => { const d = realpathSync(mkdtempSync(join(tmpdir(), `ate
 // ── the limits and the clock, with any times ───────────────────────────────
 
 test("the limits are the project's, a check's own silence wins, and the defaults stand otherwise", () => {
-  assert.deepEqual(checkLimits(null), { limitMinutes: 20, silenceMinutes: 10, startupMinutes: null, limitFrom: "default", silenceFrom: "default" });
+  assert.deepEqual(checkLimits(null), { limitMinutes: 60, silenceMinutes: 10, startupMinutes: null, limitFrom: "default", silenceFrom: "default" });
   const policy = { checkLimitMinutes: 45, silenceLimitMinutes: 5, startupLimitMinutes: 3, checkSilence: [{ command: "npm run build", minutes: 30 }] };
   assert.deepEqual(checkLimits(policy, "npm test"), { limitMinutes: 45, silenceMinutes: 5, startupMinutes: 3, limitFrom: "project", silenceFrom: "project" });
   assert.deepEqual(checkLimits(policy, "npm run build"), { limitMinutes: 45, silenceMinutes: 30, startupMinutes: 3, limitFrom: "project", silenceFrom: "check" });
   assert.equal(limitText(policy), "a run is stopped when silent for 5 minutes (no output, no process activity and no live child process); when no command completed in its first 3 minutes (no output and no child process); and at a hard ceiling of 45 minutes; both counted from when it holds its test slot; checks declaring their own silence: `npm run build` 30 minutes");
-  assert.match(limitText(null), /silent for 10 minutes .*, the default; with no startup limit; and at a hard ceiling of 20 minutes, the default/);
+  assert.match(limitText(null), /silent for 10 minutes .*, the default; with no startup limit; and at a hard ceiling of 60 minutes, the default/);
   assert.equal(stopText({ kind: "startup", minutes: 3 }), "no command completed in 3 minutes");
   assert.equal(stopText({ kind: "silent", minutes: 1 }), "silent for 1 minute");
   assert.equal(stopText({ kind: "timeout", minutes: 20 }), "timed out after 20 minutes");

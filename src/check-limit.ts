@@ -25,7 +25,7 @@
 import type { ProjectPolicy } from "./rules.ts";
 import { RuleError } from "./rules.ts";
 
-export const DEFAULT_CHECK_LIMIT_MINUTES = 20;
+export const DEFAULT_CHECK_LIMIT_MINUTES = 60;
 export const DEFAULT_SILENCE_LIMIT_MINUTES = 10;
 // A day: a limit is a number of whole or part minutes from 1 to this.
 export const LIMIT_MAX_MINUTES = 24 * 60;
