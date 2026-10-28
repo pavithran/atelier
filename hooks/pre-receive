@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// Atelier's pre-receive hook (Atelier 2.0, task 2; design section 4.4): write
+// isolation on one repository. The server runs `git receive-pack` as its own
+// user with the grant in the environment (src/git/http.mjs); this hook,
+// named by core.hooksPath and out of every agent's reach, refuses each ref
+// update the grant does not cover. It reads the ref commands and the
+// commits' parents, never a pushed file.
+//   1. One ref per push, the one the grant names: task tN writes
+//      refs/heads/t/N, plan tN refs/heads/plan/N, landing the project's
+//      branch, owner the project's branch and refs/heads/dev/*.
+//   2. No deletes; the server deletes task branches itself.
+//   3. Fast-forward only on the project's branch and plan/*.
+//   4. A landing push is a merge whose first parent is the branch's tip and
+//      whose parents include the accepted head.
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+const ZERO = /^0+$/;
+const { ATELIER_KIND: kind = "", ATELIER_TASK: task = "", ATELIER_BRANCH: branch = "", ATELIER_ACCEPTED: accepted = "" } = process.env;
+
+function refuse(message) {
+  process.stderr.write(`atelier: ${message}\n`);
+  process.exit(1);
+}
+
+const n = /^t(\d+)$/.exec(task)?.[1];
+const writes = {
+  task: n && { test: (r) => r === `refs/heads/t/${n}`, text: `t/${n}` },
+  plan: n && { test: (r) => r === `refs/heads/plan/${n}`, text: `plan/${n}` },
+  landing: branch && { test: (r) => r === `refs/heads/${branch}`, text: branch },
+  owner: branch && { test: (r) => r === `refs/heads/${branch}` || /^refs\/heads\/dev\/[^/].*$/.test(r), text: `${branch} and dev/*` },
+}[kind];
+if (!writes) refuse("this credential writes nothing here");
+
+const lines = readFileSync(0, "utf8").split("\n").filter(Boolean);
+if (lines.length !== 1) refuse(`one ref per push; this credential writes ${writes.text} only`);
+const [old, sha, ref] = lines[0].split(" ");
+if (!writes.test(ref)) refuse(`this credential writes ${writes.text} only, not ${ref.replace(/^refs\/heads\//, "")}`);
+if (ZERO.test(sha)) refuse(`no deletes: ${ref.replace(/^refs\/heads\//, "")} stays; the server deletes task branches itself`);
+
+const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const guarded = ref === `refs/heads/${branch}` || ref.startsWith("refs/heads/plan/");
+if (guarded && !ZERO.test(old)) {
+  try { git("merge-base", "--is-ancestor", old, sha); } catch { refuse(`${ref.replace(/^refs\/heads\//, "")} moves by fast-forward only`); }
+}
+if (kind === "landing") {
+  if (ZERO.test(old)) refuse(`a landing merges onto ${branch}, which has no tip yet`);
+  const parents = git("rev-list", "--parents", "-n", "1", sha).split(" ").slice(1);
+  if (parents[0] !== old) refuse(`a landing's first parent is ${branch}'s tip ${old.slice(0, 12)}`);
+  if (!/^[0-9a-f]{40}$/.test(accepted) || !parents.includes(accepted)) refuse(`a landing merges the accepted head ${accepted.slice(0, 12) || "(none)"}, which this commit's parents do not include`);
+}
