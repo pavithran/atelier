@@ -52,6 +52,12 @@ For later:
 - A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task.
 - Allowed lines (`docs/atelier/privacy-allow.json`) are dropped before the report. The owner sees them only in the allowance file's diff.
 
+7. The grant is still live. Last, the hook asks the server whether the grant it was let in with still counts and its actor still holds the task (`POST /internal/grant-live` on a loopback listener of its own, with a random per-process secret the server puts in the hook's environment). A grant the server does not confirm, or a server that does not answer, refuses the push.
+
+A push on a task grant holds that task's lock in the Git host from authorization until its backend exits, and every change that ends or rotates a grant (claim, release, handoff, abandon, merge, record-merge, dispatch, integration, the `git-token` rotation) takes the same lock first. So a change waits for the pushes in flight on its task, and a push that starts meanwhile waits for it and is then refused. Revoking an agent or runner token waits for the pushes made with its grants. Each wait is bounded by a push's own limit: a push's backend is ended after 15 minutes (`PUSH_MAX_MS`), and a change that waits longer is refused with `push_running`.
+
+The hook's secret lives in the environment of processes the server's user runs, so an agent running as that same user could read it while a push is in flight. That is accepted: on the Studio the server runs as `atelierd`, and the user boundary below is the defence.
+
 Every repository names the hook through `core.hooksPath`, and a pushed tree cannot carry a hook into a bare repository.
 
 ## The claim, the workspace and the reads

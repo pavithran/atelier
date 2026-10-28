@@ -140,12 +140,6 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
       res.end("the request target must be a path starting with one /\n");
       return;
     }
-    if (req.url === GRANT_LIVE || req.url.startsWith(`${GRANT_LIVE}?`)) {
-      const done = git.handleInternal(req, res).catch((err) => { console.error("grant check failed:", err.message); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
-      pending.add(done);
-      done.finally(() => pending.delete(done));
-      return;
-    }
     if (req.url?.startsWith("/git/") && !req.url.startsWith("/git/runner/")) {
       const done = git.handle(req, res).then((handled) => { if (!handled) { res.writeHead(404, { "content-type": "text/plain" }); res.end("no such Git route\n"); } })
         .catch((err) => { console.error("git request failed:", err); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
@@ -169,9 +163,20 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
     done.finally(() => pending.delete(done));
   });
   server.keepAliveTimeout = 65_000;
-  await new Promise((ok, fail) => { server.once("error", fail); server.listen(port, host, ok); });
+  // The hook's grant check (GRANT_LIVE) has a listener of its own on the
+  // loopback address, whatever address the server itself listens on (a
+  // tailnet one included), and answers nothing else.
+  const internal = createServer((req, res) => {
+    if (req.url !== GRANT_LIVE) { req.resume(); res.writeHead(404); res.end(); return; }
+    const done = git.handleInternal(req, res).catch((err) => { console.error("grant check failed:", err.message); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
+    pending.add(done);
+    done.finally(() => pending.delete(done));
+  });
+  await new Promise((ok, fail) => { internal.once("error", fail); internal.listen(0, "127.0.0.1", ok); });
+  git.listening(internal.address());
+  try { await new Promise((ok, fail) => { server.once("error", fail); server.listen(port, host, ok); }); }
+  catch (error) { internal.close(); throw error; }
   const bound = server.address().port;
-  git.listening(server.address());
   Object.assign(workerEnv, settings({ env, port: bound, secretsDir, vars }), bindings, { LEDGER: namespace });
   namespace.start();
   const url = `http://localhost:${bound}`;
@@ -184,6 +189,7 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
     await Promise.all([...pending]);
     server.closeAllConnections();
     await closed;
+    await new Promise((ok) => { internal.close(() => ok()); internal.closeAllConnections(); });
     await namespace.close();
     git.close();
     artifacts.close();

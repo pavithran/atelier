@@ -279,7 +279,23 @@ type GitHost = {
   createRepo(args: { key: string; branch: string }): Promise<{ created: boolean }>;
   claimBranch(args: { key: string; projectBranch: string; branch: string; from: string }): Promise<{ base: string | null; head: string | null; created: boolean }>;
   moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
+  lock(project: string, task: string): Promise<() => void>;
+  revokeAfterPushes(id: string): Promise<boolean>;
 };
+
+// The item verbs that end or rotate a task's grant. On the Node server each
+// holds the task's lock in the Git host while it runs (GitHost.lock): it
+// waits for the pushes in flight on the task, at most a push's own limit
+// (PUSH_MAX_MS, src/git/http.mjs), and a push that starts meanwhile waits
+// for it and is then refused if its grant stopped counting.
+const GRANT_ENDING = new Set(["claim", "release", "handoff", "abandon", "merged", "record-merge", "dispatch", "integrated"]);
+async function taskLock(git: GitHost, key: string, task: string): Promise<() => void> {
+  try {
+    return await git.lock(key, task);
+  } catch {
+    throw new RuleError("push_running", `a push to ${task}'s branch is still running, and it ends within 15 minutes; nothing was changed`, 503, "wait for the push to end, then run the same command again");
+  }
+}
 function gitHost(env: Env): GitHost | null {
   return (env as unknown as { GIT?: GitHost }).GIT ?? null;
 }
@@ -1529,7 +1545,8 @@ async function revoke(env: Env, repo: string | null, tokenId: string | null) {
   if (!tokenId || tokenId.startsWith("runner:") || tokenId.startsWith("git:")) return;
   // A grant recorded against an agent token (keepGitGrant) is revoked in the
   // grant store.
-  if (tokenId.startsWith("grant:")) { gitHost(env)?.revoke(tokenId.slice("grant:".length)); return; }
+  // It waits for the pushes made with the grant, so none ends after this.
+  if (tokenId.startsWith("grant:")) { await gitHost(env)?.revokeAfterPushes(tokenId.slice("grant:".length)); return; }
   // A write token is recorded only once its fork exists (the claim route
   // sets the fork, then mints and records the token), so a token with no
   // repository means the caller read the fork before a claim made both. It
@@ -1994,13 +2011,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     else if (c.token && c.token.actor !== actor) throw new RuleError("actor_mismatch", `this agent token speaks for ${c.token.actor}, not ${actor}; no Git credential was issued`, 403, `send the request as ${c.token.actor}`);
     const item = await L.item(id);
     if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
-    const slot = await L.tokenSlot(id);
-    const g = git.mint({ project: ref.key, kind: item.kind === "plan" ? "plan" : "task", task: id, actor, generation: slot.generation });
-    await keepGitGrant(c, git, ref.key, g);
-    if (!await L.recordToken(id, actor, slot.generation, slot.replaces, `git:${g.hash}`)) {
-      git.revoke(g.id);
-      throw new RuleError("claim_superseded", `${id} changed holder while its Git credential was made; no credential was issued`, 409, `run atelier claim ${id} --as ${actor}`);
-    }
+    // The rotation waits for the pushes in flight on the task (taskLock).
+    const unlockTask = await taskLock(git, ref.key, id);
+    let g: ReturnType<GitHost["mint"]>;
+    try {
+      const slot = await L.tokenSlot(id);
+      g = git.mint({ project: ref.key, kind: item.kind === "plan" ? "plan" : "task", task: id, actor, generation: slot.generation });
+      await keepGitGrant(c, git, ref.key, g);
+      if (!await L.recordToken(id, actor, slot.generation, slot.replaces, `git:${g.hash}`)) {
+        git.revoke(g.id);
+        throw new RuleError("claim_superseded", `${id} changed holder while its Git credential was made; no credential was issued`, 409, `run atelier claim ${id} --as ${actor}`);
+      }
+    } finally { unlockTask(); }
     return json({ kind: item.kind === "plan" ? "plan" : "task", remote, token: g.token, expiresAt: g.expiresAt, branch: itemBranch(item), defaultBranch: branch });
   }
 
@@ -2563,6 +2585,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
+  // A verb that ends or rotates a grant holds its task's lock (GRANT_ENDING);
+  // an integration ends the part's.
+  const locks = gitHost(env);
+  const lockedTask = !locks || !GRANT_ENDING.has(verb) ? null
+    : verb === "integrated" ? (await L.integrationTarget(id, String(body.part ?? "")).catch(() => null))?.part?.id ?? null : id;
+  const unlock = locks && lockedTask ? await taskLock(locks, ref.key, lockedTask) : null;
+  try {
   switch (verb) {
     case "claim": {
       // An integrate job's claim is preceded by a mergeability pre-check: a
@@ -3646,6 +3675,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.resolveCriteriaFinding(id, actor, body.review, body.index, String(body.verdict ?? ""), note), 201);
     }
   }
+  } finally { unlock?.(); }
   throw new RuleError("not_found", "no such route", 404);
 }
 

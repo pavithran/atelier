@@ -225,8 +225,9 @@ test("a request target that is not a path starting with one / is refused, and fo
 });
 
 // A push whose request is let in while its grant is live, its pack held back
-// until after the grant stops counting. `before` runs between the two.
-async function heldPush(id, grant, before) {
+// while `during` runs: started 400 ms after the headers, given 400 ms more
+// before the pack is sent. Answers whether `during` had finished by then.
+async function heldPush(id, grant, during) {
   const dir = join(root, `held-${id}`);
   await git(root, ...bearer(OWNER), "clone", "-q", "--single-branch", "--branch", `t/${id.slice(1)}`, remote(), dir);
   const old = await git(dir, "rev-parse", "HEAD");
@@ -238,7 +239,8 @@ async function heldPush(id, grant, before) {
   const line = `${old} ${sha} refs/heads/t/${id.slice(1)}\0report-status\n`;
   const body = Buffer.concat([Buffer.from(`${(line.length + 4).toString(16).padStart(4, "0")}${line}0000`), pack]);
   const url = new URL(`${remote()}/git-receive-pack`);
-  const answer = new Promise((ok, fail) => {
+  let change, doneBeforePack = null, finished = false;
+  const answer = await new Promise((ok, fail) => {
     const req = httpRequest({ host: url.hostname, port: url.port, path: url.pathname, method: "POST", headers: { authorization: `Bearer ${grant}`, "content-type": "application/x-git-receive-pack-request", "content-length": body.length } }, (res) => {
       let text = "";
       res.on("data", (d) => { text += d; });
@@ -247,20 +249,17 @@ async function heldPush(id, grant, before) {
     req.on("error", fail);
     req.flushHeaders();
     // The server authorises on the headers alone; the pack follows later.
-    setTimeout(async () => { try { await before(); req.end(body); } catch (error) { fail(error); } }, 400);
+    setTimeout(() => {
+      change = during().then(() => { finished = true; });
+      setTimeout(() => { doneBeforePack = finished; req.end(body); }, 400);
+    }, 400);
   });
-  return { old, sha, ...(await answer) };
+  await change;
+  return { old, sha, doneBeforePack, ...answer };
 }
+const tipOf = async (id) => (await run("git", [...bearer(OWNER), "ls-remote", remote(), `refs/heads/t/${id.slice(1)}`])).stdout.split("\t")[0];
 
-test("a push let in while its grant was live is refused at hook time when the grant stops counting before the pack arrives", async () => {
-  // Control: held back with nothing changed meanwhile, the push lands.
-  const kept = await newTask("Held push, kept");
-  const g0 = await claim(kept);
-  const ok = await heldPush(kept, g0, async () => {});
-  assert.equal(ok.status, 200);
-  assert.match(ok.text, /ok refs\/heads\/t\//, ok.text);
-  assert.equal((await run("git", [...bearer(OWNER), "ls-remote", remote(), `refs/heads/t/${kept.slice(1)}`])).stdout.split("\t")[0], ok.sha);
-
+test("a change that ends a grant waits for the push in flight on its task, and the grant is dead once it returns", async () => {
   for (const [what, stop] of [
     ["released", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/release`, { note: "mid-push" }, agentToken, BUILDER)).status, 200)],
     ["handed over", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/handoff`, { to: OTHER, note: "mid-push" }, agentToken, BUILDER)).status, 200)],
@@ -269,26 +268,46 @@ test("a push let in while its grant was live is refused at hook time when the gr
     const id = await newTask(`Held push, ${what}`);
     const grant = await claim(id);
     const r = await heldPush(id, grant, () => stop(id));
-    assert.doesNotMatch(r.text, /ok refs\/heads\/t\//, `${what}: ${r.text}`);
-    assert.match(r.text, /ng refs\/heads\/t\/\d+ pre-receive hook declined/, `${what}: ${r.text}`);
-    assert.equal((await run("git", [...bearer(OWNER), "ls-remote", remote(), `refs/heads/t/${id.slice(1)}`])).stdout.split("\t")[0], r.old, `${what}: the ref did not move`);
+    assert.equal(r.doneBeforePack, false, `${what}: the change waited for the push`);
+    assert.match(r.text, /ok refs\/heads\/t\//, `${what}: the push let in first lands: ${r.text}`);
+    assert.equal(await tipOf(id), r.sha);
+    assert.equal(await infoRefs(grant), 401, `${what}: then the grant is dead`);
   }
-
-  // Revoking the agent token mid-push refuses it too.
+  // Revoking the agent token waits for its grant's push the same way.
   const made = await api("POST", "/tokens", { actor: "codex/gpt-6", projects: ["demo"] });
   const id = await newTask("Held push, token revoked");
   const grant = await claim(id, made.body.token, "codex/gpt-6");
   const r = await heldPush(id, grant, async () => assert.equal((await api("DELETE", `/tokens/${made.body.id}`)).body.revoked, true));
-  assert.match(r.text, /pre-receive hook declined/, r.text);
-  assert.equal((await run("git", [...bearer(OWNER), "ls-remote", remote(), `refs/heads/t/${id.slice(1)}`])).stdout.split("\t")[0], r.old);
+  assert.equal(r.doneBeforePack, false);
+  assert.match(r.text, /ok refs\/heads\/t\//, r.text);
+  assert.equal(await infoRefs(grant), 401);
 });
 
-test("the hook's grant check answers only a loopback caller with the hook's secret", async () => {
-  const ask = (headers) => fetch(`${base}/internal/grant-live`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ grant: "owner" }) });
-  assert.equal((await ask({})).status, 404, "no secret");
-  assert.equal((await ask({ "x-atelier-hook-secret": "0".repeat(64) })).status, 404, "a wrong secret");
-  const right = await ask({ "x-atelier-hook-secret": server.git.hookSecret });
+test("a change made to the Ledger without the lock is still caught at hook time: the push is refused and the ref stays", async () => {
+  for (const [what, stop] of [
+    ["handed over", async (id) => { await L().handoff(id, BUILDER, OTHER, "behind the route", false, await L().tokenId(id)); }],
+    ["abandoned", async (id) => { await L().abandon(id, "owner", "behind the route", await L().tokenId(id)); }],
+  ]) {
+    const id = await newTask(`Hook check, ${what}`);
+    const grant = await claim(id);
+    const r = await heldPush(id, grant, () => stop(id));
+    assert.equal(r.doneBeforePack, true);
+    assert.match(r.text, /ng refs\/heads\/t\/\d+ pre-receive hook declined/, `${what}: ${r.text}`);
+    assert.equal(await tipOf(id), r.old, `${what}: the ref did not move`);
+  }
+});
+
+test("the hook's grant check is a loopback listener of its own that answers only the hook's secret", async () => {
+  const check = server.git.callback;
+  assert.match(check, /^http:\/\/127\.0\.0\.1:\d+\/internal\/grant-live$/);
+  assert.notEqual(new URL(check).port, new URL(base).port);
+  const ask = (url, headers) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ grant: "owner" }) });
+  assert.equal((await ask(check, {})).status, 404, "no secret");
+  assert.equal((await ask(check, { "x-atelier-hook-secret": "0".repeat(64) })).status, 404, "a wrong secret");
+  const right = await ask(check, { "x-atelier-hook-secret": server.git.hookSecret });
   assert.equal(right.status, 200);
   assert.deepEqual(await right.json(), { live: true });
-  assert.equal((await fetch(`${base}/internal/grant-live`, { headers: { "x-atelier-hook-secret": server.git.hookSecret } })).status, 404, "a GET");
+  assert.equal((await fetch(check, { headers: { "x-atelier-hook-secret": server.git.hookSecret } })).status, 404, "a GET");
+  const main = await ask(`${base}/internal/grant-live`, { "x-atelier-hook-secret": server.git.hookSecret });
+  assert.notEqual(main.status, 200, "the public listener does not answer it");
 });

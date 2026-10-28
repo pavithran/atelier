@@ -9,11 +9,35 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GrantStore } from "./grants.mjs";
-import { gitRequest } from "./http.mjs";
+import { gitRequest, PUSH_MAX_MS } from "./http.mjs";
 import { ensureRepo, repoDir } from "./repos.mjs";
 import { branchTip, createBranch, holds, moveBranch, setHead } from "./branches.mjs";
 
 export const GRANT_LIVE = "/internal/grant-live";
+// The longest a change that ends a grant waits for the pushes in flight on
+// its task: a push's own limit, and a little more for its answer.
+export const LOCK_WAIT_MS = PUSH_MAX_MS + 30_000;
+
+// One lock per key, taken in turn. `hold(key)` answers the release once
+// every earlier holder released, or throws past `waitMs`; a holder that
+// times out leaves the queue as it stood.
+class Locks {
+  #tails = new Map();
+  async hold(key, waitMs = LOCK_WAIT_MS) {
+    const prev = this.#tails.get(key) ?? Promise.resolve();
+    let release;
+    const mine = new Promise((ok) => { release = ok; });
+    const tail = prev.then(() => mine);
+    this.#tails.set(key, tail);
+    const done = () => { release(); if (this.#tails.get(key) === tail) this.#tails.delete(key); };
+    let timer;
+    const late = new Promise((_, fail) => { timer = setTimeout(() => fail(Object.assign(new Error(`a push on ${key} is still running`), { code: "push_running" })), waitMs); });
+    try { await Promise.race([prev, late]); }
+    catch (error) { done(); throw error; }
+    finally { clearTimeout(timer); }
+    return done;
+  }
+}
 export const HOOKS_DIR = fileURLToPath(new URL("../../hooks", import.meta.url));
 
 function same(a, b) {
@@ -49,6 +73,33 @@ export class GitHost {
     // which only the hook's environment carries; it is never stored or logged.
     this.hookSecret = randomBytes(32).toString("hex");
     this.callback = null;
+    // A push on a task grant and every change that ends a grant take the
+    // task's lock (project and task), and a push takes its grant's too, so
+    // a change waits for the pushes in flight and blocks new ones while it
+    // runs; a revoked agent token waits for its grants' pushes.
+    this.locks = new Locks();
+  }
+  // The lock of one task: held by the caller until it calls the release.
+  lock(project, task, waitMs) { return this.locks.hold(`task:${project}/${task}`, waitMs); }
+  // Revokes a grant once the pushes made with it have ended.
+  async revokeAfterPushes(id, waitMs) {
+    const release = await this.locks.hold(`grant:${id}`, waitMs);
+    try { return this.grants.revoke(id); } finally { release(); }
+  }
+  // A push's locks: its grant's, then its task's for a task or plan grant,
+  // always in that order; then the grant is confirmed live, or both go and
+  // the answer is null.
+  async guardPush(grant) {
+    const releases = [];
+    const all = () => { for (const r of releases.splice(0).reverse()) r(); };
+    try {
+      // The server token is no minted grant: nothing revokes it one by one.
+      if (grant.id !== "owner") releases.push(await this.locks.hold(`grant:${grant.id}`));
+      if (grant.task && (grant.kind === "task" || grant.kind === "plan")) releases.push(await this.lock(grant.key, grant.task));
+      if (await this.live(grant.id)) return all;
+    } catch { /* a lock not had in time refuses the push */ }
+    all();
+    return null;
   }
   // Where the hook reaches this process: its own address once it listens,
   // the loopback one when it listens on every address.
@@ -97,6 +148,8 @@ export class GitHost {
       mint: (grant) => this.grants.mint(grant),
       revoke: (id) => this.grants.revoke(id),
       createRepo: (args) => this.createRepo(args),
+      lock: (project, task) => this.lock(project, task),
+      revokeAfterPushes: (id) => this.revokeAfterPushes(id),
       claimBranch: (args) => this.claimBranch(args),
       moveEmptyBranch: (args) => this.moveEmptyBranch(args),
     };
@@ -189,6 +242,7 @@ export class GitHost {
       reposDir: this.reposDir,
       authorize: (token, name) => this.authorize(token, name),
       hook: this.hookEnv(),
+      guard: (grant) => this.guardPush(grant),
       scans: { dir: this.scanDir, policy: (grant) => this.scanPolicy(grant), record: (grant, report) => this.recordScan(grant, report) },
       ensure: (grant) => {
         this.repo(grant.key, grant.branch);
