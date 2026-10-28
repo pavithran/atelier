@@ -68,9 +68,11 @@ export function parseDump(text, format) {
 // Loads a dump with `post` (a function of the request body that answers the
 // route's JSON): begin, each table's rows in chunks of at most
 // IMPORT_CHUNK_BYTES, then finish, whose answer it returns. `progress` hears
-// of each table loaded.
-export async function importDump(dump, post, progress = () => {}) {
-  const begun = await post({ step: "begin", manifest: manifestOf(dump) });
+// of each table loaded. With `resume`, the id of an import that failed
+// partway, it goes on from the rows the server recorded instead of beginning.
+export async function importDump(dump, post, progress = () => {}, resume = null) {
+  const begun = resume ? await post({ step: "resume", import: resume }) : await post({ step: "begin", manifest: manifestOf(dump) });
+  const loaded = begun.loaded ?? {};
   for (const t of dump.tables) {
     const columns = t.columns.map((c) => c.name);
     let chunk = [], bytes = 0, inserted = 0;
@@ -80,7 +82,7 @@ export async function importDump(dump, post, progress = () => {}) {
       chunk = [];
       bytes = 0;
     };
-    for (const row of t.rows) {
+    for (const row of t.rows.slice(loaded[t.name] ?? 0)) {
       const size = JSON.stringify(row).length;
       if (chunk.length && bytes + size > IMPORT_CHUNK_BYTES) await send();
       chunk.push(row);
