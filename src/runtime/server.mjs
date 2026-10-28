@@ -133,8 +133,13 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const url = `http://localhost:${bound}`;
   let closing;
   const close = () => closing ??= (async () => {
-    await new Promise((ok) => { server.close(() => ok()); server.closeIdleConnections?.(); });
+    // No new connections; requests in flight finish; then every connection
+    // closes, kept-alive ones included.
+    const closed = new Promise((ok) => server.close(() => ok()));
+    server.closeIdleConnections();
     await Promise.all([...pending]);
+    server.closeAllConnections();
+    await closed;
     await namespace.close();
     git.close();
   })();

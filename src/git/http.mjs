@@ -67,11 +67,13 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure }) {
   const url = new URL(req.url ?? "/", "http://git.local");
   const m = ROUTE.exec(url.pathname);
   if (!m) return false;
-  const [, project, rest] = m;
+  const [, raw, rest] = m;
+  let project;
+  try { project = decodeURIComponent(raw); } catch { req.resume(); deny(res, 404, "atelier: no such repository"); return true; }
   const service = rest === "info/refs" ? url.searchParams.get("service") : rest;
   if (service !== "git-upload-pack" && service !== "git-receive-pack") { deny(res, 403, "atelier: only the smart Git protocol is served"); return true; }
-  const grant = await authorize(tokenOf(req.headers.authorization), decodeURIComponent(project));
-  if (!grant) { req.resume(); deny(res, 401, `atelier: no live Git credential for ${decodeURIComponent(project)}`); return true; }
+  const grant = await authorize(tokenOf(req.headers.authorization), project);
+  if (!grant) { req.resume(); deny(res, 401, `atelier: no live Git credential for ${project}`); return true; }
   if (service === "git-receive-pack" && grant.kind === "read") { req.resume(); deny(res, 403, "atelier: this credential reads only"); return true; }
   const key = await ensure(grant);
   const child = spawn("git", ["http-backend"], {
@@ -79,6 +81,8 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure }) {
     stdio: ["pipe", "pipe", "pipe"],
   });
   req.pipe(child.stdin);
+  // A client gone mid-request takes its backend with it.
+  res.on("close", () => { if (child.exitCode === null && !res.writableFinished) child.kill("SIGTERM"); });
   child.stdin.on("error", () => {});
   let errors = "";
   child.stderr.on("data", (d) => { if (errors.length < 4096) errors += d; });

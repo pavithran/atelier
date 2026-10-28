@@ -28,6 +28,12 @@ export class GitHost {
     this.namespace = namespace;
     this.settings = settings;
     this.grants = new GrantStore(join(dataDir, "git-grants.sqlite"));
+    // Rows of grants long expired or revoked go once a day; a task grant
+    // the Ledger stopped recording is dead already and goes when it expires.
+    this.grants.prune();
+    this.pruning = setInterval(() => this.grants.prune(), 24 * 3600e3);
+    this.pruning.unref();
+    this.ready = new Set();
   }
   binding() {
     return {
@@ -35,11 +41,13 @@ export class GitHost {
       revoke: (id) => this.grants.revoke(id),
     };
   }
-  // The registered project a URL names, by name or key, or null.
+  // The registered project a URL names, by any name it has had or its key,
+  // as every other route resolves it (resolveProject), or null.
   async project(name) {
     const index = this.namespace.get(this.namespace.idFromName("__index"));
-    const projects = await index.projects();
-    return projects.find((p) => p.name === name) ?? projects.find((p) => (p.key ?? p.name) === name) ?? null;
+    const ref = await index.resolveProject(name);
+    if (!ref.registered) return null;
+    return (await index.projects()).find((p) => (p.key ?? p.name) === ref.key) ?? null;
   }
   // The grant a token is for this project, or null.
   async authorize(token, name) {
@@ -62,8 +70,15 @@ export class GitHost {
     return gitRequest(req, res, {
       reposDir: this.reposDir,
       authorize: (token, name) => this.authorize(token, name),
-      ensure: (grant) => { ensureRepo({ reposDir: this.reposDir, hooksDir: this.hooksDir, key: grant.key, branch: grant.branch }); return grant.key; },
+      ensure: (grant) => {
+        // Set up once per repository per process.
+        if (!this.ready.has(grant.key)) {
+          ensureRepo({ reposDir: this.reposDir, hooksDir: this.hooksDir, key: grant.key, branch: grant.branch });
+          this.ready.add(grant.key);
+        }
+        return grant.key;
+      },
     });
   }
-  close() { this.grants.close(); }
+  close() { clearInterval(this.pruning); this.grants.close(); }
 }

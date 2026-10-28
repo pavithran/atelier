@@ -179,3 +179,13 @@ test("no plaintext token is kept in the grant store or put in the hook's environ
     assert.equal(JSON.parse(seen).ATELIER_KIND, "owner");
   } finally { await recorder.close(); }
 });
+
+test("a malformed project name is answered 404, and a renamed project's old name still reaches its repository", async () => {
+  assert.equal((await fetch(`${base}/git/%E0%A4%A.git/info/refs?service=git-upload-pack`)).status, 404);
+  const read = server.git.grants.mint({ project: "other", kind: "read", actor: AGENT });
+  assert.equal((await infoRefs(read.token, "other", "git-upload-pack")).status, 200);
+  const renamed = await api("POST", "/projects/other/rename", { to: "other-renamed" });
+  assert.equal(renamed.status, 200, await renamed.clone().text());
+  assert.equal((await infoRefs(read.token, "other", "git-upload-pack")).status, 200);
+  assert.equal((await infoRefs(read.token, "other-renamed", "git-upload-pack")).status, 200);
+});
