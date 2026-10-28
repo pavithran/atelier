@@ -955,6 +955,31 @@ function refuseSpawnedHelper(name) {
   if (runnerHelper()) throw new Error(`${name} is not a call the runner helpers declare: it is an owner-only read or report that fetches outside request() (RUNNER_CALLS in src/tokens.ts)`);
 }
 
+// The wait before each retry of a request: connection refused, 408, 429 and
+// 5xx are tried again after 1, 2 and 4 seconds. A test sets RETRY.waits, or
+// ATELIER_RETRY_MS (a comma list) does.
+export const RETRY = { waits: [1000, 2000, 4000], sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
+const retryWaits = () => process.env.ATELIER_RETRY_MS === undefined ? RETRY.waits : process.env.ATELIER_RETRY_MS.split(",").map(Number).filter((n) => n >= 0);
+
+// The read that tells whether a write applied: the task's own record when the
+// path names one, the project's standing otherwise.
+const checkFor = (path) => {
+  const item = /\/items\/(t[0-9]+)/.exec(path)?.[1];
+  const project = /^\/projects\/([^/]+)/.exec(path)?.[1];
+  return item ? `atelier show ${item}` : project ? `atelier status --project ${decodeURIComponent(project)}` : "atelier status";
+};
+
+// A request that never reached the server: nothing was sent, so asking again
+// cannot repeat it. fetch cannot tell a reset before the first byte from one
+// after it, so a reset is not here.
+const NEVER_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"]);
+
+// The only write asked again by itself: a push is idempotent by head, so the
+// same head again changes nothing. Every other write that failed uncertainly
+// stops, and the command's own "already" answer serves a rerun by hand.
+export const REPEATABLE_WRITES = [/^POST \/projects\/[^/]+\/items\/[^/]+\/push$/];
+const repeatable = (method, path) => REPEATABLE_WRITES.some((r) => r.test(`${method} ${path}`));
+
 export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
   // Validate before even the identity read: spelling, aliases and indirect
@@ -965,15 +990,40 @@ export async function request(method, path, body, as, extra = {}, signal) {
   if (path !== "/config") await resolveTokenActor();
   if (helper && tokenRunner) declaredHelperCall(method, path, body, true);
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
+  // A read retries freely, a request that never reached the server retries,
+  // and so does a write safe to repeat. Any other write that failed
+  // uncertainly stops: it may have applied. `maybe` keeps that across tries.
+  const read = method === "GET" || method === "HEAD";
+  const safe = read || repeatable(method, path);
+  let maybe = false;
   let res, text;
-  try {
-    res = await serverFetch(server() + "/api" + path, {
-      method, signal: withTimeout(signal, serverTimeoutMs(body)),
-      headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    text = await res.text();
-  } catch (error) { die(`server request failed: ${timedOut(error) ? `${method} ${path} timed out after ${secondsOf(serverTimeoutMs(body))}` : error.message}`, 4); }
+  for (let attempt = 0; ; attempt++) {
+    let failure = null;
+    try {
+      res = await serverFetch(server() + "/api" + path, {
+        method, signal: withTimeout(signal, serverTimeoutMs(body)),
+        // A write is never sent on to another address: an error from a
+        // redirect target would look like one from the original URL.
+        ...(read ? {} : { redirect: "manual" }),
+        headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      text = await res.text();
+      if (res.status === 408 || res.status === 429 || res.status >= 500) failure = { message: `${res.status}`, sent: true };
+    } catch (error) {
+      failure = { message: timedOut(error) ? `${method} ${path} timed out after ${secondsOf(serverTimeoutMs(body))}` : error.message, sent: !NEVER_SENT.has(error?.cause?.code) };
+    }
+    if (!failure) break;
+    if (!read && failure.sent) maybe = true;
+    const check = `may have applied: run ${checkFor(path)}`;
+    if (!safe && failure.sent) die(`server request failed: ${failure.message}; ${check}`, 4);
+    const waits = retryWaits();
+    if (attempt >= waits.length) {
+      die(`server request failed: ${failure.message}. Atelier at ${server()} is not answering after ${attempt + 1} tries; ${maybe ? check : "nothing was recorded"}; work in this workspace is kept`, 4);
+    }
+    process.stderr.write(`atelier: ${method} ${path} failed (${failure.message}); trying again in ${waits[attempt] / 1000}s (${attempt + 1} of ${waits.length})\n`);
+    await RETRY.sleep(waits[attempt]);
+  }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
   if (!res.ok) {
@@ -988,9 +1038,12 @@ export async function request(method, path, body, as, extra = {}, signal) {
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
+    // An earlier try that may have applied is still in doubt beside any refusal.
+    const doubt = maybe ? `; an earlier try may have applied: run ${checkFor(path)}` : "";
     const named = data.error === "no_project" ? /^\/projects\/([^/]+)/.exec(path)?.[1] : undefined;
-    if (named) die(noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name), code);
-    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`, code);
+    if (named) die(`${noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name)}${doubt}`, code);
+    if (res.status >= 300 && res.status < 400) die(`${res.status}: ${method} ${path} was answered with a redirect, which a write does not follow; check the server URL${doubt}`, 1);
+    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}${doubt}`, code);
   }
   return data;
 }
@@ -1356,26 +1409,15 @@ export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, gr
 
 const interrupted = (sig) => () => process.exit(128 + osConstants.signals[sig]);
 
-// Posts one check's result. A server that cannot answer (no connection, a
-// 5xx, 408 or 429) is asked again after a growing wait, EVIDENCE_RETRY_MS
-// each time (1, 2 and 4 seconds); a failure after the last wait ends the
-// command with the step named, and the clone is removed on the way out.
-// `sleep` is the wait, so a test does not take the seconds.
-export const EVIDENCE_RETRY_MS = [1000, 2000, 4000];
-export async function postEvidence(path, body, as, sleep = (ms) => new Promise((r) => setTimeout(r, ms))) {
+// Posts one check's result. request() asks again when the server cannot
+// answer (see RETRY); a failure after the last wait ends the command with the
+// step named, and the clone is removed on the way out.
+export async function postEvidence(path, body, as) {
   const step = `posting the result of \`${body.claim}\``;
-  for (let attempt = 0; ; attempt++) {
-    try { return await request("POST", path, body, as); }
-    catch (error) {
-      if (!(error instanceof RequestError)) die(`${step} failed: ${error.message}`, 4);
-      if (error.code === 4 && attempt < EVIDENCE_RETRY_MS.length) {
-        const wait = EVIDENCE_RETRY_MS[attempt];
-        process.stderr.write(`atelier: ${step} failed (${error.message}); trying again in ${wait / 1000}s (${attempt + 1} of ${EVIDENCE_RETRY_MS.length})\n`);
-        await sleep(wait);
-        continue;
-      }
-      die(`${step} failed: ${error.message}`, error.code);
-    }
+  try { return await request("POST", path, body, as); }
+  catch (error) {
+    if (!(error instanceof RequestError)) die(`${step} failed: ${error.message}`, 4);
+    die(`${step} failed: ${error.message}`, error.code);
   }
 }
 

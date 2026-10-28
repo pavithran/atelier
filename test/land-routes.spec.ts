@@ -573,7 +573,7 @@ it("the developer withdraws an unclaimed review request with a reason and asks a
   await refusal(L.withdrawReviewRequest(id, "owner", "changed my mind", next.request), "review_claimed", /is being served and is not withdrawn/);
   expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ state: "claimed", claimedBy: GEMINI });
   // A request already withdrawn, named by number, is not withdrawn again.
-  await refusal(L.withdrawReviewRequest(id, "owner", "again", asked.request), "no_request", /is withdrawn, so there is nothing to withdraw/);
+  expect(await L.withdrawReviewRequest(id, "owner", "again", asked.request)).toMatchObject({ request: asked.request, already: true });
 });
 
 it("naming another reviewer redirects an unclaimed review request, says so, and leaves it standing when the new ask is refused (t627)", async () => {

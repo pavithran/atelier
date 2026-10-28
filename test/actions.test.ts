@@ -62,7 +62,10 @@ test("the owner approves one kind at one revision, once while it stands", () => 
   const a = approveAction(store, "owner", { kind: "deploy", commit: H1, note: "release", expires: "1h" }, T0);
   assert.deepEqual({ id: a.id, status: a.status, expiresAt: a.expiresAt }, { id: "a1", status: "active", expiresAt: later(3600_000) });
   assert.deepEqual(events.at(-1), { kind: "action.approved", data: { id: "a1", kind: "deploy", commit: H1, note: "release", expiresAt: later(3600_000) } });
-  refused(() => approveAction(store, "owner", { kind: "deploy", commit: H1 }, T0), "already_approved", /already approved as a1.*atelier approvals withdraw a1/);
+  // A repeat while it stands answers the approval that stands and logs nothing more.
+  const eventsBefore = events.length;
+  assert.deepEqual({ id: approveAction(store, "owner", { kind: "deploy", commit: H1 }, T0).id, already: true }, { id: "a1", already: true });
+  assert.equal(events.length, eventsBefore);
   assert.equal(approveAction(store, "owner", { kind: "push", commit: H1 }, T0).id, "a2", "another kind at the same revision is its own approval");
   assert.equal(approveAction(store, "owner", { kind: "deploy", commit: H2 }, T0).id, "a3", "the same kind at another revision is its own approval");
   refused(() => approveAction(store, "codex/gpt-6-astra", { kind: "deploy", commit: "c".repeat(40) }, T0), "not_project_owner");

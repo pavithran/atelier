@@ -162,12 +162,15 @@ export function listApprovals(store: ActionStore, now: string): ApprovalView[] {
 // the revision on the main line (actionsApi in src/actions-api.ts); a second
 // active approval for the same kind and revision is refused, so what one
 // approval allows is never in doubt.
-export function approveAction(store: ActionStore, actor: string, body: Record<string, unknown>, now: string, acting: string | null = null): ApprovalView {
+export function approveAction(store: ActionStore, actor: string, body: Record<string, unknown>, now: string, acting: string | null = null): ApprovalView & { already?: true } {
   ownerOnly(store, actor, "approves a protected action");
   const { kind, commit, note, seconds, direction } = cleanApprovalInput(body, acting);
   const all = rows(store.sql);
   const same = all.find((a) => a.kind === kind && a.commit === commit && approvalStatus(a, now) === "active");
   if (same) {
+    // The same kind at the same revision, still active, on the same words: a
+    // rerun of the approval that stands.
+    if (same.quote === (direction?.quote ?? undefined)) return { ...view(same, now), already: true };
     throw new RuleError("already_approved", `${kind} at ${short(commit)} is already approved as ${same.id}, until ${same.expiresAt}. To change its note or expiry, withdraw it first: atelier approvals withdraw ${same.id}`, 409);
   }
   const n = all.length + 1;
