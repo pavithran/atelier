@@ -87,7 +87,7 @@
 import { LARGE_MAX, type LargeRef } from "./large.ts";
 import { FAILURE_LINES_CHARS } from "./text.ts";
 import { blockingMergedRuns, countingRunsAt, evidenceAt, type Evidence, type ProjectPolicy } from "./rules.ts";
-import { stopText, type CheckStop } from "./check-limit.ts";
+import { stopLine, type CheckStop } from "./check-limit.ts";
 
 // What a check run on someone's machine keeps of its output inline:
 // `atelier check` posts the output's last LOCAL_OUTPUT_TAIL characters and a
@@ -640,7 +640,7 @@ export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[]
   // A run stopped at its limit (G7) is said as what it is: no test failed,
   // so no failing tests are listed from the output it left.
   return [
-    `\`${flatLine(f.claim)}\` ${f.stopped ? `${stopText(f.stopped)}, counted from its held test slot; it was stopped, not a failed test,` : "failed"}${on} ${WHERE_TEXT[f.where]} at ${when(f.at)}${f.load !== null ? `, load ${f.load}` : ""}: ${ident}`,
+    `\`${flatLine(f.claim)}\` ${f.stopped ? `${stopLine(f.stopped)}; it was stopped, not a failed test,` : "failed"}${on} ${WHERE_TEXT[f.where]} at ${when(f.at)}${f.load !== null ? `, load ${f.load}` : ""}: ${ident}`,
     ...(f.stopped ? [] : [`  ${failingTestsLine(f.tests, f.logRead.whole, fit.names, all > 0)}`]),
     ...(all ? [`  failure lines, read from the whole output: ${fails.length < all ? `first ${fails.length} of ${all}` : `${count(all, "line")}`}${fails.length ? ":" : ""}`, ...fails.map((line) => `    ${line}`)] : []),
     `  log: ${f.logRead.label}; ${shown}${lines.length ? ":" : ""}`,

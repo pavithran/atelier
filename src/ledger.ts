@@ -336,6 +336,7 @@ export interface ProjectInit {
   checkLimitMinutes?: number | null;
   silenceLimitMinutes?: number | null;
   startupLimitMinutes?: number | null;
+  slotWaitLimitMinutes?: number | null;
   checkSilence?: CheckSilence[];
   // The model that triages a landing before its review; null clears it
   // (see ProjectPolicy.triage).
@@ -695,6 +696,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const checkLimitMinutes = i.checkLimitMinutes === undefined ? p?.checkLimitMinutes : i.checkLimitMinutes ?? undefined;
   const silenceLimitMinutes = i.silenceLimitMinutes === undefined ? p?.silenceLimitMinutes : i.silenceLimitMinutes ?? undefined;
   const startupLimitMinutes = i.startupLimitMinutes === undefined ? p?.startupLimitMinutes : i.startupLimitMinutes ?? undefined;
+  const slotWaitLimitMinutes = i.slotWaitLimitMinutes === undefined ? p?.slotWaitLimitMinutes : i.slotWaitLimitMinutes ?? undefined;
   // A check's own silence limit stands while the command is a check or the
   // preparation; one for a command the policy no longer runs is dropped.
   const runs = new Set([...checks, ...(prepare ? [prepare.command] : [])]);
@@ -736,6 +738,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(checkLimitMinutes ? { checkLimitMinutes } : {}),
       ...(silenceLimitMinutes ? { silenceLimitMinutes } : {}),
       ...(startupLimitMinutes ? { startupLimitMinutes } : {}),
+      ...(slotWaitLimitMinutes ? { slotWaitLimitMinutes } : {}),
       ...(checkSilence.length ? { checkSilence } : {}),
       ...(triage ? { triage } : {}),
       ...(reviewTier.length ? { reviewTier: [...reviewTier] } : {}),

@@ -162,6 +162,7 @@ export default async function initCommand() {
     ...(args["check-limit"] !== undefined ? { checkLimitMinutes: args["check-limit"] } : {}),
     ...(args["silence-limit"] !== undefined ? { silenceLimitMinutes: args["silence-limit"] } : {}),
     ...(args["startup-limit"] !== undefined ? { startupLimitMinutes: args["startup-limit"] } : {}),
+    ...(args["slot-wait-limit"] !== undefined ? { slotWaitLimitMinutes: args["slot-wait-limit"] } : {}),
     ...(args.multi["check-silence"] ? { checkSilence: args.multi["check-silence"].length === 1 && args.multi["check-silence"][0] === "" ? [] : args.multi["check-silence"] } : {}),
     // The model that triages a landing's diff against the task's criteria
     // before its review (t475), harness/model; omitted keeps it, "" clears it.
@@ -257,7 +258,7 @@ export default async function initCommand() {
   if (typeof args["prose-standard"] === "string" && args["prose-standard"].trim() && !pol.proseStandard) console.log("Warning: the server did not record the prose standard; deploy the server, then run atelier init --prose-standard again.");
   console.log(`Check limit: ${limitText(pol)}`);
   // A server older than the check limit ignores it and answers without one.
-  if ((typeof args["check-limit"] === "string" && args["check-limit"].trim() && !pol.checkLimitMinutes) || (typeof args["silence-limit"] === "string" && args["silence-limit"].trim() && !pol.silenceLimitMinutes) || (typeof args["startup-limit"] === "string" && args["startup-limit"].trim() && !pol.startupLimitMinutes)) console.log("Warning: the server did not record the check limit; deploy the server, then run atelier init --check-limit MINUTES --silence-limit MINUTES --startup-limit MINUTES again.");
+  if ((typeof args["check-limit"] === "string" && args["check-limit"].trim() && !pol.checkLimitMinutes) || (typeof args["silence-limit"] === "string" && args["silence-limit"].trim() && !pol.silenceLimitMinutes) || (typeof args["startup-limit"] === "string" && args["startup-limit"].trim() && !pol.startupLimitMinutes) || (typeof args["slot-wait-limit"] === "string" && args["slot-wait-limit"].trim() && !pol.slotWaitLimitMinutes)) console.log("Warning: the server did not record the check limit; deploy the server, then run atelier init --check-limit MINUTES --silence-limit MINUTES --startup-limit MINUTES --slot-wait-limit MINUTES again.");
   console.log(`Triage:     ${pol.triage ? `${pol.triage}, which triages each landing's diff against the task's acceptance criteria before the review is asked for (atelier land --triage H/M names another, --no-triage REASON skips it)` : "none, unless a landing names a model with atelier land --triage H/M"}`);
   // A server older than the triage setting ignores it and answers without one.
   if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");

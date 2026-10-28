@@ -21,7 +21,7 @@ import { basename, join, resolve } from "node:path";
 import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
 
 import { proseStandardLine } from "../src/prose-standard.ts";
-import { checkLimits, limitMs, stopOf, stopText } from "../src/check-limit.ts";
+import { checkLimits, limitMs, stopLine, stopOf, stopText } from "../src/check-limit.ts";
 
 import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
 import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
@@ -1419,7 +1419,7 @@ export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000, poli
   const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, limits, captureOrder: true, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const stopped = stopOf(r.stopped, limits);
-  const output = redact(`${r.output ?? `${r.stdout}${r.stderr}`}${stopped ? `\n[atelier] check ${stopText(stopped)}${stopped.kind === "silent" ? " (no output, no process activity and no live child process)" : stopped.kind === "startup" ? " (no output and no child process)" : ""}, counted from its held test slot; stopped, not a failed test` : r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
+  const output = redact(`${r.output ?? `${r.stdout}${r.stderr}`}${stopped ? `\n[atelier] check ${stopText(stopped)}${stopped.kind === "silent" ? " (no output, no process activity and no live child process)" : stopped.kind === "startup" ? " (no output, no child process seen, no CPU time)" : ""}${stopped.kind === "slot" ? "" : ", counted from its held test slot"}; stopped, not a failed test` : r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
   const passed = r.status === 0 && !r.error;
   const logPath = passed ? undefined : saveFailedOutput(CACHE, output);
   if (logPath) process.stderr.write(`atelier: full redacted failed-check log: ${logPath}\n`);
@@ -1437,8 +1437,8 @@ export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, gr
   const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
   process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
   const invocation = slotInvocation(["/bin/sh", "-c", cmd], metadata, env);
-  const { ceilingMs, silenceMs, startupMs } = limitMs(limits);
-  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: ceilingMs, silenceMs, startupMs, fromSlot: true, graceMs, maxBytes, onSpawn, captureOrder }); }
+  const { ceilingMs, silenceMs, startupMs, slotWaitMs } = limitMs(limits);
+  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: ceilingMs, silenceMs, startupMs, slotWaitMs, fromSlot: true, graceMs, maxBytes, onSpawn, captureOrder }); }
   finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
 }
 
@@ -1558,8 +1558,9 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   // A check stopped at the check limit (G7) is named with what stopped it:
   // it did not fail a test, and a report of it starts with those words
   // (validation_blocked: timed out ..., or silent for ...).
-  const said = (c) => c.stopped ? `${stopText(c.stopped)}, counted from its held test slot, not a failed test` : c.result;
-  const failed = checks.filter((c) => c.result === "failed").map((c) => c.stopped ? `${flat(c.claim)} (${said(c)})` : flat(c.claim));
+  const said = (c) => c.stopped ? `${stopLine(c.stopped)}, not a failed test` : c.result;
+  const failed = checks.filter((c) => c.result === "failed").map((c) => flat(c.claim));
+  const stopped = checks.filter((c) => c.result === "stopped").map((c) => `${flat(c.claim)} (${said(c)})`);
   const blockers = (gate?.blockers ?? []).map(flat);
   const checkText = checks.length ? `Checks: ${checks.map((c) => `${flat(c.claim)} ${said(c)}`).join("; ")} (${checks[0].where})` : "Checks: none ran";
   let outcome, exitCode, line, unresolved, accept, merge, ownerAction;
@@ -1569,7 +1570,16 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
     accept = "not reached"; merge = "not reached";
     ownerAction = `none yet; fix ${failed.join("; ")} in the workspace, then run done again`;
     const left = changed.length ? `; the workspace also changed: ${changed.map(flat).join(", ")}` : "";
-    line = `Outcome: failed checks: ${failed.join("; ")}; nothing was submitted${left}`;
+    line = `Outcome: failed checks: ${failed.join("; ")}${stopped.length ? `; stopped at the check limit: ${stopped.join("; ")}` : ""}; nothing was submitted${left}`;
+  } else if (stopped.length) {
+    // Every check that did not pass was stopped at the check limit (G7): no
+    // test failed. A builder that cannot finish within it reports the stop's words.
+    outcome = "stopped_checks"; exitCode = 2;
+    unresolved = "not evaluated; nothing was submitted";
+    accept = "not reached"; merge = "not reached";
+    ownerAction = `none yet; the run was stopped, not failed: see the limit with atelier show ${id}, then run done again, or end the report with validation_blocked: and the stop's words`;
+    const left = changed.length ? `; the workspace also changed: ${changed.map(flat).join(", ")}` : "";
+    line = `Outcome: checks stopped at the check limit, not failed: ${stopped.join("; ")}; nothing was submitted${left}`;
   } else if (submitted && gate.ready) {
     outcome = "submitted"; exitCode = 0;
     unresolved = "none";
@@ -1596,8 +1606,8 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   ];
   const json = {
     outcome, exitCode, outcomeLine: line, head, submitted,
-    checks: checks.map(({ claim, result, where }) => ({ claim, result, where })),
-    unresolvedGates: failed.length ? [] : blockers,
+    checks: checks.map(({ claim, result, where, stopped: stop }) => ({ claim, result, where, ...(stop ? { stopped: stop } : {}) })),
+    unresolvedGates: failed.length || stopped.length ? [] : blockers,
     accept, merge, deploy, ownerAction,
   };
   return { outcome, exitCode, summary, line, json };

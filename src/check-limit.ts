@@ -13,8 +13,12 @@
 //   for silence (the stall rule from running builders directly in miqra);
 // - the startup limit, when the project sets one (`--startup-limit
 //   MINUTES`): a run that within that many minutes of its start has printed
-//   nothing and had no child process start or end is stopped as "no command
-//   completed in N minutes" (a harness blocked on a prompt nobody can answer);
+//   nothing, shown no child process and spent no CPU time is stopped as
+//   "showed no work in N minutes" (a harness blocked on a prompt nobody can
+//   answer);
+// - the slot-wait limit (`--slot-wait-limit MINUTES`, default 60): a run that
+//   waits this long for its test slot is stopped as "waited N minutes for a
+//   test slot", and the wait never counts toward the other limits;
 // - the hard ceiling (checkLimitMinutes): a run that keeps progressing is
 //   stopped only here, as "timed out after N minutes".
 //
@@ -27,6 +31,7 @@ import { RuleError } from "./rules.ts";
 
 export const DEFAULT_CHECK_LIMIT_MINUTES = 60;
 export const DEFAULT_SILENCE_LIMIT_MINUTES = 10;
+export const DEFAULT_SLOT_WAIT_MINUTES = 60;
 // A day: a limit is a number of whole or part minutes from 1 to this.
 export const LIMIT_MAX_MINUTES = 24 * 60;
 
@@ -34,7 +39,7 @@ export const LIMIT_MAX_MINUTES = 24 * 60;
 export interface CheckSilence { command: string; minutes: number }
 
 // What stopped a run: its ceiling, or its silence, with the limit in minutes.
-export interface CheckStop { kind: "timeout" | "silent" | "startup"; minutes: number }
+export interface CheckStop { kind: "timeout" | "silent" | "startup" | "slot"; minutes: number }
 
 // The limits a run of `command` goes by under `policy`, and where each came
 // from: "project" when the policy sets it, "check" when the check declares
@@ -43,11 +48,12 @@ export interface CheckLimits {
   limitMinutes: number;
   silenceMinutes: number;
   startupMinutes: number | null;   // null: no startup limit
+  slotWaitMinutes: number;
   limitFrom: "project" | "default";
   silenceFrom: "check" | "project" | "default";
 }
 
-type LimitPolicy = Pick<ProjectPolicy, "checkLimitMinutes" | "silenceLimitMinutes" | "startupLimitMinutes" | "checkSilence"> | null | undefined;
+type LimitPolicy = Pick<ProjectPolicy, "checkLimitMinutes" | "silenceLimitMinutes" | "startupLimitMinutes" | "slotWaitLimitMinutes" | "checkSilence"> | null | undefined;
 
 const positive = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
 
@@ -59,24 +65,26 @@ export function checkLimits(policy: LimitPolicy, command?: string): CheckLimits 
     limitMinutes: limit ?? DEFAULT_CHECK_LIMIT_MINUTES,
     silenceMinutes: own ? own.minutes : silence ?? DEFAULT_SILENCE_LIMIT_MINUTES,
     startupMinutes: positive(policy?.startupLimitMinutes) ? policy!.startupLimitMinutes! : null,
+    slotWaitMinutes: positive(policy?.slotWaitLimitMinutes) ? policy!.slotWaitLimitMinutes! : DEFAULT_SLOT_WAIT_MINUTES,
     limitFrom: limit ? "project" : "default",
     silenceFrom: own ? "check" : silence ? "project" : "default",
   };
 }
 
 // The limits in milliseconds, as a runner of processes takes them.
-export const limitMs = (l: CheckLimits) => ({ ceilingMs: l.limitMinutes * 60_000, silenceMs: l.silenceMinutes * 60_000, ...(l.startupMinutes ? { startupMs: l.startupMinutes * 60_000 } : {}) });
+export const limitMs = (l: CheckLimits) => ({ ceilingMs: l.limitMinutes * 60_000, silenceMs: l.silenceMinutes * 60_000, slotWaitMs: l.slotWaitMinutes * 60_000, ...(l.startupMinutes ? { startupMs: l.startupMinutes * 60_000 } : {}) });
 
 // The stop a runner of processes reported ({kind, ms}) in the limits' minutes.
 export const stopOf = (stopped: { kind: CheckStop["kind"] } | null | undefined, l: CheckLimits): CheckStop | undefined => !stopped ? undefined
-  : { kind: stopped.kind, minutes: stopped.kind === "silent" ? l.silenceMinutes : stopped.kind === "startup" ? (l.startupMinutes ?? 0) : l.limitMinutes };
+  : { kind: stopped.kind, minutes: stopped.kind === "silent" ? l.silenceMinutes : stopped.kind === "startup" ? (l.startupMinutes ?? 0) : stopped.kind === "slot" ? l.slotWaitMinutes : l.limitMinutes };
 
 export const minutesText = (n: number): string => `${n} ${n === 1 ? "minute" : "minutes"}`;
 
 // What a stopped run reports, in Atelier's words.
 export function stopText(stop: CheckStop): string {
   return stop.kind === "silent" ? `silent for ${minutesText(stop.minutes)}`
-    : stop.kind === "startup" ? `no command completed in ${minutesText(stop.minutes)}`
+    : stop.kind === "startup" ? `showed no work in ${minutesText(stop.minutes)}`
+    : stop.kind === "slot" ? `waited ${minutesText(stop.minutes)} for a test slot`
     : `timed out after ${minutesText(stop.minutes)}`;
 }
 
@@ -87,9 +95,10 @@ export function limitText(policy: LimitPolicy): string {
   const own = (policy?.checkSilence ?? []).filter((c) => positive(c.minutes));
   return [
     `a run is stopped when silent for ${minutesText(l.silenceMinutes)} (no output, no process activity and no live child process)${l.silenceFrom === "default" ? ", the default" : ""}`,
-    l.startupMinutes ? `when no command completed in its first ${minutesText(l.startupMinutes)} (no output and no child process)` : "with no startup limit",
+    l.startupMinutes ? `when it showed no work in its first ${minutesText(l.startupMinutes)} (no output, no child process seen, no CPU time)` : "with no startup limit",
     `and at a hard ceiling of ${minutesText(l.limitMinutes)}${l.limitFrom === "default" ? ", the default" : ""}`,
-    "both counted from when it holds its test slot",
+    "all counted from when it holds its test slot",
+    `a run that waits ${minutesText(l.slotWaitMinutes)} for its slot is stopped${positive(policy?.slotWaitLimitMinutes) ? "" : ", the default"}`,
     ...(own.length ? [`checks declaring their own silence: ${own.map((c) => `\`${c.command}\` ${minutesText(c.minutes)}`).join(", ")}`] : []),
   ].join("; ");
 }
@@ -131,14 +140,18 @@ export function checkSilenceArg(value: unknown): CheckSilence[] {
 // the developer. A validation_blocked release whose reason starts with
 // Atelier's own words for a stop is such a block.
 export const TIMEOUT_FACT = "timeout" as const;
-export const STOP_WORDS = /^(?:timed out\b|silent for \d+(?:\.\d+)? minutes?\b|no command completed in \d+(?:\.\d+)? minutes?\b)/i;
+export const STOP_WORDS = /^(?:timed out\b|silent for \d+(?:\.\d+)? minutes?\b|showed no work in \d+(?:\.\d+)? minutes?\b|waited \d+(?:\.\d+)? minutes? for a test slot\b)/i;
 
 // What stopped a run, as `atelier check` posts it with the evidence; anything
 // but {kind: "timeout" | "silent", minutes} is refused.
 export function stoppedArg(value: unknown): CheckStop {
   const v = value as Record<string, unknown> | null;
-  if (!v || typeof v !== "object" || (v.kind !== "timeout" && v.kind !== "silent" && v.kind !== "startup") || !positive(v.minutes) || (v.minutes as number) > LIMIT_MAX_MINUTES) {
-    throw new RuleError("bad_stopped", "stopped must be {kind: \"timeout\", \"silent\" or \"startup\", minutes}", 400);
+  if (!v || typeof v !== "object" || (v.kind !== "timeout" && v.kind !== "silent" && v.kind !== "startup" && v.kind !== "slot") || !positive(v.minutes) || (v.minutes as number) > LIMIT_MAX_MINUTES) {
+    throw new RuleError("bad_stopped", "stopped must be {kind: \"timeout\", \"silent\", \"startup\" or \"slot\", minutes}", 400);
   }
   return { kind: v.kind, minutes: v.minutes as number };
 }
+
+// A stop with where its clock counted from: the slot for every limit but the
+// wait for the slot itself.
+export const stopLine = (stop: CheckStop): string => `${stopText(stop)}${stop.kind === "slot" ? "" : ", counted from its held test slot"}`;

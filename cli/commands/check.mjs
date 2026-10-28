@@ -4,7 +4,7 @@ import { prepareChecks } from "../../src/check-preparation.ts";
 import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
 import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
-import { stopText } from "../../src/check-limit.ts";
+import { stopLine } from "../../src/check-limit.ts";
 import { appliesText, preparationBinding, refusalOf, refusalText, reusableResult } from "../../src/checks.ts";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, git, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
@@ -124,9 +124,9 @@ export default async function checkCommand() {
       const d = await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, r, flake ? FLAKE_NOTE : ""), as);
       const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
       if (row) recorded = row.changedPaths;
-      doneChecks.push({ claim: cmd, result: r.passed ? "passed" : "failed", ...(r.stopped ? { stopped: r.stopped } : {}), where: CLEAN_CLONE });
+      doneChecks.push({ claim: cmd, result: r.passed ? "passed" : r.stopped ? "stopped" : "failed", ...(r.stopped ? { stopped: r.stopped } : {}), where: CLEAN_CLONE });
       // A stopped run is printed as what stopped it, never as FAIL: no test failed.
-      console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${flake ? `  (${FLAKE_NOTE})` : ""}${r.stopped ? `  (${stopText(r.stopped)}, counted from its held test slot; not a failed test)` : ""}`);
+      console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${flake ? `  (${FLAKE_NOTE})` : ""}${r.stopped ? `  (${stopLine(r.stopped)}; not a failed test)` : ""}`);
       if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
     }
   } finally {

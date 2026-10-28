@@ -13,9 +13,13 @@ import { spawnSync } from "node:child_process";
 // child process is quiet, not hung: its silence clock does not run (the
 // stall rule from running builders directly in miqra: the log unchanged and
 // no child alive). Given `startupMs`, a run that within that long of its start
-// has printed nothing and had no child process start or end is stopped as
-// "startup": no command completed (a harness blocked on a prompt under
-// launchd prints nothing and starts nothing).
+// has shown no work is stopped as "startup": it printed nothing, no child
+// process was seen in it and its processes spent no CPU time after the first
+// quarter of the limit (a harness blocked on a prompt under launchd does none of these).
+// A child that starts and ends between two readings is not seen as a child,
+// so the stop names what was observed, not that no command ran. Given
+// `slotWaitMs`, a run that waits that long for its test slot is stopped as
+// "slot"; the wait never counts toward the other limits.
 
 // The environment variable naming the descriptor the wrapper reports on.
 export const SLOT_HELD_FD = "ATELIER_SLOT_HELD_FD";
@@ -24,8 +28,8 @@ export const SLOT_HELD_FD = "ATELIER_SLOT_HELD_FD";
 // so a test can give it any times (30 minutes queued, 5 running) without
 // waiting for them. `heldAt` null means the slot is not held yet, and nothing
 // counts.
-export function clockStop({ heldAt, lastActivityAt, now, ceilingMs, silenceMs, startupMs, progressed = true }) {
-  if (heldAt === null || heldAt === undefined) return null;
+export function clockStop({ heldAt, lastActivityAt, now, ceilingMs, silenceMs, startupMs, progressed = true, startedAt, slotWaitMs }) {
+  if (heldAt === null || heldAt === undefined) return slotWaitMs !== undefined && startedAt !== undefined && now - startedAt >= slotWaitMs ? { kind: "slot", ms: slotWaitMs } : null;
   if (ceilingMs !== undefined && now - heldAt >= ceilingMs) return { kind: "timeout", ms: ceilingMs };
   if (startupMs !== undefined && !progressed && now - heldAt >= startupMs) return { kind: "startup", ms: startupMs };
   if (silenceMs !== undefined && now - Math.max(heldAt, lastActivityAt ?? heldAt) >= silenceMs) return { kind: "silent", ms: silenceMs };
@@ -66,9 +70,10 @@ export const pollMs = (...limits) => Math.max(50, Math.min(15_000, Math.min(...l
 // null for a run whose clock starts now. `onStop(stop)` is called once, with
 // {kind, ms}, when a limit passes. The caller calls `output()` for every piece
 // of output and `end()` when the run is over.
-export function watchRun({ pid, held = null, ceilingMs, silenceMs, startupMs, onStop, probe = treeActivity, now = Date.now, every }) {
-  if (ceilingMs === undefined && silenceMs === undefined && startupMs === undefined) return { output() {}, end() {} };
-  let heldAt = held ? null : now(), lastActivityAt = heldAt, root = pid, last, stopped = false, progressed = false;
+export function watchRun({ pid, held = null, ceilingMs, silenceMs, startupMs, slotWaitMs, onStop, probe = treeActivity, now = Date.now, every }) {
+  if (ceilingMs === undefined && silenceMs === undefined && startupMs === undefined && (slotWaitMs === undefined || !held)) return { output() {}, end() {} };
+  const startedAt = now();
+  let heldAt = held ? null : startedAt, lastActivityAt = heldAt, root = pid, last, first, stopped = false, progressed = false;
   if (held) {
     let text = "";
     held.setEncoding?.("utf8");
@@ -83,18 +88,25 @@ export function watchRun({ pid, held = null, ceilingMs, silenceMs, startupMs, on
     held.on("error", () => {});
   }
   const timer = setInterval(() => {
-    if (heldAt === null || stopped) return;
+    if (stopped) return;
+    const halt = (stop) => { stopped = true; clearInterval(timer); onStop(stop); };
+    if (heldAt === null) {
+      const waited = clockStop({ heldAt, now: now(), startedAt, slotWaitMs });
+      if (waited) halt(waited);
+      return;
+    }
     const sample = silenceMs === undefined && startupMs === undefined ? { reading: "", children: 0 } : probe(root);
     if (sample === null || sample.reading !== last) { last = sample?.reading; lastActivityAt = now(); }
-    // A live child: quiet, not hung. A child started or ended: a command ran.
+    // A live child: quiet, not hung.
     if (sample === null || sample.children > 0) lastActivityAt = now();
-    if (sample === null || sample.children > 0) progressed = true;
+    // Work: a child seen, or the tree's processes or CPU time changed since
+    // the first reading a quarter of the startup limit in, once the program's
+    // own start-up has passed.
+    if (first === undefined && now() - heldAt >= (startupMs ?? 0) / 4) first = sample?.reading;
+    if (sample === null || sample.children > 0 || (first !== undefined && sample.reading !== first)) progressed = true;
     const stop = clockStop({ heldAt, lastActivityAt, now: now(), ceilingMs, silenceMs, startupMs, progressed });
-    if (!stop) return;
-    stopped = true;
-    clearInterval(timer);
-    onStop(stop);
-  }, every ?? pollMs(ceilingMs, silenceMs, startupMs));
+    if (stop) halt(stop);
+  }, every ?? pollMs(ceilingMs, silenceMs, startupMs, slotWaitMs));
   timer.unref?.();
   return {
     output() { if (heldAt !== null) { lastActivityAt = now(); progressed = true; } },

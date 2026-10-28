@@ -86,8 +86,8 @@ function untrack(pid) {
 // silent, and `timeoutMs` is its hard ceiling. Given `fromSlot`, `argv` is
 // the test-slot wrapper (cli/load.mjs) and both count from when it reports
 // the slot held, not from the spawn. The result then carries `stopped`,
-// {kind: "timeout" | "silent" | "startup", ms}, and `silent` beside `timedOut`.
-export function runGroup(argv, { cwd, env, timeoutMs, silenceMs, startupMs, fromSlot = false, probe, every, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, onData, captureOrder = false, stdio = "pipe" } = {}) {
+// {kind: "timeout" | "silent" | "startup" | "slot", ms}, and `silent` beside `timedOut`.
+export function runGroup(argv, { cwd, env, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, probe, every, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, onData, captureOrder = false, stdio = "pipe" } = {}) {
   return new Promise((done) => {
     const clocked = silenceMs !== undefined || startupMs !== undefined || fromSlot;
     const child = spawn(argv[0], argv.slice(1), { cwd, env: fromSlot ? { ...(env ?? process.env), [SLOT_HELD_FD]: "3" } : env, detached: true, stdio: ["ignore", stdio, stdio, ...(fromSlot ? ["pipe"] : [])] });
@@ -122,13 +122,14 @@ export function runGroup(argv, { cwd, env, timeoutMs, silenceMs, startupMs, from
       end();
     }, timeoutMs);
     const watch = !clocked || !pid ? { output() {}, end() {} } : watchRun({
-      pid, held: fromSlot ? child.stdio[3] : null, ceilingMs: timeoutMs, silenceMs, startupMs, probe, every,
+      pid, held: fromSlot ? child.stdio[3] : null, ceilingMs: timeoutMs, silenceMs, startupMs, slotWaitMs, probe, every,
       onStop: (stop) => {
         if (closed || ending) return;
         stopped = stop;
         if (stop.kind === "silent") silent = true; else timedOut = true;
         error ??= new Error(stop.kind === "silent" ? `was silent for ${minutes(stop.ms)}: no output, no process activity and no live child process`
-          : stop.kind === "startup" ? `completed no command in ${minutes(stop.ms)}: no output and no child process`
+          : stop.kind === "startup" ? `showed no work in ${minutes(stop.ms)}: no output, no child process seen, no CPU time`
+          : stop.kind === "slot" ? `waited ${minutes(stop.ms)} for a test slot and was not started`
           : `timed out after ${minutes(stop.ms)}, counted from its held test slot`);
         end();
       },

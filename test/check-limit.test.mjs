@@ -29,13 +29,15 @@ const temp = (label) => { const d = realpathSync(mkdtempSync(join(tmpdir(), `ate
 // ── the limits and the clock, with any times ───────────────────────────────
 
 test("the limits are the project's, a check's own silence wins, and the defaults stand otherwise", () => {
-  assert.deepEqual(checkLimits(null), { limitMinutes: 60, silenceMinutes: 10, startupMinutes: null, limitFrom: "default", silenceFrom: "default" });
+  assert.deepEqual(checkLimits(null), { limitMinutes: 60, silenceMinutes: 10, startupMinutes: null, slotWaitMinutes: 60, limitFrom: "default", silenceFrom: "default" });
   const policy = { checkLimitMinutes: 45, silenceLimitMinutes: 5, startupLimitMinutes: 3, checkSilence: [{ command: "npm run build", minutes: 30 }] };
-  assert.deepEqual(checkLimits(policy, "npm test"), { limitMinutes: 45, silenceMinutes: 5, startupMinutes: 3, limitFrom: "project", silenceFrom: "project" });
-  assert.deepEqual(checkLimits(policy, "npm run build"), { limitMinutes: 45, silenceMinutes: 30, startupMinutes: 3, limitFrom: "project", silenceFrom: "check" });
-  assert.equal(limitText(policy), "a run is stopped when silent for 5 minutes (no output, no process activity and no live child process); when no command completed in its first 3 minutes (no output and no child process); and at a hard ceiling of 45 minutes; both counted from when it holds its test slot; checks declaring their own silence: `npm run build` 30 minutes");
+  assert.deepEqual(checkLimits(policy, "npm test"), { limitMinutes: 45, silenceMinutes: 5, startupMinutes: 3, slotWaitMinutes: 60, limitFrom: "project", silenceFrom: "project" });
+  assert.deepEqual(checkLimits(policy, "npm run build"), { limitMinutes: 45, silenceMinutes: 30, startupMinutes: 3, slotWaitMinutes: 60, limitFrom: "project", silenceFrom: "check" });
+  assert.equal(limitText(policy), "a run is stopped when silent for 5 minutes (no output, no process activity and no live child process); when it showed no work in its first 3 minutes (no output, no child process seen, no CPU time); and at a hard ceiling of 45 minutes; all counted from when it holds its test slot; a run that waits 60 minutes for its slot is stopped, the default; checks declaring their own silence: `npm run build` 30 minutes");
   assert.match(limitText(null), /silent for 10 minutes .*, the default; with no startup limit; and at a hard ceiling of 60 minutes, the default/);
-  assert.equal(stopText({ kind: "startup", minutes: 3 }), "no command completed in 3 minutes");
+  assert.equal(stopText({ kind: "startup", minutes: 3 }), "showed no work in 3 minutes");
+  assert.equal(stopText({ kind: "slot", minutes: 60 }), "waited 60 minutes for a test slot");
+  assert.equal(checkLimits({ slotWaitLimitMinutes: 90 }).slotWaitMinutes, 90);
   assert.equal(stopText({ kind: "silent", minutes: 1 }), "silent for 1 minute");
   assert.equal(stopText({ kind: "timeout", minutes: 20 }), "timed out after 20 minutes");
 });
@@ -97,14 +99,18 @@ test("a quiet run with a live child process is quiet, not hung, and goes on to t
   assert.deepEqual(r.stopped, { kind: "timeout", ms: 1500 });
 });
 
-test("a run that prints nothing and starts no command is stopped at the startup limit", async () => {
-  const hung = await runGroup([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { timeoutMs: 20_000, silenceMs: 10_000, startupMs: 500 });
-  assert.deepEqual(hung.stopped, { kind: "startup", ms: 500 });
-  assert.match(hung.error.message, /completed no command in/);
+test("a run that shows no work is stopped at the startup limit, named by what was observed", async () => {
+  const hung = await runGroup([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { timeoutMs: 20_000, silenceMs: 10_000, startupMs: 800, every: 200 });
+  assert.deepEqual(hung.stopped, { kind: "startup", ms: 800 });
+  assert.match(hung.error.message, /showed no work in .*: no output, no child process seen, no CPU time/);
   // A run that starts a command in time is not stopped by it.
   const working = await runGroup(["/bin/sh", "-c", "sleep 0.3; sleep 0.6; true"], { timeoutMs: 20_000, silenceMs: 10_000, startupMs: 500 });
   assert.equal(working.status, 0, working.error?.message);
   assert.equal(working.stopped, undefined);
+  // CPU time spent after the first reading is work, though nothing was
+  // printed and no child was seen.
+  const busy = await runGroup([process.execPath, "-e", "setTimeout(() => { const t = Date.now(); while (Date.now() - t < 300) {} }, 500); setTimeout(() => {}, 30000)"], { timeoutMs: 2500, silenceMs: 10_000, startupMs: 1500, every: 200 });
+  assert.deepEqual(busy.stopped, { kind: "timeout", ms: 2500 }, "it reached the ceiling, not the startup limit");
 });
 
 test("a run that prints nothing but keeps its CPU busy is progressing, not silent", async () => {
@@ -152,6 +158,15 @@ test("the clock starts when the slot is held: a run queued past its limit still 
   const fromSpawn = await runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "sleep 0.2"], { env, timeoutMs: 800, silenceMs: 5000 });
   await secondDone;
   assert.deepEqual(fromSpawn.stopped, { kind: "timeout", ms: 800 });
+  // A run that never gets its slot is stopped at the slot-wait limit, as a wait.
+  const third = hold(3000);
+  const thirdDone = held(third);
+  await new Promise((r) => setTimeout(r, 100));
+  const waited = await runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "true"], { env, timeoutMs: 800, silenceMs: 5000, slotWaitMs: 600, fromSlot: true });
+  assert.deepEqual(waited.stopped, { kind: "slot", ms: 600 });
+  assert.match(waited.error.message, /waited .* for a test slot and was not started/);
+  third.kill("SIGTERM");
+  await thirdDone;
 });
 
 // ── atelier check against a stub server ────────────────────────────────────
@@ -228,13 +243,13 @@ test("a check that keeps printing runs past its silence to the ceiling, and is r
   assert.deepEqual(f.evidence[0].stopped, { kind: "timeout", minutes: 0.03 });
 });
 
-test("a check that completes no command within the project's startup limit is reported as such", { timeout: 60_000 }, async (t) => {
+test("a check that shows no work within the project's startup limit is reported as such", { timeout: 60_000 }, async (t) => {
   if (!canInspectSlots(t)) return;
   const cmd = `exec ${process.execPath} -e "setTimeout(() => {}, 30000)"`;
   const f = await checkFixture(t, { checks: [cmd], startupLimitMinutes: 0.01 });
   const r = await f.run();
   assert.equal(r.status, 2, r.stdout + r.stderr);
-  assert.match(r.stdout, /^STOP  .* \(no command completed in 0\.01 minutes, counted from its held test slot; not a failed test\)/m);
+  assert.match(r.stdout, /^STOP  .* \(showed no work in 0\.01 minutes, counted from its held test slot; not a failed test\)/m);
   assert.deepEqual(f.evidence[0].stopped, { kind: "startup", minutes: 0.01 });
 });
 
@@ -266,7 +281,8 @@ test("a builder's brief gives the project's limit as its suite budget and the wo
   assert.match(brief, /validation_blocked: timed out after 25 minutes \(or silent for 5 minutes\)/);
   assert.ok(STOP_WORDS.test("timed out after 25 minutes (slot wait 31 minutes, run 25)"));
   assert.ok(STOP_WORDS.test("silent for 5 minutes"));
-  assert.ok(STOP_WORDS.test("no command completed in 3 minutes"));
+  assert.ok(STOP_WORDS.test("showed no work in 3 minutes"));
+  assert.ok(STOP_WORDS.test("waited 60 minutes for a test slot"));
   assert.ok(!STOP_WORDS.test("a test failed after it timed out"));
 });
 
@@ -337,9 +353,9 @@ test("the project records its check limit through init's route, refuses a bad on
     const id = (await api("POST", "/projects/demo/items", { title: "Shown", scope: ["lib/**"] })).body.id;
     const shown = await cli(["show", id, "--project", "demo"]);
     assert.equal(shown.code, 0, shown.stderr);
-    assert.match(shown.stdout, /^Check limit: a run is stopped when silent for 10 minutes \(no output, no process activity and no live child process\), the default; when no command completed in its first 3 minutes \(no output and no child process\); and at a hard ceiling of 45 minutes; both counted from when it holds its test slot; checks declaring their own silence: `npm run build` 30 minutes$/m);
+    assert.match(shown.stdout, /^Check limit: a run is stopped when silent for 10 minutes \(no output, no process activity and no live child process\), the default; when it showed no work in its first 3 minutes \(no output, no child process seen, no CPU time\); and at a hard ceiling of 45 minutes; all counted from when it holds its test slot; a run that waits 60 minutes for its slot is stopped, the default; checks declaring their own silence: `npm run build` 30 minutes$/m);
     const json = JSON.parse((await cli(["show", id, "--project", "demo", "--json"])).stdout);
-    assert.deepEqual(json.checkLimit, { limitMinutes: 45, silenceMinutes: 10, startupMinutes: 3, limitFrom: "project", silenceFrom: "default", checkSilence: [{ command: "npm run build", minutes: 30 }] });
+    assert.deepEqual(json.checkLimit, { limitMinutes: 45, silenceMinutes: 10, startupMinutes: 3, slotWaitMinutes: 60, limitFrom: "project", silenceFrom: "default", checkSilence: [{ command: "npm run build", minutes: 30 }] });
   } finally { await server.close(); }
 });
 
@@ -406,4 +422,22 @@ test("a stopped check's evidence is said as a timeout in show, not as a failed t
 test("the slot wrapper reports on the descriptor the clock reads", async () => {
   const { SLOT_HELD_FD } = await import("../cli/check-clock.mjs");
   assert.match(readFileSync(resolve("cli/load.mjs"), "utf8"), new RegExp(`const SLOT_HELD_FD = "${SLOT_HELD_FD}";`));
+});
+
+test("done --json and wrap say a stopped check as stopped, with its own result and outcome", async () => {
+  const { doneReport } = await import("../cli/atelier.mjs");
+  const stopped = { kind: "silent", minutes: 10 };
+  const report = doneReport({ id: "t4", head: "a".repeat(40), checks: [{ claim: "npm test", result: "stopped", stopped, where: "clean clone" }], item: null, gate: null });
+  assert.equal(report.json?.outcome ?? report.outcome, "stopped_checks");
+  const json = report.json ?? report;
+  assert.equal(json.exitCode, 2);
+  assert.deepEqual(json.checks, [{ claim: "npm test", result: "stopped", where: "clean clone", stopped }]);
+  assert.match(json.outcomeLine, /^Outcome: checks stopped at the check limit, not failed: npm test \(silent for 10 minutes, counted from its held test slot, not a failed test\); nothing was submitted$/);
+  const { cleanSession, failingChecksRefusal, sessionNoteText } = await import("../src/sessions.ts");
+  const line = "timed out after 60 minutes, counted from its held test slot";
+  const data = cleanSession({ summary: "s", head: "b".repeat(40), dirty: false, checks: [{ command: "npm test", passed: false, stopped: line }] });
+  assert.deepEqual(data.checks, [{ command: "npm test", passed: false, grade: "reported", stopped: line }]);
+  assert.throws(() => cleanSession({ summary: "s", head: "b".repeat(40), dirty: false, checks: [{ command: "npm test", passed: true, stopped: line }] }));
+  assert.match(sessionNoteText({ actor: "o", at: "2026-10-28T00:00:00.000Z", data: { ...data, checksSkipped: false } }), /Reported: npm test: timed out after 60 minutes, counted from its held test slot; stopped, not a failed test/);
+  assert.match(failingChecksRefusal([{ command: "npm test", status: null, signal: "SIGKILL", timedOut: true, stopped: line }]), /npm test \(timed out after 60 minutes, counted from its held test slot; stopped at the check limit, not a failed test\)/);
 });

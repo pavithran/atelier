@@ -41,7 +41,7 @@ import { mergeMainAndRegenerate } from "./land.mjs";
 import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
-import { checkLimits, limitMs, minutesText, stopOf, stopText as checkStopText } from "../src/check-limit.ts";
+import { checkLimits, limitMs, minutesText, stopLine, stopOf } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 import { redactKeys } from "../src/models/pool.ts";
@@ -280,7 +280,7 @@ export function briefFor(item, project, limits = null) {
     // wrapper, so it starts once the slot is held and cannot spend queue time.
     ...BUILDER_TESTS,
     `For example: node ${quoteShell(SLOT_WRAPPER)} -- sh -c 'date +%s; exec timeout ${budget} npm test' (gtimeout where timeout is missing). The date line is printed inside the slot, before the suite starts, so it marks slot acquisition even if the suite is silent: note the time before you run it; that time to the printed one is the slot wait, and the printed one to the end is the run time.`,
-    ...(limits?.limitMinutes ? [`The project's check limit is ${minutesText(limits.limitMinutes)} from the held slot, and a run silent for ${minutesText(limits.silenceMinutes)} (no output, no process activity) is stopped too. If the suite is stopped at either, end your report with the line validation_blocked: timed out after ${minutesText(limits.limitMinutes)} (or silent for ${minutesText(limits.silenceMinutes)}${limits.startupMinutes ? `, or no command completed in ${minutesText(limits.startupMinutes)}` : ""}), then the slot wait and the run time.`] : []),
+    ...(limits?.limitMinutes ? [`The project's check limit is ${minutesText(limits.limitMinutes)} from the held slot, and a run silent for ${minutesText(limits.silenceMinutes)} (no output, no process activity) is stopped too. If the suite is stopped at either, end your report with the line validation_blocked: timed out after ${minutesText(limits.limitMinutes)} (or silent for ${minutesText(limits.silenceMinutes)}${limits.startupMinutes ? `, or showed no work in ${minutesText(limits.startupMinutes)}` : ""}), then the slot wait and the run time.`] : []),
     BUILDER_SCREENSHOTS,
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
@@ -461,7 +461,7 @@ export function killGroups() {
 // `timeoutMs` is its hard ceiling; given `fromSlot`, `argv` is the test-slot
 // wrapper and both count from when it reports the slot held. The result then
 // carries `stopped`, {kind: "timeout" | "silent", ms}, with `timedOut` set.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const clocked = silenceMs !== undefined || startupMs !== undefined || fromSlot;
@@ -500,7 +500,7 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
     };
     const deadline = timeoutMs === undefined || clocked ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
     const watch = !clocked || !pid ? { output() {}, end() {} } : watchRun({
-      pid, held: fromSlot ? child.stdio[3] : null, ceilingMs: timeoutMs, silenceMs, startupMs,
+      pid, held: fromSlot ? child.stdio[3] : null, ceilingMs: timeoutMs, silenceMs, startupMs, slotWaitMs,
       onStop: (stop) => { if (closed || ending) return; stopped = stop; timedOut = true; end(); },
     });
     signal?.addEventListener("abort", end, { once: true });
@@ -889,14 +889,14 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
   const trim = (text) => text.length > RUNNER_EVIDENCE_OUTPUT ? text.slice(-RUNNER_EVIDENCE_OUTPUT) : text;
   const exec = async (command, argv) => {
     let result;
-    const { ceilingMs, silenceMs, startupMs } = limitMs(limits);
-    try { result = await run(argv, { cwd: dir, capture: true, captureError: true, signal, timeoutMs: ceilingMs, silenceMs, startupMs, fromSlot: true, env: checkEnv(process.env) }); }
+    const { ceilingMs, silenceMs, startupMs, slotWaitMs } = limitMs(limits);
+    try { result = await run(argv, { cwd: dir, capture: true, captureError: true, signal, timeoutMs: ceilingMs, silenceMs, startupMs, slotWaitMs, fromSlot: true, env: checkEnv(process.env) }); }
     catch (error) {
       if (signal?.aborted) throw error;
       return { command, ...notRun(`the runner failed to start it: ${error.message}`) };
     }
     if (signal?.aborted) throw new Error("interrupted");
-    if (result.timedOut) return { command, ...notRun(`${checkStopText(stopOf(result.stopped, limits) ?? { kind: "timeout", minutes: limits.limitMinutes })}, counted from its held test slot; stopped at the project's check limit, not a failed test`) };
+    if (result.timedOut) return { command, ...notRun(`${stopLine(stopOf(result.stopped, limits) ?? { kind: "timeout", minutes: limits.limitMinutes })}; stopped at the project's check limit, not a failed test`) };
     if (result.code === null || result.code === undefined) return { command, ...notRun(`it ended on signal ${result.signal ?? "unknown"}`) };
     const output = [result.output, result.stderr].filter(Boolean).join("\n");
     return { command, status: result.code === 0 ? "pass" : "fail", output: trim(output), outputLength: output.length, ...summarizeTestOutput(output) };
