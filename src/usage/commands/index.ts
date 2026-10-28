@@ -32,6 +32,7 @@ import command_fast from "./fast.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
 import command_flow from "./flow.ts";
+import command_forget_skip from "./forget-skip.ts";
 import command_gc from "./gc.ts";
 import command_guide from "./guide.ts";
 import command_handoff from "./handoff.ts";
@@ -129,6 +130,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
   { path: "src/usage/commands/flow.ts", spec: command_flow },
+  { path: "src/usage/commands/forget-skip.ts", spec: command_forget_skip },
   { path: "src/usage/commands/gc.ts", spec: command_gc },
   { path: "src/usage/commands/guide.ts", spec: command_guide },
   { path: "src/usage/commands/handoff.ts", spec: command_handoff },

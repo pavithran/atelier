@@ -18,6 +18,11 @@ import { assignment, config, fixture, heldItem } from "./runner-shared.mjs";
 const REPORT = "Wrote the change.\nvalidation_blocked: npm test could not run: listen EPERM 127.0.0.1";
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+// What the queue says (G5) of a task the server blocked on a validation_blocked
+// report and the developer then unblocked.
+const BLOCKED_AT = "2026-10-28T10:00:00.000Z";
+const SERVER_UNBLOCKED = { validationBlockedAt: BLOCKED_AT, unblockedAt: "2026-10-28T11:00:00.000Z" };
+
 // The fixture with the workspace's validation marker kept in `disk`.
 function withMarker(options = {}, disk = { marker: null }) {
   const f = fixture(options);
@@ -58,12 +63,12 @@ test("after the developer unblocks the task, the next claim clears the report an
     const disk = { marker: { ...marker } };
     const { io, calls, logs } = withMarker({ head: "after" }, disk);
     if (prepared) io.prepare = async () => ({ key: "ready" });
-    const state = await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", io);
+    const state = await runTask({ ...assignment, item: heldItem({ head: "recorded", ...SERVER_UNBLOCKED }) }, config, "home:studio", io);
     assert.ok(calls.some((c) => c.argv?.[0] === "claim"));
     assert.ok(calls.some((c) => c.harness), `the builder runs${prepared ? " after preparation" : ""}`);
     assert.equal(runOutcome(state), null);
     assert.equal(state.phase, "submitted");
-    assert.ok(logs.some((l) => /the developer unblocked the task since its validation_blocked report/.test(l)), logs.join("\n"));
+    assert.ok(logs.some((l) => /the developer unblocked the task at /.test(l)), logs.join("\n"));
     assert.ok(!logs.some((l) => /^resumed:/.test(l)), "an unverified commit is not finished without the builder");
     assert.equal(disk.marker, null);
   }
@@ -72,7 +77,7 @@ test("after the developer unblocks the task, the next claim clears the report an
 test("a marker that recorded a block is kept while the task is still blocked", async () => {
   const marker = { actor: assignment.actor, head: "before", taskKey: taskRevisionKey(assignment.item), detail: "npm test could not run", blocked: true };
   const { io, logs, disk } = withMarker({ head: "before" }, { marker });
-  await runTask({ ...assignment, item: heldItem({ state: "blocked" }) }, config, "home:studio", io).catch(() => {});
+  await runTask({ ...assignment, item: heldItem({ state: "blocked", validationBlockedAt: BLOCKED_AT }) }, config, "home:studio", io).catch(() => {});
   assert.ok(!logs.some((l) => /the developer unblocked the task/.test(l)));
   assert.equal(disk.marker, marker);
 });
@@ -95,7 +100,7 @@ test("a validation_blocked build that committed is pushed and blocked, not given
       // Blocked, the task is offered to nobody; the developer then unblocks
       // it and the queue offers it back to its holder (heldJobs).
       if (polls === 2) return [];
-      if (polls === 3) return [{ ...assignment, item: heldItem({ head: "after", updatedAt: "3" }) }];
+      if (polls === 3) return [{ ...assignment, item: heldItem({ head: "after", updatedAt: "3", ...SERVER_UNBLOCKED }) }];
       process.emit("SIGINT");
       return [];
     },

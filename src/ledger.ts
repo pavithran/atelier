@@ -46,7 +46,7 @@ import { ago } from "./floor.ts";
 // The note on the release a dispatch makes of a held task; the holder reads it
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -80,7 +80,8 @@ import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
-import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
+import { dropTasks, type ProviderPause } from "./runners/memory.ts";
+import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { ReviewerRecords, SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -295,6 +296,9 @@ export interface ProjectRef {
 }
 
 type Row = Record<string, SqlStorageValue>;
+// A same-exit run as the queue carries it on an item (G5, noteExit).
+type ExitJob = "criteria-review" | "prereview";
+type SameExit = { signature: string; count: number };
 
 // A dispatched open task as the queue answers it: the core-file hold with every
 // blocker, the separate claim refusal, and what t420 adds for the owner's listing.
@@ -1080,6 +1084,10 @@ export class Ledger extends DurableObject<Env> {
       result TEXT, detached INTEGER, at TEXT NOT NULL, settledAt TEXT
     )`);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS prereviews_item ON prereviews (item)`);
+    // The same-exit run of a criteria review or a pre-review (G5, noteExit):
+    // one row per job and task, for the subject (head, and a criteria
+    // review's revision) its tries were at.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS same_exits (job TEXT NOT NULL, item TEXT NOT NULL, subject TEXT NOT NULL, sig TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (job, item))`);
     this.backfillReviewProvenance();
     this.backfillPartAcceptance();
     // A deploy can change the tick's logic, and a plan waiting on nothing
@@ -2324,19 +2332,89 @@ export class Ledger extends DurableObject<Env> {
   // OFFER_REFRESH_MS, so a runner polling unchanged rewrites its row about
   // once a minute rather than on every poll, and the projects are returned
   // for the queue to read. `at` stays within OFFER_REFRESH_MS of the last ask.
-  askQueue(offer: RunnerOffer | null, at: string): ProjectRecord[] {
+  askQueue(asked: RunnerOffer | null, at: string): ProjectRecord[] {
     const projects = this.projects();
-    if (offer) {
+    if (asked) {
+      const offer = this.cutForgotten(asked);
       const scoped = offer.projects
         ? { ...offer, projects: [...new Set([...offer.projects, ...projects.filter((p) => inScope({ projects: offer.projects }, [p.name, ...(p.formerly ?? [])])).map((p) => p.name)])] }
         : offer;
-      const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, scoped.runner).toArray()[0];
+      if (offer.memory?.pauses.length) this.mergePauses(offer.memory.pauses, Date.parse(at));
+      const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, offer.runner).toArray()[0];
       const seen = row ? (JSON.parse(row.json as string) as SeenOffer) : null;
-      const same = !!seen && row!.json === JSON.stringify({ ...scoped, at: seen.at });
+      // An ask that carries no memory (an older runner's, or a heartbeat)
+      // keeps the last one sent (G5), and is the same offer as the row.
+      const { memory: kept, ...rest } = seen ?? ({} as SeenOffer);
+      const keeps = !scoped.memory && !!kept;
+      const same = !!seen && (keeps ? JSON.stringify(rest) === JSON.stringify({ ...scoped, at: seen.at }) : row!.json === JSON.stringify({ ...scoped, at: seen.at }));
       const fresh = !!seen && Date.parse(at) - Date.parse(seen.at) < OFFER_REFRESH_MS && Date.parse(at) >= Date.parse(seen.at);
-      if (!same || !fresh) this.putRunnerOffer(scoped, at);
+      if (!same || !fresh) this.putRunnerOffer(keeps ? { ...scoped, memory: kept } : scoped, at);
     }
     return projects;
+  }
+
+  // The provider limits runners have met (G5): one pause per harness, shared
+  // by every runner on the account, so another machine does not run into the
+  // same limit. A later reset replaces an earlier one; a pause past its reset
+  // is dropped when read.
+  private mergePauses(pauses: readonly ProviderPause[], now: number): void {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'provider-pauses'`).toArray()[0];
+    const kept: Record<string, ProviderPause> = row ? JSON.parse(row.value as string) : {};
+    for (const p of pauses) {
+      if (Date.parse(p.resetAt) <= now) continue;
+      const held = kept[p.harness];
+      if (!held || Date.parse(held.resetAt) < Date.parse(p.resetAt)) kept[p.harness] = p;
+    }
+    const value = JSON.stringify(kept);
+    if (value !== (row?.value ?? null)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('provider-pauses', ?)`, value);
+  }
+
+  // A memory still holding a task the developer had the runner forget (a poll
+  // sent before it read that) is cut of it; one that no longer does ends the
+  // instruction.
+  private cutForgotten(offer: RunnerOffer): RunnerOffer {
+    const forget = this.forgotten(offer.runner);
+    if (!forget.length || !offer.memory) return offer;
+    const cut = dropTasks(offer.memory, forget);
+    if (cut.removed) return { ...offer, memory: cut.memory };
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-forget:${offer.runner.toLowerCase()}`);
+    return offer;
+  }
+
+  // The tasks whose remembered skip the developer cleared for a runner
+  // (forgetSkip), as "project/id", until the runner's memory no longer holds
+  // them: the runner drops them from its own maps when it reads this.
+  forgotten(runner: string): string[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `runner-forget:${runner.toLowerCase()}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : [];
+  }
+
+  // Clears what a runner (every runner when none is named) remembers of a
+  // task. Returns how many remembered entries it removed; none is not an error.
+  forgetSkip(runner: string | null, project: string, item: string): number {
+    let removed = 0;
+    const task = `${project}/${item}`;
+    for (const row of this.sql.exec(`SELECT runner, json FROM runner_offers`).toArray()) {
+      const name = row.runner as string;
+      if (runner && name.toLowerCase() !== runner.toLowerCase()) continue;
+      const offer = JSON.parse(row.json as string) as SeenOffer;
+      if (offer.memory) {
+        const dropped = dropTasks(offer.memory, [task]);
+        if (dropped.removed) {
+          removed += dropped.removed;
+          this.sql.exec(`UPDATE runner_offers SET json = ? WHERE runner = ?`, JSON.stringify({ ...offer, memory: dropped.memory }), name);
+        }
+      }
+      const held = this.forgotten(name);
+      if (!held.includes(task)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-forget:${name.toLowerCase()}`, JSON.stringify([...held, task]));
+    }
+    return removed;
+  }
+
+  providerPauses(now = Date.now()): ProviderPause[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'provider-pauses'`).toArray()[0];
+    const kept: Record<string, ProviderPause> = row ? JSON.parse(row.value as string) : {};
+    return Object.values(kept).filter((p) => Date.parse(p.resetAt) > now);
   }
 
   runnerOffers(): SeenOffer[] {
@@ -2946,7 +3024,9 @@ export class Ledger extends DurableObject<Env> {
   runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[], idleRunner?: string): { waiting: Waiting[]; reviews: (Item & { request: number })[]; busy: { runner: string; id: string }[] } {
     if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
     if (polls) this.recordRunnerPolls(polls);
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
+    // The runner's memory (G5) is kept on the index with its offer, not in every project.
+    const { memory: _memory, ...kept } = offer;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...kept, at: new Date().toISOString() }));
     // The polls an offer was judged with, which an earlier build kept per
     // token, are judged with no longer.
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-offer-polls:${token.id}`);
@@ -3013,6 +3093,16 @@ export class Ledger extends DurableObject<Env> {
         const held = coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
         if (!held) return;
         throw new RuleError("held", heldClaimText(item.id, held), 409, `wait for the hold to clear, then run atelier queue to see ${item.id} offered again`);
+      }
+    }
+    // A dispatch is claimed by one runner (G5). Another runner whose live
+    // offer is assigned the dispatch is told who holds it and when it is
+    // reassignable, instead of runner_forbidden, so it passes the dispatch by.
+    if (claim && item.state === "claimed" && item.owner && item.runner && item.runner.toLowerCase() !== (token.runner ?? "").toLowerCase() && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
+      const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor) {
+        const gone = orphanedBy(item, this.runnerPolls());
+        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409);
       }
     }
     throw runnerDenied(token);
@@ -3293,9 +3383,12 @@ export class Ledger extends DurableObject<Env> {
   refuseLiveHolder(id: string, input: Record<string, unknown>): void {
     const item = this.item(id);
     if (item.state !== "claimed" || !item.owner || input.release === true) return;
+    // A claim whose runner stopped polling for RUNNER_GONE_MS is not live: the
+    // dispatch is reassignable without --release (G5, orphanedBy).
+    if (orphanedBy(item, this.runnerPolls())) return;
     const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
     const since = row?.at ? `, who claimed it ${ago(row.at as string, new Date())}` : "";
-    throw new RuleError("held", `${id} is held by ${item.owner}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409, `atelier dispatch ${id} --release, or atelier handoff ${id} --to HARNESS/MODEL, or ${item.owner} runs atelier release ${id}`);
+    throw new RuleError("held", `${id} is held by ${item.owner}${item.runner ? ` on ${item.runner}` : ""}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409, `atelier dispatch ${id} --release, or atelier handoff ${id} --to HARNESS/MODEL, or ${item.owner} runs atelier release ${id}`);
   }
 
   // The owner's release of an overlap-held dispatch: only the overlap
@@ -3451,7 +3544,7 @@ export class Ledger extends DurableObject<Env> {
 
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
-    const open = this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []);
+    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
@@ -3670,8 +3763,8 @@ export class Ledger extends DurableObject<Env> {
   // offer it until the hold clears (lapsedClaimHold).
   heldJobs(runner: string): (Item & { held?: CoreHold })[] {
     const mine = this.claimedRows().filter((r) => ((r.runner as string | null) ?? "").toLowerCase() === runner.toLowerCase());
-    const jobs = this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)));
+    const jobs = this.withUnblockedAt(this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))));
     // Every item is read only when a claim ended its run, so a poll reads
     // the claimed rows alone as before (t762).
     const polls = jobs.length ? this.runnerPolls() : null;
@@ -3710,6 +3803,19 @@ export class Ledger extends DurableObject<Env> {
     return items.map((i) => {
       const findings = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, i.id).one().n as number;
       return findings ? { ...i, criteriaReviews: findings } : i;
+    });
+  }
+
+  // Every build item the queue offers carries when the developer last
+  // unblocked it, so the runner takes the server's record over a marker file
+  // in its workspace (G5).
+  private withUnblockedAt<T extends Item>(items: T[]): T[] {
+    return items.map((i) => {
+      const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind = 'item.unblocked' ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
+      // The last validation_blocked report the server accepted: the block
+      // its release recorded (release, validationBlocked).
+      const block = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind = 'item.blocked' AND json_extract(data, '$.validationBlocked') = 1 ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
+      return row || block ? { ...i, ...(row ? { unblockedAt: row.at as string } : {}), ...(block ? { validationBlockedAt: block.at as string } : {}) } : i;
     });
   }
 
@@ -5501,7 +5607,8 @@ export class Ledger extends DurableObject<Env> {
         return [];
       }
       const binding = JSON.parse(r.binding as string) as PrereviewBinding;
-      return [{ ...item, head: binding.head, request: prereviewRequest(r.id as number), dispatch: JSON.parse(r.dispatch as string) as Dispatch }];
+      const same = this.sameExitAt("prereview", id, binding.head);
+      return [{ ...item, head: binding.head, request: prereviewRequest(r.id as number), dispatch: JSON.parse(r.dispatch as string) as Dispatch, ...(same ? { sameExit: same } : {}) }];
     });
   }
 
@@ -5615,6 +5722,14 @@ export class Ledger extends DurableObject<Env> {
     const mine = row.state === "claimed" ? sameActor(row.claimedBy as string, actor) : note.outcome === "skipped" && row.state === "open" && !!d && (askedOf(d, actor) || sameActor(actor, this.owner));
     if (!mine) return { released: false };
     const at = new Date().toISOString();
+    // The harness's end counts towards the same-exit run (noteExit) only now,
+    // once the claim is the reporter's and the outcome is applied: a stale,
+    // repeated or other actor's report above counts nothing. A runner failure
+    // carries the exit's signature in its detail; a timeout or a reply with
+    // no verdict is the harness's unsigned end; a conflict, a preparation, a
+    // stale binding or a skip is not the harness's end at all.
+    const exitNote = note.outcome === "runner" ? note.detail : note.outcome === "timeout" ? "the reviewer's harness timed out" : note.outcome === "malformed" ? "the reply had no verdict" : null;
+    if (exitNote !== null) this.noteExit("prereview", itemId, binding.head, exitNote);
     const result = { outcome: note.outcome, detail: note.detail, ...(note.files?.length ? { files: note.files } : {}), by: actor };
     const bound = note.main ? { ...binding, main: note.main } : undefined;
     if (note.outcome === "conflict" || note.outcome === "preparation") this.settlePrereview(row, note.outcome, result, actor, at, proved, { binding: bound });
@@ -5688,6 +5803,9 @@ export class Ledger extends DurableObject<Env> {
       this.settlePrereview(row, "stale", { ...result, outcome: "stale", detail: drift }, by, at, proved, { binding });
       return;
     }
+    // A valid verdict of the binding asked: whatever it controls now, the
+    // harness reached a verdict, which ends the same-exit run.
+    this.clearSameExit("prereview", itemId);
     const blocking = blocks(r.approve, parsed.report.findings);
     const lease = this.projectLanding();
     const holds = row.detached === 1 || (!!lease && lease.item === itemId && this.landingLive(lease, at));
@@ -7947,7 +8065,10 @@ export class Ledger extends DurableObject<Env> {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404, "run atelier ls --project P, or atelier ls --all");
       const stop = parseStop(r.stopped);
-      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch, ...(stop ? { stopped: stop } : {}) };
+      // The stop's same-exit run goes on the item as a criteria review's and
+      // a pre-review's does (sameExit), so the runner reads one count for all three.
+      const same = stop?.exit && stop.same ? { signature: stop.exit, count: stop.same } : null;
+      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch, ...(stop ? { stopped: stop } : {}), ...(same ? { sameExit: same } : {}) };
     });
   }
 
@@ -9066,10 +9187,56 @@ export class Ledger extends DurableObject<Env> {
     return { requested: true, reason: status.reason, rev, reviewer: chosen, request };
   }
 
+  // The same-exit run of a criteria review or a pre-review (G5), as a review
+  // request's stop keeps a review's (src/review/stopped.ts): how many tries in
+  // a row ended in the same harness exit, by the signature hash the runner's
+  // note carries. Every try is a new request (a failed criteria review is
+  // asked again under a new number; a settled pre-review is asked again as a
+  // new row), so the run is kept by what those requests share: the job, the
+  // task and its head (and, for a criteria review, the revision of the
+  // criteria it judges). It is the server's, so every runner reads the one
+  // count, across restarts. A signed exit the same as the last adds one; a
+  // signed other exit starts again at one; a try the harness ended unsigned
+  // (a timeout, a reply with no verdict) ends the run; anything that was not
+  // the harness's end (an interrupt, a usage limit, a merged tree's conflict)
+  // leaves it as it was. Only an outcome the server applied is counted. A
+  // head that moves on, and a task merged or abandoned, delete the rows
+  // (update).
+  private noteExit(job: ExitJob, item: string, subject: string, note: string): void {
+    if (!stopReasonOf(note)) return;
+    // A closed task's tries are over: nothing of it is counted again.
+    const state = this.sql.exec(`SELECT state FROM items WHERE id = ?`, item).toArray()[0]?.state;
+    if (state === "merged" || state === "abandoned") return;
+    const sig = exitSignatureOf(note);
+    if (!sig) { this.sql.exec(`DELETE FROM same_exits WHERE job = ? AND item = ?`, job, item); return; }
+    const row = this.sql.exec(`SELECT subject, sig, count FROM same_exits WHERE job = ? AND item = ?`, job, item).toArray()[0];
+    const count = row && row.subject === subject && row.sig === sig ? (row.count as number) + 1 : 1;
+    this.sql.exec(`INSERT OR REPLACE INTO same_exits (job, item, subject, sig, count) VALUES (?, ?, ?, ?, ?)`, job, item, subject, sig, count);
+  }
+
+  // A valid verdict applied ends the run: the harness reached a verdict, so
+  // the exits before it are not in a row with any after it.
+  private clearSameExit(job: ExitJob, item: string): void {
+    this.sql.exec(`DELETE FROM same_exits WHERE job = ? AND item = ?`, job, item);
+  }
+
+  // The run as the queue carries it on an item (sameExit), for the subject it
+  // is offered at; a row for another head or revision counts for nothing.
+  private sameExitAt(job: ExitJob, item: string, subject: string): SameExit | null {
+    const row = this.sql.exec(`SELECT subject, sig, count FROM same_exits WHERE job = ? AND item = ?`, job, item).toArray()[0];
+    return row && row.subject === subject ? { signature: row.sig as string, count: row.count as number } : null;
+  }
+
+  // The criteria review's subject: the task's head and the revision judged.
+  private criteriaExitSubject(item: string, rev: number): string {
+    const head = this.sql.exec(`SELECT head FROM items WHERE id = ?`, item).toArray()[0]?.head as string | null | undefined;
+    return `${head ?? ""}@${rev}`;
+  }
+
   // Open criteria reviews, as the queue offers them: the item with its
   // dispatch overlaid by the review's, whose job names "criteria-review".
   criteriaReviewWaiting(): (Item & { request: number })[] {
-    const rows = this.sql.exec(`SELECT id, item, dispatch FROM criteria_reviews WHERE state = 'open' ORDER BY id`).toArray();
+    const rows = this.sql.exec(`SELECT id, item, rev, dispatch FROM criteria_reviews WHERE state = 'open' ORDER BY id`).toArray();
     if (!rows.length) return [];
     const ids = [...new Set(rows.map((r) => r.item as string))];
     const items = new Map(this.withPushActors(this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray()).map((i) => [i.id, i]));
@@ -9078,7 +9245,8 @@ export class Ledger extends DurableObject<Env> {
     // the review's refusals and failures by it, apart from the task's build.
     return rows.flatMap((r) => {
       const item = items.get(r.item as string);
-      return item ? [{ ...item, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch }] : [];
+      const same = item ? this.sameExitAt("criteria-review", item.id, `${item.head ?? ""}@${r.rev as number}`) : null;
+      return item ? [{ ...item, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch, ...(same ? { sameExit: same } : {}) }] : [];
     });
   }
 
@@ -9233,6 +9401,7 @@ export class Ledger extends DurableObject<Env> {
     if (!r.approve && !blocking) throw new RuleError("bad_verdict", "a rejection of the acceptance criteria names at least one blocking finding", 400);
     const state: CriteriaReviewState = r.approve ? "approved" : "rejected";
     this.sql.exec(`UPDATE criteria_reviews SET state = ?, decidedAt = ?, summary = ?, findings = ?, checks = ? WHERE id = ?`, state, at, r.summary, JSON.stringify(findings), JSON.stringify(checks), row.id);
+    this.clearSameExit("criteria-review", r.itemId);
     this.log(r.itemId, r.by, r.approve ? "criteria_review.approved" : "criteria_review.rejected", { review: row.id, rev, criteria: r.criteria, summary: r.summary, ...(findings.length ? { findings } : {}), ...(checks.length ? { checks } : {}) }, at, proved);
     // An approval lets the plan dispatch the part it held (the tick); a
     // rejection with blocking findings waits for the owner. A part the tick
@@ -9249,15 +9418,19 @@ export class Ledger extends DurableObject<Env> {
   // as failed, approves nothing, and the criteria may be asked about again.
   failCriteriaReview(id: string, actor: string, request: number, reason: string, proved = false): CriteriaReview {
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
-    this.item(id);
+    const item = this.item(id);
     const row = this.criteriaReviewsFor(id).find((x) => x.id === request);
     if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${request}`, 404, "run atelier criteria-review ID");
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("stale_request", `${id} is ${item.state}, so its criteria review ${request} has ended and there is nothing to fail`, 409, "nothing to do for this task; run atelier queue for open work");
     if (row.state !== "claimed" || !row.claimedBy || !sameActor(row.claimedBy, actor)) {
       throw new RuleError("stale_request", `criteria review ${request} of ${id} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${actor}` : row.state}, so there is nothing of ${actor}'s to fail`, 409, `run atelier criteria-review-claim ${id}`);
     }
     const at = new Date().toISOString();
     const failure = String(reason || "the reviewer reached no verdict").slice(0, NOTE_MAX);
     this.sql.exec(`UPDATE criteria_reviews SET state = 'failed', failure = ?, decidedAt = ? WHERE id = ?`, failure, at, row.id);
+    // The failure applied, its harness exit counts towards the same-exit run
+    // across this request and the next one asked (noteExit).
+    this.noteExit("criteria-review", id, this.criteriaExitSubject(id, row.rev), failure);
     this.log(id, actor, "criteria_review.failed", { review: row.id, rev: row.rev, reviewer: actor, reason: failure }, at, proved);
     this.afterPlanChange(id);
     return this.criteriaReviewsFor(id).find((x) => x.id === row.id)!;
@@ -10295,6 +10468,17 @@ export class Ledger extends DurableObject<Env> {
         delete rest.state;
         this.update(id, rest, at);
         this.sql.exec(`UPDATE items SET state = ? WHERE id = ?`, state, id);
+        this.sql.exec(`DELETE FROM same_exits WHERE item = ?`, id);
+        // A closed task's open and claimed criteria reviews and pre-reviews
+        // end with it, so no late report of a claim made before can record
+        // or count anything (failCriteriaReview, prereviewOutcome).
+        for (const r of this.sql.exec(`SELECT id, rev, reviewer, claimedBy FROM criteria_reviews WHERE item = ? AND state IN ('open', 'claimed')`, id).toArray()) {
+          this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, `the task was ${state}`, at, r.id);
+          this.log(id, ORCHESTRATOR, "criteria_review.withdrawn", { review: r.id, rev: r.rev, reviewer: r.claimedBy ?? r.reviewer, reason: `the task was ${state}` }, at);
+        }
+        for (const r of this.sql.exec(`SELECT * FROM prereviews WHERE item = ? AND state IN ('open', 'claimed')`, id).toArray()) {
+          this.settlePrereview(r, "withdrawn", { detail: `the task was ${state}` }, ORCHESTRATOR, at);
+        }
         for (const r of this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id`, id).toArray()) {
           const d = JSON.parse(r.dispatch as string) as Dispatch;
           this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
@@ -10323,7 +10507,11 @@ export class Ledger extends DurableObject<Env> {
     // every path (t300).
     const from = "head" in fields ? (this.sql.exec(`SELECT head FROM items WHERE id = ?`, id).toArray()[0]?.head as string | null | undefined) ?? null : null;
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), at, id);
-    if ("head" in fields && fields.head && fields.head !== from) this.withdrawStaleRequests(id, fields.head, at);
+    if ("head" in fields && fields.head && fields.head !== from) {
+      this.withdrawStaleRequests(id, fields.head, at);
+      // A new head starts every same-exit run of the task afresh (noteExit).
+      this.sql.exec(`DELETE FROM same_exits WHERE item = ?`, id);
+    }
   }
 
   // ── the way back: bookmarks, dump and import (t342) ──────────────────────

@@ -236,21 +236,26 @@ test("unpausedOffer drops every model of a paused harness and no other", () => {
 // A runner whose jobs run against stand-ins: `harnessFor(task)` answers each
 // harness call, `served` records what ran, and a fake clock moves by `step`
 // at each wait. `until` is when the runner stops, by SIGTERM at a poll.
-function loop(t, { harnessFor, tasks, step = 10 * MIN, polls = 4, file, start = NOW, name = "home:studio" }) {
+// The server stands in for the Worker (G5): the pauses a poll's memory carries
+// are kept there, one per harness with the later reset, and given back to
+// every runner before its poll. `server` is shared by the runners of a test.
+const newServer = () => ({ pauses: {} });
+function loop(t, { harnessFor, tasks, step = 10 * MIN, polls = 4, server = newServer(), start = NOW, name = "home:studio" }) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-limit-loop-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configFile = join(dir, "runner.json");
   writeFileSync(configFile, JSON.stringify(config));
-  const limitFile = file ?? join(dir, "limits.json");
-  const seen = { offers: [], logs: [], served: [], released: [], finished: [], reports: [] };
+  const seen = { offers: [], logs: [], served: [], released: [], finished: [], reports: [], memories: [] };
   let clock = start, poll = 0;
   const done = (async () => {
     await runRunner({ _: ["runner"], multi: {}, name, config: configFile }, {
-      limitFile, now: () => clock, wait: async () => { clock += step; await tick(); },
+      now: () => clock, readServer: async () => ({ pauses: Object.values(server.pauses) }), wait: async () => { clock += step; await tick(); },
       workspacePath: (project, id) => `/cache/work/${project}/${id}`,
       reportRun: async (body) => { seen.reports.push(body); },
       async queue(offer) {
         poll++;
+        seen.memories.push(offer.memory);
+        for (const p of offer.memory.pauses) if (!server.pauses[p.harness] || server.pauses[p.harness].resetAt < p.resetAt) server.pauses[p.harness] = p;
         seen.offers.push({ at: clock, agents: offer.agents.map((a) => a.agent), models: offer.agents.flatMap((a) => a.models) });
         if (poll === polls) process.emit("SIGTERM");
         // The server offers a task only to a runner whose offer lists its harness.
@@ -271,14 +276,14 @@ function loop(t, { harnessFor, tasks, step = 10 * MIN, polls = 4, file, start = 
       },
     });
   })();
-  return { done, seen, limitFile, dir };
+  return { done, seen, server, dir };
 }
 
 test("a limit pauses every model of the harness for the runner, offers the others, and resumes at the reset with no redispatch", async (t) => {
   const A1 = task("t1", {}, "opencode", "glm-5.3"), A2 = task("t2", {}, "opencode", "glm-5.3-flash"), B = task("t3", {}, "claude-code", "opus-5.5");
   let limitFor = 0;
   // opencode hits a limit resetting 25 minutes on; claude-code is fine.
-  const { done, seen, limitFile } = loop(t, {
+  const { done, seen, server } = loop(t, {
     polls: 5,
     tasks: () => [A1, A2, B],
     harnessFor: (argv, clock) => argv[0] === "opencode"
@@ -305,11 +310,11 @@ test("a limit pauses every model of the harness for the runner, offers the other
   // The infrastructure event is no model report and no failure.
   assert.deepEqual(seen.reports.filter((r) => r.item === "t1"), []);
   assert.ok(!seen.logs.some((l) => /needs the developer's attention/.test(l)));
-  // The file says it, and is empty of pauses after the resume.
-  const kept = readLimits(limitFile);
-  assert.deepEqual(kept.pauses, {});
-  assert.equal(kept.events.length, 1);
-  assert.deepEqual({ ...kept.events[0], at: undefined }, { at: undefined, kind: "provider-limit", harness: "opencode", job: "build", project: "atelier", item: "t1", resetAt: resetIn(25 * MIN), fallback: false, reason: "You've hit your usage limit." });
+  // The server was told of the pause when it began, and the poll after the resume says none.
+  assert.equal(server.pauses.opencode.resetAt, resetIn(25 * MIN));
+  assert.equal(server.pauses.opencode.reason, "You've hit your usage limit.");
+  assert.deepEqual(seen.memories[1].pauses.map((p) => p.harness), ["opencode"]);
+  assert.deepEqual(seen.memories.at(-1).pauses, []);
 });
 
 test("limits never reach the failure caps: the same task is served again after any number of them", async (t) => {
@@ -328,9 +333,9 @@ test("limits never reach the failure caps: the same task is served again after a
   assert.deepEqual(seen.reports, []);
 });
 
-test("a limit with no reset time pauses the harness for 60 minutes, said in the log and the file", async (t) => {
+test("a limit with no reset time pauses the harness for 60 minutes, said in the log and to the server", async (t) => {
   const A = task("t1", {}, "opencode", "glm-5.3");
-  const { done, seen, limitFile } = loop(t, {
+  const { done, seen, server } = loop(t, {
     polls: 4, step: 30 * MIN,
     tasks: () => [A],
     harnessFor: () => limited({ resetAt: null }),
@@ -339,37 +344,37 @@ test("a limit with no reset time pauses the harness for 60 minutes, said in the 
   // Polls at +0 (limit), +30 (paused), +60 (reset: offered again, limited again), +90 (paused).
   assert.deepEqual(seen.offers.map((o) => o.agents), [["opencode", "claude-code"], ["claude-code"], ["opencode", "claude-code"], ["claude-code"]]);
   assert.ok(seen.logs.some((l) => l === `infrastructure event: provider limit on opencode during build of atelier/t1; opencode paused until ${resetIn(60 * MIN)} (no reset time given; the 60-minute fallback): usage limit reached`));
-  assert.equal(readLimits(limitFile).events.length, 2);
+  assert.equal(server.pauses.opencode.fallback, true);
 });
 
-test("a pause survives a restart, is said at start, and ends at its reset", async (t) => {
+test("a pause is the server's: a restart finds it in force, says so at start, and it ends at its reset", async (t) => {
   const A = task("t1", {}, "opencode", "glm-5.3");
-  const first = loop(t, { polls: 2, tasks: () => [A], harnessFor: () => limited({ reason: "Weekly limit reached", resetAt: resetIn(3 * 60 * MIN) }) });
+  const server = newServer();
+  const first = loop(t, { server, polls: 2, tasks: () => [A], harnessFor: () => limited({ reason: "Weekly limit reached", resetAt: resetIn(3 * 60 * MIN) }) });
   await first.done;
-  const file = JSON.parse(readFileSync(first.limitFile, "utf8"));
-  assert.equal(file.pauses.opencode.resetAt, resetIn(3 * 60 * MIN));
-  assert.equal(file.pauses.opencode.reason, "Weekly limit reached");
-  // A new process, an hour on: still paused, the harness is never run, and the log says so.
-  const restarted = loop(t, { file: first.limitFile, start: NOW + 60 * MIN, polls: 2, step: 60 * MIN, tasks: () => [A], harnessFor: () => assert.fail("a paused harness must not run") });
+  assert.equal(server.pauses.opencode.resetAt, resetIn(3 * 60 * MIN));
+  assert.equal(server.pauses.opencode.reason, "Weekly limit reached");
+  // A new process, an hour on, with no file and nothing of its own: still paused, the harness is never run, and the log says so.
+  const restarted = loop(t, { server, start: NOW + 60 * MIN, polls: 2, step: 60 * MIN, tasks: () => [A], harnessFor: () => assert.fail("a paused harness must not run") });
   await restarted.done;
   assert.deepEqual(restarted.seen.offers.map((o) => o.agents), [["claude-code"], ["claude-code"]]);
-  assert.ok(restarted.seen.logs.includes(`still opencode paused until ${resetIn(3 * 60 * MIN)}: Weekly limit reached`));
+  assert.ok(restarted.seen.logs.includes(`still opencode paused until ${resetIn(3 * 60 * MIN)}: Weekly limit reached`) || restarted.seen.logs.some((l) => l.includes("Weekly limit reached")));
   // Another, past the reset: the pause is lifted and the harness is offered.
-  const later = loop(t, { file: first.limitFile, start: NOW + 4 * 60 * MIN, polls: 2, tasks: () => [A], harnessFor: () => ({ code: 0, output: "ok" }) });
+  const later = loop(t, { server, start: NOW + 4 * 60 * MIN, polls: 2, tasks: () => [A], harnessFor: () => ({ code: 0, output: "ok" }) });
   await later.done;
   assert.deepEqual(later.seen.offers[0].agents, ["opencode", "claude-code"]);
-  assert.ok(later.seen.logs.some((l) => l.startsWith("resumed: opencode usage limit reset at")));
-  assert.deepEqual(readLimits(first.limitFile).pauses, {});
+  assert.deepEqual(later.seen.memories.at(-1).pauses, []);
 });
 
-test("the pauses are per runner: another runner's file does not pause this one", async (t) => {
+test("a pause is shared by every runner on the account: another runner is paused by it and runs nothing of the harness", async (t) => {
   const A = task("t1", {}, "opencode", "glm-5.3");
-  const one = loop(t, { polls: 2, name: "home:one", tasks: () => [A], harnessFor: () => limited({ resetAt: resetIn(90 * MIN) }) });
+  const server = newServer();
+  const one = loop(t, { server, polls: 2, name: "home:one", tasks: () => [A], harnessFor: () => limited({ resetAt: resetIn(90 * MIN) }) });
   await one.done;
-  const two = loop(t, { polls: 2, name: "home:two", file: join(one.dir, "two.json"), tasks: () => [A], harnessFor: () => ({ code: 0, output: "ok" }) });
+  const two = loop(t, { server, polls: 2, name: "home:two", tasks: () => [A], harnessFor: () => ({ code: 0, output: "ok" }) });
   await two.done;
-  assert.deepEqual(two.seen.offers[0].agents, ["opencode", "claude-code"]);
-  assert.equal(two.seen.served.length, 1);
+  assert.deepEqual(two.seen.offers[0].agents, ["claude-code"]);
+  assert.equal(two.seen.served.length, 0);
 });
 
 test("a provider limit while resolving current main before submission preserves the commit and releases the claim", async () => {

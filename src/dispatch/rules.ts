@@ -6,6 +6,7 @@ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
 import { assertSingleFamily, DEFAULT_OWNER, harnessRefusal, overlappingLive, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
+import type { RunnerMemory } from "../runners/memory.ts";
 import { assertLength, DISPATCH_NOTE_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -99,6 +100,9 @@ export interface RunnerOffer {
   // failures or a refused claim it forgets on a restart, so the reasons
   // that name it count only from then (skippedBy, refusedBy).
   started?: string;
+  // What the runner remembers of the tasks it passes by, sent with its poll
+  // and read back after a restart (G5, src/runners/memory.ts).
+  memory?: RunnerMemory;
 }
 
 export interface Assignment {

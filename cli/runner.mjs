@@ -1057,6 +1057,16 @@ export const workInProgressMessage = (actor, detail) => [
   `The runner committed this as the builder left it, unverified, for the next run to continue. The builder reported: ${oneLine(detail ?? "").slice(0, 500)}`,
   `Agent: ${actor}\n${WORK_IN_PROGRESS}`,
 ];
+// A build whose harness exits 0 with files changed and no commit (G5) has its
+// work kept the same way, as a commit starting "wip:" on the task's branch,
+// pushed and released with a note naming it. The trailer is the same, so the
+// next run continues from it.
+export const STALLED_REASON = "harness made no new commit";
+export const stalledWorkMessage = (item, actor) => [
+  `wip: ${item.id} ${oneLine(item.title ?? "").slice(0, 80)}`.trim(),
+  "The harness ended with files changed and no commit. The runner committed them as the harness left them, unverified, for the next run to continue.",
+  `Agent: ${actor}\n${WORK_IN_PROGRESS}`,
+];
 export async function commitWorkInProgress(git, message, log = () => {}) {
   // Fail closed: work that cannot be fully staged is not committed, so the
   // commit is never a partial copy that releasing the claim would let a reset
@@ -1083,7 +1093,7 @@ export async function commitWorkInProgress(git, message, log = () => {}) {
   return (await git(["rev-parse", "HEAD"])).trim();
 }
 export const workInProgressSection = (head, actor) => [
-  `The last run of this task ended validation_blocked with its work uncommitted. The runner committed that work as it stood, unverified, as ${String(head).slice(0, 12)} (marked ${WORK_IN_PROGRESS}), which the workspace's HEAD holds.`,
+  `The last run of this task left its work uncommitted. The runner committed that work as it stood, unverified, as ${String(head).slice(0, 12)} (marked ${WORK_IN_PROGRESS}), which the workspace's HEAD holds.`,
   `Continue from it: read it with git show ${String(head).slice(0, 12)}, finish what it lacks, run the tests for the files it changes and the typecheck, and commit on top of it; do not rewrite or drop it.`,
   `The runner submits only a new commit: if it already holds everything and its tests pass, say so with git commit --allow-empty -m "subject" -m "Agent: ${actor}".`,
 ].join("\n");
@@ -1440,6 +1450,8 @@ const VALIDATION_BLOCKED = [
   new RegExp(String.raw`${SANDBOX}[^\n.]{0,60}\b(?:blocked|prevented|stopped)\b[^\n.]{0,40}\b${CHECKS}\b`, "i"),
 ];
 
+const OTHER_PARTY = /\b(?:reviewers?|review (?:harness|model|agent|sandbox))\b/i;
+
 // JSON harness output contains tool transcripts too: only an agent's final
 // message is a report. Plain-text harnesses report through their stdout.
 export function validationBlockedReport(output) {
@@ -1456,7 +1468,16 @@ export function validationBlockedReport(output) {
     } catch { /* plain output */ }
   }
   if (structured) report = messages.at(-1) ?? "";
-  const match = VALIDATION_BLOCKED.map((pattern) => pattern.exec(report)).find(Boolean);
+  // A sentence about someone else's checks (a reviewer's sandbox that could
+  // not run tests) is not this build's block; only the explicit
+  // `validation_blocked:` line is taken whoever it names (G5).
+  const aboutAnother = (match) => {
+    const from = Math.max(report.lastIndexOf(". ", match.index), report.lastIndexOf("\n", match.index)) + 1;
+    const end = report.slice(match.index).search(/\.\s|\n/);
+    return OTHER_PARTY.test(report.slice(from, end < 0 ? report.length : match.index + end));
+  };
+  const matches = VALIDATION_BLOCKED.flatMap((pattern, i) => [...report.matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))].filter((m) => i === 0 || !aboutAnother(m)));
+  const match = matches.sort((a, b) => a.index - b.index)[0];
   if (!match) return null;
   // Keep the actual blocker in the server's bounded detail even when the
   // final report starts with a long summary of the implementation.
@@ -1528,8 +1549,8 @@ export async function alreadyComplete(item, head, merges = [], isAncestor) {
 // an unreadable one, one already past and one more than MAX_PAUSE_DAYS away
 // get a pause of FALLBACK_MINUTES (60) from the moment the runner sees the
 // limit; `fallback` says so. The pause is per runner and per harness,
-// kept in a file (limitFileFor) so a restart still honours it; another
-// runner process, or another machine on the same account, is not told.
+// sent to the server with the runner's poll (G5), which shares it with every
+// runner on the account and gives it back after a restart; no file decides it.
 const MAX_PAUSE_DAYS = 8;
 // What the adapters (bin/harness/limit.mjs, which cannot be imported here:
 // the CLI is copied without bin/) end with; a test holds the two equal.
@@ -1677,7 +1698,7 @@ export async function runTask(assignment, config, name, io) {
     // Keep the marker for both the builder and a main-conflict resolver, so
     // a later run cannot resume committed but unverified work as a success.
     const head = await io.head(workspace).catch(() => null);
-    await io.writeValidationBlock?.(workspace, { actor, head, taskKey, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
+    await io.writeValidationBlock?.(workspace, { actor, head, taskKey, at: new Date((io.now ?? Date.now)()).toISOString(), detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
     throw Object.assign(new Error(blocked), { validationBlocked: true });
   };
   // The brief context the server alone holds, fetched the same way before
@@ -1809,15 +1830,26 @@ export async function runTask(assignment, config, name, io) {
     // same rule, holds: this actor's marker for this task revision.
     let priorBlock = await io.readValidationBlock?.(workspace);
     const holds = (block) => block?.actor === actor && block.taskKey === taskKey;
-    // A marker whose report blocked the task (t326) was answered by the
-    // developer's unblock, the only way the task is offered again: the
-    // builder runs, and nothing the blocked run committed is finished
-    // without it (unblocked).
-    if (priorBlock?.blocked && item.state !== "blocked") {
-      io.log("the developer unblocked the task since its validation_blocked report, so the runner clears that report and runs the builder");
+    // A marker never decides a block (G5): the server's record does. The
+    // queue names when it accepted a validation_blocked report of the task
+    // (item.validationBlockedAt) and when the developer last unblocked it
+    // (item.unblockedAt). A block the developer has not answered since is the
+    // server's; the marker then holds back what it was written for. Without
+    // one, whether the block's flag was ever written on the marker or not,
+    // the marker is an old answer: it is ignored and cleared, and the builder
+    // runs. A task the developer unblocked is also not finished without the
+    // builder (unblocked).
+    const serverBlock = !!item.validationBlockedAt && !(Date.parse(item.unblockedAt) >= Date.parse(item.validationBlockedAt));
+    // Whether the developer unblocked a block the server recorded is the
+    // server's word alone, marker or none: such a task is not finished from a
+    // local commit without the builder.
+    if (!serverBlock && item.unblockedAt && item.validationBlockedAt) unblocked = true;
+    if (priorBlock && !serverBlock) {
+      io.log(item.unblockedAt
+        ? `the developer unblocked the task at ${item.unblockedAt}, after the validation_blocked report in the workspace, so the runner clears that report and runs the builder`
+        : "the server records no validation_blocked report for the task, so the runner ignores and clears the marker in the workspace and runs the builder");
       await io.clearValidationBlock?.(workspace);
       priorBlock = null;
-      unblocked = true;
     }
     if (priorBlock && priorBlock.taskKey !== taskKey) {
       io.log(priorBlock.taskKey
@@ -1867,7 +1899,16 @@ export async function runTask(assignment, config, name, io) {
     failedRun = onFile ?? inMemory;
     if (failedRun) failedRun = { ...failedRun, reruns: Math.max(onFile?.reruns ?? 0, inMemory?.reruns ?? 0) };
     continuing = io.headMessage ? isWorkInProgress(await io.headMessage(workspace).catch(() => "")) : false;
-    if (continuing) io.log(`the head ${String(before).slice(0, 8)} is work in progress a validation_blocked run committed; the builder continues from it`);
+    if (continuing) {
+      io.log(`the head ${String(before).slice(0, 8)} is work in progress the runner committed for an earlier run; the builder continues from it`);
+      // A work-in-progress commit the server does not hold (the run that made
+      // it was cut off before its push, or its push was refused) is pushed
+      // first: nothing is left only here (G5).
+      if (item.head !== before) {
+        try { await io.cli(["push", item.id, "--project", project, "--as", actor], workspace); io.log(`work in progress ${String(before).slice(0, 8)} pushed`); }
+        catch (pushError) { io.log(`work in progress ${String(before).slice(0, 8)} not pushed: ${oneLine(pushError.message)}`); }
+      }
+    }
     resumed = !continuing && !unblocked && item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
     if (failedRun) {
       if (failedRun.reruns >= MAX_HARNESS_RERUNS) {
@@ -2137,11 +2178,16 @@ export async function runTask(assignment, config, name, io) {
       // resolution in progress, which is no commit of the builder's to make;
       // and a commit whose push fails stays local, under the claim, as any
       // other commit does.
-      let kept = null, unstaged = false;
-      if (head === startedAt() && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
+      // A harness that exited 0 with files changed and no commit (G5) is
+      // kept the same way, as a "wip:" commit; it is released, not blocked,
+      // and a push the server refuses (the secret scan, say) is said in the
+      // release note, with the commit left in this workspace.
+      let kept = null, unstaged = false, pushRefused = null;
+      const stalled = !error.validationBlocked && error.message === STALLED_REASON;
+      if (head === startedAt() && (error.validationBlocked || stalled) && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
           !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
         let wip;
-        try { wip = await io.commitWork(workspace, runEnv, workInProgressMessage(actor, error.message)); }
+        try { wip = await io.commitWork(workspace, runEnv, stalled ? stalledWorkMessage(item, actor) : workInProgressMessage(actor, error.message)); }
         catch (commitError) {
           // Any failure of the commit itself (staging, signing, a hook, a
           // head read after it), whether or not HEAD moved, leaves the work
@@ -2157,11 +2203,33 @@ export async function runTask(assignment, config, name, io) {
             kept = wip;
           } catch (pushError) {
             io.log(`work in progress not kept: ${pushError.message}`);
+            // A push cut short by an interrupt is no refusal: the commit stays
+            // in the workspace under the claim, and the next run pushes it.
+            if (stalled && !io.stopped()) pushRefused = { wip, why: oneLine(pushError.message).trim() };
+            else if (stalled) { unstaged = true; io.log(`interrupted after work in progress ${wip.slice(0, 8)} was committed; claim preserved, the next run pushes it`); }
             try { head = await io.head(workspace, { cleanup: true }); } catch { head = undefined; }
           }
         }
       }
-      if (kept) {
+      if (kept && stalled) {
+        state = { ...state, workInProgress: kept };
+        try {
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} (wip) and pushed for the next run to continue`)], workspace);
+          released = true;
+          io.log(`released: work in progress ${kept.slice(0, 8)} pushed for the next run`);
+        }
+        catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
+      } else if (pushRefused) {
+        // Local only, and said so: the commit stays in this workspace, which
+        // a later run on this runner continues from (continuing).
+        state = { ...state, workInProgress: pushRefused.wip, pushRefused: pushRefused.why };
+        try {
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${pushRefused.wip.slice(0, 8)} (wip) but the push was refused, so it is only in this runner's workspace: ${pushRefused.why}`)], workspace);
+          released = true;
+          io.log(`released: work in progress ${pushRefused.wip.slice(0, 8)} is local only, the push was refused`);
+        }
+        catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
+      } else if (kept) {
         state = { ...state, workInProgress: kept };
         const note = `${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} and pushed unsubmitted for the next run to continue`;
         try {
@@ -2581,8 +2649,11 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       // The release says the exit alone: the server's stop (src/review/stopped.ts)
       // reads the note's words, which a harness's stderr must not change. The
       // stderr goes with the run report and the skip instead (t323).
-      await release(`harness exited ${result.code}`);
-      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
+      // The exit's signature rides on the note's end, so the server's stop
+      // counts the same exit across runners and restarts (G5).
+      const exit = failedExitOf(result);
+      await release(`harness exited ${result.code}; exit-signature: ${exitSignature(exit)}`);
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: exit };
     }
     // A harness that wrote no verdict file leaves nothing to read; the empty
     // reply is kept like any other unusable one, so the failure is on the task.
@@ -2820,8 +2891,11 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
         io.log(`criteria review failed: ${why}`);
         return { phase: "failed", reason: why, skipped: true };
       }
-      await fail(`harness exited ${result.code}`);
-      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
+      // The exit's signature goes with the note, so the server counts the same
+      // exit of this criteria review across runners (G5).
+      const exit = failedExitOf(result);
+      await fail(`harness exited ${result.code}; exit-signature: ${exitSignature(exit)}`);
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: exit };
     }
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
@@ -3009,8 +3083,9 @@ export async function runPrereview(assignment, config, name, runnerIO) {
         io.log(`pre-review released: ${why}`);
         return failed(why, { skipped: true });
       }
-      await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}` });
-      return failed(`harness exited ${result.code}`, { taskFailure: true, harnessExit: failedExitOf(result) });
+      const exit = failedExitOf(result);
+      await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}; exit-signature: ${exitSignature(exit)}` });
+      return failed(`harness exited ${result.code}`, { taskFailure: true, harnessExit: exit });
     }
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
@@ -3628,38 +3703,26 @@ export function exitDetail(exit, lead = null) {
   return `${head}${stderrSummary(exit.stderr, Math.max(40, RUN_DETAIL_MAX - head.length)) || "(none)"}`.slice(0, RUN_DETAIL_MAX);
 }
 
-// Two runs on one review request that end with the same harness exit (t323):
-// the runner takes that request no more, reports the run without a result
-// naming the exit and its stderr, and leaves the request for another model.
-// opencode/glm-5.3 exited 1 on atelier t173 334 times on 2026-10-22, each run
-// released and claimed again. A request is kept by failureKey, the task and
-// head of a review whatever number each release gives it. An exit is the same
+// Runs on one review request, criteria review or pre-review that end with the
+// same harness exit (t323, G5) stop it for every runner: each release or
+// failure note carries the exit's signature (exitSignature), and the server
+// counts the run across the requests each try makes, whichever runner ran
+// it, keeping it across restarts (src/review/stopped.ts for a review, the
+// Ledger's same_exits for the other two). The queue carries the count on
+// the item (sameExit) and passedBy reads it there alone; this runner keeps
+// no count of its own. opencode/glm-5.3 exited 1 on atelier t173 334 times
+// on 2026-10-22, each run released and claimed again. An exit is the same
 // when its kind, its code and its stderr's last lines are, numbers aside (a
-// time, a size or an id differs from run to run). A timeout is no exit: the
-// server stops those itself (src/review/stopped.ts).
+// time, a size or an id differs from run to run).
 export const SAME_EXIT_LIMIT = 2;
 const SAME_EXIT_JOBS = new Set(["review", "criteria-review", PREREVIEW_JOB]);
 export function exitSignature(exit) {
   const tail = String(exit.stderr ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).join("\n");
-  return JSON.stringify([exit.kind, exit.code ?? null, tail.replace(/\b[0-9a-f]{8,}\b/gi, "#").replace(/\d+/g, "#")]);
-}
-// The entry kept for a request after a run, or undefined when the run clears
-// it: a different exit starts the count again, a run that ended otherwise
-// (a verdict, a stopped review) clears it, and a run that never reached the
-// harness, or met a provider's limit, leaves it as it was.
-export function sameExitAfter(entry, task, state) {
-  if (!SAME_EXIT_JOBS.has(task.item.dispatch?.job)) return undefined;
-  if (state.providerLimit) return entry;
-  const exit = state.harnessExit;
-  if (!exit) return state.phase === "failed" && !state.taskFailure ? entry : undefined;
-  if (exit.kind === "timed-out") return undefined;
-  const signature = exitSignature(exit);
-  return { signature, exit, count: entry?.signature === signature ? entry.count + 1 : 1 };
-}
-export const sameExitStopped = (entry) => !!entry && entry.count >= SAME_EXIT_LIMIT;
-// The run report's detail, the log line and the skip note for the run that stops it.
-export function sameExitText(entry) {
-  return exitDetail(entry.exit, `the same harness exit ${entry.count} times in a row on this review request; this runner takes it no more and leaves it for another model`);
+  // Hashed, so the same exit has the same short signature wherever it is
+  // compared or stored: in a review stop's count (src/review/stopped.ts) and
+  // the Ledger's same_exits. A stored text would be cut at a bound the
+  // comparison does not know (G5).
+  return digest(JSON.stringify([exit.kind, exit.code ?? null, tail.replace(/\b[0-9a-f]{8,}\b/gi, "#").replace(/\d+/g, "#")])).slice(0, 32);
 }
 
 export function backoffAfter(entry, state, poll) {
@@ -3731,11 +3794,14 @@ export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? 
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
-  const same = SAME_EXIT_JOBS.has(task.item.dispatch?.job) ? sameExits.get(failureKey(task)) : null;
-  if (sameExitStopped(same)) return `Passed by: its harness exited the same way ${same.count} times in a row (${exitDetail(same.exit)}); this runner takes this request no more, and it is left for another model. It is tried again at a new head or once this runner restarts.`;
+  // A review's, a criteria review's and a pre-review's same-exit count is
+  // the server's alone (G5): the one count every runner reads, kept across
+  // restarts and across the requests each try makes.
+  const shared = task.item.sameExit;
+  if (SAME_EXIT_JOBS.has(task.item.dispatch?.job) && shared?.count >= SAME_EXIT_LIMIT) return `Passed by: its harness exited the same way ${shared.count} times in a row, as the server counts them across runners; it is left for another model. It is tried again at a new head.`;
   const preparing = notReady.get(notReadyKey(task));
   if (preparing && (preparing.expired || nowMs - preparing.since >= NOT_READY_LIMIT_MS)) return `Skipped: ${notReadyGiveUp(task, preparing)}`;
   if (preparing && poll < preparing.due) return `Passed by: its fork is still being prepared (not_ready, ${preparing.tries} ${preparing.tries === 1 ? "try" : "tries"}); it is tried again in ${preparing.due - poll} poll${preparing.due - poll === 1 ? "" : "s"}.`;
@@ -3804,6 +3870,73 @@ export function noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTa
   heads.add(task.item.head ?? null);
   if (released) heads.add(released);
   skipHeads.set(key, heads);
+}
+
+// What the runner remembers of the tasks it passes by (G5): the claims it was
+// refused, the tasks it gave up, its failure counts and its same-exit stops.
+// It goes with every poll and heartbeat, the server keeps it with the offer,
+// and a restarted runner reads it back at start (restoreMemory), so a stop is
+// not forgotten by a restart. Each list keeps its newest MEMORY_MAX entries.
+// `reasons` says each task's stop in words, for the owner's listing. The
+// waits that count polls (backoff, not_ready) are kept by their count and
+// start counting again from zero.
+export const MEMORY_MAX = 200;
+export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map(), pauses = {} }) {
+  const newest = (items) => [...items].slice(-MEMORY_MAX);
+  const counted = (map) => newest([...map].filter(([, n]) => n > 0)).map(([key, count]) => ({ key, count }));
+  const reasons = new Map();
+  const say = (key, why) => {
+    try { const [project, id] = JSON.parse(key); if (typeof project === "string" && typeof id === "string") reasons.set(`${project}/${id}`, why); } catch { /* A key that is not a task's says nothing. */ }
+  };
+  for (const key of refused) say(key, "claim refused or skipped here; passed by until the task changes");
+  for (const [key, n] of failures) if (n >= 2) say(key, `skipped after ${n} failed runs under this dispatch`);
+  for (const [key, n] of infrastructureFailures) if (n >= 3) say(key, `skipped after ${n} infrastructure failures in a row under this dispatch`);
+  for (const key of gaveUpTasks) say(key, "gave it up and released it; passed by until it is dispatched again");
+  return {
+    refused: newest(refused),
+    gaveUp: newest(gaveUpTasks),
+    failures: counted(failures),
+    infrastructure: counted(infrastructureFailures),
+    skipHeads: newest(skipHeads).map(([key, heads]) => ({ key, heads: [...heads] })),
+    reasons: newest(reasons).map(([task, why]) => ({ task, why })),
+    backoff: newest([...backoff].map(([key, entry]) => [key, entry.count])).map(([key, count]) => ({ key, count })),
+    notReady: newest(notReady).map(([key, e]) => ({ key, since: e.since, tries: e.tries, detail: e.detail ?? "", expired: !!e.expired })),
+    pauses: Object.values(pauses).map(({ harness, reason, resetAt, since, fallback }) => ({ harness, reason, resetAt, since, fallback: !!fallback })),
+  };
+}
+
+// Puts a memory the server held back into the maps (runnerMemory's inverse);
+// anything of another shape is left out. The waits count polls, which start
+// again from zero, so a backoff is due again as many polls on as its count
+// asks and a fork still being prepared keeps the time its first answer came.
+// Returns how many entries it restored.
+export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map() }) {
+  if (!memory || typeof memory !== "object") return 0;
+  const named = (list) => (Array.isArray(list) ? list : []).filter((e) => e && typeof e.key === "string");
+  let restored = 0;
+  for (const key of Array.isArray(memory.refused) ? memory.refused : []) if (typeof key === "string") { refused.add(key); restored++; }
+  for (const key of Array.isArray(memory.gaveUp) ? memory.gaveUp : []) if (typeof key === "string") { gaveUpTasks.add(key); restored++; }
+  for (const { key, count } of named(memory.failures)) if (Number.isInteger(count)) { failures.set(key, count); restored++; }
+  for (const { key, count } of named(memory.infrastructure)) if (Number.isInteger(count)) { infrastructureFailures.set(key, count); restored++; }
+  for (const { key, heads } of named(memory.skipHeads)) if (Array.isArray(heads)) { skipHeads.set(key, new Set(heads)); restored++; }
+  for (const { key, count } of named(memory.backoff)) if (Number.isInteger(count) && count > 0) { backoff.set(key, { count, due: backoffPolls(count) }); restored++; }
+  for (const { key, since, tries, detail, expired } of named(memory.notReady)) if (Number.isFinite(since) && Number.isInteger(tries)) { notReady.set(key, { since, tries, detail: detail ?? "", expired: !!expired, due: notReadyPolls(tries) }); restored++; }
+  return restored;
+}
+
+// Drops what the runner remembers of a task, "project/id" (atelier runner
+// forget-skip): every key is a JSON list that starts with the project and the
+// task id. Returns how many entries it dropped.
+export function forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map() }) {
+  const named = (key) => { try { const [project, id] = JSON.parse(key); return `${project}/${id}`; } catch { return null; } };
+  let dropped = 0;
+  for (const collection of [refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady]) {
+    for (const entry of [...collection]) {
+      const key = Array.isArray(entry) ? entry[0] : entry;
+      if (named(key) === task) { collection.delete(key); dropped++; }
+    }
+  }
+  return dropped;
 }
 
 // The file a plan job's harness writes the plan document to, inside the
@@ -4144,7 +4277,7 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady, oneShot }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -4178,14 +4311,15 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  // Review requests whose harness exited the same way run after run (t323),
-  // by failureKey: the exit, its signature and the count (sameExitAfter).
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), skipHeads = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), skipHeads = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
   // (recheckMissing), read through `baselineHead` at most every
   // MISSING_RECHECK_MS; a CLI wired without it keeps them until restart.
+  // What the runner remembers of the tasks it passes by goes with every poll
+  // and heartbeat, and is read back at start (runnerMemory, G5).
+  const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady, pauses: limits.pauses }) });
   const missing = new Map();
   // Post-merge reviews whose baseline could not be fetched (t591), by
   // missingKey: the commit, the failures so far and the poll the next try
@@ -4210,15 +4344,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       io.log(`${task.project}'s baseline moved to ${head.slice(0, 8)}; ${task.item.id}'s post-merge review of ${entry.commit.slice(0, 8)} is tried again`);
     }
   };
-  // The harnesses a provider's usage limit has paused (providerLimitOf), kept
-  // in a file so a restart honours them. A harness is paused for the whole
-  // runner process: every model of it leaves the offer until its reset.
-  const limitPath = limitFile ?? limitFileFor(offer.runner);
-  let limits = readLimits(limitPath);
-  const saveLimits = () => {
-    try { writeLimits(limitPath, limits); }
-    catch (error) { io.log(`could not keep the provider-limit pauses in ${limitPath}: ${error.message}`); }
-  };
+  // The harnesses a provider's usage limit has paused (providerLimitOf). The
+  // server keeps them, one per harness for every runner on the account: the
+  // runner sends the ones it meets with its poll (memory.pauses) and takes the
+  // server's back before each poll (syncPauses). No file decides them (G5), so
+  // a restart, or another machine, finds the pause in force.
+  const limits = { pauses: {}, events: [] };
+  const saveLimits = () => {};
   // Pauses whose reset has come are lifted, and said so.
   const liftExpired = () => {
     const lifted = Object.values(limits.pauses).filter((p) => Date.parse(p.resetAt) <= now());
@@ -4266,6 +4398,34 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (answer?.ready && unready.has(agent.agent)) io.log(`${agent.agent} is ready again; its models are offered.`);
       if (answer?.ready) unready.delete(agent.agent); else unready.set(agent.agent, answer?.why || "not ready");
     }
+  };
+  // Takes the server's pauses in with this process's own: the later reset
+  // wins, and a pause past its reset is not kept.
+  const syncPauses = (state) => {
+    // A task the developer had this runner forget (atelier runner forget-skip).
+    for (const task of Array.isArray(state?.forget) ? state.forget : []) {
+      if (typeof task !== "string") continue;
+      const dropped = forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady });
+      if (dropped) line(`forgot what it remembered of ${task} (${dropped} entr${dropped === 1 ? "y" : "ies"}); it is tried again`);
+    }
+    for (const p of Array.isArray(state?.pauses) ? state.pauses : []) {
+      if (!p || typeof p.harness !== "string" || !Number.isFinite(Date.parse(p.resetAt))) continue;
+      const held = limits.pauses[p.harness];
+      if (held && Date.parse(held.resetAt) >= Date.parse(p.resetAt)) continue;
+      limits.pauses[p.harness] = { harness: p.harness, reason: String(p.reason ?? ""), resetAt: p.resetAt, since: p.since ?? p.resetAt, fallback: !!p.fallback };
+    }
+  };
+  // The server's record of this runner before each poll, for the pauses
+  // other runners met. A server that will not say leaves the pauses as they are.
+  const readServerState = async () => {
+    try {
+      if (readServer) return await readServer(controller.signal);
+      if (!tokenProjects && api?.server && credential && checkCapabilities(serverVersion, [RUNNER_ME]).ok) {
+        const res = await runnerTransport({ server: api.server(), credential, runner: args.name.toLowerCase() }).send("runner-me", {}, { signal: controller.signal });
+        return res.ok ? res.data : null;
+      }
+    } catch { /* The pauses stay as they are. */ }
+    return null;
   };
   const pauseHarness = (task, state) => {
     const limit = state.providerLimit, at = now();
@@ -4636,11 +4796,15 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         if (tokenProjects) mine = await tokenProjects(controller.signal);
         else if (api?.server && credential && checkCapabilities(serverVersion, [RUNNER_ME]).ok) {
           const res = await runnerTransport({ server: api.server(), credential, runner: args.name.toLowerCase() }).send("runner-me", {}, { signal: controller.signal });
-          if (res.ok && Array.isArray(res.data?.projects)) mine = { projects: res.data.projects, names: res.data.names };
+          if (res.ok && Array.isArray(res.data?.projects)) mine = { projects: res.data.projects, names: res.data.names, memory: res.data.memory, pauses: res.data.pauses };
         }
       } catch (error) { if (!controller.signal.aborted) line(`the token's projects could not be read (${error.message}); serving the config's alone`); }
       const result = servedProjects(config.projects, mine);
       served = result.projects;
+      // The stops the server kept of the last process (G5): a restart loses none.
+      const restored = restoreMemory(mine?.memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady });
+      syncPauses(mine?.pauses ? mine : await readServerState());
+      if (restored) line(`restored ${restored} remembered stop${restored === 1 ? "" : "s"} (skips, refusals, failure counts) from the server`);
       // The offer says the same projects, so routing never picks this runner
       // for work in one it leaves out.
       if (served) offer.projects = [...served];
@@ -4723,11 +4887,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     while (!controller.signal.aborted) {
       let state;
       try {
+        if (!integrating) syncPauses(await readServerState());
         liftExpired();
         let tasks;
         await checkReady();
         if (controller.signal.aborted) break;
-        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport() };
+        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()) };
         try { tasks = await queue(pollOffer, controller.signal); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
@@ -4770,7 +4935,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         for (const task of ordered) {
           if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
         }
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, sameExits, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0))) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4810,7 +4975,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()) }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
           if (task.item.dispatch?.job === "land") { landOutcome(task, state); continue; }
           if (state.providerLimit) {
@@ -4822,22 +4987,18 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (outcome === "refused") io.log(refusedLog(task, state));
           const refusedRun = refusedAfter(refusedRuns.get(failureKey(task)), state, now());
           if (refusedRun) refusedRuns.set(failureKey(task), refusedRun); else refusedRuns.delete(failureKey(task));
-          // A review's harness that exits the same way twice on one request
-          // stops this runner taking it (t323); the run is reported with the
-          // exit and its stderr, and the review skip below leaves the request
-          // to the server, which stops it for every runner of this model and
-          // re-points it, unclaimed, to another model (the stage tick).
-          const same = sameExitAfter(sameExits.get(failureKey(task)), task, state);
-          if (same) sameExits.set(failureKey(task), same); else sameExits.delete(failureKey(task));
-          const sameStopped = sameExitStopped(same) && state.harnessExit === same.exit;
-          if (sameStopped) io.log(`${task.project}/${task.item.id} ${task.item.dispatch?.job}: ${sameExitText(same)}`);
+          // A review's harness exit is the server's to count (G5): the note
+          // carried its signature, and the next poll's item says whether the
+          // run stopped it (sameExit, passedBy). The run is reported with the
+          // exit and its stderr (t323).
           if (outcome && reportRun) {
             try {
               // The report names the job that ran: a plan, a review (a
               // criteria review counts as one), or a build. A review's
               // harness exit is named with its stderr (t323).
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : (task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) ? "review" : "build";
-              const detail = sameStopped ? sameExitText(same) : same && outcome === "refused" ? exitDetail(same.exit) : state.detail ?? state.reason;
+              const exit = SAME_EXIT_JOBS.has(task.item.dispatch?.job) && state.harnessExit?.kind !== "timed-out" ? state.harnessExit : null;
+              const detail = exit && outcome === "refused" ? exitDetail(exit) : state.detail ?? state.reason;
               await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
@@ -4896,8 +5057,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
             }
           } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
-          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3 || sameStopped) && !missReported && !state.fetchFailed && reportReviewSkip) {
-            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: sameStopped ? sameExitText(same) : state.reason });
+          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
+            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
           // A build or plan job given up under this dispatch, after its
           // failed runs or infrastructure failures in a row, is reported as

@@ -45,6 +45,7 @@ import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } from "./graph";
 import { projectShowcase, PULSE_DAYS } from "./pulse";
+import { parseMemory } from "./runners/memory";
 import { parseReadiness } from "./runners/readiness";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
@@ -1785,7 +1786,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // `names` lists, for each project the token serves, every name it answers
     // to, current first, so a runner resolves a renamed project.
     const names = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p))).map(namesOf);
-    return json({ runner: c.token.runner, projects: c.token.projects ?? [], names, expiresAt: c.token.expiresAt });
+    // What the runner last sent of the tasks it passes by (G5), so a restart
+    // loses none of it. It stays after the runner stops polling.
+    const memory = (await index(env).runnerOffers()).find((o) => o.runner.toLowerCase() === c.token!.runner!.toLowerCase())?.memory ?? null;
+    return json({ runner: c.token.runner, projects: c.token.projects ?? [], names, expiresAt: c.token.expiresAt, ...(memory ? { memory } : {}), pauses: await index(env).providerPauses(), forget: await index(env).forgotten(c.token.runner) });
+  }
+  // The developer clears what a runner remembers of a task (G5): a skip, a
+  // refusal, a failure count, a wait. No remembered skip is not an error.
+  if (parts[0] === "runners" && parts.length === 2 && parts[1] === "forget-skip" && m === "POST") {
+    requireOwner(env, actor);
+    const project = typeof body.project === "string" ? body.project : "", item = typeof body.item === "string" ? body.item : "";
+    if (!project || !/^t[0-9]+$/.test(item)) throw new RuleError("bad_task", "name the project and the task, such as t13", 400);
+    const runner = typeof body.runner === "string" && body.runner ? parseRunner(body.runner)?.runner ?? null : null;
+    if (typeof body.runner === "string" && body.runner && !runner) throw new RuleError("bad_runner", "name the runner as home:NAME", 400);
+    return json({ forgotten: await index(env).forgetSkip(runner, project, item) });
   }
   if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
     requireOwner(env, actor);
@@ -3984,8 +3998,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const started = typeof body.started === "string" && Number.isFinite(Date.parse(body.started)) ? new Date(body.started).toISOString() : null;
   // What the runner's self-check found (t234), kept with the offer.
   const readiness = parseReadiness(body.readiness);
+  // What the runner remembers of the tasks it passes by (G5).
+  const memory = parseMemory(body.memory);
   return {
-    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}),
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     ...(Array.isArray(body.checkouts) ? { checkouts: body.checkouts.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {

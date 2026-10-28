@@ -643,9 +643,11 @@ test("runRunner once polls once and handles SIGINT, SIGTERM and SIGHUP", async (
       workspacePath: () => { throw new Error("no task should be claimed"); },
       async queue(offer, signal) {
         polls++;
-        const { started, ...rest } = offer;
+        const { started, memory, ...rest } = offer;
         assert.deepEqual(rest, offerFrom(config, "home:studio"));
         assert.ok(Number.isFinite(Date.parse(started)));
+        // Nothing passed by yet (G5): the memory the poll carries is empty.
+        assert.deepEqual(Object.values(memory).flat(), []);
         if (!once) { process.emit(signalName); assert.equal(signal.aborted, true); }
         return [];
       },
