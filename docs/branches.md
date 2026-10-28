@@ -52,7 +52,23 @@ For later:
 - A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task.
 - Allowed lines (`docs/atelier/privacy-allow.json`) are dropped before the report. The owner sees them only in the allowance file's diff.
 
+7. The grant is still live. Last, the hook asks the server whether the grant it was let in with still counts and its actor still holds the task (`POST /internal/grant-live` on a loopback listener of its own, with a random per-process secret the server puts in the hook's environment). A grant the server does not confirm, or a server that does not answer, refuses the push.
+
+A push on a task grant holds that task's lock in the Git host from authorization until its backend exits (`src/git/locks.mjs`). Every Ledger change that ends or rotates a grant takes the same lock first, in one place no route, page or tick can skip: the Node runtime's Ledger stub, by the table in `src/runtime/ledger-locks.mjs`. That table lists every Ledger method that writes an item's owner, write token or claim generation, or closes it, and `test/claim-branch-ledger-locks.test.mjs` reads `src/ledger.ts` and fails on one missing. A change to a part, a plan or several tasks (the plan and stage ticks) takes the project's lock, which waits for every push in the project. So a change waits for the pushes in flight on its task, and a push that starts meanwhile waits for it and is then refused. A push whose client goes while it waits gives up its place at once and starts no backend. Revoking an agent or runner token waits for the pushes made with its grants. Each wait is bounded by a push's own limit: a push's backend is ended after 15 minutes (`PUSH_MAX_MS`), and a change that waits longer is refused with `push_running`.
+
+The hook's secret lives in the environment of processes the server's user runs, so an agent running as that same user could read it while a push is in flight. That is accepted: on the Studio the server runs as `atelierd`, and the user boundary below is the defence.
+
 Every repository names the hook through `core.hooksPath`, and a pushed tree cannot carry a hook into a bare repository.
+
+## The claim, the workspace and the reads
+
+`atelier claim tN` records the claim, then makes `refs/heads/t/N` at the tip of the project's branch unless it exists (`src/git/branches.mjs`, through `git update-ref` with the old value named). A part starts from its plan's branch, `plan/N`. The claim records the branch as the item's fork, under the name `PROJECT/t/N`; `src/git/artifacts.mjs` reads that name as the branch, so every read of a task's head, history, scan and diff reads it. The claim records that tip as the base, mints the task grant and records it as the item's write token. It answers with the remote (`ORIGIN/git/PROJECT.git`), the branch, the base, the grant and the project's prose standard with its text. A runner's claim is the same, and its workspace token is the task grant. A branch that holds nothing of its own is moved to the tip its start has reached since, on the next claim.
+
+The remote is given at the address the request came to when that is this machine's or the tailnet's (100.64.0.0/10), and at the public origin otherwise (`gitOrigin` in `src/runtime/server.mjs`). The CLI accepts plain `http://` to a tailnet address, which WireGuard encrypts.
+
+The CLI clones the branch alone (`git clone --single-branch --branch t/N`) and fetches the project's branch from the same remote as the baseline: one remote, `origin`. `atelier push` pushes `HEAD:refs/heads/t/N`. A check's clean clone, `atelier diff` and a review job clone `t/N` alone with a read grant, which `read-token`, `base-token` and `review-claim` answer on this server.
+
+`atelier init` makes the project's repository, its HEAD on the project's branch, and mints nothing: the owner pushes the project's branch with the server token. Init sends the prose standard's text with its path, so a claim can hand it to a builder with no checkout.
 
 Before Git reads a byte, the server checks the credential. A request with no live grant for this project gets 401 at `info/refs`. A read grant asking to push gets 403.
 
@@ -66,8 +82,9 @@ That makes the macOS user boundary the whole of the isolation. An agent with the
 
 - `src/git/grants.mjs`: the grant store.
 - `src/git/http.mjs`: Git over HTTP through `git http-backend`.
-- `src/git/repos.mjs`: the bare repositories.
+- `src/git/repos.mjs`: the bare repositories; `src/git/branches.mjs`: a task's branch.
 - `src/git/host.mjs`: checks each request against the Ledgers.
 - `hooks/pre-receive`: the hook.
 - `src/git/scan.mjs`: rules 5 and 6; `src/git/policy.mjs`: the policy and report files; `src/git/reader.mjs`: reads objects through `git cat-file --batch`.
 - `test/git-hook.test.mjs` and `test/git-scan.test.mjs`: push with the real client against the real hook.
+- `test/claim-branch.test.mjs` and `test/claim-branch-runner.test.mjs`: the claim, the CLI and the runner against the real server.

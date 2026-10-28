@@ -200,7 +200,9 @@ function revList(dir, args) {
 // disposed, so its owner stops tracking it.
 // env: the environment its Git runs with; the pre-receive hook passes its
 // own, which names the push's quarantined objects.
-export function openReader(dir, { name = basename(dir, ".git"), onDispose, env } = {}) {
+// head: the ref a log with no ref reads, HEAD unless named; a task's branch
+// read as its fork was (src/git/artifacts.mjs) names refs/heads/t/N.
+export function openReader(dir, { name = basename(dir, ".git"), onDispose, env, head: headRef = "HEAD" } = {}) {
   let batch = null, disposed = false;
   const objects = () => {
     if (disposed) throw artifactsError("INTERNAL_ERROR", "the repository reader was disposed");
@@ -232,7 +234,7 @@ export function openReader(dir, { name = basename(dir, ".git"), onDispose, env }
     async log({ ref, limit = LOG_DEFAULT, offset = 0 } = {}) {
       const max = Math.min(LOG_MAX, Math.max(0, Math.floor(limit)));
       const skip = Math.max(0, Math.floor(offset));
-      const start = ref ?? "HEAD";
+      const start = ref ?? headRef;
       if (!max || /^-|[\0\n]/.test(start)) return [];
       const hashes = await revList(dir, ["--first-parent", `--skip=${skip}`, `--max-count=${max}`, "--end-of-options", start, "--"]);
       const out = [];

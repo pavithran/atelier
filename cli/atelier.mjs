@@ -20,7 +20,7 @@ import { basename, join, resolve } from "node:path";
 
 import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
 
-import { proseStandardLine } from "../src/prose-standard.ts";
+import { PROSE_TEXT_FILE, proseStandardLine } from "../src/prose-standard.ts";
 import { checkLimits, limitMs, stopLine, stopOf, stopText } from "../src/check-limit.ts";
 
 import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
@@ -581,17 +581,26 @@ export function server() {
 // Hosts a request reaches without leaving this machine.
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+// An address on the tailnet (Tailscale's 100.64.0.0/10), whose traffic
+// WireGuard encrypts between the two machines (design section 4.3).
+export function tailnetHost(hostname) {
+  const m = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  return !!m && Number(m[1]) >= 64 && Number(m[1]) <= 127 && Number(m[2]) <= 255 && Number(m[3]) <= 255;
+}
+
 // Why a server address is refused, or undefined when it may be used. Each
 // request carries the owner token as a bearer header, so the server is
 // reached over https: over plain http the token would be readable on every
 // network between this machine and the server. Plain http is accepted for a
-// server on this machine alone, where the request never leaves it.
+// server on this machine alone, where the request never leaves it, and for
+// one on the tailnet, where WireGuard encrypts it (the Studio at
+// http://100.99.0.102:4100).
 export function insecureServer(url) {
   let parsed;
   try { parsed = new URL(url); } catch { return `${url} is not a URL; name the server as https://HOST`; }
   if (parsed.protocol === "https:") return undefined;
-  if (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname)) return undefined;
-  return `${url} is not https: the developer's token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
+  if (parsed.protocol === "http:" && (LOOPBACK.has(parsed.hostname) || tailnetHost(parsed.hostname))) return undefined;
+  return `${url} is not https: the developer's token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1]) and for one on the tailnet (100.64.0.0/10), which WireGuard encrypts`;
 }
 
 // A session driving Atelier by hand reads the project's AGENTS.md and the
@@ -1175,6 +1184,8 @@ export const landingHome = (gitDir) => landingDir(CACHE, gitDir);
 // token for this actor alone, and the clone is reused when it already exists.
 export async function claimWorkspace(name, id, as, runner) {
   const r = await call("POST", `${I(name, id)}/claim`, {}, as, runner ? { "x-atelier-runner": runner } : {});
+  // The Node server answers with the task's branch (Atelier 2.0, task 5).
+  if (r.workspace?.branch) return claimBranchWorkspace(name, id, as, runner, r);
   const dir = workspacePath(name, id);
   const fresh = !existsSync(join(dir, ".git"));
   if (fresh) {
@@ -1219,6 +1230,61 @@ export async function claimWorkspace(name, id, as, runner) {
     if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
   }
   return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
+}
+
+// A claim on the Node server (Atelier 2.0, task 5; design section 4.5): the
+// workspace is a clone of the task's branch alone (t/N), with one remote,
+// origin, from which the branch the task starts from (the project's, or a
+// plan's) is fetched as the baseline. `atelier.branch` names the task's
+// branch, the one push writes and Atelier reads the head from;
+// `atelier.base-branch` the baseline's. The claim's answer carries the
+// project's prose standard with its text, kept beside the workspace for the
+// briefs a runner writes there (stageProseStandard).
+async function claimBranchWorkspace(name, id, as, runner, r) {
+  const { remote, branch, token } = r.workspace;
+  const base = r.baseline?.defaultBranch ?? r.workspace.defaultBranch;
+  if (!/^(?:t|plan)\/[1-9][0-9]*$/.test(branch) || /^-/.test(base ?? "-")) die(`the server named ${JSON.stringify(branch)} on ${JSON.stringify(base)} as ${id}'s branch; nothing was cloned`);
+  const dir = workspacePath(name, id);
+  const fresh = !existsSync(join(dir, ".git"));
+  if (fresh) {
+    mkdirSync(dir, { recursive: true });
+    git(["clone", "--quiet", "--single-branch", "--branch", branch, remote, dir], { token });
+  }
+  storeWorkspaceToken(dir, remote, token);
+  recordTokenExpiry(dir, r.workspace.expiresAt);
+  installMergeConfig(dir, { git });
+  // One remote, fetching the task's branch alone; the baseline is fetched
+  // into origin's own name for it.
+  if (!fresh) {
+    git(["remote", "set-url", "origin", remote], { cwd: dir });
+    git(["config", "--local", "--replace-all", "remote.origin.fetch", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: dir });
+    git(["fetch", "--quiet", "origin"], { cwd: dir });
+  }
+  git(["fetch", "--quiet", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd: dir });
+  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, "base-branch": base })) {
+    git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
+  }
+  if (!fresh) takeForkHead(dir, id, branch, { remote: "origin", defaultBranch: base });
+  keepProseStandard(dir, r.proseStandard);
+  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
+  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
+  if (preparation?.command) console.log(`Preparation (run in ${JSON.stringify(dir)}): ${preparation.command}`);
+  const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
+  if (!runner && r.commitIdentity) {
+    const refused = identityRefusals(dir, process.env, name);
+    if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
+  }
+  return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
+}
+
+// The prose standard's text the claim carried, kept in the workspace's Git
+// directory (PROSE_TEXT_FILE), where nothing commits it; removed when the
+// claim carried none.
+function keepProseStandard(dir, prose) {
+  const file = join(dir, ".git", PROSE_TEXT_FILE);
+  if (!prose?.path || typeof prose.text !== "string" || !prose.text) { rmSync(file, { force: true }); return; }
+  try { writeFileSync(file, prose.text, { mode: 0o600 }); }
+  catch (error) { console.log(`Warning: the prose standard's text could not be kept in ${file}: ${error.message}`); }
 }
 
 // The environment that makes a commit's author and committer the project's
@@ -1336,11 +1402,13 @@ export function workspaceTokens(dir) {
   return r.status === 0 ? [...r.stdout.matchAll(/Bearer (\S+)/g)].map((m) => m[1]) : [];
 }
 
-export function cleanClone(remote, token, head, baseline, name) {
+// `branch`, on the Node server, is the task's branch (t/N), cloned alone;
+// the baseline's branch is then fetched from the same remote.
+export function cleanClone(remote, token, head, baseline, name, branch = null) {
   mkdirSync(join(CACHE, "checks"), { recursive: true });
   const dir = mkdtempSync(join(CACHE, "checks", "run-"));
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
-  git(["clone", "--quiet", remote, dir], { token });
+  git(["clone", "--quiet", ...(branch ? ["--single-branch", "--branch", branch] : []), remote, dir], { token });
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
   installMergeConfig(dir, { git });
   let changed, againstMain;

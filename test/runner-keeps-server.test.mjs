@@ -182,6 +182,22 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
   } finally { await server.close(); }
 });
 
+
+// The project's branch with one commit, pushed by the owner as atelier init
+// pushes it.
+async function seedMain(root, remote, owner) {
+  const run = promisify(execFile);
+  const seed = join(root, "seed");
+  mkdirSync(seed);
+  const env = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const git = (...args) => run("git", ["-c", "credential.helper=", ...args], { cwd: seed, env });
+  await git("init", "-q", "-b", "main");
+  writeFileSync(join(seed, "a.txt"), "one\n");
+  await git("add", "a.txt");
+  await git("commit", "-q", "-m", "first");
+  await git("-c", `http.extraHeader=Authorization: Bearer ${owner}`, "push", "-q", remote, "HEAD:refs/heads/main");
+}
+
 test("two runners claiming one dispatch at once through the real server: exactly one wins, and the other is told who holds it", async () => {
   const root = scratch();
   const secrets = join(root, "secrets");
@@ -189,20 +205,16 @@ test("two runners claiming one dispatch at once through the real server: exactly
   const OWNER = "atl_00112233445566778899aabbccddeeff";
   writeFileSync(join(secrets, "ATELIER_TOKEN"), OWNER, { mode: 0o600 });
   writeFileSync(join(secrets, "OVERRIDE_SECRET"), "override-secret-4f1c9e", { mode: 0o600 });
-  const artifacts = { create: async () => ({ name: "demo" }), get: async (repo) => ({
-    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-    fork: async () => ({}),
-    log: async () => [{ hash: "a".repeat(40) }],
-    createToken: async (scope) => ({ id: "tok1", plaintext: "art_dummy", scope, expiresAt: iso(Date.now() + 3600e3) }),
-    revokeToken: async () => true, [Symbol.dispose]() {},
-  }) };
-  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets });
   const call = (method, path, body, bearer = OWNER, actor = "owner") => fetch(`${server.url}/api${path}`, {
     method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "x-atelier-actor": actor },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   try {
     assert.equal((await call("PUT", "/projects/demo", {})).status, 200);
+    // A claim on the Node server makes the task's branch from the project's
+    // (task 5), so the owner pushes the project's branch first.
+    await seedMain(root, `${server.url}/git/demo.git`, OWNER);
     const made = await (await call("POST", "/projects/demo/items", { title: "Claimed once", scope: ["docs/**"] })).json();
     const id = (made.item ?? made).id;
     assert.equal((await call("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode" })).status, 200);

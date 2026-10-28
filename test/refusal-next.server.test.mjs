@@ -18,18 +18,6 @@ const OTHER = "codex/gpt-6";
 const dirs = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
-const artifacts = {
-  create: async () => ({ name: "demo" }),
-  get: async (repo) => ({
-    fork: async () => true,
-    log: async () => [{ hash: "c".repeat(40) }],
-    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-    createToken: async (scope) => ({ id: "tok1", plaintext: "art_dummy", scope, expiresAt: new Date(Date.now() + 3600e3).toISOString() }),
-    revokeToken: async () => true,
-    [Symbol.dispose]() {},
-  }),
-};
-
 async function serve() {
   const root = mkdtempSync(join(tmpdir(), "atelier-refusal-next-"));
   dirs.push(root);
@@ -37,7 +25,7 @@ async function serve() {
   mkdirSync(secrets, { mode: 0o700 });
   writeFileSync(join(secrets, "ATELIER_TOKEN"), OWNER, { mode: 0o600 });
   writeFileSync(join(secrets, "OVERRIDE_SECRET"), "override-secret-4f1c9e", { mode: 0o600 });
-  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets });
   const api = async (method, path, body, actor = "owner", extra = {}) => {
     const res = await fetch(`${server.url}/api${path}`, {
       method,
@@ -57,6 +45,18 @@ async function serve() {
     } catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
   };
   assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
+  // A claim on the Node server makes the task's branch from the project's
+  // (task 5), so the project's branch holds a commit first, pushed by the
+  // owner, as atelier init pushes it.
+  const seed = join(root, "seed");
+  mkdirSync(seed);
+  const gitEnv = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const git = (...args) => run("git", ["-c", "credential.helper=", ...args], { cwd: seed, env: gitEnv });
+  await git("init", "-q", "-b", "main");
+  writeFileSync(join(seed, "a.txt"), "one\n");
+  await git("add", "a.txt");
+  await git("commit", "-q", "-m", "first");
+  await git("-c", `http.extraHeader=Authorization: Bearer ${OWNER}`, "push", "-q", `${server.url}/git/demo.git`, "HEAD:refs/heads/main");
   await cli(["login", "--server", server.url]);
   const task = async (title, scope) => (await api("POST", "/projects/demo/items", { title, scope: [scope] })).body.id;
   return { server, api, cli, task };

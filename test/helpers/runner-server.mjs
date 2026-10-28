@@ -24,6 +24,7 @@ const HANDLERS = {
   "GET projects/:project/decisions": empty,
   "GET projects/:project/baseline-head": empty,
   "POST projects/:project/baseline-token": empty,
+  "POST projects/:project/git-token": ({ project, body }) => ({ kind: body?.kind === "task" ? "task" : "read", remote: `http://127.0.0.1/git/${project}.git`, token: "atl_test", expiresAt: new Date(Date.now() + 3600e3).toISOString(), defaultBranch: "main", ...(body?.kind === "task" ? { branch: `t/${String(body.item ?? "t1").slice(1)}` } : {}) }),
   [`GET ${ITEM}`]: empty,
   ...Object.fromEntries(["brief", "job-brief", "diff"].map(verb => [`GET ${ITEM}/${verb}`, empty])),
   ...Object.fromEntries(["logs", "diffs"].map(verb => [`GET ${ITEM}/${verb}/*`, empty])),

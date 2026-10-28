@@ -10,6 +10,14 @@
 
 export const PROSE_STANDARD_MAX = 300;
 
+// The most text of the standard the server keeps (task 5): `atelier init
+// --prose-standard PATH` sends the document's text with its path, and a
+// claim hands it to a builder with no checkout to read the path from.
+export const PROSE_TEXT_MAX = 200_000;
+// Where the CLI keeps that text in a claimed workspace: in its Git directory,
+// which nothing commits, for the copy a brief names (cli/prose-stage.mjs).
+export const PROSE_TEXT_FILE = "atelier-prose-standard.md";
+
 // Where the CLI puts a copy of the standard's text inside a workspace (t676).
 // An agent outside the developer's checkout (a workspace under ~/Library/Caches,
 // a reviewer's throwaway clone, a harness such as opencode that refuses reads

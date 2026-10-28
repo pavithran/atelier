@@ -6,7 +6,7 @@ export default async function diffCommand() {
   const name = project(), id = itemArg(), as = await actor(OWNER);
   const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
   const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
-  const { dir } = cleanClone(ws.remote, ws.token, ws.head, null, name);
+  const { dir } = cleanClone(ws.remote, ws.token, ws.head, null, name, ws.branch ?? null);
   try {
     git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
     const mb = git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir });
