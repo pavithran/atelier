@@ -977,8 +977,23 @@ const NEVER_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREA
 // The only write asked again by itself: a push is idempotent by head, so the
 // same head again changes nothing. Every other write that failed uncertainly
 // stops, and the command's own "already" answer serves a rerun by hand.
-export const REPEATABLE_WRITES = [/^POST \/projects\/[^/]+\/items\/[^/]+\/push$/];
+export const REPEATABLE_WRITES = [
+  /^POST \/projects\/[^/]+\/items\/[^/]+\/push$/,
+  // A check result: the same result posted again is recorded once
+  // (addEvidence in src/ledger.ts), and one for an older head is refused.
+  /^POST \/projects\/[^/]+\/items\/[^/]+\/evidence$/,
+];
 const repeatable = (method, path) => REPEATABLE_WRITES.some((r) => r.test(`${method} ${path}`));
+
+// A failed answer as the CLI prints it: the status, and the server's error
+// and detail when its body says them.
+function serverWords(status, text) {
+  try {
+    const d = JSON.parse(text);
+    if (d && typeof d.error === "string") return `${status} ${d.error}${typeof d.detail === "string" ? `: ${d.detail.slice(0, 300)}` : ""}`;
+  } catch {}
+  return `${status}`;
+}
 
 export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
@@ -1009,7 +1024,8 @@ export async function request(method, path, body, as, extra = {}, signal) {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       text = await res.text();
-      if (res.status === 408 || res.status === 429 || res.status >= 500) failure = { message: `${res.status}`, sent: true };
+      // The server's own words, when it gave any, go with the status.
+      if (res.status === 408 || res.status === 429 || res.status >= 500) failure = { message: serverWords(res.status, text), sent: true };
     } catch (error) {
       failure = { message: timedOut(error) ? `${method} ${path} timed out after ${secondsOf(serverTimeoutMs(body))}` : error.message, sent: !NEVER_SENT.has(error?.cause?.code) };
     }

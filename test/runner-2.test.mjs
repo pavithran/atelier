@@ -1479,16 +1479,18 @@ test("a failed check-result post is retried with a growing wait before the comma
   try {
     const run = (fails) => {
       posts = 0; process.env.T363_FAILS = String(fails);
-      const script = `import("./cli/atelier.mjs").then(async (m) => { const waits = []; const d = await m.postEvidence("/x", { claim: "c" }, "a", async (ms) => { waits.push(ms); }); console.log(JSON.stringify({ waits, d })); })`;
+      // The retry lives in request() since G10; a check result's route is
+      // one it may repeat, and its waits are shortened here.
+      const script = `import("./cli/atelier.mjs").then(async (m) => { const d = await m.postEvidence("/projects/p/items/t1/evidence", { claim: "c" }, "a"); console.log(JSON.stringify({ d })); })`;
       return new Promise((resolve) => {
-        const child = spawn(process.execPath, ["-e", script], { env: { ...process.env, ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ATELIER_TOKEN: "api", ATELIER_ACTOR: "a", ATELIER_CONFIG_DIR: tmpdir() }, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(process.execPath, ["-e", script], { env: { ...process.env, ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ATELIER_TOKEN: "api", ATELIER_ACTOR: "a", ATELIER_CONFIG_DIR: tmpdir(), ATELIER_RETRY_MS: "1,2,4" }, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = ""; child.stdout.on("data", (c) => out += c); child.stderr.on("data", (c) => err += c);
         child.on("close", (code) => resolve({ code, out, err }));
       });
     };
     const three = await run(3);
     assert.equal(three.code, 0, three.err);
-    assert.deepEqual(JSON.parse(three.out).waits, [1000, 2000, 4000]);
+    assert.match(three.err, /trying again in 0.001s \(1 of 3\)[\s\S]*\(3 of 3\)/);
     assert.equal(posts, 4);
     const never = await run(99);
     assert.notEqual(never.code, 0);

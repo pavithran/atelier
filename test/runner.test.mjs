@@ -1325,7 +1325,10 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
       serverFetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
-    await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === `${answer.error}: ${answer.detail}`);
+    // A 5xx on a write may have applied (G10): the server's words come with
+    // that warning; every other refusal is printed as the server gave it.
+    const message = status >= 500 ? `server request failed: ${status} ${answer.error}: ${answer.detail}; may have applied: run atelier show t1` : `${answer.error}: ${answer.detail}`;
+    await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === message);
   }
 });
 

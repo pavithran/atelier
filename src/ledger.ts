@@ -4146,7 +4146,11 @@ export class Ledger extends DurableObject<Env> {
     if (e.head !== item.head) {
       throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
     }
-    this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
+    // The same result posted again (a retry whose first answer was lost) is
+    // recorded once, so the CLI may repeat the post (G10).
+    const json = JSON.stringify(e);
+    if (this.sql.exec(`SELECT 1 FROM evidence WHERE item_id = ? AND json = ? LIMIT 1`, e.itemId, json).toArray().length) return;
+    this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, json);
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
     // A check whose whole log is kept in R2 (t284) names it by reference in the event.
     this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}), ...(e.load !== undefined ? { load: e.load } : {}) }, new Date().toISOString(), proved);

@@ -187,7 +187,11 @@ test("a task's events carry the stage the stage tick shows: checked, reviewed, t
   await G().recordToken(id, AGENT, claim.generation, null, null);
   const head = sha("e");
   await G().observePush(id, head, (await G().item(id)).head ?? null);
-  await G().addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: AGENT, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+  const result = { itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: AGENT, at: new Date().toISOString(), changedPaths: ["src/a.ts"] };
+  await G().addEvidence(result);
+  // The same result posted again (a retried post) is recorded once (G10).
+  await G().addEvidence(result);
+  assert.equal((await G().events(id, 1000)).filter((e) => e.kind === "evidence.observed").length, 1);
   assert.equal((await lastOfIn(G, id, "evidence.observed")).stage, "checked");
 
   await G().addReview({ itemId: id, by: OTHER, head, approve: true, criteria: criteriaOf(await G().item(id)), note: "Fine", at: new Date().toISOString() }, undefined, true);

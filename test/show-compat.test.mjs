@@ -24,12 +24,14 @@ function fixture(t, status = 404, error = "not_found", detail = "no such route",
       if (path === "/api/queue" && ${queue !== null}) return Response.json(${JSON.stringify(queue)});
       if (path === "/api/projects/proj/items/t1/brief") return Response.json(${JSON.stringify(brief)});
       if (path === "/api/projects/proj/items/t1") return Response.json(${JSON.stringify(body ?? { error, detail })}, { status: ${body ? 200 : status} });
-      throw new Error("unexpected route: " + path);
+      // A route this server lacks answers as an old server does; a thrown
+      // error would read as a network failure, which the CLI retries.
+      return Response.json({ error: "not_found", detail: "unexpected route: " + path }, { status: 404 });
     };
   `);
   return (flags = []) => spawnSync(process.execPath, ["--import", preload, cli, "show", "t1", "--project", "proj", "--as", "owner", ...flags], {
     cwd: root, encoding: "utf8",
-    env: { ...process.env, ATELIER_ACTOR: "owner", ATELIER_CONFIG_DIR: root, ATELIER_CACHE: root, ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid" },
+    env: { ...process.env, ATELIER_ACTOR: "owner", ATELIER_CONFIG_DIR: root, ATELIER_CACHE: root, ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", ATELIER_RETRY_MS: "0,0,0" },
   });
 }
 
