@@ -4,8 +4,8 @@
 // server with the real hook (hooks/pre-receive) and pushes with the real git
 // client over HTTP. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
-import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -166,7 +166,7 @@ test("no plaintext token is kept in the grant store or put in the hook's environ
   const hooks = join(root, "recording-hooks");
   mkdirSync(hooks);
   const dump = join(root, "hook-env.json");
-  writeFileSync(join(hooks, "pre-receive"), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'require("fs").writeFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env))'\ncat >/dev/null\n`);
+  writeFileSync(join(hooks, "pre-receive"), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'const fs = require("fs"); fs.writeFileSync(${JSON.stringify(dump)}, JSON.stringify({ ...process.env, POLICY_TEXT: fs.readFileSync(process.env.ATELIER_POLICY, "utf8"), POLICY_MODE: fs.statSync(process.env.ATELIER_POLICY).mode & 0o777 }))'\ncat >/dev/null\n`);
   chmodSync(join(hooks, "pre-receive"), 0o755);
   const recorder = await startServer({ env: "test", dataDir: join(root, "data2"), host: "127.0.0.1", hooksDir: hooks, vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
   try {
@@ -177,6 +177,13 @@ test("no plaintext token is kept in the grant store or put in the hook's environ
     assert.equal(seen.includes(OWNER), false, "the hook saw the token");
     assert.equal(JSON.parse(seen).ATELIER_GRANT, "owner");
     assert.equal(JSON.parse(seen).ATELIER_KIND, "owner");
+    // The scans' policy file and report path are the request's own, and go
+    // with it.
+    const { ATELIER_POLICY, ATELIER_REPORT, POLICY_TEXT, POLICY_MODE } = JSON.parse(seen);
+    assert.deepEqual(JSON.parse(POLICY_TEXT), { clearances: [], private: [] });
+    assert.equal(POLICY_MODE, 0o600);
+    assert.ok(ATELIER_POLICY.startsWith(join(root, "data2", "hook-scans")) && ATELIER_REPORT.startsWith(join(root, "data2", "hook-scans")));
+    assert.deepEqual(readdirSync(join(root, "data2", "hook-scans")), []);
   } finally { await recorder.close(); }
 });
 
@@ -188,4 +195,20 @@ test("a malformed project name is answered 404, and a renamed project's old name
   assert.equal(renamed.status, 200, await renamed.clone().text());
   assert.equal((await infoRefs(read.token, "other", "git-upload-pack")).status, 200);
   assert.equal((await infoRefs(read.token, "other-renamed", "git-upload-pack")).status, 200);
+});
+
+test("a push with no scan policy is refused by the hook before anything is scanned", () => {
+  const hook = join(import.meta.dirname, "..", "hooks", "pre-receive");
+  const env = { ...process.env, ATELIER_KIND: "owner", ATELIER_BRANCH: "main", ATELIER_POLICY: "", ATELIER_REPORT: "" };
+  const r = spawnSync(process.execPath, [hook], { cwd: work, env, input: `${"0".repeat(40)} ${git(work, "rev-parse", "main")} refs/heads/main\n`, encoding: "utf8" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no scan policy from the server; nothing was pushed/);
+});
+
+test("the policy and report directories a stopped server left are swept when the next one starts", async () => {
+  const data = join(root, "data3");
+  mkdirSync(join(data, "hook-scans", "push-old"), { recursive: true });
+  writeFileSync(join(data, "hook-scans", "push-old", "policy.json"), "{}");
+  const s = await startServer({ env: "test", dataDir: data, host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  try { assert.equal(existsSync(join(data, "hook-scans", "push-old")), false); } finally { await s.close(); }
 });

@@ -4,9 +4,13 @@
 // checked before Git sees a byte: a request without a live grant for this
 // project is answered 401 at info/refs, before any pack is read, and a
 // read grant asking to push is answered 403. The backend and the hook get a
-// minimal environment: the grant's id and binding, never its token.
+// minimal environment: the grant's id and binding, never its token. A push
+// also gets the paths of the policy the server wrote for its hook and of the
+// report the hook writes back (src/git/policy.mjs), which the server records
+// once the push ends.
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
+import { openScan } from "./policy.mjs";
 
 const ROUTE = /^\/git\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
 export const GIT_PREFIX = "/git/";
@@ -25,8 +29,9 @@ export function tokenOf(header) {
 }
 
 // The environment `git http-backend`, `git receive-pack` and the hook run
-// with. Nothing from the server's own environment passes but PATH.
-export function backendEnv({ reposDir, key, rest, method, query, contentType, encoding, protocol, grant }) {
+// with. Nothing from the server's own environment passes but PATH. `scan`
+// is the push's ATELIER_POLICY and ATELIER_REPORT.
+export function backendEnv({ reposDir, key, rest, method, query, contentType, encoding, protocol, grant, scan = {} }) {
   const env = {
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`,
     HOME: reposDir,
@@ -44,6 +49,7 @@ export function backendEnv({ reposDir, key, rest, method, query, contentType, en
     ATELIER_ACTOR: grant.actor,
     ATELIER_BRANCH: grant.branch,
     ATELIER_ACCEPTED: grant.accepted ?? "",
+    ...scan,
   };
   if (contentType) env.CONTENT_TYPE = contentType;
   if (encoding) env.HTTP_CONTENT_ENCODING = encoding;
@@ -62,8 +68,10 @@ function deny(res, status, text) {
 // returns false for any other path. `authorize(token, project)` resolves to
 // the grant ({ id, project, key, kind, task, actor, branch, accepted }) or
 // null; `ensure(grant)` makes the repository if it is missing and answers
-// its key.
-export async function gitRequest(req, res, { reposDir, authorize, ensure }) {
+// its key. `scans`, for a push: `dir`, where each push's policy and report
+// are written, `policy(grant)`, the policy, and `record(grant, report)`,
+// called with the hook's report before the answer ends.
+export async function gitRequest(req, res, { reposDir, authorize, ensure, scans }) {
   const url = new URL(req.url ?? "/", "http://git.local");
   const m = ROUTE.exec(url.pathname);
   if (!m) return false;
@@ -76,8 +84,9 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure }) {
   if (!grant) { req.resume(); deny(res, 401, `atelier: no live Git credential for ${project}`); return true; }
   if (service === "git-receive-pack" && grant.kind === "read") { req.resume(); deny(res, 403, "atelier: this credential reads only"); return true; }
   const key = await ensure(grant);
+  const scan = rest === "git-receive-pack" && scans ? openScan(scans.dir, await scans.policy(grant)) : null;
   const child = spawn("git", ["http-backend"], {
-    env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant }),
+    env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant, scan: scan?.env }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   req.pipe(child.stdin);
@@ -109,7 +118,12 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure }) {
       const body = head.subarray(end + skip);
       if (body.length) res.write(body);
     });
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
+      if (scan) {
+        const report = scan.report();
+        scan.close();
+        if (report) await scans.record(grant, report).catch((error) => console.error(`the secret scan of a push to ${project} (${grant.kind} ${grant.task ?? ""}) was not recorded: ${error.message}`));
+      }
       if (!started) deny(res, 500, "atelier: the Git backend gave no answer");
       else res.end();
       if (code !== 0 && errors) console.error(`git ${service} for ${project} (${grant.kind} ${grant.task ?? ""}) ended ${code}: ${errors.trim().slice(0, 500)}`);

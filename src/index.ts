@@ -3228,7 +3228,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A missing summary is fine; one that is not text or has none left after cleaning is refused.
       const summary = body.summary === undefined ? undefined : cleanSummary(body.summary);
       if (body.summary !== undefined && !summary) throw new RuleError("bad_summary", "a summary must be text with something in it", 400);
-      return json(await L.submit(id, actor, summary, c.url.origin, !!c.token));
+      if (body.head !== undefined && (typeof body.head !== "string" || !/^[a-f0-9]{40,64}$/.test(body.head))) throw new RuleError("bad_head", "head must be the full commit hash the workspace holds", 400);
+      return json(await L.submit(id, actor, summary, c.url.origin, !!c.token, body.head as string | undefined));
     // A change of owner reads the holder's write token id, is checked, then
     // that token is revoked, and only then is the change made. A change that
     // would be refused revokes nothing, and one whose token cannot be revoked
@@ -3247,6 +3248,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "release": {
       const note = String(body.note ?? "");
+      // Released by this actor already and held by no one now: the repeat of
+      // a release whose answer was lost. Held by someone else, it is refused below.
+      const repeated = await L.repeatedRelease(id, actor, note);
+      if (repeated) return json({ ...repeated, already: true });
       const oldToken = await L.tokenId(id);
       await L.checkRelease(id, actor, note);
       const before = await L.item(id);
@@ -3379,6 +3384,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const direction = itemDirection(c, "abandon", id, ref.name, env);
       if (body.deliveredBy !== undefined && (typeof body.deliveredBy !== "string" || !/^t\d+$/.test(body.deliveredBy))) throw new RuleError("bad_delivered_by", "deliveredBy must be a task id such as t5", 400);
       const deliveredBy = body.deliveredBy as string | undefined;
+      // A rerun of the abandon that stands (same deliveredBy), after the checks above.
+      const repeated = await L.repeatedAbandon(id, actor, note, deliveredBy);
+      if (repeated) return json({ ...repeated, already: true });
       const oldToken = await L.tokenId(id);
       await L.checkAbandon(id, actor, note, deliveredBy);
       const before = await L.item(id);

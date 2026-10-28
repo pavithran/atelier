@@ -14,7 +14,8 @@ export default async function abandonCommand() {
   await actor(OWNER);
   if (direction.quote !== undefined && tokenActor) die("an agent's own token cannot carry the developer's words: --quote goes with the developer token");
   const { item: before } = await call("GET", I(name, id), undefined, OWNER);
-  await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "", ...(typeof args["delivered-by"] === "string" ? { deliveredBy: args["delivered-by"] } : {}), ...direction }, OWNER, actingHeaders());
+  const done = await call("POST", `${I(name, id)}/abandon`, { note: args.note ?? "", ...(typeof args["delivered-by"] === "string" ? { deliveredBy: args["delivered-by"] } : {}), ...direction }, OWNER, actingHeaders());
+  if (done.already) return console.log(`${id} is already abandoned; nothing changed.`);
   const said = direction.quote !== undefined ? ` Recorded on the developer's words, relayed by ${actingHeaders()["x-atelier-acting"]}.` : "";
   console.log(`${before.owner ? `${id} abandoned; ${before.owner}'s write token is revoked.` : `${id} abandoned; nobody held it, so no write token was revoked.`}${said}`);
 }

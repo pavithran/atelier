@@ -16,7 +16,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type LedgerBookmark, type TaskStage } from "./rules";
+import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, eventStage, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type LedgerBookmark, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -58,6 +58,7 @@ import type { RunReport } from "./models/reliability.ts";
 import { sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
 import { matchServed, SERVED, SERVED_LIMIT, servedActor, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
+import { privatePath } from "./rules.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, standingRoute, type PartRoute } from "./plans/route.ts";
@@ -139,6 +140,8 @@ export interface DeveloperBranch {
 export interface LedgerEvent {
   seq: number;
   proved?: true;
+  // The task's stage after the change this event records (eventStage).
+  stage?: string;
   itemId: string | null;
   at: string;
   actor: string;
@@ -919,6 +922,9 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS developer_branches (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
+    // The task's stage after the change the event records (eventStage); null
+    // for an event of no task and for one written before this column.
+    if (!eventColumns.includes("stage")) this.sql.exec(`ALTER TABLE events ADD COLUMN stage TEXT`);
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
@@ -3287,7 +3293,7 @@ export class Ledger extends DurableObject<Env> {
       this.dropToken(id, token);
       this.dropRunnerJobs(id);
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
-      this.log(id, actor, "item.released", { from: item.owner, note: TAKEN_BACK }, d.at);
+      this.log(id, actor, "item.released", { from: item.owner, by: actor, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
@@ -3397,10 +3403,13 @@ export class Ledger extends DurableObject<Env> {
     return !!item.owner && ["claimed", "submitted", "accepted"].includes(item.state);
   }
 
-  undispatch(id: string, actor: string): Item {
+  undispatch(id: string, actor: string): Item & { already?: true } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a dispatch", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    // A rerun: no dispatch stands and the last word on it was this actor's withdrawal.
+    const last = this.lastEvent(id, ["item.dispatched", "item.undispatched"]);
+    if (!item.dispatch && last?.kind === "item.undispatched" && last.actor === actor) return { ...item, already: true };
     if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`);
     // A claimed or submitted task keeps its dispatch, and waits in the queue
     // again if it is released; an accepted, merged or abandoned one never does.
@@ -3991,6 +4000,11 @@ export class Ledger extends DurableObject<Env> {
     }, now, proved);
     this.retainApprovals(item, observedHead, this.refreshInFlight(id) ? null : retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
     this.afterPlanChange(id);
+    // On the Node server the pre-receive hook scanned this head before the
+    // ref moved (hookScanned); what it found is the push's scan record, so
+    // nothing is left pending.
+    const found = scan ? this.takeHookScan(id, observedHead) : null;
+    if (found && found.head === observedHead) return this.setSecret(id, "atelier/hook", observedHead, found.hits, found.unscanned);
     return this.item(id);
   }
 
@@ -4362,13 +4376,17 @@ export class Ledger extends DurableObject<Env> {
 
   // The summary is recorded in the event and nowhere else; a later submit
   // without one leaves the new revision with none.
-  submit(id: string, actor: string, summary?: string, origin?: string, proved = false): Item {
+  submit(id: string, actor: string, summary?: string, origin?: string, proved = false, head?: string): Item & { already?: true } {
     const item = this.item(id);
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
     // Cleaned first: a summary over its limit is refused before anything is written.
     const text = cleanSummary(summary);
+    // A rerun of the submit that already stands: the caller names the head it
+    // submits, and it is the one submitted and still the task's head. A newer
+    // head, or none named, is a submit like any other.
+    if (head !== undefined && head === item.head && item.state === "submitted" && this.lastEvent(id, ["item.submitted"])?.data.head === head) return { ...item, already: true };
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
     this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
@@ -4476,9 +4494,13 @@ export class Ledger extends DurableObject<Env> {
   // result for any other head is dropped, and the newer head's own pending
   // scan stands. The scan pending for `head` is cleared in the same write as
   // the flags, whether the findings changed or not.
-  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[] = []): Item {
+  //
+  // `refused` records the findings of a push the hook refused (hookScanned),
+  // whose head the item never records: the flags stand so the owner can
+  // clear them, and the next push the hook lets through replaces them.
+  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[] = [], refused = false): Item {
     const item = this.item(id);
-    if (item.head !== head) return item; // a newer push superseded this scan
+    if (!refused && item.head !== head) return item; // a newer push superseded this scan
     const at = new Date().toISOString();
     const clearances = item.secretClearances ?? [];
     const cleared = (file: string, fingerprint: string) => !!fingerprint && clearances.some((c) => c.file === file && c.fingerprint === fingerprint);
@@ -4510,12 +4532,70 @@ export class Ledger extends DurableObject<Env> {
     const standing = flags.filter((f) => !f.cleared), held = flags.filter((f) => f.cleared);
     this.log(id, actor, "secret.flagged", {
       head,
+      ...(refused ? { refused: true } : {}),
       hits: standing.filter((f) => !f.unscanned).map(where),
       ...(standing.some((f) => f.unscanned) ? { unscanned: standing.filter((f) => f.unscanned).map((f) => f.file) } : {}),
       // What a clearance recorded before matched: found again, not blocking.
       ...(held.length ? { cleared: held.map(where) } : {}),
     }, at);
     return this.item(id);
+  }
+
+  // What the pre-receive hook found in a push to the item's branch (Atelier
+  // 2.0, design section 4.4, rule 5): the hits and unscanned paths of every
+  // commit the branch adds, for `head`. The hook runs in its own process and
+  // cannot reach the Ledger, so the server records its report here once the
+  // push ends. A push it let through is kept and becomes the scan record when
+  // recordPush records that head; a push it refused is recorded on the item
+  // now, so the owner can clear it. Only file, line, fingerprint, commit and
+  // reason arrive, never a value.
+  hookScanned(id: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[], refused: boolean): Item {
+    if (!/^[0-9a-f]{40,64}$/.test(head)) throw new RuleError("bad_head", "a hook scan names the full commit it scanned", 400);
+    const item = this.item(id);
+    // A push that ends after its task closed leaves nothing behind.
+    if (item.state === "merged" || item.state === "abandoned") return item;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `hook-scan:${id}:${head}`, JSON.stringify({ head, hits, unscanned }));
+    if (refused) return this.setSecret(id, "atelier/hook", head, hits, unscanned, true);
+    return this.item(id);
+  }
+
+  // The report hookScanned kept for the item's `head`, or null. Each head has
+  // its own slot, so two pushes to one task do not replace each other's.
+  hookScan(id: string, head: string): { head: string; hits: SecretHit[]; unscanned: UnscannedFile[] } | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `hook-scan:${id}:${head}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  // The report for `head`, which recordPush consumes: the slot is emptied.
+  private takeHookScan(id: string, head: string) {
+    const found = this.hookScan(id, head);
+    if (found) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `hook-scan:${id}:${head}`);
+    return found;
+  }
+
+  // Every report kept for the item, once it merges or is abandoned.
+  private dropHookScans(id: string): void {
+    this.sql.exec(`DELETE FROM meta WHERE key LIKE ?`, `hook-scan:${id}:%`);
+  }
+
+  // The project's private paths (cli/private-guard.mjs): files that never
+  // leave the developer's Macs, which the pre-receive hook refuses in any
+  // pushed commit (design section 4.4, rule 6). Setting them replaces the
+  // list; each is checked as the list in iCloud is.
+  privatePaths(): string[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'private-paths'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : [];
+  }
+  setPrivatePaths(paths: unknown): string[] {
+    if (!Array.isArray(paths)) throw new RuleError("bad_private", "the private paths are a list", 400);
+    const kept: string[] = [];
+    for (const p of paths) {
+      const r = privatePath(String(p));
+      if ("error" in r) throw new RuleError("bad_private", r.error, 400);
+      if (!kept.includes(r.path)) kept.push(r.path);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('private-paths', ?)`, JSON.stringify(kept));
+    return kept;
   }
 
   // The project owner clears the standing secret flags, recording the reason:
@@ -4574,16 +4654,19 @@ export class Ledger extends DurableObject<Env> {
     return forkReplacements(events, id) >= FORK_REPLACEMENTS;
   }
 
+  // A task closed as delivered by another names a task that has merged.
+  private assertDelivered(id: string, deliveredBy?: string): void {
+    if (deliveredBy === undefined) return;
+    if (deliveredBy === id) throw new RuleError("bad_delivered_by", `${id} cannot be delivered by itself`, 400);
+    const by = this.item(deliveredBy);
+    if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409);
+  }
+
   private abandonAllowed(id: string, actor: string, note: string, deliveredBy?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403);
     assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
-    // A task closed as delivered by another names a task that has merged.
-    if (deliveredBy !== undefined) {
-      if (deliveredBy === id) throw new RuleError("bad_delivered_by", `${id} cannot be delivered by itself`, 400);
-      const by = this.item(deliveredBy);
-      if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409);
-    }
+    this.assertDelivered(id, deliveredBy);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     // A plan's parts go with it; stopping the plan closes them in one step.
     const open = item.kind === "plan" ? this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned") : [];
@@ -4632,7 +4715,7 @@ export class Ledger extends DurableObject<Env> {
       return this.item(id);
     }
     this.update(id, { owner: null, state: "open" }, at);
-    this.log(id, actor, "item.released", { from: item.owner, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
+    this.log(id, actor, "item.released", { from: item.owner, by: actor, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -4811,6 +4894,7 @@ export class Ledger extends DurableObject<Env> {
     if (run && (run.after || !["reserved", "complete"].includes(run.state))) throw new RuleError("post_merge_blocked", "a recorded merge cannot release its post-merge reservation", 409);
     if (run?.state === "reserved") { run.state = "complete"; this.savePostMerge(run, actor, "cancelled"); }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
+    this.log(id, actor, "landing.cancelled", {}, new Date().toISOString());
     return this.item(id);
   }
 
@@ -4865,6 +4949,7 @@ export class Ledger extends DurableObject<Env> {
       this.savePostMerge(run, actor, "reserved");
     }
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify(landing));
+    if (!landingRow) this.log(id, actor, "landing.begun", { head, before: landing.before ?? null }, new Date().toISOString());
     return item;
   }
 
@@ -5047,11 +5132,12 @@ export class Ledger extends DurableObject<Env> {
     const rows = this.projectLandingQueue();
     const mine = rows.findIndex((w) => w.item === id);
     if (leave || item.state === "merged" || item.state === "abandoned") {
-      if (mine >= 0) rows.splice(mine, 1);
+      if (mine >= 0) { rows.splice(mine, 1); this.log(id, actor, "landing.dequeued", { reason: leave ? "left" : item.state }, at); }
     } else if (mine >= 0) {
       rows[mine] = { ...rows[mine], renewedAt: at };
     } else {
       rows.push({ item: id, holder: actor, at, renewedAt: at });
+      this.log(id, actor, "landing.queued", { position: rows.length }, at);
     }
     this.setProjectLandingQueue(rows);
     await this.schedulePrereviews();
@@ -5106,6 +5192,8 @@ export class Ledger extends DurableObject<Env> {
     // lease is written as before.
     this.setProjectLandingQueue(rows.filter((w) => w.item !== id));
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
+    // A take is an event; a landing resuming its own lease is not a new one.
+    if (held?.item !== id) this.log(id, actor, "landing.leased", { ...(expired ? { replaced: expired.item, replacedHolder: expired.holder } : {}) }, at);
     // The task's own pre-review, if one is still pending, no longer controls
     // its place: the landing's checks and review go on without waiting.
     this.detachPrereviews(id, at);
@@ -5185,6 +5273,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409);
     }
     this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
+    if (held) this.log(id, actor, "landing.released", { holder: held.holder, since: held.at }, new Date().toISOString());
     this.dispatchWaiting();
     return { held: !!held, lease: held };
   }
@@ -5829,6 +5918,7 @@ export class Ledger extends DurableObject<Env> {
     if (!post) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
+    this.dropHookScans(id);
     // A merge in fast mode (t300) lands on the checks alone; the independent
     // review is owed after it, and `fast` marks the event so that review may
     // be same-family and a rejection files a fix task (mergedFast).
@@ -5897,6 +5987,7 @@ export class Ledger extends DurableObject<Env> {
     // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
+    this.dropHookScans(id);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}), ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {}) }, at);
     this.afterPlanChange(id);
@@ -5921,6 +6012,34 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}), ...(link ? { contradicts: link } : {}) }, at);
     return item;
+  }
+
+  // The task's latest event of the kinds named, or undefined.
+  private lastEvent(id: string, kinds: string[]): LedgerEvent | undefined {
+    const row = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT 1`, id, ...kinds).toArray()[0];
+    return row ? eventOf(row) : undefined;
+  }
+
+  // A rerun of a release that already stands, for the route to answer before
+  // it revokes anything: the task, or null when the call is new. It is a
+  // rerun only for the one who made the last release, and only while nobody
+  // holds the task; anything else takes the normal path.
+  repeatedRelease(id: string, actor: string, note = ""): Item | null {
+    // The repeat is checked as the release itself would check its note.
+    assertLength(note, NOTE_MAX, "the release note");
+    const item = this.item(id);
+    return item.state === "open" && !item.owner && this.lastEvent(id, ["item.released"])?.data.by === actor ? item : null;
+  }
+
+  // A rerun of an abandon, asked after the request's own checks (the owner,
+  // the note, deliveredBy): the task was abandoned with the same deliveredBy.
+  // One abandoned with another is not a rerun and the normal path refuses it.
+  repeatedAbandon(id: string, actor: string, note: string, deliveredBy?: string): Item | null {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403);
+    assertLength(note, NOTE_MAX, "the abandonment note");
+    this.assertDelivered(id, deliveredBy);
+    const item = this.item(id);
+    return item.state === "abandoned" && this.lastEvent(id, ["item.abandoned"])?.data.deliveredBy === deliveredBy ? item : null;
   }
 
   private eventAt(seq: number): LedgerEvent | undefined {
@@ -6105,6 +6224,12 @@ export class Ledger extends DurableObject<Env> {
   // owner's switch writes, and each switch is a standing decision too: fast
   // mode records one with the owner's reason, and the switch back to full
   // withdraws it, so every review brief says while it stands.
+  // Whether the project is in fast mode, read without the project record.
+  private fastMode(): boolean {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode'`).toArray()[0];
+    return projectMode(row ? JSON.parse(row.value as string) : null).mode === "fast";
+  }
+
   mode(): ProjectMode & { line: string } {
     this.project();
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode'`).toArray()[0];
@@ -6224,6 +6349,7 @@ export class Ledger extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       this.update(id, { head: receipt.commit, accepted_head: receipt.commit }, at);
       this.update(id, { state: "merged", owner: null }, at);
+      this.dropHookScans(id);
       this.log(id, actor, "item.landed_fast", { ...receipt }, at);
       this.log(id, actor, "item.merged", { mergeCommit: receipt.mergeCommit, head: receipt.commit, observedOnBaseline: false, fast: true }, at);
     });
@@ -6305,6 +6431,7 @@ export class Ledger extends DurableObject<Env> {
       this.assertNoClaimInFlight(id);
       this.dropToken(id, workspace.token);
       this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
+      this.dropHookScans(id);
       this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
       // GET /api/version reads main's head from the ledger (t142). The first
       // record made while none is stored takes the baseline tip read while
@@ -6412,7 +6539,7 @@ export class Ledger extends DurableObject<Env> {
     return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
   }
 
-  approveAction(body: Record<string, unknown>, actor: string, acting: string | null = null): ApprovalView {
+  approveAction(body: Record<string, unknown>, actor: string, acting: string | null = null): ApprovalView & { already?: true } {
     this.project();
     return approveAction(this.actionStore, actor, body, new Date().toISOString(), acting);
   }
@@ -7151,6 +7278,7 @@ export class Ledger extends DurableObject<Env> {
       for (const t of [...targets].reverse()) {
         if (tokens) this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, t.id);
         this.update(t.id, { state: "abandoned", owner: null }, at);
+        this.dropHookScans(t.id);
         this.log(t.id, actor, "item.abandoned", { note, plan: id }, at);
       }
       this.log(id, actor, "plan.stopped", { note, closed: targets.map((t) => t.id) }, at);
@@ -7507,6 +7635,7 @@ export class Ledger extends DurableObject<Env> {
       record.blocked = null;
       this.savePlanRecord(id, record);
       this.update(id, { state: "merged", owner: null }, at);
+      this.dropHookScans(id);
       this.log(id, ORCHESTRATOR, "plan.completed", { approval: approval.hash, parts: Object.fromEntries(parts.map((p) => [p.id, p.state])) }, at);
       return;
     }
@@ -8699,7 +8828,7 @@ export class Ledger extends DurableObject<Env> {
   // empty commit (a new head) let it go. A claimed request is being served
   // and is refused: its verdict, or its claim lapsing, ends it. `request`
   // names one; without it, the gate's newest live request at the head.
-  withdrawReviewRequest(itemId: string, actor: string, reason: unknown, request?: unknown, proved = false): { request: number; head: string; reviewer: string | null; reason: string } {
+  withdrawReviewRequest(itemId: string, actor: string, reason: unknown, request?: unknown, proved = false): { request: number; head: string; reviewer: string | null; reason: string; already?: true } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a review request", 403);
     if (reason !== undefined && typeof reason !== "string") throw new RuleError("bad_reason", "a reason is text", 400);
     const why = (reason ?? "").replace(/\s+/g, " ").trim();
@@ -8716,6 +8845,8 @@ export class Ledger extends DurableObject<Env> {
     const d = JSON.parse(live.dispatch as string) as Dispatch;
     const reviewer = d.agent && d.model ? `${d.agent}/${d.model}` : null;
     const head = live.head as string;
+    // The request this call names was withdrawn already: a rerun.
+    if (live.state === "withdrawn") return { request: live.id as number, head, reviewer, reason: why, already: true };
     if (live.state === "claimed") throw new RuleError("review_claimed", `the review of ${itemId} at ${head.slice(0, 8)} (request ${live.id}) is claimed by ${live.claimedBy ?? reviewer}, so it is being served and is not withdrawn; wait for its verdict, or let its claim lapse`, 409);
     if (live.state !== "open") throw new RuleError("no_request", `review request ${live.id} of ${itemId} is ${live.state}, so there is nothing to withdraw`, 409);
     const at = new Date().toISOString();
@@ -10482,15 +10613,36 @@ export class Ledger extends DurableObject<Env> {
     return { counts, record: mark.record };
   }
 
+  // The stage the stage tick would show for the task now: stageOf with the
+  // same facts, so `wait` and `situation` read what the tick reads. A closed
+  // task needs none.
+  private stageNow(id: string): string | null {
+    const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
+    if (!row) return null;
+    const item = toItem(row);
+    // The tick shows no stage for a plan, so its events carry none.
+    if (item.kind === "plan") return null;
+    if (item.state === "merged" || item.state === "integrated" || item.state === "abandoned" || item.state === "blocked") return eventStage(item);
+    const events = this.events(id, Number.MAX_SAFE_INTEGER);
+    const criteria = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, id).one();
+    return eventStage(item, {
+      events, ready: standingFastReady(events), agreed: (criteria.n as number) > 0 && (item.accept?.length ?? 0) > 0,
+      policy: this.project().policy, evidence: this.evidenceFor(id), reviews: this.reviewsFor(id), owner: this.owner, fast: this.fastMode(),
+    });
+  }
+
   private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
     // An acting model recorded since names are converted where typed is an
     // exact pool id, marked so: the judgement record reads it as it is and
     // only an unmarked one, from before, through the aliases (canonicalModel;
     // gpt-6-astra's ninth review of t622, finding 3).
     if (typeof data.acting === "string" && (ACTING_EVENTS as readonly string[]).includes(kind)) data = { ...data, actingExact: true };
+    // The stage is read from the item as it stands, so a caller logs after it
+    // has changed the item.
+    const stage = itemId === null ? null : this.stageNow(itemId);
     const seq = Number(this.sql.exec(
-      `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq`,
-      itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null,
+      `INSERT INTO events (item_id, at, actor, kind, data, proved, stage) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
+      itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null, stage,
     ).one().seq);
     if (itemId !== null && ACTOR_EVENT_KINDS.includes(kind)) {
       const mark = Number(this.runnerMeta<number>("item-actors-seq") ?? 0);
@@ -10521,6 +10673,7 @@ function toEvent(r: Row): LedgerEvent {
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
+    ...(typeof r.stage === "string" ? { stage: r.stage } : {}),
     actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
   };
 }
@@ -10530,6 +10683,7 @@ function eventOf(r: Row): LedgerEvent {
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
+    ...(typeof r.stage === "string" ? { stage: r.stage } : {}),
     actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
   };
 }
