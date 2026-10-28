@@ -173,6 +173,10 @@ test("blobs and files come back as bytes; a missing or non-blob object is null",
   assert.equal(await repo.readFile({ ref: "main", path: "nope.txt" }), null);
   assert.equal(await repo.readFile({ ref: "main", path: "src" }), null, "a directory is no file");
   assert.equal(await repo.readFile({ ref: "nope", path: "src/a.txt" }), null);
+  // A missing path with spaces, whose echo looks like a header, answers
+  // null and leaves the reader answering.
+  assert.equal(await repo.readFile({ ref: "main", path: "absent blob 123" }), null);
+  assert.equal(await (await repo.readFile({ ref: "main", path: "src/a.txt" })).text(), "one\nTWO\nTHREE\n");
   assert.equal(await code(repo.readFile({ ref: "", path: "x" })), "INVALID_INPUT");
 });
 

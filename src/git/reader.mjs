@@ -27,6 +27,11 @@ function checkHash(hash) {
 
 // One `git cat-file --batch` process. Requests are answered in order, so they
 // are queued; a missing object answers null.
+// The most a single object read buffers; a larger one fails with
+// MEMORY_LIMIT, as Artifacts declares.
+export const OBJECT_MAX = 64 * 1024 * 1024;
+const HEADER = /^([0-9a-f]{40}|[0-9a-f]{64}) (blob|tree|commit|tag) (\d+)$/;
+
 class Batch {
   #proc;
   #buf = Buffer.alloc(0);
@@ -36,7 +41,7 @@ class Batch {
 
   constructor(dir) {
     this.#proc = spawn("git", ["cat-file", "--batch"], { cwd: dir, stdio: ["pipe", "pipe", "ignore"] });
-    this.#proc.stdout.on("data", (d) => { this.#buf = Buffer.concat([this.#buf, d]); this.#settle(); });
+    this.#proc.stdout.on("data", (d) => { this.#buf = this.#buf.length ? Buffer.concat([this.#buf, d]) : d; this.#settle(); });
     const ended = (err) => { this.#end ??= err ?? new Error("git cat-file ended"); this.#settle(); };
     this.#proc.on("error", ended);
     this.#proc.on("close", () => ended());
@@ -67,11 +72,18 @@ class Batch {
     }
   }
 
+  // n bytes, gathered as chunks and joined once.
   async #bytes(n) {
-    while (this.#buf.length < n) await this.#more();
-    const out = this.#buf.subarray(0, n);
-    this.#buf = this.#buf.subarray(n);
-    return out;
+    const chunks = [];
+    let have = 0;
+    while (have < n) {
+      if (!this.#buf.length) await this.#more();
+      const take = this.#buf.subarray(0, n - have);
+      chunks.push(take);
+      have += take.length;
+      this.#buf = this.#buf.subarray(take.length);
+    }
+    return Buffer.concat(chunks, n);
   }
 
   // { type, bytes } for an object or an expression `REV:PATH`, null if missing.
@@ -79,10 +91,21 @@ class Batch {
     const run = async () => {
       if (this.#end) throw this.#end;
       this.#proc.stdin.write(`${spec}\n`);
-      const parts = (await this.#line()).split(" ");
-      if (parts.length < 3) return null;
-      const bytes = await this.#bytes(Number(parts[2]) + 1);
-      return { type: parts[1], oid: parts[0], bytes: bytes.subarray(0, bytes.length - 1) };
+      // A missing object answers "SPEC missing" (or "ambiguous"), and SPEC
+      // may hold spaces; only a well-formed header is followed by a body.
+      const line = await this.#line();
+      const m = HEADER.exec(line);
+      if (!m) {
+        if (line.endsWith(" missing") || line.endsWith(" ambiguous")) return null;
+        throw artifactsError("INTERNAL_ERROR", `git cat-file answered ${line.slice(0, 80)}`);
+      }
+      const size = Number(m[3]);
+      if (size > OBJECT_MAX) {
+        await this.#bytes(size + 1);
+        throw artifactsError("MEMORY_LIMIT", `object ${m[1].slice(0, 12)} is ${size} bytes, over the ${OBJECT_MAX} read limit`);
+      }
+      const bytes = await this.#bytes(size + 1);
+      return { type: m[2], oid: m[1], bytes: bytes.subarray(0, size) };
     };
     const next = this.#chain.then(run, run);
     this.#chain = next.catch(() => {});

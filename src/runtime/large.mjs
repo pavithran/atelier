@@ -2,7 +2,7 @@
 // src/large.ts makes (put and get of a text under a key), kept as files under
 // DIR, mode 600. A key's segments are encoded, so no key names a file outside
 // DIR.
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const segment = (s) => encodeURIComponent(s).replace(/\./g, "%2E");
@@ -33,7 +33,6 @@ export class LocalLarge {
     const path = this.#path(key);
     let bytes;
     try { bytes = await readFile(path); } catch (err) { if (err.code === "ENOENT") return null; throw err; }
-    const size = (await stat(path)).size;
-    return { key, size, text: async () => bytes.toString("utf8"), arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) };
+    return { key, size: bytes.length, text: async () => bytes.toString("utf8"), arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) };
   }
 }
