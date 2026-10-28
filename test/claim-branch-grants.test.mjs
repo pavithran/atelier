@@ -283,7 +283,13 @@ test("a change that ends a grant waits for the push in flight on its task, and t
   assert.equal(await infoRefs(grant), 401);
 });
 
-test("a change made to the Ledger without the lock is still caught at hook time: the push is refused and the ref stays", async () => {
+test("a change made to the Ledger without the lock is still caught at hook time: the push is refused and the ref stays", async (t) => {
+  // Every Ledger stub call that ends a grant takes the lock; with the
+  // runtime's wrapper taken away, the change lands mid-push, as one made
+  // inside the Ledger itself would, and only the hook's check stands.
+  const around = server.namespace.around;
+  server.namespace.around = null;
+  t.after(() => { server.namespace.around = around; });
   for (const [what, stop] of [
     ["handed over", async (id) => { await L().handoff(id, BUILDER, OTHER, "behind the route", false, await L().tokenId(id)); }],
     ["abandoned", async (id) => { await L().abandon(id, "owner", "behind the route", await L().tokenId(id)); }],

@@ -7,7 +7,8 @@
 // the real hook, wrapped here to pause once the hook has passed. Every
 // credential here is a dummy.
 import { strict as assert } from "node:assert";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,6 +114,69 @@ test("a handoff requested while a push that passed its hook is paused completes 
   const late = await tryGit(dir, ...bearer(grant), "push", remote(), `HEAD:refs/heads/t/${id.slice(1)}`);
   assert.notEqual(late.code, 0);
   assert.equal(await tipOf(id), head);
+});
+
+test("a handoff from the task page while a push that passed its hook is paused completes only after the push ends", async () => {
+  const id = await newTask("Paused push, page handoff");
+  const claimed = await api("POST", `/projects/demo/items/${id}/claim`, {}, agentToken, BUILDER);
+  assert.equal(claimed.status, 200);
+  const grant = claimed.body.workspace.token;
+  const dir = await workspace(id, "page.txt");
+  const head = await git(dir, "rev-parse", "HEAD");
+  rmSync(GO, { force: true });
+  rmSync(PASSED, { force: true });
+  const pushing = tryGit(dir, ...bearer(grant), "push", remote(), `HEAD:refs/heads/t/${id.slice(1)}`);
+  await until(() => existsSync(PASSED));
+  const shown = (await api("GET", `/projects/demo/items/${id}`)).body.item.head ?? "";
+  let handed = null;
+  const page = fetch(`${base}/ui/demo/${id}/handoff`, {
+    method: "POST", redirect: "manual",
+    headers: { authorization: `Bearer ${OWNER}`, origin: server.settings.PUBLIC_ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ to: OTHER, note: "from the page, mid-push", head: shown }).toString(),
+  }).then((r) => { handed = Date.now(); return r; });
+  await wait(600);
+  assert.equal(handed, null, "the page's handoff waits for the push");
+  const released = Date.now();
+  writeFileSync(GO, "");
+  assert.equal((await pushing).code, 0);
+  const answered = await page;
+  assert.ok(answered.status < 400, `${answered.status}: ${await answered.text()}`);
+  assert.ok(handed >= released);
+  const item = (await api("GET", `/projects/demo/items/${id}`)).body.item;
+  assert.equal(item.owner, OTHER, "the page handed it over");
+  assert.equal(await tipOf(id), head);
+  const status = (await fetch(`${remote()}/info/refs?service=git-upload-pack`, { headers: { authorization: `Bearer ${grant}` } })).status;
+  assert.equal(status, 401, "the old grant is dead");
+});
+
+test("a push whose client disconnects while it waits for the task's lock starts no backend and leaves the lock free at once", async () => {
+  const id = await newTask("Gone while queued");
+  const claimed = await api("POST", `/projects/demo/items/${id}/claim`, {}, agentToken, BUILDER);
+  const grant = claimed.body.workspace.token;
+  const dir = await workspace(id, "gone.txt");
+  const old = await tipOf(id);
+  const sha = await git(dir, "rev-parse", "HEAD");
+  const pack = execFileSync("git", ["pack-objects", "--stdout", "--revs"], { cwd: dir, input: `${sha}\n^${old}\n`, env: gitEnv });
+  const line = `${old} ${sha} refs/heads/t/${id.slice(1)}\0report-status\n`;
+  const body = Buffer.concat([Buffer.from(`${(line.length + 4).toString(16).padStart(4, "0")}${line}0000`), pack]);
+  // Something else holds the task's lock, as a change to the task would.
+  const holder = await server.git.lock("demo", id);
+  const before = server.git.backends;
+  const url = new URL(`${remote()}/git-receive-pack`);
+  const req = httpRequest({ host: url.hostname, port: url.port, path: url.pathname, method: "POST", headers: { authorization: `Bearer ${grant}`, "content-type": "application/x-git-receive-pack-request", "content-length": body.length } });
+  req.on("error", () => {});
+  req.write(body.subarray(0, 8));
+  await wait(400);
+  assert.equal(server.git.locks.idle(`task:demo/${id}`), false, "the push waits behind the holder");
+  req.destroy();
+  await wait(200);
+  holder();
+  assert.equal(server.git.locks.idle(`task:demo/${id}`), true, "nothing is left waiting once the holder releases");
+  const again = await server.git.lock("demo", id, { waitMs: 100 });
+  again();
+  await wait(200);
+  assert.equal(server.git.backends, before, "no backend ran for the push that went");
+  assert.equal(await tipOf(id), old);
 });
 
 test("with nothing in the way, a claim and a push stay fast", async () => {

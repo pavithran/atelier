@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { Namespace, notSupported } from "./namespace.mjs";
 import { GitHost, GRANT_LIVE } from "../git/host.mjs";
+import { ledgerLocks } from "./ledger-locks.mjs";
 import { LocalArtifacts } from "../git/artifacts.mjs";
 import { LocalLarge } from "./large.mjs";
 
@@ -129,6 +130,9 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
   const git = new GitHost({ dataDir: dir, reposDir: repos, hooksDir, namespace, settings: workerEnv });
   bindings.GIT ??= git.binding();
+  // Every Ledger change that ends or rotates a task's grant waits for the
+  // pushes in flight on the task (src/runtime/ledger-locks.mjs).
+  namespace.around = ledgerLocks(git, (name) => namespace.get(namespace.idFromName(name)));
   const pending = new Set();
   const server = createServer(async (req, res) => {
     // A request target is a path: one that does not start with a single

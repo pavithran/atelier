@@ -81,10 +81,18 @@ export const PUSH_MAX_MS = 15 * 60_000;
 // `guard(grant)`, for a push: waits for the task's lock, then confirms the
 // grant is still live; answers the release, held until the backend exits, or
 // null when the grant stopped counting while it waited.
-export async function gitRequest(req, res, { reposDir, authorize, ensure, scans, hook, guard }) {
+// `onSpawn()` is told of each backend started.
+export async function gitRequest(req, res, { reposDir, authorize, ensure, scans, hook, guard, onSpawn }) {
   const url = new URL(req.url ?? "/", "http://git.local");
   const m = ROUTE.exec(url.pathname);
   if (!m) return false;
+  // A client that goes while its request waits (for its authorization or its
+  // locks) is noticed at once: a lock it waits for is given up, one it holds
+  // is released, and no backend is started for it.
+  const gone = new AbortController();
+  const leave = () => { if (!gone.signal.aborted && !res.writableFinished) gone.abort(new Error("the client went away")); };
+  req.on("close", () => { if (!req.complete) leave(); });
+  res.on("close", leave);
   const [, raw, rest] = m;
   let project;
   try { project = decodeURIComponent(raw); } catch { req.resume(); deny(res, 404, "atelier: no such repository"); return true; }
@@ -96,14 +104,18 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure, scans,
   // A push holds its task's lock from here until its backend exits, so a
   // release, handoff, closure or revocation either comes before it (and the
   // grant is refused here, or at hook time) or waits for it to end.
-  const release = rest === "git-receive-pack" && guard ? await guard(grant) : () => {};
+  const release = rest === "git-receive-pack" && guard ? await guard(grant, gone.signal) : () => {};
+  if (gone.signal.aborted) { release?.(); return true; }
   if (!release) { req.resume(); deny(res, 401, `atelier: no live Git credential for ${project}`); return true; }
-  let key, scan;
+  let key, scan, child = null;
+  gone.signal.addEventListener("abort", () => { if (!child) release(); }, { once: true });
   try {
     key = await ensure(grant);
     scan = rest === "git-receive-pack" && scans ? openScan(scans.dir, await scans.policy(grant)) : null;
   } catch (error) { release(); throw error; }
-  const child = spawn("git", ["http-backend"], {
+  if (gone.signal.aborted) { scan?.close(); return true; }
+  onSpawn?.();
+  child = spawn("git", ["http-backend"], {
     env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant, scan: scan?.env, hook: rest === "git-receive-pack" ? hook : {} }),
     stdio: ["pipe", "pipe", "pipe"],
   });
