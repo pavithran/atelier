@@ -4516,9 +4516,23 @@ export class Ledger extends DurableObject<Env> {
   private releaseAllowed(id: string, actor: string, note: string): Item {
     assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
+    // A claim answering 503 not_ready has already given the task back, so a
+    // task whose forks all stalled is open, not claimed. Its release is the
+    // way out (t378): it holds nothing, so any actor may record it.
+    if (item.state === "open" && this.forkReplacementsUsed(id)) return item;
     assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
     return item;
+  }
+
+  // Whether the task's fork stalled with every replacement since its last
+  // release already made, so only a release gives it a fresh fork.
+  private forkReplacementsUsed(id: string): boolean {
+    const prep = this.forkPrep(id);
+    if (!prep || !forkStalled(prep, this.item(id), new Date(), this.mainHead())) return false;
+    const events = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE item_id = ? AND kind IN ('stage.rerouted', 'item.released') ORDER BY seq`, id).toArray()
+      .map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
+    return forkReplacements(events, id) >= FORK_REPLACEMENTS;
   }
 
   private abandonAllowed(id: string, actor: string, note: string, deliveredBy?: string): Item {
