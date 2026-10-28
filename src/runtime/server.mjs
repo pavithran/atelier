@@ -66,22 +66,22 @@ export function settings({ env, port, secretsDir, vars = {}, processEnv = proces
 }
 
 // The origin a Git remote is given at for a request that reached this
-// process directly over the tailnet or from this machine: http://HOST, the
-// address the client used (design section 4.3: builders push over the
-// tailnet, which WireGuard encrypts). Any other request, the tunnel's
-// included, is given the public origin. The value names only where the
-// requester itself reaches the server, so a Host it chose misleads no one but
-// itself.
+// process directly on its tailnet or loopback address: http://ADDRESS:PORT,
+// the address the connection was accepted on (design section 4.3: builders
+// push over the tailnet, which WireGuard encrypts). It is read from the
+// socket, never from the Host header the caller chose. A loopback request
+// that came through the tunnel (cloudflared, on this machine, names the
+// caller in cf-connecting-ip or x-forwarded-for) and any other request are
+// given the public origin (null here).
 export const GIT_ORIGIN_HEADER = "x-atelier-git-origin";
-export function gitOrigin(host) {
-  if (typeof host !== "string" || !/^[A-Za-z0-9.:[\]-]{1,100}$/.test(host)) return null;
-  let url;
-  try { url = new URL(`http://${host}`); } catch { return null; }
-  const name = url.hostname;
-  const tailnet = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name);
-  const ok = name === "localhost" || name === "127.0.0.1" || name === "[::1]"
-    || (tailnet && Number(tailnet[1]) >= 64 && Number(tailnet[1]) <= 127 && Number(tailnet[2]) <= 255 && Number(tailnet[3]) <= 255);
-  return ok ? url.origin : null;
+export function gitOrigin({ localAddress, localPort, headers = {} } = {}) {
+  if (typeof localAddress !== "string" || !Number.isInteger(localPort)) return null;
+  const address = localAddress.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, "");
+  const tailnet = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
+  if (tailnet && Number(tailnet[1]) >= 64 && Number(tailnet[1]) <= 127) return `http://${address}:${localPort}`;
+  const loopback = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(address) || address === "::1";
+  if (!loopback || headers["cf-connecting-ip"] !== undefined || headers["x-forwarded-for"] !== undefined) return null;
+  return `http://${address === "::1" ? "[::1]" : address}:${localPort}`;
 }
 
 async function toRequest(req, origin) {
@@ -90,7 +90,7 @@ async function toRequest(req, origin) {
   for (let i = 0; i < req.rawHeaders.length; i += 2) {
     if (req.rawHeaders[i].toLowerCase() !== GIT_ORIGIN_HEADER) headers.append(req.rawHeaders[i], req.rawHeaders[i + 1]);
   }
-  const git = gitOrigin(req.headers.host);
+  const git = gitOrigin({ localAddress: req.socket?.localAddress, localPort: req.socket?.localPort, headers: req.headers });
   if (git) headers.set(GIT_ORIGIN_HEADER, git);
   const body = req.method === "GET" || req.method === "HEAD" ? undefined : Readable.toWeb(req);
   return new Request(url, { method: req.method, headers, body, duplex: body ? "half" : undefined });

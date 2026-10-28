@@ -271,9 +271,11 @@ test("the CLI accepts plain http to a tailnet address and still refuses plain ht
   }
 });
 
-test("a Git remote is given at the address the request came to only for this machine and the tailnet", () => {
-  assert.equal(gitOrigin("100.99.0.102:4100"), "http://100.99.0.102:4100");
-  assert.equal(gitOrigin("127.0.0.1:4100"), "http://127.0.0.1:4100");
-  assert.equal(gitOrigin("localhost:4100"), "http://localhost:4100");
-  for (const host of ["atelier.zone", "100.128.0.1:4100", "evil.example:80", "100.99.0.102.evil.example", "", undefined, "a b"]) assert.equal(gitOrigin(host), null, String(host));
+test("a Git remote is given at the tailnet or loopback address the connection was accepted on, and at the public origin through the tunnel", () => {
+  assert.equal(gitOrigin({ localAddress: "100.99.0.102", localPort: 4100 }), "http://100.99.0.102:4100");
+  assert.equal(gitOrigin({ localAddress: "::ffff:127.0.0.1", localPort: 4100 }), "http://127.0.0.1:4100");
+  assert.equal(gitOrigin({ localAddress: "::1", localPort: 4100 }), "http://[::1]:4100");
+  assert.equal(gitOrigin({ localAddress: "127.0.0.1", localPort: 4100, headers: { "cf-connecting-ip": "203.0.113.9" } }), null);
+  assert.equal(gitOrigin({ localAddress: "127.0.0.1", localPort: 4100, headers: { "x-forwarded-for": "203.0.113.9" } }), null);
+  for (const localAddress of ["192.168.1.5", "100.128.0.1", "10.0.0.1", undefined]) assert.equal(gitOrigin({ localAddress, localPort: 4100 }), null, String(localAddress));
 });

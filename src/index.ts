@@ -284,10 +284,11 @@ function gitHost(env: Env): GitHost | null {
   return (env as unknown as { GIT?: GitHost }).GIT ?? null;
 }
 
-// The remote of a project's repository on the Node server: at the address
-// the request came to when that is the tailnet's or this machine's, which
-// the Node server names in x-atelier-git-origin (src/runtime/server.mjs),
-// and at the public origin otherwise, as through the tunnel.
+// The remote of a project's repository on the Node server: at the tailnet or
+// loopback address the server accepted the request on, which the Node server
+// reads from the socket and names in x-atelier-git-origin (gitOrigin in
+// src/runtime/server.mjs), and at the public origin otherwise, as through
+// the tunnel.
 function gitRemote(c: Ctx, project: string): string {
   return `${c.req.headers.get("x-atelier-git-origin") || c.url.origin}/git/${encodeURIComponent(project)}.git`;
 }
@@ -1983,6 +1984,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     if (body.kind !== "task") throw new RuleError("bad_kind", "kind is read or task", 400);
     const id = String(body.item ?? "");
+    if (!/^t[0-9]+$/.test(id)) throw new RuleError("bad_item", "name the task as tN", 400);
+    // The actor a runner token names is only its header's word: the runner
+    // must hold this task's job itself (assertRunnerJob), as on the item's
+    // own routes. An agent token speaks for its own actor alone.
+    if (c.token?.runner) await L.assertRunnerJob(c.token, id, actor);
+    else if (c.token && c.token.actor !== actor) throw new RuleError("actor_mismatch", `this agent token speaks for ${c.token.actor}, not ${actor}; no Git credential was issued`, 403, `send the request as ${c.token.actor}`);
     const item = await L.item(id);
     if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
     const slot = await L.tokenSlot(id);

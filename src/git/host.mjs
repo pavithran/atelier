@@ -113,8 +113,13 @@ export class GitHost {
     const g = this.grants.find(token);
     if (!g || g.project !== key) return null;
     if (g.kind === "task" || g.kind === "plan") {
-      const recorded = await this.ledger(key).tokenId(g.task).catch(() => null);
+      const L = this.ledger(key);
+      const recorded = await L.tokenId(g.task).catch(() => null);
       if (recorded !== `git:${g.hash}`) return null;
+      // Beside the record, the task itself: a grant writes only for a task
+      // still open to work and still held by the actor it was minted to.
+      const item = await L.item(g.task).catch(() => null);
+      if (!item || ["merged", "abandoned", "integrated"].includes(item.state) || item.owner !== g.actor) return null;
     }
     return { id: g.id, project: key, key, kind: g.kind, task: g.task, actor: g.actor, branch, accepted: g.accepted };
   }

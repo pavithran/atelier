@@ -10471,6 +10471,11 @@ export class Ledger extends DurableObject<Env> {
     if (("owner" in fields && fields.owner !== null || "claim_gen" in fields) && !this.#ownerAssignment) {
       throw new RuleError("owner_assignment", "owner assignment and claim reservation require assignOwner", 409);
     }
+    // A task that closes (merged, abandoned, or a part integrated into its
+    // plan) takes its write token with it, in the same write: a Git grant
+    // counts only while the item records it (src/git/host.mjs), so no
+    // credential outlives the work it was for.
+    if (fields.state === "merged" || fields.state === "abandoned" || fields.state === "integrated") fields = { ...fields, token_id: null };
     if (fields.state === "merged" || fields.state === "abandoned") {
       this.ctx.storage.transactionSync(() => {
         const state = fields.state!;
