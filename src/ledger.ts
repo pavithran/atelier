@@ -5914,7 +5914,9 @@ export class Ledger extends DurableObject<Env> {
   // it revokes anything: the task, or null when the call is new. It is a
   // rerun only for the one who made the last release, and only while nobody
   // holds the task; anything else takes the normal path.
-  repeatedRelease(id: string, actor: string): Item | null {
+  repeatedRelease(id: string, actor: string, note = ""): Item | null {
+    // The repeat is checked as the release itself would check its note.
+    assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
     return item.state === "open" && !item.owner && this.lastEvent(id, ["item.released"])?.data.by === actor ? item : null;
   }

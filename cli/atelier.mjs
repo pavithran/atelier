@@ -1038,11 +1038,12 @@ export async function request(method, path, body, as, extra = {}, signal) {
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
+    // An earlier try that may have applied is still in doubt beside any refusal.
+    const doubt = maybe ? `; an earlier try may have applied: run ${checkFor(path)}` : "";
     const named = data.error === "no_project" ? /^\/projects\/([^/]+)/.exec(path)?.[1] : undefined;
-    if (named) die(noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name), code);
-    if (res.status >= 300 && res.status < 400) die(`${res.status}: ${method} ${path} was answered with a redirect, which a write does not follow; check the server URL`, 1);
-    // An earlier try that may have applied is still in doubt beside this refusal.
-    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}${maybe ? `; an earlier try may have applied: run ${checkFor(path)}` : ""}`, code);
+    if (named) die(`${noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name)}${doubt}`, code);
+    if (res.status >= 300 && res.status < 400) die(`${res.status}: ${method} ${path} was answered with a redirect, which a write does not follow; check the server URL${doubt}`, 1);
+    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}${doubt}`, code);
   }
   return data;
 }

@@ -226,6 +226,15 @@ test("abandon repeated with the same deliveredBy answers already; with another i
   assert.equal((await w.send("POST", url, { deliveredBy: unmerged })).status, 409, "validated before it can be called a rerun");
 });
 
+test("doubt survives a redirect and a no_project answer too", async (t) => {
+  for (const second of [[302, { location: "/elsewhere" }], [404, { error: "no_project", detail: "no project p" }]]) {
+    const s = await stub((_req, n) => (n === 1 ? [503, { error: "unavailable" }] : second));
+    t.after(s.close);
+    const e = await refused(() => request("POST", PUSH, { head: "a".repeat(40) }));
+    assert.match(e.message, /may have applied: run atelier show t7/, `after ${second[0]}`);
+  }
+});
+
 test("release: the owner's repeat of a release it made answers already; after another claim it takes the normal path", async (t) => {
   const w = await world(t);
   const url = (id) => `/projects/demo/items/${id}/release`;
@@ -244,6 +253,9 @@ test("release: the owner's repeat of a release it made answers already; after an
   assert.equal(w.count("item.released"), 2);
   // A release made by one actor is not a rerun for another.
   assert.equal(await w.ledger.repeatedRelease(id, "codex/gpt-6"), null);
+  // A repeat is checked as a release is: an oversized note is refused.
+  const long = await w.send("POST", url(id), { note: "x".repeat(100_000) });
+  assert.equal(long.status, 400);
 });
 
 test("undispatch on an undispatched task answers already and logs one item.undispatched", async (t) => {

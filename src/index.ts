@@ -3246,7 +3246,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const note = String(body.note ?? "");
       // Released by this actor already and held by no one now: the repeat of
       // a release whose answer was lost. Held by someone else, it is refused below.
-      const repeated = await L.repeatedRelease(id, actor);
+      const repeated = await L.repeatedRelease(id, actor, note);
       if (repeated) return json({ ...repeated, already: true });
       const oldToken = await L.tokenId(id);
       await L.checkRelease(id, actor, note);
