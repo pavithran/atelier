@@ -816,8 +816,9 @@ export async function runLand(io) {
   // recorded itself (a lease not taken, a gate that does not stand, a signal)
   // is recorded as this step failing, with the failure's own words.
   let current = "start";
-  const recordFailure = async (message) => {
-    if (failureRecorded) return;
+  const recordFailure = async (message, data = null) => {
+    // A step that recorded its own stop (a stopped triage) is not recorded twice.
+    if (failureRecorded || data?.recorded) return;
     await record(current, 0, { failed: true, tail: tailOf(message) });
   };
   stepFailure = recordFailure;
@@ -850,7 +851,7 @@ export async function runLand(io) {
       // merges (t471), as they did before the merge of main into the workspace.
       if (git(["merge-base", "--is-ancestor", mainHead, head], { cwd: at, allowFail: true }).status !== 0) {
         await compareMoved(io, { dir: at, id, name, record, moved, t0, mainHead, head, step: "merge-main" });
-      }
+      } else print(`main at ${short(mainHead)} is already in ${id}'s head ${short(head)}. With main already merged there is nothing to compare, so this landing cannot detect edits that an earlier merge of main left in code main had moved to another file.`);
       current = "triage";
       const triageAt = { triage, dir: at, id, itemPath, head, mainHead, target, record, guard: unleased };
       let triaged = await triageGate(io, triageAt);
@@ -933,7 +934,7 @@ export async function runLand(io) {
     // A step the signal ended fails here before its release is answered,
     // and a signal can come while this release is: either way the signal's
     // handler ends the landing, with the signal's status.
-    await recordFailure(error.message);
+    await recordFailure(error.message, error.data);
     await release(`stopped: ${String(error.message).split("\n")[0]}`);
     if (stopping) await stopping;
     die(error.message);
@@ -1274,7 +1275,7 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
       return binding;
     }
     throw new StepError([...findings,
-      `The landing stops before the review request: ${leftAs(`the merged head stays pushed to ${id}'s fork`)}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the developer, ${triageBypass(retry, triage)}.`].join("\n"));
+      `The landing stops before the review request: ${leftAs(io.args?.workflow === true ? `the merged head stays pushed to ${id}'s fork` : "")}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the developer, ${triageBypass(retry, triage)}.`].join("\n"), { recorded: true });
   }
 }
 

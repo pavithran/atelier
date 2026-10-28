@@ -6078,9 +6078,12 @@ export class Ledger extends DurableObject<Env> {
     // Workflow's) opens the first.
     const base: LandingRecord = prev ?? { step, attempt: 1, at, head: this.item(id).head ?? null, failedStep: null, tail: null };
     // A failure already recorded in this attempt stands; what follows it (a
-    // triage record, the release) does not clear it.
-    if (base.failedStep) return;
-    const failed = data.failed === true;
+    // triage record, the release) does not clear it, except the developer's
+    // override of a stopped triage, after which the landing goes on.
+    const overridden = step === "triage" && data.outcome === "overridden";
+    if (base.failedStep && !(base.failedStep === "triage" && overridden)) return;
+    // A stopped triage is the triage step failing, its reason the tail.
+    const failed = data.failed === true || (step === "triage" && data.outcome === "stopped");
     const files = Array.isArray(data.files) ? data.files as string[] : Array.isArray(data.conflicts) ? data.conflicts as string[] : null;
     const tail = typeof data.tail === "string" ? data.tail : typeof data.reason === "string" ? data.reason : null;
     const { requeued: _r, cancelled: _c, files: _f, ...kept } = base;

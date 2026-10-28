@@ -219,8 +219,8 @@ test("the guide and the handbook teach landing a wave, not 'Never land two toget
     assert.ok(help.includes(flag), `${flag} is in the land help`);
     assert.ok(wave.includes(flag) || flag === "--no-review" || flag === "--triage" || flag === "--reviewer", `${flag} is in the wave text`);
   }
-  assert.ok(readFileSync("cli/land.mjs", "utf8").includes("ATELIER_LAND_MAIN_MOVED_ROUNDS"));
-  assert.ok(wave.includes("ATELIER_LAND_MAIN_MOVED_ROUNDS"));
+  assert.ok(readFileSync("cli/commands/merge.mjs", "utf8").includes("export const MAIN_MOVED_REDOS = 2;"));
+  assert.ok(wave.includes("MAIN_MOVED_REDOS"));
 });
 
 // t49: the handover is described once, in the handbook, and the guide links it.

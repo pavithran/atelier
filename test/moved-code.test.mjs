@@ -368,7 +368,9 @@ function landIo(world, { args = {}, wf = null, refuseApproval = false, failGit =
     calls.push({ method, path, body });
     if (path === "/version") return { capabilities: SERVER_CAPABILITIES, commit: "c0ffee" };
     if (path === leasePath) return method === "GET" ? { lease: null, waiting: [] } : body.cancel || body.renew ? {} : { item: { id: "t1", state: "submitted" } };
-    if (path === itemPath) return { item: { id: "t1", state: "submitted", owner: "codex/test" }, policy: { checks: [] } };
+    // The plain landing compares a claimed task's recorded head in its
+    // workspace (G2); the Workflow landing merges main there itself.
+    if (path === itemPath) return { item: args.workflow ? { id: "t1", state: "submitted", owner: "codex/test" } : { id: "t1", state: "claimed", owner: "codex/test", head: world.head() }, policy: { checks: [] } };
     if (path === `${itemPath}/base-token`) return { remote: world.baseline, token: "read", defaultBranch: "main" };
     if (path === `${itemPath}/land` && refuseApproval && body.resolvedBy) throw Object.assign(new Error("not_project_owner: only the project owner records a landing's steps"), { status: 403 });
     if (path === `${itemPath}/landing-workflow`) return wf.handle(method, body ?? {});
@@ -415,7 +417,7 @@ test("plain land: an edit in moved code stops it before the merge, Git unchanged
   unchanged(w, head);
   assert.equal(l.leased(), false);
   assert.deepEqual(l.commands, []);
-  const merge = l.records().find((r) => r.step === "merge");
+  const merge = l.records().find((r) => r.step === "merge-main");
   assert.equal(merge.failed, true);
   assert.deepEqual(merge.conflicts, ["cli/atelier.mjs", "cli/commands/report.mjs"]);
   assert.ok(merge.reason.startsWith(`moved-code comparison at task ${head}, main ${main}, merge base ${mergeBase}: 1 finding stopped the landing before the merge`), merge.reason);
@@ -440,14 +442,14 @@ test("plain land: after the edit is ported a retry compares afresh and lands; wi
   const retry = landIo(w);
   assert.equal(await retry.land(), null, retry.output());
   assert.match(retry.output(), new RegExp(`Compared t1's edits with code main moved to another file \\(task ${ported.slice(0, 8)}, main ${main.slice(0, 8)}, merge base ${before.slice(0, 8)}\\): none found\\.`));
-  assert.equal(retry.records().find((r) => r.step === "merge").reason, `moved-code comparison at task ${ported}, main ${main}, merge base ${before}: no edit in moved code`);
-  assert.deepEqual(retry.commands, ["push", "check", "submit"]);
-  assert.equal(git(w.ws, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").length, 3);
-  // Again, with main already merged: nothing to compare, said as such.
+  // Nothing merges into the workspace (G2): the head is checked and submitted as it is.
+  assert.deepEqual(retry.commands, ["check", "submit"]);
+  assert.equal(w.head(), ported);
+  // Again, with main already merged into the head: nothing to compare, said as such.
+  git(w.ws, "fetch", "-q", w.baseline, "main"); git(w.ws, "merge", "-q", "--no-edit", "FETCH_HEAD");
   const again = landIo(w);
   assert.equal(await again.land(), null, again.output());
-  assert.match(again.output(), /main at [0-9a-f]{8} is already merged into t1's workspace\. With main already merged there is nothing to compare, so this landing cannot detect edits that an earlier merge of main left in code main had moved to another file\./);
-  assert.match(again.records().find((r) => r.step === "merge").reason, /^moved-code comparison: main [0-9a-f]{40} is already in t1's head [0-9a-f]{40}, so nothing was compared/);
+  assert.match(again.output(), /main at [0-9a-f]{8} is already in t1's head [0-9a-f]{8}\. With main already merged there is nothing to compare, so this landing cannot detect edits that an earlier merge of main left in code main had moved to another file\./);
 });
 
 test("plain land --moved-ok records the owner, the findings and the revisions on the ledger and in the log before the merge, then goes on", async (t) => {
@@ -458,32 +460,33 @@ test("plain land --moved-ok records the owner, the findings and the revisions on
   const records = l.records();
   const approval = records.findIndex((r) => r.resolvedBy === "owner with --moved-ok");
   assert.ok(approval >= 0);
-  assert.deepEqual(records.map((r) => r.step), ["merge", "merge", "push", "check", "submit", "review"]);
+  // Recorded before the checks and the submission; the merge itself comes under the lease (G2).
+  assert.deepEqual(records.map((r) => r.step), ["start", "merge", "check", "submit", "review"]);
   const recorded = records[approval];
   assert.equal(recorded.head, head);
   assert.deepEqual(recorded.conflicts, ["cli/atelier.mjs", "cli/commands/report.mjs"]);
   assert.match(recorded.reason, new RegExp(`^--moved-ok: owner approved 1 finding at task ${head}, main ${main}, merge base [0-9a-f]{40}: cli/atelier\\.mjs lines 6-11 moved to cli/commands/report\\.mjs lines 2-7`));
-  // Recorded before the merge, which the next record is.
-  assert.equal(records[approval + 1].step, "merge");
-  assert.match(records[approval + 1].reason, /1 finding approved with --moved-ok$/);
   const [entry] = w.log();
   assert.deepEqual({ kind: entry.kind, actor: entry.actor, task: entry.task, main: entry.main }, { kind: "moved-ok", actor: "owner", task: head, main });
   assert.equal(entry.findings.length, 1);
   assert.match(l.output(), /--moved-ok: your approval of exactly these 1 finding at these revisions is recorded; the landing goes on, and a conflict in Git's merge still stops it\./);
-  assert.equal(git(w.ws, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").length, 3, "main was merged");
+  assert.equal(w.head(), head, "nothing was merged into the workspace");
 });
 
-test("--moved-ok bypasses only the findings: a Git conflict still stops the landing", async (t) => {
+// --moved-ok bypasses only the findings: Git's own conflicts still stop the
+// landing, at its merge onto main under the lease (merge-main, G2), which
+// test/land-node.test.mjs drives against the real server.
+test("--moved-ok bypasses only the findings: it approves nothing of a Git conflict, which the merge under the lease meets", async (t) => {
   const w = landWorld(t, {
     base: { ...regression.base, "work.txt": "base\n" },
     task: { ...regression.task, "work.txt": "task\n" },
     main: { ...regression.main, "work.txt": "main\n" },
   });
   const l = landIo(w, { args: { "moved-ok": true } });
-  const error = await l.land();
-  assert.match(error.message, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
-  assert.ok(l.records().some((r) => r.resolvedBy === "owner with --moved-ok"));
-  assert.equal(l.leased(), false);
+  assert.equal(await l.land(), null, l.output());
+  const approval = l.records().find((r) => r.resolvedBy === "owner with --moved-ok");
+  assert.deepEqual(approval.conflicts, ["cli/atelier.mjs", "cli/commands/report.mjs"]);
+  assert.equal(l.leased(), false, "--no-review never takes the lease");
 });
 
 test("--moved-ok whose approval the ledger refuses (anyone but the project owner) stops before the merge with Git unchanged", async (t) => {
@@ -560,7 +563,7 @@ test("a comparison that fails, or finds no merge base, stops the landing with th
   assert.match(error.message, /the comparison of t1's edits with code main moved to another file failed \(task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}\), so the landing stops before merging main; Git and the workspace are unchanged: git diff-tree failed:\nfatal: injected failure/);
   unchanged(w, head);
   assert.equal(failing.leased(), false);
-  assert.equal(failing.records().find((r) => r.step === "merge").failed, true);
+  assert.equal(failing.records().find((r) => r.step === "merge-main").failed, true);
   // Main replaced by a history unrelated to the task's.
   git(w.mainClone, "checkout", "-q", "--orphan", "other"); apply(w.mainClone, { "other.txt": "unrelated\n" });
   git(w.mainClone, "add", "-A"); git(w.mainClone, "commit", "-qm", "unrelated"); git(w.mainClone, "push", "-q", "-f", "origin", "other:main");

@@ -687,15 +687,16 @@ starts several of them at once and keeps the order.
   carries, and the checks run again at the new head. The landing counts
   whatever the gate counts, so a carried approval shortens the wait without
   the CLI judging it; an older server carries nothing and asks.
-- **When main moves.** Under the lease the landing confirms that main is
-  still the commit its head was merged with, checked and reviewed against.
-  If another landing merged first, it releases the lease, merges the new
-  main into its workspace, checks it, asks for the approvals still missing
-  (none, when the merge was retained) and tries again. After
-  `ATELIER_LAND_MAIN_MOVED_ROUNDS` rounds (`cli/land.mjs` says the default)
-  it stops with the task still submitted; run the same command once main
-  settles. A conflict ends that landing, names the files and holds no lease:
-  resolve it as under "Conflicts", then run the command again.
+- **When main moves.** Main moving under a reviewed task sends nothing back
+  for review (G2): under the lease the landing merges the reviewed head onto
+  main as it stands, runs the checks on that merged tree and pushes the
+  merge alone. If main moves again between those checks and the push, the
+  push is refused and the merge and checks are made again, twice at most
+  (`MAIN_MOVED_REDOS` in `cli/commands/merge.mjs`); a third refusal stops it
+  with the task still accepted; run the same command once main settles. A
+  conflict ends that landing at its `merge-main` step, names the files and
+  pushes nothing: resolve it as under "Conflicts", then run the command
+  again.
 - **Failures.** Each result prints the moment its landing ends: `tN landed.`,
   or `tN failed (…)` with what the landing printed, the reviewer's findings
   included. A failure never stops the others that already run or the tasks
