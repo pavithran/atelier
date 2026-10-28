@@ -3102,7 +3102,7 @@ export class Ledger extends DurableObject<Env> {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
       if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor) {
         const gone = orphanedBy(item, this.runnerPolls());
-        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409);
+        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409, "leave this dispatch to its holder and take the next one: atelier runner polls again");
       }
     }
     throw runnerDenied(token);

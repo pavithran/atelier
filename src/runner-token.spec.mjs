@@ -233,7 +233,8 @@ it("keeps project aliases and refuses another runner even with the same actor", 
   const res = await t.request("POST", "/tokens", OWNER, "owner", { runner: "home:other", projects: [t.name] });
   const other = await res.json();
   await t.request("POST", "/queue", other.token, ACTOR, { ...t.offer, runner: "home:other" });
-  expect((await t.request("POST", `${t.base}/claim`, other.token, ACTOR, {})).status).toBe(403);
+  // Another runner's claim of a claimed dispatch is a 409 naming the holder (G5).
+  expect((await t.request("POST", `${t.base}/claim`, other.token, ACTOR, {})).status).toBe(409);
   expect((await t.request("POST", `${t.base}/release`, other.token, ACTOR, {})).status).toBe(403);
   const renamed = `${t.name}-renamed`;
   expect((await t.request("POST", `/projects/${t.name}/rename`, OWNER, "owner", { to: renamed })).status).toBe(200);
@@ -292,7 +293,7 @@ it("concurrent different runners cannot both acquire the same dispatched job", a
   await t.poll();
   await t.request("POST", "/queue", other.token, ACTOR, { ...t.offer, runner: "home:second" });
   const responses = await Promise.all([t.api("POST", `${t.base}/claim`, {}), t.request("POST", `${t.base}/claim`, other.token, ACTOR, {})]);
-  expect(responses.map((r) => r.status).sort()).toEqual([200, 403]);
+  expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
   const item = await t.L.item("t1");
   expect(item.owner).toBe(ACTOR);
   expect(["home:studio", "home:second"]).toContain(item.runner);
@@ -315,7 +316,8 @@ it("GET /runners/me names the runner token's runner, projects and expiry, and re
   const t = await setup();
   const res = await t.api("GET", "/runners/me", undefined, undefined);
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ runner: "home:studio", projects: [t.name], names: [[t.name]], expiresAt: t.token.expiresAt });
+  // The runner's memory comes back with its identity (G5): pauses and skips to forget.
+  expect(await res.json()).toEqual({ runner: "home:studio", projects: [t.name], names: [[t.name]], expiresAt: t.token.expiresAt, pauses: [], forget: [] });
   const owner = await t.request("GET", "/runners/me");
   expect(owner.status).toBe(403);
   expect(await owner.json()).toMatchObject({ error: "runner_token_required" });
