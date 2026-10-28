@@ -162,3 +162,53 @@ test("main that keeps moving is merged and checked at most three times, then rep
   assert.equal(w.log().filter((l) => / Merge t\d+:/.test(l)).length, 0, "no merge of the task reached main");
   assert.ok(!w.log().some((l) => l.includes(head)), "main does not hold the task's head");
 });
+
+test("a registered checkout ahead of main lands nothing: its unreviewed commits never ride along", async (t) => {
+  const w = await landingWorld(t);
+  const { id, head } = await w.task({ files: { "task.txt": "task\n" } });
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(`${w.checkout}/local.txt`, "not reviewed\n");
+  w.git(w.checkout, "add", "local.txt");
+  w.git(w.checkout, "commit", "-q", "-m", "a local commit nobody reviewed");
+  const local = w.git(w.checkout, "rev-parse", "HEAD");
+  const main = await w.tip();
+  const r = await w.cli(["land", id]);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /main in .* is at [0-9a-f]{8}, 1 commit ahead of the project's main \([0-9a-f]{8}\), which no landing reviewed:\n {2}[0-9a-f]+ a local commit nobody reviewed/);
+  assert.match(r.output, /next: only the developer can: move those commits off main/);
+  assert.equal(await w.tip(), main, "nothing was pushed");
+  assert.equal(w.git(w.checkout, "rev-parse", "HEAD"), local, "the checkout is as it was");
+  const d = await w.detail(id);
+  assert.equal(d.landing.failedStep, "merge-main");
+  assert.match(d.landing.tail, /ahead of the project's main/);
+  assert.equal(d.item.acceptedHead, head);
+});
+
+test("a preparation that changes a tracked file fails the landing, naming it, even when the checks then pass", async (t) => {
+  const w = await landingWorld(t);
+  await w.moveMain({ "src.txt": "broken\n" }, "main adds src.txt");
+  const check = "grep -q fixed src.txt";
+  const prepare = "sh -c 'echo fixed > src.txt'";
+  await w.setPolicy({ checks: [check], prepare: { command: prepare, inputs: ["src.txt"], outputs: ["src.txt"], declaration: { command: prepare, by: "owner", note: "a test double" } } });
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  const main = await w.tip();
+  const r = await w.cli(["land", id]);
+  assert.notEqual(r.status, 0, r.output);
+  assert.equal(await w.tip(), main, "nothing was pushed");
+  const d = await w.detail(id);
+  assert.equal(d.landing.failedStep, "checks");
+  assert.match(d.landing.tail, /the checks' preparation \(`sh -c 'echo fixed > src\.txt'`\) changed tracked files \(src\.txt\)/);
+});
+
+test("a regeneration that fails records its own output as the tail", async (t) => {
+  const w = await landingWorld(t);
+  await w.setPolicy({ regenerate: "echo DISTINCT-REGEN-ERROR-42 >&2; exit 4" });
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  const main = await w.tip();
+  const r = await w.cli(["land", id]);
+  assert.notEqual(r.status, 0, r.output);
+  assert.equal(await w.tip(), main);
+  const shown = JSON.parse((await w.cli(["show", id, "--json"])).stdout);
+  assert.equal(shown.landing.failedStep, "regenerate");
+  assert.match(shown.landing.tail, /DISTINCT-REGEN-ERROR-42/);
+});

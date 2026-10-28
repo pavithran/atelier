@@ -3319,6 +3319,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (main) await L.noteMainHead(main);
       return json(await L.integratePart(id, actor, partKey, mergeCommit, true, holdsMain));
     }
+    case "land-merge": {
+      // The landing entering its merge (G1, atelier merge ID --landing): one
+      // Ledger call, ordered with the cancel of its queued landing.
+      requireOwner(env, actor);
+      return json({ landing: await L.beginLandMerge(id, actor) });
+    }
     case "land-job": {
       // Queues the task's landing for a runner that holds the registered
       // checkout (t226, atelier land ID --queue). The developer's alone: a

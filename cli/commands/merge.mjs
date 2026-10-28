@@ -201,6 +201,13 @@ export default async function mergeCommand() {
     try { adoptOldLanding(gitDir,landing); } catch (error) { await fail(error.message); }
     for (let round=0; ; round++) {
     begin('merge-main');
+    // The landing enters its merge on the Ledger before anything merges
+    // (G1): from here a cancel of its queued landing is refused, naming the
+    // step, and one that came first stops it here.
+    if(lander){
+      try{await request('POST',`${I(name,id)}/land-merge`,{},OWNER);}
+      catch(error){await fail(error.message,{},error.code);}
+    }
     const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
     // A landing begun at an acceptance that has since been withdrawn or
     // moved cannot be finished: what it merged is no longer what is accepted.
@@ -284,6 +291,13 @@ export default async function mergeCommand() {
         if (local!==paired) await fail(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
       }
       else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true,env:REAL_HISTORY_ENV}).status!==0) await fail(behind());
+      // The lander's merge starts from the project's tip itself (G2): a
+      // checkout ahead of it holds commits no landing reviewed, which the
+      // push would publish with the merge.
+      else if (lander && local!==baselineHead) {
+        const ahead=git(['log','--format=%h %s',`${baselineHead}..${local}`],{cwd,allowFail:true}).stdout.trim().split('\n').filter(Boolean);
+        await fail(`${p.branch} in ${cwd} is at ${short(local)}, ${ahead.length} commit${ahead.length===1?'':'s'} ahead of the project's ${p.branch} (${short(baselineHead)}), which no landing reviewed:\n  ${ahead.slice(0,10).join('\n  ')}\nThe landing merges onto the project's tip alone, so nothing was merged or pushed.\nnext: only the developer can: move those commits off ${p.branch} in ${cwd} (or land them as a task), then run atelier land ${id} again`);
+      }
       journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
     }
     if (!journal.state.mergeCommit) {
@@ -428,6 +442,11 @@ export default async function mergeCommand() {
     // nothing else, through one function (pushMergeToProjectBranch), so the
     // credential it carries can be swapped for a landing grant (task 6).
     // Nor through the checkout's own commits the push carries with it (t645).
+    // A cancel the Ledger took before the merge began stops it before the push.
+    if(lander&&!alreadyPublished){
+      const now=(await request('GET',I(name,id),undefined,OWNER).catch(()=>null))?.landing;
+      if(now?.cancelled)await fail(`${id}'s queued landing was cancelled before its merge was pushed, so nothing was pushed; the merge commit is left in the checkout: atelier merge ${id} --cancel --discard-local removes it`);
+    }
     let pushed=null, refusedPush=null;
     try {
       pushed=alreadyPublished?{status:0}:guardedPush({project:name,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>{throw new GuardStop(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);}},
@@ -527,7 +546,8 @@ async function checkMergedTree({ name, id, cwd, policy, identity, commit, secret
       const t0 = Date.now();
       console.log(`Regenerating with \`${regenerate}\` on the merged tree…`);
       const r = await runRegenerateIn(dir, regenerate, { redact, secrets: () => secrets }, policy);
-      if (!r.ok) await stop(`the regeneration command \`${regenerate}\` failed on the merged tree (${r.why}); nothing was pushed and ${id} stays accepted. Fix the command (atelier init --regenerate), then run atelier land ${id} again`, { command: regenerate });
+      // The record's tail is the command's own output, redacted, not ours.
+      if (!r.ok) await stop(`the regeneration command \`${regenerate}\` failed on the merged tree (${r.why}); nothing was pushed and ${id} stays accepted. Fix the command (atelier init --regenerate), then run atelier land ${id} again. Its output ends:\n${tailOf(r.output)}`, { command: regenerate, tail: tailOf(r.output) });
       const changed = !!landingGit(["status", "--porcelain", "-uall"], { cwd: dir });
       if (changed) {
         landingGit(["add", "-A"], { cwd: dir });
@@ -542,8 +562,23 @@ async function checkMergedTree({ name, id, cwd, policy, identity, commit, secret
     }
     if (!cmds.length) return checked;
     const t0 = Date.now();
+    // What passes must describe what is pushed: before each check and after
+    // the last, the clone's HEAD is the merge commit and its tracked tree
+    // and index are as that commit holds them (untracked build output may
+    // stand). A change names the step that made it, and nothing is pushed.
+    const unchanged = async (after) => {
+      const head = landingGit(["rev-parse", "HEAD"], { cwd: dir });
+      const worktree = landingGit(["diff", "--quiet", "HEAD"], { cwd: dir, allowFail: true }).status;
+      const index = landingGit(["diff", "--cached", "--quiet"], { cwd: dir, allowFail: true }).status;
+      if (head === checked && worktree === 0 && index === 0) return;
+      const what = head !== checked ? `moved HEAD from the merge commit ${short(checked)} to ${short(head)}` : `changed tracked files (${landingGit(["diff", "--name-only", "HEAD"], { cwd: dir, allowFail: true }).stdout.split("\n").filter(Boolean).slice(0, 10).join(", ") || "the index"})`;
+      await stop(`${after} ${what} in the clone the checks run in, so the checks would not describe the merge that is pushed; nothing was pushed and ${id} stays accepted. Make the checks and their preparation leave tracked files alone, then run atelier land ${id} again`, { mergeCommit: checked });
+    };
     await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next(), undefined, policy), secrets).catch((error) => stop(`the checks' preparation failed on the merged tree: ${error.message}\nNothing was pushed; ${id} stays accepted.`));
+    let previous = policy.prepare ? `the checks' preparation (\`${policy.prepare.command}\`)` : "the clone's set-up";
     for (const cmd of cmds) {
+      await unchanged(previous);
+      previous = `the check \`${cmd}\``;
       const r = await runCheck(cmd, dir, secrets, sequence.next(), undefined, policy);
       console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(checked)} (the merge of ${id} into main)`);
       if (!r.passed) {
@@ -551,6 +586,7 @@ async function checkMergedTree({ name, id, cwd, policy, identity, commit, secret
         await stop(`the check \`${cmd}\` failed on the merged tree (${why}), so nothing was pushed to main; ${id} stays accepted with its approvals, and is not rejected. Its output ends:\n${tailOf(r.output)}`, { failedCheck: cmd, tail: tailOf(r.output), mergeCommit: checked });
       }
     }
+    await unchanged(previous);
     await record("checks", Date.now() - t0, { mergeCommit: checked, statuses: cmds.map((c) => `passed: ${c}`.slice(0, 200)) });
     return checked;
   } finally {

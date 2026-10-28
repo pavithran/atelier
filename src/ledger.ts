@@ -10249,6 +10249,23 @@ export class Ledger extends DurableObject<Env> {
     return { item: id, by, at, ...(said ? { quote: said } : {}), queued: true };
   }
 
+  // The landing enters its merge (G1): `atelier merge ID --landing` calls
+  // this before it merges anything. The Ledger runs one call at a time, so
+  // this and cancelLand cannot interleave: a cancel recorded first refuses
+  // the merge, and one asked after finds the record at merge-main and
+  // refuses, naming the step.
+  beginLandMerge(id: string, actor: string): LandingRecord {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
+    const item = this.item(id);
+    const prev = this.landingRecord(id);
+    const at = new Date().toISOString();
+    if (prev?.cancelled) throw new RuleError("landing_cancelled", `${id}'s queued landing was cancelled at ${prev.cancelled.slice(0, 16).replace("T", " ")} UTC, before its merge began, so nothing is merged`, 409, `run atelier land ${id} --queue to queue it again, or atelier land ${id} to land it here`);
+    const record: LandingRecord = { ...(prev ?? { attempt: 1, head: item.head ?? null }), step: "merge-main", at, failedStep: null, tail: null };
+    delete record.files;
+    this.saveLandingRecord(id, record);
+    return record;
+  }
+
   // Removes a task's queued landing (G1, atelier land ID --queue --cancel).
   // Nothing queued answers so, changing nothing, so the command may be run
   // twice. A landing of the task that holds the lease and has begun its

@@ -1559,7 +1559,8 @@ export async function runRegenerateIn(dir, regenerate, io, policy = null) {
   const why = stopped ? `${stopText(stopped)}; stopped at the project's check limit` : r.error ? r.error.message : `exit ${r.status}`;
   const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${stopped ? why : r.error.message}` : ""}`, io.secrets());
   if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
-  return { ok: !r.error && r.status === 0, why, ...(stopped ? { stopped } : {}) };
+  // The redacted output goes back too, so a failure's record can keep its tail.
+  return { ok: !r.error && r.status === 0, why, output, ...(stopped ? { stopped } : {}) };
 }
 
 // The check step of either landing (t436): `atelier check` as a step of its
@@ -2002,7 +2003,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
     print(`Regenerating with \`${regenerate}\`…`);
     const r = await runRegenerateIn(dir, regenerate, io, d0?.policy);
     if (!r.ok) {
-      await record("regenerate", Date.now() - start, { command: regenerate, failed: true });
+      await record("regenerate", Date.now() - start, { command: regenerate, failed: true, tail: tailOf(r.output) });
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
     }
     let changed = false;

@@ -72,7 +72,7 @@ test("a failed landing is not offered again until it is queued again or its head
   assert.deepEqual(await offered(w), [id]);
 });
 
-test("land --queue --cancel removes a queued landing; run twice, the second says not queued and changes nothing; past the merge it refuses", async (t) => {
+test("land --queue --cancel removes a queued landing; run twice, the second says not queued and changes nothing", async (t) => {
   const w = await landingWorld(t);
   const { id } = await w.task({ files: { "task.txt": "task\n" } });
   assert.equal((await w.cli(["land", id, "--queue"])).status, 0);
@@ -86,14 +86,33 @@ test("land --queue --cancel removes a queued landing; run twice, the second says
   assert.equal(second.status, 0, second.output);
   assert.match(second.stdout, new RegExp(`${id} is not queued to land; nothing was changed`));
   assert.equal((await w.detail(id)).events.length, events, "the second cancel changed nothing");
-  // A landing that holds the lease and has begun its merge is not interrupted.
+});
+
+// The real timing: the landing has entered its merge on the Ledger (its
+// checks on the merged tree are running, held by a check that waits) when
+// the developer cancels. The cancel is refused, naming the step, and the
+// landing runs on and lands.
+test("a cancel while the landing merges is refused, naming the step, and the landing is not interrupted", async (t) => {
+  const w = await landingWorld(t);
+  const { writeFileSync, existsSync } = await import("node:fs");
+  const entered = `${w.root}/entered`, go = `${w.root}/go`, script = `${w.root}/wait.sh`;
+  writeFileSync(script, `#!/bin/sh\ntouch ${entered}\nn=0; while [ ! -f ${go} ] && [ $n -lt 600 ]; do sleep 0.1; n=$((n+1)); done\nexit 0\n`, { mode: 0o700 });
+  await w.setPolicy({ checks: [`sh ${script}`], checkClasses: [{ command: `sh ${script}`, by: "owner", note: "a test double that waits" }] });
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
   assert.equal((await w.cli(["land", id, "--queue"])).status, 0);
-  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
-  for (const step of ["start", "lease", "accept", "merge-main"]) await w.api("POST", `/projects/demo/items/${id}/land`, { step, ms: 0 });
+  const main = await w.tip();
+  const landing = w.cli(["land", id]);
+  for (let i = 0; i < 600 && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
+  assert.ok(existsSync(entered), "the check on the merged tree started");
   const refused = await w.cli(["land", id, "--queue", "--cancel"]);
-  assert.notEqual(refused.status, 0);
+  assert.notEqual(refused.status, 0, refused.output);
   assert.match(refused.output, /landing_past_merge: t\d+'s landing \(attempt 1\) is at its merge-main step, past the merge, so it is not cancelled or interrupted/);
-  assert.deepEqual(await offered(w), [id], "still queued");
+  assert.match(refused.output, /next: run atelier show t\d+ --json/);
+  writeFileSync(go, "");
+  const r = await landing;
+  assert.equal(r.status, 0, r.output);
+  assert.equal((await w.detail(id)).item.state, "merged");
+  assert.notEqual(await w.tip(), main);
 });
 
 test("a landing cancelled while it waits stops before its merge, merging nothing", async (t) => {
