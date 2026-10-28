@@ -331,6 +331,7 @@ Each is an event in the project's ledger, with no task id:
 | `action.withdrawn` | id, kind, commit, note |
 | `action.consumed` | id, kind, commit |
 | `action.ran` | step, kind, approval used, command, commit, exit status, signal, duration, passed, output tail, ship id, note, and, when the approval it used had them, quote and acting |
+| `ship.recorded` | ship id, head, by, result (shipped or failed), the step it stopped at, the steps that ran, note |
 
 There is one `action.ran` for every command, request or step that ran,
 passing or failing, and none for a step that did not run. The ship id is the
@@ -342,6 +343,25 @@ replaced with `[redacted]`, as `atelier check` redacts check output.
 
 The project page lists the approvals with their status and the latest steps
 run; `GET /api/projects/P/actions` returns both.
+
+Once a ship has begun running its steps, it records the deploy as one
+`ship.recorded` event, whether it shipped or failed (G9): at the step that
+failed, or, for a ship that ended some other way (a refused request), on its
+way out. A ship killed outright records nothing. `GET /api/projects/P/deploys`
+lists them, newest first, and `atelier show` prints the newest as `Last
+deploy:`. A ship refused before running anything records no deploy.
+
+## The checkout lease
+
+Ship runs in the registered checkout, as a landing's merge step does
+(docs/landing.md). The two never use it at the same time: each takes the
+project's checkout lease before it reads or changes the checkout, and frees
+it when done. A ship started while a merge holds it waits, saying who holds
+it (`ship waits for P's registered checkout: it is held by t3's landing (its
+merge step), owner on studio (pid 4242), since ...`), and goes on once it is
+free; a merge started during a ship waits the same way. The holder renews the
+lease every minute; one that stopped renewing for 15 minutes (it died) is
+taken over, and the taker says whose lease lapsed. `--dry-run` takes no lease.
 
 While a merged revision's declared protected actions have not run, the
 developer's inbox carries a reminder. The kinds the order needs unconditionally

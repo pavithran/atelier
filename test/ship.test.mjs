@@ -171,6 +171,19 @@ function standIn(state) {
       return send(200, view(a));
     }
     if (path === "/api/projects/demo/actions/runs") { state.runs.push(body); return send(201, body); }
+    // The checkout lease (G9) as the server keeps it, for one holder at a
+    // time, and the deploys ship records.
+    if (path === "/api/projects/demo/checkout-lease" && req.method === "POST") {
+      state.leases.push(body);
+      if (body.action === "take") {
+        if (state.lease && state.lease.id !== body.id) return send(409, { error: "checkout_lease", detail: `demo's registered checkout is held by ${state.lease.holder}; landing and shipping never use it at the same time`, next: "wait for it" });
+        state.lease = { id: body.id, kind: body.kind, holder: "owner", since: new Date().toISOString() };
+        return send(200, { lease: state.lease });
+      }
+      if (body.action === "release" && state.lease?.id === body.id) state.lease = null;
+      return send(200, { lease: state.lease });
+    }
+    if (path === "/api/projects/demo/deploys" && req.method === "POST") { state.deploys.push(body); return send(201, body); }
     const withdraw = /^\/api\/projects\/demo\/actions\/(a\d+)\/withdraw$/.exec(path);
     if (withdraw) {
       const a = state.approvals.find((x) => x.id === withdraw[1]);
@@ -192,7 +205,7 @@ async function fixture(t, { approve = [], ship, extra = {}, email = "t@x.test" }
   const git = gitAs(email);
   const dir = mkdtempSync(join(tmpdir(), "atelier-ship-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const state = { approvals: [], runs: [], requests: [] };
+  const state = { approvals: [], runs: [], requests: [], leases: [], deploys: [], lease: null };
   const server = standIn(state);
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
@@ -244,7 +257,8 @@ exit \${DEPLOY_EXIT:-0}
     child.stderr.on("data", (s) => { stderr += s; });
     child.on("close", (status) => done({ status, stdout, stderr }));
   });
-  const writes = () => state.requests.filter((r) => r.method !== "GET");
+  // The checkout lease's take and release (G9) are not the ship's writes.
+  const writes = () => state.requests.filter((r) => r.method !== "GET" && !r.path.endsWith("/checkout-lease"));
   return { dir, checkout, github, baseline, head, state, url, marker, run, writes };
 }
 
@@ -328,6 +342,13 @@ test("ship runs each step in order with its approvals, records each one redacted
   assert.ok(f.state.approvals.every((a) => a.consumed), "the deploy approval is used");
   assert.ok(f.state.requests.some((q) => q.method === "POST" && q.path === "/api/projects/demo/sessions"), "wrap recorded the session");
   assert.equal(git(f.github, "rev-parse", "main"), git(f.checkout, "rev-parse", "HEAD"), "github holds the shipped head");
+  // The ship held the checkout lease throughout (G9), released it at the
+  // head it left the checkout at, and recorded its deploy.
+  assert.deepEqual(f.state.leases.map((x) => [x.action, x.kind ?? null]), [["take", "ship"], ["release", null]]);
+  assert.equal(f.state.leases[1].head, git(f.checkout, "rev-parse", "HEAD"));
+  assert.equal(f.state.lease, null);
+  assert.deepEqual(f.state.deploys.map((d) => [d.head, d.result, d.ran.join(",")]), [[f.head, "shipped", "commit,deploy,verify-delivery,wrap,push"]]);
+  assert.equal(f.state.deploys[0].ship, runs[0].ship);
   // The spent deploy approval cannot ship again; the push never needed one.
   const again = await f.run(["ship", "--push"]);
   assert.equal(again.status, 1);
@@ -345,6 +366,9 @@ test("ship stops at the first step that fails, says what ran and what did not, a
     "",
   ].join("\n"));
   assert.deepEqual(f.state.runs.map((x) => [x.step, x.passed, x.exitStatus]), [["commit", true, null], ["deploy", false, 3]]);
+  // The failed deploy is recorded (G9), and the lease released on the way out.
+  assert.deepEqual(f.state.deploys.map((d) => [d.head, d.result, d.step, d.ran.join(","), d.note]), [[f.head, "failed", "deploy", "commit", "bin/deploy.sh exited 3"]]);
+  assert.equal(f.state.lease, null, "the lease was released though ship ended through die()");
   assert.ok(!f.state.requests.some((q) => q.path.endsWith("/sessions")), "wrap did not run");
   assert.notEqual(git(f.github, "rev-parse", "main"), f.head, "nothing was pushed");
 });

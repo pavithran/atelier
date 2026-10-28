@@ -14,6 +14,7 @@ import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
 import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, request, saveConfig, server, short } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
+import { holdCheckout } from "../checkout-hold.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
@@ -171,7 +172,10 @@ export default async function mergeCommand() {
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
   let unlock;
   try { unlock=landingLock(landing); } catch (error) { die(error.message); }
+  // The checkout lease (G9): the merge step never uses the checkout beside atelier ship.
+  let checkoutLease;
   try {
+    checkoutLease=await holdCheckout({project:name,kind:'landing',item:id,cwd});
     try { adoptOldLanding(gitDir,landing); } catch (error) { die(error.message); }
     const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
     // A landing begun at an acceptance that has since been withdrawn or
@@ -386,5 +390,5 @@ export default async function mergeCommand() {
     await cleanWorkspace(name, id, p.branch, cwd);
     if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
     else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
-  } finally { unlock(); }
+  } finally { await checkoutLease?.release(); unlock(); }
 }
