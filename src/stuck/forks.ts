@@ -13,9 +13,17 @@ export interface StalledForks { item: string; forks: StalledFork[]; since: strin
 
 const preparing = (e: LedgerEvent, kind: string) => e.kind === kind && e.data.stage === "preparing";
 
-// How many times the tick has replaced this task's fork.
+// How many times the tick or a claim has replaced this task's fork since the
+// task was last released. A release starts the count again: it is the way out
+// for a task whose replacements stalled, and the next claim makes a fork.
 export function forkReplacements(events: readonly { item?: string; itemId?: string; kind: string; data: Record<string, unknown> }[], id: string): number {
-  return events.filter((e) => (e.item ?? e.itemId) === id && e.kind === "stage.rerouted" && e.data.stage === "preparing").length;
+  let n = 0;
+  for (const e of events) {
+    if ((e.item ?? e.itemId) !== id) continue;
+    if (e.kind === "item.released") n = 0;
+    else if (e.kind === "stage.rerouted" && e.data.stage === "preparing") n++;
+  }
+  return n;
 }
 
 // The live tasks whose last replacement fork stalled and was told, with no

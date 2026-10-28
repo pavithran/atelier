@@ -2391,7 +2391,8 @@ export const FORK_REPLACE_MS = 30 * 60_000;
 // for one that was cut off (t286): longer than any claim request runs, so a
 // claim still waiting on Artifacts is never taken for one.
 export const FORK_REQUEST_MS = 2 * 60_000;
-// How many forks under new names a task gets beyond its first (t254).
+// How many forks under new names a task gets beyond its first (t254), counted
+// from the task's last release: a release requests a fresh run of them.
 export const FORK_REPLACEMENTS = 2;
 
 export type ForkPreparation = { fork: string; since: string | null; reportedAt: string | null };
@@ -2420,7 +2421,7 @@ export function forkPreparationView(prep: ForkPreparation & { since: string }, i
   if (item.fork || item.head) {
     return { ...base, action: "stuck", next: `${stuck} The Ledger records ${item.fork ? "a fork" : "a head"} for ${item.id}, so the repository may hold the task's commits: do not delete it; check it in Artifacts.` };
   }
-  return { ...base, action: "stuck", next: `${stuck} The Ledger records no commit for ${item.id}, so once it has been preparing ${FORK_REPLACE_MS / 60_000} minutes, the next claim of ${item.id} makes a fork under a new name, at most ${FORK_REPLACEMENTS} times; nothing needs deleting by hand.` };
+  return { ...base, action: "stuck", next: `${stuck} The Ledger records no commit for ${item.id}, so once it has been preparing ${FORK_REPLACE_MS / 60_000} minutes, the next claim of ${item.id} makes a fork under a new name, at most ${FORK_REPLACEMENTS} times; nothing needs deleting by hand. When those forks stall too, \`atelier stuck\` names the release that requests a fresh fork.` };
 }
 export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
 const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;

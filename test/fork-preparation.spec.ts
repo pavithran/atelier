@@ -384,7 +384,7 @@ it("a fork whose request was answered is not taken for cut off by a later claim 
 
 it("a claim makes at most two replacement forks, as the tick does, and then reports the fork as before", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
-  const { L, fa, fork, claim } = await setup("fork-cut-off-thrice");
+  const { L, fa, fork, claim, actor } = await setup("fork-cut-off-thrice");
   await timedOutClaim(fa, claim);
   // Every fork Artifacts makes from here on stays unready too.
   fa.hooks.readyOnFork = false;
@@ -404,5 +404,19 @@ it("a claim makes at most two replacement forks, as the tick does, and then repo
   expect((await answer(last)).detail).toContain(`${fork}-r3 has not become ready`);
   expect(fa.forks).toEqual([fork, `${fork}-r2`, `${fork}-r3`]);
   expect((await rerouted(L)).length).toBe(2);
+  expect(fa.deletes).toEqual([]);
+  // The way out `atelier stuck` names: release the task, claim it again. The
+  // release starts the count again, so the claim replaces the stalled fork.
+  // A claim answering 503 not_ready may have given the task back (unclaim), so
+  // it is open, and the agent that asked for the claim, not the developer,
+  // releases it.
+  await inside(L, (i) => { i.sql.exec(`UPDATE items SET state = 'open', owner = NULL WHERE id = 't1'`); });
+  expect(await L.item("t1")).toMatchObject({ state: "open", owner: null });
+  await inside(L, (i) => i.release("t1", actor, "Fresh fork after the replacements stalled"));
+  const fresh = await claim();
+  expect(fresh.status).toBe(503);
+  expect((await answer(fresh)).detail).toContain(`${fork}-r4 is still being prepared`);
+  expect(fa.forks).toEqual([fork, `${fork}-r2`, `${fork}-r3`, `${fork}-r4`]);
+  expect((await rerouted(L)).length).toBe(3);
   expect(fa.deletes).toEqual([]);
 });
