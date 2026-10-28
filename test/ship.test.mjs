@@ -514,7 +514,7 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
   // and the CLOUDFLARE_ENV it saw.
   const seenFile = join(f.dir, "cloudflare-env.txt");
   writeFileSync(preload, `import { appendFileSync } from "node:fs"; appendFileSync(process.env.SEEN_FILE, process.argv[2] + " " + (process.env.CLOUDFLARE_ENV ?? "unset") + "\\n"); const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
-  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, SEEN_FILE: seenFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed", CLOUDFLARE_ENV: "staging" });
+  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, SEEN_FILE: seenFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, SHIP_VERIFY_WINDOW_MS: "0", ATELIER_SHIP_HEAD: "spoofed", CLOUDFLARE_ENV: "staging" });
   assert.ok(existsSync(argsFile), r.stderr + r.stdout);
   // CLOUDFLARE_ENV in the owner's shell never reaches Wrangler, and main's
   // order names the staging Worker.
@@ -531,7 +531,7 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
     assert.deepEqual(seen.filter((line) => !line.endsWith(" unset")), ["ship staging"]);
   } else {
     assert.notEqual(r.status, 0);
-    assert.match(r.stderr + r.stdout, /live deployed commit does not match/);
+    assert.match(r.stderr + r.stdout, /live deployed commit [0-9a-f]+ does not match/);
     assert.ok(!f.state.runs.some(run => ["wrap", "push"].includes(run.step)));
     assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
   }
