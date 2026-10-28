@@ -419,3 +419,56 @@ test("a new head starts the run afresh and deletes it, and an abandoned task lea
     assert.deepEqual(rows(c.ns, "same-abandon"), [], "an abandoned task's run is deleted");
   } finally { await c.ns.close(); }
 });
+
+test("a valid criteria verdict between two failures with one signature ends the run", async () => {
+  const { ns, L, id, attempt, offered } = await criteriaWorld("same-criteria-verdict");
+  try {
+    await attempt(RUNNER_A, signed(S));
+    // The next review reaches a valid rejection; the owner refutes its
+    // finding without changing the criteria, so the same revision is asked again.
+    const next = await offered();
+    assert.equal(next.sameExit.count, 1);
+    const claim = await L.claimCriteriaReview(id, GPT, RUNNER_B);
+    await L.addCriteriaReview({ itemId: id, by: GPT, rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: false, summary: "Vague.", findings: [{ file: "criterion-1", line: null, severity: "blocking", text: "Fast is not a measurement." }] }, true);
+    assert.deepEqual(rows(ns, "same-criteria-verdict"), [], "the verdict ends the run");
+    await L.resolveCriteriaFinding(id, "owner", claim.request, 1, "refuted", "200 ms is the measurement");
+    await attempt(RUNNER_A, signed(S));
+    assert.deepEqual((await offered()).sameExit, { signature: S, count: 1 }, "the exit after the verdict starts again at one");
+  } finally { await ns.close(); }
+});
+
+test("a valid pre-review verdict ends the run", async () => {
+  const { ns, L, t2, attempt, offered } = await prereviewWorld("same-prereview-verdict");
+  try {
+    await attempt(RUNNER_A, prereviewNote(`exited 2; exit-signature: ${S}`));
+    const item = await offered();
+    const claim = await L.claimReview(t2, GPT, RUNNER_B, true, MAIN);
+    await L.addReview({ itemId: t2, by: GPT, head: item.head, criteria: claim.criteria, request: claim.request, approve: true, note: "Looks right.", at: iso(Date.now()), findings: { prereview: { main: MAIN, tree: "d".repeat(40) }, findings: [] }, mainNow: MAIN }, undefined, true, "api");
+    assert.equal((await L.prereviewsFor(t2)).find((v) => v.request === claim.request).state, "passed");
+    assert.deepEqual(rows(ns, "same-prereview-verdict"), [], "the verdict ends the run");
+  } finally { await ns.close(); }
+});
+
+test("a criteria review claimed before the task is abandoned records and counts nothing after it", async () => {
+  const { ns, L, id } = await criteriaWorld("same-criteria-closed");
+  try {
+    await L.requestCriteriaReview(id, "owner", GPT, POOL);
+    const claim = await L.claimCriteriaReview(id, GPT, RUNNER_A);
+    await L.abandon(id, "owner", "not needed");
+    assert.equal((await L.criteriaReviewsFor(id)).find((r) => r.id === claim.request).state, "withdrawn", "the claim ends with the task");
+    await assert.rejects(L.failCriteriaReview(id, GPT, claim.request, signed(S), true), /stale_request/);
+    assert.deepEqual(rows(ns, "same-criteria-closed"), [], "no row comes back");
+  } finally { await ns.close(); }
+});
+
+test("a pre-review claimed before the task is abandoned counts nothing after it", async () => {
+  const { ns, L, t2, offered } = await prereviewWorld("same-prereview-closed");
+  try {
+    await offered();
+    const claim = await L.claimReview(t2, GPT, RUNNER_A, true, MAIN);
+    await L.abandon(t2, "owner", "not needed");
+    assert.equal((await L.prereviewsFor(t2)).find((v) => v.request === claim.request).state, "withdrawn", "the claim ends with the task");
+    await L.releaseReview(t2, GPT, prereviewNote(`exited 2; exit-signature: ${S}`), true, claim.request);
+    assert.deepEqual(rows(ns, "same-prereview-closed"), [], "no row comes back");
+  } finally { await ns.close(); }
+});

@@ -5799,6 +5799,9 @@ export class Ledger extends DurableObject<Env> {
       this.settlePrereview(row, "stale", { ...result, outcome: "stale", detail: drift }, by, at, proved, { binding });
       return;
     }
+    // A valid verdict of the binding asked: whatever it controls now, the
+    // harness reached a verdict, which ends the same-exit run.
+    this.clearSameExit("prereview", itemId);
     const blocking = blocks(r.approve, parsed.report.findings);
     const lease = this.projectLanding();
     const holds = row.detached === 1 || (!!lease && lease.item === itemId && this.landingLive(lease, at));
@@ -9197,11 +9200,20 @@ export class Ledger extends DurableObject<Env> {
   // (update).
   private noteExit(job: ExitJob, item: string, subject: string, note: string): void {
     if (!stopReasonOf(note)) return;
+    // A closed task's tries are over: nothing of it is counted again.
+    const state = this.sql.exec(`SELECT state FROM items WHERE id = ?`, item).toArray()[0]?.state;
+    if (state === "merged" || state === "abandoned") return;
     const sig = exitSignatureOf(note);
     if (!sig) { this.sql.exec(`DELETE FROM same_exits WHERE job = ? AND item = ?`, job, item); return; }
     const row = this.sql.exec(`SELECT subject, sig, count FROM same_exits WHERE job = ? AND item = ?`, job, item).toArray()[0];
     const count = row && row.subject === subject && row.sig === sig ? (row.count as number) + 1 : 1;
     this.sql.exec(`INSERT OR REPLACE INTO same_exits (job, item, subject, sig, count) VALUES (?, ?, ?, ?, ?)`, job, item, subject, sig, count);
+  }
+
+  // A valid verdict applied ends the run: the harness reached a verdict, so
+  // the exits before it are not in a row with any after it.
+  private clearSameExit(job: ExitJob, item: string): void {
+    this.sql.exec(`DELETE FROM same_exits WHERE job = ? AND item = ?`, job, item);
   }
 
   // The run as the queue carries it on an item (sameExit), for the subject it
@@ -9385,6 +9397,7 @@ export class Ledger extends DurableObject<Env> {
     if (!r.approve && !blocking) throw new RuleError("bad_verdict", "a rejection of the acceptance criteria names at least one blocking finding", 400);
     const state: CriteriaReviewState = r.approve ? "approved" : "rejected";
     this.sql.exec(`UPDATE criteria_reviews SET state = ?, decidedAt = ?, summary = ?, findings = ?, checks = ? WHERE id = ?`, state, at, r.summary, JSON.stringify(findings), JSON.stringify(checks), row.id);
+    this.clearSameExit("criteria-review", r.itemId);
     this.log(r.itemId, r.by, r.approve ? "criteria_review.approved" : "criteria_review.rejected", { review: row.id, rev, criteria: r.criteria, summary: r.summary, ...(findings.length ? { findings } : {}), ...(checks.length ? { checks } : {}) }, at, proved);
     // An approval lets the plan dispatch the part it held (the tick); a
     // rejection with blocking findings waits for the owner. A part the tick
@@ -9401,9 +9414,10 @@ export class Ledger extends DurableObject<Env> {
   // as failed, approves nothing, and the criteria may be asked about again.
   failCriteriaReview(id: string, actor: string, request: number, reason: string, proved = false): CriteriaReview {
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
-    this.item(id);
+    const item = this.item(id);
     const row = this.criteriaReviewsFor(id).find((x) => x.id === request);
     if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${request}`, 404);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("stale_request", `${id} is ${item.state}, so its criteria review ${request} has ended and there is nothing to fail`, 409);
     if (row.state !== "claimed" || !row.claimedBy || !sameActor(row.claimedBy, actor)) {
       throw new RuleError("stale_request", `criteria review ${request} of ${id} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${actor}` : row.state}, so there is nothing of ${actor}'s to fail`, 409);
     }
@@ -10451,6 +10465,16 @@ export class Ledger extends DurableObject<Env> {
         this.update(id, rest, at);
         this.sql.exec(`UPDATE items SET state = ? WHERE id = ?`, state, id);
         this.sql.exec(`DELETE FROM same_exits WHERE item = ?`, id);
+        // A closed task's open and claimed criteria reviews and pre-reviews
+        // end with it, so no late report of a claim made before can record
+        // or count anything (failCriteriaReview, prereviewOutcome).
+        for (const r of this.sql.exec(`SELECT id, rev, reviewer, claimedBy FROM criteria_reviews WHERE item = ? AND state IN ('open', 'claimed')`, id).toArray()) {
+          this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, `the task was ${state}`, at, r.id);
+          this.log(id, ORCHESTRATOR, "criteria_review.withdrawn", { review: r.id, rev: r.rev, reviewer: r.claimedBy ?? r.reviewer, reason: `the task was ${state}` }, at);
+        }
+        for (const r of this.sql.exec(`SELECT * FROM prereviews WHERE item = ? AND state IN ('open', 'claimed')`, id).toArray()) {
+          this.settlePrereview(r, "withdrawn", { detail: `the task was ${state}` }, ORCHESTRATOR, at);
+        }
         for (const r of this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id`, id).toArray()) {
           const d = JSON.parse(r.dispatch as string) as Dispatch;
           this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
