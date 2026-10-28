@@ -23,10 +23,7 @@ export default async function ledgerCommand() {
   }
   if (sub === "restore") {
     if (typeof args.bookmark !== "string" || !args.bookmark.trim()) die(`name the bookmark to restore: atelier ledger restore --bookmark ID --project ${name}`);
-    const host = new URL(server()).host;
-    await confirmRestore(host, name, args.bookmark.trim());
-    const r = await call("POST", `${path}/restore`, { bookmark: args.bookmark.trim(), server: host }, OWNER);
-    console.log(formatRestore(r));
+    await restoreLedger(name, path, args.bookmark.trim(), new URL(server()).host);
     return;
   }
   if (sub === "dump") {
@@ -51,12 +48,19 @@ export default async function ledgerCommand() {
 // Names the server and waits for its name to be typed back. The index is
 // every project's, so a restore sent to the wrong server (ATELIER_SERVER
 // unset, say) rolls back the wrong one's registrations, tokens and pool.
-async function confirmRestore(host, name, bookmark) {
+export async function restoreLedger(name, path, bookmark, host, io = {}) {
+  await confirmRestore(host, name, bookmark, io);
+  const r = await (io.call ?? call)("POST", `${path}/restore`, { bookmark, server: host }, OWNER);
+  (io.log ?? console.log)(formatRestore(r));
+}
+
+// `io` stands in for the terminal and the failure exit in tests.
+export async function confirmRestore(host, name, bookmark, { input = process.stdin, output = process.stdout, fail = die } = {}) {
   const prompt = `Restoring ${name} to ${bookmark} on ${host} also rolls back the index, which is every project's, on ${host}.\nType the server's name (${host}) to go on: `;
-  if (!process.stdin.isTTY) die(`restore asks for confirmation in a terminal; ${prompt.split("\n")[0]}`);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  if (!input.isTTY) return fail(`restore asks for confirmation in a terminal; ${prompt.split("\n")[0]}`);
+  const rl = createInterface({ input, output });
   try {
-    if ((await rl.question(prompt)).trim() !== host) die("not confirmed; nothing was restored");
+    if ((await rl.question(prompt)).trim() !== host) fail("not confirmed; nothing was restored");
   } finally { rl.close(); }
 }
 
