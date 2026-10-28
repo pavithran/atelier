@@ -591,8 +591,8 @@ function bookmarks(env: Env) {
 
 // The way back from a switch of the server (t342), the developer's alone:
 // POST ledger/bookmark records a point-in-time bookmark of the project's
-// Ledger and of the index; POST ledger/restore { bookmark } restores both to
-// one it recorded, on their next start, which it asks for at once, and
+// Ledger and of the index; POST ledger/restore { bookmark, server } restores
+// both to one it recorded on this server, named by the server's host, on their next start, which it asks for at once, and
 // records the bookmarks that undo it; GET ledger/dump answers what a dump
 // holds apart from the rows, and ledger/dump?table=T&after=N a page of a
 // table's rows; POST ledger/import { step: begin | rows | finish } loads a
@@ -610,31 +610,49 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
   if (step !== "import" && !ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
   const own = `project:${ref.key}`;
   const stubOf = (name: string) => name === "__index" ? index(env) : name === own ? L : null;
+  // A bookmark id counts per project on each server, so b1 exists on every
+  // server that recorded one. The id names its server: b1@atelier.zone.
+  const server = c.url.host;
+  const named = (id: string) => `${id}@${server}`;
   if (step === "bookmark" && m === "POST") {
     const ledgers = [{ name: own, bookmark: await L.storageBookmark() }, { name: "__index", bookmark: await index(env).storageBookmark() }];
-    return json(await bookmarks(env).recordBookmark(ref.key, { project, at: new Date().toISOString(), by: actor, ledgers }), 201);
+    const saved = await bookmarks(env).recordBookmark(ref.key, { project, at: new Date().toISOString(), by: actor, ledgers });
+    return json({ ...saved, id: named(saved.id), server }, 201);
   }
   if (step === "restore" && m === "POST") {
     if (typeof body.bookmark !== "string" || !body.bookmark) throw new RuleError("bad_bookmark", "name the bookmark to restore: atelier ledger restore --bookmark ID", 400);
-    const record = await bookmarks(env).bookmarkRecord(ref.key, body.bookmark);
+    const at = body.bookmark.lastIndexOf("@");
+    if (at < 1) throw new RuleError("bad_bookmark", `a bookmark id names its server: ${body.bookmark.slice(0, 80)}@${server}; atelier ledger bookmark --project ${project} prints it`, 400);
+    const [bare, onServer] = [body.bookmark.slice(0, at), body.bookmark.slice(at + 1)];
+    if (onServer !== server) throw new RuleError("wrong_server", `bookmark ${body.bookmark.slice(0, 80)} was recorded on ${onServer.slice(0, 80)}, and this server is ${server}, so nothing was restored`, 409);
+    // The restore rolls back the index, which is every project's, on this
+    // server alone; the caller names it to say it is the one meant.
+    if (body.server !== server) throw new RuleError("confirm_server", `restoring ${project} to ${body.bookmark} on ${server} also rolls back the index, which is every project's; send server: ${server} to confirm`, 409);
+    const record = await bookmarks(env).bookmarkRecord(ref.key, bare);
     if (!record) throw new RuleError("unknown_bookmark", `no bookmark ${body.bookmark.slice(0, 80)} was recorded for ${project}, so nothing was restored; atelier ledger bookmark --project ${project} records one`, 404);
-    const at = new Date().toISOString();
-    const restored: { name: string; bookmark: string; undo: string }[] = [];
+    const when = new Date().toISOString();
+    const B = bookmarks(env);
+    const restored: { name: string; bookmark: string; undo: string; undoId: string }[] = [];
     for (const l of record.ledgers) {
       const stub = stubOf(l.name);
-      if (!stub) throw new RuleError("bad_bookmark", `bookmark ${record.id} names ${l.name}, which is not ${project}'s Ledger or the index`, 409);
-      try { restored.push({ ...l, undo: (await stub.restoreBookmark(l.bookmark)).undo }); } catch (error) {
+      if (!stub) throw new RuleError("bad_bookmark", `bookmark ${named(record.id)} names ${l.name}, which is not ${project}'s Ledger or the index`, 409);
+      let undo: string;
+      try { undo = (await stub.restoreBookmark(l.bookmark)).undo; } catch (error) {
         if (!restored.length) throw error;
+        await B.noteRestore(ref.key, record.id, { at: when, by: actor });
         const rule = parseRuleError(error);
-        throw new RuleError("restore_partial", `${restored.map((r) => r.name).join(" and ")} restore${restored.length === 1 ? "s" : ""} to ${record.id} on ${restored.length === 1 ? "its" : "their"} next start, but ${l.name} did not take the bookmark (${rule?.detail ?? String(error)}); the bookmarks that undo the first: ${restored.map((r) => `${r.name} ${r.undo}`).join(", ")}`, 500);
+        throw new RuleError("restore_partial", `${restored.map((r) => r.name).join(" and ")} restore${restored.length === 1 ? "s" : ""} to ${named(record.id)} on ${restored.length === 1 ? "its" : "their"} next start, but ${l.name} did not take the bookmark (${rule?.detail ?? String(error)}); the bookmarks that undo the first, recorded: ${restored.map((r) => `${r.name} ${named(r.undoId)}`).join(", ")}`, 500);
       }
+      // Recorded before the next Ledger is asked, so a failure after this
+      // one has taken the restore still leaves its undo on record.
+      const first = await B.recordBookmark(ref.key, { project, at: when, by: actor, ledgers: [{ name: l.name, bookmark: undo }], undoes: record.id });
+      restored.push({ ...l, undo, undoId: first.id });
     }
-    const B = bookmarks(env);
-    await B.noteRestore(ref.key, record.id, { at, by: actor });
-    const undo = await B.recordBookmark(ref.key, { project, at, by: actor, ledgers: restored.map((r) => ({ name: r.name, bookmark: r.undo })), undoes: record.id });
+    await B.noteRestore(ref.key, record.id, { at: when, by: actor });
+    const undo = await B.recordBookmark(ref.key, { project, at: when, by: actor, ledgers: restored.map((r) => ({ name: r.name, bookmark: r.undo })), undoes: record.id });
     return json({
-      project, bookmark: record.id, recordedAt: record.at, restoring: restored.map(({ name, bookmark }) => ({ name, bookmark })), undo: undo.id,
-      detail: `${restored.map((r) => r.name).join(" and ")} restore to ${record.id} (${record.at}) on their next start, which each was asked to make once idle; bookmark ${undo.id} undoes it`,
+      project, server, bookmark: named(record.id), recordedAt: record.at, restoring: restored.map(({ name, bookmark }) => ({ name, bookmark })), undo: named(undo.id),
+      detail: `${restored.map((r) => r.name).join(" and ")} restore to ${named(record.id)} (${record.at}) on their next start, which each was asked to make once idle; bookmark ${named(undo.id)} undoes it`,
     });
   }
   if (step === "dump" && m === "GET") {
