@@ -87,7 +87,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
         : `check in with the holder${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact them before handing the task to another agent`);
     for (const f of stalledForks(live, events, now))
       add("fork-stalled", f.item, `no fork became ready after the tick replaced it: ${f.forks.map((k) => `${k.name} (${Math.floor(k.ageMs / 60_000)} min)`).join(", ")}`, f.since,
-        `refile it: ${command(`new "TITLE" --accept "TEXT" --scope GLOB`)} with the task's brief and criteria; then ${command(`abandon ${f.item}`)}`);
+        `request a fresh fork: ${command(`release ${f.item} --note "Fresh fork after the replacements stalled"`)}, then claim it again with ${command(`start ${f.item} --as H/M`)}; the release starts the count of replacement forks again, the task keeps its history, and Atelier deletes no repository`);
     for (const w of workflows) {
       if (!live.some((i) => i.id === w.item && i.state !== "merged" && i.state !== "abandoned")) continue;
       if (w.record.stage === "conflict" && !["complete", "errored", "terminated", "absent"].includes(w.status ?? "") && age(w.record.stageAt) > limits.conflictWaitMinutes * 60_000)
