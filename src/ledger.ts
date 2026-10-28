@@ -4510,7 +4510,9 @@ export class Ledger extends DurableObject<Env> {
   // reason arrive, never a value.
   hookScanned(id: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[], refused: boolean): Item {
     if (!/^[0-9a-f]{40,64}$/.test(head)) throw new RuleError("bad_head", "a hook scan names the full commit it scanned", 400);
-    this.item(id);
+    const item = this.item(id);
+    // A push that ends after its task closed leaves nothing behind.
+    if (item.state === "merged" || item.state === "abandoned") return item;
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `hook-scan:${id}:${head}`, JSON.stringify({ head, hits, unscanned }));
     if (refused) return this.setSecret(id, "atelier/hook", head, hits, unscanned, true);
     return this.item(id);
