@@ -78,3 +78,9 @@ test("a refused run whose stderr is a size refusal is logged and reported as one
   assert.match(refusedLog(review(), state), /exit code 1, refused its input for its size \(limit 1048576; size 1500000\)/);
   assert.match(exitDetail(state.harnessExit), /^harness exit code 1, refused its input for its size \(limit 1048576; size 1500000\); stderr: /);
 });
+
+test("key=value secrets on stderr lose their values before they are sent on", () => {
+  const out = stderrSummary("API_TOKEN=abc123def456\nPASSWORD=hunter2");
+  assert.doesNotMatch(out, /abc123def456|hunter2/);
+  assert.match(out, /API_TOKEN=\[key removed\]/);
+});
