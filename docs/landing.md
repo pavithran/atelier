@@ -77,11 +77,14 @@ journal, which the cancel removes.
 
 The merge runs in the registered checkout, and so does `atelier ship`
 (docs/ship.md). Once a deploy raced the lander there. So `atelier merge`,
-which `atelier land` runs for its merge step, takes the project's checkout
-lease before it touches the checkout and frees it when it ends, however it
-ends; a process killed outright leaves it to lapse after 15 minutes without
+which `atelier land` runs for its merge step, and `atelier merge --cancel`
+take the project's checkout lease before they touch the checkout and free it
+when they end, however they end; a process killed outright leaves it to lapse after 15 minutes without
 a heartbeat. While a ship holds it, the merge waits and says who holds it.
-The server keeps the lease (`GET /api/projects/P/checkout-lease`: holder,
+A holder that stalled past the limit and was taken over stops at its next
+step (before the local merge, before publishing, before post-merge steps),
+saying so as a fact with a `next`, so nothing more of it touches the
+checkout. The server keeps the lease (`GET /api/projects/P/checkout-lease`: holder,
 kind, task, machine, process and since) beside the landing lease, which
 guards the baseline rather than the checkout.
 

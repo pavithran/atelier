@@ -61,6 +61,8 @@ export async function landing(t, { fresh = false, env: extra = {} } = {}) {
       box.state = 'merged'; box.lease = null;
       return reply(200, item());
     }
+    // The checkout lease merge and its cancel take and release (G9), always free here.
+    if (path.endsWith('/checkout-lease') && req.method === 'POST') return reply(200, {});
     return reply(404, { error: 'not_found', detail: `${req.method} ${path}` });
   });
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok));

@@ -61,6 +61,26 @@ async function serve(t, root = scratch(t, "atelier-checkout-server-")) {
   return { root, server, api, close };
 }
 
+// Moves the live lease's last heartbeat back past the liveness limit in the
+// server's SQLite file, which is how a holder stalled that long looks to the
+// server. The server reads the row afresh on every call. Answers the lease.
+function stall(real) {
+  const ledgers = join(real.root, "data", "ledgers");
+  for (const file of readdirSync(ledgers).filter((n) => n.endsWith(".sqlite"))) {
+    const db = new DatabaseSync(join(ledgers, file));
+    db.exec("PRAGMA busy_timeout = 5000");
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'checkout-lease'").get();
+    if (row) {
+      const lease = { ...JSON.parse(row.value), renewedAt: new Date(Date.now() - CHECKOUT_LEASE_EXPIRY_MS - 1000).toISOString() };
+      db.prepare("UPDATE meta SET value = ? WHERE key = 'checkout-lease'").run(JSON.stringify(lease));
+      db.close();
+      return lease;
+    }
+    db.close();
+  }
+  throw new Error("no checkout lease to stall");
+}
+
 async function newProject(real) {
   assert.equal((await real.api("PUT", "/projects/demo", {})).status, 200);
   assert.equal((await real.api("POST", "/projects/demo/items", { title: "A task the checkout lease names" })).status, 201);
@@ -100,7 +120,7 @@ async function landing(t, real, opts = {}) {
 // A ship: a checkout registered as demo whose ship order deploys with a
 // script that waits for SHIP_GO, against a stand-in that sends the checkout
 // lease and the deploy records to the real server.
-async function shipper(t, real) {
+async function shipper(t, real, { failDeploys = 0 } = {}) {
   const dir = scratch(t, "atelier-checkout-ship-");
   const g = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@x.test", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@x.test" } }).trim();
   const checkout = join(dir, "checkout");
@@ -110,11 +130,12 @@ async function shipper(t, real) {
   g(checkout, "config", "user.name", "T"); g(checkout, "config", "user.email", "t@x.test");
   writeFileSync(join(checkout, "bin", "deploy.sh"), "#!/bin/sh\ntouch \"$SHIP_STARTED\"\nwhile [ ! -e \"$SHIP_GO\" ] && [ -d \"$(dirname \"$SHIP_GO\")\" ]; do sleep 0.05; done\nexit ${DEPLOY_EXIT:-0}\n");
   chmodSync(join(checkout, "bin", "deploy.sh"), 0o755);
-  const state = { approvals: [], runs: [] };
+  const state = { approvals: [], runs: [], deployFails: 0 };
   const url = await listen(t, createServer(async (req, res) => {
     let raw = ""; for await (const c of req) raw += c;
     const path = new URL(req.url, "http://x").pathname, body = raw ? JSON.parse(raw) : undefined;
     const send = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
+    if (path === "/api/projects/demo/deploys" && req.method === "POST" && state.deployFails < failDeploys) { state.deployFails++; return send(503, { error: "unavailable", detail: "the stand-in fails this record" }); }
     if (path === "/api/projects/demo/checkout-lease" || path === "/api/projects/demo/deploys") return forward(req, res, `${real.server.url}${req.url}`, raw);
     if (path === "/api/version") return send(200, { capabilities: SERVER_CAPABILITIES });
     if (path === "/live") return send(200, {});
@@ -170,9 +191,14 @@ test("the real lease: a second holder is refused naming the first, a retried tak
   assert.equal(refused.body.error, "checkout_lease");
   assert.match(refused.body.detail, /^demo's registered checkout is held by t1's landing \(its merge step\), owner on studio \(pid 4242\), since \d{4}-\d\d-\d\d \d\d:\d\d UTC; landing and shipping never use it at the same time$/);
   assert.match(refused.body.next, /atelier merge and atelier ship wait for the checkout themselves, and a holder that died frees it 15 minutes after its last heartbeat/);
-  // The same take again (a retried request) is the same take.
+  // The same take again (a retried request) is the same take, renewed even
+  // when its lease had lapsed meanwhile.
+  stall(real);
+  assert.equal((await real.api("GET", P)).body.lease, null);
   const again = await take("landing-lease-1", "landing", { item: "t1", head: sha("a") });
-  assert.deepEqual(again.body.lease, landed.body.lease);
+  assert.deepEqual({ ...again.body.lease, renewedAt: null }, { ...landed.body.lease, renewedAt: null });
+  assert.ok(Date.parse(again.body.lease.renewedAt) > Date.now() - 60_000, "the retried take renewed it");
+  assert.equal((await real.api("GET", P)).body.lease.id, "landing-lease-1");
   const renewed = await real.api("POST", P, { action: "renew", id: "landing-lease-1" });
   assert.equal(renewed.status, 200);
   assert.ok(renewed.body.lease.renewedAt >= landed.body.lease.renewedAt);
@@ -361,4 +387,65 @@ test("the next landing reports a checkout head changed outside the lease as a fa
   assert.equal(f.box.states.t2, "merged");
   const moved = (await real.api("GET", "/projects/demo/events")).body.events.find((e) => e.kind === "checkout.moved");
   assert.deepEqual([moved.itemId, moved.data.was, moved.data.now, moved.data.kind], [null, merged, byHand, "landing"]);
+});
+
+test("merge --cancel takes the checkout lease too: beside a running ship it waits, saying who holds the checkout", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const real = await serve(t);
+  await newProject(real);
+  const ship = await shipper(t, real);
+  const shipping = ship.run();
+  await until("the deploy to start", () => existsSync(ship.started));
+  const f = await landing(t, real);
+  let waiting = false;
+  f.onOutput = (out) => { if (/t1's merge --cancel waits for proj's registered checkout: it is held by atelier ship, owner on .+ \(pid \d+\), since /.test(out)) waiting = true; };
+  const cancel = f.run(f.checkout, "merge", "t1", "--cancel", "--discard-local");
+  await until("the cancel to wait for the checkout", () => waiting);
+  assert.ok(!f.box.requests.some((r) => r.path.endsWith("/items/t1")), "the cancel read nothing before it held the checkout");
+  writeFileSync(ship.go, "");
+  assert.equal((await shipping.done).status, 0);
+  const cancelled = await cancel;
+  assert.equal(cancelled.status, 0, cancelled.output);
+  assert.match(cancelled.output, /proj's registered checkout is free; t1's merge --cancel goes on\./);
+  const kinds = (await real.api("GET", "/projects/demo/events")).body.events.filter((e) => e.kind === "checkout.leased").map((e) => e.data.kind).reverse();
+  assert.deepEqual(kinds, ["ship", "landing"]);
+  assert.equal((await real.api("GET", "/projects/demo/checkout-lease")).body.lease, null, "the cancel released it");
+});
+
+test("a ship that stalled past the limit and was taken over stops at its next step, as a fact with a next, and records the failed deploy", async (t) => {
+  const real = await serve(t);
+  await newProject(real);
+  const ship = await shipper(t, real);
+  // No heartbeat while it stalls.
+  const shipping = ship.run({ ATELIER_CHECKOUT_BEAT_MS: "600000" });
+  await until("the deploy to start", () => existsSync(ship.started));
+  const stalled = stall(real);
+  const taken = await real.api("POST", "/projects/demo/checkout-lease", { action: "take", id: "landing-takes-over", kind: "landing", item: "t1", host: "mbp", pid: 77 });
+  assert.equal(taken.status, 200, JSON.stringify(taken.body));
+  assert.equal(taken.body.replaced.id, stalled.id);
+  // The ship resumes: its deploy ends, and the next step does not start.
+  writeFileSync(ship.go, "");
+  const r = await shipping.done;
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /^atelier: Fact: ship lost demo's checkout lease: the registered checkout is now held by t1's landing \(its merge step\), owner on mbp \(pid 77\), since .* UTC, not by this lease, which lapsed\. It stopped before its next step, so nothing more of it touched the checkout\.\nnext: look at the checkout/);
+  assert.deepEqual(ship.state.runs.map((x) => x.step), ["commit", "deploy"], "verify-delivery and wrap never ran");
+  const deploys = (await real.api("GET", "/projects/demo/deploys")).body.deploys;
+  assert.deepEqual([deploys[0].result, deploys[0].step, deploys[0].ran], ["failed", "verify-delivery", ["commit", "deploy"]]);
+  assert.match(deploys[0].note, /ship lost demo's checkout lease/);
+  // The landing's lease is left alone by the ship's exit.
+  assert.equal((await real.api("GET", "/projects/demo/checkout-lease")).body.lease.id, "landing-takes-over");
+});
+
+test("a deploy record the server refuses for a while is still written, on the exit path's retries", async (t) => {
+  const real = await serve(t);
+  await newProject(real);
+  // Four tries of request() fail, then the exit path's first try succeeds.
+  const ship = await shipper(t, real, { failDeploys: 4 });
+  writeFileSync(ship.go, "");
+  const r = await ship.run({ DEPLOY_EXIT: "2", ATELIER_RETRY_MS: "0,0,0" }).done;
+  assert.equal(r.status, 1, r.stdout);
+  assert.equal(ship.state.deployFails, 4);
+  const deploys = (await real.api("GET", "/projects/demo/deploys")).body.deploys;
+  assert.deepEqual(deploys.map((d) => [d.result, d.step, d.note]), [["failed", "deploy", "bin/deploy.sh exited 2"]]);
+  assert.doesNotMatch(r.stdout, /could not be written/);
 });

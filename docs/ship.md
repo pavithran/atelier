@@ -361,7 +361,9 @@ it (`ship waits for P's registered checkout: it is held by t3's landing (its
 merge step), owner on studio (pid 4242), since ...`), and goes on once it is
 free; a merge started during a ship waits the same way. The holder renews the
 lease every minute; one that stopped renewing for 15 minutes (it died) is
-taken over, and the taker says whose lease lapsed. `--dry-run` takes no lease.
+taken over, and the taker says whose lease lapsed. A ship whose lease was
+taken over that way stops before its next step, as a fact with a `next`, and
+records the deploy as failed. `--dry-run` takes no lease.
 
 While a merged revision's declared protected actions have not run, the
 developer's inbox carries a reminder. The kinds the order needs unconditionally

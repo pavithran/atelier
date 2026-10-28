@@ -344,8 +344,9 @@ test("ship runs each step in order with its approvals, records each one redacted
   assert.equal(git(f.github, "rev-parse", "main"), git(f.checkout, "rev-parse", "HEAD"), "github holds the shipped head");
   // The ship held the checkout lease throughout (G9), released it at the
   // head it left the checkout at, and recorded its deploy.
-  assert.deepEqual(f.state.leases.map((x) => [x.action, x.kind ?? null]), [["take", "ship"], ["release", null]]);
-  assert.equal(f.state.leases[1].head, git(f.checkout, "rev-parse", "HEAD"));
+  // Each step started under it: one renewal per step boundary.
+  assert.deepEqual(f.state.leases.map((x) => [x.action, x.kind ?? null]), [["take", "ship"], ...runs.map(() => ["renew", null]), ["release", null]]);
+  assert.equal(f.state.leases.at(-1).head, git(f.checkout, "rev-parse", "HEAD"));
   assert.equal(f.state.lease, null);
   assert.deepEqual(f.state.deploys.map((d) => [d.head, d.result, d.ran.join(",")]), [[f.head, "shipped", "commit,deploy,verify-delivery,wrap,push"]]);
   assert.equal(f.state.deploys[0].ship, runs[0].ship);

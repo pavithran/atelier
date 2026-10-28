@@ -5436,7 +5436,13 @@ export class Ledger extends DurableObject<Env> {
     const input = takeInput(body);
     const now = new Date(), at = now.toISOString();
     const held = this.checkoutLeaseRow();
-    if (held && held.id === input.id) return { lease: held };
+    // The same take again (a retried request) keeps the lease, renewed:
+    // another holder that took it since would have a lease of its own.
+    if (held && held.id === input.id) {
+      const renewed = { ...held, renewedAt: at };
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('checkout-lease', ?)`, JSON.stringify(renewed));
+      return { lease: renewed };
+    }
     if (held && !checkoutLeaseLapsed(held, now.getTime())) throw checkoutHeld(held, this.project().name);
     const lease: CheckoutLease = { id: input.id, kind: input.kind, holder: actor, since: at, renewedAt: at, ...(input.item ? { item: input.item } : {}), ...(input.host ? { host: input.host } : {}), ...(input.pid ? { pid: input.pid } : {}) };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('checkout-lease', ?)`, JSON.stringify(lease));

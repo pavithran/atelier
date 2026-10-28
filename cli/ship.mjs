@@ -454,6 +454,8 @@ export async function ship(ctx) {
   ctx.began?.({ ship: id, head: commit });
   for (const [i, s] of plan.steps.entries()) {
     if (WITH_PUSH.has(s.step) && !ctx.push) continue;
+    // Each step starts only while the ship still holds the checkout (G9).
+    await ctx.checkpoint?.(s.step, ran);
     ctx.stage(`ship at ${s.step}`);
     // Each kind this step needs takes its approval now, before anything of
     // the step runs: one approval, one run. The push needs none: it is the

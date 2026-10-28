@@ -8,7 +8,7 @@ import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
 import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
-import { holdCheckout, postOnExit } from "../checkout-hold.mjs";
+import { holdCheckout, postOnExit, stayHeld } from "../checkout-hold.mjs";
 
 // The project owner runs the project's ship order in its registered
 // checkout (cli/ship.mjs): each protected step only with an approval at the
@@ -38,11 +38,20 @@ export default async function shipCommand() {
   // Once begun, the ship records its deploy, shipped or failed (G9); one
   // that ends any other way (a refused request, say) is recorded as failed
   // on its way out, since die() runs no finally.
-  let begun = null, recorded = false;
+  // `recorded` is set only once the server took the record; the exit path
+  // posts what is left, retrying briefly.
+  let begun = null, recorded = false, pending = null;
   const onExit = () => {
     if (!begun || recorded) return;
-    recorded = true;
-    postOnExit(`${P(name)}/deploys`, { ...begun, result: "failed", note: "atelier ship ended before it finished; its output says why" });
+    recorded = postOnExit(`${P(name)}/deploys`, pending ?? { ...begun, result: "failed", note: "atelier ship ended before it finished; its output says why" });
+  };
+  const deployed = async (record) => {
+    pending = record;
+    try { await request("POST", `${P(name)}/deploys`, record, OWNER); recorded = true; }
+    catch (error) {
+      recorded = postOnExit(`${P(name)}/deploys`, record);
+      if (!recorded) console.log(`Warning: the deploy record could not be written: ${error.message}`);
+    }
   };
   process.on("exit", onExit);
   try {
@@ -64,11 +73,10 @@ export default async function shipCommand() {
       push: args.push === true,
       identity,
       began: (record) => { begun = record; },
-      deployed: async (record) => {
-        recorded = true;
-        try { await request("POST", `${P(name)}/deploys`, record, OWNER); }
-        catch (error) { console.log(`Warning: the deploy record could not be written: ${error.message}`); }
-      },
+      deployed,
+      // A lease lost to a takeover stops the ship before its next step,
+      // recorded as a failed deploy (G9).
+      checkpoint: (step, ran) => stayHeld(checkout, (lost) => deployed({ ...begun, result: "failed", step, ran: [...ran], note: lost.detail.slice(0, 1000) })),
     });
   } finally { process.off("exit", onExit); await checkout?.release(); }
 }
