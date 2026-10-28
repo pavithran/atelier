@@ -886,6 +886,11 @@ it("a review skip is recorded under its request and read back by it, so an older
     { runner: "home:studio", at: expect.any(String), note: "no agent token" },
     { runner: "home:desk", at: expect.any(String), note: "wrong agent" },
   ]);
+  // t376: a skip's note is stored with key=value secrets removed.
+  await L.recordReviewSkip(partId, first.request, head, "home:lab", "owner", "API_TOKEN=abc123def456 PASSWORD=hunter2");
+  const secret = JSON.stringify(await L.reviewSkips(partId, first.request));
+  expect(secret).toContain("API_TOKEN=[key removed]");
+  expect(secret).not.toMatch(/abc123def456|hunter2/);
   const offers = [
     { runner: "home:studio", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
     { runner: "home:desk", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
