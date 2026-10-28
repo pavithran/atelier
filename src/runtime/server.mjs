@@ -1,0 +1,129 @@
+// The Atelier server under Node (Atelier 2.0, task 1; design section 4.2):
+// one process serving `src/index.ts`'s `fetch` over Node's `http`, with the
+// Ledger Durable Objects as SQLite files under the environment's data
+// directory (src/runtime/namespace.mjs). Artifacts, R2 and the landing
+// Workflow are bindings that refuse with `not_supported` until the tasks
+// that replace them (Git hosting, files for `large`) land.
+//
+// Settings come from three places, later ones winning: defaults for the
+// environment, the process environment (only the names in SETTINGS), and a
+// secrets directory holding one file per name (mode 600, as
+// /Users/atelierd/secrets is). Nothing read from either is written to disk.
+import "./loader.mjs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { createServer } from "node:http";
+import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { Namespace, notSupported } from "./namespace.mjs";
+
+export const SETTINGS = [
+  "ATELIER_TOKEN", "OWNER_ACTOR", "OWNER_NAME", "TIMEZONE", "PUBLIC_ORIGIN", "DEPLOYED_MAIN", "OVERRIDE_SECRET",
+  "NTFY_TOPIC", "CUSTODY_TOKEN", "CF_ACCOUNT_ID", "CF_ACCESS_OWNER_EMAIL", "CF_ACCESS_ISS", "CF_ACCESS_AUD",
+  "ANALYTICS_TOKEN", "AI_GATEWAY_ID", "SOURCE_PROJECT", "ATELIER_REVIEW_DIFF_MAX",
+  "USAGE_WINDOW_PERCENT", "USAGE_WEEKLY_PERCENT", "USAGE_DAILY_SPEND", "USAGE_BALANCE_FLOOR",
+];
+const NAME = /^[A-Z][A-Z0-9_]*$/;
+
+// A binding the Node server does not provide yet: every method refuses.
+function unsupported(binding) {
+  return new Proxy({}, {
+    get(_, prop) {
+      if (typeof prop !== "string" || prop === "then") return undefined;
+      return async () => { throw notSupported(`${binding}.${prop}`); };
+    },
+  });
+}
+
+export function readSecrets(dir) {
+  const out = {};
+  if (!dir) return out;
+  for (const name of readdirSync(dir)) {
+    if (!NAME.test(name)) continue;
+    const path = join(dir, name);
+    if (!statSync(path).isFile()) continue;
+    out[name] = readFileSync(path, "utf8").trim();
+  }
+  return out;
+}
+
+function deployedMain() {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: new URL("../..", import.meta.url), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch { return undefined; }
+}
+
+export function settings({ env, port, secretsDir, vars = {}, processEnv = process.env }) {
+  const out = { AI_GATEWAY_ID: "atelier", PUBLIC_ORIGIN: `http://localhost:${port}`, DEPLOYED_MAIN: deployedMain(), ATELIER_ENV: env };
+  for (const name of SETTINGS) if (processEnv[name]?.trim()) out[name] = processEnv[name].trim();
+  Object.assign(out, readSecrets(secretsDir), vars);
+  for (const [k, v] of Object.entries(out)) if (v === undefined) delete out[k];
+  return out;
+}
+
+async function toRequest(req, origin) {
+  const url = new URL(req.url ?? "/", origin);
+  const headers = new Headers();
+  for (let i = 0; i < req.rawHeaders.length; i += 2) headers.append(req.rawHeaders[i], req.rawHeaders[i + 1]);
+  const body = req.method === "GET" || req.method === "HEAD" ? undefined : Readable.toWeb(req);
+  return new Request(url, { method: req.method, headers, body, duplex: body ? "half" : undefined });
+}
+
+async function send(res, response, head) {
+  const headers = {};
+  response.headers.forEach((v, k) => { if (k !== "set-cookie") headers[k] = v; });
+  const cookies = response.headers.getSetCookie();
+  if (cookies.length) headers["set-cookie"] = cookies;
+  res.writeHead(response.status, response.statusText || undefined, headers);
+  if (head || !response.body) return res.end();
+  for await (const chunk of response.body) res.write(chunk);
+  res.end();
+}
+
+// Starts a server for one environment. dataDir: where its Ledgers live
+// (created mode 700). Resolves once it listens, to { url, port, env,
+// namespace, close }.
+// `bindings` replaces the refusing ARTIFACTS, LARGE or LANDING_WORKFLOW with a
+// test's own until the tasks that replace them land.
+export async function startServer({ env = "staging", dataDir, port = 0, host = "0.0.0.0", secretsDir, vars, bindings: given = {} } = {}) {
+  if (env !== "production" && env !== "staging" && env !== "test") throw new Error(`--env is production or staging, not ${env}`);
+  if (!dataDir) throw new Error("--data DIR names the environment's data directory");
+  process.umask(0o077);
+  const dir = resolve(dataDir);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const { Ledger, default: worker } = await import("../index.ts");
+  globalThis.caches ??= { default: { match: async () => undefined, put: async () => undefined, delete: async () => false } };
+  const bindings = { ARTIFACTS: unsupported("ARTIFACTS"), LARGE: unsupported("LARGE"), LANDING_WORKFLOW: unsupported("LANDING_WORKFLOW"), ...given };
+  const workerEnv = {};
+  const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
+  const pending = new Set();
+  const server = createServer(async (req, res) => {
+    const kept = [];
+    const ctx = { waitUntil: (p) => kept.push(Promise.resolve(p).catch((err) => console.error("work kept after a request failed:", err))), passThroughOnException() {}, props: {} };
+    const done = (async () => {
+      try {
+        const request = await toRequest(req, workerEnv.PUBLIC_ORIGIN);
+        await send(res, await worker.fetch(request, workerEnv, ctx), req.method === "HEAD");
+      } catch (err) {
+        console.error(`${req.method} ${(req.url ?? "").split("?")[0]} failed:`, err);
+        if (!res.headersSent) { res.writeHead(500, { "content-type": "text/plain" }); res.end("internal error\n"); } else res.destroy();
+      }
+      await Promise.all(kept);
+    })();
+    pending.add(done);
+    done.finally(() => pending.delete(done));
+  });
+  server.keepAliveTimeout = 65_000;
+  await new Promise((ok, fail) => { server.once("error", fail); server.listen(port, host, ok); });
+  const bound = server.address().port;
+  Object.assign(workerEnv, settings({ env, port: bound, secretsDir, vars }), bindings, { LEDGER: namespace });
+  namespace.start();
+  const url = `http://localhost:${bound}`;
+  let closing;
+  const close = () => closing ??= (async () => {
+    await new Promise((ok) => { server.close(() => ok()); server.closeIdleConnections?.(); });
+    await Promise.all([...pending]);
+    await namespace.close();
+  })();
+  return { url, port: bound, env, namespace, close, settings: workerEnv };
+}

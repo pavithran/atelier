@@ -9,7 +9,8 @@
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "erasableSyntaxOnly": true
   },
   "include": ["worker-configuration.d.ts", "src/**/*.ts"]
 }
