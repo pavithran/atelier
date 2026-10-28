@@ -58,6 +58,7 @@ import type { RunReport } from "./models/reliability.ts";
 import { sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
 import { matchServed, SERVED, SERVED_LIMIT, servedActor, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
+import { privatePath } from "./rules.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, standingRoute, type PartRoute } from "./plans/route.ts";
@@ -3962,6 +3963,11 @@ export class Ledger extends DurableObject<Env> {
     }, now, proved);
     this.retainApprovals(item, observedHead, this.refreshInFlight(id) ? null : retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
     this.afterPlanChange(id);
+    // On the Node server the pre-receive hook scanned this head before the
+    // ref moved (hookScanned); what it found is the push's scan record, so
+    // nothing is left pending.
+    const found = scan ? this.takeHookScan(id, observedHead) : null;
+    if (found && found.head === observedHead) return this.setSecret(id, "atelier/hook", observedHead, found.hits, found.unscanned);
     return this.item(id);
   }
 
@@ -4447,9 +4453,13 @@ export class Ledger extends DurableObject<Env> {
   // result for any other head is dropped, and the newer head's own pending
   // scan stands. The scan pending for `head` is cleared in the same write as
   // the flags, whether the findings changed or not.
-  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[] = []): Item {
+  //
+  // `refused` records the findings of a push the hook refused (hookScanned),
+  // whose head the item never records: the flags stand so the owner can
+  // clear them, and the next push the hook lets through replaces them.
+  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[] = [], refused = false): Item {
     const item = this.item(id);
-    if (item.head !== head) return item; // a newer push superseded this scan
+    if (!refused && item.head !== head) return item; // a newer push superseded this scan
     const at = new Date().toISOString();
     const clearances = item.secretClearances ?? [];
     const cleared = (file: string, fingerprint: string) => !!fingerprint && clearances.some((c) => c.file === file && c.fingerprint === fingerprint);
@@ -4481,12 +4491,70 @@ export class Ledger extends DurableObject<Env> {
     const standing = flags.filter((f) => !f.cleared), held = flags.filter((f) => f.cleared);
     this.log(id, actor, "secret.flagged", {
       head,
+      ...(refused ? { refused: true } : {}),
       hits: standing.filter((f) => !f.unscanned).map(where),
       ...(standing.some((f) => f.unscanned) ? { unscanned: standing.filter((f) => f.unscanned).map((f) => f.file) } : {}),
       // What a clearance recorded before matched: found again, not blocking.
       ...(held.length ? { cleared: held.map(where) } : {}),
     }, at);
     return this.item(id);
+  }
+
+  // What the pre-receive hook found in a push to the item's branch (Atelier
+  // 2.0, design section 4.4, rule 5): the hits and unscanned paths of every
+  // commit the branch adds, for `head`. The hook runs in its own process and
+  // cannot reach the Ledger, so the server records its report here once the
+  // push ends. A push it let through is kept and becomes the scan record when
+  // recordPush records that head; a push it refused is recorded on the item
+  // now, so the owner can clear it. Only file, line, fingerprint, commit and
+  // reason arrive, never a value.
+  hookScanned(id: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[], refused: boolean): Item {
+    if (!/^[0-9a-f]{40,64}$/.test(head)) throw new RuleError("bad_head", "a hook scan names the full commit it scanned", 400);
+    const item = this.item(id);
+    // A push that ends after its task closed leaves nothing behind.
+    if (item.state === "merged" || item.state === "abandoned") return item;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `hook-scan:${id}:${head}`, JSON.stringify({ head, hits, unscanned }));
+    if (refused) return this.setSecret(id, "atelier/hook", head, hits, unscanned, true);
+    return this.item(id);
+  }
+
+  // The report hookScanned kept for the item's `head`, or null. Each head has
+  // its own slot, so two pushes to one task do not replace each other's.
+  hookScan(id: string, head: string): { head: string; hits: SecretHit[]; unscanned: UnscannedFile[] } | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `hook-scan:${id}:${head}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  // The report for `head`, which recordPush consumes: the slot is emptied.
+  private takeHookScan(id: string, head: string) {
+    const found = this.hookScan(id, head);
+    if (found) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `hook-scan:${id}:${head}`);
+    return found;
+  }
+
+  // Every report kept for the item, once it merges or is abandoned.
+  private dropHookScans(id: string): void {
+    this.sql.exec(`DELETE FROM meta WHERE key LIKE ?`, `hook-scan:${id}:%`);
+  }
+
+  // The project's private paths (cli/private-guard.mjs): files that never
+  // leave the developer's Macs, which the pre-receive hook refuses in any
+  // pushed commit (design section 4.4, rule 6). Setting them replaces the
+  // list; each is checked as the list in iCloud is.
+  privatePaths(): string[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'private-paths'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : [];
+  }
+  setPrivatePaths(paths: unknown): string[] {
+    if (!Array.isArray(paths)) throw new RuleError("bad_private", "the private paths are a list", 400);
+    const kept: string[] = [];
+    for (const p of paths) {
+      const r = privatePath(String(p));
+      if ("error" in r) throw new RuleError("bad_private", r.error, 400);
+      if (!kept.includes(r.path)) kept.push(r.path);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('private-paths', ?)`, JSON.stringify(kept));
+    return kept;
   }
 
   // The project owner clears the standing secret flags, recording the reason:
@@ -5800,6 +5868,7 @@ export class Ledger extends DurableObject<Env> {
     if (!post) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
+    this.dropHookScans(id);
     // A merge in fast mode (t300) lands on the checks alone; the independent
     // review is owed after it, and `fast` marks the event so that review may
     // be same-family and a rejection files a fix task (mergedFast).
@@ -5868,6 +5937,7 @@ export class Ledger extends DurableObject<Env> {
     // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
+    this.dropHookScans(id);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}), ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {}) }, at);
     this.afterPlanChange(id);
@@ -6195,6 +6265,7 @@ export class Ledger extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       this.update(id, { head: receipt.commit, accepted_head: receipt.commit }, at);
       this.update(id, { state: "merged", owner: null }, at);
+      this.dropHookScans(id);
       this.log(id, actor, "item.landed_fast", { ...receipt }, at);
       this.log(id, actor, "item.merged", { mergeCommit: receipt.mergeCommit, head: receipt.commit, observedOnBaseline: false, fast: true }, at);
     });
@@ -6276,6 +6347,7 @@ export class Ledger extends DurableObject<Env> {
       this.assertNoClaimInFlight(id);
       this.dropToken(id, workspace.token);
       this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
+      this.dropHookScans(id);
       this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
       // GET /api/version reads main's head from the ledger (t142). The first
       // record made while none is stored takes the baseline tip read while
@@ -7122,6 +7194,7 @@ export class Ledger extends DurableObject<Env> {
       for (const t of [...targets].reverse()) {
         if (tokens) this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, t.id);
         this.update(t.id, { state: "abandoned", owner: null }, at);
+        this.dropHookScans(t.id);
         this.log(t.id, actor, "item.abandoned", { note, plan: id }, at);
       }
       this.log(id, actor, "plan.stopped", { note, closed: targets.map((t) => t.id) }, at);
@@ -7478,6 +7551,7 @@ export class Ledger extends DurableObject<Env> {
       record.blocked = null;
       this.savePlanRecord(id, record);
       this.update(id, { state: "merged", owner: null }, at);
+      this.dropHookScans(id);
       this.log(id, ORCHESTRATOR, "plan.completed", { approval: approval.hash, parts: Object.fromEntries(parts.map((p) => [p.id, p.state])) }, at);
       return;
     }

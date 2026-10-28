@@ -302,13 +302,13 @@ async function scanPair(reader: Reader, baseTree: string, headTree: string, allo
 // and the most commits of the task's own the scan reads. A task over the
 // second throws, and the scan stays pending.
 const MAIN_COMMITS = 1000;
-const TASK_COMMITS = 1000;
+export const TASK_COMMITS = 1000;
 const LOG_PAGE = 100;
 
 // The empty tree, the base a root commit is scanned against. No repository
 // need hold it: the reader answers it as empty.
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-function withEmptyTree(r: Reader): Reader {
+export function withEmptyTree(r: Reader): Reader {
   return { tree: async (h) => (h === EMPTY_TREE ? [] : r.tree(h)), blob: (h) => r.blob(h) };
 }
 
@@ -357,7 +357,7 @@ export function parseAllowances(text: string, path = ALLOW_PATH): PrivacyAllowan
 
 // The allowances in the tree `tree` holds at ALLOW_PATH, none when the path
 // is absent. A path that is there and is not a readable file throws.
-async function readAllowanceList(reader: Reader, tree: string): Promise<PrivacyAllowance[]> {
+export async function readAllowanceList(reader: Reader, tree: string): Promise<PrivacyAllowance[]> {
   const r = strictReader(reader);
   const names = ALLOW_PATH.split("/");
   let at = tree;

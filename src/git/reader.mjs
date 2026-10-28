@@ -39,8 +39,8 @@ class Batch {
   #end = null;
   #chain = Promise.resolve();
 
-  constructor(dir) {
-    this.#proc = spawn("git", ["cat-file", "--batch"], { cwd: dir, stdio: ["pipe", "pipe", "ignore"] });
+  constructor(dir, env) {
+    this.#proc = spawn("git", ["cat-file", "--batch"], { cwd: dir, env, stdio: ["pipe", "pipe", "ignore"] });
     this.#proc.stdout.on("data", (d) => { this.#buf = this.#buf.length ? Buffer.concat([this.#buf, d]) : d; this.#settle(); });
     const ended = (err) => { this.#end ??= err ?? new Error("git cat-file ended"); this.#settle(); };
     this.#proc.on("error", ended);
@@ -198,11 +198,13 @@ function revList(dir, args) {
 
 // `dir`: the bare repository. `onDispose`: called once, when the reader is
 // disposed, so its owner stops tracking it.
-export function openReader(dir, { name = basename(dir, ".git"), onDispose } = {}) {
+// env: the environment its Git runs with; the pre-receive hook passes its
+// own, which names the push's quarantined objects.
+export function openReader(dir, { name = basename(dir, ".git"), onDispose, env } = {}) {
   let batch = null, disposed = false;
   const objects = () => {
     if (disposed) throw artifactsError("INTERNAL_ERROR", "the repository reader was disposed");
-    return batch ??= new Batch(dir);
+    return batch ??= new Batch(dir, env);
   };
   const width = (oid) => oid.length / 2;
   const refuse = (what) => async () => { throw notSupported(`ARTIFACTS.${what}`); };
