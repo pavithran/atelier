@@ -225,7 +225,7 @@ export function ownerDirection(quote: unknown, acting: string | null | undefined
   const words = typeof quote === "string" ? quote.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
   if (!words) throw new RuleError("bad_quote", `${what} on the developer's direction needs the developer's words: --quote "what the developer said"`, 400);
   if (words.length > DIRECTION_QUOTE_MAX) throw new RuleError("too_long", `the developer's words are at most ${DIRECTION_QUOTE_MAX} characters`, 400);
-  if (!acting) throw new RuleError("no_acting", `${what} on the developer's direction names the model acting on it: --as H/M or ATELIER_ACTOR, such as claude-code/opus-5.5`, 400);
+  if (!acting) throw new RuleError("no_acting", `${what} on the developer's direction names the model acting on it: --as H/M or ATELIER_ACTOR, such as claude-code/opus-5.5`, 400, "add --as H/M, or set ATELIER_ACTOR");
   return { quote: words, acting };
 }
 
@@ -850,7 +850,7 @@ export function assertHandoffTarget(actor: string, owner: string): void {
 }
 
 export function assertReviewAllowed(item: Item, proved: boolean): void {
-  if (proved && item.state === "accepted") throw new RuleError("accepted", "only the developer token may reopen accepted work by reviewing", 403);
+  if (proved && item.state === "accepted") throw new RuleError("accepted", "only the developer token may reopen accepted work by reviewing", 403, `only the developer can: reopen accepted work with atelier accept ${item.id} --head SHA`);
 }
 
 // "claude-code/opus-5.5" → "opus-5.5". The model, not the harness, is what
@@ -1046,15 +1046,25 @@ export function scopesOverlapWithin(a: string[], b: string[], within: string[]):
 
 // Durable Object RPC keeps an error's message and drops its other fields, so
 // the status and code travel inside the message and `parseRuleError` unpacks them.
+//
+// `next` (G8) is the exact command that resolves the refusal, or the words
+// "only the developer can: ..." when only the developer can. In this process it
+// is a field, and the message stays `status|code|detail`. The Ledger stub
+// (src/runtime/namespace.mjs) passes only the message, so it appends the next
+// behind NEXT_MARK as the error crosses, and parseRuleError reads either form.
+// A message without it, from an older server, parses as before.
+export const NEXT_MARK = "\u001fnext\u001f";
 export class RuleError extends Error {
   code: string;
   detail: string;
   status: number;
-  constructor(code: string, detail: string, status = 409) {
+  next?: string;
+  constructor(code: string, detail: string, status = 409, next?: string) {
     super(`${status}|${code}|${detail}`);
     this.code = code;
     this.detail = detail;
     this.status = status;
+    if (next) this.next = next;
   }
 }
 
@@ -1065,14 +1075,20 @@ export class RuleError extends Error {
 export const AREAS_REMOVED = "areas_removed";
 export const AREAS_REMOVED_MESSAGE = "function areas were removed from Atelier; update the CLI (a task keeps working without one)";
 
-export function parseRuleError(err: unknown): { status: number; code: string; detail: string } | null {
+export function parseRuleError(err: unknown): { status: number; code: string; detail: string; next?: string } | null {
   const m = err instanceof Error ? /^(\d{3})\|([a-z_]+)\|([\s\S]*)$/.exec(err.message) : null;
-  return m ? { status: Number(m[1]), code: m[2], detail: m[3] } : null;
+  if (!m) return null;
+  const at = m[3].lastIndexOf(NEXT_MARK);
+  if (at < 0) {
+    const next = (err as { next?: unknown }).next;
+    return { status: Number(m[1]), code: m[2], detail: m[3], ...(typeof next === "string" && next ? { next } : {}) };
+  }
+  return { status: Number(m[1]), code: m[2], detail: m[3].slice(0, at), next: m[3].slice(at + NEXT_MARK.length) };
 }
 
 export function assertNotTerminal(item: Item): void {
   if (item.state === "merged" || item.state === "abandoned") {
-    throw new RuleError("closed", `${item.id} is ${item.state}`);
+    throw new RuleError("closed", `${item.id} is ${item.state}`, 409, "run atelier ls to pick another task");
   }
 }
 
@@ -1080,10 +1096,10 @@ export function assertClaimable(item: Item, actor: string): void {
   if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
   assertNotBlocked(item);
   if (item.state === "merged" || item.state === "abandoned" || item.state === "accepted") {
-    throw new RuleError("closed", `${item.id} is ${item.state}`);
+    throw new RuleError("closed", `${item.id} is ${item.state}`, 409, "run atelier ls to pick another task");
   }
   if (item.owner && item.owner !== actor) {
-    throw new RuleError("owned", `${item.id} is held by ${item.owner}; ask for a handoff`);
+    throw new RuleError("owned", `${item.id} is held by ${item.owner}; ask for a handoff`, 409, `${item.owner} runs atelier release ${item.id}, or hands it over with atelier handoff ${item.id} --to ${actor}. Only the developer can take it by force: atelier dispatch ${item.id} --release`);
   }
 }
 
@@ -1106,7 +1122,7 @@ export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEF
   if (actor !== owner) assertSingleFamily(admission?.active ? admissionActor(actor, admission) : actor, policy, actor);
   if (role === "assessor") {
     if (admission?.active) return;
-    if (admission) throw new RuleError("ineligible", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+    if (admission) throw new RuleError("ineligible", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403, "only the developer can: atelier models admit ID --project NAME --reason TEXT");
   }
   // ControlPlane's agents, roles and eligible list are retired (t152): the
   // project record keeps them, and nothing here reads them.
@@ -1329,7 +1345,7 @@ export function overrideAt(item: Pick<Item, "head" | "reviewOverride">, owner = 
 export function assertNotBlocked(item: Item): void {
   if (item.state !== "blocked") return;
   const reason = item.blocked?.reason ?? "no reason recorded";
-  throw new RuleError("blocked", `${item.id} is blocked: ${reason}. Run atelier unblock ${item.id} first`);
+  throw new RuleError("blocked", `${item.id} is blocked: ${reason}. Run atelier unblock ${item.id} first`, 409, `run atelier unblock ${item.id}`);
 }
 
 // Only a task that is waiting, in progress or in review can be blocked: an
@@ -1337,10 +1353,10 @@ export function assertNotBlocked(item: Item): void {
 // closed. One already blocked keeps its first reason; unblock it to change it.
 export function assertBlockable(item: Item): void {
   if (item.state === "blocked") {
-    throw new RuleError("already_blocked", `${item.id} is already blocked: ${item.blocked?.reason ?? "no reason recorded"}. Run atelier unblock ${item.id} to lift that, then block it again with the new reason`);
+    throw new RuleError("already_blocked", `${item.id} is already blocked: ${item.blocked?.reason ?? "no reason recorded"}. Run atelier unblock ${item.id} to lift that, then block it again with the new reason`, 409, `atelier unblock ${item.id}, then block it again`);
   }
   if (item.state !== "open" && item.state !== "claimed" && item.state !== "submitted") {
-    throw new RuleError("closed", `${item.id} is ${item.state}; only an open, claimed or submitted task can be blocked`);
+    throw new RuleError("closed", `${item.id} is ${item.state}; only an open, claimed or submitted task can be blocked`, 409, "run atelier ls to pick another task");
   }
 }
 
@@ -1482,8 +1498,8 @@ export function expiredBlocks(items: readonly Pick<Item, "id" | "state" | "block
 // line safe, which a later reader checks against the code.
 export function secretClearReason(value: unknown): string {
   const reason = line(value);
-  if (!reason) throw new RuleError("secret_reason", "clearing a secret flag needs a reason: what shows the line is not a secret", 400);
-  if (reason.length > REASON_MAX) throw new RuleError("secret_reason", `a clearing reason is at most ${REASON_MAX} characters`, 400);
+  if (!reason) throw new RuleError("secret_reason", "clearing a secret flag needs a reason: what shows the line is not a secret", 400, "add a reason with --note TEXT");
+  if (reason.length > REASON_MAX) throw new RuleError("secret_reason", `a clearing reason is at most ${REASON_MAX} characters`, 400, "add a reason with --note TEXT");
   return reason;
 }
 
@@ -1502,7 +1518,7 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
   const out: ItemFields = {};
   // An older CLI's new --area and edit --area or --clear-area send this
   // field. Refuse it plainly, whatever its value, rather than store it.
-  if (input.area !== undefined) throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410);
+  if (input.area !== undefined) throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410, "update the CLI; run atelier update");
   if (input.revertOf !== undefined) {
     if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
     out.revertOf = input.revertOf;
@@ -1533,7 +1549,7 @@ export const overrideForbidden = (single: PoolFamily | null): string =>
 export const OVERRIDE_FORBIDDEN = overrideForbidden(null);
 
 export function assertOverridesAllowed(policy: Pick<ProjectPolicy, "noOverride" | "familyMode">): void {
-  if (policy.noOverride) throw new RuleError("override_forbidden", overrideForbidden(singleFamily(policy)), 403);
+  if (policy.noOverride) throw new RuleError("override_forbidden", overrideForbidden(singleFamily(policy)), 403, "only the developer can: atelier init --no-override false");
 }
 
 // What the inbox, the page and the brief offer beside a missing independent
@@ -1567,7 +1583,7 @@ export function reviewOverrideFor(
   const rejections = countingReviews(reviews, bindingOf(item), policy, owner).filter((r) => r.head === item.head && !r.approve && r.by !== owner).map(({ by, at }) => ({ by, at }));
   if (!item.head || (!g.needsAssessor && !rejections.length)) {
     const where = item.head ? ` at ${item.head.slice(0, 8)}` : "";
-    throw new RuleError("override_unneeded", `${item.id}${where} is not missing an independent review, so there is nothing to override${g.ready ? "; accept it without an override" : `: ${g.blockers.join("; ")}`}`);
+    throw new RuleError("override_unneeded", `${item.id}${where} is not missing an independent review, so there is nothing to override${g.ready ? "; accept it without an override" : `: ${g.blockers.join("; ")}`}`, 409, `atelier accept ${item.id}`);
   }
   const requirement = g.requirement ?? protectedNeed(singleFamily(policy));
   const waived = rejections.length
@@ -1600,7 +1616,7 @@ export function overlappingLive(item: Item, items: readonly Item[], actor: strin
 export function assertSingleFamily(actor: string, policy: Pick<ProjectPolicy, "familyMode">, what = actor): void {
   const single = singleFamily(policy);
   if (!single || !actor.includes("/") || actorFamily(actor) === single) return;
-  throw new RuleError("single_family", `${what} is not one of ${single}'s models, and this project runs in single-family mode (${single}): use one of ${single}'s models, or return to cross-family review with atelier init --cross-family`, 409);
+  throw new RuleError("single_family", `${what} is not one of ${single}'s models, and this project runs in single-family mode (${single}): use one of ${single}'s models, or return to cross-family review with atelier init --cross-family`, 409, `use one of ${single}'s models, or only the developer can: atelier init --cross-family`);
 }
 
 // The reason a claim whose scope overlaps a live item is refused under a
@@ -1619,7 +1635,7 @@ export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPol
   assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
     const refusal = overlappingRefusal(item, items, actor);
-    if (refusal) throw new RuleError("overlap", refusal);
+    if (refusal) throw new RuleError("overlap", refusal, 409, "only the developer can narrow a scope: atelier edit ID --scope GLOB");
   }
 }
 
@@ -1627,13 +1643,13 @@ export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPol
 // the review of a change without criteria would judge it against nothing.
 export function assertCriteriaAllowed(policy: Pick<ProjectPolicy, "requireCriteria">, accept: readonly string[] | undefined): void {
   if (policy.requireCriteria && !accept?.length) {
-    throw new RuleError("no_criteria", "this project requires acceptance criteria on every task, since a review judges a change against them: give the task at least one with --accept \"TEXT\"", 400);
+    throw new RuleError("no_criteria", "this project requires acceptance criteria on every task, since a review judges a change against them: give the task at least one with --accept \"TEXT\"", 400, 'only the developer can: atelier edit ID --accept "TEXT"');
   }
 }
 
 export function assertOwner(item: Item, actor: string): void {
   if (item.owner !== actor) {
-    throw new RuleError("not_owner", `${actor} does not hold ${item.id} (holder: ${item.owner ?? "nobody"})`, 403);
+    throw new RuleError("not_owner", `${actor} does not hold ${item.id} (holder: ${item.owner ?? "nobody"})`, 403, `${item.owner ?? "nobody"} holds ${item.id}. If it is free, run atelier claim ${item.id} --as ${actor}; if you hold it elsewhere, run atelier release ${item.id} there first`);
   }
 }
 
@@ -2501,8 +2517,8 @@ export function gcCheckReason(startedAt: unknown, running: boolean, now: number)
 }
 
 export function assertRevision(item: Item, expected: string): void {
-  if (!/^[a-f0-9]{40,64}$/.test(expected)) throw new RuleError("missing_revision", "refresh the task and choose a revision before acting", 400);
-  if (expected !== item.head) throw new RuleError("stale_head", "this task changed since you opened it; refresh and review the new revision");
+  if (!/^[a-f0-9]{40,64}$/.test(expected)) throw new RuleError("missing_revision", "refresh the task and choose a revision before acting", 400, "run atelier show TASK, then choose the revision it shows");
+  if (expected !== item.head) throw new RuleError("stale_head", "this task changed since you opened it; refresh and review the new revision", 409, `run atelier show ${item.id}, then review the new head`);
 }
 
 // A review's criteria binding, checked against the item's now. A review that
@@ -2514,11 +2530,11 @@ export function assertRevision(item: Item, expected: string): void {
 export function assertCriteria(item: Item, expected: unknown): void {
   const refresh = `refresh: read ${item.id}'s acceptance criteria and their binding with atelier show ${item.id}, judge the change against them, and review again with --criteria BINDING`;
   if (typeof expected !== "string" || !expected) {
-    throw new RuleError("criteria_unbound", `the review names no binding of the acceptance criteria it judged, so it cannot stand for ${item.id}'s criteria; ${refresh}`, 409);
+    throw new RuleError("criteria_unbound", `the review names no binding of the acceptance criteria it judged, so it cannot stand for ${item.id}'s criteria; ${refresh}`, 409, `run atelier review ${item.id} again with --criteria BINDING from atelier show ${item.id}`);
   }
   const now = criteriaOf(item);
   if (expected !== now) {
-    throw new RuleError("stale_criteria", `${item.id}'s acceptance criteria changed since this review read them (bound to ${expected.slice(0, 12)}, now ${now.slice(0, 12)}); ${refresh}`, 409);
+    throw new RuleError("stale_criteria", `${item.id}'s acceptance criteria changed since this review read them (bound to ${expected.slice(0, 12)}, now ${now.slice(0, 12)}); ${refresh}`, 409, `run atelier show ${item.id} for the current binding, then review again with --criteria BINDING`);
   }
 }
 
@@ -2529,7 +2545,7 @@ export function ownerPortAllowed(item: Pick<Item, "owner" | "state">, actor: str
 
 export function assertLive(item: Item): void {
   assertNotBlocked(item);
-  if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
+  if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`, 409, `run atelier show ${item.id}`);
 }
 
 // The latest standing review from each reviewer for a binding.
@@ -2644,21 +2660,21 @@ export function directionText(d: { quote?: string; acting?: string }): string {
 
 // The switch the owner asks for, checked before anything is written.
 export function modeSwitch(current: ProjectMode, actor: string, owner: string, to: unknown, reason: unknown, at: string): ProjectMode {
-  if (actor !== owner) throw new RuleError("not_project_owner", "only the developer switches the project's mode", 403);
+  if (actor !== owner) throw new RuleError("not_project_owner", "only the developer switches the project's mode", 403, "only the developer can: atelier mode fast|full");
   if (to !== "fast" && to !== "full") throw new RuleError("bad_mode", "the mode is fast or full", 400);
   if (to === "full") {
-    if (current.mode === "full") throw new RuleError("already_full", "the project is already in full mode", 409);
+    if (current.mode === "full") throw new RuleError("already_full", "the project is already in full mode", 409, "run atelier mode");
     return { mode: "full" };
   }
   const why = typeof reason === "string" ? reason.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
   if (!why) throw new RuleError("bad_reason", "fast mode needs a reason: atelier mode fast --reason TEXT", 400);
   if (why.length > MODE_REASON_MAX) throw new RuleError("too_long", `the reason is at most ${MODE_REASON_MAX} characters`, 400);
-  if (current.mode === "fast") throw new RuleError("already_fast", `the project is already in fast mode (${modeLine(current)}); switch to full first`, 409);
+  if (current.mode === "fast") throw new RuleError("already_fast", `the project is already in fast mode (${modeLine(current)}); switch to full first`, 409, "only the developer can: atelier mode full");
   return { mode: "fast", since: at, reason: why, by: actor, decision: null };
 }
 
 export function assertFastMode(mode: ProjectMode): asserts mode is Extract<ProjectMode, { mode: "fast" }> {
-  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", "the project is in full mode; the developer switches with atelier mode fast --reason TEXT before landing fast", 409);
+  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", "the project is in full mode; the developer switches with atelier mode fast --reason TEXT before landing fast", 409, "only the developer can: atelier mode fast --reason TEXT");
 }
 
 // Fast mode lands without the gate, so it is held to what an override of the
@@ -2673,7 +2689,7 @@ export function assertFastMode(mode: ProjectMode): asserts mode is Extract<Proje
 export interface FastModeConfirmation { by: string; at: string; until: string; factor: OwnerFactor }
 
 export function assertFastModeAllowed(policy: Pick<ProjectPolicy, "noOverride">): void {
-  if (policy.noOverride) throw new RuleError("fast_mode_forbidden", "this project forbids overrides of the independent review (atelier init --no-override), and fast mode lands without that review, so fast mode is refused", 403);
+  if (policy.noOverride) throw new RuleError("fast_mode_forbidden", "this project forbids overrides of the independent review (atelier init --no-override), and fast mode lands without that review, so fast mode is refused", 403, "only the developer can: atelier init --no-override false");
 }
 
 // What the refusal tells the agent: ask the developer, and on their yes run
@@ -2691,7 +2707,7 @@ export function fastModePageHint(project: string, origin = "", factor?: OwnerFac
 
 export function assertFastModeConfirmed(c: FastModeConfirmation | null | undefined, now: number, owner: string, project: string): void {
   if (c && c.by === owner && Date.parse(c.until) > now && (c.factor === "access" || c.factor === "secret")) return;
-  throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, 403);
+  throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, 403, "only the developer can confirm fast mode");
 }
 
 // What a landing in fast mode records: the commit merged, the merge commit,
@@ -2797,7 +2813,7 @@ export function recordedMerge(body: Record<string, unknown>, actor: string, at: 
     return { by: r.by, verdict: r.verdict as RecordedReviewVerdict, head: r.head, ...(typeof r.at === "string" ? { at: r.at } : {}) };
   });
   if (!reviews.some((r) => r.verdict === "approve" && r.head === body.commit)) {
-    throw new RuleError("no_approval", `no review given approves ${body.commit.slice(0, 8)}, the commit merged; name the review that approved it at that head`, 400);
+    throw new RuleError("no_approval", `no review given approves ${body.commit.slice(0, 8)}, the commit merged; name the review that approved it at that head`, 400, "run atelier show TASK --reviews, then name the review that approved this commit");
   }
   if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) throw bad("the note is text, at most 2000 characters");
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
@@ -2820,12 +2836,12 @@ export function recordedMerge(body: Record<string, unknown>, actor: string, at: 
 // refused as any other the baseline lacks, naming atelier sync.
 export function recordedMergeRefusal(record: { mergeCommit: string; commit: string; baselineMerge?: string }, baseline: { parents: readonly string[] | null; holds: boolean | null }): RuleError | null {
   const m = (record.baselineMerge ?? record.mergeCommit).slice(0, 8);
-  if (baseline.parents === null) return new RuleError("merge_not_on_main", `the baseline has no commit ${m}; bring main in first (atelier sync) and record again`, 409);
-  if (baseline.holds === null) return new RuleError("merge_unconfirmed", `main's history could not be read far enough to find ${m}, so the merge is not recorded`, 409);
-  if (!baseline.holds) return new RuleError("merge_not_on_main", `main does not hold ${m}; bring main in first (atelier sync) and record again`, 409);
+  if (baseline.parents === null) return new RuleError("merge_not_on_main", `the baseline has no commit ${m}; bring main in first (atelier sync) and record again`, 409, "run atelier sync, then record the merge again");
+  if (baseline.holds === null) return new RuleError("merge_unconfirmed", `main's history could not be read far enough to find ${m}, so the merge is not recorded`, 409, "run atelier sync, then record the merge again");
+  if (!baseline.holds) return new RuleError("merge_not_on_main", `main does not hold ${m}; bring main in first (atelier sync) and record again`, 409, "run atelier sync, then record the merge again");
   if (record.baselineMerge) return null;
-  if (baseline.parents.length < 2) return new RuleError("not_a_merge", `${m} has ${baseline.parents.length} parent${baseline.parents.length === 1 ? "" : "s"}, so it is not a merge`, 409);
-  if (baseline.parents[1] !== record.commit) return new RuleError("second_parent_differs", `${m}'s second parent is ${baseline.parents[1].slice(0, 8)}, not ${record.commit.slice(0, 8)}, the commit named as the task's head`, 409);
+  if (baseline.parents.length < 2) return new RuleError("not_a_merge", `${m} has ${baseline.parents.length} parent${baseline.parents.length === 1 ? "" : "s"}, so it is not a merge`, 409, "name the merge commit on main with --merge SHA");
+  if (baseline.parents[1] !== record.commit) return new RuleError("second_parent_differs", `${m}'s second parent is ${baseline.parents[1].slice(0, 8)}, not ${record.commit.slice(0, 8)}, the commit named as the task's head`, 409, "name the merge commit whose second parent is the task's head with --merge SHA");
   return null;
 }
 

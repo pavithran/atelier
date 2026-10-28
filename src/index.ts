@@ -158,9 +158,9 @@ function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: st
   if (factor === "secret") {
     const given = String(form.get("confirmation") ?? "");
     if (given && sameString(given, (env as unknown as Settings).OVERRIDE_SECRET!.trim())) return "secret";
-    throw new RuleError(code, `${what} needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
+    throw new RuleError(code, `${what} needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403, `only the developer can: ${hint}`);
   }
-  throw new RuleError(code, `${what} needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
+  throw new RuleError(code, `${what} needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403, `only the developer can: ${hint}`);
 }
 
 function thresholds(env: Env): Thresholds {
@@ -617,7 +617,7 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
   requireOwner(env, actor);
   const L = ledger(env, ref.key);
   const project = ref.name;
-  if (step !== "import" && !ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+  if (step !== "import" && !ref.registered) throw new RuleError("no_project", `no project ${project}`, 404, "run atelier init, or check the project name with atelier status");
   const own = `project:${ref.key}`;
   const stubOf = (name: string) => name === "__index" ? index(env) : name === own ? L : null;
   // A bookmark id counts per project on each server, so b1 exists on every
@@ -699,7 +699,7 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
 }
 
 function requireOwner(env: Env, actor: string) {
-  if (actor !== ownerActor(env)) throw new RuleError("not_project_owner", "only the developer can do this", 403);
+  if (actor !== ownerActor(env)) throw new RuleError("not_project_owner", "only the developer can do this", 403, "only the developer can run this command; ask them in chat");
 }
 
 // The developer's direction for block, unblock, abandon and clear-secret
@@ -713,7 +713,7 @@ function requireOwner(env: Env, actor: string) {
 function itemDirection(c: Ctx, verb: "block" | "unblock" | "abandon" | "clear-secret", id: string, project: string, env: Env): OwnerDirection | null {
   const body = c.body as Record<string, unknown>;
   if (body.quote !== undefined) {
-    if (c.token) throw new RuleError("owner_token_required", `${verb} on the developer's words needs the developer token; an agent's own token cannot carry them`, 403);
+    if (c.token) throw new RuleError("owner_token_required", `${verb} on the developer's words needs the developer token; an agent's own token cannot carry them`, 403, "only the developer can: run the same command on the developer token");
     if (c.actor !== ownerActor(env)) throw new RuleError("bad_quote", `${verb} on the developer's direction is recorded under the developer's actor, not ${c.actor}`, 400);
     return ownerDirection(body.quote, c.acting ?? null, verb);
   }
@@ -733,7 +733,7 @@ function itemDirection(c: Ctx, verb: "block" | "unblock" | "abandon" | "clear-se
     verb === "clear-secret" ? `--note ${text(body.reason ?? "")}` : "",
     `--quote "the developer's words" --as H/M --project ${project}`,
   ].filter(Boolean).join(" ");
-  throw new RuleError("direction_needed", `${verb} by a model on the developer token needs the developer's yes. Once they have said it, run: ${command}`, 403);
+  throw new RuleError("direction_needed", `${verb} by a model on the developer token needs the developer's yes. Once they have said it, run: ${command}`, 403, `only the developer can: ${command}`);
 }
 
 function codeOf(err: unknown): string {
@@ -764,7 +764,7 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
       await new Promise((ok) => setTimeout(ok, forkWait(attempt)));
     }
   }
-  throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
+  throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503, "wait a few seconds, then run the same command again");
 }
 
 // One step of a request against Artifacts, retried with backoff when it
@@ -1033,7 +1033,7 @@ async function mintFor(c: Ctx, repo: string, scope: "read" | "write", branch: st
   }
   if (!kept) {
     await revoke(c.env, repo, t.tokenId);
-    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git token was issued", 401);
+    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git token was issued", 401, "ask the developer for a new token, then run atelier login");
   }
   return t;
 }
@@ -1301,7 +1301,7 @@ async function reportNotReady(L: ReturnType<typeof ledger>, t: { id: string; nam
   if (parseRuleError(err)?.code !== "not_ready") throw err;
   const view = await L.forkNotReady(t.id, t.name, t.actor, t.generation, t.proved);
   if (!view) throw err;
-  throw new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503);
+  throw new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503, "wait a few seconds, then run the same command again");
 }
 
 // Main's head as the baseline holds it now, for the Ledger, which cannot read
@@ -1322,7 +1322,7 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
   const hash = /^[a-f0-9]{40,64}$/;
   if (!hash.test(mainHead) || !hash.test(expectedHead) || (head !== null && !hash.test(head))) throw new RuleError("bad_head", "mainHead, expectedHead and head must be full commit hashes", 400);
   const item = await L.item(id);
-  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace`, 409);
+  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
   let agent: string | null = null;
   if (head) {
     using repo = await env.ARTIFACTS.get(item.fork);
@@ -1333,12 +1333,12 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
       ...(!commit ? [] : commit.parents?.length !== 2 || commit.parents[0] !== expectedHead || commit.parents[1] !== mainHead
         ? [`${head.slice(0, 8)}'s parents are ${(commit.parents ?? []).map((p) => p.slice(0, 8)).join(", ") || "none"}, not the task's head ${expectedHead.slice(0, 8)} then main's ${mainHead.slice(0, 8)}`] : []),
     ];
-    if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409);
+    if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
     agent = agentLine(commit?.message ?? "");
   } else {
     const top = await headOf(env, item.fork);
     const held = top === expectedHead && (await holdsCommit(env, item.fork, expectedHead, mainHead)).holds === true;
-    if (!held) throw new RuleError("unverified_merge", `${id}'s fork is not at ${expectedHead.slice(0, 8)} holding main's head ${mainHead.slice(0, 8)}, and no merge was reported`, 409);
+    if (!held) throw new RuleError("unverified_merge", `${id}'s fork is not at ${expectedHead.slice(0, 8)} holding main's head ${mainHead.slice(0, 8)}, and no merge was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
   }
   const transformations = Array.isArray(body.transformations) ? body.transformations.filter((t: unknown): t is string => typeof t === "string").map((t: string) => t.slice(0, 40)) : [];
   const patch = (v: unknown) => (typeof v === "string" && hash.test(v) ? v : null);
@@ -1404,7 +1404,7 @@ async function revoke(env: Env, repo: string | null, tokenId: string | null) {
   // sets the fork, then mints and records the token), so a token with no
   // repository means the caller read the fork before a claim made both. It
   // is refused, never passed over, or the token would stay live off the record (t653).
-  if (!repo) throw new RuleError("workspace_changed", "the task was claimed while this was asked, so its new workspace token was not revoked and nothing was changed; try again", 409);
+  if (!repo) throw new RuleError("workspace_changed", "the task was claimed while this was asked, so its new workspace token was not revoked and nothing was changed; try again", 409, "run the same command again");
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -1448,7 +1448,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (options.runner) {
         for (const name of options.projects!) {
           const ref = await resolveProject(env, name);
-          if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+          if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400, "run atelier init, or check the project name with atelier status");
         }
       }
       const token = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
@@ -1844,12 +1844,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (body.kind !== "task") throw new RuleError("bad_kind", "kind is read or task", 400);
     const id = String(body.item ?? "");
     const item = await L.item(id);
-    if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409);
+    if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
     const slot = await L.tokenSlot(id);
     const g = git.mint({ project: ref.key, kind: "task", task: id, actor, generation: slot.generation });
     if (!await L.recordToken(id, actor, slot.generation, slot.replaces, `git:${g.hash}`)) {
       git.revoke(g.id);
-      throw new RuleError("claim_superseded", `${id} changed holder while its Git credential was made; no credential was issued`, 409);
+      throw new RuleError("claim_superseded", `${id} changed holder while its Git credential was made; no credential was issued`, 409, `run atelier claim ${id} --as ${actor}`);
     }
     return json({ kind: "task", remote, token: g.token, expiresAt: g.expiresAt, branch: `t/${id.slice(1)}`, defaultBranch: branch });
   }
@@ -1985,7 +1985,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
-    if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404, "run atelier init, or check the project name with atelier status");
     // The standard reviewer set is found by this project's registration
     // (t687): without it standardReviewers() reads an empty set at version 0,
     // which other projects drop as stale, so a withdrawal would never reach
@@ -1996,10 +1996,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const items = await L.items();
     // A task queued for a runner is live work too: removing the project would drop it from the queue while it stays claimable.
     if (body.force !== true && items.some((i) => i.state === "open" && i.dispatch)) {
-      throw new RuleError("live_work", "project has work queued for a runner; use --force to remove it", 409);
+      throw new RuleError("live_work", "project has work queued for a runner; use --force to remove it", 409, "run atelier ls --all, or use --force");
     }
     assertProjectRemovable(items, body.force === true);
-    if (!await index(env).removeProject(project)) throw new RuleError("no_project", `no project ${project}`, 404);
+    if (!await index(env).removeProject(project)) throw new RuleError("no_project", `no project ${project}`, 404, "run atelier init, or check the project name with atelier status");
     return json({ removed: true });
   }
   if (parts.length === 2 && m === "GET") {
@@ -2017,7 +2017,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "rename" && parts.length === 3 && m === "POST") {
     requireOwner(env, actor);
     const to = projectNameArg(body.to);
-    if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404, "run atelier init, or check the project name with atelier status");
     // The standard reviewer set is found by this project's name (t687):
     // moving the name away would strand the admissions every other project
     // inherited, and moving it onto another project would hand that project
@@ -2031,7 +2031,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Renaming back to one of the project's own names is not a new name.
     if (!ref.names.includes(to)) assertNewName(to);
     if (project === to) {
-      if ((await L.project()).name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
+      if ((await L.project()).name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400, "pick another name");
       return json({ from: parts[1], to, key: ref.key, names: ref.names, project: await L.setName(to, actor) });
     }
     // The index knows registered names and former ones, and refuses those
@@ -2040,7 +2040,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const target = await index(env).resolveProject(to);
     assertNameFree(ref, to, target);
     if (target.key !== ref.key && await ledger(env, to).project().then(() => true, () => false)) {
-      throw new RuleError("name_taken", `${to} is in use: a removed project's Ledger is kept under that name`, 409);
+      throw new RuleError("name_taken", `${to} is in use: a removed project's Ledger is kept under that name`, 409, "pick another name");
     }
     // --release-name (t774): the project gives up its current name, which a
     // project created afterwards may take, stored apart from this one under
@@ -2123,7 +2123,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = String(body.item ?? ""), main = String(body.main ?? "");
       const [project, task] = await Promise.all([L.project(), L.item(item)]);
       const top = task.kind === "part" ? null : await headOf(env, project.repo);
-      if (top && top !== main) throw new RuleError("main_moved", `main is at ${top.slice(0, 8)}, not ${main.slice(0, 8)}, the commit ${item}'s head was merged with; release the lease and merge main again`, 409);
+      if (top && top !== main) throw new RuleError("main_moved", `main is at ${top.slice(0, 8)}, not ${main.slice(0, 8)}, the commit ${item}'s head was merged with; release the lease and merge main again`, 409, `run atelier land ${item} --release-lease; merge main into ${item}'s workspace and push (atelier dispatch ${item} --job merge-main); then atelier accept ${item}, then atelier land ${item}`);
       return json({ confirmed: await L.confirmLeaseMain(item, actor, main, instance) });
     }
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
@@ -2134,9 +2134,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (m === "GET") return json({ run: await L.postMergeRun(item) });
     requireOwner(env, actor);
     const run = await L.postMergeRun(item);
-    if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409);
+    if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409, `run atelier land ${item} --post-merge status`);
     if (body.action === "prepare") {
-      if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409);
+      if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409, `run atelier merge ${item}, then record the merge`);
       using repo = await env.ARTIFACTS.get((await L.project()).repo);
       const before = await repo.readCommit(run.before), after = await repo.readCommit(run.after);
       if (!before || !after) throw new RuleError("missing_history", "post-merge diff history is unavailable", 409);
@@ -2197,7 +2197,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 4 && parts[3] === "token" && m === "POST") {
       const scope = body.scope === "write" ? "write" : "read";
       if (scope === "write") await developerBranchesRepo(env, L, actor, ref.key, p.repo, repo, p.name);
-      else if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
+      else if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404, "run atelier branch push NAME");
       const minted = await mintFor(c, repo, scope, await projectBranch(env, p));
       return json({ ...minted, repo, prefix: DEVELOPER_BRANCH_PREFIX });
     }
@@ -2206,7 +2206,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const name = developerBranch(body.name, branch);
       if (name !== body.name) throw new RuleError("bad_branch", `name the branch in full, as ${name}`, 400);
       const host = branchHost(body.host);
-      if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
+      if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404, "run atelier branch push NAME");
       const commit = String(body.commit ?? "");
       if (!/^[0-9a-f]{40}$/.test(commit)) throw new RuleError("bad_commit", "commit must be a 40-character commit id", 400);
       const readTop = () => artifactsStep(`read ${name} in ${repo}`, async () => {
@@ -2227,7 +2227,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const expected = await L.developerBranch(name);
         const top = await readTop();
         if (!top || top.hash !== commit) {
-          if (round === 1 && !(expected && top && expected.commit === top.hash)) throw new RuleError("branch_not_pushed", `${repo} holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409);
+          if (round === 1 && !(expected && top && expected.commit === top.hash)) throw new RuleError("branch_not_pushed", `${repo} holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409, `atelier branch push ${name}`);
           const from = expected && top && expected.commit === top.hash ? ` from ${expected.host}` : "";
           return json({ error: "branch_moved", detail: `another Mac pushed ${name} since: the branches repository holds ${top ? top.hash.slice(0, 8) : "no such branch"}${from}, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`, tip: top?.hash ?? null, current: expected }, 409);
         }
@@ -2235,7 +2235,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const committedAt = Number.isFinite(top.committedAt) ? new Date(top.committedAt * 1000).toISOString() : null;
         const result = await L.recordDeveloperBranch(actor, { name, commit, subject, committedAt, host }, expected);
         if ("recorded" in result) return json(result.recorded, 201);
-        if (round >= 5) throw new RuleError("branch_busy", `${name} was recorded again by another push on every attempt; nothing was recorded for ${commit.slice(0, 8)}: run atelier branch ls`, 409);
+        if (round >= 5) throw new RuleError("branch_busy", `${name} was recorded again by another push on every attempt; nothing was recorded for ${commit.slice(0, 8)}: run atelier branch ls`, 409, `run atelier branch ls, then atelier branch push ${name} again`);
       }
     }
     throw new RuleError("not_found", "no such route", 404);
@@ -2267,7 +2267,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (m === "POST") {
       try { return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null, body.quote)); } catch (err) {
         const rule = parseRuleError(err);
-        if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, rule.status);
+        if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, rule.status, rule.next ?? "only the developer can confirm fast mode: " + fastModeConfirmationHint(project));
         throw err;
       }
     }
@@ -2303,7 +2303,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
   // Function areas were removed (t769). An older CLI's area commands get 410
   // Gone on every path and method under areas, not a 404 or 403.
-  if (parts[2] === "areas") throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410);
+  if (parts[2] === "areas") throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410, "update the CLI; run atelier update");
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
   // one (docs/orchestrator.md, section 2), for the owner alone, with the
@@ -2341,7 +2341,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "sandbox") throw sandboxRemoved();
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
-    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
     return json(await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, (await L.project()).repo), item.fork));
   }
   // A whole check log or review diff kept in R2 (src/large.ts), served by the
@@ -2401,7 +2401,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
           await L.integrationFailed(id, INTEGRATOR, before.dispatch.part, conflict, "conflict");
-          throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
+          throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409, `wait for the builder to push the fix, then run atelier show ${id}`);
         }
       }
       const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
@@ -2460,7 +2460,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           const secret = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
           const hash = await sha256(secret);
           if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
-            throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
+            throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409, `run atelier claim ${id} --as ${actor}`);
           }
           const b = await mintFor(c, p.repo, "read", branch);
           return json({ item: await L.item(id), workspace: {
@@ -2476,7 +2476,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // returned, so its plaintext reaches no one.
         if (!await L.recordToken(id, actor, generation, replaces, w.tokenId)) {
           await revoke(env, fork, w.tokenId);
-          throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409);
+          throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409, `run atelier claim ${id} --as ${actor}`);
         }
         const b = await mintFor(c, p.repo, "read", branch);
         return json({
@@ -2494,7 +2494,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // already worded, pass through as they are.
         if (before.owner !== actor || parseRuleError(err) || retryableByRuntime(err)) throw err;
         console.error(errorLine(`re-claim of ${id} by ${actor}`, err));
-        throw new RuleError("claim_failed", `${id} is still claimed by ${actor}, but the server could not finish renewing its workspace token and logged why. The old token may already be revoked and a new one may not have reached you, so the workspace's token may not work. Run atelier claim ${id} again, or atelier start ${id} --as ${actor}, which issues a new token`, 503);
+        throw new RuleError("claim_failed", `${id} is still claimed by ${actor}, but the server could not finish renewing its workspace token and logged why. The old token may already be revoked and a new one may not have reached you, so the workspace's token may not work. Run atelier claim ${id} again, or atelier start ${id} --as ${actor}, which issues a new token`, 503, `run atelier claim ${id} --as ${actor} to renew it`);
       }
     }
     // The fork-less fast build was removed (t228): a build claims with a fork
@@ -2503,7 +2503,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // claims with a fork. Nothing is recorded.
     case "fast-take":
     case "fast-ready":
-      throw new RuleError("not_fast_build", `${id} is not built fast: the fork-less fast build was removed; claim ${id} with a fork (atelier claim)`, 409);
+      throw new RuleError("not_fast_build", `${id} is not built fast: the fork-less fast build was removed; claim ${id} with a fork (atelier claim)`, 409, `run atelier claim ${id} --as HARNESS/MODEL`);
     case "owner-port-token": {
       requireOwner(env, actor);
       const { item, generation, replaces } = await L.reserveOwnerPort(id, actor);
@@ -2511,7 +2511,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const t = await mintFor(c, item.fork!, "write", await projectBranch(env, await L.project()), 300);
       try {
         if (!await L.recordOwnerPortToken(id, actor, generation, replaces, t.tokenId, t.expiresAt)) {
-          throw new RuleError("claim_superseded", `${id} changed while the port token was made; no token was issued`, 409);
+          throw new RuleError("claim_superseded", `${id} changed while the port token was made; no token was issued`, 409, `run atelier claim ${id} --as ${actor}`);
         }
       } catch (error) {
         await revoke(env, item.fork, t.tokenId);
@@ -2521,7 +2521,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "read-token": {
       const item = await L.item(id);
-      if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+      if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
       const t = await mintFor(c, item.fork, "read", await projectBranch(env, await L.project()));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
     }
@@ -2529,7 +2529,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A read token for the repository an item is measured against: the
       // plan's fork for a part, the baseline otherwise. The part's holder
       // reads it to run checks and diffs against the integration branch.
-      if (body.scope === "write") throw new RuleError("read_only", "a base token is read-only", 403);
+      if (body.scope === "write") throw new RuleError("read_only", "a base token is read-only", 403, "ask for a write token: run atelier claim ID --as H/M");
       const item = await L.item(id);
       const p = await L.project();
       const repo = await baseRepo(env, L, item, p.repo);
@@ -2545,7 +2545,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("bad_head", "head must be the full commit hash the workspace pushed, as git rev-parse HEAD prints it", 400);
       }
       const item = await L.item(id);
-      if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+      if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
       const observed = await headOf(env, item.fork);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
       const lineage = await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom);
@@ -2577,12 +2577,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The holder of a task refresh's lease runs the required checks at the
       // head its refresh recorded (t462), and records them as the holder would.
       if (check && actor !== item.owner && !(await L.refreshChecker(id, actor, String(body.head ?? item.head ?? "")))) {
-        throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. Run them in your own workspace: atelier check ${id}`, 403);
+        throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. Run them in your own workspace: atelier check ${id}`, 403, `${item.owner ?? "the holder"} runs atelier check ${id}, or hand the task over with atelier handoff ${id} --to ${actor}`);
       }
       // A merged check ran on the merge of the head with a main head the
       // caller names; it needs a workspace to be measured against.
       const merged = check && body.merged === true;
-      if (merged && !item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+      if (merged && !item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
       // A claim (a check's command or a report's text) and a check's output
       // are stored as sent, so each over its limit is refused, not cut.
       const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
@@ -2609,7 +2609,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // Atelier counts no result from a command that is never read-only.
       const refused = check ? refusalOf(e.claim) : null;
-      if (refused) throw new RuleError("not_read_only", `${refusalText(e.claim, refused)}.`, 409);
+      if (refused) throw new RuleError("not_read_only", `${refusalText(e.claim, refused)}.`, 409, "check only with commands that read; run atelier check");
       // An observed check counts only against the head Atelier itself reads
       // from Artifacts, and records the paths Atelier measures there. The
       // gate decides whether a change is protected from those paths, and the
@@ -2621,7 +2621,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (check && item.fork) {
         const p = await L.project();
         const measured = await measureWorkspace(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
-        if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again");
+        if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again", 409, "run atelier push, then atelier check");
         e.changedPaths = merged ? null : measured.changedPaths;
         if (measured.main) e.mainHead = measured.main;
         if (merged) {
@@ -2629,7 +2629,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           if (mainHead !== measured.main) {
             using baseline = await env.ARTIFACTS.get(p.repo);
             if (!/^[a-f0-9]{40,64}$/.test(mainHead) || !(await baseline.log({ limit: 1000 })).some((x) => x.hash === mainHead)) {
-              throw new RuleError("unknown_main", `${mainHead.slice(0, 8) || "the main head given"} is not a commit on main; run atelier check --merged again`, 409);
+              throw new RuleError("unknown_main", `${mainHead.slice(0, 8) || "the main head given"} is not a commit on main; run atelier check --merged again`, 409, "run atelier sync, then atelier check --merged");
             }
           }
           e.mainHead = mainHead;
@@ -2739,7 +2739,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // validates its merge commit and claimed request together in the Ledger.
       if (item.state !== "merged") {
         assertRevision(item, String(body.head ?? ""));
-        if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+        if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
       }
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
@@ -2917,7 +2917,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const replacementReport = (record: Pick<NonNullable<typeof remembered>, "instance" | "replaced">) => record.replaced ? { replaced: { ...record.replaced, to: record.instance } } : {};
       if (body.event !== undefined) {
         const event = body.event as { type?: unknown; payload?: unknown };
-        if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404);
+        if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404, `run atelier land ${id} --workflow`);
         // The two events the Workflow waits for: the executor's report of
         // the workspace steps, and the owner's resume after a conflict.
         if (event.type !== "workspace" && event.type !== "resume") throw new RuleError("bad_event", "a landing Workflow takes a workspace or a resume event", 400);
@@ -2926,7 +2926,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // to an instance since replaced cannot advance the replacement with a
         // report or a resume meant for the old one.
         if (typeof body.instance !== "string" || !body.instance) throw new RuleError("bad_event", `an event names the instance it answers ({ event, instance }); update the atelier command and run atelier land ${id} --workflow again`, 400);
-        if (body.instance !== remembered.instance) throw new RuleError("stale_landing", `${body.instance} is no longer ${id}'s landing Workflow: ${remembered.instance} replaced it${remembered.replaced ? ` (${remembered.replaced.reason}: ${remembered.replaced.detail})` : ""}, so the ${event.type} event is not sent. Run atelier land ${id} --workflow again to attach to it`, 409);
+        if (body.instance !== remembered.instance) throw new RuleError("stale_landing", `${body.instance} is no longer ${id}'s landing Workflow: ${remembered.instance} replaced it${remembered.replaced ? ` (${remembered.replaced.reason}: ${remembered.replaced.detail})` : ""}, so the ${event.type} event is not sent. Run atelier land ${id} --workflow again to attach to it`, 409, `run atelier land ${id} --workflow to attach to the current landing`);
         const type: string = event.type;
         try {
           await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.sendEvent({ type, payload: event.payload ?? {} }));
@@ -3018,8 +3018,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A new instance for a closed or accepted task would only fail its
       // first step; it is refused here with the same words, before one is made.
       const item = await L.item(id);
-      if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
-      if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
+      if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409, "run atelier ls to pick another task");
+      if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409, `run atelier merge ${id}`);
       // The review options: the ones this run names, and for a replacement
       // that names none, the ones the replaced instance was started with.
       const reviewer = named ?? (remembered && body.noReview !== true ? remembered?.reviewer ?? null : null);
@@ -3040,14 +3040,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? undefined);
       if (!claim.owner) {
         const record = claim.record;
-        if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409);
+        if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409, `run atelier land ${id} --workflow`);
         // The owner may not have created it yet: it is waited for briefly.
         let status: InstanceStatus | null = null;
         for (let i = 0; i < 25 && !status; i++) {
           try { status = await (await env.LANDING_WORKFLOW.get(record.instance)).status(); }
           catch { await new Promise((ok) => setTimeout(ok, 200)); }
         }
-        if (!status) throw new RuleError("landing_starting", `${id}'s landing Workflow ${record.instance} is being started by another request; run atelier land ${id} --workflow again to attach to it`, 409);
+        if (!status) throw new RuleError("landing_starting", `${id}'s landing Workflow ${record.instance} is being started by another request; run atelier land ${id} --workflow again to attach to it`, 409, `run atelier land ${id} --workflow`);
         await L.observeLandingWorkflowStatus(id, record.instance, status);
         return json({ ...record, created: false, status, ...replacementReport(record) });
       }
@@ -3078,12 +3078,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const partKey = String(body.part ?? "");
       const mergeCommit = String(body.mergeCommit ?? "");
       const { plan, part, integrationHead, mainHead } = await L.integrationTarget(id, partKey);
-      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409);
-      if (!part.head) throw new RuleError("no_head", `part ${partKey} has no verified head`, 409);
+      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
+      if (!part.head) throw new RuleError("no_head", `part ${partKey} has no verified head`, 409, `run atelier plan show ${id}`);
       using repo = await env.ARTIFACTS.get(plan.fork);
       const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
       const reasons = verifyIntegration({ log, integrationHead: integrationHead ?? plan.base ?? "", partHead: part.head, mergeCommit });
-      if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409);
+      if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409, `run atelier plan show ${id}`);
       // A merge-main part's integration puts its main head on the plan's
       // branch when the merge commit holds it, which is read from the branch.
       const holdsMain = mainHead ? (await holdsCommit(env, plan.fork, mergeCommit, mainHead)).holds === true : false;
@@ -3131,7 +3131,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const w = await mintFor(c, leased.item.fork!, "write", branch);
       if (!await L.recordRefreshToken(id, leased.lease.id, w.tokenId)) {
         await revoke(env, leased.item.fork, w.tokenId);
-        throw new RuleError("lease_lost", `${id}'s refresh lease changed while its token was made; no token was issued`, 409);
+        throw new RuleError("lease_lost", `${id}'s refresh lease changed while its token was made; no token was issued`, 409, `run atelier refresh-lease ${id} again`);
       }
       const b = await mintFor(c, p.repo, "read", branch);
       return json({
@@ -3162,16 +3162,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const mainHead = String(body.mainHead ?? "");
       const mergeCommit = body.mergeCommit === undefined || body.mergeCommit === null ? null : String(body.mergeCommit);
       const { plan, integrationHead } = await L.refreshTarget(id);
-      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409);
+      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
       if (mergeCommit) {
         using repo = await env.ARTIFACTS.get(plan.fork);
         const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
         const reasons = verifyRefresh({ log, integrationHead: integrationHead ?? plan.base ?? "", mainHead, mergeCommit });
-        if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409);
+        if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
       } else {
         const top = await headOf(env, plan.fork);
         const held = top && /^[a-f0-9]{40,64}$/.test(mainHead) ? (await holdsCommit(env, plan.fork, top, mainHead)).holds : false;
-        if (held !== true) throw new RuleError("unverified_merge", `the plan's branch does not hold main's head ${mainHead.slice(0, 8)}, and no merge commit was reported`, 409);
+        if (held !== true) throw new RuleError("unverified_merge", `the plan's branch does not hold main's head ${mainHead.slice(0, 8)}, and no merge commit was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
       }
       return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
     }
@@ -3280,7 +3280,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
-          throw new RuleError(rule.code, `an override of the independent review needs the developer's confirmation: ${overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env))}`, rule.status);
+          throw new RuleError(rule.code, `an override of the independent review needs the developer's confirmation: ${overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env))}`, rule.status, rule.next ?? "only the developer can confirm the override: " + overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env)));
         }
         throw err;
       }
@@ -3359,9 +3359,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const p = await L.project();
         const top = item.acceptedHead ? await headOf(env, p.repo) : null;
         const ancestry = top ? (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds : null;
-        if (await L.postMergeRun(id) && ancestry === null) throw new RuleError("missing_history", "cannot cancel a post-merge reservation without proving the accepted revision is absent from the baseline", 409);
+        if (await L.postMergeRun(id) && ancestry === null) throw new RuleError("missing_history", "cannot cancel a post-merge reservation without proving the accepted revision is absent from the baseline", 409, "run atelier sync, then try again");
         const landed = ancestry === true;
-        if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
+        if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409, `run atelier merge ${id}`);
         return json(await L.cancelLanding(id, actor));
       }
       const project = await L.project();
@@ -4110,7 +4110,7 @@ async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: s
   }
   if (!preview || preview.merge.clean) return;
   const paths = preview.merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ");
-  throw new RuleError("conflicts_with_main", `${id}'s branch would conflict with main at ${preview.head.slice(0, 8)}: ${paths}. Take main into the branch first with atelier plan refresh ${id}, which puts the plan back to building and merges main's head, adding a merge-main part whose builder resolves the conflict when it does not merge cleanly (--resolve adds that part at once); the integrator submits the plan again once every part is integrated, and it is accepted then`, 409);
+  throw new RuleError("conflicts_with_main", `${id}'s branch would conflict with main at ${preview.head.slice(0, 8)}: ${paths}. Take main into the branch first with atelier plan refresh ${id}, which puts the plan back to building and merges main's head, adding a merge-main part whose builder resolves the conflict when it does not merge cleanly (--resolve adds that part at once); the integrator submits the plan again once every part is integrated, and it is accepted then`, 409, `run atelier plan refresh ${id}`);
 }
 
 // The task page's forms whose refusal is drawn beside them (t457).
@@ -4119,7 +4119,7 @@ const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
-  if (item.fork && await headOf(env,item.fork) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+  if (item.fork && await headOf(env,item.fork) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
 }
 
 // ── UI ─────────────────────────────────────────────────────────────────────
@@ -4164,7 +4164,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // page's override permission is: from the developer's own sign-in, with
     // the factor no agent holds (Astra's audit of 2026-10-13, finding 3).
     if (id === "mode" && verb === "allow-fast") {
-      if (!c.signedIn) throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's own sign-in, not the developer token: ${fastModePageHint(project, c.url.origin, ownerFactorOf(env))}`, 403);
+      if (!c.signedIn) throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's own sign-in, not the developer token: ${fastModePageHint(project, c.url.origin, ownerFactorOf(env))}`, 403, `${fastModePageHint(project, c.url.origin, ownerFactorOf(env))}`);
       await L.confirmFastMode(owner, ownerFactorIn(env, c, form, project, null));
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/settings`, c.url).toString(), 303);
     }
@@ -4189,7 +4189,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // made from a page showing other criteria than the task's (t457).
       const shownCriteria = form.get("criteria");
       if ((TASK_FORMS.has(verb) || shownCriteria !== null) && shownCriteria !== criteriaOf(before)) {
-        throw new RuleError("stale_criteria", `${id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409);
+        throw new RuleError("stale_criteria", `${id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409, "reload the task page, read the criteria, then decide again");
       }
       // An override sent from a page drawn before the task was accepted (an
       // old tab) would record a second override and acceptance; it is
@@ -4197,7 +4197,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       if (verb === "override" && before.state !== "submitted") {
         throw new RuleError("not_submitted", before.state === "accepted"
           ? `${id} was already accepted at ${(before.acceptedHead ?? before.head ?? "").slice(0, 8)} since this page was drawn, so this override would record a second override and acceptance`
-          : `${id} is ${before.state}; an override is made only on a submitted revision`, 409);
+          : `${id} is ${before.state}; an override is made only on a submitted revision`, 409, `run atelier show ${id}`);
       }
       if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
       // The override forms are the owner's confirmation only with the factor
@@ -4206,7 +4206,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // buys, they are refused as the API's override is.
       let factor: OwnerFactor | undefined;
       if (verb === "override" || verb === "allow-override") {
-        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's own sign-in, not the developer token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's own sign-in, not the developer token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403, `${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`);
         factor = ownerFactorIn(env, c, form, project, id);
       }
       // A change of owner takes the write token with it, as on the API routes:
@@ -4297,7 +4297,7 @@ function failed(err: unknown, req: Request, url: URL, pathname: string, env: Env
   const back = who === null ? "/" : "/home";
   if (rule) {
     return url.pathname.startsWith("/api/")
-      ? json({ error: rule.code, detail: rule.detail }, rule.status)
+      ? json({ error: rule.code, detail: rule.detail, ...(rule.next ? { next: rule.next } : {}) }, rule.status)
       : html(renderError(rule.detail, back, who), rule.status);
   }
   // An Error logged as an object reaches Workers Logs as a stack with no
@@ -4805,7 +4805,7 @@ export default {
           const forbidden = !!token?.runner && rule.status === 403;
           try {
             const held = await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined, forbidden);
-            if (held) return new RuleError("held", held, 409);
+            if (held) return new RuleError("held", held, 409, `wait for the hold to clear, then run atelier queue to see ${parts[4]} offered again`);
           }
           catch (e) { console.error("claim refusal not recorded", String(e)); }
         };

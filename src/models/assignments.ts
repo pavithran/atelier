@@ -337,7 +337,7 @@ export interface ResolvedAssignment {
 }
 
 const ownerOnly = (store: AssignmentStore, actor: string, what: string) => {
-  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403);
+  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403, "only the developer can: atelier models assign ROLE H/M --reason TEXT --quote TEXT --evidence PROJECT/tN");
 };
 const same = (a: AssignmentRecord, scope: string, role: AssignmentRole) => a.scope === scope && a.role === role;
 const scopeText = (scope: string, names?: ReadonlyMap<string, string>) => (scope === ALL_PROJECTS ? "every project" : names?.get(scope) ?? scope);
@@ -416,7 +416,7 @@ export function withdrawAssignment(store: AssignmentStore, actor: string, id: st
   if (why.length > DECISION_NOTE_MAX) throw new RuleError("too_long", `the note is at most ${DECISION_NOTE_MAX} characters`, 400);
   const records = store.records();
   const target = records.find((r) => r.id === id);
-  if (!target || target.kind !== "assigned") throw new RuleError("no_assignment", `no assignment ${id}; atelier models roles lists them`, 404);
+  if (!target || target.kind !== "assigned") throw new RuleError("no_assignment", `no assignment ${id}; atelier models roles lists them`, 404, "run atelier models roles");
   const done = records.find((r): r is AssignmentWithdrawal => r.kind === "withdrawn" && r.withdraws === id);
   if (done) {
     if (isWithdrawalRetry(done, why, declared)) return { ...done, retried: true };

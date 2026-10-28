@@ -324,9 +324,9 @@ export function admitCardRecord(all: readonly CardRecord[], input: CardInput | W
   const target = input.kind === "withdrawal" ? input.withdraws : input.corrects ?? input.supersedes;
   if (!target) return { fileAs: filing.model };
   const card = all.find((r): r is ModelCard => r.id === target && r.kind === "card");
-  if (!card || !filing.reachable.has(card.id)) throw new RuleError("no_card", `${target} is not a card of ${filing.model}`, 404);
+  if (!card || !filing.reachable.has(card.id)) throw new RuleError("no_card", `${target} is not a card of ${filing.model}`, 404, "run atelier models card");
   const end = endings(all).get(target);
-  if (end) throw new RuleError("card_ended", `${target} is already ${end.state} by ${end.by}; name ${end.state === "withdrawn" ? "an active card" : end.by} instead`, 409);
+  if (end) throw new RuleError("card_ended", `${target} is already ${end.state} by ${end.by}; name ${end.state === "withdrawn" ? "an active card" : end.by} instead`, 409, "run atelier models card");
   return { fileAs: card.model };
 }
 

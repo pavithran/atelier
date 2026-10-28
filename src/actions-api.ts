@@ -22,7 +22,7 @@ type LedgerStub = DurableObjectStub<Ledger>;
 export type MainLine = (commit: string) => Promise<boolean | null>;
 
 function owner(actor: string, ownerActor: string): void {
-  if (actor !== ownerActor) throw new RuleError("not_project_owner", "only the developer approves, withdraws or runs a protected action", 403);
+  if (actor !== ownerActor) throw new RuleError("not_project_owner", "only the developer approves, withdraws or runs a protected action", 403, "only the developer can: atelier approve ACTION --head SHA");
 }
 
 // The checks come before Artifacts is read, so a refusal for the actor or the
@@ -31,8 +31,8 @@ async function approve(L: LedgerStub, body: Record<string, unknown>, actor: stri
   owner(actor, ownerActor);
   const { commit } = cleanApprovalInput(body, acting);
   const held = await onMainLine(commit);
-  if (held === null) throw new RuleError("ancestry_unverified", `Atelier could not find ${commit.slice(0, 8)} in the part of the main line's history it reads; approve a recent revision, such as the head atelier ship --dry-run names`, 409);
-  if (!held) throw new RuleError("not_on_main_line", `${commit.slice(0, 8)} is not on the project's main line as Atelier holds it in the baseline; approve a revision the baseline holds, such as the head atelier ship --dry-run names`, 409);
+  if (held === null) throw new RuleError("ancestry_unverified", `Atelier could not find ${commit.slice(0, 8)} in the part of the main line's history it reads; approve a recent revision, such as the head atelier ship --dry-run names`, 409, "run atelier ship --dry-run, then approve the head it names with atelier approve ship --head SHA");
+  if (!held) throw new RuleError("not_on_main_line", `${commit.slice(0, 8)} is not on the project's main line as Atelier holds it in the baseline; approve a revision the baseline holds, such as the head atelier ship --dry-run names`, 409, "run atelier ship --dry-run, then approve the head it names with atelier approve ship --head SHA");
   return await L.approveAction(body, actor, acting);
 }
 

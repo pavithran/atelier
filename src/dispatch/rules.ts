@@ -210,12 +210,12 @@ export function overrideDispatch(input: Record<string, unknown>, previous: Dispa
 // written. Releasing a dispatch already released changes nothing.
 export function retainDispatch(item: Item, input: { agent?: unknown; model?: unknown; retainAt?: unknown }, items: readonly Item[], policy: ProjectPolicy, owner = DEFAULT_OWNER): Dispatch {
   if (item.owner || item.state !== "open") {
-    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409, `run atelier dispatch ${item.id}`);
   }
   const d = item.dispatch;
-  if (!d) throw new RuleError("not_dispatched", `${item.id} is not queued for a runner, so there is no dispatch to release`, 409);
+  if (!d) throw new RuleError("not_dispatched", `${item.id} is not queued for a runner, so there is no dispatch to release`, 409, "run atelier queue to see what is queued");
   if (input.retainAt !== undefined && input.retainAt !== d.at) {
-    throw new RuleError("stale_dispatch", `${item.id}'s dispatch has changed; read it again before releasing its hold`, 409);
+    throw new RuleError("stale_dispatch", `${item.id}'s dispatch has changed; read it again before releasing its hold`, 409, "run atelier queue, then dispatch again");
   }
   // undefined: keep the dispatch's own; null: clear it; else the name given.
   const given = (v: unknown, what: string): string | null | undefined => {
@@ -721,7 +721,7 @@ function unofferedReasonLine(dead: string, item: Item): string {
 
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
-    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}; only an open task can be sent to a runner`, 409, `run atelier show ${item.id}`);
   }
 }
 
@@ -741,14 +741,14 @@ export function assertDispatchClaimable(item: Item, items: readonly Item[], poli
   if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, policy, d.model);
   if (d.agent && d.model) {
     const refusal = roleRefusal(`${d.agent}/${d.model}`, policy, "executor", owner);
-    if (refusal) throw new RuleError("ineligible", refusal, 403);
+    if (refusal) throw new RuleError("ineligible", refusal, 403, "only the developer can: atelier models set ID --state available");
   } else if (d.agent) {
     const refusal = harnessRefusal(d.agent, policy, "executor", owner);
-    if (refusal) throw new RuleError("ineligible", refusal, 403);
+    if (refusal) throw new RuleError("ineligible", refusal, 403, "only the developer can: atelier models set ID --state available");
   }
   if (policy.refuseOverlap) {
     const refusal = overlappingRefusal(item, items, dispatchClaimant(d));
-    if (refusal) throw new RuleError("overlap", refusal);
+    if (refusal) throw new RuleError("overlap", refusal, 409, `run atelier dispatch ${item.id} --overlap-ok`);
   }
 }
 
@@ -821,14 +821,14 @@ export function assertDispatchedClaim(item: Item & { dispatch?: Dispatch | null 
   const d = item.dispatch;
   if (!d || item.state !== "open") return;
   if (!runner) {
-    throw new RuleError("dispatched", `${item.id} is waiting for a ${d.to === "any" ? "" : `${d.to} `}runner; withdraw the dispatch to claim it by hand`);
+    throw new RuleError("dispatched", `${item.id} is waiting for a ${d.to === "any" ? "" : `${d.to} `}runner; withdraw the dispatch to claim it by hand`, 409, `atelier undispatch ${item.id}`);
   }
   if (d.to !== "any" && d.to !== runner.kind) {
-    throw new RuleError("wrong_runner", `${item.id} is for a ${d.to} runner, not ${runner.runner}`, 403);
+    throw new RuleError("wrong_runner", `${item.id} is for a ${d.to} runner, not ${runner.runner}`, 403, `use a ${d.to} runner, or run atelier dispatch ${item.id} --to any`);
   }
   const [harness, model] = actor.split("/");
-  if (d.agent && harness !== d.agent) throw new RuleError("wrong_agent", `${item.id} asks for ${d.agent}, not ${harness}`, 403);
-  if (d.model && model !== d.model) throw new RuleError("wrong_model", `${item.id} asks for ${d.model}, not ${model ?? "no model"}`, 403);
+  if (d.agent && harness !== d.agent) throw new RuleError("wrong_agent", `${item.id} asks for ${d.agent}, not ${harness}`, 403, `claim with ${d.agent}, or run atelier dispatch ${item.id} --agent ${harness}`);
+  if (d.model && model !== d.model) throw new RuleError("wrong_model", `${item.id} asks for ${d.model}, not ${model ?? "no model"}`, 403, `claim with ${d.model}, or run atelier dispatch ${item.id} --model ${model ?? "MODEL"}`);
 }
 
 export function describe(d: Dispatch): string {

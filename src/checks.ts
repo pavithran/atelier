@@ -797,7 +797,7 @@ export function settleCheckClasses(
   // A command that is never read-only cannot be declared, and an init that
   // names the checks cannot register one.
   const refused = (strict ? checks : declared.map((d) => d.command)).flatMap((command) => { const why = refusalOf(command); return why ? [refusalText(command, why)] : []; });
-  if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}.`, 400);
+  if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}.`, 400, "check only with commands that read; run atelier check");
   const out: CheckDeclaration[] = [];
   const undeclared: string[] = [];
   for (const command of checks) {

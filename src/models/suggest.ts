@@ -153,5 +153,5 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   }
   // A failure says what became of the build assignments too (gpt-6-astra's
   // sixteenth review of t622, finding 2).
-  throw new RuleError("no_builder", [`${why} No eligible builder in the pool. ${excluded.join("; ")}`, ...byAssignment.outcome.lines].join(" "), 409);
+  throw new RuleError("no_builder", [`${why} No eligible builder in the pool. ${excluded.join("; ")}`, ...byAssignment.outcome.lines].join(" "), 409, "add a model with atelier models add, or name one with --to H/M");
 }

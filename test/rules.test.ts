@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acceptedAgainstMain, acceptedState } from "../src/rules.ts";
+import { acceptedAgainstMain, acceptedState, NEXT_MARK } from "../src/rules.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
 import { usageShortages } from "../src/rules.ts";
@@ -114,6 +114,17 @@ test("rule errors survive a trip through a plain message", () => {
   const parsed = parseRuleError(new Error(new RuleError("owned", "t1 is owned | by x", 409).message));
   assert.deepEqual(parsed, { status: 409, code: "owned", detail: "t1 is owned | by x" });
   assert.equal(parseRuleError(new Error("boom")), null);
+});
+
+test("a rule error's next command crosses a plain message, and an older message without one still parses", () => {
+  const err = new RuleError("dispatched", "t1 | waits\nfor a runner", 409, "atelier undispatch t1");
+  assert.equal(err.next, "atelier undispatch t1");
+  const parsed = { status: 409, code: "dispatched", detail: "t1 | waits\nfor a runner", next: "atelier undispatch t1" };
+  assert.deepEqual(parseRuleError(err), parsed);
+  assert.equal(err.message, "409|dispatched|t1 | waits\nfor a runner");
+  // As the Ledger stub passes it: the message alone, with the next behind the mark.
+  assert.deepEqual(parseRuleError(new Error(`${err.message}${NEXT_MARK}${err.next}`)), parsed);
+  assert.deepEqual(parseRuleError(new Error("409|dispatched|t1 waits")), { status: 409, code: "dispatched", detail: "t1 waits" });
 });
 
 test("a required check is pending until observed at the current head", () => {
