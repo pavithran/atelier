@@ -2078,7 +2078,7 @@ test("merge warns on eligibility and overlap changes without refusing unrelated 
 });
 
 test("merge compares eligible agents, the overlap rule and checks with the acceptance, and refuses what the accepted item no longer satisfies", () => {
-  const context = { contributors: ["codex/gpt-6-astra"], passed: ["npm test"], overlapping: ["t4 (claude-code/opus-5.5)"] };
+  const context = { passed: ["npm test"], overlapping: ["t4 (claude-code/opus-5.5)"] };
   // The eligible list is retired: a contributor absent from the stored list is not refused.
   let d = mergePolicyDecision({ ...before, eligible: ["codex"] }, { ...before, eligible: ["claude"] }, ["src/a.ts"], false, context);
   assert.match(d.warning, /eligible:/);
@@ -2122,7 +2122,7 @@ test("the acceptance's policy is its snapshot over the server's policy before th
   assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: [], acceptancePolicy: { shipRuns: ["bin/a.sh"] } }, server).shipRuns, ["bin/a.sh"]);
 });
 
-test("the merge context names the item's contributors, the checks observed passing at the accepted revision and the live items its scope overlaps", () => {
+test("the merge context names the checks observed passing at the accepted revision and the live items its scope overlaps", () => {
   const head = "a".repeat(40), at = "2026-10-06T00:00:00.000Z";
   const detail = {
     item: { id: "t1", scope: ["src/**"], acceptedHead: head },
@@ -2131,10 +2131,6 @@ test("the merge context names the item's contributors, the checks observed passi
       { itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6-astra", at, where: "sandbox" },
       { itemId: "t1", claim: "npm run lint", grade: "observed", head, passed: false, by: "codex/gpt-6-astra", at, where: "sandbox" },
     ],
-    events: [
-      { actor: "codex/gpt-6-astra", kind: "item.claimed", data: {} },
-      { actor: "owner", kind: "item.handoff", data: { from: "codex/gpt-6-astra", to: "claude-code/opus-5.5" } },
-    ],
   };
   const items = [
     { id: "t1", state: "accepted", owner: "claude-code/opus-5.5", scope: ["src/**"] },
@@ -2142,7 +2138,7 @@ test("the merge context names the item's contributors, the checks observed passi
     { id: "t3", state: "submitted", owner: "zcode/glm-5.3", scope: ["docs/**"] },
     { id: "t4", state: "merged", owner: null, scope: [] },
   ];
-  assert.deepEqual(mergeContext(detail, items), { contributors: ["codex/gpt-6-astra", "claude-code/opus-5.5"], passed: ["npm test"], overlapping: ["t2 (zcode/glm-5.3)"] });
+  assert.deepEqual(mergeContext(detail, items), { passed: ["npm test"], overlapping: ["t2 (zcode/glm-5.3)"] });
   assert.deepEqual(mergeContext(detail).overlapping, []);
 });
 
