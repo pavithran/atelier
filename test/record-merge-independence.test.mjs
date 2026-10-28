@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServer } from "../src/runtime/server.mjs";
 import { criteriaOf } from "../src/criteria.ts";
-import { acceptancePolicy, mergeContext, mergePolicyDecision, overrideForbidden, PROTECTED_NEED } from "../src/rules.ts";
+import { acceptancePolicy, gate, mergeContext, mergePolicyDecision, overrideForbidden, PROTECTED_NEED, recordedMergeIndependence } from "../src/rules.ts";
 
 const OWNER = "atl_00112233445566778899aabbccddeeff";
 const BUILDER = "codex/gpt-6";
@@ -62,25 +62,30 @@ async function builtTask(project, paths = ["src/a.ts"]) {
   const L = ledger(project);
   const claim = await L.claim(id, BUILDER);
   await L.recordToken(id, BUILDER, claim.generation, null, null);
-  const head = (n % 16).toString(16).repeat(39) + "a";
+  const head = n.toString(16).padStart(40, "b");
   await L.observePush(id, head, (await L.item(id)).head ?? null);
   if (paths) await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: BUILDER, at: new Date().toISOString(), changedPaths: paths });
   return { id, head, L };
 }
 // The merge of `head` into main, made outside Atelier.
 function mergeOutside(head) {
-  const hash = (n % 16).toString(16).repeat(39) + "f";
+  const hash = `${head.slice(0, 8)}`.padEnd(40, "c");
   commits.unshift({ hash, parents: [BASE, head], treeHash: BASE });
   return hash;
 }
 const recordMerge = (project, id, body) => api("POST", `/projects/${project}/items/${id}/record-merge`, body);
 const approvalBy = (by, head) => ({ by, verdict: "approve", head });
+// A review the reviewer's own token recorded at the head, as the review routes record one.
+const review = async (L, id, by, head, approve = true, proved = true) =>
+  L.addReview({ itemId: id, by, head, approve, criteria: criteriaOf(await L.item(id)), note: approve ? "Fine" : "Not yet", at: new Date().toISOString() }, undefined, proved);
 const recorded = async (L, id) => (await L.events(id, 500)).filter((e) => e.kind === "item.merge_recorded");
 
 before(async () => {
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
   assert.equal((await api("PUT", "/projects/open", { checks: ["npm test"], protected: ["src/**"] })).status, 200);
   assert.equal((await api("PUT", "/projects/strict", { checks: ["npm test"], protected: ["src/**"], noOverride: true })).status, 200);
+  assert.equal((await api("PUT", "/projects/fastp", { checks: ["npm test"], protected: ["src/**"] })).status, 200);
+  assert.equal((await api("PUT", "/projects/risk", { checks: ["npm test"], protected: ["src/**"], riskReviews: { core: ["src/**"], reviews: { "docs-or-tests": 0, other: 2, core: 2 } } })).status, 200);
 });
 after(async () => { await server?.close(); });
 
@@ -114,10 +119,11 @@ test("paths never observed are taken as a protected change's, so the same-family
   assert.equal((await L.item(id)).state, "claimed");
 });
 
-test("a valid record-merge, with an approval from another family beside a same-family one, still succeeds", async () => {
-  const { id, head, L } = await builtTask("open");
+test("a valid record-merge, naming an approval from another family the Ledger holds beside a same-family one, still succeeds, in a project that forbids overrides too", async () => {
+  const { id, head, L } = await builtTask("strict");
+  await review(L, id, OTHER, head);
   const merge = mergeOutside(head);
-  const r = await recordMerge("open", id, { mergeCommit: merge, head, reviews: [approvalBy(SAME, head), approvalBy(OTHER, head)] });
+  const r = await recordMerge("strict", id, { mergeCommit: merge, head, reviews: [approvalBy(SAME, head), approvalBy(OTHER, head)] });
   const body = await r.json();
   assert.equal(r.status, 200, body.detail);
   assert.equal(body.item.state, "merged");
@@ -146,6 +152,7 @@ test("a project that forbids overrides refuses a record-merge that needs one, an
   assert.ok(body.next);
   assert.equal((await L.item(id)).state, "claimed");
 
+  await review(L, id, OTHER, head);
   const ok = await recordMerge("strict", id, { mergeCommit: merge, head, reviews: [approvalBy(OTHER, head)] });
   assert.equal(ok.status, 200, (await ok.clone().json()).detail);
   assert.equal((await ok.json()).item.state, "merged");
@@ -201,4 +208,112 @@ test("the merge guard does not refuse a merge for contributors no longer eligibl
   // The change is still named, and refuses nothing.
   assert.match(decision.warning, /eligible: \["codex"\] -> \["claude"\]/);
   assert.equal(decision.refusal, null);
+});
+
+test("a withdrawn approval does not come back: the reviewer's later rejection at the same head stands, as at the gate", async () => {
+  for (const project of ["strict", "open"]) {
+    // In the Ledger: the independent reviewer approved, then rejected.
+    const { id, head, L } = await builtTask(project);
+    await review(L, id, OTHER, head);
+    await new Promise((ok) => setTimeout(ok, 5));
+    await review(L, id, OTHER, head, false);
+    const r = await recordMerge(project, id, { mergeCommit: mergeOutside(head), head, reviews: [approvalBy(OTHER, head)] });
+    const body = await r.json();
+    assert.equal(r.status, 403, body.detail);
+    assert.equal(body.error, project === "strict" ? "override_forbidden" : "not_independent");
+    assert.match(body.detail, /claude-code\/opus-5\.5: withdrawn by its later rejection/);
+    assert.equal((await L.item(id)).state, "claimed");
+  }
+  // Named in the record: an approval and then the same reviewer's rejection.
+  const { id, head, L } = await builtTask("strict");
+  await review(L, id, OTHER, head);
+  const r = await recordMerge("strict", id, { mergeCommit: mergeOutside(head), head, reviews: [approvalBy(OTHER, head), { by: OTHER, verdict: "reject", head }] });
+  assert.equal(r.status, 403);
+  assert.match((await r.json()).detail, /withdrawn by its later rejection/);
+  assert.equal((await L.item(id)).state, "claimed");
+});
+
+test("an approval no review the Ledger holds proves is unproved: refused where overrides are, and only an override where they are allowed", async () => {
+  // Named alone, and held only as the developer recorded it in the model's name.
+  for (const held of [false, true]) {
+    const { id, head, L } = await builtTask("strict");
+    if (held) await review(L, id, OTHER, head, true, false);
+    const r = await recordMerge("strict", id, { mergeCommit: mergeOutside(head), head, reviews: [approvalBy(OTHER, head)] });
+    const body = await r.json();
+    assert.equal(r.status, 403, body.detail);
+    assert.equal(body.error, "override_forbidden");
+    assert.match(body.detail, /the approval by claude-code\/opus-5\.5 was recorded by .* answers no review request/);
+    assert.equal((await L.item(id)).state, "claimed");
+  }
+  const { id, head } = await builtTask("open");
+  const r = await recordMerge("open", id, { mergeCommit: mergeOutside(head), head, reviews: [approvalBy(OTHER, head)] });
+  const body = await r.json();
+  assert.equal(r.status, 200, body.detail);
+  assert.match(body.record.override, /developer's record of claude-code\/opus-5\.5's approval, which no review the Ledger holds proves/);
+});
+
+test("an independent approval at another head is not the commit's review", async () => {
+  const { id, head, L } = await builtTask("strict");
+  await review(L, id, OTHER, head);
+  // The builder pushes again; the approval stays at the earlier head.
+  const later = n.toString(16).padStart(40, "d");
+  await L.observePush(id, later, head);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: later, passed: true, by: BUILDER, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+  const merge = mergeOutside(later);
+  const r = await recordMerge("strict", id, { mergeCommit: merge, head: later, reviews: [approvalBy(OTHER, head), approvalBy(OTHER, later)] });
+  const body = await r.json();
+  assert.equal(r.status, 403, body.detail);
+  assert.equal(body.error, "override_forbidden");
+  // Named at the earlier head alone, nothing approves the commit merged.
+  const none = await recordMerge("strict", id, { mergeCommit: merge, head: later, reviews: [approvalBy(OTHER, head)] });
+  assert.equal((await none.json()).error, "no_approval");
+  assert.equal((await L.item(id)).state, "claimed");
+});
+
+test("one model under two names counts once when the change's class needs several reviews", async () => {
+  const { id, head, L } = await builtTask("risk", ["lib/a.ts"]);
+  const merge = mergeOutside(head);
+  const twice = await recordMerge("risk", id, { mergeCommit: merge, head, reviews: [approvalBy(OTHER, head), approvalBy("codex/claude-opus-5-5", head)] });
+  const body = await twice.json();
+  assert.equal(twice.status, 403, body.detail);
+  assert.equal(body.error, "not_independent");
+  assert.match(body.detail, /other change: needs 2 independent reviews, .*; 1 so far/);
+  assert.equal((await L.item(id)).state, "claimed");
+  const ok = await recordMerge("risk", id, { mergeCommit: merge, head, reviews: [approvalBy(OTHER, head), approvalBy("antigravity/gemini-4-argon", head)] });
+  assert.equal(ok.status, 200, (await ok.clone().json()).detail);
+});
+
+test("in fast mode record-merge asks no review before the merge, as the gate does", async () => {
+  const { id, head, L } = await builtTask("fastp");
+  const blockers = async () => (await (await api("GET", `/projects/fastp/items/${id}`)).json()).gate.blockers;
+  assert.ok((await blockers()).includes(PROTECTED_NEED));
+  await L.setMode("owner", "fast", "reviewers are down", OTHER, "PAVI: go fast today");
+  assert.ok(!(await blockers()).includes(PROTECTED_NEED));
+  const r = await recordMerge("fastp", id, { mergeCommit: mergeOutside(head), head, reviews: [approvalBy(SAME, head)] });
+  const body = await r.json();
+  assert.equal(r.status, 200, body.detail);
+  assert.equal(body.item.state, "merged");
+});
+
+test("a rejection-only override and one recorded at another head do not stand in for the review, as at the gate", () => {
+  const head = "1".repeat(40), older = "2".repeat(40), at = "2026-10-28T12:00:00.000Z";
+  const policy = { checks: ["npm test"], protected: ["src/**"] };
+  const evidence = [{ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: BUILDER, at, changedPaths: ["src/a.ts"] }];
+  const item = { id: "t1", kind: "task", title: "t", state: "submitted", owner: BUILDER, head, base: "0".repeat(40), scope: [], pushActors: [BUILDER] };
+  const record = { commit: head, reviews: [approvalBy(SAME, head)], at };
+  const cases = {
+    rejectionsOnly: { head, by: "owner", reason: "waive the rejection", at, rejectionsOnly: true, rejections: [] },
+    stale: { head: older, by: "owner", reason: "an older revision", at },
+  };
+  for (const [name, reviewOverride] of Object.entries(cases)) {
+    const withOverride = { ...item, reviewOverride };
+    const got = recordedMergeIndependence(record, withOverride, policy, evidence, [], "owner");
+    assert.equal(got.override, null, name);
+    assert.equal(got.refusal?.code, "not_independent", name);
+    assert.ok(gate(withOverride, policy, evidence, [], "owner").blockers.includes(PROTECTED_NEED), name);
+  }
+  // A current override at the commit stands in, at both.
+  const current = { ...item, reviewOverride: { head, by: "owner", reason: "no reviewer", at } };
+  assert.equal(recordedMergeIndependence(record, current, policy, evidence, [], "owner").override?.reason, "no reviewer");
+  assert.equal(gate(current, policy, evidence, [], "owner").ready, true);
 });

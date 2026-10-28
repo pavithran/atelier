@@ -6494,7 +6494,7 @@ export class Ledger extends DurableObject<Env> {
     const refusal = recordedMergeRefusal(record, baseline);
     if (refusal) throw refusal;
     // The gate's independence, and the project's ban on overrides (G16).
-    const independence = recordedMergeIndependence(record, item, this.project().policy, this.evidenceFor(id), this.owner, this.mode().mode === "fast");
+    const independence = recordedMergeIndependence(record, item, this.project().policy, this.evidenceFor(id), this.reviewsFor(id), this.owner, this.mode().mode === "fast");
     if (independence.refusal) throw independence.refusal;
     this.assertPostMergeFree(id);
     this.assertNoClaimInFlight(id);

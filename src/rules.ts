@@ -2862,15 +2862,27 @@ export function recordedMergeRefusal(record: { mergeCommit: string; commit: stri
 // observed are taken as a protected change's, the safe side, as the gate
 // lands nothing whose paths it has not read. A change the gate asks no review
 // of keeps record-merge's own rule (one approval at the commit, from
-// recordedMerge). Otherwise the approvals named must be the ones the gate
-// would count (independentApproval, one per model), or an override the
-// developer recorded at that commit stands in for them, as in the gate; a
-// project that forbids overrides (noOverride) counts none and refuses the
-// record. In fast mode the gate asks no review before the merge, so neither
-// does this; the post-merge review is asked after the record.
+// recordedMerge). Otherwise the approvals named must be ones the gate would
+// count, or an override the developer recorded at that commit stands in for
+// them, as in the gate; a project that forbids overrides (noOverride) counts
+// none and refuses the record. In fast mode the gate asks no review before
+// the merge, so neither does this; the post-merge review is asked after.
+//
+// The verdicts are resolved as the gate resolves them (countingReviews: the
+// latest standing review per reviewer at the commit and the criteria now),
+// over the reviews the Ledger holds and the ones named. A named approval
+// keeps the provenance of the Ledger's standing review by that reviewer at
+// that commit; one the Ledger has no standing review for is the developer's
+// word in a model's name, so it is unproved (proved: false), which a
+// protected change never counts (unprovedReview). A named rejection is a
+// verdict like any other, so it withdraws an earlier approval of its
+// reviewer, as a later rejection does at the gate. An approval counts only
+// when it is named and still its reviewer's standing verdict. Where the
+// project allows overrides, unproved approvals that would otherwise count
+// stand in as the developer's override, named as such on the record.
 export function recordedMergeIndependence(
-  record: { commit: string; reviews: readonly RecordedReview[] },
-  item: Item, policy: ProjectPolicy, evidence: Evidence[], owner = DEFAULT_OWNER, fast = false,
+  record: { commit: string; reviews: readonly RecordedReview[]; at: string },
+  item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, fast = false,
 ): { refusal: RuleError | null; override: ReviewOverride | null } {
   const ok = { refusal: null, override: null };
   if (fast) return ok;
@@ -2881,27 +2893,49 @@ export function recordedMergeIndependence(
   const as = need.as;
   const contributors = contributorsOf(item);
   const single = singleFamily(policy);
-  const named = record.reviews.filter((r) => r.verdict === "approve" && r.head === record.commit)
-    .map((r): Review => ({ itemId: item.id, by: r.by, head: r.head, approve: true, note: "", at: r.at ?? "" }));
+  const at: ReviewBinding = { head: record.commit, criteria: criteriaOf(item) };
+  const held = reviews.filter((r) => standingReview(r, at));
+  const given = record.reviews.filter((r) => r.head === record.commit);
+  // The named reviews the Ledger does not already hold as standing, in the
+  // order given; one with no date is as of the record.
+  const named: Review[] = given
+    .filter((r) => r.verdict === "reject" || !held.some((h) => h.by === r.by))
+    .map((r) => ({ itemId: item.id, by: r.by, head: r.head, approve: r.verdict === "approve", note: "", at: r.at ?? record.at, criteria: at.criteria, recordedBy: owner, proved: false, claimed: false }));
+  const approvers = new Set(given.filter((r) => r.verdict === "approve").map((r) => r.by));
+  const standing = countingReviews([...held, ...named], at, policy, owner);
+  const candidates = standing.filter((r) => r.approve && approvers.has(r.by));
   const seen = new Set<string>();
-  const counted = named.filter((r) => independentApproval(r, as, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
+  const counted = candidates.filter((r) => independentApproval(r, as, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
   if (counted.length >= need.count) return ok;
   const message = need.risk ? riskBlocker(need.risk, need.count, counted.length, single) : protectedNeed(single);
   // Why each approval named does not count, in the words the review routes use.
-  const why = named.filter((r) => !counted.includes(r)).map((r) => {
-    const reason = contributed(r.by, contributors) ? "a contributor, and no model reviews its own work"
+  const why = [...approvers].filter((by) => !counted.some((r) => r.by === by)).map((by) => {
+    const r = standing.find((s) => s.by === by);
+    const reason = !r ? "no standing review at this commit"
+      : !r.approve ? "withdrawn by its later rejection"
+      : contributed(r.by, contributors) ? "a contributor, and no model reviews its own work"
       : sameActor(r.by, owner) ? "the developer, whose decision is not also the second opinion"
-      : companyRefusal(r.by, single) ?? (as === "protected" ? familyRefusal(r.by, contributors, single) : null) ?? "already counted as the same model";
-    return `${r.by}: ${reason}`;
+      : companyRefusal(r.by, single) ?? (as === "protected" ? familyRefusal(r.by, contributors, single) : null)
+        ?? (as === "protected" && unprovedReview(r) ? unprovedBlocker(r) : null) ?? "already counted as the same model";
+    return `${by}: ${reason}`;
   });
   const detail = `${item.id} ${message}${why.length ? `; ${why.join("; ")}` : ""}`;
   const review = `atelier record-merge ${item.id} --merge SHA --head ${record.commit} --review H/M=approve@${record.commit}`;
   if (policy.noOverride) {
-    return { refusal: new RuleError("override_forbidden", `${detail}. ${overrideForbidden(single)}`, 403, `name an approval from ${independentReviewerText(single)}: ${review}`), override: null };
+    return { refusal: new RuleError("override_forbidden", `${detail}. ${overrideForbidden(single)}`, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
   }
   const override = overrideAt({ head: record.commit, reviewOverride: item.reviewOverride }, owner);
   if (override && !override.rejectionsOnly) return { refusal: null, override };
-  return { refusal: new RuleError("not_independent", detail, 403, `name an approval from ${independentReviewerText(single)}: ${review}`), override: null };
+  // Where overrides are allowed, approvals that would count but for their
+  // proof stand in for the review as the developer's override, and the
+  // record says so; they are never counted as the independent review.
+  const seenUnproved = new Set<string>();
+  const unproved = candidates.filter((r) => unprovedReview(r) && independentApproval({ ...r, proved: true }, as, contributors, owner, single) && !seen.has(modelKey(r.by)) && !seenUnproved.has(modelKey(r.by)) && !!seenUnproved.add(modelKey(r.by)));
+  if (unproved.length && counted.length + unproved.length >= need.count) {
+    const reason = `the developer's record of ${unproved.map((r) => r.by).join(", ")}'s approval, which no review the Ledger holds proves`;
+    return { refusal: null, override: { head: record.commit, by: owner, reason, at: record.at } };
+  }
+  return { refusal: new RuleError("not_independent", detail, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
 }
 
 // The builder a commit's message names: its last Agent: line, as harness/model.
