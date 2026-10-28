@@ -21,6 +21,7 @@ import { basename, join, resolve } from "node:path";
 import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
 
 import { proseStandardLine } from "../src/prose-standard.ts";
+import { checkLimits, limitMs, stopLine, stopOf, stopText } from "../src/check-limit.ts";
 
 import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
 import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
@@ -57,7 +58,6 @@ const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
 const CONFIG = join(CONFIG_DIR, "config.json");
 export const CACHE = process.env.ATELIER_CACHE ?? join(HOME, "Library", "Caches", "ai-projects", "cloudflare-git");
-const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
 const CLI_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 // The one line --version prints, wherever it stands, ops included.
 const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
@@ -1409,29 +1409,36 @@ export async function mergeWithMain(dir, id, name = "") {
 // writes in the clone when it is removed. The group's leader is the
 // test-slot wrapper (cli/load.mjs), so the check holds one host-wide slot
 // for as long as its tree runs.
-export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
+// The run is bounded by the project's check limit (G7, src/check-limit.ts),
+// `policy`'s for `cmd`, counted from the held slot: a run stopped at it is
+// `stopped`, {kind, minutes}, which the evidence carries, never a failed test.
+export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000, policy = null) {
   process.stderr.write(`atelier: running \`${redact(cmd, secrets)}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
-  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, captureOrder: true, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
+  const limits = checkLimits(policy, cmd);
+  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, limits, captureOrder: true, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
-  const output = redact(`${r.output ?? `${r.stdout}${r.stderr}`}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
+  const stopped = stopOf(r.stopped, limits);
+  const output = redact(`${r.output ?? `${r.stdout}${r.stderr}`}${stopped ? `\n[atelier] check ${stopText(stopped)}${stopped.kind === "silent" ? " (no output, no process activity and no live child process)" : stopped.kind === "startup" ? " (no output, no child process seen, no CPU time)" : ""}${stopped.kind === "slot" ? "" : ", counted from its held test slot"}; stopped, not a failed test` : r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
   const passed = r.status === 0 && !r.error;
   const logPath = passed ? undefined : saveFailedOutput(CACHE, output);
   if (logPath) process.stderr.write(`atelier: full redacted failed-check log: ${logPath}\n`);
-  return { passed, logPath, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
+  return { passed, logPath, status: r.status, signal: r.signal, timedOut: r.timedOut, ...(stopped ? { stopped } : {}), output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
-// One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
+// One registered check through runGroup, bounded by `limits` (checkLimits in
+// src/check-limit.ts: the project's, or the defaults) from the held slot, under
 // the test-slot wrapper with `metadata` (its class, project, task, actor). An
 // interrupt, a terminal hang-up or a SIGTERM of this command does not reach
 // the check's group, so each ends this process, and runGroup ends the group
 // on the way out; a slot whose wrapper died that way is reclaimed at the
 // next admission or status read.
-export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes, captureOrder }) {
+export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes, captureOrder, limits = checkLimits(null, cmd) }) {
   const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
   process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
   const invocation = slotInvocation(["/bin/sh", "-c", cmd], metadata, env);
-  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn, captureOrder }); }
+  const { ceilingMs, silenceMs, startupMs, slotWaitMs } = limitMs(limits);
+  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: ceilingMs, silenceMs, startupMs, slotWaitMs, fromSlot: true, graceMs, maxBytes, onSpawn, captureOrder }); }
   finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
 }
 
@@ -1548,9 +1555,14 @@ export function checkoutLine(raw) {
 // submitted and ready for the owner. Acceptance, merge and deploy are separate.
 export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   const submitted = item?.state === "submitted";
+  // A check stopped at the check limit (G7) is named with what stopped it:
+  // it did not fail a test, and a report of it starts with those words
+  // (validation_blocked: timed out ..., or silent for ...).
+  const said = (c) => c.stopped ? `${stopLine(c.stopped)}, not a failed test` : c.result;
   const failed = checks.filter((c) => c.result === "failed").map((c) => flat(c.claim));
+  const stopped = checks.filter((c) => c.result === "stopped").map((c) => `${flat(c.claim)} (${said(c)})`);
   const blockers = (gate?.blockers ?? []).map(flat);
-  const checkText = checks.length ? `Checks: ${checks.map((c) => `${flat(c.claim)} ${c.result}`).join("; ")} (${checks[0].where})` : "Checks: none ran";
+  const checkText = checks.length ? `Checks: ${checks.map((c) => `${flat(c.claim)} ${said(c)}`).join("; ")} (${checks[0].where})` : "Checks: none ran";
   let outcome, exitCode, line, unresolved, accept, merge, ownerAction;
   if (failed.length) {
     outcome = "failed_checks"; exitCode = 2;
@@ -1558,7 +1570,16 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
     accept = "not reached"; merge = "not reached";
     ownerAction = `none yet; fix ${failed.join("; ")} in the workspace, then run done again`;
     const left = changed.length ? `; the workspace also changed: ${changed.map(flat).join(", ")}` : "";
-    line = `Outcome: failed checks: ${failed.join("; ")}; nothing was submitted${left}`;
+    line = `Outcome: failed checks: ${failed.join("; ")}${stopped.length ? `; stopped at the check limit: ${stopped.join("; ")}` : ""}; nothing was submitted${left}`;
+  } else if (stopped.length) {
+    // Every check that did not pass was stopped at the check limit (G7): no
+    // test failed. A builder that cannot finish within it reports the stop's words.
+    outcome = "stopped_checks"; exitCode = 2;
+    unresolved = "not evaluated; nothing was submitted";
+    accept = "not reached"; merge = "not reached";
+    ownerAction = `none yet; the run was stopped, not failed: see the limit with atelier show ${id}, then run done again, or end the report with validation_blocked: and the stop's words`;
+    const left = changed.length ? `; the workspace also changed: ${changed.map(flat).join(", ")}` : "";
+    line = `Outcome: checks stopped at the check limit, not failed: ${stopped.join("; ")}; nothing was submitted${left}`;
   } else if (submitted && gate.ready) {
     outcome = "submitted"; exitCode = 0;
     unresolved = "none";
@@ -1585,8 +1606,8 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   ];
   const json = {
     outcome, exitCode, outcomeLine: line, head, submitted,
-    checks: checks.map(({ claim, result, where }) => ({ claim, result, where })),
-    unresolvedGates: failed.length ? [] : blockers,
+    checks: checks.map(({ claim, result, where, stopped: stop }) => ({ claim, result, where, ...(stop ? { stopped: stop } : {}) })),
+    unresolvedGates: failed.length || stopped.length ? [] : blockers,
     accept, merge, deploy, ownerAction,
   };
   return { outcome, exitCode, summary, line, json };

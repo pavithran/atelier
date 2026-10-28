@@ -126,6 +126,9 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   }
   if (item.state === "blocked" || item.blocked) {
     const b = item.blocked;
+    // A block that is a fact (G7: a run stopped at its limit) is the
+    // model's to lift; the line says so, so no one waits for the developer.
+    if (b?.fact) return own("unblock", "A run stopped at its check limit: a fact, not a decision. The model lifts it once the cause is seen, with no developer's words.", `atelier unblock ${item.id}${flag}`, `blocked as a ${b.fact} fact by ${b.by}: ${b.reason}`);
     return own("unblock", "Settle what blocks it, then unblock it so it goes on.", `atelier unblock ${item.id}${flag}`, `blocked by ${b?.by ?? "nobody"}: ${b?.reason ?? "no reason recorded"}${b?.quote ? `, ${directionText(b)}` : ""}`);
   }
   const planBlocked = has("plan-blocked");

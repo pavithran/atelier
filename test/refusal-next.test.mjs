@@ -12,7 +12,7 @@ import { test } from "node:test";
 // names the route it guards, where no other command applies.
 const VALIDATION = [
     "acting_owner_only", "ambiguous_acting", "bad_acting", "bad_actor", "bad_agent", "bad_allow_paid",
-    "bad_bookmark", "bad_branch", "bad_card", "bad_check_paths", "bad_checks", "bad_choices", "bad_claim",
+    "bad_bookmark", "bad_branch", "bad_card", "bad_check_limit", "bad_check_paths", "bad_check_silence", "bad_checks", "bad_choices", "bad_claim",
     "bad_commit", "bad_contradicts", "bad_decision", "bad_declaration", "bad_delivered_by", "bad_dispatch",
     "bad_dump", "bad_event", "bad_evidence", "bad_expiry", "bad_failures", "bad_field", "bad_finding",
     "bad_findings", "bad_goal", "bad_hash", "bad_head", "bad_host", "bad_identity", "bad_item", "bad_kind",
@@ -22,7 +22,7 @@ const VALIDATION = [
     "bad_replaces", "bad_report", "bad_request", "bad_request_id", "bad_reset", "bad_resolve", "bad_resolver",
     "bad_review_bar", "bad_review_tier", "bad_revision", "bad_risk_reviews", "bad_role", "bad_run",
     "bad_runner", "bad_runner_token", "bad_scope", "bad_served", "bad_session", "bad_single_family",
-    "bad_status", "bad_step", "bad_summary", "bad_time", "bad_title", "bad_to", "bad_triage", "bad_usage",
+    "bad_status", "bad_step", "bad_stopped", "bad_summary", "bad_time", "bad_title", "bad_to", "bad_triage", "bad_usage",
     "bad_verdict", "block_reason", "block_until", "confirm_server", "defect_found_in", "defect_note",
     "override_reason", "project_mismatch", "release_current_name", "release_name_too_long", "repo_reserved",
     "too_large", "too_long", "too_many_events", "unregistered_acting",

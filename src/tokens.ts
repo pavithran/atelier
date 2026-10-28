@@ -282,7 +282,7 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "baseline-token", method: "POST", path: "/projects/{project}/baseline-token", credential: "runner", body: ["scope"], via: "cli", command: "baseline-token", jobs: ["build"] },
   // The same command reads the project's regenerate command from its record.
   { name: "baseline-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "baseline-token", jobs: ["build"] },
-  { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "merged", "mainHead", "notApplicable", "load", "reuse"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "stopped", "merged", "mainHead", "notApplicable", "load", "reuse"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
   { name: "submit", method: "POST", path: `${ITEM}/submit`, credential: "runner", body: ["summary", "head"], via: "cli", command: "submit", jobs: ["build", "integrate", "refresh"], integrator: true },
   // The review job's helpers, under the reviewer's own agent token.
   { name: "review-claim", method: "POST", path: `${ITEM}/review-claim`, credential: "agent", body: [], via: "cli", command: "review-claim", jobs: REVIEW },
