@@ -310,3 +310,75 @@ test("the real Ledger's alarm runs under the Node runtime within a second of its
     assert.equal(ns.object("project:demo").stored(), null);
   } finally { await ns.close(); }
 });
+
+test("an alarm that alarm() sets again for the same moment is kept and fires", async () => {
+  let calls = 0, seenDuring;
+  let at;
+  class Again extends DurableObject {
+    async arm(t) { await this.ctx.storage.setAlarm(t); }
+    async alarm() {
+      calls++;
+      if (calls === 1) { await this.ctx.storage.setAlarm(at); seenDuring = await this.ctx.storage.getAlarm(); }
+    }
+  }
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Again, env: {} });
+  try {
+    at = Date.now() + 100;
+    await ns.get(ns.idFromName("x")).arm(at);
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(seenDuring, at);
+    assert.equal(calls, 2);
+    assert.equal(ns.object("x").stored(), null);
+  } finally { await ns.close(); }
+});
+
+test("an alarm set by an alarm() that never committed is rolled back with it; the first delivery comes again", async () => {
+  const dir = join(scratch(), "data");
+  const fired = [];
+  class Replacing extends DurableObject {
+    async arm(at) { await this.ctx.storage.setAlarm(at); }
+    async alarm() {
+      fired.push("first");
+      this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS w (v TEXT)");
+      this.ctx.storage.sql.exec("INSERT INTO w VALUES ('uncommitted')");
+      await this.ctx.storage.setAlarm(Date.now() + 3600e3);
+      await new Promise(() => {});
+    }
+  }
+  const ns = new Namespace({ dir, Class: Replacing, env: {} });
+  const original = Date.now() + 50;
+  await ns.get(ns.idFromName("x")).arm(original);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(fired, ["first"]);
+  // The process dies with alarm() unfinished: its transaction never commits.
+  for (const o of ns.objects.values()) { o.arm(null); o.db.close(); }
+  ns.alarms.close();
+  class After extends DurableObject {
+    async alarm() { fired.push("again"); }
+    rows() { return this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE name = 'w'").toArray().length; }
+  }
+  const again = new Namespace({ dir, Class: After, env: {} });
+  again.start();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(fired, ["first", "again"]);
+  assert.equal(await again.get(again.idFromName("x")).rows(), 0);
+  assert.equal(again.object("x").stored(), null);
+  await again.close();
+});
+
+test("an alarm() that sets a later alarm and then throws is retried, not left to the later one", async () => {
+  const seen = [];
+  class SetThenThrow extends DurableObject {
+    async arm(at) { await this.ctx.storage.setAlarm(at); }
+    async alarm(info) {
+      seen.push(info.isRetry);
+      if (!info.isRetry) { await this.ctx.storage.setAlarm(Date.now() + 3600e3); throw new Error("fails after setting"); }
+    }
+  }
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: SetThenThrow, env: {} });
+  try {
+    await ns.get(ns.idFromName("x")).arm(Date.now() + 50);
+    await new Promise((r) => setTimeout(r, 2600));
+    assert.deepEqual(seen, [false, true]);
+  } finally { await ns.close(); }
+});

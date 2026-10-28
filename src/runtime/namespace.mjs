@@ -17,14 +17,19 @@
 //   crosses as a plain Error with its message (the routes read RuleError from
 //   the message, parseRuleError); a method the object lacks fails with the
 //   runtime's own wording, which missingLedgerMethod reads.
-// - An alarm the object sets is kept in DIR/alarms.sqlite and fires at its
-//   time, after a restart too, retried up to six times with backoff when
-//   `alarm()` throws. Delivery is at least once: the kept alarm is removed
-//   only after the call that ran `alarm()` has committed, so a crash in
-//   between fires it again on the next start. While `alarm()` runs,
-//   `getAlarm()` answers null unless it set a new one, as the Workers
-//   runtime answers. `ctx.abort()` drops the instance, and the next call
-//   builds a new one over the same file.
+// - An alarm the object sets is kept in the object's own file (table
+//   _atelier_alarm, which the Ledger's dump skips, as it skips the Workers
+//   runtime's _cf_ tables), written in the same transaction as the call that
+//   set it, and fires at its time, after a restart too. Delivery is at least
+//   once: the delivered alarm is cleared in the transaction of the call that
+//   ran `alarm()`, so a crash before that commits leaves it to fire again,
+//   and anything `alarm()` set or wrote rolls back with it. While `alarm()`
+//   runs, `getAlarm()` answers null unless it set a new one. When `alarm()`
+//   throws it is retried up to six times with backoff (at the sooner of the
+//   retry and any alarm it set). DIR/alarms.sqlite lists the objects that
+//   may hold an alarm, so a start knows which files to read.
+// - `ctx.abort()` drops the instance, and the next call builds a new one
+//   over the same file.
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -80,11 +85,11 @@ class Obj {
     this.id = ns.idFromName(name);
     this.db = openDatabase(join(ns.dir, "ledgers", fileName(name)));
     this.sql = new SqlStorage(this.db);
+    this.db.exec("CREATE TABLE IF NOT EXISTS _atelier_alarm (id INTEGER PRIMARY KEY CHECK (id = 1), at REAL, gen INTEGER NOT NULL, retries INTEGER NOT NULL DEFAULT 0)");
     this.tail = Promise.resolve();
     this.instance = null;
     this.depth = 0;
     this.timer = null;
-    this.retries = 0;
     this.firing = null;
     this.held = new Set();
   }
@@ -132,63 +137,61 @@ class Obj {
     if (reason) console.log(`${this.name}: restarted (${reason})`);
     this.instance = null;
   }
+  // The kept alarm: { at, gen, retries }, at null when none is set.
+  row() {
+    return this.db.prepare("SELECT at, gen, retries FROM _atelier_alarm WHERE id = 1").get() ?? { at: null, gen: 0, retries: 0 };
+  }
   stored() {
-    return this.ns.alarms.prepare("SELECT at FROM alarms WHERE name = ?").get(this.name)?.at ?? null;
+    return this.row().at;
   }
   alarmAt() {
-    const at = this.stored();
-    return at === this.firing ? null : at;
+    const r = this.row();
+    return this.firing !== null && r.gen === this.firing ? null : r.at;
+  }
+  write(at, retries = 0) {
+    this.db.prepare("INSERT INTO _atelier_alarm (id, at, gen, retries) VALUES (1, ?, 1, ?) ON CONFLICT (id) DO UPDATE SET at = excluded.at, gen = gen + 1, retries = excluded.retries").run(at, retries);
+    if (at !== null) this.ns.alarms.prepare("INSERT OR IGNORE INTO armed (name) VALUES (?)").run(this.name);
   }
   setAlarm(at) {
-    if (at === null || !Number.isFinite(at)) {
-      this.ns.alarms.prepare("DELETE FROM alarms WHERE name = ?").run(this.name);
-      this.arm(null);
-      return;
-    }
-    this.ns.alarms.prepare("INSERT INTO alarms (name, at) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET at = excluded.at").run(this.name, at);
-    this.retries = 0;
-    this.arm(at);
+    this.write(at === null || !Number.isFinite(at) ? null : at);
+    this.rearm();
   }
-  arm(at) {
+  // Sets the timer from the kept alarm; forgets the object in the list once
+  // it holds none.
+  rearm() {
+    const { at, gen } = this.row();
+    if (at === null && !this.db.isTransaction) this.ns.alarms.prepare("DELETE FROM armed WHERE name = ?").run(this.name);
+    this.arm(at, gen);
+  }
+  arm(at, gen) {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (at === null || this.ns.closed) return;
     const wait = Math.max(0, at - Date.now());
-    this.timer = setTimeout(() => (wait > TIMER_MAX ? this.arm(at) : this.fire(at)), Math.min(wait, TIMER_MAX));
+    this.timer = setTimeout(() => (wait > TIMER_MAX ? this.arm(at, gen) : this.fire(gen)), Math.min(wait, TIMER_MAX));
     this.timer.unref?.();
   }
-  fire(at) {
+  fire(gen) {
     this.timer = null;
-    let ran = false;
     void this.run(async () => {
-      if (this.stored() !== at) return;
+      const kept = this.row();
+      if (kept.gen !== gen || kept.at === null) return;
       const instance = this.live;
-      if (typeof instance.alarm !== "function") { ran = true; return; }
-      this.firing = at;
+      if (typeof instance.alarm !== "function") { this.write(null); return; }
+      this.firing = gen;
       try {
-        await instance.alarm({ retryCount: this.retries, isRetry: this.retries > 0 });
-        ran = true;
-      } finally {
+        await instance.alarm({ retryCount: kept.retries, isRetry: kept.retries > 0 });
         this.firing = null;
+        if (this.row().gen === gen) this.write(null);
+      } catch (err) {
+        this.firing = null;
+        console.error(`${this.name}: alarm failed (try ${kept.retries + 1}):`, err);
+        if (kept.retries >= ALARM_RETRIES) { if (this.row().gen === gen) this.write(null); return; }
+        const now = this.row();
+        const retry = Date.now() + 2 ** (kept.retries + 1) * 1000;
+        this.write(now.gen !== gen && now.at !== null ? Math.min(now.at, retry) : retry, kept.retries + 1);
       }
-    }).then(() => {
-      if (!ran) return;
-      // Committed: the delivered alarm goes, unless alarm() set a new one.
-      this.retries = 0;
-      this.ns.alarms.prepare("DELETE FROM alarms WHERE name = ? AND at = ?").run(this.name, at);
-    }, (err) => {
-      console.error(`${this.name}: alarm failed (try ${this.retries + 1}):`, err);
-      if (this.stored() !== at) return;
-      if (this.retries >= ALARM_RETRIES) {
-        this.retries = 0;
-        this.ns.alarms.prepare("DELETE FROM alarms WHERE name = ? AND at = ?").run(this.name, at);
-        return;
-      }
-      this.retries++;
-      const again = Date.now() + 2 ** this.retries * 1000;
-      this.ns.alarms.prepare("UPDATE alarms SET at = ? WHERE name = ? AND at = ?").run(again, this.name, at);
-      this.arm(again);
-    });
+    }).finally(() => { if (!this.ns.closed) this.rearm(); });
   }
   close() {
     this.arm(null);
@@ -209,11 +212,11 @@ export class Namespace {
     chmodSync(dir, 0o700);
     chmodSync(join(dir, "ledgers"), 0o700);
     this.alarms = new DatabaseSync(join(dir, "alarms.sqlite"));
-    this.alarms.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS alarms (name TEXT PRIMARY KEY, at REAL NOT NULL)");
+    this.alarms.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS armed (name TEXT PRIMARY KEY)");
   }
   // Arms every alarm kept from before a restart.
   start() {
-    for (const { name, at } of this.alarms.prepare("SELECT name, at FROM alarms").all()) this.object(name).arm(at);
+    for (const { name } of this.alarms.prepare("SELECT name FROM armed").all()) this.object(name).rearm();
   }
   idFromName(name) {
     const id = { name, toString: () => name, equals: (other) => String(other) === name };

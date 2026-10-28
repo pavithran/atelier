@@ -60,14 +60,16 @@ const nodeCommand = files.length ? [...node, ...files]
 // rewrites them against the Node server. A Workers test not in the list ends
 // the run, so none is skipped unnoticed. ATELIER_WORKERS_TESTS=1 runs them
 // still, in workerd.
-const skipped = new Set(readFileSync(new URL("./workers-skipped.txt", import.meta.url), "utf8").split("\n").map((l) => l.trim()).filter(Boolean));
-const unlisted = found.byRunner.vitest.filter((f) => !skipped.has(f));
-if (unlisted.length) {
-  console.error(`test/run.mjs: Workers tests not in test/workers-skipped.txt; run them under Node or list them:\n${unlisted.map((l) => `  ${l}`).join("\n")}`);
-  process.exit(1);
-}
 const workersTests = process.env.ATELIER_WORKERS_TESTS === "1";
-if (!files.length && !workersTests && found.byRunner.vitest.length) console.log(`test/run.mjs: ${found.byRunner.vitest.length} Workers test files skipped by name (test/workers-skipped.txt)`);
+if (!workersTests) {
+  const skipped = new Set(readFileSync(new URL("./workers-skipped.txt", import.meta.url), "utf8").split("\n").map((l) => l.trim()).filter(Boolean));
+  const unlisted = found.byRunner.vitest.filter((f) => !skipped.has(f));
+  if (unlisted.length) {
+    console.error(`test/run.mjs: Workers tests not in test/workers-skipped.txt; run them under Node or list them:\n${unlisted.map((l) => `  ${l}`).join("\n")}`);
+    process.exit(1);
+  }
+  if (!files.length && found.byRunner.vitest.length) console.log(`test/run.mjs: ${found.byRunner.vitest.length} Workers test files skipped by name (test/workers-skipped.txt)`);
+}
 const vitestCommand = files.length || !workersTests ? null : ["node_modules/.bin/vitest", "run", `--maxWorkers=${vitestWorkers}`];
 
 // runGroup SIGKILLs the group on the way out of process.exit.

@@ -169,7 +169,7 @@ test("npm test executes real runner-token routes and propagates a failed token a
     cpSync(file, join(dir, file), { recursive: true });
   }
   symlinkSync(resolve("node_modules"), join(dir, "node_modules"), "dir");
-  const env = { ...process.env, CI: "1", NO_COLOR: "1", WRANGLER_SEND_METRICS: "false" };
+  const env = { ...process.env, CI: "1", NO_COLOR: "1", WRANGLER_SEND_METRICS: "false", ATELIER_WORKERS_TESTS: "1" };
   for (const key of Object.keys(env)) if (/^(ATELIER_(TOKEN|RUNNER_TOKEN)|CLOUDFLARE_|CF_API_)/.test(key)) delete env[key];
   const execute = () => spawnSync("npm", ["test"], { cwd: dir, env, encoding: "utf8", timeout: 55_000 });
   const passed = execute();
@@ -206,7 +206,7 @@ test("npm test runs the vitest pool after a failed Node pool and exits with the 
   mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
   symlinkSync(resolve("node_modules/vitest"), join(dir, "node_modules/vitest"), "dir");
   writeFileSync(join(dir, "node_modules/.bin/vitest"), `#!/bin/sh\necho ran > "${join(dir, "vitest-ran")}"\nexit "$VITEST_STATUS"\n`, { mode: 0o755 });
-  const env = { ...process.env };
+  const env = { ...process.env, ATELIER_WORKERS_TESTS: "1" };
   delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
   for (const [vitestStatus, expected] of [[0, 1], [3, 3]]) {
     rmSync(join(dir, "vitest-ran"), { force: true });
@@ -243,7 +243,7 @@ function runTree(t, { timings, vitest = "exit 0" } = {}) {
   mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
   symlinkSync(resolve("node_modules/vitest"), join(dir, "node_modules/vitest"), "dir");
   writeFileSync(join(dir, "node_modules/.bin/vitest"), `#!/bin/sh\necho vitest ran > "${join(dir, "vitest-ran")}"\n${vitest}\n`, { mode: 0o755 });
-  const env = { ...process.env, ATELIER_TEST_WORKERS: "1" };
+  const env = { ...process.env, ATELIER_TEST_WORKERS: "1", ATELIER_WORKERS_TESTS: "1" };
   delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
   delete env.NODE_COMPILE_CACHE;
   return { dir, run: () => spawnSync(process.execPath, ["test/run.mjs"], { cwd: dir, env, encoding: "utf8", timeout: 60_000 }) };
