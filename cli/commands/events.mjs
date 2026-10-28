@@ -41,5 +41,6 @@ export default async function eventsCommand() {
     (before) => call("GET", `${P(name)}/events${before === undefined ? "" : `?before=${before}`}`, undefined, OWNER),
     filterOf({ from, to, kinds }),
   );
-  console.log(JSON.stringify(events, null, 2));
+  // The same array with or without --json: {seq, at, item, actor, kind, stage, data}.
+  console.log(JSON.stringify(events.map((e) => ({ seq: e.seq, at: e.at, item: e.itemId, actor: e.actor, kind: e.kind, stage: e.stage ?? null, data: e.data })), null, 2));
 }
