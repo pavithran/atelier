@@ -453,7 +453,9 @@ export type ReviewAsked = { needed: boolean; reason: string; at?: string; head?:
 // Thrown inside requestReview's transaction when a redirect asks no
 // replacement, so the withdrawal rolls back and the answer is given (t627).
 class KeptRequests extends Error {
-  constructor(readonly kept: { request: number; reviewer: string | null }[], readonly answer: ReviewAsked) { super("kept"); }
+  readonly kept: { request: number; reviewer: string | null }[];
+  readonly answer: ReviewAsked;
+  constructor(kept: { request: number; reviewer: string | null }[], answer: ReviewAsked) { super("kept"); this.kept = kept; this.answer = answer; }
 }
 // The longest reason the developer gives for withdrawing a review request (t627).
 export const REVIEW_WITHDRAW_REASON_MAX = 1000;
