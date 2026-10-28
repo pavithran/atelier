@@ -40,6 +40,8 @@ export class Locks {
   // Resolves to the release once held; rejects (code "push_running", or the
   // signal's reason) when given up. `kind` is "r" or "w".
   acquire(key, kind = "w", { waitMs = LOCK_WAIT_MS, signal } = {}) {
+    // A waiter already given up makes no slot.
+    if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
     let slot = this.#slots.get(key);
     if (!slot) this.#slots.set(key, slot = new Slot());
     return new Promise((ok, fail) => {
@@ -68,7 +70,6 @@ export class Locks {
           if (slot.idle && this.#slots.get(key) === slot) this.#slots.delete(key);
         });
       };
-      if (signal?.aborted) { fail(signal.reason ?? new Error("aborted")); return; }
       slot.queue.push(waiter);
       signal?.addEventListener("abort", onAbort, { once: true });
       timer = setTimeout(() => leave(Object.assign(new Error(`${key} is still held by a push`), { code: "push_running" })), waitMs);

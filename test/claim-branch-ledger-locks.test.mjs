@@ -49,8 +49,7 @@ test("a waiter whose signal aborts leaves the queue at once, and readers share w
 });
 
 // The Ledger's methods, each with its body, from the class declaration on.
-function ledgerMethods() {
-  const source = readFileSync(new URL("../src/ledger.ts", import.meta.url), "utf8");
+function ledgerMethods(source) {
   const methods = new Map();
   let current = null;
   for (const line of source.slice(source.indexOf("export class Ledger")).split("\n")) {
@@ -65,27 +64,60 @@ function ledgerMethods() {
   return methods;
 }
 
-test("every Ledger method that writes an item's owner, write token or claim generation, or closes it, is in the lock table", () => {
-  const methods = ledgerMethods();
+// The public Ledger methods that write an item's owner, write token or claim
+// generation, or close it, directly or through any method they call, private
+// or public (a call through `this` never passes the stub's wrapper), and that
+// the lock table does not list.
+function uncovered(source, table = GRANT_LOCKS) {
+  const methods = ledgerMethods(source);
   // The primitives that write: SQL setting token_id, claim_gen or owner, and
   // the helpers through which every other write goes.
   const PRIMITIVES = new Set(["dropToken", "assignOwner", "update"]);
-  const WRITES = /SET[^`]*\b(token_id|claim_gen|owner)\s*=|dropToken\(|assignOwner\(|recordToken\(|update\([^;]*\b(owner:|state: "(?:merged|abandoned|integrated)")/s;
+  const WRITES = /SET[^`]*\b(token_id|claim_gen|owner)\s*=|dropToken\(|assignOwner\(|update\([^;]*\b(owner:|state: "(?:merged|abandoned|integrated)")/s;
   const writers = new Set([...methods.values()].filter((m) => !PRIMITIVES.has(m.name) && m.name !== "constructor" && WRITES.test(m.body)).map((m) => m.name));
-  // A method that calls a private writer writes through it.
   for (let grew = true; grew;) {
     grew = false;
     for (const m of methods.values()) {
-      if (writers.has(m.name) || PRIMITIVES.has(m.name)) continue;
-      if ([...writers].some((w) => methods.get(w).private && new RegExp(`this\\.${w.replace("$", "\\$")}\\(`).test(m.body))) { writers.add(m.name); grew = true; }
+      if (writers.has(m.name) || PRIMITIVES.has(m.name) || m.name === "constructor") continue;
+      if ([...writers].some((w) => new RegExp(`this\\.${w.replace("$", "\\$")}\\(`).test(m.body))) { writers.add(m.name); grew = true; }
     }
   }
   const reachable = [...writers].filter((n) => !methods.get(n).private).sort();
+  return { reachable, missing: reachable.filter((n) => !(n in table)), methods };
+}
+
+const LEDGER = readFileSync(new URL("../src/ledger.ts", import.meta.url), "utf8");
+
+test("every Ledger method that writes an item's owner, write token or claim generation, or closes it, is in the lock table", () => {
+  const { reachable, missing, methods } = uncovered(LEDGER);
   assert.ok(reachable.includes("release") && reachable.includes("handoff") && reachable.includes("recordToken"), `the scan found ${reachable.join(", ")}`);
-  const missing = reachable.filter((n) => !(n in GRANT_LOCKS));
   assert.deepEqual(missing, [], `these Ledger methods write an owner, token or claim generation, or close an item, and take no lock: ${missing.join(", ")}; add them to GRANT_LOCKS in src/runtime/ledger-locks.mjs`);
   for (const [name, scope] of Object.entries(GRANT_LOCKS)) {
     assert.ok(methods.has(name) && !methods.get(name).private, `${name} is a public Ledger method`);
     assert.ok(["task", "planned", "project"].includes(scope), `${name}: ${scope}`);
   }
+});
+
+test("the scan catches a public method that reaches a writer through another public method", () => {
+  const anchor = "\n  release(id: string, actor: string, note: string";
+  assert.ok(LEDGER.includes(anchor));
+  const mutated = LEDGER.replace(anchor, `\n  releaseAlias(id: string, actor: string): Item {\n    return this.release(id, actor, "alias");\n  }\n${anchor}`);
+  assert.deepEqual(uncovered(mutated).missing, ["releaseAlias"]);
+  // And through a chain of two.
+  const chained = mutated.replace("\n  releaseAlias(", `\n  aliasOfAlias(id: string): Item {\n    return this.releaseAlias(id, "x");\n  }\n\n  releaseAlias(`);
+  assert.deepEqual(uncovered(chained).missing, ["aliasOfAlias", "releaseAlias"]);
+});
+
+test("an acquisition already aborted, or given up, leaves no slot behind", async () => {
+  const locks = new Locks();
+  const gone = new AbortController();
+  gone.abort(new Error("gone"));
+  await assert.rejects(locks.acquire("fresh", "w", { signal: gone.signal }), /gone/);
+  assert.equal(locks.idle("fresh"), true);
+  await assert.rejects(locks.acquireAll([["a", "w"], ["b", "w"]], { signal: gone.signal }), /gone/);
+  assert.equal(locks.idle("a") && locks.idle("b"), true);
+  const held = await locks.acquire("t");
+  await assert.rejects(locks.acquire("t", "w", { waitMs: 10 }), (e) => e.code === "push_running");
+  held();
+  assert.equal(locks.idle("t"), true);
 });
