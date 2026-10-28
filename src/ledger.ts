@@ -10254,14 +10254,21 @@ export class Ledger extends DurableObject<Env> {
   // this and cancelLand cannot interleave: a cancel recorded first refuses
   // the merge, and one asked after finds the record at merge-main and
   // refuses, naming the step.
-  beginLandMerge(id: string, actor: string): LandingRecord {
+  beginLandMerge(id: string, actor: string, attempt?: number): LandingRecord {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
-    const item = this.item(id);
+    this.item(id);
     const prev = this.landingRecord(id);
     const at = new Date().toISOString();
-    if (prev?.cancelled) throw new RuleError("landing_cancelled", `${id}'s queued landing was cancelled at ${prev.cancelled.slice(0, 16).replace("T", " ")} UTC, before its merge began, so nothing is merged`, 409, `run atelier land ${id} --queue to queue it again, or atelier land ${id} to land it here`);
-    const record: LandingRecord = { ...(prev ?? { attempt: 1, head: item.head ?? null }), step: "merge-main", at, failedStep: null, tail: null };
-    delete record.files;
+    // Only the landing that holds this task's live lease, in the attempt
+    // the record names and has not failed, enters its merge: a stale or
+    // direct call changes nothing, and a failure's evidence stands until a
+    // new attempt starts.
+    const held = this.projectLanding();
+    if (!held || held.item !== id || !this.landingLive(held, at)) throw new RuleError("no_lease", `${id}'s landing holds no live landing lease, so it cannot enter its merge; nothing was changed`, 409, `run atelier land ${id}`);
+    if (!prev || attempt === undefined || prev.attempt !== attempt) throw new RuleError("stale_landing", `${id}'s landing record is at attempt ${prev?.attempt ?? "none"}, not ${attempt ?? "unnamed"}, so this merge belongs to no current attempt; nothing was changed`, 409, `run atelier land ${id}`);
+    if (prev.failedStep) throw new RuleError("landing_failed", `${id}'s landing (attempt ${prev.attempt}) failed at its ${prev.failedStep} step, so it does not enter its merge; nothing was changed`, 409, `run atelier show ${id} --json for the failure, then atelier land ${id} to start a new attempt`);
+    if (prev.cancelled) throw new RuleError("landing_cancelled", `${id}'s queued landing was cancelled at ${prev.cancelled.slice(0, 16).replace("T", " ")} UTC, before its merge began, so nothing is merged`, 409, `run atelier land ${id} --queue to queue it again, or atelier land ${id} to land it here`);
+    const record: LandingRecord = { ...prev, step: "merge-main", at };
     this.saveLandingRecord(id, record);
     return record;
   }

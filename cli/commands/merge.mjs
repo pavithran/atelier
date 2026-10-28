@@ -205,7 +205,10 @@ export default async function mergeCommand() {
     // (G1): from here a cancel of its queued landing is refused, naming the
     // step, and one that came first stops it here.
     if(lander){
-      try{await request('POST',`${I(name,id)}/land-merge`,{},OWNER);}
+      // It names the attempt it belongs to, which the Ledger checks against
+      // the task's landing record and its live lease.
+      const attempt=(await request('GET',I(name,id),undefined,OWNER).catch(()=>null))?.landing?.attempt;
+      try{await request('POST',`${I(name,id)}/land-merge`,attempt===undefined?{}:{attempt},OWNER);}
       catch(error){await fail(error.message,{},error.code);}
     }
     const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
@@ -270,6 +273,13 @@ export default async function mergeCommand() {
     // before merging (G2): a clean checkout whose branch the baseline holds,
     // with no landing of its own begun, is fast-forwarded, as atelier pull
     // would. A partial-history project keeps its pairing step (sync).
+    // A journal left unpublished, by a landing or by a plain atelier merge,
+    // is adopted by the lander only when its merge began at the project's
+    // tip as the journal recorded it: one begun on a checkout ahead of it
+    // would publish commits no landing reviewed.
+    if (lander && !fresh && journal.state && journal.state.phase!=='published' && (!journal.state.baselineStart || journal.state.start!==journal.state.baselineStart)) {
+      await fail(`the unfinished merge of ${id} in ${cwd} began at ${short(journal.state.start)}, not at the project's ${p.branch} (${journal.state.baselineStart?short(journal.state.baselineStart):'not recorded'}) as it stood then, so it may carry commits no landing reviewed; nothing was merged or pushed.\nnext: only the developer can: atelier merge ${id} --cancel --discard-local, then atelier land ${id} again`);
+    }
     if (lander && !fresh && !journal.state && git(['rev-parse','HEAD'],{cwd})!==baselineHead
       && git(['merge-base','--is-ancestor','HEAD',baselineHead],{cwd,allowFail:true,env:REAL_HISTORY_ENV}).status===0) {
       git(['merge','--quiet','--ff-only',baselineHead],{cwd});

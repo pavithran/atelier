@@ -212,3 +212,49 @@ test("a regeneration that fails records its own output as the tail", async (t) =
   assert.equal(shown.landing.failedStep, "regenerate");
   assert.match(shown.landing.tail, /DISTINCT-REGEN-ERROR-42/);
 });
+
+test("a merge journal an interrupted plain atelier merge left on a checkout ahead of main is not adopted by the landing", async (t) => {
+  const w = await landingWorld(t);
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  assert.equal((await w.api("POST", `/projects/demo/items/${id}/accept`, { head: (await w.detail(id)).item.head })).status, 200);
+  writeFileSync(`${w.checkout}/local.txt`, "not reviewed\n");
+  w.git(w.checkout, "add", "local.txt");
+  w.git(w.checkout, "commit", "-q", "-m", "a local commit nobody reviewed");
+  const main = await w.tip();
+  // The plain merge is stopped just before its push, its journal left behind.
+  const hold = `${w.root}/hold`;
+  const plain = w.spawnCli(["merge", id], { ATELIER_TEST_HOLD: hold, ATELIER_TEST_HOLD_STAGE: "push" });
+  for (let i = 0; i < 300 && !existsSync(`${hold}.read`); i++) await new Promise((ok) => setTimeout(ok, 100));
+  assert.ok(existsSync(`${hold}.read`), "the plain merge reached its push");
+  plain.child.kill("SIGKILL");
+  await plain.done;
+  assert.equal(await w.tip(), main);
+  const r = await w.cli(["land", id]);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /the unfinished merge of t\d+ in .* began at [0-9a-f]{8}, not at the project's main \([0-9a-f]{8}\)/);
+  assert.match(r.output, /next: only the developer can: atelier merge t\d+ --cancel --discard-local, then atelier land t\d+ again/);
+  assert.equal(await w.tip(), main, "nothing was pushed");
+  assert.equal((await w.detail(id)).landing.failedStep, "merge-main");
+});
+
+test("entering the merge needs the task's live lease and its current attempt; a stale call changes nothing", async (t) => {
+  const w = await landingWorld(t);
+  const { id } = await w.task({ files: { "shared.txt": "task's line\n" } });
+  await w.moveMain({ "shared.txt": "main's line\n" });
+  assert.notEqual((await w.cli(["land", id])).status, 0);
+  const before = (await w.detail(id)).landing;
+  assert.equal(before.failedStep, "merge-main");
+  const enter = (attempt) => w.api("POST", `/projects/demo/items/${id}/land-merge`, attempt === undefined ? {} : { attempt });
+  let r = await enter(before.attempt);
+  assert.equal(r.status, 409); assert.equal(r.json.error, "no_lease");
+  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
+  r = await enter(before.attempt + 1);
+  assert.equal(r.status, 409); assert.equal(r.json.error, "stale_landing");
+  r = await enter(undefined);
+  assert.equal(r.status, 409); assert.equal(r.json.error, "stale_landing");
+  r = await enter(before.attempt);
+  assert.equal(r.status, 409); assert.equal(r.json.error, "landing_failed");
+  assert.match(r.json.next ?? "", /atelier land t\d+/);
+  assert.deepEqual((await w.detail(id)).landing, before, "the failure's evidence stands");
+});

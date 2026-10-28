@@ -3323,7 +3323,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The landing entering its merge (G1, atelier merge ID --landing): one
       // Ledger call, ordered with the cancel of its queued landing.
       requireOwner(env, actor);
-      return json({ landing: await L.beginLandMerge(id, actor) });
+      return json({ landing: await L.beginLandMerge(id, actor, typeof body.attempt === "number" ? body.attempt : undefined) });
     }
     case "land-job": {
       // Queues the task's landing for a runner that holds the registered

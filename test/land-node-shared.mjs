@@ -10,7 +10,7 @@
 // are recorded through the Ledger, and the real CLI (`atelier land`) lands it
 // as a child process. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -57,6 +57,13 @@ export async function landingWorld(t) {
     cwd, timeout: 240_000,
     env: { ...gitEnv, HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_LAND_POLL_MS: "50", ...env },
   }, (err, stdout, stderr) => ok({ status: err ? (err.code ?? 1) : 0, stdout, stderr, output: `${stdout}${stderr}` })));
+  // The same CLI as a child the test can stop partway.
+  const spawnCli = (args, env = {}) => {
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "demo"], { cwd: checkout, env: { ...gitEnv, HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: OWNER, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ...env } });
+    t.after(() => child.kill("SIGKILL"));
+    const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
+    return { child, done };
+  };
 
   // The developer's checkout, registered by atelier init, which makes the
   // project's bare repository and pushes main; then the project's checks,
@@ -121,7 +128,7 @@ export async function landingWorld(t) {
   };
   const detail = async (id) => (await api("GET", `/projects/demo/items/${id}`)).json;
 
-  return { root, base, server, api, L, git, netGit, remote, checkout, moveMain, tip, parents, log, task, setPolicy, cli, detail, repo };
+  return { root, base, server, api, L, git, netGit, remote, checkout, moveMain, tip, parents, log, task, setPolicy, cli, spawnCli, detail, repo };
 }
 
 // The events of `kind` a task's detail lists, oldest first.
