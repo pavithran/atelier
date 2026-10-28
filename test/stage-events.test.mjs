@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { promisify } from "node:util";
 import { startServer } from "../src/runtime/server.mjs";
+import { criteriaOf } from "../src/criteria.ts";
 
 const run = promisify(execFile);
 const OWNER = "atl_00112233445566778899aabbccddeeff";
@@ -31,6 +32,8 @@ const artifacts = {
 
 let server;
 const L = () => server.namespace.get(server.namespace.idFromName("project:demo"));
+// The "gated" project asks a check and an independent review of src/**, so the stages between built and landable show.
+const G = () => server.namespace.get(server.namespace.idFromName("project:gated"));
 const sha = (c) => c.repeat(40);
 
 function api(method, path, body) {
@@ -49,6 +52,17 @@ async function newTask(title) {
 // The events of one task, oldest first, as the Ledger holds them.
 const eventsOf = async (id) => (await L().events(id, 500)).reverse();
 const last = async (id) => (await eventsOf(id)).at(-1);
+async function gatedTask(title) {
+  const r = await api("POST", "/projects/gated/items", { title });
+  assert.equal(r.status, 201);
+  const made = await r.json();
+  return (made.item ?? made).id;
+}
+async function lastOfIn(ledger, id, kind) {
+  const e = (await ledger().events(id, 500)).find((x) => x.kind === kind);
+  assert.ok(e, `${id} has a ${kind} event`);
+  return e;
+}
 // The last event of a kind: its actor and stage are what the test asserts.
 async function lastOf(id, kind) {
   const e = (await eventsOf(id)).filter((x) => x.kind === kind).at(-1);
@@ -60,6 +74,7 @@ async function lastOf(id, kind) {
 before(async () => {
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
   assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
+  assert.equal((await api("PUT", "/projects/gated", { checks: ["npm test"], protected: ["src/**"] })).status, 200);
 });
 after(async () => { await server?.close(); });
 
@@ -164,4 +179,89 @@ test("atelier events --json prints one array of {seq, at, item, actor, kind, sta
   assert.equal(mine.kind, "item.claimed");
   assert.equal(mine.stage, "building");
   assert.ok(events.every((e) => e.kind === "item.claimed"));
+});
+
+test("a task's events carry the stage the stage tick shows: checked, reviewed, then landable", async () => {
+  const id = await gatedTask("Facts stages");
+  const claim = await G().claim(id, AGENT);
+  await G().recordToken(id, AGENT, claim.generation, null, null);
+  const head = sha("e");
+  await G().observePush(id, head, (await G().item(id)).head ?? null);
+  await G().addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: AGENT, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+  assert.equal((await lastOfIn(G, id, "evidence.observed")).stage, "checked");
+
+  await G().addReview({ itemId: id, by: OTHER, head, approve: true, criteria: criteriaOf(await G().item(id)), note: "Fine", at: new Date().toISOString() }, undefined, true);
+  const approved = await lastOfIn(G, id, "review.approved");
+  assert.equal(approved.stage, "reviewed", "approved but not yet submitted");
+
+  await G().submit(id, AGENT, "ready");
+  assert.equal((await lastOfIn(G, id, "item.submitted")).stage, "landable");
+
+  // Submitted, checked and approved, the gate is clear.
+
+  await G().accept(id, "owner");
+  assert.equal((await lastOfIn(G, id, "item.accepted")).stage, "landable");
+});
+
+test("a landing that joins or leaves the lease wait queue writes landing.queued and landing.dequeued", async () => {
+  const holder = await newTask("Holds the lease");
+  const waiter = await newTask("Waits for the lease");
+  for (const id of [holder, waiter]) {
+    const claim = await L().claim(id, AGENT);
+    await L().recordToken(id, AGENT, claim.generation, null, null);
+  }
+  await L().beginProjectLanding(holder, "owner");
+  await L().queueProjectLanding(waiter, "owner");
+  const queued = await lastOf(waiter, "landing.queued");
+  assert.equal(queued.actor, "owner");
+  assert.equal(queued.stage, "building");
+  // A poll that only renews the place writes nothing more.
+  await L().queueProjectLanding(waiter, "owner");
+  assert.equal((await eventsOf(waiter)).filter((e) => e.kind === "landing.queued").length, 1);
+  await L().queueProjectLanding(waiter, "owner", true);
+  const left = await lastOf(waiter, "landing.dequeued");
+  assert.equal(left.actor, "owner");
+  assert.equal(left.stage, "building");
+  await L().cancelProjectLanding(holder, "owner");
+});
+
+test("an event written for an earlier time carries no stage", async () => {
+  const id = await newTask("Replayed");
+  const claim = await L().claim(id, AGENT);
+  await L().recordToken(id, AGENT, claim.generation, null, null);
+  await L().dispatch(id, "owner", { to: "home", release: true, note: "again" });
+  const released = await lastOf(id, "item.released");
+    assert.equal(released.stage, undefined);
+  assert.equal((await lastOf(id, "item.dispatched")).stage, "queued");
+});
+
+test("beginLanding writes landing.begun once, a resumed landing none, and cancelling writes landing.cancelled; merged() writes a landed stage", async () => {
+  const id = await gatedTask("Merge begins");
+  const claim = await G().claim(id, AGENT);
+  await G().recordToken(id, AGENT, claim.generation, null, null);
+  const head = sha("f");
+  await G().observePush(id, head, (await G().item(id)).head ?? null);
+  await G().submit(id, AGENT, "ready");
+  await G().addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: AGENT, at: new Date().toISOString(), changedPaths: ["src/b.ts"] });
+  await G().addReview({ itemId: id, by: OTHER, head, approve: true, criteria: criteriaOf(await G().item(id)), note: "Fine", at: new Date().toISOString() }, undefined, true);
+  await G().accept(id, "owner");
+  const count = async (kind) => (await G().events(id, 500)).filter((e) => e.kind === kind).length;
+
+  await G().beginLanding(id, "owner", head);
+  assert.equal(await count("landing.begun"), 1);
+  assert.equal((await lastOfIn(G, id, "landing.begun")).actor, "owner");
+  await G().beginLanding(id, "owner", head);
+  assert.equal(await count("landing.begun"), 1, "a resumed landing writes none");
+
+  await G().cancelLanding(id, "owner");
+  const cancelled = await lastOfIn(G, id, "landing.cancelled");
+  assert.equal(cancelled.actor, "owner");
+  assert.equal(cancelled.stage, "landable");
+
+  await G().beginLanding(id, "owner", head);
+  assert.equal(await count("landing.begun"), 2);
+  await G().merged(id, "owner", sha("9"), true);
+  const merged = await lastOfIn(G, id, "item.merged");
+  assert.equal(merged.actor, "owner");
+  assert.equal(merged.stage, "landed");
 });

@@ -2163,8 +2163,8 @@ export function stageOf(item: Item, facts: TaskStageFacts = {}): { stage: TaskSt
 // The stage a task is at after a change, as the events record it: stageOf from
 // the item alone, except that a blocked or abandoned task is named so. The
 // one definition `wait` and `situation` read from the events table.
-export function eventStage(item: Item): string {
-  return item.state === "blocked" || item.state === "abandoned" ? item.state : stageOf(item).stage;
+export function eventStage(item: Item, facts: TaskStageFacts = {}): string {
+  return item.state === "blocked" || item.state === "abandoned" ? item.state : stageOf(item, facts).stage;
 }
 
 // How long a task may stay at a stage before the five-minute tick records it
