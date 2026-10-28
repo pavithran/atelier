@@ -2852,7 +2852,7 @@ export class Ledger extends DurableObject<Env> {
 
   item(id: string): Item {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
-    if (!row) throw new RuleError("no_item", `no item ${id}`, 404);
+    if (!row) throw new RuleError("no_item", `no item ${id}`, 404, "run atelier ls --project P, or atelier ls --all");
     const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`, id).toArray();
     return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
   }
@@ -4909,7 +4909,7 @@ export class Ledger extends DurableObject<Env> {
     // judged here.
     const confirmed = landingRow ? null : this.leaseMain(id);
     if (confirmed && confirmed.head === head && before && before !== confirmed.main) {
-      throw new RuleError("main_moved", `main moved from ${confirmed.main.slice(0, 8)} to ${before.slice(0, 8)} since ${id}'s landing confirmed it under the lease; ${id} at ${head.slice(0, 8)} was checked and reviewed against ${confirmed.main.slice(0, 8)}, so it is not merged into ${before.slice(0, 8)}. Nothing was merged. Merge main into ${id}'s workspace and push it (atelier dispatch ${id} --job merge-main, or by hand with atelier push), which withdraws the acceptance, then run atelier land ${id} again to check and review the new head`, 409, `run atelier land ${id} again to check it against the new main`);
+      throw new RuleError("main_moved", `main moved from ${confirmed.main.slice(0, 8)} to ${before.slice(0, 8)} since ${id}'s landing confirmed it under the lease; ${id} at ${head.slice(0, 8)} was checked and reviewed against ${confirmed.main.slice(0, 8)}, so it is not merged into ${before.slice(0, 8)}. Nothing was merged. Merge main into ${id}'s workspace and push it (atelier dispatch ${id} --job merge-main, or by hand with atelier push), which withdraws the acceptance, then run atelier land ${id} again to check and review the new head`, 409, `merge main into ${id}'s workspace and push (atelier dispatch ${id} --job merge-main, or atelier push), which withdraws the acceptance; then atelier accept ${id}, then atelier land ${id}`);
     }
     const landing = landingRow ? JSON.parse(landingRow.value as string) as { head: string; at: number; before?: string | null } : { head, at: Date.now(), before: before ?? null };
     // A cancelled reservation remains in history, but does not become the
@@ -7941,7 +7941,7 @@ export class Ledger extends DurableObject<Env> {
       return this.claimNeed(target, r.wanted === 1, r.tier === 1, at).needed;
     }).map((r) => {
       const item = items.get(r.item as string);
-      if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
+      if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404, "run atelier ls --project P, or atelier ls --all");
       const stop = parseStop(r.stopped);
       return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch, ...(stop ? { stopped: stop } : {}) };
     });

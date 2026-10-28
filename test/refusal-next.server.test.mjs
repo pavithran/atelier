@@ -125,14 +125,14 @@ test("a landing refusal names its next command, and ATELIER_JSON=1 prints the ob
   } finally { await server.close(); }
 });
 
-test("a refusal without a next prints no next line, and --json gives next as null", async () => {
+test("no_item names atelier ls, as text and as JSON", async () => {
   const { server, cli } = await serve();
   try {
     const text = await cli(["show", "t99", "--project", "demo"]);
     assert.notEqual(text.code, 0);
-    assert.doesNotMatch(text.stderr, /next:/);
+    assert.match(text.stderr, /\nnext: run atelier ls --project P, or atelier ls --all\n$/);
     const json = await cli(["show", "t99", "--project", "demo", "--json"]);
-    assert.deepEqual(JSON.parse(json.stderr), { code: "no_item", detail: "no item t99", next: null });
     assert.notEqual(json.code, 0);
+    assert.deepEqual(JSON.parse(json.stderr), { code: "no_item", detail: "no item t99", next: "run atelier ls --project P, or atelier ls --all" });
   } finally { await server.close(); }
 });

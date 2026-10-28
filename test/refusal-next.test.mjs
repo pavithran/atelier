@@ -8,38 +8,77 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const EXEMPT = {
-  "input validation: the detail already says what to send": [
+// Each exempt code is input validation, whose detail says what to send, or
+// names the route it guards, where no other command applies.
+const VALIDATION = [
     "acting_owner_only", "ambiguous_acting", "bad_acting", "bad_actor", "bad_agent", "bad_allow_paid",
     "bad_bookmark", "bad_branch", "bad_card", "bad_check_paths", "bad_checks", "bad_choices", "bad_claim",
     "bad_commit", "bad_contradicts", "bad_decision", "bad_declaration", "bad_delivered_by", "bad_dispatch",
     "bad_dump", "bad_event", "bad_evidence", "bad_expiry", "bad_failures", "bad_field", "bad_finding",
     "bad_findings", "bad_goal", "bad_hash", "bad_head", "bad_host", "bad_identity", "bad_item", "bad_kind",
-    "bad_label", "bad_limit", "bad_list", "bad_main", "bad_mode", "bad_model", "bad_ms", "bad_name",
-    "bad_note", "bad_outcome", "bad_post_merge", "bad_prepare", "bad_private", "bad_projects",
-    "bad_prose_standard", "bad_quote", "bad_reason", "bad_receipt", "bad_record", "bad_ref", "bad_regenerate",
-    "bad_release", "bad_replaces", "bad_report", "bad_request", "bad_request_id", "bad_reset", "bad_resolve",
-    "bad_resolver", "bad_review_bar", "bad_review_tier", "bad_revision", "bad_risk_reviews", "bad_role",
-    "bad_run", "bad_runner", "bad_runner_token", "bad_scope", "bad_served", "bad_session", "bad_single_family",
+    "bad_label", "bad_limit", "bad_list", "bad_main", "bad_mode", "bad_model", "bad_ms", "bad_name", "bad_note",
+    "bad_outcome", "bad_post_merge", "bad_prepare", "bad_private", "bad_projects", "bad_prose_standard",
+    "bad_quote", "bad_reason", "bad_receipt", "bad_record", "bad_ref", "bad_regenerate", "bad_release",
+    "bad_replaces", "bad_report", "bad_request", "bad_request_id", "bad_reset", "bad_resolve", "bad_resolver",
+    "bad_review_bar", "bad_review_tier", "bad_revision", "bad_risk_reviews", "bad_role", "bad_run",
+    "bad_runner", "bad_runner_token", "bad_scope", "bad_served", "bad_session", "bad_single_family",
     "bad_status", "bad_step", "bad_summary", "bad_time", "bad_title", "bad_to", "bad_triage", "bad_usage",
     "bad_verdict", "block_reason", "block_until", "confirm_server", "defect_found_in", "defect_note",
     "override_reason", "project_mismatch", "release_current_name", "release_name_too_long", "repo_reserved",
     "too_large", "too_long", "too_many_events", "unregistered_acting",
-  ],
-  "an internal state, a dump or restore step, or a wrong route: the detail names the one fix and no command applies": [
-    "artifacts_unavailable", "assignment_changed", "branches_repo_mismatch", "check_applies",
-    "deployment_unverified", "empty", "import_in_progress", "ledger_not_empty", "no_import", "no_item",
-    "no_such_payload", "no_table", "not_found", "not_rolled_back", "owner_assignment", "read_only",
-    "repo_foreign", "repo_taken", "request_reused", "restore_partial", "restore_unavailable", "revert_part",
-    "revoke_failed", "runner_token_required", "sandbox_removed", "schema_mismatch", "server_updating",
-    "stale_attempt", "standard_project", "token_revoked", "undeclared_check", "unknown_bookmark",
-    "unknown_family", "workflow_not_listening", "workflow_not_terminated", "workflow_unreadable",
-    "wrong_server",
-  ],
+];
+// Exempt codes that validate input without a bad_ or too_ name.
+const VALIDATION_OTHER = new Set(["acting_owner_only", "ambiguous_acting", "block_reason", "block_until", "confirm_server", "defect_found_in", "defect_note", "override_reason", "project_mismatch", "release_current_name", "release_name_too_long", "repo_reserved", "unregistered_acting"]);
+const GUARDED_ROUTE = {
+  artifacts_unavailable: "Git hosting step: retry is the same command",
+  assignment_changed: "models assign: the decision it replaces changed",
+  branches_repo_mismatch: "branch push: the branches repository is fixed",
+  check_applies: "check record: the reason is the detail",
+  deployment_unverified: "ship deployment check route",
+  empty: "push and refresh routes: a repository with no commits",
+  import_in_progress: "ledger import: resumes with the same import",
+  ledger_not_empty: "ledger import: loads into an empty Ledger only",
+  no_import: "ledger import: no such import",
+  no_such_payload: "stored payload route: nothing stored under that hash",
+  no_table: "ledger dump: no such table",
+  not_found: "unknown route or item path on this server",
+  not_rolled_back: "integration-failed and refreshed-failed: the rollback reason is the fix",
+  owner_assignment: "internal claim bookkeeping, not reachable by a command",
+  repo_foreign: "project init: the repository exists under another purpose",
+  repo_taken: "project init and branch routes: the repository belongs to another project",
+  request_reused: "models assign: a new request id",
+  restore_partial: "ledger restore: the detail names the bookmarks that undo it",
+  restore_unavailable: "ledger restore: storage did not take the bookmark",
+  revert_part: "revert: names the plan to revert",
+  revoke_failed: "workspace token renewal: retry is the same command",
+  runner_token_required: "GET /runners/me: needs a runner token",
+  sandbox_removed: "removed container-check route",
+  schema_mismatch: "ledger import: dump and Ledger differ",
+  server_updating: "any route during a server update: retry is the same command",
+  stale_attempt: "post-merge report: the attempt ended",
+  standard_project: "projects remove and rename: the standard reviewer project",
+  undeclared_check: "init --check: the detail lists the commands",
+  unknown_bookmark: "ledger restore: the detail names how to record a bookmark",
+  unknown_family: "models admit: family not recognised from the name",
+  workflow_not_listening: "landing Workflow event route",
+  workflow_not_terminated: "landing Workflow replacement route",
+  workflow_unreadable: "landing Workflow read route",
+  wrong_server: "ledger restore: bookmark is of another server",
+};
+const EXEMPT = {
+  "input validation: the detail already says what to send": VALIDATION,
+  "a guarded route or internal step, named in GUARDED_ROUTE": Object.keys(GUARDED_ROUTE),
+};
+// Raise sites whose first argument is not a string literal, with the codes
+// they raise. Any other such site fails the scan.
+const COMPUTED = {
+  "src/index.ts": { code: ["override_unconfirmed", "fast_mode_unconfirmed"], "rule.code": ["fast_mode_unconfirmed", "override_unconfirmed"], AREAS_REMOVED: ["areas_removed"] },
+  "src/rules.ts": { AREAS_REMOVED: ["areas_removed"] },
 };
 
 // The claim, push, submit, land and record-merge paths: none is exempt and no
-// raise site may lack a next.
+// raise site may lack a next. These are the "strict" codes; the commit message
+// and the 2.0 log count them as STRICT.length, and the test below checks it.
 const STRICT = [
   "owned", "not_owner", "not_holder", "held", "dispatched", "not_dispatched", "post_merge_blocked", "post_merge_uncertain",
   "stale_head", "closed", "claim_in_flight", "claim_superseded", "claim_failed", "model_held", "ineligible", "single_family",
@@ -91,12 +130,16 @@ function argCount(s, i) {
 }
 
 const sites = new Map(); // code -> [{ where, next }]
+const add = (code, where, next) => sites.set(code, [...(sites.get(code) ?? []), { where, next }]);
 for (const file of files("src")) {
   const s = readFileSync(file, "utf8");
-  for (const m of s.matchAll(/new RuleError\("([a-z_0-9]+)"/g)) {
-    const list = sites.get(m[1]) ?? [];
-    list.push({ where: `${file}:${s.slice(0, m.index).split("\n").length}`, next: argCount(s, m.index + "new RuleError(".length) >= 4 });
-    sites.set(m[1], list);
+  const lineOf = (i) => `${file}:${s.slice(0, i).split("\n").length}`;
+  for (const m of s.matchAll(/new RuleError\(\s*([^\s"][^,]*|"([a-z_0-9]+)")/g)) {
+    const next = argCount(s, m.index + "new RuleError(".length) >= 4;
+    if (m[2]) { add(m[2], lineOf(m.index), next); continue; }
+    const listed = COMPUTED[file]?.[m[1].trim()];
+    assert.ok(listed, `${lineOf(m.index)}: RuleError with a computed code (${m[1].trim()}) that the scan cannot see; list it in COMPUTED`);
+    for (const code of listed) add(code, lineOf(m.index), next);
   }
 }
 const exempt = new Map(Object.entries(EXEMPT).flatMap(([reason, codes]) => codes.map((c) => [c, reason])));
@@ -111,7 +154,7 @@ test("the exempt list is honest: each entry is raised, has no next, and the list
     assert.ok(sites.has(code), `${code} is exempt but no longer raised: remove it`);
     assert.ok(!sites.get(code).some((x) => x.next), `${code} has a next now: remove it from the exempt list`);
   }
-  assert.ok(exempt.size <= 140, "the exempt list grew; give the new refusal a next");
+  for (const code of VALIDATION) assert.ok(/^(bad_|too_)/.test(code) || VALIDATION_OTHER.has(code), `${code} is not input validation: name its route in GUARDED_ROUTE`);
 });
 
 test("no claim, push, submit, land or record-merge code is exempt, and each raise site names its next", () => {
@@ -121,4 +164,11 @@ test("no claim, push, submit, land or record-merge code is exempt, and each rais
     const bare = sites.get(code).filter((x) => !x.next).map((x) => x.where);
     assert.deepEqual(bare, [], `${code} has raise sites without a next`);
   }
+});
+
+test("the counts: strict codes, codes with a next, exempt codes", () => {
+  const withNext = [...sites].filter(([, list]) => list.some((x) => x.next)).length;
+  console.log(`# strict ${STRICT.length}, with next ${withNext}, exempt ${exempt.size}, codes ${sites.size}`);
+  assert.equal(withNext + exempt.size, sites.size);
+  assert.equal(new Set(STRICT).size, STRICT.length);
 });

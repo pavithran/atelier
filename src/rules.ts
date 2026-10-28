@@ -1518,7 +1518,7 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
   const out: ItemFields = {};
   // An older CLI's new --area and edit --area or --clear-area send this
   // field. Refuse it plainly, whatever its value, rather than store it.
-  if (input.area !== undefined) throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410);
+  if (input.area !== undefined) throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410, "update the CLI; run atelier update");
   if (input.revertOf !== undefined) {
     if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
     out.revertOf = input.revertOf;
@@ -1643,7 +1643,7 @@ export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPol
 // the review of a change without criteria would judge it against nothing.
 export function assertCriteriaAllowed(policy: Pick<ProjectPolicy, "requireCriteria">, accept: readonly string[] | undefined): void {
   if (policy.requireCriteria && !accept?.length) {
-    throw new RuleError("no_criteria", "this project requires acceptance criteria on every task, since a review judges a change against them: give the task at least one with --accept \"TEXT\"", 400, 'give the task a criterion: atelier new TITLE --accept "TEXT", or atelier edit ID --accept "TEXT"');
+    throw new RuleError("no_criteria", "this project requires acceptance criteria on every task, since a review judges a change against them: give the task at least one with --accept \"TEXT\"", 400, 'only the developer can: atelier edit ID --accept "TEXT"');
   }
 }
 

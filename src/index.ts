@@ -158,9 +158,9 @@ function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: st
   if (factor === "secret") {
     const given = String(form.get("confirmation") ?? "");
     if (given && sameString(given, (env as unknown as Settings).OVERRIDE_SECRET!.trim())) return "secret";
-    throw new RuleError(code, `${what} needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
+    throw new RuleError(code, `${what} needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403, `only the developer can: ${hint}`);
   }
-  throw new RuleError(code, `${what} needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
+  throw new RuleError(code, `${what} needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403, `only the developer can: ${hint}`);
 }
 
 function thresholds(env: Env): Thresholds {
@@ -1033,7 +1033,7 @@ async function mintFor(c: Ctx, repo: string, scope: "read" | "write", branch: st
   }
   if (!kept) {
     await revoke(c.env, repo, t.tokenId);
-    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git token was issued", 401);
+    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git token was issued", 401, "ask the developer for a new token, then run atelier login");
   }
   return t;
 }
@@ -2123,7 +2123,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = String(body.item ?? ""), main = String(body.main ?? "");
       const [project, task] = await Promise.all([L.project(), L.item(item)]);
       const top = task.kind === "part" ? null : await headOf(env, project.repo);
-      if (top && top !== main) throw new RuleError("main_moved", `main is at ${top.slice(0, 8)}, not ${main.slice(0, 8)}, the commit ${item}'s head was merged with; release the lease and merge main again`, 409, `run atelier land ${item} --release-lease, then atelier land ${item} again`);
+      if (top && top !== main) throw new RuleError("main_moved", `main is at ${top.slice(0, 8)}, not ${main.slice(0, 8)}, the commit ${item}'s head was merged with; release the lease and merge main again`, 409, `run atelier land ${item} --release-lease; merge main into ${item}'s workspace and push (atelier dispatch ${item} --job merge-main); then atelier accept ${item}, then atelier land ${item}`);
       return json({ confirmed: await L.confirmLeaseMain(item, actor, main, instance) });
     }
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
@@ -2303,7 +2303,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
   // Function areas were removed (t769). An older CLI's area commands get 410
   // Gone on every path and method under areas, not a 404 or 403.
-  if (parts[2] === "areas") throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410);
+  if (parts[2] === "areas") throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410, "update the CLI; run atelier update");
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
   // one (docs/orchestrator.md, section 2), for the owner alone, with the
@@ -2529,7 +2529,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A read token for the repository an item is measured against: the
       // plan's fork for a part, the baseline otherwise. The part's holder
       // reads it to run checks and diffs against the integration branch.
-      if (body.scope === "write") throw new RuleError("read_only", "a base token is read-only", 403);
+      if (body.scope === "write") throw new RuleError("read_only", "a base token is read-only", 403, "ask for a write token: run atelier claim ID --as H/M");
       const item = await L.item(id);
       const p = await L.project();
       const repo = await baseRepo(env, L, item, p.repo);
