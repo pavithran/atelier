@@ -317,3 +317,41 @@ test("a rejection-only override and one recorded at another head do not stand in
   assert.equal(recordedMergeIndependence(record, current, policy, evidence, [], "owner").override?.reason, "no reviewer");
   assert.equal(gate(current, policy, evidence, [], "owner").ready, true);
 });
+
+test("where two reviews are needed a tier approval counts as any other, as the gate counts it", () => {
+  const head = "3".repeat(40), at = "2026-10-28T12:00:00.000Z";
+  const policy = { checks: ["npm test"], protected: ["src/**"], riskReviews: { core: ["src/**"], reviews: { "docs-or-tests": 0, other: 2, core: 2 } } };
+  const evidence = [{ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: BUILDER, at, changedPaths: ["src/a.ts"] }];
+  const item = { id: "t1", kind: "task", title: "t", state: "submitted", owner: BUILDER, head, base: "0".repeat(40), scope: [], pushActors: [BUILDER] };
+  const criteria = criteriaOf(item);
+  const reviews = [
+    { itemId: "t1", by: OTHER, head, approve: true, note: "", at, criteria, proved: true },
+    { itemId: "t1", by: "antigravity/gemini-4-argon", head, approve: true, note: "", at, criteria, proved: true, tier: true },
+  ];
+  assert.equal(gate(item, policy, evidence, reviews, "owner").ready, true);
+  const record = { commit: head, reviews: reviews.map((r) => approvalBy(r.by, head)), at };
+  assert.deepEqual(recordedMergeIndependence(record, item, { ...policy, noOverride: true }, evidence, reviews, "owner"), { refusal: null, override: null });
+  // With one review needed, a tier approval is still never the independent one, at either.
+  const one = { ...policy, riskReviews: undefined, noOverride: true };
+  const tierOnly = [reviews[1]];
+  assert.equal(gate(item, one, evidence, tierOnly, "owner").ready, false);
+  const refused = recordedMergeIndependence({ ...record, reviews: [approvalBy(reviews[1].by, head)] }, item, one, evidence, tierOnly, "owner").refusal;
+  assert.match(refused?.detail ?? "", /antigravity\/gemini-4-argon: a tier review, which is never the independent review/);
+});
+
+test("a developer-recorded review answering a request the reviewer claimed is proved, as at the gate", async () => {
+  const { id, head, L } = await builtTask("strict");
+  await L.submit(id, BUILDER, "done");
+  const opus = { id: "opus-5.5", harness: "claude-code", where: "cloud", provider: "subscription", aliases: [], family: "anthropic", note: "", addedBy: "owner", addedAt: new Date().toISOString() };
+  await L.requestReview(id, "owner", OTHER, [opus]);
+  const claim = await L.claimReview(id, OTHER, { runner: "home:a", kind: "home" }, true);
+  // The verdict comes through the developer's token, answering the claimed request.
+  await L.addReview({ itemId: id, by: OTHER, head, approve: true, criteria: criteriaOf(await L.item(id)), note: "Fine", at: new Date().toISOString(), request: claim.request }, undefined, false);
+  const held = (await (await api("GET", `/projects/strict/items/${id}`)).json()).reviews.find((r) => r.by === OTHER);
+  assert.deepEqual([held.proved, held.claimed], [false, true]);
+  const r = await recordMerge("strict", id, { mergeCommit: mergeOutside(head), head, reviews: [approvalBy(OTHER, head)] });
+  const body = await r.json();
+  assert.equal(r.status, 200, body.detail);
+  assert.equal(body.item.state, "merged");
+  assert.equal(body.record.override, undefined);
+});

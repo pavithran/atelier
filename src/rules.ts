@@ -2872,9 +2872,13 @@ export function recordedMergeRefusal(record: { mergeCommit: string; commit: stri
 // latest standing review per reviewer at the commit and the criteria now),
 // over the reviews the Ledger holds and the ones named. A named approval
 // keeps the provenance of the Ledger's standing review by that reviewer at
-// that commit; one the Ledger has no standing review for is the developer's
-// word in a model's name, so it is unproved (proved: false), which a
-// protected change never counts (unprovedReview). A named rejection is a
+// that commit, as the gate reads it: the reviewer's own token, or the
+// developer's token answering a review request the reviewer claimed for that
+// head (claimed). One the Ledger has no standing review for is the
+// developer's word in a model's name, so it is unproved (proved: false).
+// As at the gate, proof is asked of a protected change's review only
+// (unprovedReview in independentApproval); a coordinated change's review
+// counts whoever recorded it. A named rejection is a
 // verdict like any other, so it withdraws an earlier approval of its
 // reviewer, as a later rejection does at the gate. An approval counts only
 // when it is named and still its reviewer's standing verdict. Where the
@@ -2904,8 +2908,10 @@ export function recordedMergeIndependence(
   const approvers = new Set(given.filter((r) => r.verdict === "approve").map((r) => r.by));
   const standing = countingReviews([...held, ...named], at, policy, owner);
   const candidates = standing.filter((r) => r.approve && approvers.has(r.by));
-  const seen = new Set<string>();
-  const counted = candidates.filter((r) => independentApproval(r, as, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
+  // Counted by the gate's own counting (approvalsCounted): independentApproval,
+  // one per model, and a tier approval as any other where two or more are needed.
+  const judged = { ...item, head: record.commit };
+  const counted = approvalsCounted(judged, policy, candidates, kind, paths, owner, {});
   if (counted.length >= need.count) return ok;
   const message = need.risk ? riskBlocker(need.risk, need.count, counted.length, single) : protectedNeed(single);
   // Why each approval named does not count, in the words the review routes use.
@@ -2916,7 +2922,8 @@ export function recordedMergeIndependence(
       : contributed(r.by, contributors) ? "a contributor, and no model reviews its own work"
       : sameActor(r.by, owner) ? "the developer, whose decision is not also the second opinion"
       : companyRefusal(r.by, single) ?? (as === "protected" ? familyRefusal(r.by, contributors, single) : null)
-        ?? (as === "protected" && unprovedReview(r) ? unprovedBlocker(r) : null) ?? "already counted as the same model";
+        ?? (as === "protected" && unprovedReview(r) ? unprovedBlocker(r) : null)
+        ?? (r.tier && need.count < 2 ? "a tier review, which is never the independent review" : null) ?? "already counted as the same model";
     return `${by}: ${reason}`;
   });
   const detail = `${item.id} ${message}${why.length ? `; ${why.join("; ")}` : ""}`;
@@ -2929,9 +2936,9 @@ export function recordedMergeIndependence(
   // Where overrides are allowed, approvals that would count but for their
   // proof stand in for the review as the developer's override, and the
   // record says so; they are never counted as the independent review.
-  const seenUnproved = new Set<string>();
-  const unproved = candidates.filter((r) => unprovedReview(r) && independentApproval({ ...r, proved: true }, as, contributors, owner, single) && !seen.has(modelKey(r.by)) && !seenUnproved.has(modelKey(r.by)) && !!seenUnproved.add(modelKey(r.by)));
-  if (unproved.length && counted.length + unproved.length >= need.count) {
+  const withProof = approvalsCounted(judged, policy, candidates.map((r) => (unprovedReview(r) ? { ...r, proved: true } : r)), kind, paths, owner, {});
+  const unproved = withProof.filter((r) => !counted.some((c) => c.by === r.by));
+  if (unproved.length && withProof.length >= need.count) {
     const reason = `the developer's record of ${unproved.map((r) => r.by).join(", ")}'s approval, which no review the Ledger holds proves`;
     return { refusal: null, override: { head: record.commit, by: owner, reason, at: record.at } };
   }
