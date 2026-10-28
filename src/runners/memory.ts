@@ -2,7 +2,8 @@
 // and kept with its offer, so a restarted runner reads it back from the
 // server (GET /runners/me) and the owner's listing shows it. Only the known
 // fields are kept, each bounded, so a runner cannot store more than a status
-// line shows. The keys are the runner's own (cli/runner.mjs: refusedKey,
+// line shows. No same-exit count is among them: that is the server's alone
+// (the Ledger's same_exits and a review request's stop). The keys are the runner's own (cli/runner.mjs: refusedKey,
 // failureKey, taskKey); the server only holds them.
 
 export interface RunnerMemory {
@@ -10,7 +11,6 @@ export interface RunnerMemory {
   gaveUp: string[];                  // tasks given up and released, by taskKey
   failures: { key: string; count: number }[];        // failed runs under a dispatch, by failureKey
   infrastructure: { key: string; count: number }[];  // infrastructure failures in a row, by failureKey
-  sameExits: { key: string; count: number; signature: string; exit: Record<string, string | number | null> }[];
   skipHeads: { key: string; heads: (string | null)[] }[];  // the heads a skip began at (noteSkipHeads)
   reasons: { task: string; why: string }[];  // the last reason each task is passed by, in words
   backoff: { key: string; count: number }[];        // failed runs in a row waiting out a backoff, by backoffKey
@@ -42,16 +42,6 @@ export function parseMemory(raw: unknown): RunnerMemory | null {
     gaveUp: list(r.gaveUp).flatMap((k) => key(k) ? [k as string] : []),
     failures: entries(r.failures, counted),
     infrastructure: entries(r.infrastructure, counted),
-    sameExits: entries(r.sameExits, (x) => {
-      const n = count(x.count);
-      if (n === null || typeof x.signature !== "string" || x.signature.length > 64 || !x.exit || typeof x.exit !== "object") return null;
-      const exit: Record<string, string | number | null> = {};
-      for (const [name, v] of Object.entries(x.exit as Record<string, unknown>).slice(0, 8)) {
-        if (typeof v === "string") exit[name.slice(0, 32)] = v.slice(0, 1500);
-        else if (typeof v === "number" || v === null) exit[name.slice(0, 32)] = v;
-      }
-      return { count: n, signature: x.signature, exit };
-    }),
     skipHeads: entries(r.skipHeads, (x) => Array.isArray(x.heads) ? { heads: x.heads.slice(0, 16).flatMap((h) => typeof h === "string" && h.length <= 64 ? [h] : h === null ? [null] : []) } : null),
     backoff: entries(r.backoff, counted),
     notReady: entries(r.notReady, (x) => {
@@ -94,7 +84,7 @@ export function dropTasks(memory: RunnerMemory, tasks: readonly string[]): { mem
   const cut: RunnerMemory = {
     ...memory,
     refused: keys(memory.refused), gaveUp: keys(memory.gaveUp),
-    failures: keep(memory.failures), infrastructure: keep(memory.infrastructure), sameExits: keep(memory.sameExits),
+    failures: keep(memory.failures), infrastructure: keep(memory.infrastructure),
     skipHeads: keep(memory.skipHeads), backoff: keep(memory.backoff), notReady: keep(memory.notReady),
     reasons: memory.reasons.filter((r) => !tasks.includes(r.task)),
   };

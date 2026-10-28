@@ -18,6 +18,7 @@ import { startServer } from "../src/runtime/server.mjs";
 import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import { parseMemory } from "../src/runners/memory.ts";
 import { stopAfter, stopped } from "../src/review/stopped.ts";
+import { passedBy } from "../cli/runner.mjs";
 
 const dirs = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -26,10 +27,14 @@ const scratch = () => { const d = mkdtempSync(join(tmpdir(), "atelier-keeps-serv
 const A = "opencode/glm-5.3";
 const iso = (ms) => new Date(ms).toISOString();
 
-async function world(name = "demo") {
+async function world(name = "demo", { linked = false } = {}) {
   // Loaded after the runtime, whose loader resolves the Worker's imports.
   const { Ledger } = await import("../src/index.ts");
-  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Ledger, env: {} });
+  // Linked, a project's Ledger reads the index (its models and runner
+  // offers) through the LEDGER binding, as the server wires it.
+  const env = {};
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Ledger, env });
+  if (linked) env.LEDGER = ns;
   const L = ns.get(ns.idFromName(`project:${name}`));
   const index = ns.get(ns.idFromName("__index"));
   const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
@@ -99,8 +104,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
   });
   assert.deepEqual(wild.refused, ["a"]);
   assert.deepEqual(wild.failures, [{ key: "k", count: 2 }]);
-  assert.equal(wild.sameExits[0].exit.stderr.length, 1500);
-  assert.ok(!("nested" in wild.sameExits[0].exit));
+  assert.ok(!("sameExits" in wild), "a same-exit count is the server's alone, never kept from a runner's memory");
   assert.deepEqual(wild.skipHeads, [{ key: "k", heads: ["h1", null] }]);
   assert.deepEqual(wild.reasons, [{ task: "demo/t1", why: "skipped" }]);
   assert.equal(parseMemory({ refused: Array.from({ length: 500 }, (_, i) => `k${i}`) }).refused.length, 200);
@@ -130,7 +134,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
     const me = async () => (await (await call("GET", "/runners/me", undefined, runnerToken)).json());
     // Nothing remembered yet.
     assert.equal((await me()).memory, undefined);
-    const memory = { refused: [], gaveUp: ['["demo","t13","2026-10-28T09:00:00.000Z"]'], failures: [{ key: '["demo","t13","2026-10-28T09:00:00.000Z"]', count: 2 }], infrastructure: [], sameExits: [], skipHeads: [], backoff: [{ key: '["demo","t14","2026-10-28T09:00:00.000Z"]', count: 4 }], notReady: [{ key: '["demo","t15","2026-10-28T09:00:00.000Z"]', since: 1000, tries: 2, detail: "still being prepared", expired: false }], pauses: [], reasons: [{ task: "demo/t13", why: "skipped after 2 failed runs under this dispatch" }] };
+    const memory = { refused: [], gaveUp: ['["demo","t13","2026-10-28T09:00:00.000Z"]'], failures: [{ key: '["demo","t13","2026-10-28T09:00:00.000Z"]', count: 2 }], infrastructure: [], skipHeads: [], backoff: [{ key: '["demo","t14","2026-10-28T09:00:00.000Z"]', count: 4 }], notReady: [{ key: '["demo","t15","2026-10-28T09:00:00.000Z"]', since: 1000, tries: 2, detail: "still being prepared", expired: false }], pauses: [], reasons: [{ task: "demo/t13", why: "skipped after 2 failed runs under this dispatch" }] };
     assert.equal((await poll({ memory })).status, 200);
     assert.deepEqual((await me()).memory, memory);
     // A heartbeat or an older runner's poll carries none, and the last stands.
@@ -238,32 +242,180 @@ test("a review request's stop counts the same exit across releases by its signat
   assert.equal(stopAfter(null, "h".repeat(40), "no-verdict", "harness exited 2", at).exit, undefined);
 });
 
-test("alternating runners reach the shared same-exit limit for a criteria review and for a pre-review, each counted apart", async () => {
-  const { ns, L } = await world();
+// The same-exit run of a criteria review and of a pre-review (criterion 5),
+// through the Ledger's own transitions: each try is a request the runner
+// claims and fails, the failure ends that request (a criteria review is
+// failed, a pre-review settles) and the next try is a new request under a
+// new number, claimed by another runner. The run is kept across them by the
+// job, the task and its head, and the queue carries it to every runner.
+const S = "0123456789abcdef0123456789abcdef", T = "fedcba9876543210fedcba9876543210";
+const GPT = "codex/gpt-6-astra", OPUS = "claude-code/opus-5.5", SONNET = "claude-code/sonnet-5.5";
+const RUNNER_A = { runner: "home:a", kind: "home" }, RUNNER_B = { runner: "home:b", kind: "home" };
+const MAIN = "c".repeat(40), H0 = "0".repeat(40);
+const head = (n) => n.toString(16).padStart(40, "a");
+const model = (id, harness) => ({ id, harness, where: "home", provider: "subscription", aliases: [], family: harness === "codex" ? "openai" : "anthropic", note: "", addedBy: "owner", addedAt: iso(Date.now()) });
+const POOL = [model("gpt-6-astra", "codex"), model("opus-5.5", "claude-code")];
+const signed = (sig) => `harness exited 2; exit-signature: ${sig}`;
+const prereviewNote = (detail, outcome = "runner") => JSON.stringify({ outcome, detail });
+const rows = (ns, name) => ns.object(`project:${name}`).live.sql.exec(`SELECT job, item, subject, sig, count FROM same_exits`).toArray().map((r) => ({ ...r }));
+const reviewTask = (project, item) => ({ project, agent: item.dispatch.agent, actor: `${item.dispatch.agent}/${item.dispatch.model}`, item });
+const passes = (task, job) => passedBy(task, [job], { refused: new Set(), failures: new Map(), infrastructureFailures: new Map() });
+
+async function criteriaWorld(name) {
+  const { ns, L } = await world(name);
+  const { id } = await L.newItem("Faster search", ["docs/**"], "owner", { accept: ["Search answers within 200 ms"] });
+  // One try: the review asked of GPT, claimed on `runner`, failed with `note`.
+  const attempt = async (runner, note) => {
+    // Asked afresh, unless one is open already (offered asked it).
+    await L.requestCriteriaReview(id, "owner", GPT, POOL);
+    const claim = await L.claimCriteriaReview(id, GPT, runner);
+    assert.equal((await L.failCriteriaReview(id, GPT, claim.request, note, true)).state, "failed");
+    return claim.request;
+  };
+  // The criteria review the queue offers now, asked afresh, as a runner sees it.
+  const offered = async () => {
+    await L.requestCriteriaReview(id, "owner", GPT, POOL);
+    const item = (await L.criteriaReviewWaiting()).find((i) => i.id === id);
+    assert.ok(item, "a criteria review is offered");
+    return item;
+  };
+  return { ns, L, id, attempt, offered };
+}
+
+async function prereviewWorld(name) {
+  const { ns, L, index } = await world(name, { linked: true });
+  for (const m of POOL) await index.putModel(m);
+  for (const r of [RUNNER_A, RUNNER_B]) await index.putRunnerOffer({ runner: r.runner, kind: "home", jobs: ["build", "review", "prereview"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }] }, iso(Date.now()));
+  // t1 holds the landing lease and t2 waits behind it, so t2 is pre-reviewed.
+  const submitted = async (h) => {
+    const id = (await L.newItem(`Task ${h.slice(-2)}`, [], "owner", { accept: ["It works"] })).id;
+    await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+    await L.claim(id, OPUS, RUNNER_A);
+    await L.setFork(id, `fork-${id}`, H0, OPUS);
+    await L.recordPush(id, OPUS, h, h);
+    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: h, passed: true, by: OPUS, at: iso(Date.now()), changedPaths: ["src/a.ts"] });
+    await L.submit(id, OPUS);
+    return id;
+  };
+  const t1 = await submitted(head(1)), t2 = await submitted(head(2));
+  await L.beginProjectLanding(t1, "owner");
+  await L.queueProjectLanding(t2, "owner");
+  // The pre-review of t2 the queue offers now, as a runner sees it.
+  const offered = async () => {
+    await L.queueProjectLanding(t2, "owner");
+    const { reviews } = await L.queued();
+    const item = reviews.find((r) => r.id === t2 && r.dispatch.job === "prereview");
+    assert.ok(item, "a pre-review is offered");
+    return item;
+  };
+  // One try: the offered pre-review claimed on `runner` and released with `note`.
+  const attempt = async (runner, note) => {
+    const item = await offered();
+    const claim = await L.claimReview(t2, GPT, runner, true, MAIN);
+    assert.equal(claim.request, item.request);
+    await L.releaseReview(t2, GPT, note, true, claim.request);
+    return claim.request;
+  };
+  return { ns, L, t1, t2, attempt, offered };
+}
+
+test("alternating runners stop a criteria review at the same exit across its failed requests, as the server counts it", async () => {
+  const { ns, L, id, attempt, offered } = await criteriaWorld("same-criteria");
   try {
-    const sig = "0123456789abcdef0123456789abcdef", other = "fedcba9876543210fedcba9876543210";
-    // The notes the runners send: a criteria review's, and a pre-review's JSON outcome (outcomeNote).
-    const notes = {
-      "criteria-review": (s) => `harness exited 2; exit-signature: ${s}`,
-      prereview: (s) => JSON.stringify({ outcome: "runner", detail: `the reviewer's harness exited 2; exit-signature: ${s}` }),
-    };
-    for (const job of ["criteria-review", "prereview"]) {
-      assert.equal(await L.sameExitOf(job, "t1", 7), null);
-      // Runner A, then runner B, then A: the count is the server's, whoever ran.
-      await L.noteExit(job, "t1", 7, notes[job](sig));
-      assert.equal((await L.sameExitOf(job, "t1", 7)).count, 1);
-      await L.noteExit(job, "t1", 7, notes[job](sig));
-      assert.equal((await L.sameExitOf(job, "t1", 7)).count, 2, `${job} reaches the limit`);
-      await L.noteExit(job, "t1", 7, notes[job](sig));
-      assert.equal((await L.sameExitOf(job, "t1", 7)).count, 3);
-      // Another exit starts the count again; another request and the other job are apart.
-      await L.noteExit(job, "t1", 7, notes[job](other));
-      assert.deepEqual(await L.sameExitOf(job, "t1", 7), { signature: other, count: 1 });
-      assert.equal(await L.sameExitOf(job, "t1", 8), null);
-      // A note without a signature (a timeout, a bad reply) counts nothing.
-      await L.noteExit(job, "t1", 8, job === "prereview" ? notes.prereview("").replace("; exit-signature: ", "") : "harness timed out");
-      assert.equal(await L.sameExitOf(job, "t1", 8), null);
-    }
-    assert.equal((await L.sameExitOf("prereview", "t2", 7)), null);
+    const first = await attempt(RUNNER_A, signed(S));
+    const once = await offered();
+    assert.deepEqual(once.sameExit, { signature: S, count: 1 });
+    assert.notEqual(once.request, first, "the failed request ended; the next try is a new request");
+    assert.equal(passes(reviewTask("same-criteria", once), "criteria-review"), null, "one exit is tried again");
+    const claim = await L.claimCriteriaReview(id, GPT, RUNNER_B);
+    await L.failCriteriaReview(id, GPT, claim.request, signed(S), true);
+    const stopped = await offered();
+    assert.deepEqual(stopped.sameExit, { signature: S, count: 2 });
+    assert.match(passes(reviewTask("same-criteria", stopped), "criteria-review"), /exited the same way 2 times in a row, as the server counts them across runners/);
+    // A failure that is not the claimant's is refused and counts nothing.
+    await assert.rejects(L.failCriteriaReview(id, OPUS, stopped.request, signed(S), true), /stale_request/);
+    assert.equal((await offered()).sameExit.count, 2);
   } finally { await ns.close(); }
+});
+
+test("a criteria review's run starts again at another signature, ends at an unsigned failure, and is kept through an interrupt", async () => {
+  const { ns, attempt, offered } = await criteriaWorld("same-criteria-resets");
+  try {
+    await attempt(RUNNER_A, signed(S));
+    await attempt(RUNNER_B, signed(T));
+    assert.deepEqual((await offered()).sameExit, { signature: T, count: 1 }, "another signature starts again at one");
+    await attempt(RUNNER_A, "harness timed out");
+    assert.equal((await offered()).sameExit, undefined, "a timeout, unsigned, ends the run");
+    await attempt(RUNNER_B, signed(T));
+    await attempt(RUNNER_A, "the reply had no VERDICT line");
+    assert.equal((await offered()).sameExit, undefined, "a reply with no verdict, unsigned, ends the run");
+    await attempt(RUNNER_B, signed(T));
+    await attempt(RUNNER_A, "interrupted");
+    assert.deepEqual((await offered()).sameExit, { signature: T, count: 1 }, "an interrupt is not the harness's end and leaves the run");
+    await attempt(RUNNER_B, signed(T));
+    assert.equal((await offered()).sameExit.count, 2);
+  } finally { await ns.close(); }
+});
+
+test("alternating runners stop a pre-review at the same exit across its settled requests, and a refused release counts nothing", async () => {
+  const { ns, L, t2, attempt, offered } = await prereviewWorld("same-prereview");
+  try {
+    const first = await attempt(RUNNER_A, prereviewNote(`the reviewer's harness exited 2; exit-signature: ${S}`));
+    // Released again, and by an actor whose claim it never was: not applied, so not counted.
+    await L.releaseReview(t2, GPT, prereviewNote(`the reviewer's harness exited 2; exit-signature: ${S}`), true, first);
+    const once = await offered();
+    assert.notEqual(once.request, first, "the settled request ended; the next try is a new row");
+    assert.deepEqual(once.sameExit, { signature: S, count: 1 }, "the repeated release changed nothing");
+    assert.equal(passes(reviewTask("same-prereview", once), "prereview"), null);
+    const claim = await L.claimReview(t2, GPT, RUNNER_B, true, MAIN);
+    await L.releaseReview(t2, SONNET, prereviewNote(`the reviewer's harness exited 2; exit-signature: ${S}`), true, claim.request);
+    assert.equal(rows(ns, "same-prereview")[0].count, 1, "another actor's release of the claim is refused and counts nothing");
+    await L.releaseReview(t2, GPT, prereviewNote(`the reviewer's harness exited 2; exit-signature: ${S}`), true, claim.request);
+    const stopped = await offered();
+    assert.deepEqual(stopped.sameExit, { signature: S, count: 2 });
+    assert.match(passes(reviewTask("same-prereview", stopped), "prereview"), /exited the same way 2 times in a row, as the server counts them across runners/);
+  } finally { await ns.close(); }
+});
+
+test("a pre-review's run starts again at another signature and ends at a timeout or a reply with no verdict", async () => {
+  const a = await prereviewWorld("same-prereview-sig");
+  try {
+    await a.attempt(RUNNER_A, prereviewNote(`exited 2; exit-signature: ${S}`));
+    await a.attempt(RUNNER_B, prereviewNote(`exited 2; exit-signature: ${T}`));
+    assert.deepEqual((await a.offered()).sameExit, { signature: T, count: 1 });
+  } finally { await a.ns.close(); }
+  const b = await prereviewWorld("same-prereview-timeout");
+  try {
+    await b.attempt(RUNNER_A, prereviewNote(`exited 2; exit-signature: ${S}`));
+    await b.attempt(RUNNER_B, prereviewNote("the reviewer's harness timed out", "timeout"));
+    assert.equal((await b.offered()).sameExit, undefined, "a timeout, unsigned, ends the run");
+  } finally { await b.ns.close(); }
+  const c = await prereviewWorld("same-prereview-malformed");
+  try {
+    await c.attempt(RUNNER_A, prereviewNote(`exited 2; exit-signature: ${S}`));
+    const item = await c.offered();
+    const claim = await c.L.claimReview(c.t2, GPT, RUNNER_B, true, MAIN);
+    await c.L.unparsableReview(c.t2, GPT, item.head, "no VERDICT line", "I think it is fine", true, claim.request);
+    assert.equal((await c.offered()).sameExit, undefined, "a reply with no verdict ends the run");
+    assert.deepEqual(rows(c.ns, "same-prereview-malformed"), []);
+  } finally { await c.ns.close(); }
+});
+
+test("a new head starts the run afresh and deletes it, and an abandoned task leaves no row", async () => {
+  const { ns, L, t2, attempt, offered } = await prereviewWorld("same-head");
+  try {
+    await attempt(RUNNER_A, prereviewNote(`exited 2; exit-signature: ${S}`));
+    assert.deepEqual(rows(ns, "same-head").map((r) => [r.job, r.item, r.subject, r.count]), [["prereview", t2, head(2), 1]]);
+    assert.equal((await offered()).sameExit.count, 1);
+    // The builder pushes a new head: the run is gone.
+    await L.recordPush(t2, OPUS, head(9), head(9));
+    assert.deepEqual(rows(ns, "same-head"), [], "a new head deletes the run");
+  } finally { await ns.close(); }
+  const c = await criteriaWorld("same-abandon");
+  try {
+    await c.attempt(RUNNER_A, signed(S));
+    assert.equal(rows(c.ns, "same-abandon").length, 1);
+    await c.L.abandon(c.id, "owner", "not needed");
+    assert.deepEqual(rows(c.ns, "same-abandon"), [], "an abandoned task's run is deleted");
+  } finally { await c.ns.close(); }
 });

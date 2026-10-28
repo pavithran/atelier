@@ -3703,42 +3703,26 @@ export function exitDetail(exit, lead = null) {
   return `${head}${stderrSummary(exit.stderr, Math.max(40, RUN_DETAIL_MAX - head.length)) || "(none)"}`.slice(0, RUN_DETAIL_MAX);
 }
 
-// Two runs on one review request that end with the same harness exit (t323):
-// the runner takes that request no more, reports the run without a result
-// naming the exit and its stderr, and leaves the request for another model.
-// opencode/glm-5.3 exited 1 on atelier t173 334 times on 2026-10-22, each run
-// released and claimed again. A request is kept by failureKey, the task and
-// head of a review whatever number each release gives it. An exit is the same
+// Runs on one review request, criteria review or pre-review that end with the
+// same harness exit (t323, G5) stop it for every runner: each release or
+// failure note carries the exit's signature (exitSignature), and the server
+// counts the run across the requests each try makes, whichever runner ran
+// it, keeping it across restarts (src/review/stopped.ts for a review, the
+// Ledger's same_exits for the other two). The queue carries the count on
+// the item (sameExit) and passedBy reads it there alone; this runner keeps
+// no count of its own. opencode/glm-5.3 exited 1 on atelier t173 334 times
+// on 2026-10-22, each run released and claimed again. An exit is the same
 // when its kind, its code and its stderr's last lines are, numbers aside (a
-// time, a size or an id differs from run to run). A timeout is no exit: the
-// server stops those itself (src/review/stopped.ts).
+// time, a size or an id differs from run to run).
 export const SAME_EXIT_LIMIT = 2;
 const SAME_EXIT_JOBS = new Set(["review", "criteria-review", PREREVIEW_JOB]);
 export function exitSignature(exit) {
   const tail = String(exit.stderr ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).join("\n");
   // Hashed, so the same exit has the same short signature wherever it is
-  // compared or stored: in this process, in the server's memory of the
-  // runner, and in a review stop's count (src/review/stopped.ts). A stored
-  // text would be cut at a bound the comparison does not know (G5).
+  // compared or stored: in a review stop's count (src/review/stopped.ts) and
+  // the Ledger's same_exits. A stored text would be cut at a bound the
+  // comparison does not know (G5).
   return digest(JSON.stringify([exit.kind, exit.code ?? null, tail.replace(/\b[0-9a-f]{8,}\b/gi, "#").replace(/\d+/g, "#")])).slice(0, 32);
-}
-// The entry kept for a request after a run, or undefined when the run clears
-// it: a different exit starts the count again, a run that ended otherwise
-// (a verdict, a stopped review) clears it, and a run that never reached the
-// harness, or met a provider's limit, leaves it as it was.
-export function sameExitAfter(entry, task, state) {
-  if (!SAME_EXIT_JOBS.has(task.item.dispatch?.job)) return undefined;
-  if (state.providerLimit) return entry;
-  const exit = state.harnessExit;
-  if (!exit) return state.phase === "failed" && !state.taskFailure ? entry : undefined;
-  if (exit.kind === "timed-out") return undefined;
-  const signature = exitSignature(exit);
-  return { signature, exit, count: entry?.signature === signature ? entry.count + 1 : 1 };
-}
-export const sameExitStopped = (entry) => !!entry && entry.count >= SAME_EXIT_LIMIT;
-// The run report's detail, the log line and the skip note for the run that stops it.
-export function sameExitText(entry) {
-  return exitDetail(entry.exit, `the same harness exit ${entry.count} times in a row on this review request; this runner takes it no more and leaves it for another model`);
 }
 
 export function backoffAfter(entry, state, poll) {
@@ -3810,16 +3794,14 @@ export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? 
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
-  // A criteria review's and a pre-review's same-exit count is the server's
-  // (G5): the one count every runner reads, kept across restarts. A review's
-  // is on its stop (below).
+  // A review's, a criteria review's and a pre-review's same-exit count is
+  // the server's alone (G5): the one count every runner reads, kept across
+  // restarts and across the requests each try makes.
   const shared = task.item.sameExit;
-  if (SAME_EXIT_JOBS.has(task.item.dispatch?.job) && shared?.count >= SAME_EXIT_LIMIT) return `Passed by: its harness exited the same way ${shared.count} times in a row, as the server counts them across runners; it is left for another model. It is tried again at a new head or request.`;
-  const same = SAME_EXIT_JOBS.has(task.item.dispatch?.job) ? sameExits.get(failureKey(task)) : null;
-  if (sameExitStopped(same)) return `Passed by: its harness exited the same way ${same.count} times in a row (${exitDetail(same.exit)}); this runner takes this request no more, and it is left for another model. It is tried again at a new head or once this runner restarts.`;
+  if (SAME_EXIT_JOBS.has(task.item.dispatch?.job) && shared?.count >= SAME_EXIT_LIMIT) return `Passed by: its harness exited the same way ${shared.count} times in a row, as the server counts them across runners; it is left for another model. It is tried again at a new head.`;
   const preparing = notReady.get(notReadyKey(task));
   if (preparing && (preparing.expired || nowMs - preparing.since >= NOT_READY_LIMIT_MS)) return `Skipped: ${notReadyGiveUp(task, preparing)}`;
   if (preparing && poll < preparing.due) return `Passed by: its fork is still being prepared (not_ready, ${preparing.tries} ${preparing.tries === 1 ? "try" : "tries"}); it is tried again in ${preparing.due - poll} poll${preparing.due - poll === 1 ? "" : "s"}.`;
@@ -3899,7 +3881,7 @@ export function noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTa
 // waits that count polls (backoff, not_ready) are kept by their count and
 // start counting again from zero.
 export const MEMORY_MAX = 200;
-export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads, backoff = new Map(), notReady = new Map(), pauses = {} }) {
+export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map(), pauses = {} }) {
   const newest = (items) => [...items].slice(-MEMORY_MAX);
   const counted = (map) => newest([...map].filter(([, n]) => n > 0)).map(([key, count]) => ({ key, count }));
   const reasons = new Map();
@@ -3910,14 +3892,11 @@ export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFai
   for (const [key, n] of failures) if (n >= 2) say(key, `skipped after ${n} failed runs under this dispatch`);
   for (const [key, n] of infrastructureFailures) if (n >= 3) say(key, `skipped after ${n} infrastructure failures in a row under this dispatch`);
   for (const key of gaveUpTasks) say(key, "gave it up and released it; passed by until it is dispatched again");
-  for (const [key, entry] of sameExits) if (sameExitStopped(entry)) say(key, `its harness exited the same way ${entry.count} times in a row`);
   return {
     refused: newest(refused),
     gaveUp: newest(gaveUpTasks),
     failures: counted(failures),
     infrastructure: counted(infrastructureFailures),
-    // Every same-exit count is the server's now (a review's stop, the others' exit counts).
-    sameExits: [],
     skipHeads: newest(skipHeads).map(([key, heads]) => ({ key, heads: [...heads] })),
     reasons: newest(reasons).map(([task, why]) => ({ task, why })),
     backoff: newest([...backoff].map(([key, entry]) => [key, entry.count])).map(([key, count]) => ({ key, count })),
@@ -3931,7 +3910,7 @@ export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFai
 // again from zero, so a backoff is due again as many polls on as its count
 // asks and a fork still being prepared keeps the time its first answer came.
 // Returns how many entries it restored.
-export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads, backoff = new Map(), notReady = new Map() }) {
+export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map() }) {
   if (!memory || typeof memory !== "object") return 0;
   const named = (list) => (Array.isArray(list) ? list : []).filter((e) => e && typeof e.key === "string");
   let restored = 0;
@@ -3939,7 +3918,6 @@ export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastr
   for (const key of Array.isArray(memory.gaveUp) ? memory.gaveUp : []) if (typeof key === "string") { gaveUpTasks.add(key); restored++; }
   for (const { key, count } of named(memory.failures)) if (Number.isInteger(count)) { failures.set(key, count); restored++; }
   for (const { key, count } of named(memory.infrastructure)) if (Number.isInteger(count)) { infrastructureFailures.set(key, count); restored++; }
-  for (const { key, count, signature, exit } of named(memory.sameExits)) if (Number.isInteger(count) && typeof signature === "string" && exit && typeof exit === "object") { sameExits.set(key, { count, signature, exit }); restored++; }
   for (const { key, heads } of named(memory.skipHeads)) if (Array.isArray(heads)) { skipHeads.set(key, new Set(heads)); restored++; }
   for (const { key, count } of named(memory.backoff)) if (Number.isInteger(count) && count > 0) { backoff.set(key, { count, due: backoffPolls(count) }); restored++; }
   for (const { key, since, tries, detail, expired } of named(memory.notReady)) if (Number.isFinite(since) && Number.isInteger(tries)) { notReady.set(key, { since, tries, detail: detail ?? "", expired: !!expired, due: notReadyPolls(tries) }); restored++; }
@@ -3949,10 +3927,10 @@ export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastr
 // Drops what the runner remembers of a task, "project/id" (atelier runner
 // forget-skip): every key is a JSON list that starts with the project and the
 // task id. Returns how many entries it dropped.
-export function forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads, backoff = new Map(), notReady = new Map() }) {
+export function forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map() }) {
   const named = (key) => { try { const [project, id] = JSON.parse(key); return `${project}/${id}`; } catch { return null; } };
   let dropped = 0;
-  for (const collection of [refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads, backoff, notReady]) {
+  for (const collection of [refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady]) {
     for (const entry of [...collection]) {
       const key = Array.isArray(entry) ? entry[0] : entry;
       if (named(key) === task) { collection.delete(key); dropped++; }
@@ -4333,9 +4311,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  // Review requests whose harness exited the same way run after run (t323),
-  // by failureKey: the exit, its signature and the count (sameExitAfter).
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), skipHeads = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), skipHeads = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4343,7 +4319,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // MISSING_RECHECK_MS; a CLI wired without it keeps them until restart.
   // What the runner remembers of the tasks it passes by goes with every poll
   // and heartbeat, and is read back at start (runnerMemory, G5).
-  const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads, backoff, notReady, pauses: limits.pauses }) });
+  const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady, pauses: limits.pauses }) });
   const missing = new Map();
   // Post-merge reviews whose baseline could not be fetched (t591), by
   // missingKey: the commit, the failures so far and the poll the next try
@@ -4429,7 +4405,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // A task the developer had this runner forget (atelier runner forget-skip).
     for (const task of Array.isArray(state?.forget) ? state.forget : []) {
       if (typeof task !== "string") continue;
-      const dropped = forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads, backoff, notReady });
+      const dropped = forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady });
       if (dropped) line(`forgot what it remembered of ${task} (${dropped} entr${dropped === 1 ? "y" : "ies"}); it is tried again`);
     }
     for (const p of Array.isArray(state?.pauses) ? state.pauses : []) {
@@ -4826,7 +4802,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       const result = servedProjects(config.projects, mine);
       served = result.projects;
       // The stops the server kept of the last process (G5): a restart loses none.
-      const restored = restoreMemory(mine?.memory, { refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads, backoff, notReady });
+      const restored = restoreMemory(mine?.memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady });
       syncPauses(mine?.pauses ? mine : await readServerState());
       if (restored) line(`restored ${restored} remembered stop${restored === 1 ? "" : "s"} (skips, refusals, failure counts) from the server`);
       // The offer says the same projects, so routing never picks this runner
@@ -4959,7 +4935,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         for (const task of ordered) {
           if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
         }
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, sameExits, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0))) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -5011,22 +4987,18 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (outcome === "refused") io.log(refusedLog(task, state));
           const refusedRun = refusedAfter(refusedRuns.get(failureKey(task)), state, now());
           if (refusedRun) refusedRuns.set(failureKey(task), refusedRun); else refusedRuns.delete(failureKey(task));
-          // A review's harness that exits the same way twice on one request
-          // stops this runner taking it (t323); the run is reported with the
-          // exit and its stderr, and the review skip below leaves the request
-          // to the server, which stops it for every runner of this model and
-          // re-points it, unclaimed, to another model (the stage tick).
-          const same = sameExitAfter(sameExits.get(failureKey(task)), task, state);
-          if (same) sameExits.set(failureKey(task), same); else sameExits.delete(failureKey(task));
-          const sameStopped = sameExitStopped(same) && state.harnessExit === same.exit;
-          if (sameStopped) io.log(`${task.project}/${task.item.id} ${task.item.dispatch?.job}: ${sameExitText(same)}`);
+          // A review's harness exit is the server's to count (G5): the note
+          // carried its signature, and the next poll's item says whether the
+          // run stopped it (sameExit, passedBy). The run is reported with the
+          // exit and its stderr (t323).
           if (outcome && reportRun) {
             try {
               // The report names the job that ran: a plan, a review (a
               // criteria review counts as one), or a build. A review's
               // harness exit is named with its stderr (t323).
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : (task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) ? "review" : "build";
-              const detail = sameStopped ? sameExitText(same) : same && outcome === "refused" ? exitDetail(same.exit) : state.detail ?? state.reason;
+              const exit = SAME_EXIT_JOBS.has(task.item.dispatch?.job) && state.harnessExit?.kind !== "timed-out" ? state.harnessExit : null;
+              const detail = exit && outcome === "refused" ? exitDetail(exit) : state.detail ?? state.reason;
               await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
@@ -5085,8 +5057,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
             }
           } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
-          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3 || sameStopped) && !missReported && !state.fetchFailed && reportReviewSkip) {
-            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: sameStopped ? sameExitText(same) : state.reason });
+          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
+            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
           // A build or plan job given up under this dispatch, after its
           // failed runs or infrastructure failures in a row, is reported as

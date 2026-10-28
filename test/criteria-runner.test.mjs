@@ -270,3 +270,36 @@ test("two failed criteria reviews skip that review alone: the task's build and t
   assert.equal(attention.length, 1);
   assert.match(attention[0], /atelier\/t21/);
 });
+
+// G5: the same exit of a criteria review is the server's to count. Each
+// failure ends the request and the next try is a new one; the runner keeps no
+// count of its own, so it takes every new request until the queue's item
+// carries the server's count at the limit (sameExit).
+test("identical harness exits on successive criteria review requests are taken until the server's count stops them, never by a count of the runner's own", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-criteria-same-exit-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, jobs: ["criteria-review"] }));
+  const said = [];
+  t.mock.method(console, "log", (line) => said.push(String(line)));
+  const { io, calls } = fixture({ code: 1, stderr: "Error: model not found" });
+  const review = (request, sameExit) => ({ ...assignment, item: { ...assignment.item, request, updatedAt: String(request), ...(sameExit ? { sameExit } : {}) } });
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => new Promise((resolve) => setImmediate(resolve)),
+    now: (() => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); })(),
+    async queue() {
+      polls++;
+      if (polls <= 3) return [review(polls)];
+      if (polls === 4) return [review(4, { signature: "0123456789abcdef0123456789abcdef", count: 2 })];
+      process.emit("SIGTERM");
+      return [];
+    },
+  });
+  const claims = calls.filter((c) => c.argv?.[0] === "criteria-review-claim");
+  assert.equal(claims.length, 3, "three identical exits here, and each new request is still taken");
+  const notes = calls.filter((c) => c.argv?.[0] === "criteria-review-failed").map((c) => c.argv[c.argv.indexOf("--note") + 1]);
+  assert.equal(new Set(notes).size, 1, "every failure carries the one signature the server counts");
+  assert.match(notes[0], /exit-signature: [0-9a-f]{32}$/);
+  assert.ok(said.some((l) => /exited the same way 2 times in a row, as the server counts them across runners/.test(l)), said.join("\n"));
+});

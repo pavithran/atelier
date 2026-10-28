@@ -2315,21 +2315,24 @@ test("a review released without a verdict under two request numbers at one head 
   assert.ok(logs.some((l) => /needs the developer's attention after 2 failures/.test(l)), logs.join("\n"));
 });
 
-// t323: opencode/glm-5.3 exited 1 on atelier t173 334 times on 2026-10-22,
-// each run released and the request claimed again. After two runs on one
-// request end with the same harness exit, the runner takes it no more,
-// reports the run without a result naming the exit and its stderr, and
-// reports the skip, so the server leaves the request for another model.
-test("two identical harness exits on one review request stop this runner taking it, and the run is reported with the exit and its stderr", async (t) => {
+// t323, G5: opencode/glm-5.3 exited 1 on atelier t173 334 times on
+// 2026-10-22, each run released and the request claimed again. Each release
+// carries the exit's signature, which the server counts across requests and
+// runners (the request's stop) and the queue carries on the item (sameExit);
+// the runner passes the request by at that count alone and keeps none of its own.
+test("a review request is passed by at the server's same-exit count, never at a count of the runner's own, and each run is reported with the exit and its stderr", async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const stderr = "starting opencode 0.9.1\nError: provider returned 500 at 2026-10-22T01:02:03Z\nexiting";
-  const { io, calls, logs } = fixture({ code: 1, stderr });
-  const runs = [], skips = [];
+  const { io, calls } = fixture({ code: 1, stderr });
+  const runs = [], said = [];
+  t.mock.method(console, "log", (line) => said.push(String(line)));
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   const head = "a".repeat(40);
-  // Each release makes the request anew under another number, as the server does.
-  const task = (request) => ({ ...assignment, item: { ...assignment.item, head, request, dispatch: { job: "review" } } });
+  // Each release makes the request anew under another number, as the server
+  // does; poll 2's item carries the server's count at the limit, polls 1 and
+  // 3 carry none.
+  const task = (request, sameExit) => ({ ...assignment, item: { ...assignment.item, head, request, dispatch: { job: "review" }, ...(sameExit ? { sameExit } : {}) } });
   let polls = 0;
   // Each run's stderr names another time, which leaves the exit the same.
   let run = 0;
@@ -2338,30 +2341,30 @@ test("two identical harness exits on one review request stop this runner taking 
   await runRunner(args, {
     now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportRun(body) { runs.push(body); },
-    async reportReviewSkip(body) { skips.push(body); },
+    async reportReviewSkip() {},
     async queue() {
       polls++;
-      if (polls <= 4) return [task(polls)];
+      if (polls === 1) return [task(1)];
+      if (polls === 2) return [task(2, { signature: "0123456789abcdef0123456789abcdef", count: 2 })];
+      if (polls === 3) return [task(3)];
       process.emit("SIGINT");
       return [];
     },
   });
-  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2, "claimed twice, then never again");
+  // Poll 2 is passed by on the server's word after one run here; poll 3,
+  // with no count from the server, is claimed though this runner saw the
+  // same exit before.
+  const claims = calls.filter((c) => c.argv?.[0] === "review-claim");
+  assert.equal(claims.length, 2, "claimed at polls 1 and 3");
+  assert.ok(said.some((l) => /exited the same way 2 times in a row, as the server counts them across runners/.test(l)), said.join("\n"));
   assert.deepEqual(runs.map((r) => [r.role, r.outcome]), [["review", "refused"], ["review", "refused"]], "each run is reported as one without a result");
-  assert.match(runs[0].detail, /^harness exit code 1; stderr: .*provider returned 500/);
-  assert.match(runs[1].detail, /same harness exit 2 times in a row on this review request; this runner takes it no more and leaves it for another model/);
-  assert.match(runs[1].detail, /exit code 1/);
-  assert.match(runs[1].detail, /provider returned 500 at 2026-10-22T01:02:00Z \/ exiting$/);
+  for (const r of runs) assert.match(r.detail, /^harness exit code 1; stderr: .*provider returned 500 at 2026-10-22T01:0#?\d:00Z \/ exiting$/);
   assert.ok(runs.every((r) => r.detail.length <= 300), "within what the server keeps");
   // Each release says the exit alone, which the server's stop counts
   // whatever the stderr says; that stops the request for every runner of the model.
   const notes = calls.filter((c) => c.argv?.[0] === "review-release").map((c) => c.argv[c.argv.indexOf("--note") + 1]);
   assert.match(notes[0], /^harness exited 1; exit-signature: [0-9a-f]{32}$/);
   assert.equal(notes[1], notes[0], "the same exit has the same signature, which the server counts");
-  assert.equal(skips.length, 1, "the skip is reported once");
-  assert.equal(skips[0].request, 2);
-  assert.match(skips[0].note, /leaves it for another model/);
-  assert.ok(logs.some((l) => /t21 review: the same harness exit 2 times in a row/.test(l)), logs.join("\n"));
 });
 
 test("two different harness exits on one review request do not stop it as the same exit", async (t) => {
