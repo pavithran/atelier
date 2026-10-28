@@ -32,7 +32,7 @@ import {
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, reviewNotes, openNotes, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
-  recordedMerge, recordedMergeRefusal, type RecordedMerge,
+  recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
   forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
 } from "./rules";
 import { cleanSummary } from "./brief";
@@ -6493,9 +6493,12 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "plan") throw new RuleError("plan_merge", `${id} is a plan; a plan's merge lands its parts, and atelier merge records it`, 409, `run atelier merge ${id}`);
     const refusal = recordedMergeRefusal(record, baseline);
     if (refusal) throw refusal;
+    // The gate's independence, and the project's ban on overrides (G16).
+    const independence = recordedMergeIndependence(record, item, this.project().policy, this.evidenceFor(id), this.owner, this.mode().mode === "fast");
+    if (independence.refusal) throw independence.refusal;
     this.assertPostMergeFree(id);
     this.assertNoClaimInFlight(id);
-    return { item, record, repeat: null };
+    return { item, record: independence.override ? { ...record, override: independence.override.reason } : record, repeat: null };
   }
 
   // The task's workspace and its write token, read together, so the token

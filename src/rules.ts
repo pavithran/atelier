@@ -2791,6 +2791,10 @@ export interface RecordedMerge {
   // The developer says the merge's declared protected actions already ran
   // (t754), with a short note of what ran, such as a deploy version id.
   shipped?: string;
+  // The reason of the developer's override of the independent review that
+  // stood at the commit merged, when the named approvals did not satisfy it
+  // (recordedMergeIndependence, G16).
+  override?: string;
   outside: true;
   at: string;
   by: string;
@@ -2850,6 +2854,54 @@ export function recordedMergeRefusal(record: { mergeCommit: string; commit: stri
   if (baseline.parents.length < 2) return new RuleError("not_a_merge", `${m} has ${baseline.parents.length} parent${baseline.parents.length === 1 ? "" : "s"}, so it is not a merge`, 409, "name the merge commit on main with --merge SHA");
   if (baseline.parents[1] !== record.commit) return new RuleError("second_parent_differs", `${m}'s second parent is ${baseline.parents[1].slice(0, 8)}, not ${record.commit.slice(0, 8)}, the commit named as the task's head`, 409, "name the merge commit whose second parent is the task's head with --merge SHA");
   return null;
+}
+
+// The independence a recorded merge needs (G16): the gate's own, applied to
+// the approvals the developer names at the commit merged. The change's class
+// is read from the paths Atelier observed at that commit; paths never
+// observed are taken as a protected change's, the safe side, as the gate
+// lands nothing whose paths it has not read. A change the gate asks no review
+// of keeps record-merge's own rule (one approval at the commit, from
+// recordedMerge). Otherwise the approvals named must be the ones the gate
+// would count (independentApproval, one per model), or an override the
+// developer recorded at that commit stands in for them, as in the gate; a
+// project that forbids overrides (noOverride) counts none and refuses the
+// record. In fast mode the gate asks no review before the merge, so neither
+// does this; the post-merge review is asked after the record.
+export function recordedMergeIndependence(
+  record: { commit: string; reviews: readonly RecordedReview[] },
+  item: Item, policy: ProjectPolicy, evidence: Evidence[], owner = DEFAULT_OWNER, fast = false,
+): { refusal: RuleError | null; override: ReviewOverride | null } {
+  const ok = { refusal: null, override: null };
+  if (fast) return ok;
+  const paths = evidenceAt(policy, evidence, record.commit).changedPaths;
+  const kind = paths === null ? "protected" : changeClass(paths, policy);
+  const need = approvalsNeeded(policy, kind, paths);
+  if (!need.as || !need.count) return ok;
+  const as = need.as;
+  const contributors = contributorsOf(item);
+  const single = singleFamily(policy);
+  const named = record.reviews.filter((r) => r.verdict === "approve" && r.head === record.commit)
+    .map((r): Review => ({ itemId: item.id, by: r.by, head: r.head, approve: true, note: "", at: r.at ?? "" }));
+  const seen = new Set<string>();
+  const counted = named.filter((r) => independentApproval(r, as, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
+  if (counted.length >= need.count) return ok;
+  const message = need.risk ? riskBlocker(need.risk, need.count, counted.length, single) : protectedNeed(single);
+  // Why each approval named does not count, in the words the review routes use.
+  const why = named.filter((r) => !counted.includes(r)).map((r) => {
+    const reason = contributed(r.by, contributors) ? "a contributor, and no model reviews its own work"
+      : sameActor(r.by, owner) ? "the developer, whose decision is not also the second opinion"
+      : companyRefusal(r.by, single) ?? (as === "protected" ? familyRefusal(r.by, contributors, single) : null) ?? "already counted as the same model";
+    return `${r.by}: ${reason}`;
+  });
+  const detail = `${item.id} ${message}${why.length ? `; ${why.join("; ")}` : ""}`;
+  const review = `atelier record-merge ${item.id} --merge SHA --head ${record.commit} --review H/M=approve@${record.commit}`;
+  if (policy.noOverride) {
+    return { refusal: new RuleError("override_forbidden", `${detail}. ${overrideForbidden(single)}`, 403, `name an approval from ${independentReviewerText(single)}: ${review}`), override: null };
+  }
+  const override = overrideAt({ head: record.commit, reviewOverride: item.reviewOverride }, owner);
+  if (override && !override.rejectionsOnly) return { refusal: null, override };
+  return { refusal: new RuleError("not_independent", detail, 403, `name an approval from ${independentReviewerText(single)}: ${review}`), override: null };
 }
 
 // The builder a commit's message names: its last Agent: line, as harness/model.
@@ -3475,18 +3527,18 @@ export function shipChanges(before: PolicyFields, after: PolicyFields): string[]
     .map((k) => `ship ${k === "shipRuns" ? "commands" : "approval kinds"}: ${JSON.stringify(before[k] ?? [])} -> ${JSON.stringify(after[k] ?? [])}`);
 }
 
-// What the merge guard needs of the item beyond its changed paths: who
-// contributed to it, which required checks were observed passing at the
-// accepted revision, and which live items its scope overlaps.
-export interface MergeContext { contributors?: string[]; passed?: string[]; overlapping?: string[] }
+// What the merge guard needs of the item beyond its changed paths: which
+// required checks were observed passing at the accepted revision, and which
+// live items its scope overlaps. Its contributors fed only the retired
+// eligible list's comparison (G16), so they are not read here.
+export interface MergeContext { passed?: string[]; overlapping?: string[] }
 
 export function mergeContext(
-  detail: { item: { id: string; scope: string[]; acceptedHead: string | null }; policy: ProjectPolicy; evidence: Evidence[]; events: { actor: string; kind: string; data: Record<string, unknown> }[] },
+  detail: { item: { id: string; scope: string[]; acceptedHead: string | null }; policy: ProjectPolicy; evidence: Evidence[] },
   items: { id: string; state: string; owner: string | null; scope: string[] }[] = [],
 ): MergeContext {
   const { item } = detail;
   return {
-    contributors: pushActors(detail.events),
     passed: evidenceAt(detail.policy, detail.evidence, item.acceptedHead).checks.filter((c) => c.grade === "observed" && c.passed).map((c) => c.claim),
     overlapping: items.filter((o) => o.id !== item.id && holdsScope(o) && scopesOverlap(item.scope, o.scope)).map((o) => `${o.id} (${o.owner ?? "unowned"})`),
   };
