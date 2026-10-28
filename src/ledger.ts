@@ -6076,7 +6076,9 @@ export class Ledger extends DurableObject<Env> {
     // A lease that lapsed mid-step with no landing taking it over still
     // records its failure, so the fence against retries holds; a lease
     // another task's landing holds now, live or lapsed, refuses it.
-    // A step that names its attempt is taken only for the current one.
+    // A step under the lease must name its attempt (the merge's steps do);
+    // a step that names one is taken only for the current attempt.
+    if (LAND_PAST_MERGE.has(step) && clean.attempt === undefined) throw new RuleError("stale_landing", `a landing's ${step} step names its attempt, and this one names none; nothing was changed`, 409, `run atelier land ${id}`);
     if (clean.attempt !== undefined && step !== "start") {
       const record = this.landingRecord(id);
       if (!record || record.attempt !== clean.attempt) throw new RuleError("stale_landing", `${id}'s landing record is at attempt ${record?.attempt ?? "none"}, not ${clean.attempt}, so this ${step} step belongs to no current attempt; nothing was changed`, 409, `run atelier land ${id}`);

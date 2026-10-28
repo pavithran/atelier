@@ -214,7 +214,10 @@ export default async function mergeCommand() {
       // for every round; run by hand, the record's current attempt is read once.
       if(round===0){
         const named=Number(process.env.ATELIER_LAND_ATTEMPT);
-        landAttempt=Number.isInteger(named)&&named>=1?named:(await request('GET',I(name,id),undefined,OWNER).catch(()=>null))?.landing?.attempt;
+        // Without the attempt atelier land names, this merge could write to
+        // another landing's attempt: refused, recording nothing.
+        if(!/^[1-9][0-9]*$/.test(process.env.ATELIER_LAND_ATTEMPT??''))die(`--landing is the landing's own merge and needs the attempt atelier land names for it (ATELIER_LAND_ATTEMPT); nothing was merged or recorded.\nnext: run atelier land ${id}, or atelier merge ${id} without --landing`);
+        landAttempt=named;
       }
       // A refused entry is this call's, not the landing's: it ends here with
       // the refusal and records nothing on the task.

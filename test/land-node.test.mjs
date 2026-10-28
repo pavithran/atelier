@@ -267,7 +267,7 @@ test("merge --landing without the lease leaves an unfinished attempt's record as
   for (const step of ["start", "lease", "accept"]) assert.equal((await w.api("POST", `/projects/demo/items/${id}/land`, { step, ms: 0 })).status, 200);
   const before = (await w.detail(id)).landing;
   const main = await w.tip();
-  const r = await w.cli(["merge", id, "--landing"]);
+  const r = await w.cli(["merge", id, "--landing"], { env: { ATELIER_LAND_ATTEMPT: String(before.attempt) } });
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /no_lease: t\d+'s landing holds no live landing lease, so it cannot enter its merge/);
   assert.match(r.output, /next: run atelier land t\d+/);
@@ -277,4 +277,28 @@ test("merge --landing without the lease leaves an unfinished attempt's record as
   const direct = await w.api("POST", `/projects/demo/items/${id}/land`, { step: "merge-main", ms: 0, failed: true, attempt: before.attempt + 1 });
   assert.equal(direct.status, 409); assert.equal(direct.json.error, "stale_landing");
   assert.deepEqual((await w.detail(id)).landing, before);
+});
+
+test("a manual merge --landing with no attempt named is refused while another landing is live, recording nothing", async (t) => {
+  const w = await landingWorld(t);
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  assert.equal((await w.api("POST", `/projects/demo/items/${id}/accept`, { head: (await w.detail(id)).item.head })).status, 200);
+  for (const step of ["start", "lease"]) assert.equal((await w.api("POST", `/projects/demo/items/${id}/land`, { step, ms: 0 })).status, 200);
+  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
+  const before = await w.detail(id);
+  const main = await w.tip();
+  for (const env of [{}, { ATELIER_LAND_ATTEMPT: "two" }, { ATELIER_LAND_ATTEMPT: "0" }]) {
+    const r = await w.cli(["merge", id, "--landing"], { env });
+    assert.notEqual(r.status, 0, r.output);
+    assert.match(r.output, /--landing is the landing's own merge and needs the attempt atelier land names for it/);
+    assert.match(r.output, /next: run atelier land t\d+, or atelier merge t\d+ without --landing/);
+  }
+  const after = await w.detail(id);
+  assert.deepEqual(after.landing, before.landing, "nothing recorded");
+  assert.equal(after.events.length, before.events.length);
+  assert.equal(await w.tip(), main);
+  // The server refuses a step under the lease that names no attempt.
+  const bare = await w.api("POST", `/projects/demo/items/${id}/land`, { step: "checks", ms: 0, failed: true });
+  assert.equal(bare.status, 409); assert.equal(bare.json.error, "stale_landing");
+  assert.deepEqual((await w.detail(id)).landing, before.landing);
 });

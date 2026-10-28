@@ -97,6 +97,8 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       acceptanceProtected: box.policy?.protected ?? ["work.txt"],
       ...(box.mode ? { mode: box.mode } : {}),
       gate: box.gate ?? { ready: true, outOfScope: [], blockers: [] }, evidence: box.evidence[id] ?? [], reviews, events,
+      // The landing record's attempt, which atelier land names to its merge (G1).
+      landing: { attempt: 1, step: "start", at: new Date().toISOString(), head, failedStep: null, tail: null },
       // The live gate request and the replies the server could not read
       // (t613), where a test gives them: `liveReview` null is a request
       // gone; absent, the server sends neither, as an older one did.
