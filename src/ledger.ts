@@ -16,7 +16,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type LedgerBookmark, type TaskStage } from "./rules";
+import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, eventStage, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type LedgerBookmark, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -139,6 +139,8 @@ export interface DeveloperBranch {
 export interface LedgerEvent {
   seq: number;
   proved?: true;
+  // The task's stage after the change this event records (eventStage).
+  stage?: string;
   itemId: string | null;
   at: string;
   actor: string;
@@ -919,6 +921,9 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS developer_branches (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
+    // The task's stage after the change the event records (eventStage); null
+    // for an event of no task and for one written before this column.
+    if (!eventColumns.includes("stage")) this.sql.exec(`ALTER TABLE events ADD COLUMN stage TEXT`);
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
@@ -4782,6 +4787,7 @@ export class Ledger extends DurableObject<Env> {
     if (run && (run.after || !["reserved", "complete"].includes(run.state))) throw new RuleError("post_merge_blocked", "a recorded merge cannot release its post-merge reservation", 409);
     if (run?.state === "reserved") { run.state = "complete"; this.savePostMerge(run, actor, "cancelled"); }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
+    this.log(id, actor, "landing.cancelled", {}, new Date().toISOString());
     return this.item(id);
   }
 
@@ -4836,6 +4842,7 @@ export class Ledger extends DurableObject<Env> {
       this.savePostMerge(run, actor, "reserved");
     }
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify(landing));
+    if (!landingRow) this.log(id, actor, "landing.begun", { head, before: landing.before ?? null }, new Date().toISOString());
     return item;
   }
 
@@ -5077,6 +5084,8 @@ export class Ledger extends DurableObject<Env> {
     // lease is written as before.
     this.setProjectLandingQueue(rows.filter((w) => w.item !== id));
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
+    // A take is an event; a landing resuming its own lease is not a new one.
+    if (held?.item !== id) this.log(id, actor, "landing.leased", { ...(expired ? { replaced: expired.item, replacedHolder: expired.holder } : {}) }, at);
     // The task's own pre-review, if one is still pending, no longer controls
     // its place: the landing's checks and review go on without waiting.
     this.detachPrereviews(id, at);
@@ -5156,6 +5165,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409);
     }
     this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
+    if (held) this.log(id, actor, "landing.released", { holder: held.holder, since: held.at }, new Date().toISOString());
     this.dispatchWaiting();
     return { held: !!held, lease: held };
   }
@@ -10459,9 +10469,12 @@ export class Ledger extends DurableObject<Env> {
     // only an unmarked one, from before, through the aliases (canonicalModel;
     // gpt-6-astra's ninth review of t622, finding 3).
     if (typeof data.acting === "string" && (ACTING_EVENTS as readonly string[]).includes(kind)) data = { ...data, actingExact: true };
+    // The stage is read from the item as it stands, so a caller logs after it
+    // has changed the item.
+    const itemRow = itemId === null ? undefined : this.sql.exec(`SELECT * FROM items WHERE id = ?`, itemId).toArray()[0];
     const seq = Number(this.sql.exec(
-      `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq`,
-      itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null,
+      `INSERT INTO events (item_id, at, actor, kind, data, proved, stage) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
+      itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null, itemRow ? eventStage(toItem(itemRow)) : null,
     ).one().seq);
     if (itemId !== null && ACTOR_EVENT_KINDS.includes(kind)) {
       const mark = Number(this.runnerMeta<number>("item-actors-seq") ?? 0);
@@ -10492,6 +10505,7 @@ function toEvent(r: Row): LedgerEvent {
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
+    ...(typeof r.stage === "string" ? { stage: r.stage } : {}),
     actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
   };
 }
@@ -10501,6 +10515,7 @@ function eventOf(r: Row): LedgerEvent {
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
+    ...(typeof r.stage === "string" ? { stage: r.stage } : {}),
     actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
   };
 }
