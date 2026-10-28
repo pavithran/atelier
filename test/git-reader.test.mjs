@@ -390,3 +390,16 @@ test("src/large.ts stores and reads a payload through LARGE", async () => {
   assert.equal(await getLarge(large, ref.key), "the diff\n");
   assert.equal(await getLarge(large, ref.key + "0"), null);
 });
+
+test("an object over the read limit fails with MEMORY_LIMIT and leaves the reader answering", async () => {
+  const { openReader, OBJECT_MAX } = await import("../src/git/reader.mjs");
+  const dir = join(scratchDir("big"), "big.git");
+  git(tmpdir(), ["init", "--bare", "-q", dir]);
+  const big = git(dir, ["hash-object", "-w", "--stdin"], Buffer.alloc(OBJECT_MAX + 1));
+  const small = git(dir, ["hash-object", "-w", "--stdin"], "small\n");
+  const repo = openReader(dir);
+  try {
+    await assert.rejects(repo.readBlob(big), (e) => e.code === "MEMORY_LIMIT");
+    assert.equal(await (await repo.readBlob(small)).text(), "small\n");
+  } finally { repo[Symbol.dispose](); }
+});

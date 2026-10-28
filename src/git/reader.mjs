@@ -72,6 +72,17 @@ class Batch {
     }
   }
 
+  // Reads past n bytes, keeping none.
+  async #skip(n) {
+    let left = n;
+    while (left > 0) {
+      if (!this.#buf.length) await this.#more();
+      const take = Math.min(left, this.#buf.length);
+      this.#buf = this.#buf.subarray(take);
+      left -= take;
+    }
+  }
+
   // n bytes, gathered as chunks and joined once.
   async #bytes(n) {
     const chunks = [];
@@ -101,7 +112,7 @@ class Batch {
       }
       const size = Number(m[3]);
       if (size > OBJECT_MAX) {
-        await this.#bytes(size + 1);
+        await this.#skip(size + 1);
         throw artifactsError("MEMORY_LIMIT", `object ${m[1].slice(0, 12)} is ${size} bytes, over the ${OBJECT_MAX} read limit`);
       }
       const bytes = await this.#bytes(size + 1);
