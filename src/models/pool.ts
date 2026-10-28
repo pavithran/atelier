@@ -250,8 +250,9 @@ const keyInPath = (path: string) => path.split("/").some((seg) => LOOKS_LIKE_KEY
 const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 
 // An assignment whose name holds TOKEN, KEY, SECRET or PASSWORD (API_TOKEN=abc,
-// PASSWORD="x y") loses its value; the name stays so the note still reads.
-const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*\s*=\s*)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
+// PASSWORD="x y", written without spaces around the =) loses its value; the name
+// stays so the note still reads. Spaced assignments are left, as code has them.
+const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*=)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
 
 export function redactKeys(s: string): string {
   return s.replace(SECRET_ASSIGNMENT, "$1[key removed]")

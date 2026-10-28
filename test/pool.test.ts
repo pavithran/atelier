@@ -221,6 +221,7 @@ test("a status report is one of four states, with what was served", () => {
 test("redactKeys removes the value of a TOKEN, KEY, SECRET or PASSWORD assignment and keeps the name", () => {
   assert.equal(redactKeys("API_TOKEN=abc123def456 failed"), "API_TOKEN=[key removed] failed");
   assert.equal(redactKeys("PASSWORD=hunter2"), "PASSWORD=[key removed]");
-  assert.equal(redactKeys('client_secret = "two words" next'), 'client_secret = [key removed] next');
+  assert.equal(redactKeys('client_secret="two words" next'), 'client_secret=[key removed] next');
+  assert.equal(redactKeys('const DURATION_TOKEN = 1'), 'const DURATION_TOKEN = 1');
   assert.equal(redactKeys("TOKENS=1 and keyboard=us and MODE=fast"), "TOKENS=[key removed] and keyboard=[key removed] and MODE=fast");
 });
