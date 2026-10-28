@@ -105,7 +105,7 @@ test("a landing grant moves the project's branch only by a merge of the accepted
   const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted });
   refused(await push(landing.token, `${commit("merge other", main, other)}:refs/heads/main`), /merges the accepted head/);
   refused(await push(landing.token, `+${commit("accepted first", accepted, main)}:refs/heads/main`), /first parent is main's tip/);
-  refused(await push(landing.token, `${commit("merge", main, accepted)}:refs/heads/t/5`), /this credential writes main only/);
+  refused(await push(landing.token, `${commit("merge", main, accepted)}:refs/heads/t/5`), /this credential writes main and refs\/notes\/atelier only/);
   const merge = commit("merge t5", main, accepted);
   const ok = await push(landing.token, `${merge}:refs/heads/main`);
   assert.equal(ok.status, 0, ok.stderr);
@@ -113,6 +113,30 @@ test("a landing grant moves the project's branch only by a merge of the accepted
   git(work, "update-ref", "refs/heads/main", merge);
   // The owner's own credential moves main by fast-forward only.
   refused(await push(OWNER, `+${commit("rewrite main", main)}:refs/heads/main`), /main moves by fast-forward only/);
+});
+
+// G2: the landing's provenance notes go on a push of their own to
+// refs/notes/atelier, which the landing and owner grants may write by
+// fast-forward, one ref per push; a task grant never writes them.
+test("a landing grant and the owner push Atelier's notes ref by fast-forward, one ref at a time; a task grant cannot", async () => {
+  const main = git(work, "rev-parse", "main");
+  git(work, "notes", "--ref=atelier", "add", "-f", "-m", "Atelier: demo/t5 merged", main);
+  const notes = git(work, "rev-parse", "refs/notes/atelier");
+  const t5 = await taskToken("t5");
+  refused(await push(t5.token, "refs/notes/atelier:refs/notes/atelier"), /this credential writes t\/5 only, not refs\/notes\/atelier/);
+  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted: main });
+  refused(await push(OWNER, `${commit("dev work", main)}:refs/heads/dev/notes-test`, "refs/notes/atelier:refs/notes/atelier"), /one ref per push/);
+  const ok = await push(landing.token, "refs/notes/atelier:refs/notes/atelier");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(await lsRemote(remote(OWNER), "refs/notes/atelier"), notes);
+  // The owner adds a note on top; a rewritten notes history is refused.
+  git(work, "notes", "--ref=atelier", "add", "-f", "-m", "Atelier: a second note", main);
+  const second = git(work, "rev-parse", "refs/notes/atelier");
+  assert.equal((await push(OWNER, "refs/notes/atelier:refs/notes/atelier")).status, 0);
+  assert.equal(await lsRemote(remote(OWNER), "refs/notes/atelier"), second);
+  const rewritten = git(work, "commit-tree", git(work, "rev-parse", `${notes}^{tree}`), "-m", "rewritten notes");
+  refused(await push(OWNER, `+${rewritten}:refs/notes/atelier`), /refs\/notes\/atelier moves by fast-forward only/);
+  refused(await push(landing.token, ":refs/notes/atelier"), /no deletes/);
 });
 
 async function infoRefs(token, project = "demo", service = "git-receive-pack") {

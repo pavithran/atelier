@@ -156,9 +156,10 @@ so the task's branch and its approvals stay as they were reviewed.
    main, at most twice, and each merge is pushed at most once. A third
    refusal stops the landing with the fact: how often main moved, from
    where to where, with nothing pushed. The provenance notes go on a push of
-   their own afterwards and never decide the landing; the Node server's hook
-   takes one ref per push and keeps no notes ref, so there they stay in the
-   checkout.
+   their own afterwards, to `refs/notes/atelier`, which the hook lets the
+   owner and landing grants write by fast-forward, and never decide the
+   landing: a refused notes push leaves them in the checkout for the next
+   landing.
 8. **`merged`**: the merge is recorded, and the lease released.
 
 The developer's own `atelier merge t9` (without `--landing`) still merges

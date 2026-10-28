@@ -227,6 +227,10 @@ export default async function mergeCommand() {
     if (git(["status","--porcelain"],{cwd})) await fail("the registered checkout has uncommitted changes; preserve them before retrying");
     if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) await fail(`check out ${p.branch} in ${cwd} first`);
     const base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
+    // The Node server mints no token for the developer's write of the
+    // project's branch: the developer's own server token is the credential
+    // (docs/branches.md), which task 6 replaces with a landing grant.
+    if(!base.token)base.token=apiToken();
     git(['fetch','--quiet',base.remote,p.branch],{cwd,token:base.token});
     const baselineHead=git(['rev-parse','FETCH_HEAD'],{cwd});
     const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
@@ -452,9 +456,11 @@ export default async function mergeCommand() {
       }
       await fail(`the push of ${id}'s merge ${short(published)} to ${p.branch} was refused${moved?` (main moved from ${short(baselineHead)} to ${short(now)})`:''}:\n${said}\nNothing was published; the merge commit is kept in the checkout. Run atelier merge ${id} again to retry, or cancel with atelier merge ${id} --cancel --discard-local.`);
     }
-    // The provenance notes go on a push of their own, after the merge, and
-    // never decide it: the Node server's hook takes one ref per push and
-    // keeps no notes ref, so there they stay in this checkout.
+    // The provenance notes go on a push of their own, after the merge (the
+    // Node server's hook takes one ref per push; the owner and landing grants
+    // may write refs/notes/atelier, fast-forward only). A refusal never
+    // undoes the merge: the notes stay in this checkout and the next landing
+    // pushes them, merged with the baseline's.
     const notesPushed=git(['push','--quiet',base.remote,'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token,allowFail:true});
     if(notesPushed.status!==0){const lines=String(notesPushed.stderr||'').split('\n').filter(Boolean);console.log(`Provenance notes were not published to the baseline (${(lines.find((l)=>/atelier:/.test(l))??lines.at(-1)??'refused').replace(/^remote:\s*/,'').split(base.token||'\0').join('[redacted]')}); they stay in this checkout under refs/notes/atelier.`);}
     journal.save({phase:'published'});

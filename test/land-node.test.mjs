@@ -28,6 +28,11 @@ test("a task approved at H lands after main moved, with no new review and no pus
   const merge = await w.tip();
   assert.deepEqual(w.parents(merge), [moved, head], "the landing push is a merge of the accepted head onto main's tip");
   assert.equal(await w.tip(branch), head, "the task's branch stays at the reviewed head");
+  // The provenance notes reached the server on a push of their own.
+  assert.doesNotMatch(r.output, /Provenance notes were not published/);
+  const notes = await w.tip("refs/notes/atelier");
+  assert.ok(notes, "refs/notes/atelier is on the server");
+  assert.match(w.git(w.checkout, "notes", "--ref=atelier", "show", merge), new RegExp(`${id}`));
   // No push recorded after the approval, and no new review asked or given.
   const approvedAt = before.reviews.at(-1).at;
   assert.deepEqual([...eventsOf(d, "push.observed"), ...eventsOf(d, "item.pushed")].filter((e) => e.at > approvedAt), []);
