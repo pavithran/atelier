@@ -930,9 +930,12 @@ export async function runLand(io) {
     if (!r.passed) {
       // The merge records its own failing step; one it could not record (it
       // was killed, or failed before its first step) is recorded here.
+      // Only this landing's own attempt is read: a record another landing
+      // has started since is not this one's to fail.
       const after = await request("GET", itemPath).catch(() => null);
-      if (after?.landing?.failedStep) failureRecorded = true;
-      else if (after?.landing?.step) { current = after.landing.step; if (Number.isInteger(after.landing.attempt)) failureAttempt = after.landing.attempt; }
+      const ours = after?.landing && (!Number.isInteger(failureAttempt) || after.landing.attempt === failureAttempt);
+      if (ours && after.landing.failedStep) failureRecorded = true;
+      else if (ours && after.landing.step) current = after.landing.step;
       throw new StepError(`atelier merge failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
     }
     print(`${id} landed: merged as ${short(mergeHead())}.`);
@@ -1273,7 +1276,9 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
       }
       return binding;
     }
-    if (!outcome.reused) await record("triage", Date.now() - t0, triageRecord(binding, "stopped", { triager: triage.actor, statuses: outcome.results ?? undefined, reason: outcome.why }));
+    // Whether the server took the stop: if not, the landing's own failure
+    // record stands in for it.
+    const stopRecorded = !outcome.reused && await record("triage", Date.now() - t0, triageRecord(binding, "stopped", { triager: triage.actor, statuses: outcome.results ?? undefined, reason: outcome.why })) === true;
     const findings = [`The triage of ${id} by ${triage.actor} stopped at ${short(head)} (merge base ${short(base)}, criteria ${short(binding.criteria)}): ${outcome.why}.`, ...lines, ...unverified];
     if (triage.override) {
       await recordStrict(Date.now() - t0, triageRecord(binding, "overridden", { triager: triage.actor, reason: triage.override }), "The override of the stopped triage (--override-triage)");
@@ -1281,7 +1286,7 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
       return binding;
     }
     throw new StepError([...findings,
-      `The landing stops before the review request: ${leftAs(io.args?.workflow === true ? `the merged head stays pushed to ${id}'s fork` : "")}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the developer, ${triageBypass(retry, triage)}.`].join("\n"), { recorded: true });
+      `The landing stops before the review request: ${leftAs(io.args?.workflow === true ? `the merged head stays pushed to ${id}'s fork` : "")}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the developer, ${triageBypass(retry, triage)}.`].join("\n"), { recorded: stopRecorded });
   }
 }
 

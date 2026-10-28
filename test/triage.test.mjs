@@ -694,3 +694,13 @@ test("init --triage needs a model, and a bare one is refused before anything is 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a stop the server did not take is recorded by the landing's own failure record, once (G1)", async (t) => {
+  let refusedOnce = 0;
+  const l = landing(t, { args: { triage: "codex/gpt-6-astra" }, answers: [reply([met(1), { criterion: 2, status: "not-met", evidence: "the route answers 500", file: "src/route.ts", line: 4 }])], landFails: (b) => b.step === "triage" && b.outcome === "stopped" && refusedOnce++ === 0 });
+  await assert.rejects(runLand(l.io), /criterion 2 not met/);
+  assert.match(l.output(), /Warning: the landing's triage step could not be recorded/);
+  const failures = l.recorded.filter((e) => e.kind === "land.triage" && e.data.failed === true);
+  assert.equal(failures.length, 1, "the fallback recorded the stop");
+  assert.match(failures[0].data.tail, /criterion 2 not met/);
+});

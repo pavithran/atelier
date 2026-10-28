@@ -203,3 +203,30 @@ test("SIGTERM during the merged-tree checks is recorded as the step the landing 
   assert.match(d.landing.tail, /SIGTERM ended the landing/);
   assert.equal(await w.tip(), main, "nothing was pushed");
 });
+
+test("a merge that fails after another landing started a new attempt fails nothing of the new one", async (t) => {
+  const w = await landingWorld(t);
+  const { writeFileSync, existsSync } = await import("node:fs");
+  const entered = `${w.root}/entered`, go = `${w.root}/go`, script = `${w.root}/wait.sh`;
+  writeFileSync(script, `#!/bin/sh\ntouch ${entered}\nn=0; while [ ! -f ${go} ] && [ $n -lt 600 ]; do sleep 0.1; n=$((n+1)); done\necho OLD ATTEMPT FAILS\nexit 1\n`, { mode: 0o700 });
+  await w.setPolicy({ checks: [`sh ${script}`], checkClasses: [{ command: `sh ${script}`, by: "owner", note: "a test double that waits, then fails" }] });
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  const main = await w.tip();
+  const landing = w.cli(["land", id]);
+  for (let i = 0; i < 600 && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
+  assert.ok(existsSync(entered), "the check on the merged tree started");
+  const old = (await w.detail(id)).landing.attempt;
+  // Another landing of the task starts a new attempt meanwhile.
+  assert.equal((await w.api("POST", `/projects/demo/items/${id}/land`, { step: "start", ms: 0 })).status, 200);
+  const fresh = (await w.detail(id)).landing;
+  assert.equal(fresh.attempt, old + 1);
+  writeFileSync(go, "");
+  const r = await landing;
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /stale_landing/);
+  assert.equal(await w.tip(), main, "nothing was pushed");
+  const now = (await w.detail(id)).landing;
+  assert.equal(now.attempt, fresh.attempt);
+  assert.equal(now.failedStep, null, "the new attempt is not failed by the old one");
+  assert.equal(now.step, "start");
+});
