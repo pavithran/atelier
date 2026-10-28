@@ -75,3 +75,13 @@ it("a change that needs one review still redirects its open request to the revie
   const next = await L.requestReview(id, "owner", GEMINI, POOL, true);
   expect(next).toMatchObject({ requested: true, reviewer: GEMINI, withdrew: [{ request: first.request, reviewer: GPT }] });
 });
+
+it("an approval recorded without a claim answers only its own reviewer's request", async () => {
+  const { L, id, head } = await submitted("two-requests-unclaimed", ["src/rules.ts"]);
+  const first = await L.requestReview(id, "owner", GPT, POOL, true);
+  const second = await L.requestReview(id, "owner", GEMINI, POOL, true);
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Fine.", findings: [], at: new Date().toISOString() });
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["answered", "open"]);
+  expect((await L.reviewWaiting()).map((w) => w.request)).toEqual([second.request]);
+  expect(first.request).not.toBe(second.request);
+});

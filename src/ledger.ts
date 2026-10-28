@@ -4236,7 +4236,7 @@ export class Ledger extends DurableObject<Env> {
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
-    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, r.approve ? boundClaims.map((c) => c.id as number) : undefined);
+    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, r.approve ? boundClaims.map((c) => c.id as number) : undefined, r.approve && !claimed ? r.by : undefined);
     // A rejection sends the change back for rework, so a tier request at the
     // head no runner has claimed yet is no longer asked for; a claimed one is
     // left to finish, and its findings join the rework.
@@ -8385,10 +8385,22 @@ export class Ledger extends DurableObject<Env> {
     return need.needed ? missingReviews(need) : 1;
   }
 
-  private answerReviewRequest(itemId: string, head: string, criteria: string, at: string, only: number[] = []): void {
+  // An approval recorded without a claim answers at most the requests asked
+  // of its own reviewer (`by`), so it never closes the other reviewer's
+  // request. When no live request names a reviewer, it answers them all.
+  private answerReviewRequest(itemId: string, head: string, criteria: string, at: string, only: number[] = [], by?: string): void {
     if (only.length) {
       for (const id of only) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ? AND state = 'claimed'`, id);
       return;
+    }
+    if (by !== undefined) {
+      const live = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL AND (criteria IS NULL OR criteria = ?)`, itemId, head, criteria).toArray()
+        .map((c) => ({ id: c.id as number, d: JSON.parse(c.dispatch as string) as Dispatch }));
+      const named = live.filter((c) => c.d.agent && c.d.model);
+      if (named.length) {
+        for (const c of named.filter((c) => sameActor(`${c.d.agent}/${c.d.model}`, by))) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, c.id);
+        return;
+      }
     }
     this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL AND (criteria IS NULL OR criteria = ?)`, itemId, head, criteria);
   }
