@@ -630,7 +630,7 @@ function companyRoute(route: PartRoute, single: PoolFamily | null): PartRoute {
 // The owner's page names the criteria it showed beside the head; a decision
 // made from it stands only while they are still the item's (t457).
 function assertShownCriteria(item: Item, shown: string): void {
-  if (shown !== criteriaOf(item)) throw new RuleError("stale_criteria", `${item.id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409);
+  if (shown !== criteriaOf(item)) throw new RuleError("stale_criteria", `${item.id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409, "reload the task page, read the criteria, then decide again");
 }
 
 function mayAssess(actor: string, policy: ProjectPolicy, owner: string): boolean {
@@ -748,9 +748,9 @@ export function assertRepoAvailable(projects: ProjectRecord[], name: string, rep
 export function assertNameFree(source: ProjectRef, to: string, target: ProjectRef): void {
   if (target.key === source.key) return;
   if (target.registered) {
-    throw new RuleError("name_taken", `${to} is ${target.name === to ? "the name" : "a former name"} of ${target.name}, which still answers to it`, 409);
+    throw new RuleError("name_taken", `${to} is ${target.name === to ? "the name" : "a former name"} of ${target.name}, which still answers to it`, 409, "pick another name");
   }
-  if (target.key !== to) throw new RuleError("name_taken", `${to} was a name of a removed project, stored under ${target.key}, which still answers to it`, 409);
+  if (target.key !== to) throw new RuleError("name_taken", `${to} was a name of a removed project, stored under ${target.key}, which still answers to it`, 409, "pick another name");
 }
 
 // Every name that reaches `key`, given the names table: the key itself unless
@@ -762,7 +762,7 @@ export function keyNames(keys: Map<string, string>, key: string): string[] {
 
 export function assertProjectRemovable(items: Pick<Item, "state">[], force: boolean): void {
   if (!force && items.some((i) => ["claimed", "submitted", "accepted", "blocked"].includes(i.state))) {
-    throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409);
+    throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409, "run atelier ls --all, or use --force");
   }
 }
 
@@ -1299,13 +1299,13 @@ export class Ledger extends DurableObject<Env> {
   // the next one that takes the name.
   renameProject(from: string, to: string, releaseKey?: string): { from: string; to: string; key: string; names: string[]; released?: string; rescoped?: number } {
     const source = this.resolveProject(from);
-    if (!source.registered) throw new RuleError("no_project", `no project ${from}`, 404);
-    if (source.name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
+    if (!source.registered) throw new RuleError("no_project", `no project ${from}`, 404, "run atelier init, or check the project name with atelier status");
+    if (source.name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400, "pick another name");
     if (releaseKey !== undefined && from !== source.name) {
       throw new RuleError("release_current_name", `${from} is a former name of ${source.name}; release the project's current name by renaming ${source.name}`, 400);
     }
     assertNameFree(source, to, this.resolveProject(to));
-    if (releaseKey !== undefined && !this.keyFree(releaseKey)) throw new RuleError("name_taken", `${releaseKey} is already in use as a storage key`, 409);
+    if (releaseKey !== undefined && !this.keyFree(releaseKey)) throw new RuleError("name_taken", `${releaseKey} is already in use as a storage key`, 409, "pick another name");
     const row = this.sql.exec(`SELECT json FROM projects WHERE name = ?`, source.name).toArray()[0];
     const record = { ...(JSON.parse(row.json as string) as ProjectRecord), name: to };
     this.sql.exec(`DELETE FROM projects WHERE name = ?`, source.name);
@@ -1509,7 +1509,7 @@ export class Ledger extends DurableObject<Env> {
     const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
     const entry = JSON.parse(row.json as string) as ModelEntry;
-    if (entry.where !== kind) throw new RuleError("wrong_runner", `${id} runs ${entry.where === "home" ? "at home" : "in the cloud"}; a ${kind} runner cannot report it`, 403);
+    if (entry.where !== kind) throw new RuleError("wrong_runner", `${id} runs ${entry.where === "home" ? "at home" : "in the cloud"}; a ${kind} runner cannot report it`, 403, `report it from a ${entry.where === "home" ? "home" : "cloud"} runner`);
     const record = { ...entry, status };
     this.sql.exec(`UPDATE models SET json = ? WHERE id = ?`, JSON.stringify(record), id);
     return record;
@@ -1549,7 +1549,7 @@ export class Ledger extends DurableObject<Env> {
   // job; one outside the pool is the owner's to name.
   private assertStanding(actor: string, role: "build" | "review" | "plan", pool: readonly ModelEntry[] = this.poolStanding()): void {
     const held = actorStanding(pool, actor, role);
-    if (held) throw new RuleError("model_held", `${held}; name another, or change its standing with atelier models set`, 409);
+    if (held) throw new RuleError("model_held", `${held}; name another, or change its standing with atelier models set`, 409, "name another model, or only the developer can: atelier models set ID --state available");
   }
 
   // Every dispatch and review request this ledger writes is made here, so
@@ -2349,7 +2349,7 @@ export class Ledger extends DurableObject<Env> {
   // runs one call at a time, so no other init can change the project between
   // the read and the write.
   initProject(init: ProjectInit, actor: string): ProjectRecord {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer initializes policy", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer initializes policy", 403, "only the developer can: atelier init");
     if (init.postMerge !== undefined) init = { ...init, postMerge: parsePostMerge(init.postMerge, actor, new Date().toISOString()) };
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     const at = new Date().toISOString();
@@ -2410,7 +2410,7 @@ export class Ledger extends DurableObject<Env> {
 
   project(): ProjectRecord {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
-    if (!row) throw new RuleError("no_project", "project not initialised; run `atelier init`", 404);
+    if (!row) throw new RuleError("no_project", "project not initialised; run `atelier init`", 404, "run atelier init, or check the project name with atelier status");
     const record = JSON.parse(row.value as string) as ProjectRecord;
     const admissions = effectiveAdmissions(this.reviewerAdmissions(), this.standardReviewers());
     record.policy = { ...record.policy, reviewerAdmissions: admissions.length ? admissions : undefined };
@@ -2503,7 +2503,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   admitReviewer(named: string, active: boolean, reason: string, actor: string, pool: ModelEntry[]): ReviewerAdmission {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer admits or withdraws reviewers", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer admits or withdraws reviewers", 403, "only the developer can: atelier models admit ID --project NAME --reason TEXT");
     this.project();
     if (typeof reason !== "string" || !reason.trim()) throw new RuleError("bad_reason", "say why this reviewer is admitted or withdrawn", 400);
     assertLength(reason, REASON_MAX, "the admission reason");
@@ -2514,10 +2514,10 @@ export class Ledger extends DurableObject<Env> {
     // A standard admission this project has no record of is withdrawn here by a record of its own.
     const prior = admissions.find((a) => matches(a.id, a.aliases)) ?? effectiveAdmissions([], this.standardReviewers()).find((a) => matches(a.id, a.aliases));
     const entries = pool.filter((m) => matches(m.id, m.aliases) && (!harness || m.harness.toLowerCase() === harness));
-    if (entries.length > 1) throw new RuleError("ambiguous_model", `${named} names multiple registered models`, 409);
+    if (entries.length > 1) throw new RuleError("ambiguous_model", `${named} names multiple registered models`, 409, "name one by its exact harness/id, such as atelier models show H/M");
     const entry = entries[0];
-    if (active && !entry) throw new RuleError("no_model", `${named} is not registered; use atelier models add before atelier models admit`, 404);
-    if (!active && !prior) throw new RuleError("no_admission", `${named} has no reviewer admission in this project`, 404);
+    if (active && !entry) throw new RuleError("no_model", `${named} is not registered; use atelier models add before atelier models admit`, 404, "only the developer can: atelier models add ID --harness H --where home|cloud");
+    if (!active && !prior) throw new RuleError("no_admission", `${named} has no reviewer admission in this project`, 404, "run atelier models reviewers --project NAME");
     // A harness prefix on a withdrawal must name the registered model's harness too.
     if (!active && harness) {
       const registered = pool.filter((m) => matches(m.id, m.aliases));
@@ -2575,7 +2575,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   recordBranchesRepo(actor: string, repo: string): string {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branches repository", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branches repository", 403, "only the developer can: atelier branch push");
     const held = this.branchesRepo();
     if (held && held !== repo) throw new RuleError("branches_repo_mismatch", `this project's branches repository is ${held}, not ${repo}`, 409);
     if (!held) {
@@ -2602,7 +2602,7 @@ export class Ledger extends DurableObject<Env> {
   // inside the Ledger (Astra's fourth review of t641), so it cannot reset
   // the Ledger, and nothing is recorded.
   recordDeveloperBranch(actor: string, branch: Omit<DeveloperBranch, "pushedAt">, expected: DeveloperBranch | null): { recorded: DeveloperBranch } | { moved: DeveloperBranch | null } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branch", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branch", 403, "only the developer can: atelier branch push");
     return this.ctx.storage.transactionSync(() => {
       const current = this.developerBranch(branch.name);
       if (JSON.stringify(current) !== JSON.stringify(expected)) return { moved: current };
@@ -2650,12 +2650,12 @@ export class Ledger extends DurableObject<Env> {
   newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item & { derived?: true; revert?: { itemId: string; mergeCommit: string } } {
     if (fields.revertOf !== undefined) {
       const original = this.item(fields.revertOf);
-      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`);
+      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409, `run atelier show ${original.id}`);
       // A plan part's event names the whole plan's merge; reverting that
       // would silently undo its siblings too. Ask for the plan explicitly.
       if (original.kind === "part") throw new RuleError("revert_part", "revert the merged plan, not one of its parts");
       const mergeCommit = this.events(original.id).find((e) => e.kind === "item.merged")?.data.mergeCommit;
-      if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`);
+      if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`, 409, `run atelier show ${original.id}`);
       return this.ctx.storage.transactionSync(() => {
         const revert = { itemId: original.id, mergeCommit };
         const item = this.newItem(shortTitle(`Revert ${original.id}: ${original.title}`), original.scope, actor, {
@@ -2694,10 +2694,10 @@ export class Ledger extends DurableObject<Env> {
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
   editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string): Item & { criteriaChange?: CriteriaChange } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403, `only the developer can: atelier edit ${id}`);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`, 409, "run atelier ls to pick another task");
     const set = fieldColumns(fields);
     if (fields.title !== undefined) {
       const title = titleLine(fields.title);
@@ -2707,10 +2707,10 @@ export class Ledger extends DurableObject<Env> {
     }
     const rescoping = scope !== undefined && JSON.stringify(scope) !== JSON.stringify(item.scope);
     if (scope !== undefined) {
-      if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409);
+      if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409, "edit the plan's scope instead");
       set.scope = JSON.stringify(scope);
     }
-    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context", 400);
+    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context", 400, "give at least one field to change");
     if (context !== undefined) assertLength(context, NOTE_MAX, "the task's context");
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
@@ -2734,15 +2734,15 @@ export class Ledger extends DurableObject<Env> {
   // being landed is merged under the acceptance those criteria were judged by.
   private assertCriteriaEditable(item: Item): void {
     if (item.state === "integrated") {
-      throw new RuleError("integrated", `${item.id} is integrated into its plan's branch under the acceptance criteria its review judged, so they cannot change; nothing was changed`, 409);
+      throw new RuleError("integrated", `${item.id} is integrated into its plan's branch under the acceptance criteria its review judged, so they cannot change; nothing was changed`, 409, `run atelier show ${item.id}`);
     }
     const landing = this.landing(item.id);
     if (landing) {
-      throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so its acceptance criteria cannot change; nothing was changed. Let the merge finish, or cancel it with atelier merge ${item.id} --cancel, then edit them`, 409);
+      throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so its acceptance criteria cannot change; nothing was changed. Let the merge finish, or cancel it with atelier merge ${item.id} --cancel, then edit them`, 409, `run atelier merge ${item.id} --cancel, then edit the criteria`);
     }
     const held = this.projectLanding();
     if (held && held.item === item.id && this.landingLive(held, new Date().toISOString())) {
-      throw new RuleError("landing_lease", `${held.holder} is landing ${item.id} under the project's landing lease, so its acceptance criteria cannot change; nothing was changed. Let the landing finish, or free the lease with atelier land ${item.id} --release-lease, then edit them`, 409);
+      throw new RuleError("landing_lease", `${held.holder} is landing ${item.id} under the project's landing lease, so its acceptance criteria cannot change; nothing was changed. Let the landing finish, or free the lease with atelier land ${item.id} --release-lease, then edit them`, 409, `run atelier land ${item.id} --release-lease, then edit the criteria`);
     }
   }
 
@@ -3012,7 +3012,7 @@ export class Ledger extends DurableObject<Env> {
         // the task while the hold stands and tries it again once it clears.
         const held = coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
         if (!held) return;
-        throw new RuleError("held", heldClaimText(item.id, held), 409);
+        throw new RuleError("held", heldClaimText(item.id, held), 409, `wait for the hold to clear, then run atelier queue to see ${item.id} offered again`);
       }
     }
     throw runnerDenied(token);
@@ -3076,7 +3076,7 @@ export class Ledger extends DurableObject<Env> {
     // judged under.
     const integrating = actor === INTEGRATOR;
     if (integrating) {
-      if (!proved) throw new RuleError("integrator_token", `${INTEGRATOR} claims only through a token bound to it`, 403);
+      if (!proved) throw new RuleError("integrator_token", `${INTEGRATOR} claims only through a token bound to it`, 403, "claim through the integrator token");
     } else {
       // A plan's planner claims its item to write the plan, under the planner role.
       assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
@@ -3092,13 +3092,13 @@ export class Ledger extends DurableObject<Env> {
       // owner recovers the task by handing it off or releasing it, or by
       // giving the model its standing back.
       if (held && item.owner === actor) {
-        throw new RuleError("model_held", `${held}; it keeps its claim of ${id} but may not renew it: hand it off with atelier handoff ${id} --to HARNESS/MODEL, release it with atelier release ${id}, or change its standing with atelier models set`, 409);
+        throw new RuleError("model_held", `${held}; it keeps its claim of ${id} but may not renew it: hand it off with atelier handoff ${id} --to HARNESS/MODEL, release it with atelier release ${id}, or change its standing with atelier models set`, 409, `hand it off with atelier handoff ${id} --to HARNESS/MODEL, or release it with atelier release ${id}`);
       }
       if (held) {
         const d = item.dispatch;
         const named = !!d?.agent && !!d.model && sameActor(`${d.agent}/${d.model}`, actor);
         if (named) this.withdrawHeldDispatch(item, held, at);
-        throw new RuleError("model_held", `${held}${named ? `; its dispatch of ${id} is withdrawn` : ""}`, 409);
+        throw new RuleError("model_held", `${held}${named ? `; its dispatch of ${id} is withdrawn` : ""}`, 409, "name another model, or only the developer can: atelier models set ID --state available");
       }
     }
     // Under require-criteria-review a build is claimed only while a criteria
@@ -3117,7 +3117,7 @@ export class Ledger extends DurableObject<Env> {
       // that may not be, so the same runner is compared without case.
       const held = item.runner ?? null, asking = runner?.runner ?? null;
       if (held && held.toLowerCase() !== (asking ?? "").toLowerCase()) {
-        throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
+        throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`, 409, `run atelier release ${id} --as ${actor}, then claim it again with the runner you mean`);
       }
     }
     // A claim whose last run ended without a result held nothing, so another
@@ -3125,7 +3125,7 @@ export class Ledger extends DurableObject<Env> {
     // run both at once: it is refused while that hold stands, and its note
     // is kept, so it goes on holding nothing (t325).
     const lapsed = this.lapsedClaimHold(item);
-    if (lapsed) throw new RuleError("held", heldClaimText(id, lapsed), 409);
+    if (lapsed) throw new RuleError("held", heldClaimText(id, lapsed), 409, `wait for the hold to clear, then run atelier queue to see ${id} offered again`);
     this.dropRunnerJobs(id);
     if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-idle:${runner.runner.toLowerCase()}`);
     // A runner claims before every run, so what it said of its last one
@@ -3183,8 +3183,8 @@ export class Ledger extends DurableObject<Env> {
   // assignment. Share the token slot so the next claim revokes the port token.
   reserveOwnerPort(id: string, actor: string) {
     const item = this.item(id);
-    if (!ownerPortAllowed(item, actor, this.owner)) throw new RuleError("owner_port", "only the developer may port to an open, unclaimed task", 403);
-    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+    if (!ownerPortAllowed(item, actor, this.owner)) throw new RuleError("owner_port", "only the developer may port to an open, unclaimed task", 403, "only the developer can port work to an open, unclaimed task: atelier claim ID --as H/M");
+    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
     const row = this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
     const generation = crypto.randomUUID();
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `owner-port:${id}`, JSON.stringify({ generation, claimGeneration: row.claim_gen }));
@@ -3227,7 +3227,7 @@ export class Ledger extends DurableObject<Env> {
   private dropToken(id: string, expected: string | null | undefined): void {
     if (expected === undefined) return;
     if (this.tokenId(id) !== expected) {
-      throw new RuleError("token_changed", `${id} was claimed again while this was asked, and its workspace token changed; try again`, 409);
+      throw new RuleError("token_changed", `${id} was claimed again while this was asked, and its workspace token changed; try again`, 409, "run the same command again");
     }
     this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, id);
   }
@@ -3295,7 +3295,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "claimed" || !item.owner || input.release === true) return;
     const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
     const since = row?.at ? `, who claimed it ${ago(row.at as string, new Date())}` : "";
-    throw new RuleError("held", `${id} is held by ${item.owner}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409);
+    throw new RuleError("held", `${id} is held by ${item.owner}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409, `atelier dispatch ${id} --release, or atelier handoff ${id} --to HARNESS/MODEL, or ${item.owner} runs atelier release ${id}`);
   }
 
   // The owner's release of an overlap-held dispatch: only the overlap
@@ -3306,7 +3306,7 @@ export class Ledger extends DurableObject<Env> {
   // `why`: what named the builder, the build assignments skipped for it
   // included, as dispatch keeps it.
   releaseHold(id: string, actor: string, input: Record<string, unknown>, why?: string): Item & { retainedDispatch: true; releasedCoreHold?: CoreHold } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403, `only the developer can: atelier dispatch ${id}`);
     const item = this.item(id);
     this.assertNotPlanned(item);
     assertNotTerminal(item);
@@ -3332,14 +3332,14 @@ export class Ledger extends DurableObject<Env> {
   // before a holder's token is revoked for it.
   private assertMergeMainWorkspace(item: Item, d: Dispatch): void {
     if (d.job === "merge-main" && !item.fork) {
-      throw new RuleError("no_fork", `${item.id} has no workspace yet, so there is nothing for its builder to merge main into`, 409);
+      throw new RuleError("no_fork", `${item.id} has no workspace yet, so there is nothing for its builder to merge main into`, 409, `run atelier claim ${item.id} --as HARNESS/MODEL to make its workspace`);
     }
   }
 
   // What a dispatch checks alone, so the caller can revoke a holder's token
   // only for a dispatch that will be made.
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403, `only the developer can: atelier dispatch ${id}`);
     if (input) this.refuseLiveHolder(id, input);
     const item = this.item(id);
     assertNotTerminal(item);
@@ -3377,7 +3377,7 @@ export class Ledger extends DurableObject<Env> {
     const ask = item.kind === "part"
       ? `the plan asks for one when it dispatches the part; see atelier plan show ${item.plan}`
       : `ask for one with atelier criteria-review ${item.id} [--reviewer H/M]`;
-    throw new RuleError("criteria_unreviewed", `${item.id} cannot be ${what}: this project requires a review of the acceptance criteria before a build, and none approves them as they are now (${status.reason}); ${ask}`, 409);
+    throw new RuleError("criteria_unreviewed", `${item.id} cannot be ${what}: this project requires a review of the acceptance criteria before a build, and none approves them as they are now (${status.reason}); ${ask}`, 409, `ask for the criteria review with atelier criteria-review ${item.id}`);
   }
 
   private holds(item: Item): boolean {
@@ -3385,19 +3385,19 @@ export class Ledger extends DurableObject<Env> {
   }
 
   undispatch(id: string, actor: string): Item & { already?: true } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a dispatch", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a dispatch", 403, `only the developer can: atelier undispatch ${id}`);
     const item = this.item(id);
     this.assertNotPlanned(item);
     // A rerun: no dispatch stands and the last word on it was this actor's withdrawal.
     const last = this.lastEvent(id, ["item.dispatched", "item.undispatched"]);
     if (!item.dispatch && last?.kind === "item.undispatched" && last.actor === actor) return { ...item, already: true };
-    if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`);
+    if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`, 409, "run atelier queue to see what is queued");
     // A claimed or submitted task keeps its dispatch, and waits in the queue
     // again if it is released; an accepted, merged or abandoned one never does.
     if (item.state !== "open") {
       throw new RuleError("not_dispatched", ["claimed", "submitted"].includes(item.state)
         ? `${id} is ${item.state} by ${item.owner}; its dispatch applies again only if it is released, so withdraw it then`
-        : `${id} is ${item.state}, so its dispatch no longer applies and there is nothing to withdraw`);
+        : `${id} is ${item.state}, so its dispatch no longer applies and there is nothing to withdraw`, 409, `run atelier show ${id}`);
     }
     const at = new Date().toISOString();
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
@@ -3572,7 +3572,7 @@ export class Ledger extends DurableObject<Env> {
     // A held task's skip is the holder's word (t669): the developer token with
     // an X-Atelier-Runner header names any actor, so the report is refused
     // unless it comes from the actor that holds the task.
-    if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403);
+    if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403, `the holder reports the skip, or run atelier show ${id}`);
     const skip: RunSkip = { runner, actor, kind, failures, note: redactKeys(note.replace(TEXT_CONTROLS, " ")).slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("run-skip", id, runner, d.at, skip);
     // A task the runner released before it decided to give up (an ordinary
@@ -3744,7 +3744,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
     if (item.state === "merged" || item.state === "abandoned" || (generation !== undefined && (item.owner !== actor || row.claim_gen !== generation))) {
-      throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409);
+      throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
     }
     this.update(id, { fork, base, head: base }, at);
     this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
@@ -3874,7 +3874,7 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const item = this.item(id);
     if (item.kind === "plan" || item.owner !== actor || item.fork !== fork || item.base !== from || (item.head && item.head !== item.base)) {
-      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409);
+      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
     }
     this.update(id, { base, head: base }, at);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
@@ -3934,7 +3934,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const landing = this.landing(id);
     if (item.state === "accepted" && landing && item.head !== observedHead) {
-      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)}; push again once it has landed`, 409);
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)}; push again once it has landed`, 409, "wait until the merge lands, then run atelier push again");
     }
     if (item.head === observedHead) {
       // The fork notification may have observed this port before the owner's
@@ -3949,9 +3949,9 @@ export class Ledger extends DurableObject<Env> {
     const unverified = rewritten && lineage.holdsRecorded === null;
     if (rewritten && lineage.rebasedFrom !== item.head) {
       if (unverified) {
-        throw new RuleError("ancestry_unverified", `${id}'s workspace is at ${observedHead.slice(0, 8)}, and Atelier could not verify ancestry within ${lineage.searched ?? 0} commits of the fork's history: ${item.head!.slice(0, 8)}, the head it recorded, is not among them, and the rest was not read. The recorded head stays. If atelier update rebased this workspace, push with atelier push --force, which declares the rebase`, 409);
+        throw new RuleError("ancestry_unverified", `${id}'s workspace is at ${observedHead.slice(0, 8)}, and Atelier could not verify ancestry within ${lineage.searched ?? 0} commits of the fork's history: ${item.head!.slice(0, 8)}, the head it recorded, is not among them, and the rest was not read. The recorded head stays. If atelier update rebased this workspace, push with atelier push --force, which declares the rebase`, 409, "if atelier update rebased this workspace, run atelier push --force");
       }
-      throw new RuleError("history_rewritten", `${id}'s workspace is at ${observedHead.slice(0, 8)}, which does not hold ${item.head!.slice(0, 8)}, the head Atelier recorded: the commits pushed before are no longer on its branch. Put them back under your commits (git fetch origin, then rebase or merge), then push again; after atelier update, push with atelier push --force`, 409);
+      throw new RuleError("history_rewritten", `${id}'s workspace is at ${observedHead.slice(0, 8)}, which does not hold ${item.head!.slice(0, 8)}, the head Atelier recorded: the commits pushed before are no longer on its branch. Put them back under your commits (git fetch origin, then rebase or merge), then push again; after atelier update, push with atelier push --force`, 409, "run git fetch origin and rebase or merge, then atelier push; after atelier update, atelier push --force");
     }
     const now = new Date().toISOString();
     const reopened = item.state === "accepted";
@@ -4144,7 +4144,7 @@ export class Ledger extends DurableObject<Env> {
   addEvidence(e: Evidence, origin?: string, proved = false): void {
     const item = this.item(e.itemId);
     if (e.head !== item.head) {
-      throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`);
+      throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}; push first`, 409, "run atelier push, then atelier check");
     }
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
@@ -4161,7 +4161,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     if (item.state !== "merged") return item;
     const landing = landingOf(item, this.events(id, Number.MAX_SAFE_INTEGER).toReversed());
-    if (!landing) throw new RuleError("no_merge_commit", `${id} has no recorded merge commit`, 409);
+    if (!landing) throw new RuleError("no_merge_commit", `${id} has no recorded merge commit`, 409, `run atelier show ${id}`);
     return { ...item, head: landing.commit };
   }
 
@@ -4183,28 +4183,28 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const recordedActor = r.by;
     const admission = reviewerAdmission(r.by, policy);
-    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403, `only the developer can: atelier models admit ${admission.id} --project NAME --reason TEXT`);
     if (!admission?.active) assertEligible(r.by, policy, this.owner);
     // Never trust a client-supplied admission snapshot.
     r = { ...r, by: admission?.active ? admissionActor(r.by, admission) : r.by, reviewerAdmission: admission?.active ? admission : undefined };
     // Under single-family mode no other company's model reviews, however its
     // review comes (t394); the owner's own review is the owner's, not a model's.
     const foreign = sameActor(r.by, this.owner) ? null : companyRefusal(r.by, singleFamily(policy));
-    if (foreign) throw new RuleError("single_family", `${foreign}: its review is not recorded; return to cross-family review with atelier init --cross-family`, 409);
+    if (foreign) throw new RuleError("single_family", `${foreign}: its review is not recorded; return to cross-family review with atelier init --cross-family`, 409, "only the developer can: atelier init --cross-family");
     const item = this.reviewItem(r.itemId);
     if (admission?.active) {
       const { refusal } = postMergeIndependence(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy), item.state === "merged" && this.mergedFast(item.id));
-      if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403);
+      if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403, `name a reviewer from another family with atelier review-request ${item.id} --reviewer H/M`);
     }
     if (item.state === "merged" && r.request === undefined) {
-      throw new RuleError("closed", `${item.id} is merged; a review must answer a claimed post-merge review request`, 409);
+      throw new RuleError("closed", `${item.id} is merged; a review must answer a claimed post-merge review request`, 409, `run atelier show ${item.id}`);
     }
     assertReviewAllowed(item, proved);
     if (item.state !== "accepted" && item.state !== "merged") assertLive(item);
-    else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
+    else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again", 409, `run atelier merge ${item.id} --cancel`);
     // The holder under another letter case, profile or registered name is still the holder.
-    if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "a holder cannot review their own item", 403);
-    if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
+    if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "a holder cannot review their own item", 403, `ask another model to review ${item.id}: atelier review-request ${item.id} --reviewer H/M`);
+    if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409, `run atelier show ${item.id}, then review the current head`);
     // The review is bound to the criteria the reviewer was given, as it names
     // them; one that names none, or criteria the task no longer has, is
     // refused here, before anything is recorded or any request answered.
@@ -4228,14 +4228,14 @@ export class Ledger extends DurableObject<Env> {
       // A verdict that names no request is told so (t575), never "request undefined".
       if (r.request === undefined) {
         const live = claims.map((c) => c.id as number);
-        throw new RuleError("stale_request", `the verdict on ${r.itemId} names no review request, but ${r.by} claimed ${live.length ? `request ${live.join(", ")}` : "one"} at ${r.head.slice(0, 8)}: name it with --request N, as the review claim gave it; if it was withdrawn or replaced, claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409);
+        throw new RuleError("stale_request", `the verdict on ${r.itemId} names no review request, but ${r.by} claimed ${live.length ? `request ${live.join(", ")}` : "one"} at ${r.head.slice(0, 8)}: name it with --request N, as the review claim gave it; if it was withdrawn or replaced, claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409, `run atelier review ${r.itemId} again with --request N from the review claim`);
       }
-      throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409);
+      throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409, `run atelier review-claim ${r.itemId} --as ${r.by}, then give the verdict again`);
     }
     const boundClaims = claims.filter((c) => c.id === r.request);
     const claimed = boundClaims.length > 0;
     if (item.state === "merged" && (!claimed || r.request === undefined)) {
-      throw new RuleError("stale_request", "a post-merge verdict must answer the review request this reviewer claimed", 409);
+      throw new RuleError("stale_request", "a post-merge verdict must answer the review request this reviewer claimed", 409, `run atelier review-claim ${r.itemId} --as ${r.by}, then give the verdict again`);
     }
     // A review answering a tier request this reviewer claimed is a tier
     // review. One whose tier request was withdrawn, when the change was
@@ -4246,7 +4246,7 @@ export class Ledger extends DurableObject<Env> {
       const mine = this.sql.exec(`SELECT state, tier, claimedBy FROM review_requests WHERE item = ? AND head = ? AND claimedBy IS NOT NULL ORDER BY id DESC`, r.itemId, r.head).toArray()
         .filter((c) => sameActor(c.claimedBy as string, r.by));
       if (mine.length && mine.every((c) => c.tier === 1 && c.state === "withdrawn")) {
-        throw new RuleError("tier_withdrawn", `the tier review of ${r.itemId} at ${r.head.slice(0, 8)} asked of ${r.by} was withdrawn; a tier review never holds a landing, and this one is no longer asked for`, 409);
+        throw new RuleError("tier_withdrawn", `the tier review of ${r.itemId} at ${r.head.slice(0, 8)} asked of ${r.by} was withdrawn; a tier review never holds a landing, and this one is no longer asked for`, 409, "run atelier review-claim ID --as H/M for the current request");
       }
     }
     // A review answering a gate's request asked of a tier model gives the
@@ -4351,7 +4351,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     assertLive(item);
     assertOwner(item, actor);
-    if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
+    if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting", 409, "run atelier push, then atelier submit");
     // Cleaned first: a summary over its limit is refused before anything is written.
     const text = cleanSummary(summary);
     // A rerun of the submit that already stands: the caller names the head it
@@ -4389,17 +4389,17 @@ export class Ledger extends DurableObject<Env> {
     assertEligible(to, this.project().policy, this.owner);
     assertNotBlocked(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, from);
-    else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`, 409, `run atelier show ${id}`);
     const role = claimRole(item);
     if (role) this.assertStanding(to, role);
     return item;
   }
 
   private acceptedReworkAllowed(item: Item, actor: string): void {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer sends accepted work back to building", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer sends accepted work back to building", 403, `only the developer can: atelier merge ${item.id} --cancel`);
     this.assertNotPlanned(item);
     const landing = this.landing(item.id);
-    if (landing) throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease; finish atelier merge ${item.id}, or cancel an unpublished merge with atelier merge ${item.id} --cancel before sending it back to building`, 409);
+    if (landing) throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease; finish atelier merge ${item.id}, or cancel an unpublished merge with atelier merge ${item.id} --cancel before sending it back to building`, 409, `run atelier merge ${item.id}, or atelier merge ${item.id} --cancel`);
   }
 
   // The holder or the project owner blocks a task with the reason it cannot
@@ -4428,7 +4428,7 @@ export class Ledger extends DurableObject<Env> {
   unblock(id: string, actor: string, proved = false, direction: OwnerDirection | null = null): Item {
     const item = this.item(id);
     const fence = this.prereviewFence(id);
-    if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`);
+    if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`, 409, "run atelier show ID");
     if (actor !== this.owner) assertOwner(item, actor);
     const at = new Date().toISOString();
     const said = direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {};
@@ -4578,7 +4578,7 @@ export class Ledger extends DurableObject<Env> {
   // flags themselves stay on the item, marked cleared, as the record of what
   // the scan found.
   clearSecret(id: string, actor: string, reason: unknown, proved = false, direction: OwnerDirection | null = null): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer clears a secret flag", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer clears a secret flag", 403, `only the developer can: atelier clear-secret ${id} --note "why"`);
     const text = secretClearReason(reason);
     const item = this.item(id);
     // A scan still pending is not a flag: nothing has been judged yet, so
@@ -4586,10 +4586,10 @@ export class Ledger extends DurableObject<Env> {
     // next retry of the push event, or when the holder runs atelier push
     // again; a flag it records can then be cleared.
     if (item.head && item.secretScan === item.head) {
-      throw new RuleError("secret_pending", `${id}'s secret scan for ${item.head.slice(0, 8)} has not completed, so there is no flag to clear yet; it runs again on the next push or retry`, 409);
+      throw new RuleError("secret_pending", `${id}'s secret scan for ${item.head.slice(0, 8)} has not completed, so there is no flag to clear yet; it runs again on the next push or retry`, 409, `run atelier push or retry, then wait for the scan, then run atelier clear-secret ${id} --note "why"`);
     }
     const standing = (item.secret ?? []).filter((f) => !f.cleared);
-    if (!standing.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409);
+    if (!standing.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409, `run atelier show ${id}`);
     const at = new Date().toISOString();
     const clearances = [...(item.secretClearances ?? [])];
     const said = direction ? { quote: direction.quote, acting: direction.acting } : {};
@@ -4630,24 +4630,24 @@ export class Ledger extends DurableObject<Env> {
     if (deliveredBy === undefined) return;
     if (deliveredBy === id) throw new RuleError("bad_delivered_by", `${id} cannot be delivered by itself`, 400);
     const by = this.item(deliveredBy);
-    if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409);
+    if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409, `run atelier show ${deliveredBy}`);
   }
 
   private abandonAllowed(id: string, actor: string, note: string, deliveredBy?: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403, `only the developer can: atelier abandon ${id}`);
     assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
     this.assertDelivered(id, deliveredBy);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409, "run atelier ls to pick another task");
     // A plan's parts go with it; stopping the plan closes them in one step.
     const open = item.kind === "plan" ? this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned") : [];
-    if (open.length) throw new RuleError("plan_parts", `${id} is a plan with parts not merged or abandoned (${open.map((p) => p.id).join(", ")}); stop it with atelier plan stop ${id}, which closes them too`, 409);
+    if (open.length) throw new RuleError("plan_parts", `${id} is a plan with parts not merged or abandoned (${open.map((p) => p.id).join(", ")}); stop it with atelier plan stop ${id}, which closes them too`, 409, `atelier plan stop ${id}`);
     // A merge under the landing lease may already have put the accepted
     // revision on the baseline, and only an accepted task can record that
     // merge. So abandon waits until the lease ends.
     const landing = this.landing(id);
     if (landing) {
-      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot be abandoned. The lease ends when atelier merge ${id} records the merge, or when atelier merge ${id} --cancel withdraws a merge that is not on the baseline; abandon ${id} after a cancel`, 409);
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot be abandoned. The lease ends when atelier merge ${id} records the merge, or when atelier merge ${id} --cancel withdraws a merge that is not on the baseline; abandon ${id} after a cancel`, 409, `run atelier merge ${id} --cancel`);
     }
     return item;
   }
@@ -4718,7 +4718,7 @@ export class Ledger extends DurableObject<Env> {
   // reviewer) refuse the acceptance rather than accept under criteria the
   // owner never read (t457).
   accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null, quote?: unknown): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer accepts", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer accepts", 403, `only the developer can: atelier accept ${id}`);
     // The developer's words go with an override (t629); alone they direct nothing.
     if (quote !== undefined && overrideReason === undefined) throw new RuleError("bad_quote", "the developer's words (--quote) go with an override of the independent review: --override-review REASON --quote \"what the developer said\"", 400);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
@@ -4748,7 +4748,7 @@ export class Ledger extends DurableObject<Env> {
           owner: this.owner,
         })
       : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" });
-    if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
+    if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`, 409, `run atelier show ${id} for the blockers`);
     // Last, once the override would otherwise go through, the owner's
     // confirmation: a forbidden override, a missing reason, nothing to
     // override or another blocker are told first, so the owner is sent to
@@ -4757,7 +4757,7 @@ export class Ledger extends DurableObject<Env> {
     // words and the model acting on them, recorded with the override.
     const direction = override && !confirmedBy ? ownerDirection(quote, acting, "an override of the independent review") : null;
     if (override && !confirmedBy && !confirmation && !direction) {
-      throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403);
+      throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403, `only the developer can: ${overrideConfirmationHint(project.name, id)}`);
     }
     if (override && direction) Object.assign(override.override, { quote: direction.quote, acting: direction.acting });
     if (override) {
@@ -4803,16 +4803,16 @@ export class Ledger extends DurableObject<Env> {
   // since there would be nothing to allow. `criteria`, the binding the page
   // showed, is checked here as accept checks it (t457).
   confirmOverride(id: string, actor: string, expected: string | undefined, factor: OwnerFactor, criteria?: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer allows an override", 403);
-    if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the developer's Access identity or the confirmation secret", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer allows an override", 403, `only the developer can: atelier accept ${id} --override-review REASON`);
+    if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the developer's Access identity or the confirmation secret", 403, "only the developer can confirm an override with the Access identity or the confirmation secret");
     const policy = this.project().policy;
     assertOverridesAllowed(policy);
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
     if (criteria !== undefined) assertShownCriteria(item, criteria);
-    if (item.state !== "submitted" || !item.head) throw new RuleError("not_submitted", `${id} is ${item.state}; an override is allowed only on a submitted revision`, 409);
+    if (item.state !== "submitted" || !item.head) throw new RuleError("not_submitted", `${id} is ${item.state}; an override is allowed only on a submitted revision`, 409, `run atelier show ${id}`);
     const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner, { fast: this.mode().mode === "fast" });
-    if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`);
+    if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`, 409, `run atelier accept ${id} without an override`);
     const now = Date.now(), at = new Date(now).toISOString();
     const confirmation: OverrideConfirmation = { head: item.head, by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
     this.update(id, { override_confirmation: JSON.stringify(confirmation) }, at);
@@ -4860,9 +4860,9 @@ export class Ledger extends DurableObject<Env> {
   }
 
   cancelLanding(id: string, actor: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403, `only the developer can: atelier merge ${id}`);
     const run = this.postMergeRun(id);
-    if (run && (run.after || !["reserved", "complete"].includes(run.state))) throw new RuleError("post_merge_blocked", "a recorded merge cannot release its post-merge reservation", 409);
+    if (run && (run.after || !["reserved", "complete"].includes(run.state))) throw new RuleError("post_merge_blocked", "a recorded merge cannot release its post-merge reservation", 409, `run atelier land ${id} --post-merge status`);
     if (run?.state === "reserved") { run.state = "complete"; this.savePostMerge(run, actor, "cancelled"); }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
     this.log(id, actor, "landing.cancelled", {}, new Date().toISOString());
@@ -4872,15 +4872,15 @@ export class Ledger extends DurableObject<Env> {
   beginLanding(id: string, actor: string, head: string, before?: string, generation?: number): Item {
     this.assertPostMergeFree(id);
     this.assertNoRefreshPush(id);
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403, `only the developer can: atelier merge ${id}`);
     const item = this.item(id);
     if (item.state !== "accepted" || item.acceptedHead !== head) {
-      throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409);
+      throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409, `run atelier show ${id}, review it again, then atelier merge ${id}`);
     }
     // A standing secret flag blocks the merge too (t332), as it blocks
     // acceptance through the gate; the message names the flag, never the value.
     const secret = secretBlockers(item);
-    if (secret.length) throw new RuleError("secret", `${id} has a secret flag: ${secret.join("; ")}`, 409);
+    if (secret.length) throw new RuleError("secret", `${id} has a secret flag: ${secret.join("; ")}`, 409, `run atelier show ${id} for the flag; only the developer can clear it: atelier clear-secret ${id} --note "why"`);
     // A merge publishes to the baseline, the one thing the project's landing
     // lease guards (t232): while another task's landing is live on it, the
     // merge is refused, so a landing that lost its lease (its Mac slept past
@@ -4891,10 +4891,10 @@ export class Ledger extends DurableObject<Env> {
     const held = this.projectLanding();
     if (held && held.item !== id && this.landingLive(held, new Date().toISOString())) {
       const since = held.at.slice(0, 16).replace("T", " ");
-      throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project, so ${id} cannot merge beside it. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or free the lease with atelier land ${held.item} --release-lease, then atelier merge ${id} again`, 409);
+      throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project, so ${id} cannot merge beside it. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or free the lease with atelier land ${held.item} --release-lease, then atelier merge ${id} again`, 409, `wait for ${held.holder}'s landing of ${held.item}, or run atelier land ${held.item} --release-lease`);
     }
     const policy = this.project().policy.postMerge;
-    if (generation !== undefined && generation !== this.mergeGeneration()) throw new RuleError("stale_default_branch", "another landing completed while the default branch was read; read it again", 409);
+    if (generation !== undefined && generation !== this.mergeGeneration()) throw new RuleError("stale_default_branch", "another landing completed while the default branch was read; read it again", 409, `run atelier land ${id} again`);
     const previous = this.postMergeRun(id);
     // Capture the baseline once even when no steps are configured yet. A
     // resumed landing may already have published, so its newly observed tip
@@ -4909,7 +4909,7 @@ export class Ledger extends DurableObject<Env> {
     // judged here.
     const confirmed = landingRow ? null : this.leaseMain(id);
     if (confirmed && confirmed.head === head && before && before !== confirmed.main) {
-      throw new RuleError("main_moved", `main moved from ${confirmed.main.slice(0, 8)} to ${before.slice(0, 8)} since ${id}'s landing confirmed it under the lease; ${id} at ${head.slice(0, 8)} was checked and reviewed against ${confirmed.main.slice(0, 8)}, so it is not merged into ${before.slice(0, 8)}. Nothing was merged. Merge main into ${id}'s workspace and push it (atelier dispatch ${id} --job merge-main, or by hand with atelier push), which withdraws the acceptance, then run atelier land ${id} again to check and review the new head`, 409);
+      throw new RuleError("main_moved", `main moved from ${confirmed.main.slice(0, 8)} to ${before.slice(0, 8)} since ${id}'s landing confirmed it under the lease; ${id} at ${head.slice(0, 8)} was checked and reviewed against ${confirmed.main.slice(0, 8)}, so it is not merged into ${before.slice(0, 8)}. Nothing was merged. Merge main into ${id}'s workspace and push it (atelier dispatch ${id} --job merge-main, or by hand with atelier push), which withdraws the acceptance, then run atelier land ${id} again to check and review the new head`, 409, `run atelier land ${id} again to check it against the new main`);
     }
     const landing = landingRow ? JSON.parse(landingRow.value as string) as { head: string; at: number; before?: string | null } : { head, at: Date.now(), before: before ?? null };
     // A cancelled reservation remains in history, but does not become the
@@ -4961,7 +4961,7 @@ export class Ledger extends DurableObject<Env> {
   // cleared when the task closes, like the rest of its landing state (see
   // merged and abandon).
   setLandingWorkflow(id: string, instance: string, actor: string, options: LandingWorkflowOptions = {}): LandingWorkflowRecord {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     this.item(id);
     const record = landingWorkflowRecord(instance, options);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
@@ -4977,7 +4977,7 @@ export class Ledger extends DurableObject<Env> {
   // `owner` and creates `to`; every other is answered the record as it
   // stands, whose options are the ones `to` is created with.
   claimLandingWorkflow(id: string, from: string | null, to: string, actor: string, options: LandingWorkflowOptions, replaced?: { from: string; reason: string; detail: string }): { owner: boolean; record: LandingWorkflowRecord | null } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     this.item(id);
     const current = this.landingWorkflowOf(id);
     if ((current?.instance ?? null) !== from) return { owner: false, record: current };
@@ -5032,7 +5032,7 @@ export class Ledger extends DurableObject<Env> {
     if (!instance) return;
     const record = this.landingWorkflowOf(id);
     if (record && record.instance !== instance) {
-      throw new RuleError("stale_landing", `${instance} is no longer ${id}'s landing Workflow: ${record.instance} replaced it${record.replaced?.from === instance ? ` (${record.replaced.reason}: ${record.replaced.detail})` : ""}, and only it takes, renews or releases ${id}'s landing lease`, 409);
+      throw new RuleError("stale_landing", `${instance} is no longer ${id}'s landing Workflow: ${record.instance} replaced it${record.replaced?.from === instance ? ` (${record.replaced.reason}: ${record.replaced.detail})` : ""}, and only it takes, renews or releases ${id}'s landing lease`, 409, `run atelier land ${id} --workflow to attach to the current landing`);
     }
   }
 
@@ -5095,7 +5095,7 @@ export class Ledger extends DurableObject<Env> {
   // pre-reviews the live lease calls for (schedulePrereviews), which never
   // fails the ask.
   async queueProjectLanding(id: string, actor: string, leave = false, instance?: string): Promise<{ lease: LandingLease | null; waiting: WaitingLanding[] }> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     const item = this.item(id);
     this.fenceLandingInstance(id, instance);
     if (!leave) this.assertNotFenced(id);
@@ -5126,7 +5126,7 @@ export class Ledger extends DurableObject<Env> {
   async beginProjectLanding(id: string, actor: string, instance?: string): Promise<{ item: Item; expired: LandingLease | null }> {
     this.assertPostMergeFree(id);
     this.assertNoRefreshPush(id);
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     const item = this.item(id);
     this.fenceLandingInstance(id, instance);
     this.assertNotFenced(id);
@@ -5136,7 +5136,7 @@ export class Ledger extends DurableObject<Env> {
     if (held && held.item !== id) {
       if (this.landingLive(held, at)) {
         const since = held.at.slice(0, 16).replace("T", " ");
-        throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or atelier land ${held.item} --release-lease to free the lease`, 409);
+        throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or atelier land ${held.item} --release-lease to free the lease`, 409, `wait for ${held.holder}'s landing of ${held.item}, or run atelier land ${held.item} --release-lease`);
       }
       // A lease that lapsed is reported to the landing that takes it over,
       // so a killed landing is named rather than silently replaced.
@@ -5157,7 +5157,7 @@ export class Ledger extends DurableObject<Env> {
     if (held?.item !== id && ahead.length) {
       const first = ahead[0];
       const since = first.at.slice(0, 16).replace("T", " ");
-      throw new RuleError("landing_lease", `${first.holder}'s landing of ${first.item} has been waiting for the lease since ${since} UTC, first of ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued for it; landings take the lease in the order they queued, so ${id} cannot take it ahead of them`, 409);
+      throw new RuleError("landing_lease", `${first.holder}'s landing of ${first.item} has been waiting for the lease since ${since} UTC, first of ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued for it; landings take the lease in the order they queued, so ${id} cannot take it ahead of them`, 409, `wait for your turn, or run atelier land ${id} --release-lease to leave the queue`);
     }
     // The taker leaves the queue (its row, had it one, is spent), and the
     // lease is written as before.
@@ -5178,7 +5178,7 @@ export class Ledger extends DurableObject<Env> {
   // is held for another task or by nobody, which tells the landing it no
   // longer holds the project.
   async renewProjectLanding(id: string, actor: string, instance?: string): Promise<LandingLease> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     this.fenceLandingInstance(id, instance);
     const at = new Date().toISOString();
     const held = this.projectLanding();
@@ -5190,7 +5190,7 @@ export class Ledger extends DurableObject<Env> {
       const older = stage === "workspace" || stage === "conflict" || stage === "checks" || stage === "review"
         ? `. ${id}'s landing Workflow holds no lease while main is merged, checked and reviewed (t550); this atelier command is older than that and renews a lease it no longer needs. Update the atelier command, then run atelier land ${id} --workflow again to attach`
         : "";
-      throw new RuleError("no_lease", (held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`) + older, 409);
+      throw new RuleError("no_lease", (held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`) + older, 409, `run atelier land ${id} to take the landing lease again`);
     }
     this.dispatchWaiting();
     const renewed = { ...held, renewedAt: at };
@@ -5210,12 +5210,12 @@ export class Ledger extends DurableObject<Env> {
   // part merges into its plan's branch, not the baseline the merge reads,
   // so none is recorded for one.
   confirmLeaseMain(id: string, actor: string, main: string, instance?: string): { main: string; head: string } | null {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     if (!/^[a-f0-9]{40,64}$/.test(main)) throw new RuleError("bad_main", "main must be the commit hash the landing confirmed", 400);
     this.fenceLandingInstance(id, instance);
     const held = this.projectLanding();
     if (!held || held.item !== id || !this.landingLive(held, new Date().toISOString())) {
-      throw new RuleError("no_lease", held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot confirm main under it`, 409);
+      throw new RuleError("no_lease", held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot confirm main under it`, 409, `run atelier land ${id} to take the landing lease again`);
     }
     const item = this.item(id);
     if (item.kind === "part" || !item.head) return null;
@@ -5235,13 +5235,13 @@ export class Ledger extends DurableObject<Env> {
   // landing whose lease lapsed and was taken over must not free the
   // landing that took it, or two landings would run at once.
   cancelProjectLanding(id: string, actor: string, instance?: string): { held: boolean; lease: LandingLease | null } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ends a landing lease", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ends a landing lease", 403, `only the developer can: atelier land ${id} --release-lease`);
     if (!id) throw new RuleError("bad_item", "a cancel names the task whose landing lease it releases: { cancel: true, item: ID }", 400);
     this.fenceLandingInstance(id, instance);
     const held = this.projectLanding();
     if (held && held.item !== id) {
       const since = held.at.slice(0, 16).replace("T", " ");
-      throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409);
+      throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409, `run atelier land ${held.item} --release-lease`);
     }
     this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
     if (held) this.log(id, actor, "landing.released", { holder: held.holder, since: held.at }, new Date().toISOString());
@@ -5530,39 +5530,39 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const item = this.item(itemId);
     const admission = reviewerAdmission(actor, policy);
-    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403, `only the developer can: atelier models admit ${admission.id} --project NAME --reason TEXT`);
     if (admission?.active) actor = admissionActor(actor, admission);
-    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "a holder cannot review their own item", 403);
-    if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot pre-review it`, 403);
+    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "a holder cannot review their own item", 403, `ask another model to pre-review ${itemId}`);
+    if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot pre-review it`, 403, `ask another model to pre-review ${itemId}`);
     // The company restriction in force now binds, as for a gate request (t394).
     const foreign = companyRefusal(actor, singleFamily(policy));
-    if (foreign) throw new RuleError("single_family", `${foreign}: it cannot claim ${itemId}'s pre-review`, 403);
+    if (foreign) throw new RuleError("single_family", `${foreign}: it cannot claim ${itemId}'s pre-review`, 403, "use a model of the project's family, or only the developer can: atelier init --cross-family");
     const refusal = familyRefusal(actor, contributorsOf(item), singleFamily(policy));
-    if (refusal) throw new RuleError("not_independent", `${actor}: ${refusal}`, 403);
+    if (refusal) throw new RuleError("not_independent", `${actor}: ${refusal}`, 403, `use a reviewer from another family than ${itemId}'s contributors`);
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
-    if (!runner) throw new RuleError("dispatched", `${itemId}'s pre-review waits for a runner to claim it`, 409);
-    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s pre-review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
+    if (!runner) throw new RuleError("dispatched", `${itemId}'s pre-review waits for a runner to claim it`, 409, `atelier undispatch ${itemId}, or wait for a runner to claim it`);
+    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s pre-review is for a ${dispatch.to} runner, not ${runner.runner}`, 403, `use a ${dispatch.to} runner, or run atelier dispatch ${itemId} --to any`);
     const now = Date.now(), at = new Date(now).toISOString();
     const held = actorStanding(this.poolStanding(), actor, "review");
     if (held) {
       this.settlePrereview(row, "withdrawn", { detail: held }, ORCHESTRATOR, at);
-      throw new RuleError("model_held", `${held}; its pre-review of ${itemId} is withdrawn`, 409);
+      throw new RuleError("model_held", `${held}; its pre-review of ${itemId} is withdrawn`, 409, "name another model, or only the developer can: atelier models set ID --state available");
     }
     const ineligible = this.prereviewIneligible(itemId, now);
     if (ineligible) {
       if (ineligible.gone) this.retirePrereview(row, ineligible, at);
-      throw new RuleError("not_eligible", `${itemId}'s pre-review ${prereviewRequest(row.id as number)} cannot be claimed: ${ineligible.why}`, 409);
+      throw new RuleError("not_eligible", `${itemId}'s pre-review ${prereviewRequest(row.id as number)} cannot be claimed: ${ineligible.why}`, 409, `wait, then run atelier review-claim ${itemId} --as ${actor} again`);
     }
-    if (!main || !/^[a-f0-9]{40,64}$/.test(main)) throw new RuleError("main_unread", `main's head could not be read from the baseline, so ${itemId}'s pre-review cannot be bound to it; claim it again`, 503);
+    if (!main || !/^[a-f0-9]{40,64}$/.test(main)) throw new RuleError("main_unread", `main's head could not be read from the baseline, so ${itemId}'s pre-review cannot be bound to it; claim it again`, 503, `run atelier review-claim ${itemId} --as ${actor} again`);
     this.setMainHead(main, at);
     const drift = this.prereviewDrift(row);
     if (drift) {
       this.settlePrereview(row, "stale", { outcome: "stale", detail: drift }, ORCHESTRATOR, at);
-      throw new RuleError("stale_request", `${itemId}'s pre-review ${prereviewRequest(row.id as number)} is stale: ${drift}`, 409);
+      throw new RuleError("stale_request", `${itemId}'s pre-review ${prereviewRequest(row.id as number)} is stale: ${drift}`, 409, `run atelier review-claim ${itemId} --as ${actor} again`);
     }
     const binding: PrereviewBinding = { ...JSON.parse(row.binding as string) as PrereviewBinding, main };
     const bound = this.sql.exec(`UPDATE prereviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, binding = ?, bindingKey = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, JSON.stringify(binding), bindingKey(itemId, binding), row.id).toArray();
-    if (!bound.length) throw new RuleError("no_review", `${itemId} has no open pre-review request`, 409);
+    if (!bound.length) throw new RuleError("no_review", `${itemId} has no open pre-review request`, 409, `run atelier show ${itemId}`);
     const request = prereviewRequest(row.id as number);
     this.log(itemId, actor, "prereview.claimed", { request, head: binding.head, main, runner: runner.runner, criteria: binding.criteria }, at, proved);
     return {
@@ -5585,7 +5585,7 @@ export class Ledger extends DurableObject<Env> {
     if (admission) actor = admissionActor(actor, admission);
     this.expirePrereviewClaims(Date.now());
     const row = this.sql.exec(`SELECT * FROM prereviews WHERE id = ? AND item = ? AND state = 'claimed'`, prereviewId(request), itemId).toArray()[0];
-    if (!row || !sameActor(row.claimedBy as string, actor)) throw new RuleError("stale_request", "the pre-review claim is no longer current", 409);
+    if (!row || !sameActor(row.claimedBy as string, actor)) throw new RuleError("stale_request", "the pre-review claim is no longer current", 409, `run atelier review-claim ${itemId} --as ${actor} again`);
     return row;
   }
 
@@ -5604,7 +5604,7 @@ export class Ledger extends DurableObject<Env> {
     this.item(itemId);
     this.expirePrereviewClaims(Date.now());
     const row = this.sql.exec(`SELECT * FROM prereviews WHERE id = ? AND item = ?`, prereviewId(request), itemId).toArray()[0];
-    if (!row) throw new RuleError("no_request", `no pre-review request ${request} of ${itemId}`, 404);
+    if (!row) throw new RuleError("no_request", `no pre-review request ${request} of ${itemId}`, 404, "run atelier show ID");
     const binding = JSON.parse(row.binding as string) as PrereviewBinding;
     if (head !== undefined && head !== binding.head) throw new RuleError("bad_head", `pre-review request ${request} of ${itemId} is at ${binding.head.slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
     const d = row.dispatch ? JSON.parse(row.dispatch as string) as Dispatch : null;
@@ -5634,15 +5634,15 @@ export class Ledger extends DurableObject<Env> {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertLength(r.note, NOTE_MAX, "the pre-review note");
     const admission = reviewerAdmission(r.by, this.project().policy);
-    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403, `only the developer can: atelier models admit ${admission.id} --project NAME --reason TEXT`);
     const by = admission?.active ? admissionActor(r.by, admission) : r.by;
     const request = r.request!;
     const itemId = r.itemId;
     const item = this.item(itemId);
     this.expirePrereviewClaims(Date.now());
     const row = this.sql.exec(`SELECT * FROM prereviews WHERE id = ? AND item = ?`, prereviewId(request), itemId).toArray()[0];
-    if (!row) throw new RuleError("no_request", `no pre-review request ${request} of ${itemId}`, 404);
-    if (!proved) throw new RuleError("not_proved", "a pre-review verdict is recorded only under the reviewer's own token, never the developer's", 403);
+    if (!row) throw new RuleError("no_request", `no pre-review request ${request} of ${itemId}`, 404, "run atelier show ID");
+    if (!proved) throw new RuleError("not_proved", "a pre-review verdict is recorded only under the reviewer's own token, never the developer's", 403, "the reviewer gives the verdict under its own token");
     const at = new Date().toISOString();
     if (row.state !== "claimed" || !sameActor(row.claimedBy as string, by)) {
       // The same verdict delivered again is the first one, already applied.
@@ -5653,7 +5653,7 @@ export class Ledger extends DurableObject<Env> {
     const held = actorStanding(this.poolStanding(), by, "review");
     if (held) {
       this.settlePrereview(row, "withdrawn", { detail: held }, by, at, proved);
-      throw new RuleError("model_held", `${held}; its pre-review of ${itemId} is withdrawn`, 409);
+      throw new RuleError("model_held", `${held}; its pre-review of ${itemId} is withdrawn`, 409, "name another model, or only the developer can: atelier models set ID --state available");
     }
     // The verdict is checked here whatever client posted it: an envelope
     // that does not parse, or a verdict whose word and findings disagree
@@ -5743,7 +5743,7 @@ export class Ledger extends DurableObject<Env> {
   // until its owner or builder retries (unblock).
   private assertNotFenced(id: string): void {
     const fence = this.prereviewFence(id);
-    if (fence) throw new RuleError("prereview_blocked", fenceText(id, fence), 409);
+    if (fence) throw new RuleError("prereview_blocked", fenceText(id, fence), 409, `run atelier show ${id}`);
   }
 
   // The findings a blocking pre-review left at `head`, for the rework brief.
@@ -5821,7 +5821,7 @@ export class Ledger extends DurableObject<Env> {
 
   private assertPostMergeFree(item: string): void {
     const held = this.activePostMerge();
-    if (held && !held.members.includes(item)) throw new RuleError("post_merge_blocked", `post-merge run ${held.id} for ${held.members.join(", ")} is ${held.state}; resolve it before another merge`, 409);
+    if (held && !held.members.includes(item)) throw new RuleError("post_merge_blocked", `post-merge run ${held.id} for ${held.members.join(", ")} is ${held.state}; resolve it before another merge`, 409, `run atelier land ${held.members[0]} --post-merge status`);
   }
 
   private savePostMerge(run: PostMergeRun, actor: string, action: string): void {
@@ -5835,16 +5835,16 @@ export class Ledger extends DurableObject<Env> {
   }
 
   preparePostMerge(item: string, runId: string, paths: string[], actor: string): PostMergeRun {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer executes post-merge work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer executes post-merge work", 403, `only the developer can: atelier land ${item} --post-merge status`);
     const run = this.postMergeRun(item);
-    if (!run || run.id !== runId) throw new RuleError("stale_run", "post-merge run changed", 409);
+    if (!run || run.id !== runId) throw new RuleError("stale_run", "post-merge run changed", 409, `run atelier land ${item} --post-merge status`);
     preparePostMerge(run, paths); this.savePostMerge(run, actor, "prepared"); return run;
   }
 
   postMergeAction(item: string, actor: string, input: { run: string; action: string; attempt?: string; passed?: boolean; output?: unknown; commandOutcome?: Attempt["commandOutcome"]; publication?: Attempt["publication"]; reason?: unknown; resolution?: unknown }, deployment?: Attempt["deployment"]): PostMergeRun {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer executes or reconciles post-merge work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer executes or reconciles post-merge work", 403, `only the developer can: atelier land ${item} --post-merge reconcile`);
     const run = this.postMergeRun(item);
-    if (!run || run.id !== input.run) throw new RuleError("stale_run", "post-merge run changed", 409);
+    if (!run || run.id !== input.run) throw new RuleError("stale_run", "post-merge run changed", 409, `run atelier land ${item} --post-merge status`);
     const at = new Date().toISOString();
     if (input.action === "start") startAttempt(run, crypto.randomUUID(), at);
     else if (input.action === "command") recordCommand(run, input.attempt ?? "", input.passed === true, input.publication);
@@ -5857,7 +5857,7 @@ export class Ledger extends DurableObject<Env> {
   // it took and what it settled, recorded as a land.* event for the
   // integration record (t186) to read the cost of landing a task.
   landEvent(id: string, actor: string, step: string, ms: number, data: Record<string, unknown>, proved = false): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a landing's steps", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a landing's steps", 403, `only the developer can: atelier land ${id}`);
     if (!LAND_STEPS.has(step)) throw new RuleError("bad_step", `"${step}" is not a step of a landing; one of ${[...LAND_STEPS].join(", ")}`, 400);
     if (!Number.isFinite(ms) || ms < 0 || ms > 86_400_000) throw new RuleError("bad_ms", "ms must be the step's duration in milliseconds, a day at most", 400);
     const clean = cleanLandData(data);
@@ -5867,21 +5867,21 @@ export class Ledger extends DurableObject<Env> {
   }
 
   merged(id: string, actor: string, mergeCommit: string, observed: boolean, acceptedHead?: string | null): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403, `only the developer can: atelier merge ${id}`);
     const item = this.item(id);
     if (item.state === "merged" && this.events(id).some((e) => e.kind === "item.merged" && e.data.mergeCommit === mergeCommit)) return item;
-    if (!observed) throw new RuleError("unverified_merge", "merge commit is not on the baseline");
-    if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}`);
+    if (!observed) throw new RuleError("unverified_merge", "merge commit is not on the baseline", 409, "run atelier sync, then record the merge again");
+    if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}`, 409, `run atelier show ${id}`);
     // The merge commit was verified against one accepted revision; if the
     // acceptance has moved since, this record would name the wrong one.
     if (acceptedHead !== undefined && item.acceptedHead !== acceptedHead) {
-      throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409);
+      throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409, `run atelier merge ${id} again`);
     }
     this.assertPostMergeFree(id);
     const post = this.postMergeRun(id);
-    if (this.project().policy.postMerge && !post) throw new RuleError("post_merge_blocked", "reserve post-merge work through the landing route before publishing", 409);
+    if (this.project().policy.postMerge && !post) throw new RuleError("post_merge_blocked", "reserve post-merge work through the landing route before publishing", 409, `run atelier land ${id}`);
     if (post) {
-      if (post.state !== "reserved") throw new RuleError("post_merge_blocked", "reservation is not awaiting a merge", 409);
+      if (post.state !== "reserved") throw new RuleError("post_merge_blocked", "reservation is not awaiting a merge", 409, `run atelier land ${id} --post-merge status`);
       post.after = mergeCommit;
       this.savePostMerge(post, actor, "merged");
     }
@@ -5974,10 +5974,10 @@ export class Ledger extends DurableObject<Env> {
   // checked against this task's own verdicts and revisions (linkVerdict) and
   // recorded with the defect, which counts it against the model that acted.
   traceDefect(id: string, actor: string, note: string, foundIn: string | null, contradicts: Contradicts | null = null): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer traces a defect to a change", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer traces a defect to a change", 403, `only the developer can: atelier defect ${id} --note TEXT`);
     const item = this.item(id);
     if (!item.acceptedHead) {
-      throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
+      throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409, `run atelier show ${id}`);
     }
     const link = contradicts ? linkVerdict(contradicts, this.eventAt(contradicts.event), id, this.revisionsAccepted(id)) : null;
     const at = new Date().toISOString();
@@ -6006,7 +6006,7 @@ export class Ledger extends DurableObject<Env> {
   // the note, deliveredBy): the task was abandoned with the same deliveredBy.
   // One abandoned with another is not a rerun and the normal path refuses it.
   repeatedAbandon(id: string, actor: string, note: string, deliveredBy?: string): Item | null {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403, `only the developer can: atelier abandon ${id}`);
     assertLength(note, NOTE_MAX, "the abandonment note");
     this.assertDelivered(id, deliveredBy);
     const item = this.item(id);
@@ -6045,7 +6045,7 @@ export class Ledger extends DurableObject<Env> {
   // review, its reviewer and the verdict event's sequence number, the number
   // a defect names to contradict it.
   addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string, select: { reviewSeq?: unknown; reviewer?: unknown } = {}, acting: string | null = null): { review: number; by: string; event: number } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a verdict on a finding", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a verdict on a finding", 403, `only the developer can: atelier finding ${id} --head SHA --index N --verdict confirmed|refuted|fixed`);
     if (!["confirmed", "refuted", "fixed"].includes(verdict)) throw new RuleError("bad_finding", "a finding's verdict is confirmed, refuted or fixed", 400);
     if (typeof head !== "string" || !/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_finding", "--head must be the full revision the review was made at", 400);
     if (!Number.isInteger(index) || index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
@@ -6056,28 +6056,28 @@ export class Ledger extends DurableObject<Env> {
     this.item(id);
     const at = head;
     const reviews = this.reviewEventsAt(id, at);
-    if (!reviews.length) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409);
+    if (!reviews.length) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409, `run atelier show ${id} --reviews`);
     const listed = (rs: typeof reviews) => rs.map((r) => `${r.seq} by ${r.by} (${r.findings.length} ${r.findings.length === 1 ? "finding" : "findings"})`).join("; ");
     const all = `the reviews of ${id} at ${at.slice(0, 8)} are ${listed(reviews)}`;
     let review: (typeof reviews)[number];
     if (reviewSeq !== undefined) {
       const found = reviews.find((r) => r.seq === reviewSeq);
-      if (!found) throw new RuleError("no_review", `${id} has no review ${reviewSeq} at ${at.slice(0, 8)}; ${all}`, 409);
+      if (!found) throw new RuleError("no_review", `${id} has no review ${reviewSeq} at ${at.slice(0, 8)}; ${all}`, 409, `run atelier show ${id} --reviews`);
       review = found;
     } else if (reviewer !== undefined) {
       const theirs = reviews.filter((r) => sameActor(r.by, reviewer as string));
-      if (!theirs.length) throw new RuleError("no_review", `${reviewer} has no review of ${id} at ${at.slice(0, 8)}; ${all}`, 409);
-      if (theirs.length > 1) throw new RuleError("ambiguous_review", `${reviewer} reviewed ${id} at ${at.slice(0, 8)} more than once: ${listed(theirs)}; name one with --review-seq`, 409);
+      if (!theirs.length) throw new RuleError("no_review", `${reviewer} has no review of ${id} at ${at.slice(0, 8)}; ${all}`, 409, `run atelier show ${id} --reviews`);
+      if (theirs.length > 1) throw new RuleError("ambiguous_review", `${reviewer} reviewed ${id} at ${at.slice(0, 8)} more than once: ${listed(theirs)}; name one with --review-seq`, 409, "run atelier finding with --review-seq N");
       review = theirs[0];
     } else {
       const withFindings = reviews.filter((r) => r.findings.length);
-      if (withFindings.length > 1) throw new RuleError("ambiguous_review", `more than one review of ${id} at ${at.slice(0, 8)} has findings: ${listed(withFindings)}; name one with --review-seq or --reviewer`, 409);
+      if (withFindings.length > 1) throw new RuleError("ambiguous_review", `more than one review of ${id} at ${at.slice(0, 8)} has findings: ${listed(withFindings)}; name one with --review-seq or --reviewer`, 409, "run atelier finding with --review-seq N or --reviewer H/M");
       review = reviews[reviews.length - 1];
     }
     const findings = review.findings;
     if (index > findings.length) {
       const others = reviews.length > 1 ? `; ${all}, and --review-seq names one` : "";
-      throw new RuleError("no_finding", `${id}'s review ${review.seq} by ${review.by} at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it${others}`, 409);
+      throw new RuleError("no_finding", `${id}'s review ${review.seq} by ${review.by} at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it${others}`, 409, "run atelier show ID --reviews for the findings");
     }
     const finding = findings[index - 1];
     this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, review: review.seq, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text }, ...(acting ? { acting } : {}) }, new Date().toISOString());
@@ -6099,7 +6099,7 @@ export class Ledger extends DurableObject<Env> {
   // never change. Without `apply` nothing is written, and the answer says
   // what matches and what would be annotated.
   annotateServed(sel: ServedSelection, actor: string, apply: boolean): { matched: ServedMatch[]; pending: number; annotated: number; applied: boolean } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records which model served an event", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records which model served an event", 403, "only the developer can: atelier served MODEL --recorded H/M --from TIME --to TIME");
     this.project();
     const events = this.sql.exec(`SELECT * FROM events WHERE (at >= ? AND at < ?) OR kind = ? ORDER BY seq`, sel.from, sel.to, SERVED).toArray()
       .map((r) => ({ seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string, actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }));
@@ -6253,8 +6253,8 @@ export class Ledger extends DurableObject<Env> {
   // the factor no agent holds (the route checks it), good for
   // OVERRIDE_CONFIRMATION_MS and one switch. Refused where overrides are.
   confirmFastMode(actor: string, factor: OwnerFactor): FastModeConfirmation {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer allows fast mode", 403);
-    if (factor !== "access" && factor !== "secret") throw new RuleError("fast_mode_unconfirmed", "fast mode is allowed only with the developer's Access identity or the confirmation secret", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer allows fast mode", 403, "only the developer can: atelier mode fast --reason TEXT");
+    if (factor !== "access" && factor !== "secret") throw new RuleError("fast_mode_unconfirmed", "fast mode is allowed only with the developer's Access identity or the confirmation secret", 403, "only the developer can confirm fast mode with the Access identity or the confirmation secret");
     assertFastModeAllowed(this.project().policy);
     const now = Date.now(), at = new Date(now).toISOString();
     const confirmation: FastModeConfirmation = { by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
@@ -6308,14 +6308,14 @@ export class Ledger extends DurableObject<Env> {
   // yet (the owner publishes after), so the merge is not observed on the
   // baseline, and the event says it landed fast.
   landedFast(id: string, actor: string, body: Record<string, unknown>): { item: Item; receipt: FastReceipt } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands in fast mode", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands in fast mode", 403, `only the developer can: atelier land ${id}`);
     assertFastModeAllowed(this.project().policy);
     const at = new Date().toISOString();
     const receipt = fastReceipt(body, this.mode(), actor, at);
     const item = this.item(id);
     const prior = this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "item.landed_fast");
     if (item.state === "merged" && prior?.data.mergeCommit === receipt.mergeCommit) return { item, receipt: prior.data as unknown as FastReceipt };
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409, "run atelier ls to pick another task");
     this.assertPostMergeFree(id);
     this.ctx.storage.transactionSync(() => {
       this.update(id, { head: receipt.commit, accepted_head: receipt.commit }, at);
@@ -6357,18 +6357,18 @@ export class Ledger extends DurableObject<Env> {
   private assertNoClaimInFlight(id: string): void {
     const item = this.item(id);
     if (this.claimInFlight(item)) {
-      throw new RuleError("claim_in_flight", `${id} is being claimed by ${item.owner}, and the claim has not finished; wait for it to finish, or release it, and record the merge again`, 409);
+      throw new RuleError("claim_in_flight", `${id} is being claimed by ${item.owner}, and the claim has not finished; wait for it to finish, or release it, and record the merge again`, 409, `run atelier release ${id} --as ${item.owner}, then record the merge again`);
     }
   }
 
   private recordMergeAllowed(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, at: string): { item: Item; record: RecordedMerge; repeat: RecordedMerge | null } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a merge made outside Atelier", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a merge made outside Atelier", 403, `only the developer can: atelier record-merge ${id} --merge SHA`);
     const record = recordedMerge(body, actor, at);
     const item = this.item(id);
     const prior = this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "item.merge_recorded");
     if (item.state === "merged" && prior?.data.mergeCommit === record.mergeCommit) return { item, record, repeat: prior.data as unknown as RecordedMerge };
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409);
-    if (item.kind === "plan") throw new RuleError("plan_merge", `${id} is a plan; a plan's merge lands its parts, and atelier merge records it`, 409);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409, "run atelier ls to pick another task");
+    if (item.kind === "plan") throw new RuleError("plan_merge", `${id} is a plan; a plan's merge lands its parts, and atelier merge records it`, 409, `run atelier merge ${id}`);
     const refusal = recordedMergeRefusal(record, baseline);
     if (refusal) throw refusal;
     this.assertPostMergeFree(id);
@@ -6395,7 +6395,7 @@ export class Ledger extends DurableObject<Env> {
     if (repeat) return { item, record: repeat };
     const now = this.workspaceOf(id);
     if (now.fork !== workspace.fork || now.token !== workspace.token) {
-      throw new RuleError("workspace_changed", `${id} was claimed again while the merge was checked, and its workspace or token changed; record it again`, 409);
+      throw new RuleError("workspace_changed", `${id} was claimed again while the merge was checked, and its workspace or token changed; record it again`, 409, `run atelier record-merge ${id} again`);
     }
     this.ctx.storage.transactionSync(() => {
       // Decided again where the task is marked merged.
@@ -6860,11 +6860,11 @@ export class Ledger extends DurableObject<Env> {
   // a plan job only when it says it runs one (assign, src/dispatch/rules.ts).
   // The default planner is one a live runner offers, read from the index.
   async newPlan(goal: unknown, scope: string[], actor: string, planner: string | null, pool: ModelEntry[]): Promise<{ item: Item; planner: string; reasons: string[] }> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer starts a plan", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer starts a plan", 403, "only the developer can: atelier plan \"goal\"");
     const text = cleanGoal(goal);
     const policy = this.project().policy;
     const active = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned') LIMIT 1`).toArray()[0];
-    if (active) throw new RuleError("plan_active", `${active.id} is this project's active plan, and a project has one at a time; finish it, or stop it with atelier plan stop ${active.id}`, 409);
+    if (active) throw new RuleError("plan_active", `${active.id} is this project's active plan, and a project has one at a time; finish it, or stop it with atelier plan stop ${active.id}`, 409, `atelier plan stop ${active.id}`);
     // Kept here as well, so a reroute of this plan's planner in a project the
     // index has not yet sent the pool reads the owner's standing.
     this.keepPool(pool);
@@ -6875,7 +6875,7 @@ export class Ledger extends DurableObject<Env> {
       reasons = ["Named by the developer", ...aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["plan"]), "the developer's named planner").lines];
     } else {
       const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers(), this.heldAssignments());
-      if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model.${pick.reasons.length > 1 ? ` ${pick.reasons.slice(1).join(" ")}` : ""}`, 409);
+      if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model.${pick.reasons.length > 1 ? ` ${pick.reasons.slice(1).join(" ")}` : ""}`, 409, "add a model with atelier models add, or name one with --planner H/M");
       chosen = pick.actor;
       reasons = pick.reasons;
     }
@@ -6908,8 +6908,8 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const item = this.planItem(id);
     const record = this.planRecord(id);
-    if (record.approval) throw new RuleError("plan_approved", `${id}'s plan was approved at ${record.approval.hash.slice(0, 12)} and does not change; to change the split, stop the plan with atelier plan stop ${id} and start another`, 409);
-    if (item.state !== "claimed") throw new RuleError("not_planning", `${id} is ${item.state}; a plan is posted by the holder of its claim`, 409);
+    if (record.approval) throw new RuleError("plan_approved", `${id}'s plan was approved at ${record.approval.hash.slice(0, 12)} and does not change; to change the split, stop the plan with atelier plan stop ${id} and start another`, 409, `atelier plan stop ${id}, then file a new plan`);
+    if (item.state !== "claimed") throw new RuleError("not_planning", `${id} is ${item.state}; a plan is posted by the holder of its claim`, 409, `run atelier claim ${id} --as ${actor}`);
     assertOwner(item, actor);
     if (!parsed.ok || hash === null) {
       this.log(id, actor, "plan.invalid", { errors }, at, proved);
@@ -6937,7 +6937,7 @@ export class Ledger extends DurableObject<Env> {
       // rejecting review at its head, with its findings. Anyone but the
       // holder is told there is no brief, as before.
       if (item.owner !== actor || item.state !== "claimed") {
-        throw new RuleError("not_a_plan", `${id} is not a plan or a part of one; its runner writes its own brief`, 404);
+        throw new RuleError("not_a_plan", `${id} is not a plan or a part of one; its runner writes its own brief`, 404, "run atelier show ID");
       }
       assertOwner(item, actor);
       const rejection = this.reviewsFor(id).filter((r) => !r.approve && r.head === item.head).at(-1) ?? null;
@@ -6982,7 +6982,7 @@ export class Ledger extends DurableObject<Env> {
     const planId = item.plan!;
     const record = this.planRecord(planId);
     const approval = record.approval;
-    if (!approval) throw new RuleError("no_approval", `${id} is a part of ${planId}, which has no approved plan`, 409);
+    if (!approval) throw new RuleError("no_approval", `${id} is a part of ${planId}, which has no approved plan`, 409, `run atelier plan show ${planId}`);
     const document = planWithAdded(this.approvedPlan(planId, approval.hash), record);
     const spec = document.parts.find((p) => p.key === item.partKey);
     if (!spec) throw new RuleError("no_proposal", `${id}'s key ${item.partKey} is not in ${planId}'s approved plan`, 500);
@@ -7055,20 +7055,20 @@ export class Ledger extends DurableObject<Env> {
   async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[], offers: readonly SeenOffer[] | null = null): Promise<{ item: Item; parts: Item[] }> {
     offers = this.ownOffers(offers);
     this.keepOffers(offers);
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer approves a plan", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer approves a plan", 403, `only the developer can: atelier plan approve ${id} --hash HASH`);
     const item = this.planItem(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409, "run atelier ls to pick another task");
     // The plan item must be unheld: a planner that still holds its claim would
     // keep a live write token through the plan's completion.
-    if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; approve it once its claim is released`, 409);
+    if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; approve it once its claim is released`, 409, `run atelier release ${id} as its holder, then approve the plan`);
     this.keepPool(pool);
     const record = this.planRecord(id);
-    if (record.approval) throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; a plan is approved once`, 409);
+    if (record.approval) throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; a plan is approved once`, 409, `run atelier plan show ${id}`);
     if (!/^[a-f0-9]{64}$/.test(hash)) throw new RuleError("bad_hash", `give the full hash atelier plan show ${id} prints`, 400);
     const newest = this.proposal(id);
-    if (!newest) throw new RuleError("no_proposal", `${id} has no valid proposal yet; wait for the planner, then read it with atelier plan show ${id}`, 409);
+    if (!newest) throw new RuleError("no_proposal", `${id} has no valid proposal yet; wait for the planner, then read it with atelier plan show ${id}`, 409, `wait for the planner, then run atelier plan show ${id}`);
     if (newest.hash !== hash) {
-      throw new RuleError("stale_plan", `${hash.slice(0, 12)} is not ${id}'s newest proposal, which is ${newest.hash}; read it with atelier plan show ${id}, then approve that hash`, 409);
+      throw new RuleError("stale_plan", `${hash.slice(0, 12)} is not ${id}'s newest proposal, which is ${newest.hash}; read it with atelier plan show ${id}, then approve that hash`, 409, `run atelier plan show ${id}, then atelier plan approve ${id} --hash NEWEST_HASH`);
     }
     const policy = this.project().policy;
     // The offers to judge the routing from: those the Worker read beside the
@@ -7082,7 +7082,7 @@ export class Ledger extends DurableObject<Env> {
       const why = unrouted.map((r) => `part ${r.key} has no ${r.builder ? "reviewer" : "builder"}: ${r.unrouted}`).join("; ");
       // Runners have asked, so what they offer is known: say the fix that is.
       const runner = routing ? ", or start a runner that offers them" : "";
-      throw new RuleError("unrouted", `${id} was not approved: ${why}. Add models to the pool${allowPaid ? "" : ", or approve with --allow-paid if a paid model would qualify"}${runner}, then approve again`, 409);
+      throw new RuleError("unrouted", `${id} was not approved: ${why}. Add models to the pool${allowPaid ? "" : ", or approve with --allow-paid if a paid model would qualify"}${runner}, then approve again`, 409, "add models to the pool, or approve with --allow-paid");
     }
     const now = new Date();
     const at = now.toISOString();
@@ -7128,7 +7128,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   reroutePlan(id: string, actor: string, to: unknown): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer reroutes a plan's work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer reroutes a plan's work", 403, `only the developer can: atelier plan reroute ${id} --to H/M`);
     const item = this.item(id);
     const policy = this.project().policy;
     const at = new Date().toISOString();
@@ -7173,15 +7173,15 @@ export class Ledger extends DurableObject<Env> {
   // stays until they unblock it. The builder's attempts are not touched.
   private rerouteReviewer(item: Item, actor: string, to: unknown, at: string): Item {
     const plan = this.item(item.plan!);
-    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`, 409, `run atelier show ${plan.id}`);
     const reviewer = namedActor(to, this.project().policy, "assessor", this.owner);
     this.assertStanding(reviewer, "review");
     const single = singleFamily(this.project().policy);
     const refusal = independenceRefusal(reviewer, contributorsOf(item), single);
-    if (refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${item.id}: ${refusal}; name ${single ? independentReviewerText(single) : "a model of another family than every contributor"}`, 409);
+    if (refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${item.id}: ${refusal}; name ${single ? independentReviewerText(single) : "a model of another family than every contributor"}`, 409, `name another reviewer with atelier review-request ${item.id} --reviewer H/M`);
     const claimed = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND state = 'claimed' AND tier IS NULL`, item.id).toArray()
       .map((r) => r.claimedBy as string).find((by) => !sameActor(by, reviewer));
-    if (claimed) throw new RuleError("review_claimed", `${claimed} is reviewing ${item.id} now; wait for its verdict, or let its claim lapse, before naming ${reviewer}`, 409);
+    if (claimed) throw new RuleError("review_claimed", `${claimed} is reviewing ${item.id} now; wait for its verdict, or let its claim lapse, before naming ${reviewer}`, 409, `wait for ${claimed}'s verdict, or run atelier review-withdraw ${item.id} --reason TEXT`);
     const record = this.planRecord(plan.id);
     const key = item.partKey!;
     const route = routesOf(record).find((r) => r.key === key)!;
@@ -7207,7 +7207,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   retryPlan(id: string, actor: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer retries a plan's work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer retries a plan's work", 403, `only the developer can: atelier plan retry ${id}`);
     const item = this.item(id);
     const at = new Date().toISOString();
     if (item.kind === "plan") {
@@ -7228,9 +7228,9 @@ export class Ledger extends DurableObject<Env> {
   // abandoned, each with its workspace and the write token recorded for it.
   // The route revokes those tokens, then asks for the stop with their ids.
   stopTargets(id: string, actor: string): { id: string; fork: string | null; tokenId: string | null }[] {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer stops a plan", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer stops a plan", 403, `only the developer can: atelier plan stop ${id}`);
     const item = this.planItem(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409, "run atelier ls to pick another task");
     const open = this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned");
     return [item, ...open].map((i) => ({ id: i.id, fork: i.fork, tokenId: this.tokenId(i.id) }));
   }
@@ -7242,7 +7242,7 @@ export class Ledger extends DurableObject<Env> {
   stopPlan(id: string, actor: string, note: string, tokens?: Record<string, string | null>): Item {
     const targets = this.stopTargets(id, actor);
     if (tokens && targets.some((t) => t.tokenId !== (tokens[t.id] ?? null))) {
-      throw new RuleError("token_changed", `a part of ${id} was claimed again while this was asked, and its workspace token changed; try again`, 409);
+      throw new RuleError("token_changed", `a part of ${id} was claimed again while this was asked, and its workspace token changed; try again`, 409, "run the same command again");
     }
     const at = new Date().toISOString();
     this.ctx.storage.transactionSync(() => {
@@ -7274,7 +7274,7 @@ export class Ledger extends DurableObject<Env> {
     offers = this.ownOffers(offers);
     const asked = this.item(id);
     const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
-    if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404);
+    if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404, "run atelier show ID");
     const record = this.planRecord(item.id);
     const newest = this.proposal(item.id);
     const approval = record.approval;
@@ -7404,7 +7404,7 @@ export class Ledger extends DurableObject<Env> {
 
   private planRecord(id: string): PlanRecord {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `plan:${id}`).toArray()[0];
-    if (!row) throw new RuleError("not_a_plan", `${id} is not a plan`, 404);
+    if (!row) throw new RuleError("not_a_plan", `${id} is not a plan`, 404, "run atelier show ID");
     return JSON.parse(row.value as string);
   }
 
@@ -7414,7 +7414,7 @@ export class Ledger extends DurableObject<Env> {
 
   private planItem(id: string): Item {
     const item = this.item(id);
-    if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan${item.kind === "part" ? `; it is a part of ${item.plan}` : ""}`, 400);
+    if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan${item.kind === "part" ? `; it is a part of ${item.plan}` : ""}`, 400, "run atelier show ID");
     return item;
   }
 
@@ -7459,32 +7459,32 @@ export class Ledger extends DurableObject<Env> {
 
   // A plan not yet approved, open and held by nobody, for a decision about its planner.
   private planningPlan(id: string, actor: string, verb: "revise" | "reroute" | "retry"): { item: Item; record: PlanRecord } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the developer may ${verb} a plan`, 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the developer may ${verb} a plan`, 403, `only the developer can: atelier plan show ${id}`);
     const item = this.planItem(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409, "run atelier ls to pick another task");
     const record = this.planRecord(id);
     if (record.approval) {
-      throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; ${verb === "revise" ? `a plan is revised only before approval; to change the split, stop it with atelier plan stop ${id} and start another` : `${verb} one of its parts instead: atelier plan ${verb} tN`}`, 409);
+      throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; ${verb === "revise" ? `a plan is revised only before approval; to change the split, stop it with atelier plan stop ${id} and start another` : `${verb} one of its parts instead: atelier plan ${verb} tN`}`, 409, `atelier plan stop ${id}`);
     }
-    if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; ${verb} it once its proposal is posted or its claim is released`, 409);
+    if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; ${verb} it once its proposal is posted or its claim is released`, 409, `wait for the proposal or run atelier release ${id} as its holder`);
     return { item, record };
   }
 
   // A part of an approved, open plan, open itself and held by nobody, for a
   // decision about who builds it.
   private openPart(item: Item, verb: "reroute" | "retry"): { record: PlanRecord; key: string } {
-    if (item.kind !== "part") throw new RuleError("not_a_plan", `${item.id} is not a plan or a part of one`, 400);
+    if (item.kind !== "part") throw new RuleError("not_a_plan", `${item.id} is not a plan or a part of one`, 400, "run atelier show ID");
     const plan = this.item(item.plan!);
-    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`, 409, `run atelier show ${plan.id}`);
     const record = this.planRecord(plan.id);
     // A deadline block is fixed at approval, so reroute and retry cannot lift
     // it; the owner stops the plan instead.
     if (pastDeadline(record, new Date().toISOString())) {
-      throw new RuleError("plan_deadline", `${item.id}'s plan ${plan.id} is past its deadline ${record.approval!.deadline}; the deadline is fixed at approval, so ${verb === "reroute" ? "rerouting" : "retrying"} a part cannot lift it. Stop the plan with atelier plan stop ${plan.id}`, 409);
+      throw new RuleError("plan_deadline", `${item.id}'s plan ${plan.id} is past its deadline ${record.approval!.deadline}; the deadline is fixed at approval, so ${verb === "reroute" ? "rerouting" : "retrying"} a part cannot lift it. Stop the plan with atelier plan stop ${plan.id}`, 409, "only the developer can: atelier plan retry ID");
     }
     if (item.state !== "open" || item.owner) {
       const release = item.state === "claimed" ? `; ask ${item.owner} to release it, or release it with atelier release ${item.id}` : "";
-      throw new RuleError("part_busy", `${item.id} is ${item.state}${item.owner ? `, held by ${item.owner}` : ""}; a part is ${verb === "reroute" ? "rerouted" : "retried"} only while it is open and held by nobody${release}`, 409);
+      throw new RuleError("part_busy", `${item.id} is ${item.state}${item.owner ? `, held by ${item.owner}` : ""}; a part is ${verb === "reroute" ? "rerouted" : "retried"} only while it is open and held by nobody${release}`, 409, "run atelier plan show ID");
     }
     return { record, key: item.partKey! };
   }
@@ -7959,7 +7959,7 @@ export class Ledger extends DurableObject<Env> {
     if (isPrereviewRequest(request)) { this.prereviewOutcome(itemId, actor, request, { outcome: "skipped", detail: `${runner} skipped it${note ? `: ${note.slice(0, REASON_MAX)}` : ""}` }, proved, head); return; }
     this.item(itemId);
     const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
-    if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404);
+    if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404, "run atelier show ID");
     if (row.head !== head) throw new RuleError("bad_head", `review request ${request} of ${itemId} is at ${(row.head as string).slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
     const at = new Date().toISOString();
     this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
@@ -8091,7 +8091,7 @@ export class Ledger extends DurableObject<Env> {
   // given without carrying it.
   reviewDiffStored(itemId: string, actor: string, head: string, ref: LargeRef, proved = false): void {
     const item = this.reviewItem(itemId);
-    if (head !== item.head) throw new RuleError("stale_head", `the stored diff is for ${head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}`);
+    if (head !== item.head) throw new RuleError("stale_head", `the stored diff is for ${head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}`, 409, "run atelier push, then ask for the review again");
     this.log(itemId, actor, "review.diff", { head, ...ref }, new Date().toISOString(), proved);
   }
 
@@ -8099,11 +8099,11 @@ export class Ledger extends DurableObject<Env> {
     this.expireReviewClaims();
     const item = this.reviewItem(itemId);
     const admission = reviewerAdmission(actor, this.project().policy);
-    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403, `only the developer can: atelier models admit ${admission.id} --project NAME --reason TEXT`);
     if (admission?.active) {
       actor = admissionActor(actor, admission);
       const { refusal } = postMergeIndependence(admissionActor(actor, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(this.project().policy), item.state === "merged" && this.mergedFast(itemId));
-      if (refusal) throw new RuleError("not_independent", `${actor}: ${refusal}`, 403);
+      if (refusal) throw new RuleError("not_independent", `${actor}: ${refusal}`, 403, `name a reviewer from another family with atelier review-request ${itemId} --reviewer H/M`);
     }
     // A request at a head the item has left is closed before anything else,
     // whoever claims, and carried to the current head where the gate needs
@@ -8112,12 +8112,12 @@ export class Ledger extends DurableObject<Env> {
     // open at an old head; this closes them on the first claim.
     const closed = item.head ? this.withdrawStaleRequests(itemId, item.head, new Date().toISOString()) : [];
     if (item.state !== "merged" && item.head) this.reaskReview(itemId, new Date().toISOString());
-    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "a holder cannot review their own item", 403);
-    if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
+    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "a holder cannot review their own item", 403, `ask another model to review ${itemId}: atelier review-claim ${itemId} --as H/M`);
+    if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403, `ask another model to review ${itemId}: atelier review-claim ${itemId} --as H/M`);
     // The company restriction in force now binds, whatever it was when the
     // request was made (t394).
     const foreign = companyRefusal(actor, singleFamily(this.project().policy));
-    if (foreign) throw new RuleError("single_family", `${foreign}: it cannot claim ${itemId}'s review`, 403);
+    if (foreign) throw new RuleError("single_family", `${foreign}: it cannot claim ${itemId}'s review`, 403, "use a model of the project's family, or only the developer can: atelier init --cross-family");
     // The gate's request and a tier request may both be open: the one asked
     // of this actor is bound, or else the oldest, which refuses below.
     const rows = this.sql.exec(`SELECT id, head, dispatch, wanted, tier, stopped FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id`, itemId).toArray();
@@ -8128,30 +8128,30 @@ export class Ledger extends DurableObject<Env> {
     };
     const row = rows.find(askedOf) ?? rows[0];
     if (!row && closed.length) {
-      throw new RuleError("stale_head", `the review request for ${closed.map((h) => h.slice(0, 8)).join(", ")} was closed: ${itemId} is at ${item.head!.slice(0, 8)}, and no review of that head is asked yet`, 409);
+      throw new RuleError("stale_head", `the review request for ${closed.map((h) => h.slice(0, 8)).join(", ")} was closed: ${itemId} is at ${item.head!.slice(0, 8)}, and no review of that head is asked yet`, 409, `run atelier review-request ${itemId} --reviewer H/M for the current head`);
     }
     if (!row) {
       // A request a runner holds is live, as requestReview counts it (t574):
       // the refusal names the claim, so it is not read as no request at all.
       const held = this.sql.exec(`SELECT id, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state = 'claimed' ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
-      if (held) throw new RuleError("no_review", `${itemId} has no open review request: request ${held.id} is claimed by ${held.claimedBy} since ${held.claimedAt}`, 404);
-      throw new RuleError("no_review", `${itemId} has no open review request`, 404);
+      if (held) throw new RuleError("no_review", `${itemId} has no open review request: request ${held.id} is claimed by ${held.claimedBy} since ${held.claimedAt}`, 404, `wait for ${held.claimedBy}'s verdict, or run atelier show ${itemId}`);
+      throw new RuleError("no_review", `${itemId} has no open review request`, 404, `run atelier review-request ${itemId} --reviewer H/M`);
     }
     const tier = row.tier === 1;
     const head = row.head as string;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
     if (head !== item.head) {
-      throw new RuleError("stale_head", `the review request is for ${head.slice(0, 8)} but ${itemId} is at ${item.head?.slice(0, 8) ?? "nothing"}; the builder must push first`, 409);
+      throw new RuleError("stale_head", `the review request is for ${head.slice(0, 8)} but ${itemId} is at ${item.head?.slice(0, 8) ?? "nothing"}; the builder must push first`, 409, "the builder runs atelier push, then ask for the review again");
     }
-    if (!runner) throw new RuleError("dispatched", `${itemId}'s review waits for a runner to claim it`, 409);
+    if (!runner) throw new RuleError("dispatched", `${itemId}'s review waits for a runner to claim it`, 409, `run atelier undispatch ${itemId}, or wait for a runner to claim it`);
     // A request stopped at this head (t238) is claimed by no runner, however
     // it asks; the developer's decision, or a new request, lifts it.
     const stop = tier ? null : parseStop(row.stopped);
-    if (reviewStopped(stop)) throw new RuleError("review_stopped", stopText(itemId, stop, item.state === "merged"), 409);
-    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
+    if (reviewStopped(stop)) throw new RuleError("review_stopped", stopText(itemId, stop, item.state === "merged"), 409, `run atelier show ${itemId}`);
+    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s review is for a ${dispatch.to} runner, not ${runner.runner}`, 403, `use a ${dispatch.to} runner, or run atelier dispatch ${itemId} --to any`);
     const [harness, model] = actor.split("/");
-    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403);
-    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
+    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403, `claim with ${dispatch.agent}, or run atelier dispatch ${itemId} --agent ${harness}`);
+    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403, `claim with ${dispatch.model}, or run atelier dispatch ${itemId} --model ${model ?? "MODEL"}`);
     const at = new Date(Date.now()).toISOString();
     // A request made before the owner paused, reserved or kept this model
     // from reviewing is not claimable: it is withdrawn, so the gate asks
@@ -8159,7 +8159,7 @@ export class Ledger extends DurableObject<Env> {
     const held = actorStanding(this.poolStanding(), actor, "review");
     if (held) {
       this.withdrawHeldRequest(itemId, row.id as number, head, actor, held, tier, at);
-      throw new RuleError("model_held", `${held}; its review of ${itemId} is withdrawn`, 409);
+      throw new RuleError("model_held", `${held}; its review of ${itemId} is withdrawn`, 409, "name another model, or only the developer can: atelier models set ID --state available");
     }
     // A part's claim carries the plan's account of it for the brief; an item
     // outside a plan has none, and its need is read as the gate reads it.
@@ -8173,7 +8173,7 @@ export class Ledger extends DurableObject<Env> {
     // No await separates selection from this conditional write. The request
     // id is the fencing generation and may be claimed only once.
     const bound = this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, criteria = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, criteria, row.id).toArray();
-    if (!bound.length) throw new RuleError("no_review", `${itemId} has no open review request`, 409);
+    if (!bound.length) throw new RuleError("no_review", `${itemId} has no open review request`, 409, `run atelier review-request ${itemId} --reviewer H/M`);
     this.log(itemId, actor, "review.claimed", { head, runner: runner.runner, criteria, request: row.id as number, ...(tier ? { tier: true } : {}) }, at, proved);
     // The plan alarm recovers expired reviews without a poll. Renewals can
     // move expiry forward; the alarm reads the latest timestamp and rearms.
@@ -8231,7 +8231,7 @@ export class Ledger extends DurableObject<Env> {
   // overrule; an empty text clears it. Each call is an event, the latest
   // one read by every reviewer's brief. The owner or the orchestrator writes it.
   setContext(id: string, actor: string, text: string): Item {
-    if (actor !== this.owner && actor !== ORCHESTRATOR) throw new RuleError("not_project_owner", "only the developer or the orchestrator sets a task's context", 403);
+    if (actor !== this.owner && actor !== ORCHESTRATOR) throw new RuleError("not_project_owner", "only the developer or the orchestrator sets a task's context", 403, `only the developer can: atelier edit ${id} --context TEXT`);
     this.item(id);
     assertLength(text, NOTE_MAX, "the task's context");
     this.log(id, actor, "item.context", { text: text.trim() }, new Date().toISOString());
@@ -8299,7 +8299,7 @@ export class Ledger extends DurableObject<Env> {
     // before the transaction: the ticks read them.
     offers = this.ownOffers(offers);
     this.keepOffers(offers);
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403, `only the developer can: atelier review-request ${id} --reviewer H/M`);
     this.reviewItem(id);
     this.keepPool(pool);
     try {
@@ -8322,14 +8322,14 @@ export class Ledger extends DurableObject<Env> {
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
       if (contributed(reviewer, contributorsOf(item))) {
-        throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
+        throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403, `name another reviewer with atelier review-request ${id} --reviewer H/M`);
       }
       // A post-merge review of a task landed in fast mode may come from a
       // model of the builder's family (t585); any other recorded merge is
       // audited by another family, as the gate would have asked.
       if (item.state === "merged") {
         const family = postMergeIndependence(reviewer, contributorsOf(item), singleFamily(policy), this.mergedFast(id));
-        if (family.refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${id} after its merge: ${family.refusal}; only a task landed in fast mode takes a same-family review`, 409);
+        if (family.refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${id} after its merge: ${family.refusal}; only a task landed in fast mode takes a same-family review`, 409, `name a reviewer from another family with atelier review-request ${id} --reviewer H/M`);
       }
       this.assertStanding(reviewer, "review", pool);
       // Under single-family mode even a named reviewer is one of the
@@ -8338,23 +8338,23 @@ export class Ledger extends DurableObject<Env> {
       const admission = reviewerAdmission(reviewer, policy);
       const single = singleFamily(policy);
       if (single && actorFamily(admission?.active ? admissionActor(reviewer, admission) : reviewer) !== single) {
-        throw new RuleError("single_family", `${reviewer} is not one of ${single}'s models, and this project runs in single-family mode (${single}): name one of ${single}'s models with --reviewer, or return to cross-family review with atelier init --cross-family`, 409);
+        throw new RuleError("single_family", `${reviewer} is not one of ${single}'s models, and this project runs in single-family mode (${single}): name one of ${single}'s models with --reviewer, or return to cross-family review with atelier init --cross-family`, 409, `name one of ${single}'s models, or only the developer can: atelier init --cross-family`);
       }
       const entries = reviewerEntries(pool.filter((m) => [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(reviewer!))), reviewer);
       if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models: ${entries.map((m) => `${m.harness}/${m.id}`).join(", ")}; name one by its exact harness/id`, 409);
-      if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+      if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403, `only the developer can: atelier models admit ${admission.id} --project NAME --reason TEXT`);
       if ((!admission && !entries.length) || !mayAssess(reviewer, policy, this.owner)) {
-        throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the developer can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403);
+        throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the developer can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403, `only the developer can: atelier models admit ${reviewer} --project ${this.project().name} --reason TEXT`);
       }
       if (admission?.active) {
         const entry = pool.find((m) => m.id === admission.id);
         if (!entry) throw new RuleError("no_model", `${admission.id} is no longer registered; use atelier models add`, 409);
         reviewer = `${entry.harness}/${entry.id}`;
         const { refusal } = postMergeIndependence(reviewer, contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy), item.state === "merged" && this.mergedFast(id));
-        if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403);
+        if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403, `name a reviewer from another family with atelier review-request ${id} --reviewer H/M`);
         const dispatch = { ...this.standingDispatch({ to: entry.where, agent: entry.harness, model: entry.id }, "review", ORCHESTRATOR, new Date().toISOString(), pool), job: "review" as const };
         if (!hand && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
-          throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; start a runner with its registered harness and endpoint`, 409);
+          throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; start a runner with its registered harness and endpoint`, 409, `start a runner that serves ${reviewer}, then run atelier review-request ${id} --reviewer ${reviewer} again`);
         }
       }
     }
@@ -8437,15 +8437,15 @@ export class Ledger extends DurableObject<Env> {
         // pool or not.
         if (records && standing) {
           const refusal = independenceRefusal(standing, contributorsOf(item), singleFamily(policy));
-          if (refusal) throw new RuleError("no_reviewer", `the review requested of ${standing} at ${item.head!.slice(0, 8)} cannot count: ${refusal}. Name another with atelier land ${id} --reviewer H/M`, 409);
+          if (refusal) throw new RuleError("no_reviewer", `the review requested of ${standing} at ${item.head!.slice(0, 8)} cannot count: ${refusal}. Name another with atelier land ${id} --reviewer H/M`, 409, `atelier land ${id} --reviewer H/M`);
         }
         if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
-          throw new RuleError("review_claimed", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}, and a runner has claimed it, so it is not withdrawn; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
+          throw new RuleError("review_claimed", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}, and a runner has claimed it, so it is not withdrawn; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409, `wait for the verdict, or let the claim lapse, then name ${reviewer}`);
         }
         const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
         return { ...(withdrew.length ? { withdrew } : {}), needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
       }
-      if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
+      if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409, `run atelier show ${id}`);
       // No replacement is asked, so the redirect is undone: the withdrawal
       // and the new request commit together or not at all (gpt-6-astra's
       // review of t627, finding 2).
@@ -8506,7 +8506,7 @@ export class Ledger extends DurableObject<Env> {
     const where = records || reviewerAdmission(chosen, policy)?.active ? chosenEntry?.where ?? "home" : "home";
     const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
     if (!hand && reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
-      throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
+      throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409, `start a runner that serves ${chosen}, then run the same command again`);
     }
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
@@ -8757,7 +8757,7 @@ export class Ledger extends DurableObject<Env> {
     if (admission) actor = admissionActor(actor, admission);
     this.expireReviewClaims();
     const row = !Number.isSafeInteger(request) || request! < 1 ? undefined : this.sql.exec(`SELECT * FROM review_requests WHERE id = ? AND item = ? AND state = 'claimed'`, request!, item).toArray()[0];
-    if (!row || !sameActor(row.claimedBy as string, actor)) throw new RuleError("stale_request", "the review claim generation is no longer current", 409);
+    if (!row || !sameActor(row.claimedBy as string, actor)) throw new RuleError("stale_request", "the review claim generation is no longer current", 409, `run atelier review-claim ${item} --as ${actor}`);
     return row;
   }
 
@@ -8800,7 +8800,7 @@ export class Ledger extends DurableObject<Env> {
   // and is refused: its verdict, or its claim lapsing, ends it. `request`
   // names one; without it, the gate's newest live request at the head.
   withdrawReviewRequest(itemId: string, actor: string, reason: unknown, request?: unknown, proved = false): { request: number; head: string; reviewer: string | null; reason: string; already?: true } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a review request", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a review request", 403, `only the developer can: atelier review-withdraw ${itemId} --reason TEXT`);
     if (reason !== undefined && typeof reason !== "string") throw new RuleError("bad_reason", "a reason is text", 400);
     const why = (reason ?? "").replace(/\s+/g, " ").trim();
     if (!why) throw new RuleError("bad_reason", "withdrawing a review request needs a reason: --reason \"…\"", 400);
@@ -8812,14 +8812,14 @@ export class Ledger extends DurableObject<Env> {
     const live = request !== undefined
       ? this.sql.exec(`SELECT id, head, dispatch, state, claimedBy FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0]
       : this.sql.exec(`SELECT id, head, dispatch, state, claimedBy FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, itemId, item.head ?? "").toArray()[0];
-    if (!live) throw new RuleError("no_request", request !== undefined ? `${itemId} has no review request ${request}` : `no review of ${itemId}${item.head ? ` at ${item.head.slice(0, 8)}` : ""} is requested, so there is nothing to withdraw`, 409);
+    if (!live) throw new RuleError("no_request", request !== undefined ? `${itemId} has no review request ${request}` : `no review of ${itemId}${item.head ? ` at ${item.head.slice(0, 8)}` : ""} is requested, so there is nothing to withdraw`, 409, "run atelier show ID");
     const d = JSON.parse(live.dispatch as string) as Dispatch;
     const reviewer = d.agent && d.model ? `${d.agent}/${d.model}` : null;
     const head = live.head as string;
     // The request this call names was withdrawn already: a rerun.
     if (live.state === "withdrawn") return { request: live.id as number, head, reviewer, reason: why, already: true };
-    if (live.state === "claimed") throw new RuleError("review_claimed", `the review of ${itemId} at ${head.slice(0, 8)} (request ${live.id}) is claimed by ${live.claimedBy ?? reviewer}, so it is being served and is not withdrawn; wait for its verdict, or let its claim lapse`, 409);
-    if (live.state !== "open") throw new RuleError("no_request", `review request ${live.id} of ${itemId} is ${live.state}, so there is nothing to withdraw`, 409);
+    if (live.state === "claimed") throw new RuleError("review_claimed", `the review of ${itemId} at ${head.slice(0, 8)} (request ${live.id}) is claimed by ${live.claimedBy ?? reviewer}, so it is being served and is not withdrawn; wait for its verdict, or let its claim lapse`, 409, `wait for the verdict, or let the claim lapse, then run atelier review-withdraw ${itemId} --reason TEXT`);
+    if (live.state !== "open") throw new RuleError("no_request", `review request ${live.id} of ${itemId} is ${live.state}, so there is nothing to withdraw`, 409, "run atelier show ID");
     const at = new Date().toISOString();
     this.sql.exec(`UPDATE review_requests SET state = 'withdrawn', developerWithdrawnAt = ? WHERE id = ? AND state = 'open'`, at, live.id);
     this.log(itemId, actor, "review.withdrawn", { head, reviewer, request: live.id as number, reason: why }, at, proved);
@@ -8984,9 +8984,9 @@ export class Ledger extends DurableObject<Env> {
   // rejection's blocking findings wait for the owner, and when no reviewer
   // can be shown independent of the authors.
   requestCriteriaReview(id: string, actor: string, reviewer: string | null, pool: readonly ModelEntry[], proved = false): { requested: boolean; reason: string; rev: number; reviewer?: string; request?: number } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review of a task's acceptance criteria", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review of a task's acceptance criteria", 403, `only the developer can: atelier criteria-review ${id}`);
     const item = this.item(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its criteria are no longer reviewed`);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its criteria are no longer reviewed`, 409, "run atelier ls to pick another task");
     if (reviewer !== null && !validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
     // The pool as the index has it now is kept, as requestReview keeps it, so
     // the ticks that run without the index read the owner's standing from it.
@@ -9012,10 +9012,10 @@ export class Ledger extends DurableObject<Env> {
     if (status.need === "none") {
       // Criteria the item has but no revision records: filed before revisions
       // were kept, so no author is known. The owner's edit records one.
-      if (criteriaOf(item) !== NO_CRITERIA) throw new RuleError("no_criteria_reviewer", `${item.id}'s acceptance criteria cannot be reviewed: ${attributionRefusal([], this.owner)}. Edit them (atelier edit ${item.id} --accept "TEXT"), which records the developer as their author`, 409);
-      throw new RuleError("no_criteria", `${item.id} has no acceptance criteria to review: give them with atelier edit ${item.id} --accept "TEXT"`, 409);
+      if (criteriaOf(item) !== NO_CRITERIA) throw new RuleError("no_criteria_reviewer", `${item.id}'s acceptance criteria cannot be reviewed: ${attributionRefusal([], this.owner)}. Edit them (atelier edit ${item.id} --accept "TEXT"), which records the developer as their author`, 409, `atelier edit ${item.id} --accept "TEXT"`);
+      throw new RuleError("no_criteria", `${item.id} has no acceptance criteria to review: give them with atelier edit ${item.id} --accept "TEXT"`, 409, `run atelier edit ${item.id} --accept "TEXT"`);
     }
-    if (status.need === "owner") throw new RuleError("criteria_rejected", `${item.id}'s acceptance criteria are not reviewed again until the developer answers the findings: ${status.reason}`, 409);
+    if (status.need === "owner") throw new RuleError("criteria_rejected", `${item.id}'s acceptance criteria are not reviewed again until the developer answers the findings: ${status.reason}`, 409, `only the developer can answer the findings: atelier criteria-finding ${item.id} --review N --index N --verdict confirmed|refuted|fixed`);
     if (status.need === "wait") {
       // A named reviewer replaces an unclaimed request for another; a claimed
       // one, or no name, leaves the live request standing.
@@ -9092,16 +9092,16 @@ export class Ledger extends DurableObject<Env> {
     const [harness, model] = actor.split("/");
     const askedOf = (r: CriteriaReview) => { const d = this.criteriaDispatch(r.id); return (!d.agent || d.agent === harness) && (!d.model || d.model === model); };
     const row = rows.find(askedOf) ?? rows[0];
-    if (!row) throw new RuleError("no_criteria_review", `${id} has no open review of its acceptance criteria`, 404);
+    if (!row) throw new RuleError("no_criteria_review", `${id} has no open review of its acceptance criteria`, 404, "run atelier criteria-review ID");
     if (row.rev !== rev) {
       this.withdrawCriteriaReviews(id, ORCHESTRATOR, "the acceptance criteria changed", at);
-      throw new RuleError("stale_criteria", `the review of ${id}'s acceptance criteria asked about revision ${row.rev}, and they are at revision ${rev} now; it is withdrawn, and no review of the current revision is asked yet`, 409);
+      throw new RuleError("stale_criteria", `the review of ${id}'s acceptance criteria asked about revision ${row.rev}, and they are at revision ${rev} now; it is withdrawn, and no review of the current revision is asked yet`, 409, `run atelier criteria-review-claim ${id}`);
     }
     const dispatch = this.criteriaDispatch(row.id);
-    if (!runner) throw new RuleError("dispatched", `${id}'s criteria review waits for a runner to claim it`, 409);
-    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${id}'s criteria review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
-    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${id}'s criteria review asks for ${dispatch.agent}, not ${harness}`, 403);
-    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${id}'s criteria review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
+    if (!runner) throw new RuleError("dispatched", `${id}'s criteria review waits for a runner to claim it`, 409, `run atelier undispatch ${id}, or wait for a runner to claim it`);
+    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${id}'s criteria review is for a ${dispatch.to} runner, not ${runner.runner}`, 403, `use a ${dispatch.to} runner, or run atelier dispatch ${id} --to any`);
+    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${id}'s criteria review asks for ${dispatch.agent}, not ${harness}`, 403, `claim with ${dispatch.agent}, or run atelier dispatch ${id} --agent ${harness}`);
+    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${id}'s criteria review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403, `claim with ${dispatch.model}, or run atelier dispatch ${id} --model ${model ?? "MODEL"}`);
     // A review asked before the owner paused, reserved or kept this model
     // from reviewing is not claimable, as a code review is not (claimReview):
     // it is withdrawn, so a part's plan asks another, and the claim refused
@@ -9110,10 +9110,10 @@ export class Ledger extends DurableObject<Env> {
     if (held) {
       this.withdrawHeldCriteriaReview(row, held, at);
       this.afterPlanChange(id);
-      throw new RuleError("model_held", `${held}; its review of ${id}'s acceptance criteria is withdrawn`, 409);
+      throw new RuleError("model_held", `${held}; its review of ${id}'s acceptance criteria is withdrawn`, 409, "name another model, or only the developer can: atelier models set ID --state available");
     }
     const refusal = criteriaIndependenceRefusal(actor, row.authors, this.owner, singleFamily(this.project().policy));
-    if (refusal) throw new RuleError("not_independent", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403);
+    if (refusal) throw new RuleError("not_independent", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403, `name a reviewer from another family with atelier criteria-review ${id} --reviewer H/M`);
     this.assertCriteriaAssessor(actor, id);
     this.sql.exec(`UPDATE criteria_reviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner.runner, at, row.id);
     this.log(id, actor, "criteria_review.claimed", { review: row.id, rev, criteria: row.criteria, runner: runner.runner }, at, proved);
@@ -9135,7 +9135,7 @@ export class Ledger extends DurableObject<Env> {
   // policy may change between request and verdict, so each step asks again.
   private assertCriteriaAssessor(actor: string, id: string): void {
     const refusal = roleRefusal(actor, this.project().policy, "assessor", this.owner);
-    if (refusal) throw new RuleError("ineligible", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403);
+    if (refusal) throw new RuleError("ineligible", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403, `only the developer can: atelier models admit ${actor} --project ${this.project().name} --reason TEXT`);
   }
 
   private criteriaDispatch(review: number): Dispatch {
@@ -9195,7 +9195,7 @@ export class Ledger extends DurableObject<Env> {
     const at = now.toISOString();
     this.lapseCriteriaReviews(r.itemId, now);
     const row = this.criteriaReviewsFor(r.itemId).find((x) => x.id === r.request);
-    if (!row) throw new RuleError("no_criteria_review", `${r.itemId} has no criteria review ${r.request}`, 404);
+    if (!row) throw new RuleError("no_criteria_review", `${r.itemId} has no criteria review ${r.request}`, 404, "run atelier criteria-review ID");
     const rev = this.criteriaRevision(r.itemId);
     // A review of a revision the criteria have left is withdrawn, whatever
     // the verdict says; a verdict that names another revision or binding
@@ -9203,13 +9203,13 @@ export class Ledger extends DurableObject<Env> {
     // reviewer's slip, and the claim stands for the right verdict.
     if (row.rev !== rev) {
       if (row.state === "open" || row.state === "claimed") this.withdrawCriteriaReviews(r.itemId, ORCHESTRATOR, "the acceptance criteria changed", at);
-      throw new RuleError("stale_criteria", `${r.itemId}'s acceptance criteria changed since revision ${row.rev} was reviewed: they are at revision ${rev} now, so this verdict answers nothing and is not recorded; the review is withdrawn, and the current revision is reviewed afresh`, 409);
+      throw new RuleError("stale_criteria", `${r.itemId}'s acceptance criteria changed since revision ${row.rev} was reviewed: they are at revision ${rev} now, so this verdict answers nothing and is not recorded; the review is withdrawn, and the current revision is reviewed afresh`, 409, `run atelier criteria-review-claim ${r.itemId}, then give the verdict again`);
     }
     if (r.rev !== rev || r.criteria !== criteriaOf(item)) {
-      throw new RuleError("stale_criteria", `this verdict names revision ${r.rev} of ${r.itemId}'s acceptance criteria${r.criteria !== criteriaOf(item) ? " and a binding the criteria do not have" : ""}; they are at revision ${rev}, which the claim gave, so nothing is recorded; name the revision and binding the claim gave`, 409);
+      throw new RuleError("stale_criteria", `this verdict names revision ${r.rev} of ${r.itemId}'s acceptance criteria${r.criteria !== criteriaOf(item) ? " and a binding the criteria do not have" : ""}; they are at revision ${rev}, which the claim gave, so nothing is recorded; name the revision and binding the claim gave`, 409, `run atelier criteria-review-claim ${r.itemId}, then give the verdict again`);
     }
     if (row.state !== "claimed" || !row.claimedBy || !sameActor(row.claimedBy, r.by)) {
-      throw new RuleError("stale_request", `criteria review ${r.request} of ${r.itemId} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${r.by}` : row.state}, so this verdict answers nothing; claim it again (atelier criteria-review-claim ${r.itemId})`, 409);
+      throw new RuleError("stale_request", `criteria review ${r.request} of ${r.itemId} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${r.by}` : row.state}, so this verdict answers nothing; claim it again (atelier criteria-review-claim ${r.itemId})`, 409, `run atelier criteria-review-claim ${r.itemId}`);
     }
     // The owner's standing holds at the verdict as at the claim: a reviewer
     // paused, reserved or kept from reviewing since it claimed approves
@@ -9218,10 +9218,10 @@ export class Ledger extends DurableObject<Env> {
     if (held) {
       this.withdrawHeldCriteriaReview(row, held, at);
       this.afterPlanChange(r.itemId);
-      throw new RuleError("model_held", `${held}; its review of ${r.itemId}'s acceptance criteria is withdrawn, and this verdict is not recorded`, 409);
+      throw new RuleError("model_held", `${held}; its review of ${r.itemId}'s acceptance criteria is withdrawn, and this verdict is not recorded`, 409, "name another model, or only the developer can: atelier models set ID --state available");
     }
     const refusal = criteriaIndependenceRefusal(r.by, row.authors, this.owner, singleFamily(this.project().policy));
-    if (refusal) throw new RuleError("not_independent", `${r.by} cannot review ${r.itemId}'s acceptance criteria: ${refusal}`, 403);
+    if (refusal) throw new RuleError("not_independent", `${r.by} cannot review ${r.itemId}'s acceptance criteria: ${refusal}`, 403, `name a reviewer from another family with atelier criteria-review ${r.itemId} --reviewer H/M`);
     this.assertCriteriaAssessor(r.by, r.itemId);
     const findings = r.findings ?? [];
     const blocking = findings.filter((f) => f.severity === "blocking").length;
@@ -9247,9 +9247,9 @@ export class Ledger extends DurableObject<Env> {
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
     this.item(id);
     const row = this.criteriaReviewsFor(id).find((x) => x.id === request);
-    if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${request}`, 404);
+    if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${request}`, 404, "run atelier criteria-review ID");
     if (row.state !== "claimed" || !row.claimedBy || !sameActor(row.claimedBy, actor)) {
-      throw new RuleError("stale_request", `criteria review ${request} of ${id} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${actor}` : row.state}, so there is nothing of ${actor}'s to fail`, 409);
+      throw new RuleError("stale_request", `criteria review ${request} of ${id} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${actor}` : row.state}, so there is nothing of ${actor}'s to fail`, 409, `run atelier criteria-review-claim ${id}`);
     }
     const at = new Date().toISOString();
     const failure = String(reason || "the reviewer reached no verdict").slice(0, NOTE_MAX);
@@ -9264,16 +9264,16 @@ export class Ledger extends DurableObject<Env> {
   // revision counts only once every blocking finding of it is settled, and a
   // rejection whose blocking findings are all settled is reviewed again.
   resolveCriteriaFinding(id: string, actor: string, review: number, index: number, verdict: string, note: string): CriteriaResolution {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer answers a finding of a criteria review", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer answers a finding of a criteria review", 403, `only the developer can: atelier criteria-finding ${id} --review N --index N --verdict confirmed|refuted|fixed`);
     if (!RESOLUTION_VERDICTS.includes(verdict as ResolutionVerdict)) throw new RuleError("bad_finding", `a finding's verdict is ${RESOLUTION_VERDICTS.join(", ")}`, 400);
     assertLength(note, NOTE_MAX, "the note");
     this.item(id);
     const row = this.criteriaReviewsFor(id).find((x) => x.id === review);
-    if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${review}`, 404);
-    if (row.state !== "approved" && row.state !== "rejected") throw new RuleError("no_finding", `criteria review ${review} of ${id} is ${row.state}, and has no findings to answer`, 409);
+    if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${review}`, 404, "run atelier criteria-review ID");
+    if (row.state !== "approved" && row.state !== "rejected") throw new RuleError("no_finding", `criteria review ${review} of ${id} is ${row.state}, and has no findings to answer`, 409, "run atelier show ID --reviews for the findings");
     const findings = row.findings ?? [];
     if (!Number.isInteger(index) || index < 1 || index > findings.length) {
-      throw new RuleError("no_finding", `criteria review ${review} of ${id} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409);
+      throw new RuleError("no_finding", `criteria review ${review} of ${id} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409, "run atelier show ID --reviews for the findings");
     }
     const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO criteria_resolutions (item, review, idx, verdict, note, by, at) VALUES (?, ?, ?, ?, ?, ?, ?)`, id, review, index, verdict, note, actor, at);
@@ -9385,7 +9385,7 @@ export class Ledger extends DurableObject<Env> {
   integrationTarget(id: string, partKey: string): { plan: Item; part: Item; integrationHead: string | null; mainHead: string | null; planHead: string | null } {
     const plan = this.planItem(id);
     const part = this.planParts(id).find((p) => p.partKey === partKey);
-    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
+    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404, "run atelier plan show ID");
     const record = this.planRecord(id);
     const named = this.sql.exec(
       `SELECT json_extract(data, '$.planHead') AS planHead FROM events WHERE item_id = ? AND kind = 'item.dispatched' AND json_extract(data, '$.planHead') IS NOT NULL ORDER BY seq DESC LIMIT 1`, part.id,
@@ -9403,21 +9403,21 @@ export class Ledger extends DurableObject<Env> {
   // under the merge commit; the branch then holds that main head, as after a
   // refresh, so the tick does not dispatch a refresh for it.
   integratePart(id: string, actor: string, partKey: string, mergeCommit: string, verified: boolean, holdsMain = false): { item: Item; allIntegrated: boolean; parts: string[] } {
-    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration`, 403);
+    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration`, 403, `only the integrator records an integration; run atelier plan show ${id}`);
     const plan = this.planItem(id);
-    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`, 409, "run atelier ls to pick another task");
     const record = this.planRecord(id);
-    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved`, 409);
+    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved`, 409, `only the developer can: atelier plan approve ${id} --hash HASH`);
     const part = this.planParts(id).find((p) => p.partKey === partKey);
-    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
-    if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part is integrated`, 409);
-    if (!verified) throw new RuleError("unverified_merge", "the merge commit is not on the plan's branch", 409);
+    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404, "run atelier plan show ID");
+    if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part is integrated`, 409, `run atelier plan show ${id}`);
+    if (!verified) throw new RuleError("unverified_merge", "the merge commit is not on the plan's branch", 409, `run atelier plan show ${id}`);
     // The rules the integrate job was dispatched under hold at the record
     // too: a review withdrawn meanwhile, as when the part's criteria changed
     // while the integrator merged, no longer lets the part in.
     const views = this.integrationViews(this.planParts(id));
     const blockers = integrationBlockers(views.find((v) => v.id === part.id)!, views, this.reviewsFor(part.id), this.project().policy, this.owner);
-    if (blockers.length) throw new RuleError("not_integrable", `part ${partKey} (${part.id}) cannot be integrated now: ${blockers.join("; ")}`, 409);
+    if (blockers.length) throw new RuleError("not_integrable", `part ${partKey} (${part.id}) cannot be integrated now: ${blockers.join("; ")}`, 409, `run atelier plan show ${id}`);
     const at = new Date().toISOString();
     const merged = addedPart(record, partKey);
     const takes = merged && holdsMain ? merged.mainHead : null;
@@ -9444,12 +9444,12 @@ export class Ledger extends DurableObject<Env> {
   // checks; only then does the builder's finished attempt become a failed one
   // (phase.ts reads the integration.failed event). The integrate job clears, and nothing is recorded as integrated.
   integrationFailed(id: string, actor: string, partKey: string, reason: string, kind: IntegrationFailureKind | null = null): Item {
-    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration failure`, 403);
+    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records an integration failure`, 403, `only the integrator records an integration failure; run atelier plan show ${id}`);
     const plan = this.planItem(id);
-    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`, 409, "run atelier ls to pick another task");
     const part = this.planParts(id).find((p) => p.partKey === partKey);
-    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404);
-    if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part fails integration`, 409);
+    if (!part) throw new RuleError("no_part", `${id} has no part ${partKey}`, 404, "run atelier plan show ID");
+    if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part fails integration`, 409, `run atelier plan show ${id}`);
     const at = new Date().toISOString();
     const builder = part.owner;
     this.dropRunnerJobs(part.id);
@@ -9531,15 +9531,15 @@ export class Ledger extends DurableObject<Env> {
   // its landing lease is held: a merge holding the lease may already be on
   // the baseline, so it is cancelled first.
   private refreshScope(id: string, actor: string, what: string): { plan: Item; record: PlanRecord; reopening: boolean } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403, `only the developer can: atelier plan refresh ${id}`);
     const plan = this.planItem(id);
-    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`, 409, "run atelier ls to pick another task");
     const record = this.planRecord(id);
-    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved; its branch takes main only once the plan is building`, 409);
+    if (!record.approval) throw new RuleError("not_approved", `${id} is not approved; its branch takes main only once the plan is building`, 409, `only the developer can: atelier plan approve ${id} --hash HASH`);
     const reopening = plan.state === "submitted" || plan.state === "accepted";
     const landing = reopening ? this.landing(id) : null;
     if (landing) {
-      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot go back to building. Cancel that merge with atelier merge ${id} --cancel, then run this again`, 409);
+      throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)} and holds the landing lease, so it cannot go back to building. Cancel that merge with atelier merge ${id} --cancel, then run this again`, 409, `run atelier merge ${id} --cancel, then run this again`);
     }
     return { plan, record, reopening };
   }
@@ -9551,11 +9551,11 @@ export class Ledger extends DurableObject<Env> {
     const held = !!plan.owner && !reopening;
     if (held || job === "integrate" || job === "refresh" || record.refresh?.state === "dispatched") {
       const what = held ? `${plan.owner} holds ${id}` : job === "integrate" ? `${id}'s integrate job for part ${plan.dispatch?.part} is queued` : `a refresh from main at ${(record.refresh?.mainHead ?? "").slice(0, 8)} is queued`;
-      throw new RuleError("job_in_flight", `${what}; run atelier plan refresh again once it is done`, 409);
+      throw new RuleError("job_in_flight", `${what}; run atelier plan refresh again once it is done`, 409, `wait until it is done, then run atelier plan refresh ${id} again`);
     }
     if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
     if (holds) {
-      throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to refresh`, 409);
+      throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to refresh`, 409, `run atelier plan show ${id}`);
     }
     return scope;
   }
@@ -9585,14 +9585,14 @@ export class Ledger extends DurableObject<Env> {
 
   // The refresh in flight that the integrator reports on, refusing any other.
   private reportedRefresh(id: string, actor: string, mainHead: string, what: string): { plan: Item; record: PlanRecord; refresh: PlanRefresh } {
-    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records a refresh${what}`, 403);
+    if (actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} records a refresh${what}`, 403, `only the integrator records a refresh; run atelier plan show ${id}`);
     const plan = this.planItem(id);
-    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
-    if (plan.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}; claim its refresh job first`, 403);
+    if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`, 409, "run atelier ls to pick another task");
+    if (plan.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}; claim its refresh job first`, 403, `run atelier refresh-lease ${id} --job refresh to claim its refresh job`);
     const record = this.planRecord(id);
     const refresh = record.refresh;
-    if (!refresh || refresh.state !== "dispatched") throw new RuleError("no_refresh", `${id} has no refresh in flight`, 409);
-    if (refresh.mainHead !== mainHead) throw new RuleError("other_refresh", `${id}'s refresh in flight merges main at ${refresh.mainHead.slice(0, 8)}, not ${mainHead.slice(0, 8)}`, 409);
+    if (!refresh || refresh.state !== "dispatched") throw new RuleError("no_refresh", `${id} has no refresh in flight`, 409, `run atelier plan refresh ${id}`);
+    if (refresh.mainHead !== mainHead) throw new RuleError("other_refresh", `${id}'s refresh in flight merges main at ${refresh.mainHead.slice(0, 8)}, not ${mainHead.slice(0, 8)}`, 409, `run atelier plan show ${id}`);
     return { plan, record, refresh };
   }
 
@@ -9607,7 +9607,7 @@ export class Ledger extends DurableObject<Env> {
   // taken it; the integrator then submits the plan rather than releasing it.
   refreshed(id: string, actor: string, mainHead: string, mergeCommit: string | null, verified: boolean): { item: Item; allIntegrated: boolean; parts: string[] } {
     const { record, refresh } = this.reportedRefresh(id, actor, mainHead, "");
-    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the plan's branch", 409);
+    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the plan's branch", 409, `run atelier plan refresh ${id}`);
     const at = new Date().toISOString();
     if (mergeCommit) record.integrationHead = mergeCommit;
     record.mainTaken = mainHead;
@@ -9711,10 +9711,10 @@ export class Ledger extends DurableObject<Env> {
   private resolveAllowed(id: string, actor: string, mainHead: string, holds: boolean, to: unknown): { plan: Item; record: PlanRecord; reopening: boolean; builder: string | null } {
     const { plan, record, reopening } = this.refreshScope(id, actor, "resolves a plan's branch with main");
     if (record.refresh?.state === "dispatched") {
-      throw new RuleError("job_in_flight", `a refresh from main at ${record.refresh.mainHead.slice(0, 8)} is queued; if it conflicts, the plan adds the part to resolve it itself`, 409);
+      throw new RuleError("job_in_flight", `a refresh from main at ${record.refresh.mainHead.slice(0, 8)} is queued; if it conflicts, the plan adds the part to resolve it itself`, 409, `wait for the refresh to finish, then run atelier plan show ${id}`);
     }
     if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
-    if (holds) throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to resolve`, 409);
+    if (holds) throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to resolve`, 409, `run atelier plan show ${id}`);
     const builder = to === undefined || to === null ? null : namedActor(to, this.project().policy, "executor", this.owner);
     // The named builder is held by the developer's standing as a reroute's
     // is, an alias included (gemini-4-argon's ninth review of t622, finding 3).
@@ -9723,10 +9723,10 @@ export class Ledger extends DurableObject<Env> {
     const key = mergeMainKey(mainHead);
     const existing = parts.find((p) => p.partKey === key);
     if (existing) {
-      throw new RuleError("part_exists", `${existing.id} (${key}) already merges main at ${mainHead.slice(0, 8)}; it is ${existing.state}. Retry it with atelier plan retry ${existing.id}, or name its builder with atelier plan reroute ${existing.id} --to H/M`, 409);
+      throw new RuleError("part_exists", `${existing.id} (${key}) already merges main at ${mainHead.slice(0, 8)}; it is ${existing.state}. Retry it with atelier plan retry ${existing.id}, or name its builder with atelier plan reroute ${existing.id} --to H/M`, 409, `atelier plan retry ${existing.id}`);
     }
     const open = (record.added ?? []).map((a) => parts.find((p) => p.id === a.id)).find((p) => p && p.state !== "integrated" && p.state !== "merged" && p.state !== "abandoned");
-    if (open) throw new RuleError("merge_open", `${open.id} (${open.partKey}) is merging main into the branch and is ${open.state}; resolve that one first, or abandon it with atelier abandon ${open.id}`, 409);
+    if (open) throw new RuleError("merge_open", `${open.id} (${open.partKey}) is merging main into the branch and is ${open.state}; resolve that one first, or abandon it with atelier abandon ${open.id}`, 409, `run atelier abandon ${open.id}, or finish it first`);
     return { plan, record, reopening, builder };
   }
 
@@ -9752,21 +9752,21 @@ export class Ledger extends DurableObject<Env> {
     if (item.owner === actor) return;
     if (actor === INTEGRATOR) {
       if (item.kind === "plan" && (item.dispatch?.job === "integrate" || item.dispatch?.job === "refresh")) return;
-      throw new RuleError("not_integrator", `${INTEGRATOR} takes only a plan's integrate or refresh job`, 403);
+      throw new RuleError("not_integrator", `${INTEGRATOR} takes only a plan's integrate or refresh job`, 403, `run atelier plan show ${item.id}`);
     }
     if (item.kind === "part" && item.state === "open" && !item.dispatch) {
-      throw new RuleError("not_dispatched", `${item.id} is a part of plan ${item.plan}, which dispatches it once the parts it depends on have merged; it is not dispatched now. See atelier plan show ${item.plan}`, 409);
+      throw new RuleError("not_dispatched", `${item.id} is a part of plan ${item.plan}, which dispatches it once the parts it depends on have merged; it is not dispatched now. See atelier plan show ${item.plan}`, 409, `run atelier plan show ${item.plan}`);
     }
     if (item.kind === "plan") {
       if (this.planRecord(item.id).approval) {
-        throw new RuleError("plan_approved", `${item.id} is an approved plan, and its parts carry the work; see atelier plan show ${item.id}`, 409);
+        throw new RuleError("plan_approved", `${item.id} is an approved plan, and its parts carry the work; see atelier plan show ${item.id}`, 409, `run atelier plan show ${item.id}`);
       }
       // A plan item's only work is its plan job. Once a valid proposal clears
       // that dispatch (postPlan) the plan waits for the owner, so no eligible
       // actor claims the plan item by hand: only the plan job's dispatch lets
       // the routed planner claim it.
       if (item.dispatch?.job !== "plan") {
-        throw new RuleError("not_dispatched", `${item.id}'s plan job has left the queue, so it cannot be claimed by hand; it waits for the developer's decision. See atelier plan show ${item.id}`, 409);
+        throw new RuleError("not_dispatched", `${item.id}'s plan job has left the queue, so it cannot be claimed by hand; it waits for the developer's decision. See atelier plan show ${item.id}`, 409, `run atelier plan show ${item.id}`);
       }
     }
   }
@@ -9775,10 +9775,10 @@ export class Ledger extends DurableObject<Env> {
   // planner and its parts are dispatched by the plan.
   private assertNotPlanned(item: Item): void {
     if (item.kind === "part") {
-      throw new RuleError("plan_dispatch", `${item.id} is a part of plan ${item.plan}, which dispatches it; to change who builds it, run atelier plan reroute ${item.id} --to harness/model`, 409);
+      throw new RuleError("plan_dispatch", `${item.id} is a part of plan ${item.plan}, which dispatches it; to change who builds it, run atelier plan reroute ${item.id} --to harness/model`, 409, `atelier plan reroute ${item.id} --to H/M`);
     }
     if (item.kind === "plan") {
-      throw new RuleError("plan_dispatch", `${item.id} is a plan; its planner is dispatched by atelier plan, and again by atelier plan revise, reroute or retry`, 409);
+      throw new RuleError("plan_dispatch", `${item.id} is a plan; its planner is dispatched by atelier plan, and again by atelier plan revise, reroute or retry`, 409, `atelier plan revise ${item.id} --note TEXT`);
     }
   }
 
@@ -9847,7 +9847,7 @@ export class Ledger extends DurableObject<Env> {
   // The owner's atelier refreshes --enqueue: main's head as the Worker read
   // it now, noted and queued for every task that should take it.
   queueRefreshes(actor: string, mainHead: string): { queued: number; mainHead: string } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer queues refreshes", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer queues refreshes", 403, "only the developer can: atelier refreshes --enqueue");
     const at = new Date().toISOString();
     if (!HASH.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
     this.setMainHead(mainHead, at);
@@ -9915,7 +9915,7 @@ export class Ledger extends DurableObject<Env> {
   // landing to run; one already queued keeps its place.
   requestLand(id: string, by: string, quote?: string): { item: string; by: string; at: string; quote?: string; queued: boolean } {
     const item = this.item(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409, "run atelier ls to pick another task");
     const at = new Date().toISOString();
     const existing = this.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
     if (existing) return { item: id, by: existing.by as string, at: existing.at as string, ...(existing.quote ? { quote: existing.quote as string } : {}), queued: false };
@@ -9967,13 +9967,13 @@ export class Ledger extends DurableObject<Env> {
   // its mechanical conflicts (the resolver's task-resolve job), at the
   // task's head now. Refused while the task is busy or blocked, with why.
   leaseRefresh(id: string, actor: string, runner: string | null, job: RefreshJob): { item: Item; lease: RefreshLease; contributors: string[]; resolvers: string[]; retained: { by: string; head: string }[]; revoke: string | null } {
-    if (job === "refresh" && actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} runs a task's refresh`, 403);
+    if (job === "refresh" && actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} runs a task's refresh`, 403, "only the integrator runs a task's refresh; run atelier refreshes");
     const at = new Date().toISOString();
     const item = this.item(id);
     const target = this.currentTarget(item, at);
     if (!target) throw new RuleError("no_refresh", `${id} has no refresh queued`, 409);
     const standing = this.refreshStandingOf(item, at);
-    if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409);
+    if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409, "wait for the refresh to be eligible, then run atelier refreshes");
     const lease = takeLease(target, { job, actor, runner, head: item.head!, now: Date.parse(at), id: crypto.randomUUID(), same: sameActor });
     // The resolver chosen for the conflicts is judged again as it takes them:
     // the policy may have dropped it or changed family mode, or an approval
@@ -9986,7 +9986,7 @@ export class Ledger extends DurableObject<Env> {
         const wait = `${actor} may no longer resolve it: ${why}`;
         this.saveRefreshTarget(id, { ...target, state: "waiting", resolver: null, wait, updatedAt: at });
         this.log(id, ORCHESTRATOR, "refresh.waiting", { mainHead: target.mainHead, head: item.head, wait, refusals: [{ actor, why }] }, at);
-        throw new RuleError("not_resolver", wait, 403);
+        throw new RuleError("not_resolver", wait, 403, "wait for the named resolver, or run atelier refreshes");
       }
     }
     this.saveRefreshTarget(id, { ...target, state: "leased", lease, updatedAt: at });
@@ -10017,8 +10017,8 @@ export class Ledger extends DurableObject<Env> {
   renewRefreshLease(id: string, actor: string, leaseId: string): RefreshLease {
     const target = this.refreshTargetOf(id);
     const lease = target?.lease;
-    if (!lease || lease.id !== leaseId) throw new RuleError("lease_lost", `${id} has no refresh lease ${leaseId}; it lapsed or another runner took it`, 409);
-    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
+    if (!lease || lease.id !== leaseId) throw new RuleError("lease_lost", `${id} has no refresh lease ${leaseId}; it lapsed or another runner took it`, 409, `run atelier refresh-lease ${id} --job refresh for a new lease`);
+    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403, `run atelier refresh-lease ${id} --job refresh for your own lease`);
     const next = renewLease(lease, Date.now());
     this.saveRefreshTarget(id, { ...target!, lease: next });
     return next;
@@ -10054,9 +10054,9 @@ export class Ledger extends DurableObject<Env> {
     const lease = target?.lease;
     if (!lease || lease.id !== leaseId) return { item, released: false, revoke: null };
     if (lease.pushing && actor === this.owner && !sameActor(lease.by, actor)) return this.releasePushFence(item, target!, lease, reason, at);
-    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
-    if (lease.pushing) throw new RuleError("refresh_pushing", "the announced push must be reconciled before releasing its lease", 409);
-    if (lease.checking) throw new RuleError("refresh_recorded", `${id}'s refresh is recorded at ${lease.checking.slice(0, 8)} and waits for its checks; report them with refresh-checked`, 409);
+    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403, `run atelier refresh-lease ${id} --job refresh for your own lease`);
+    if (lease.pushing) throw new RuleError("refresh_pushing", "the announced push must be reconciled before releasing its lease", 409, "wait for the push to settle, then run atelier refreshes");
+    if (lease.checking) throw new RuleError("refresh_recorded", `${id}'s refresh is recorded at ${lease.checking.slice(0, 8)} and waits for its checks; report them with refresh-checked`, 409, "report the checks with atelier refresh-checked ID --lease ID --main-head SHA --expected-head SHA --passed");
     this.saveRefreshTarget(id, afterRelease(target!, lease, at));
     this.log(id, actor, "refresh.released", { job: lease.job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, reason: cleanReason(reason), ...(providerLimit ? { providerLimit: true } : {}) }, at);
     return { item, released: true, revoke: lease.tokenId ?? null };
@@ -10068,10 +10068,10 @@ export class Ledger extends DurableObject<Env> {
   // task is refreshed again from the head the ledger records.
   private releasePushFence(item: Item, target: RefreshTarget, lease: RefreshLease, reason: string, at: string): { item: Item; released: boolean; revoke: string | null } {
     const why = cleanReason(reason), now = Date.parse(at), pushing = lease.pushing!;
-    if (!why) throw new RuleError("reason_required", `say why ${item.id}'s announced push is released: --reason TEXT`, 400);
+    if (!why) throw new RuleError("reason_required", `say why ${item.id}'s announced push is released: --reason TEXT`, 400, "add --reason TEXT and run the command again");
     if (leaseLive(lease, now) || Date.parse(pushing.until) > now) {
       const until = new Date(Math.max(Date.parse(lease.until), Date.parse(pushing.until))).toISOString();
-      throw new RuleError("refresh_leased", `${lease.by} may still be pushing ${pushing.head.slice(0, 8)} to ${item.id}'s fork; its lease and push window end at ${until}, and the push may be released after that`, 409);
+      throw new RuleError("refresh_leased", `${lease.by} may still be pushing ${pushing.head.slice(0, 8)} to ${item.id}'s fork; its lease and push window end at ${until}, and the push may be released after that`, 409, "wait for the lease to end, then run atelier refreshes");
     }
     this.saveRefreshTarget(item.id, afterSettle(target, lease, "superseded", at));
     this.log(item.id, this.owner, "refresh.push_released", { lease: lease.id, head: pushing.head, announcedBy: pushing.by ?? lease.by, mainHead: lease.mainHead, from: lease.expectedHead, reason: why }, at);
@@ -10089,13 +10089,13 @@ export class Ledger extends DurableObject<Env> {
     const target = this.refreshTargetOf(id);
     const lease = reportedLease(target, { item: id, actor, ...report });
     if (!HASH.test(report.head)) throw new RuleError("bad_head", "head must be the full hash of the refreshed merge", 400);
-    if (!leaseLive(lease, Date.parse(at))) throw new RuleError("lease_lost", "the refresh lease expired before its push", 409);
-    if (lease.checking) throw new RuleError("refresh_recorded", "the refresh already waits for checks", 409);
-    if (item.head !== report.expectedHead) throw new RuleError("head_moved", `${id} moved from ${report.expectedHead.slice(0, 8)} to ${(item.head ?? "").slice(0, 8)} under the lease; nothing may be pushed over it`, 409);
+    if (!leaseLive(lease, Date.parse(at))) throw new RuleError("lease_lost", "the refresh lease expired before its push", 409, `run atelier refresh-lease ${id} --job refresh for a new lease`);
+    if (lease.checking) throw new RuleError("refresh_recorded", "the refresh already waits for checks", 409, "report the checks with atelier refresh-checked ID --lease ID --main-head SHA --expected-head SHA --passed");
+    if (item.head !== report.expectedHead) throw new RuleError("head_moved", `${id} moved from ${report.expectedHead.slice(0, 8)} to ${(item.head ?? "").slice(0, 8)} under the lease; nothing may be pushed over it`, 409, `run atelier refresh-lease ${id} --job refresh to start again`);
     const standing = this.refreshStandingOf(item, at);
-    if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409);
+    if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409, "wait for the refresh to be eligible, then run atelier refreshes");
     if (lease.pushing) {
-      if (lease.pushing.head !== report.head) throw new RuleError("refresh_pushing", "another head is already announced", 409);
+      if (lease.pushing.head !== report.head) throw new RuleError("refresh_pushing", "another head is already announced", 409, "wait for the push to settle, then run atelier refreshes");
       return lease;
     }
     const next = { ...lease, pushing: { head: report.head, until: new Date(Date.parse(at) + REFRESH_PUSH_MS).toISOString(), by: lease.by, job: lease.job } };
@@ -10112,7 +10112,7 @@ export class Ledger extends DurableObject<Env> {
     const pushing = lease?.pushing;
     if (lease && pushing) {
       const live = leaseLive(lease, Date.now());
-      throw new RuleError("refresh_pushing", `${pushing.by ?? lease.by} announced a push of main merged into ${id} as ${pushing.head.slice(0, 8)} and has not recorded it; ${live ? `its lease runs until ${lease.until}, then ${INTEGRATOR} reconciles the push` : `its lease lapsed, and ${INTEGRATOR}'s next refresh job reconciles the push`}. The developer may release it once the lease lapses: atelier refresh-lease ${id} --release ${lease.id} --reason TEXT`, 409);
+      throw new RuleError("refresh_pushing", `${pushing.by ?? lease.by} announced a push of main merged into ${id} as ${pushing.head.slice(0, 8)} and has not recorded it; ${live ? `its lease runs until ${lease.until}, then ${INTEGRATOR} reconciles the push` : `its lease lapsed, and ${INTEGRATOR}'s next refresh job reconciles the push`}. The developer may release it once the lease lapses: atelier refresh-lease ${id} --release ${lease.id} --reason TEXT`, 409, "wait for the push to settle, then run atelier refreshes");
     }
   }
 
@@ -10131,17 +10131,17 @@ export class Ledger extends DurableObject<Env> {
     const key = resultKey(id, report.expectedHead, report.mainHead);
     const recorded = this.refreshResultOf(key);
     if (recorded && recorded.by === actor && (recorded.head ?? null) === (report.head ?? null)) return { item: this.item(id), result: recorded, replay: true };
-    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the task's fork", 409);
+    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the task's fork", 409, `run atelier refresh-lease ${id} --job refresh to start again`);
     const at = new Date().toISOString();
     const item = this.item(id);
     const target = this.refreshTargetOf(id)!;
     const lease = reportedLease(target, { item: id, actor, lease: report.lease, mainHead: report.mainHead, expectedHead: report.expectedHead });
     const standing = this.refreshStandingOf(item, at);
-    if (standing.kind !== "eligible" && !(standing.kind === "deferred" && standing.busy === "reviewing")) throw new RuleError("refresh_deferred", standing.reason, 409);
-    if (!report.head && (lease.pushing || lease.checking)) throw new RuleError("refresh_pending", "the announced head must be recorded and checked", 409);
-    if (!report.head && item.head !== report.expectedHead) throw new RuleError("head_moved", "the task moved under its refresh", 409);
+    if (standing.kind !== "eligible" && !(standing.kind === "deferred" && standing.busy === "reviewing")) throw new RuleError("refresh_deferred", standing.reason, 409, "wait for the refresh to be eligible, then run atelier refreshes");
+    if (!report.head && (lease.pushing || lease.checking)) throw new RuleError("refresh_pending", "the announced head must be recorded and checked", 409, "record and check the announced head, then run the command again");
+    if (!report.head && item.head !== report.expectedHead) throw new RuleError("head_moved", "the task moved under its refresh", 409, `run atelier refresh-lease ${id} --job refresh to start again`);
     if (!report.head) {
-      if (lease.job !== "refresh") throw new RuleError("no_head", "a resolver reports the merge it made", 400);
+      if (lease.job !== "refresh") throw new RuleError("no_head", "a resolver reports the merge it made", 400, `run atelier refresh-lease ${id} --job resolve`);
       const result: RefreshResult = { key, item: id, outcome: "held", mainHead: report.mainHead, expectedHead: report.expectedHead, head: null, by: actor, at };
       this.saveRefreshResult(result);
       this.saveRefreshTarget(id, afterSettle(target, lease, "held", at));
@@ -10159,7 +10159,7 @@ export class Ledger extends DurableObject<Env> {
     // The fork's head may have been recorded already, from the push event
     // (observePush); any other head is a push the lease did not make.
     if (item.head !== report.expectedHead && item.head !== report.head) {
-      throw new RuleError("head_moved", `${id} moved to ${(item.head ?? "").slice(0, 8)} under the refresh; the refresh is not recorded`, 409);
+      throw new RuleError("head_moved", `${id} moved to ${(item.head ?? "").slice(0, 8)} under the refresh; the refresh is not recorded`, 409, `run atelier refresh-lease ${id} --job refresh to start again`);
     }
     const accepted = item.state === "accepted" || item.acceptedHead !== null;
     this.update(id, { head: report.head, last_push_at: at, ...(accepted ? { state: "submitted", accepted_head: null } : {}) }, at);

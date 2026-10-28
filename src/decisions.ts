@@ -70,7 +70,7 @@ function rows(sql: SqlStorage): Decision[] {
 }
 
 function ownerOnly(store: DecisionStore, actor: string, what: string): void {
-  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403);
+  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403, "only the developer can: atelier decisions");
 }
 
 export const decisionStatus = (d: Decision): DecisionStatus => (d.withdrawn ? "withdrawn" : "standing");
@@ -95,7 +95,7 @@ export function recordDecision(store: DecisionStore, actor: string, body: Record
   const { text, quote } = cleanDecisionInput(body);
   const all = rows(store.sql);
   const same = all.find((d) => !d.withdrawn && d.text === text);
-  if (same) throw new RuleError("already_decided", `${same.id} already records that decision, on ${same.at.slice(0, 10)}. To change it, withdraw it first: atelier decisions withdraw ${same.id} --note "…"`, 409);
+  if (same) throw new RuleError("already_decided", `${same.id} already records that decision, on ${same.at.slice(0, 10)}. To change it, withdraw it first: atelier decisions withdraw ${same.id} --note "…"`, 409, `atelier decisions withdraw ${same.id} --note "why", then decide again`);
   const n = all.length + 1;
   const decision: Decision = { id: `d${n}`, text, quote, by: actor, at: now, ...(acting ? { acting } : {}) };
   store.sql.exec(`INSERT INTO decisions (n, id, json) VALUES (?, ?, ?)`, n, decision.id, JSON.stringify(decision));
@@ -112,8 +112,8 @@ export function withdrawDecision(store: DecisionStore, actor: string, id: string
   if (!why) throw new RuleError("bad_note", "withdrawing a decision needs a note saying why: --note \"…\"", 400);
   if (why.length > DECISION_NOTE_MAX) throw new RuleError("too_long", `the note is at most ${DECISION_NOTE_MAX} characters`, 400);
   const d = rows(store.sql).find((x) => x.id === id);
-  if (!d) throw new RuleError("no_decision", `no decision ${id}; atelier decisions lists them`, 404);
-  if (d.withdrawn) throw new RuleError("not_standing", `${id} was withdrawn on ${d.withdrawn.at.slice(0, 10)}, so there is nothing to withdraw`, 409);
+  if (!d) throw new RuleError("no_decision", `no decision ${id}; atelier decisions lists them`, 404, "run atelier decisions");
+  if (d.withdrawn) throw new RuleError("not_standing", `${id} was withdrawn on ${d.withdrawn.at.slice(0, 10)}, so there is nothing to withdraw`, 409, "run atelier decisions");
   d.withdrawn = { by: actor, at: now, note: why, ...(acting ? { acting } : {}) };
   store.sql.exec(`UPDATE decisions SET json = ? WHERE id = ?`, JSON.stringify(d), d.id);
   store.log("decision.withdrawn", { id, text: d.text, note: why, ...(acting ? { acting } : {}) });

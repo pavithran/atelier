@@ -113,10 +113,10 @@ export function enqueue(target: RefreshTarget | null, item: string, mainHead: st
 export function takeLease(target: RefreshTarget, input: { job: RefreshJob; actor: string; runner: string | null; head: string; now: number; id: string; same: (a: string, b: string) => boolean }): RefreshLease {
   const { job, actor, head, now } = input;
   if (target.lease && leaseLive(target.lease, now)) {
-    throw new RuleError("refresh_leased", `${target.item}'s refresh from main at ${target.lease.mainHead.slice(0, 8)} is leased to ${target.lease.by} until ${target.lease.until}`, 409);
+    throw new RuleError("refresh_leased", `${target.item}'s refresh from main at ${target.lease.mainHead.slice(0, 8)} is leased to ${target.lease.by} until ${target.lease.until}`, 409, "wait for the lease to end, then run atelier refreshes");
   }
   if (target.lease?.pushing && Date.parse(target.lease.pushing.until) > now) {
-    throw new RuleError("refresh_pushing", `${target.item}'s announced push has not settled`, 409);
+    throw new RuleError("refresh_pushing", `${target.item}'s announced push has not settled`, 409, "wait for the push to settle, then run atelier refreshes");
   }
   const was = target.lease?.job ?? (target.state === "resolve" ? "resolve" : "refresh");
   // A lease that lapsed while its holder ran the required checks at the head
@@ -131,21 +131,21 @@ export function takeLease(target: RefreshTarget, input: { job: RefreshJob; actor
   if (target.state === "leased" && lapsed?.pushing) {
     const own = job === lapsed.job && input.same(lapsed.by, actor);
     const integrator = job === "refresh" && input.same(actor, INTEGRATOR);
-    if (!own && !integrator) throw new RuleError("not_leaseholder", `${target.item}'s announced push is reconciled by ${lapsed.by} or ${INTEGRATOR}, not ${actor}`, 409);
+    if (!own && !integrator) throw new RuleError("not_leaseholder", `${target.item}'s announced push is reconciled by ${lapsed.by} or ${INTEGRATOR}, not ${actor}`, 409, `wait for ${lapsed.by} or ${INTEGRATOR}`);
     const pushing = { ...lapsed.pushing, by: lapsed.pushing.by ?? lapsed.by, job: lapsed.pushing.job ?? lapsed.job };
     return { ...lapsed, job, by: actor, pushing, id: input.id, runner: input.runner, tokenId: undefined, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
   }
   if (target.state === "leased" && lapsed?.checking && job === lapsed.job && head === lapsed.checking) {
-    if (job === "resolve" && (!target.resolver || !input.same(target.resolver, actor))) throw new RuleError("not_resolver", `${target.item}'s conflict is for ${target.resolver ?? "no resolver"}, not ${actor}`, 403);
+    if (job === "resolve" && (!target.resolver || !input.same(target.resolver, actor))) throw new RuleError("not_resolver", `${target.item}'s conflict is for ${target.resolver ?? "no resolver"}, not ${actor}`, 403, "wait for the named resolver, or run atelier refreshes");
     return { id: input.id, job, by: actor, runner: input.runner, mainHead: lapsed.mainHead, expectedHead: lapsed.expectedHead, checking: lapsed.checking, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
   }
   if (job === "refresh" && !(target.state === "queued" || (target.state === "leased" && was === "refresh"))) {
-    throw new RuleError("not_queued", `${target.item}'s refresh is ${target.state}${target.state === "resolve" ? `, waiting for its resolver ${target.resolver}` : target.wait ? `: ${target.wait}` : ""}`, 409);
+    throw new RuleError("not_queued", `${target.item}'s refresh is ${target.state}${target.state === "resolve" ? `, waiting for its resolver ${target.resolver}` : target.wait ? `: ${target.wait}` : ""}`, 409, "run atelier refreshes");
   }
   if (job === "resolve") {
-    if (!(target.state === "resolve" || (target.state === "leased" && was === "resolve"))) throw new RuleError("not_resolving", `${target.item} has no mechanical conflict waiting for a resolver`, 409);
-    if (!target.resolver || !input.same(target.resolver, actor)) throw new RuleError("not_resolver", `${target.item}'s conflict is for ${target.resolver ?? "no resolver"}, not ${actor}`, 403);
-    if (target.expectedHead !== head) throw new RuleError("head_moved", `${target.item} moved from ${(target.expectedHead ?? "").slice(0, 8)} to ${head.slice(0, 8)} since its conflicts were found; it is refreshed again from the start`, 409);
+    if (!(target.state === "resolve" || (target.state === "leased" && was === "resolve"))) throw new RuleError("not_resolving", `${target.item} has no mechanical conflict waiting for a resolver`, 409, "run atelier refreshes");
+    if (!target.resolver || !input.same(target.resolver, actor)) throw new RuleError("not_resolver", `${target.item}'s conflict is for ${target.resolver ?? "no resolver"}, not ${actor}`, 403, "wait for the named resolver, or run atelier refreshes");
+    if (target.expectedHead !== head) throw new RuleError("head_moved", `${target.item} moved from ${(target.expectedHead ?? "").slice(0, 8)} to ${head.slice(0, 8)} since its conflicts were found; it is refreshed again from the start`, 409, `run atelier refresh-lease ${target.item} --job refresh to start again`);
   }
   return { id: input.id, job, by: actor, runner: input.runner, mainHead: target.mainHead, expectedHead: head, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
 }
@@ -155,10 +155,10 @@ export function takeLease(target: RefreshTarget, input: { job: RefreshJob; actor
 // lease, or with none live, is refused.
 export function reportedLease(target: RefreshTarget | null, report: { item: string; lease: string; mainHead: string; expectedHead: string; actor: string }): RefreshLease {
   const lease = target?.lease;
-  if (!lease || lease.id !== report.lease) throw new RuleError("lease_lost", `${report.item} has no refresh lease ${report.lease}; it lapsed or another runner took it, so this report is not recorded`, 409);
-  if (lease.by !== report.actor) throw new RuleError("not_leaseholder", `${report.item}'s refresh lease is ${lease.by}'s, not ${report.actor}'s`, 403);
-  if (lease.mainHead !== report.mainHead) throw new RuleError("other_main", `${report.item}'s lease merges main at ${lease.mainHead.slice(0, 8)}, not ${report.mainHead.slice(0, 8)}`, 409);
-  if (lease.expectedHead !== report.expectedHead) throw new RuleError("other_head", `${report.item}'s lease started from ${lease.expectedHead.slice(0, 8)}, not ${report.expectedHead.slice(0, 8)}`, 409);
+  if (!lease || lease.id !== report.lease) throw new RuleError("lease_lost", `${report.item} has no refresh lease ${report.lease}; it lapsed or another runner took it, so this report is not recorded`, 409, `run atelier refresh-lease ${report.item} --job refresh for a new lease`);
+  if (lease.by !== report.actor) throw new RuleError("not_leaseholder", `${report.item}'s refresh lease is ${lease.by}'s, not ${report.actor}'s`, 403, `run atelier refresh-lease ${report.item} --job refresh for your own lease`);
+  if (lease.mainHead !== report.mainHead) throw new RuleError("other_main", `${report.item}'s lease merges main at ${lease.mainHead.slice(0, 8)}, not ${report.mainHead.slice(0, 8)}`, 409, "run atelier refreshes and start the refresh again");
+  if (lease.expectedHead !== report.expectedHead) throw new RuleError("other_head", `${report.item}'s lease started from ${lease.expectedHead.slice(0, 8)}, not ${report.expectedHead.slice(0, 8)}`, 409, "run atelier refreshes and start the refresh again");
   return lease;
 }
 

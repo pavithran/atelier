@@ -148,7 +148,7 @@ function save(sql: SqlStorage, a: ActionApproval): void {
 }
 
 function ownerOnly(store: ActionStore, actor: string, what: string): void {
-  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403);
+  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403, "only the developer can: atelier approvals");
 }
 
 const view = (a: ActionApproval, now: string): ApprovalView => ({ ...a, status: approvalStatus(a, now) });
@@ -171,7 +171,7 @@ export function approveAction(store: ActionStore, actor: string, body: Record<st
     // The same kind at the same revision, still active, on the same words: a
     // rerun of the approval that stands.
     if (same.quote === (direction?.quote ?? undefined)) return { ...view(same, now), already: true };
-    throw new RuleError("already_approved", `${kind} at ${short(commit)} is already approved as ${same.id}, until ${same.expiresAt}. To change its note or expiry, withdraw it first: atelier approvals withdraw ${same.id}`, 409);
+    throw new RuleError("already_approved", `${kind} at ${short(commit)} is already approved as ${same.id}, until ${same.expiresAt}. To change its note or expiry, withdraw it first: atelier approvals withdraw ${same.id}`, 409, `atelier approvals withdraw ${same.id}, then approve again`);
   }
   const n = all.length + 1;
   const approval: ActionApproval = { id: `a${n}`, kind, commit, note, ...(direction ?? {}), by: actor, at: now, expiresAt: new Date(Date.parse(now) + seconds * 1000).toISOString() };
@@ -183,9 +183,9 @@ export function approveAction(store: ActionStore, actor: string, body: Record<st
 export function withdrawAction(store: ActionStore, actor: string, id: string, note: unknown, now: string): ApprovalView {
   ownerOnly(store, actor, "withdraws an approval");
   const a = rows(store.sql).find((x) => x.id === id);
-  if (!a) throw new RuleError("no_approval", `no approval ${id}; atelier approvals lists them`, 404);
+  if (!a) throw new RuleError("no_approval", `no approval ${id}; atelier approvals lists them`, 404, "run atelier approvals to list the approval ids");
   const status = approvalStatus(a, now);
-  if (status !== "active") throw new RuleError("not_active", `${id} is ${status}, so there is nothing to withdraw`, 409);
+  if (status !== "active") throw new RuleError("not_active", `${id} is ${status}, so there is nothing to withdraw`, 409, "run atelier approvals --all");
   a.withdrawn = { by: actor, at: now, note: line(note, NOTE_MAX) };
   save(store.sql, a);
   store.log("action.withdrawn", { id, kind: a.kind, commit: a.commit, note: a.withdrawn.note });
@@ -209,7 +209,7 @@ export function consumeAction(store: ActionStore, actor: string, body: Record<st
       elsewhere.length ? `${kind} is approved only at another revision (${elsewhere.join(", ")})` : "",
       lapsed ? `${lapsed.id} for it is ${approvalStatus(lapsed, now)}` : "",
     ].filter(Boolean).join("; ");
-    throw new RuleError("not_approved", `no active approval for ${kind} at ${short(commit)}${why ? `: ${why}` : ""}. The developer approves it with: atelier approve ${kind} --head ${commit}`, 409);
+    throw new RuleError("not_approved", `no active approval for ${kind} at ${short(commit)}${why ? `: ${why}` : ""}. The developer approves it with: atelier approve ${kind} --head ${commit}`, 409, `only the developer can: atelier approve ${kind} --head ${commit}`);
   }
   match.consumed = { by: actor, at: now };
   save(store.sql, match);

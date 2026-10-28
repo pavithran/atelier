@@ -930,14 +930,24 @@ export function actingHeaders(as = args.as ?? process.env.ATELIER_ACTOR) {
 }
 
 export async function call(method, path, body, as, extra = {}) {
-  try { return await request(method, path, body, as, extra); } catch (error) { if (error instanceof RequestError) die(error.message, error.code); throw error; }
+  try { return await request(method, path, body, as, extra); } catch (error) {
+    if (error instanceof RequestError) {
+      if (error.refusal && jsonErrors()) { process.stderr.write(`${JSON.stringify(error.refusal)}\n`); process.exit(error.code); }
+      die(error.message, error.code);
+    }
+    throw error;
+  }
 }
 
 // A request the server refused or could not answer: the message `call`
 // prints and the exit code it ends with.
+// `refusal` is the server's {code, detail, next} when it refused (G8).
 export class RequestError extends Error {
-  constructor(message, code) { super(message); this.code = code; }
+  constructor(message, code, refusal) { super(message); this.code = code; if (refusal) this.refusal = refusal; }
 }
+
+// --json (or ATELIER_JSON=1) turns a refusal into one JSON object on stderr.
+const jsonErrors = () => !!args.json || (typeof process !== "undefined" && process.env.ATELIER_JSON === "1");
 
 // `call` without ending the command: a failure throws a RequestError, so a
 // caller can retry it or name the step that failed.
@@ -1043,7 +1053,9 @@ export async function request(method, path, body, as, extra = {}, signal) {
     const named = data.error === "no_project" ? /^\/projects\/([^/]+)/.exec(path)?.[1] : undefined;
     if (named) die(`${noProjectMessage(decodeURIComponent(named), server(), cfg.projects, registeredHere().name)}${doubt}`, code);
     if (res.status >= 300 && res.status < 400) die(`${res.status}: ${method} ${path} was answered with a redirect, which a write does not follow; check the server URL${doubt}`, 1);
-    die(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}${doubt}`, code);
+    const detail = `${data.detail ?? text.slice(0, 300)}${doubt}`;
+    const next = typeof data.next === "string" && data.next ? data.next : null;
+    throw new RequestError(`${data.error ?? res.status}: ${detail}${next ? `\nnext: ${next}` : ""}`, code, { code: String(data.error ?? res.status), detail, next });
   }
   return data;
 }

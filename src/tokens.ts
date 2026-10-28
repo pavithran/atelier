@@ -140,7 +140,7 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
 }
 
 export function runnerDenied(token: AgentToken): RuleError {
-  return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403);
+  return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403, "if the task was taken back by a dispatch, stop work on it; run atelier ls to see what you hold");
 }
 
 // Every HTTP call the home runner makes against the server, declared once
@@ -376,7 +376,7 @@ export function callParts(call: RunnerCall, params: Record<string, string> = { p
 export const TERMINAL_TASK_EXITS = { merged: 5, abandoned: 6 } as const;
 
 export function runnerTaskTerminal(id: string, state: keyof typeof TERMINAL_TASK_EXITS): RuleError {
-  return new RuleError("task_terminal", `${id} is ${state === "abandoned" ? "closed" : state} (state: ${state})`, 409);
+  return new RuleError("task_terminal", `${id} is ${state === "abandoned" ? "closed" : state} (state: ${state})`, 409, "stop work on this task; run atelier show ID");
 }
 
 // The exit a CLI command ends with when the server's answer is task_terminal:

@@ -96,7 +96,7 @@ export function preparePostMerge(run: PostMergeRun, paths: string[]): void {
 }
 export function startAttempt(run: PostMergeRun, id: string, at: string): Attempt {
   expireAttempt(run, Date.parse(at));
-  if (run.state !== "pending" || run.paths === null) throw new RuleError("post_merge_blocked", `run ${run.id} is ${run.state}; reconcile uncertain effects before retrying`, 409);
+  if (run.state !== "pending" || run.paths === null) throw new RuleError("post_merge_blocked", `run ${run.id} is ${run.state}; reconcile uncertain effects before retrying`, 409, `run atelier land ${run.members[0]} --post-merge reconcile --resolution no-effect|completed --reason TEXT`);
   const step = currentStep(run)!;
   const spec = run.policy.steps.find(s => s.name === step.name)!;
   const a: Attempt = { id, number: step.attempts.length + 1, startedAt: at, deadline: new Date(Date.parse(at) + spec.timeoutMs + 600000).toISOString(), outcome: "running" };
@@ -158,7 +158,7 @@ export function recoverPostMerge(run: PostMergeRun, action: string, reason: unkn
   // its before commit is unavailable). No command has started, so the owner
   // may waive each step without inventing a diff or an execution outcome.
   const reservedWaiver = run.state === "reserved" && !!run.after && action === "skip" && run.steps.every(s => s.attempts.every(a => a.outcome === "waived"));
-  if (["running", "uncertain", "reserved"].includes(run.state) && !reservedWaiver) throw new RuleError("post_merge_uncertain", "stop the executor and reconcile its external effect before retry or skip", 409);
+  if (["running", "uncertain", "reserved"].includes(run.state) && !reservedWaiver) throw new RuleError("post_merge_uncertain", "stop the executor and reconcile its external effect before retry or skip", 409, `run atelier land ${run.members[0]} --post-merge reconcile --resolution no-effect|completed --reason TEXT`);
   if (action === "retry") {
     if (run.state !== "failed") bad("only a failed step can be retried");
     if (a) a.retry = { by: actor, at, reason: String(reason) };

@@ -50,7 +50,9 @@ function fileName(name) {
 function crossed(err) {
   if (!(err instanceof Error)) return new Error(String(err));
   const Kind = [TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError].find((k) => err.constructor === k) ?? Error;
-  const out = new Kind(err.message);
+  // A RuleError's next command rides behind this mark (NEXT_MARK in src/rules.ts):
+  // only the message crosses, and parseRuleError reads it back.
+  const out = new Kind(typeof err.next === "string" && err.next && /^\d{3}\|/.test(err.message) ? `${err.message}\u001fnext\u001f${err.next}` : err.message);
   out.remote = true;
   return out;
 }
