@@ -1026,6 +1026,14 @@ test("wrong runner: another name in the offer, in the header or on another token
   assert.equal(polled.some((j) => j.item.id === id), false, "a held job is offered to its holder alone");
   for (const verb of ["claim", "read-token", "release", "submit"]) {
     assert.equal(runnerRoute("POST", ["projects", p.name, "items", id, verb], {}), true, verb);
+    // G5: a claim the poll offered this runner is refused naming the holder
+    // (409 claimed), so it passes the dispatch by; the other routes stay denied.
+    if (verb === "claim") {
+      const refusal = await expect(other("POST", `${p.base(id)}/claim`, { body: {} }), 409, "claim by another runner");
+      assert.equal(refusal.error, "claimed");
+      assert.match(refusal.detail, /is claimed by .* on home:studio; the dispatch can be given to another runner once home:studio has not polled for 5 minutes/);
+      continue;
+    }
     await denied(other("POST", `${p.base(id)}/${verb}`, { body: {} }), second, `${verb} by another runner`);
   }
   await denied(other("GET", p.base(id)), second, "read by another runner");

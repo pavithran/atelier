@@ -109,7 +109,7 @@ test("the next run is briefed to continue from the work in progress and never su
   const open = fixture({ heads: ["wip0123456789"], message, output: "Nothing to add." });
   const state = await runTask({ ...assignment, item: { ...assignment.item, state: "open", head: "wip0123456789", base: "base" } }, config, "home:studio", open.io);
   const brief = open.calls.find((c) => c.brief).brief;
-  assert.match(brief, /ended validation_blocked with its work uncommitted/);
+  assert.match(brief, /left its work uncommitted/);
   assert.match(brief, /Continue from it/);
   assert.match(brief, new RegExp(`git commit --allow-empty -m "subject" -m "Agent: ${actor}"`));
   // The harness added nothing: the unverified head is a stall, not a complete task.

@@ -1057,6 +1057,16 @@ export const workInProgressMessage = (actor, detail) => [
   `The runner committed this as the builder left it, unverified, for the next run to continue. The builder reported: ${oneLine(detail ?? "").slice(0, 500)}`,
   `Agent: ${actor}\n${WORK_IN_PROGRESS}`,
 ];
+// A build whose harness exits 0 with files changed and no commit (G5) has its
+// work kept the same way, as a commit starting "wip:" on the task's branch,
+// pushed and released with a note naming it. The trailer is the same, so the
+// next run continues from it.
+export const STALLED_REASON = "harness made no new commit";
+export const stalledWorkMessage = (item, actor) => [
+  `wip: ${item.id} ${oneLine(item.title ?? "").slice(0, 80)}`.trim(),
+  "The harness ended with files changed and no commit. The runner committed them as the harness left them, unverified, for the next run to continue.",
+  `Agent: ${actor}\n${WORK_IN_PROGRESS}`,
+];
 export async function commitWorkInProgress(git, message, log = () => {}) {
   // Fail closed: work that cannot be fully staged is not committed, so the
   // commit is never a partial copy that releasing the claim would let a reset
@@ -1083,7 +1093,7 @@ export async function commitWorkInProgress(git, message, log = () => {}) {
   return (await git(["rev-parse", "HEAD"])).trim();
 }
 export const workInProgressSection = (head, actor) => [
-  `The last run of this task ended validation_blocked with its work uncommitted. The runner committed that work as it stood, unverified, as ${String(head).slice(0, 12)} (marked ${WORK_IN_PROGRESS}), which the workspace's HEAD holds.`,
+  `The last run of this task left its work uncommitted. The runner committed that work as it stood, unverified, as ${String(head).slice(0, 12)} (marked ${WORK_IN_PROGRESS}), which the workspace's HEAD holds.`,
   `Continue from it: read it with git show ${String(head).slice(0, 12)}, finish what it lacks, run the tests for the files it changes and the typecheck, and commit on top of it; do not rewrite or drop it.`,
   `The runner submits only a new commit: if it already holds everything and its tests pass, say so with git commit --allow-empty -m "subject" -m "Agent: ${actor}".`,
 ].join("\n");
@@ -1677,7 +1687,7 @@ export async function runTask(assignment, config, name, io) {
     // Keep the marker for both the builder and a main-conflict resolver, so
     // a later run cannot resume committed but unverified work as a success.
     const head = await io.head(workspace).catch(() => null);
-    await io.writeValidationBlock?.(workspace, { actor, head, taskKey, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
+    await io.writeValidationBlock?.(workspace, { actor, head, taskKey, at: new Date((io.now ?? Date.now)()).toISOString(), detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
     throw Object.assign(new Error(blocked), { validationBlocked: true });
   };
   // The brief context the server alone holds, fetched the same way before
@@ -1819,6 +1829,17 @@ export async function runTask(assignment, config, name, io) {
       priorBlock = null;
       unblocked = true;
     }
+    // The server's record decides a block, never the file (G5). The queue
+    // names when the developer last unblocked the task (item.unblockedAt); a
+    // marker not written after that, or one with no time, is an old answer,
+    // whether or not the block's flag was ever set on it. A missing marker
+    // holds nothing back to begin with.
+    if (priorBlock && item.unblockedAt && !(Date.parse(priorBlock.at) >= Date.parse(item.unblockedAt))) {
+      io.log(`the developer unblocked the task at ${item.unblockedAt}, after the validation_blocked report in the workspace, so the runner clears that report and runs the builder`);
+      await io.clearValidationBlock?.(workspace);
+      priorBlock = null;
+      unblocked = true;
+    }
     if (priorBlock && priorBlock.taskKey !== taskKey) {
       io.log(priorBlock.taskKey
         ? "the task's scope, criteria or brief changed since its validation_blocked report, so the runner clears that report and retries because the task changed"
@@ -1867,7 +1888,7 @@ export async function runTask(assignment, config, name, io) {
     failedRun = onFile ?? inMemory;
     if (failedRun) failedRun = { ...failedRun, reruns: Math.max(onFile?.reruns ?? 0, inMemory?.reruns ?? 0) };
     continuing = io.headMessage ? isWorkInProgress(await io.headMessage(workspace).catch(() => "")) : false;
-    if (continuing) io.log(`the head ${String(before).slice(0, 8)} is work in progress a validation_blocked run committed; the builder continues from it`);
+    if (continuing) io.log(`the head ${String(before).slice(0, 8)} is work in progress the runner committed for an earlier run; the builder continues from it`);
     resumed = !continuing && !unblocked && item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
     if (failedRun) {
       if (failedRun.reruns >= MAX_HARNESS_RERUNS) {
@@ -2137,11 +2158,16 @@ export async function runTask(assignment, config, name, io) {
       // resolution in progress, which is no commit of the builder's to make;
       // and a commit whose push fails stays local, under the claim, as any
       // other commit does.
-      let kept = null, unstaged = false;
-      if (head === startedAt() && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
+      // A harness that exited 0 with files changed and no commit (G5) is
+      // kept the same way, as a "wip:" commit; it is released, not blocked,
+      // and a push the server refuses (the secret scan, say) is said in the
+      // release note, with the commit left in this workspace.
+      let kept = null, unstaged = false, pushRefused = null;
+      const stalled = !error.validationBlocked && error.message === STALLED_REASON;
+      if (head === startedAt() && (error.validationBlocked || stalled) && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
           !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
         let wip;
-        try { wip = await io.commitWork(workspace, runEnv, workInProgressMessage(actor, error.message)); }
+        try { wip = await io.commitWork(workspace, runEnv, stalled ? stalledWorkMessage(item, actor) : workInProgressMessage(actor, error.message)); }
         catch (commitError) {
           // Any failure of the commit itself (staging, signing, a hook, a
           // head read after it), whether or not HEAD moved, leaves the work
@@ -2157,11 +2183,30 @@ export async function runTask(assignment, config, name, io) {
             kept = wip;
           } catch (pushError) {
             io.log(`work in progress not kept: ${pushError.message}`);
+            if (stalled) pushRefused = { wip, why: oneLine(pushError.message).trim() };
             try { head = await io.head(workspace, { cleanup: true }); } catch { head = undefined; }
           }
         }
       }
-      if (kept) {
+      if (kept && stalled) {
+        state = { ...state, workInProgress: kept };
+        try {
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} (wip) and pushed for the next run to continue`)], workspace);
+          released = true;
+          io.log(`released: work in progress ${kept.slice(0, 8)} pushed for the next run`);
+        }
+        catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
+      } else if (pushRefused) {
+        // Local only, and said so: the commit stays in this workspace, which
+        // a later run on this runner continues from (continuing).
+        state = { ...state, workInProgress: pushRefused.wip, pushRefused: pushRefused.why };
+        try {
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${pushRefused.wip.slice(0, 8)} (wip) but the push was refused, so it is only in this runner's workspace: ${pushRefused.why}`)], workspace);
+          released = true;
+          io.log(`released: work in progress ${pushRefused.wip.slice(0, 8)} is local only, the push was refused`);
+        }
+        catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
+      } else if (kept) {
         state = { ...state, workInProgress: kept };
         const note = `${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} and pushed unsubmitted for the next run to continue`;
         try {
@@ -3806,6 +3851,53 @@ export function noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTa
   skipHeads.set(key, heads);
 }
 
+// What the runner remembers of the tasks it passes by (G5): the claims it was
+// refused, the tasks it gave up, its failure counts and its same-exit stops.
+// It goes with every poll and heartbeat, the server keeps it with the offer,
+// and a restarted runner reads it back at start (restoreMemory), so a stop is
+// not forgotten by a restart. Each list keeps its newest MEMORY_MAX entries.
+// `reasons` says each task's stop in words, for the owner's listing. The
+// waits that count polls (backoff, not_ready) are not kept: their polls
+// start again from zero.
+export const MEMORY_MAX = 200;
+export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads }) {
+  const newest = (items) => [...items].slice(-MEMORY_MAX);
+  const counted = (map) => newest([...map].filter(([, n]) => n > 0)).map(([key, count]) => ({ key, count }));
+  const reasons = new Map();
+  const say = (key, why) => {
+    try { const [project, id] = JSON.parse(key); if (typeof project === "string" && typeof id === "string") reasons.set(`${project}/${id}`, why); } catch { /* A key that is not a task's says nothing. */ }
+  };
+  for (const key of refused) say(key, "claim refused or skipped here; passed by until the task changes");
+  for (const [key, n] of failures) if (n >= 2) say(key, `skipped after ${n} failed runs under this dispatch`);
+  for (const [key, n] of infrastructureFailures) if (n >= 3) say(key, `skipped after ${n} infrastructure failures in a row under this dispatch`);
+  for (const key of gaveUpTasks) say(key, "gave it up and released it; passed by until it is dispatched again");
+  for (const [key, entry] of sameExits) if (sameExitStopped(entry)) say(key, `its harness exited the same way ${entry.count} times in a row`);
+  return {
+    refused: newest(refused),
+    gaveUp: newest(gaveUpTasks),
+    failures: counted(failures),
+    infrastructure: counted(infrastructureFailures),
+    sameExits: newest(sameExits).map(([key, entry]) => ({ key, count: entry.count, signature: entry.signature, exit: entry.exit })),
+    skipHeads: newest(skipHeads).map(([key, heads]) => ({ key, heads: [...heads] })),
+    reasons: newest(reasons).map(([task, why]) => ({ task, why })),
+  };
+}
+
+// Puts a memory the server held back into the maps (runnerMemory's inverse);
+// anything of another shape is left out. Returns how many entries it restored.
+export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads }) {
+  if (!memory || typeof memory !== "object") return 0;
+  const named = (list) => (Array.isArray(list) ? list : []).filter((e) => e && typeof e.key === "string");
+  let restored = 0;
+  for (const key of Array.isArray(memory.refused) ? memory.refused : []) if (typeof key === "string") { refused.add(key); restored++; }
+  for (const key of Array.isArray(memory.gaveUp) ? memory.gaveUp : []) if (typeof key === "string") { gaveUpTasks.add(key); restored++; }
+  for (const { key, count } of named(memory.failures)) if (Number.isInteger(count)) { failures.set(key, count); restored++; }
+  for (const { key, count } of named(memory.infrastructure)) if (Number.isInteger(count)) { infrastructureFailures.set(key, count); restored++; }
+  for (const { key, count, signature, exit } of named(memory.sameExits)) if (Number.isInteger(count) && typeof signature === "string" && exit && typeof exit === "object") { sameExits.set(key, { count, signature, exit }); restored++; }
+  for (const { key, heads } of named(memory.skipHeads)) if (Array.isArray(heads)) { skipHeads.set(key, new Set(heads)); restored++; }
+  return restored;
+}
+
 // The file a plan job's harness writes the plan document to, inside the
 // workspace: the runner's reset cleans a stale one away before each run, the
 // harness is told to commit nothing, and the runner reads it back as the
@@ -4186,6 +4278,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // was last read. Each is passed by until the baseline's head moves
   // (recheckMissing), read through `baselineHead` at most every
   // MISSING_RECHECK_MS; a CLI wired without it keeps them until restart.
+  // What the runner remembers of the tasks it passes by goes with every poll
+  // and heartbeat, and is read back at start (runnerMemory, G5).
+  const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads }) });
   const missing = new Map();
   // Post-merge reviews whose baseline could not be fetched (t591), by
   // missingKey: the commit, the failures so far and the poll the next try
@@ -4636,11 +4731,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         if (tokenProjects) mine = await tokenProjects(controller.signal);
         else if (api?.server && credential && checkCapabilities(serverVersion, [RUNNER_ME]).ok) {
           const res = await runnerTransport({ server: api.server(), credential, runner: args.name.toLowerCase() }).send("runner-me", {}, { signal: controller.signal });
-          if (res.ok && Array.isArray(res.data?.projects)) mine = { projects: res.data.projects, names: res.data.names };
+          if (res.ok && Array.isArray(res.data?.projects)) mine = { projects: res.data.projects, names: res.data.names, memory: res.data.memory };
         }
       } catch (error) { if (!controller.signal.aborted) line(`the token's projects could not be read (${error.message}); serving the config's alone`); }
       const result = servedProjects(config.projects, mine);
       served = result.projects;
+      // The stops the server kept of the last process (G5): a restart loses none.
+      const restored = restoreMemory(mine?.memory, { refused, gaveUpTasks, failures, infrastructureFailures, sameExits, skipHeads });
+      if (restored) line(`restored ${restored} remembered stop${restored === 1 ? "" : "s"} (skips, refusals, failure counts) from the server`);
       // The offer says the same projects, so routing never picks this runner
       // for work in one it leaves out.
       if (served) offer.projects = [...served];
@@ -4727,7 +4825,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         let tasks;
         await checkReady();
         if (controller.signal.aborted) break;
-        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport() };
+        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()) };
         try { tasks = await queue(pollOffer, controller.signal); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
@@ -4810,7 +4908,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()) }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
           if (task.item.dispatch?.job === "land") { landOutcome(task, state); continue; }
           if (state.providerLimit) {

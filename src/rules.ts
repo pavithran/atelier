@@ -37,6 +37,10 @@ export interface Item {
   // and Ledger.heldJobs), so the server's brief, which carries their
   // findings, is known to hold something before the build starts.
   criteriaReviews?: number;
+  // When the developer last unblocked the task, from the log: the queue
+  // carries it so a runner's validation-block marker, older than that, is not
+  // replayed (G5). Absent for a task never unblocked.
+  unblockedAt?: string;
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
   // The owner's standing permission for an override from the command line
   // (t371): given on the task's page under the owner's own sign-in, for one
@@ -1083,7 +1087,7 @@ export function assertClaimable(item: Item, actor: string): void {
     throw new RuleError("closed", `${item.id} is ${item.state}`);
   }
   if (item.owner && item.owner !== actor) {
-    throw new RuleError("owned", `${item.id} is held by ${item.owner}; ask for a handoff`);
+    throw new RuleError("owned", `${item.id} is held by ${item.owner}${item.runner ? ` on ${item.runner}` : ""}; ask for a handoff`);
   }
 }
 

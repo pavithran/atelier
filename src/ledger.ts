@@ -46,7 +46,7 @@ import { ago } from "./floor.ts";
 // The note on the release a dispatch makes of a held task; the holder reads it
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -2324,11 +2324,15 @@ export class Ledger extends DurableObject<Env> {
       const scoped = offer.projects
         ? { ...offer, projects: [...new Set([...offer.projects, ...projects.filter((p) => inScope({ projects: offer.projects }, [p.name, ...(p.formerly ?? [])])).map((p) => p.name)])] }
         : offer;
-      const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, scoped.runner).toArray()[0];
+      const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, offer.runner).toArray()[0];
       const seen = row ? (JSON.parse(row.json as string) as SeenOffer) : null;
-      const same = !!seen && row!.json === JSON.stringify({ ...scoped, at: seen.at });
+      // An ask that carries no memory (an older runner's, or a heartbeat)
+      // keeps the last one sent (G5), and is the same offer as the row.
+      const { memory: kept, ...rest } = seen ?? ({} as SeenOffer);
+      const keeps = !scoped.memory && !!kept;
+      const same = !!seen && (keeps ? JSON.stringify(rest) === JSON.stringify({ ...scoped, at: seen.at }) : row!.json === JSON.stringify({ ...scoped, at: seen.at }));
       const fresh = !!seen && Date.parse(at) - Date.parse(seen.at) < OFFER_REFRESH_MS && Date.parse(at) >= Date.parse(seen.at);
-      if (!same || !fresh) this.putRunnerOffer(scoped, at);
+      if (!same || !fresh) this.putRunnerOffer(keeps ? { ...scoped, memory: kept } : scoped, at);
     }
     return projects;
   }
@@ -2940,7 +2944,9 @@ export class Ledger extends DurableObject<Env> {
   runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[], idleRunner?: string): { waiting: Waiting[]; reviews: (Item & { request: number })[]; busy: { runner: string; id: string }[] } {
     if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
     if (polls) this.recordRunnerPolls(polls);
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
+    // The runner's memory (G5) is kept on the index with its offer, not in every project.
+    const { memory: _memory, ...kept } = offer;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...kept, at: new Date().toISOString() }));
     // The polls an offer was judged with, which an earlier build kept per
     // token, are judged with no longer.
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-offer-polls:${token.id}`);
@@ -3007,6 +3013,16 @@ export class Ledger extends DurableObject<Env> {
         const held = coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
         if (!held) return;
         throw new RuleError("held", heldClaimText(item.id, held), 409);
+      }
+    }
+    // A dispatch is claimed by one runner (G5). Another runner whose live
+    // offer is assigned the dispatch is told who holds it and when it is
+    // reassignable, instead of runner_forbidden, so it passes the dispatch by.
+    if (claim && item.state === "claimed" && item.owner && item.runner && item.runner.toLowerCase() !== (token.runner ?? "").toLowerCase() && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
+      const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor) {
+        const gone = orphanedBy(item, this.runnerPolls());
+        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409);
       }
     }
     throw runnerDenied(token);
@@ -3287,9 +3303,12 @@ export class Ledger extends DurableObject<Env> {
   refuseLiveHolder(id: string, input: Record<string, unknown>): void {
     const item = this.item(id);
     if (item.state !== "claimed" || !item.owner || input.release === true) return;
+    // A claim whose runner stopped polling for RUNNER_GONE_MS is not live: the
+    // dispatch is reassignable without --release (G5, orphanedBy).
+    if (orphanedBy(item, this.runnerPolls())) return;
     const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
     const since = row?.at ? `, who claimed it ${ago(row.at as string, new Date())}` : "";
-    throw new RuleError("held", `${id} is held by ${item.owner}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409);
+    throw new RuleError("held", `${id} is held by ${item.owner}${item.runner ? ` on ${item.runner}` : ""}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409);
   }
 
   // The owner's release of an overlap-held dispatch: only the overlap
@@ -3442,7 +3461,7 @@ export class Ledger extends DurableObject<Env> {
 
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
-    const open = this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []);
+    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
@@ -3661,8 +3680,8 @@ export class Ledger extends DurableObject<Env> {
   // offer it until the hold clears (lapsedClaimHold).
   heldJobs(runner: string): (Item & { held?: CoreHold })[] {
     const mine = this.claimedRows().filter((r) => ((r.runner as string | null) ?? "").toLowerCase() === runner.toLowerCase());
-    const jobs = this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)));
+    const jobs = this.withUnblockedAt(this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))));
     // Every item is read only when a claim ended its run, so a poll reads
     // the claimed rows alone as before (t762).
     const polls = jobs.length ? this.runnerPolls() : null;
@@ -3701,6 +3720,16 @@ export class Ledger extends DurableObject<Env> {
     return items.map((i) => {
       const findings = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, i.id).one().n as number;
       return findings ? { ...i, criteriaReviews: findings } : i;
+    });
+  }
+
+  // Every build item the queue offers carries when the developer last
+  // unblocked it, so the runner takes the server's record over a marker file
+  // in its workspace (G5).
+  private withUnblockedAt<T extends Item>(items: T[]): T[] {
+    return items.map((i) => {
+      const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind = 'item.unblocked' ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
+      return row ? { ...i, unblockedAt: row.at as string } : i;
     });
   }
 
