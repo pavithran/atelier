@@ -854,7 +854,7 @@ export async function runLand(io) {
       const reviewed = fast ? undefined : await reviewStep(io, { id, name, itemPath, reviewer, head, record, oneShot: !noWait });
       if (fast) {
         print(`${name} is in fast mode: ${id} lands on its passing checks, and its independent review is asked after the merge.`);
-        await record("review", 0, { skipped: true, fast: true });
+        await record("review", 0, { skipped: true });
       }
       await recordLandRequest(io, itemPath, id);
       if (reviewed === "asked") {
