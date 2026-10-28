@@ -55,9 +55,25 @@ test("ship reads docs/atelier/ship.json unless told otherwise, and main's order 
   assert.equal(deploy.ifChanged.since, STAGING_URL);
   assert.deepEqual(main.steps.find((s) => s.step === "verify-delivery").runs[0].argv, ["node", "scripts/ship-worker.mjs", "verify", "--version-url", STAGING_URL]);
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
-  assert.match(pkg.scripts.deploy, /^wrangler deploy --env staging /);
+  assert.match(pkg.scripts.deploy, /node scripts\/ship-worker\.mjs deploy --env staging$/);
   // No run of main's order reaches production.
   assert.doesNotMatch(JSON.stringify(main.steps), /https:\/\/atelier\.zone/);
+});
+
+test("npm run deploy goes through ship-worker and deploys the staging Worker even with CLOUDFLARE_ENV set", (t) => {
+  const f = repo(t);
+  mkdirSync(join(f.cwd, "scripts"));
+  writeFileSync(join(f.cwd, "scripts/ship-worker.mjs"), readFileSync(script));
+  writeFileSync(join(f.cwd, "package.json"), JSON.stringify({ scripts: { deploy: JSON.parse(readFileSync(resolve("package.json"), "utf8")).scripts.deploy } }));
+  f.git("add", "."); f.git("commit", "-qm", "scripts");
+  const bin = mkdtempSync(join(tmpdir(), "atelier-fake-npx-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const log = join(bin, "log");
+  writeFileSync(join(bin, "npx"), `#!/bin/sh\necho "$@" > '${log}'\n`);
+  chmodSync(join(bin, "npx"), 0o755);
+  const r = spawnSync("npm", ["run", "deploy"], { cwd: f.cwd, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_ENV: "production", ATELIER_SHIP_HEAD: "" } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(log, "utf8"), /^wrangler deploy --env staging --keep-vars --var DEPLOYED_MAIN:[0-9a-f]{40}\n$/);
 });
 
 test('"push": false leaves the push step out, and refuses the steps that run with it', (t) => {

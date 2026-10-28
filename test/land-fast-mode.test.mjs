@@ -17,6 +17,18 @@ test("in fast mode atelier land merges on the checks and asks the review after t
   assert.equal(f.box.reviewAsks.length, 1, "the one ask is the post-merge one");
 });
 
+test("in fast mode the recorded review step carries no field the ledger rejects", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.mode = { mode: "fast", since: "2026-10-19T09:00:00.000Z", reason: "Artifacts fails", by: "owner", decision: null };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  const step = f.box.requests.find((x) => x.method === "POST" && x.path === "/api/projects/proj/items/t1/land" && x.body.step === "review");
+  assert.ok(step, "the landing recorded its review step");
+  assert.equal(step.body.skipped, true);
+  assert.equal("fast" in step.body, false, "LAND_DATA has no fast field, so the ledger answers bad_field");
+});
+
 test("in fast mode a landing with a named reviewer asks that reviewer after the merge", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
