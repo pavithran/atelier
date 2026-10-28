@@ -7799,6 +7799,7 @@ export class Ledger extends DurableObject<Env> {
   // and at `head`, so a report never lands against nothing; a request no
   // longer open is still recorded, since a report may arrive late.
   recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, note: string, proved = false): void {
+    note = redactKeys(note);
     if (isPrereviewRequest(request)) { this.prereviewOutcome(itemId, actor, request, { outcome: "skipped", detail: `${runner} skipped it${note ? `: ${note.slice(0, REASON_MAX)}` : ""}` }, proved, head); return; }
     this.item(itemId);
     const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
