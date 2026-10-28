@@ -258,3 +258,23 @@ test("entering the merge needs the task's live lease and its current attempt; a 
   assert.match(r.json.next ?? "", /atelier land t\d+/);
   assert.deepEqual((await w.detail(id)).landing, before, "the failure's evidence stands");
 });
+
+test("merge --landing without the lease leaves an unfinished attempt's record as it was", async (t) => {
+  const w = await landingWorld(t);
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  assert.equal((await w.api("POST", `/projects/demo/items/${id}/accept`, { head: (await w.detail(id)).item.head })).status, 200);
+  // An attempt under way, which has not failed: started and leased, then let go.
+  for (const step of ["start", "lease", "accept"]) assert.equal((await w.api("POST", `/projects/demo/items/${id}/land`, { step, ms: 0 })).status, 200);
+  const before = (await w.detail(id)).landing;
+  const main = await w.tip();
+  const r = await w.cli(["merge", id, "--landing"]);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /no_lease: t\d+'s landing holds no live landing lease, so it cannot enter its merge/);
+  assert.match(r.output, /next: run atelier land t\d+/);
+  assert.deepEqual((await w.detail(id)).landing, before, "the record is unchanged");
+  assert.equal(await w.tip(), main);
+  // Nor can anyone record a failure of a step under the lease without it.
+  const direct = await w.api("POST", `/projects/demo/items/${id}/land`, { step: "merge-main", ms: 0, failed: true, attempt: before.attempt });
+  assert.equal(direct.status, 409); assert.equal(direct.json.error, "no_lease");
+  assert.deepEqual((await w.detail(id)).landing, before);
+});

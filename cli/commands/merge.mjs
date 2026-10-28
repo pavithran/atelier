@@ -184,9 +184,12 @@ export default async function mergeCommand() {
   const lander=args.landing===true;
   let step='merge-main', stepAt=Date.now();
   const begin=(s)=>{step=s;stepAt=Date.now();};
+  // The attempt this merge entered (beginLandMerge), sent with each step it
+  // records, so the Ledger takes them only for the current attempt.
+  let landAttempt;
   const record=async(s,ms,data={})=>{
     if(!lander)return;
-    try{await request('POST',`${I(name,id)}/land`,{step:s,ms:Math.max(0,Math.round(ms)),...data},OWNER);}
+    try{await request('POST',`${I(name,id)}/land`,{step:s,ms:Math.max(0,Math.round(ms)),...data,...(Number.isInteger(landAttempt)?{attempt:landAttempt}:{})},OWNER);}
     catch(error){console.error(`Warning: the landing's ${s} step could not be recorded: ${error.message}`);}
   };
   // Every stop of the lander's merge names its step on the record, with the
@@ -207,9 +210,11 @@ export default async function mergeCommand() {
     if(lander){
       // It names the attempt it belongs to, which the Ledger checks against
       // the task's landing record and its live lease.
-      const attempt=(await request('GET',I(name,id),undefined,OWNER).catch(()=>null))?.landing?.attempt;
-      try{await request('POST',`${I(name,id)}/land-merge`,attempt===undefined?{}:{attempt},OWNER);}
-      catch(error){await fail(error.message,{},error.code);}
+      landAttempt=(await request('GET',I(name,id),undefined,OWNER).catch(()=>null))?.landing?.attempt;
+      // A refused entry is this call's, not the landing's: it ends here with
+      // the refusal and records nothing on the task.
+      try{await request('POST',`${I(name,id)}/land-merge`,landAttempt===undefined?{}:{attempt:landAttempt},OWNER);}
+      catch(error){die(error.message,error.code??1);}
     }
     const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
     // A landing begun at an acceptance that has since been withdrawn or

@@ -470,7 +470,7 @@ export interface LandingRecord {
 // cut to its first entries by the ledger itself, which adds the count of the
 // whole list beside it (`fromMainCount`, cutLandLists below), so no caller
 // sends those counts.
-const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "regenerated" | "ms" | "tail" | "count"> = {
+const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "regenerated" | "ms" | "tail" | "count" | "attempt"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   // A merge's main head, and the route levels where main and the task each
   // raised it (t248: base, main, task, what the merge left, what was set).
@@ -492,6 +492,9 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "r
   // step's own output, the files a merge stopped on, the check that failed,
   // and how many times main moved between the checks and the push (G2).
   fast: "boolean", tail: "tail", files: "strings", failedCheck: "string", rounds: "count",
+  // The attempt a step belongs to (the landing record's), which the Ledger
+  // checks for a failure of a step under the lease.
+  attempt: "attempt",
 };
 export const LAND_JSON_MAX = 4000;
 // What a review request answers: the request made or standing, and any
@@ -514,6 +517,7 @@ const LAND_KIND_TEXT: Record<string, string> = {
   ms: "a duration in milliseconds, thirty days at most",
   tail: `text, cut to its last ${2000} characters`,
   count: "a whole number from 0 to 100",
+  attempt: "a whole number from 1",
 };
 const ROUTE_LEVEL_KEYS = ["base", "main", "task", "was", "set"];
 const MATCHES = new Set(["ours", "theirs", "neither side"]);
@@ -552,6 +556,7 @@ function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
     if (kind === "string" && typeof value === "string") out[key] = value.slice(0, 500);
     else if (kind === "tail" && typeof value === "string") out[key] = value.slice(-LAND_TAIL_MAX);
     else if (kind === "count" && Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 100) out[key] = value;
+    else if (kind === "attempt" && Number.isInteger(value) && (value as number) >= 1) out[key] = value;
     else if (kind === "boolean" && typeof value === "boolean") out[key] = value;
     else if (kind === "strings" && Array.isArray(value) && value.length <= 200 && value.every((s) => typeof s === "string")) out[key] = value.slice(0, 200).map((s) => s.slice(0, 200));
     else if (shaped) out[key] = shaped;
@@ -6064,6 +6069,15 @@ export class Ledger extends DurableObject<Env> {
     if (!Number.isFinite(ms) || ms < 0 || ms > 86_400_000) throw new RuleError("bad_ms", "ms must be the step's duration in milliseconds, a day at most", 400);
     const clean = cleanLandData(data);
     const at = new Date().toISOString();
+    // A failure of a step under the lease (the merge, its checks, the push,
+    // the record) stops the task's land job and rewrites its record, so only
+    // the landing that holds this task's live lease, in the record's current
+    // attempt, records one (G1). Anyone else changes nothing.
+    if (clean.failed === true && LAND_PAST_MERGE.has(step)) {
+      const held = this.projectLanding(), record = this.landingRecord(id);
+      if (!held || held.item !== id || !this.landingLive(held, at)) throw new RuleError("no_lease", `${id}'s landing holds no live landing lease, so a failure of its ${step} step is not recorded; nothing was changed`, 409, `run atelier land ${id}`);
+      if (!record || clean.attempt !== record.attempt) throw new RuleError("stale_landing", `${id}'s landing record is at attempt ${record?.attempt ?? "none"}, not ${clean.attempt ?? "unnamed"}, so this failure belongs to no current attempt; nothing was changed`, 409, `run atelier land ${id}`);
+    }
     this.log(id, actor, `land.${step}`, { ms: Math.round(ms), ...clean }, at, proved);
     this.noteLandingStep(id, step, clean, at);
     return this.item(id);

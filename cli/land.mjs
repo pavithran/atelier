@@ -815,11 +815,11 @@ export async function runLand(io) {
   // The step under way, for the landing record (G1): a failure that no step
   // recorded itself (a lease not taken, a gate that does not stand, a signal)
   // is recorded as this step failing, with the failure's own words.
-  let current = "start";
+  let current = "start", failureAttempt;
   const recordFailure = async (message, data = null) => {
     // A step that recorded its own stop (a stopped triage) is not recorded twice.
     if (failureRecorded || data?.recorded) return;
-    await record(current, 0, { failed: true, tail: tailOf(message) });
+    await record(current, 0, { failed: true, tail: tailOf(message), ...(Number.isInteger(failureAttempt) ? { attempt: failureAttempt } : {}) });
   };
   stepFailure = recordFailure;
   try {
@@ -926,7 +926,7 @@ export async function runLand(io) {
       // was killed, or failed before its first step) is recorded here.
       const after = await request("GET", itemPath).catch(() => null);
       if (after?.landing?.failedStep) failureRecorded = true;
-      else if (after?.landing?.step) current = after.landing.step;
+      else if (after?.landing?.step) { current = after.landing.step; failureAttempt = after.landing.attempt; }
       throw new StepError(`atelier merge failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
     }
     print(`${id} landed: merged as ${short(mergeHead())}.`);
