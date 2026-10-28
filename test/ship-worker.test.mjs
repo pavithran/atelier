@@ -66,6 +66,33 @@ test("deployment failure and a source change during deployment cannot report suc
   assert.throws(() => deployWorker({ ...f, run: () => { writeFileSync(join(f.cwd, "source.txt"), "changed"); return { status: 0 }; } }), /uncommitted/);
 });
 
+// A clock that sleeping advances, so retries cost no real time.
+function fakeClock() {
+  let time = 0; const sleeps = [];
+  return { now: () => time, sleep: async (ms) => { sleeps.push(ms); time += ms; }, sleeps };
+}
+
+test("verification retries an old commit and passes once the new one is served", async (t) => {
+  const f = fixture(t); const clock = fakeClock(); let calls = 0;
+  const old = "a".repeat(40);
+  assert.equal(await verifyWorker({ ...f, ...clock, fetchImpl: async () => Response.json({ commit: ++calls <= 2 ? old : f.head }) }), f.head);
+  assert.equal(calls, 3);
+  assert.deepEqual(clock.sleeps, [1000, 2000]);
+});
+
+test("verification fails after the window when the commit never changes, naming both commits", async (t) => {
+  const f = fixture(t); const clock = fakeClock(); const old = "a".repeat(40);
+  await assert.rejects(verifyWorker({ ...f, ...clock, fetchImpl: async () => Response.json({ commit: old }) }),
+    (error) => error.message.includes(old) && error.message.includes(f.head) && /60 s/.test(error.message));
+  assert.equal(clock.now(), 60_000);
+});
+
+test("verification does not retry an HTTP error", async (t) => {
+  const f = fixture(t); const clock = fakeClock(); let calls = 0;
+  await assert.rejects(verifyWorker({ ...f, ...clock, fetchImpl: async () => { calls++; return Response.json({}, { status: 503 }); } }), /503/);
+  assert.equal(calls, 1);
+});
+
 test("verification matches deployed commit, independently of ledger main, without credentials or redirects", async (t) => {
   const f = fixture(t);
   assert.equal(await verifyWorker({ ...f, fetchImpl: async (url, options) => {
@@ -86,7 +113,7 @@ for (const [name, response] of [
   ["array", () => Response.json([])],
 ]) test(`verification refuses ${name}`, async (t) => {
   const f = fixture(t);
-  await assert.rejects(verifyWorker({ ...f, fetchImpl: async () => response(f) }));
+  await assert.rejects(verifyWorker({ ...f, ...fakeClock(), fetchImpl: async () => response(f) }));
 });
 
 test("verification refuses unavailable service and source movement during its request", async (t) => {
