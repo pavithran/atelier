@@ -287,10 +287,12 @@ function gitHost(env: Env): GitHost | null {
 // The remote of a project's repository on the Node server: at the tailnet or
 // loopback address the server accepted the request on, which the Node server
 // reads from the socket and names in x-atelier-git-origin (gitOrigin in
-// src/runtime/server.mjs), and at the public origin otherwise, as through
-// the tunnel.
+// src/runtime/server.mjs), and at the configured PUBLIC_ORIGIN otherwise, as
+// through the tunnel: never at an origin the request itself names.
 function gitRemote(c: Ctx, project: string): string {
-  return `${c.req.headers.get("x-atelier-git-origin") || c.url.origin}/git/${encodeURIComponent(project)}.git`;
+  const origin = c.req.headers.get("x-atelier-git-origin") || ((c.env as unknown as Settings).PUBLIC_ORIGIN ?? "").trim().replace(/\/+$/, "");
+  if (!origin) throw new RuleError("no_public_origin", "this server names no PUBLIC_ORIGIN, so it cannot give a Git remote outside the tailnet", 503, "only the developer can: set PUBLIC_ORIGIN for the server");
+  return `${origin}/git/${encodeURIComponent(project)}.git`;
 }
 
 // A task's branch (design section 4.3): t/N, or plan/N for a plan's

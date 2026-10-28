@@ -17,6 +17,7 @@
 //   5. The secret scan of the commits the push adds; a key-shaped line the
 //      owner has not cleared refuses the push, naming file and line.
 //   6. The private-file guard: no commit adds a private path.
+//   7. The grant is still live, asked of the server at hook time.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
@@ -61,3 +62,15 @@ await import("../src/runtime/loader.mjs");
 const { checkPush } = await import("../src/git/scan.mjs");
 const refusal = await checkPush({ old, sha, ref, branch, task, policyPath: policy, reportPath: report });
 if (refusal) refuse(refusal);
+// 7. Last, the grant is asked about again, at the server: a push let in
+// while its grant was live is refused when the grant was revoked, or its task
+// handed over, given up or closed, while the pack was still arriving. A grant
+// the server does not confirm, or a server that does not answer, refuses.
+const { ATELIER_GRANT: grant = "", ATELIER_GRANT_CHECK: check = "", ATELIER_HOOK_SECRET: secret = "" } = process.env;
+if (!check || !secret) refuse("this push has no way to check its credential with the server; nothing was pushed");
+let live = false;
+try {
+  const res = await fetch(check, { method: "POST", headers: { "content-type": "application/json", "x-atelier-hook-secret": secret }, body: JSON.stringify({ grant }), signal: AbortSignal.timeout(10_000) });
+  live = res.ok && (await res.json()).live === true;
+} catch { /* unanswered: not live */ }
+if (!live) refuse("this credential is no longer live: the task was handed over, released, closed or its token revoked while the push arrived; nothing was pushed");

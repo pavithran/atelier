@@ -17,7 +17,7 @@ import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { Namespace, notSupported } from "./namespace.mjs";
-import { GitHost } from "../git/host.mjs";
+import { GitHost, GRANT_LIVE } from "../git/host.mjs";
 import { LocalArtifacts } from "../git/artifacts.mjs";
 import { LocalLarge } from "./large.mjs";
 
@@ -131,6 +131,21 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   bindings.GIT ??= git.binding();
   const pending = new Set();
   const server = createServer(async (req, res) => {
+    // A request target is a path: one that does not start with a single
+    // "/" (an absolute form such as http://evil.example/api/..., or
+    // //evil.example/...) would name another origin than this server's.
+    if (!req.url?.startsWith("/") || req.url.startsWith("//")) {
+      req.resume();
+      res.writeHead(400, { "content-type": "text/plain" });
+      res.end("the request target must be a path starting with one /\n");
+      return;
+    }
+    if (req.url === GRANT_LIVE || req.url.startsWith(`${GRANT_LIVE}?`)) {
+      const done = git.handleInternal(req, res).catch((err) => { console.error("grant check failed:", err.message); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
+      pending.add(done);
+      done.finally(() => pending.delete(done));
+      return;
+    }
     if (req.url?.startsWith("/git/") && !req.url.startsWith("/git/runner/")) {
       const done = git.handle(req, res).then((handled) => { if (!handled) { res.writeHead(404, { "content-type": "text/plain" }); res.end("no such Git route\n"); } })
         .catch((err) => { console.error("git request failed:", err); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
@@ -156,6 +171,7 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   server.keepAliveTimeout = 65_000;
   await new Promise((ok, fail) => { server.once("error", fail); server.listen(port, host, ok); });
   const bound = server.address().port;
+  git.listening(server.address());
   Object.assign(workerEnv, settings({ env, port: bound, secretsDir, vars }), bindings, { LEDGER: namespace });
   namespace.start();
   const url = `http://localhost:${bound}`;

@@ -53,6 +53,13 @@ export class GrantStore {
     if (!row || row.revoked_at !== null || row.expires_at <= now) return null;
     return { ...row };
   }
+  // The live grant under an id, or null, as find answers for a token.
+  findById(id, now = Date.now()) {
+    if (typeof id !== "string" || !/^[0-9a-f]{16}$/.test(id)) return null;
+    const row = this.db.prepare(`SELECT * FROM grants WHERE id = ?`).get(id);
+    if (!row || row.revoked_at !== null || row.expires_at <= now) return null;
+    return { ...row };
+  }
   revoke(id, now = Date.now()) {
     return this.db.prepare(`UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(now, id).changes > 0;
   }

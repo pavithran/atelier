@@ -31,7 +31,9 @@ export function tokenOf(header) {
 // The environment `git http-backend`, `git receive-pack` and the hook run
 // with. Nothing from the server's own environment passes but PATH. `scan`
 // is the push's ATELIER_POLICY and ATELIER_REPORT.
-export function backendEnv({ reposDir, key, rest, method, query, contentType, encoding, protocol, grant, scan = {} }) {
+// `hook` is what the hook re-checks the grant with at hook time
+// (ATELIER_GRANT_CHECK, ATELIER_HOOK_SECRET; GitHost.hookEnv).
+export function backendEnv({ reposDir, key, rest, method, query, contentType, encoding, protocol, grant, scan = {}, hook = {} }) {
   const env = {
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`,
     HOME: reposDir,
@@ -50,6 +52,7 @@ export function backendEnv({ reposDir, key, rest, method, query, contentType, en
     ATELIER_BRANCH: grant.branch,
     ATELIER_ACCEPTED: grant.accepted ?? "",
     ...scan,
+    ...hook,
   };
   if (contentType) env.CONTENT_TYPE = contentType;
   if (encoding) env.HTTP_CONTENT_ENCODING = encoding;
@@ -71,7 +74,7 @@ function deny(res, status, text) {
 // its key. `scans`, for a push: `dir`, where each push's policy and report
 // are written, `policy(grant)`, the policy, and `record(grant, report)`,
 // called with the hook's report before the answer ends.
-export async function gitRequest(req, res, { reposDir, authorize, ensure, scans }) {
+export async function gitRequest(req, res, { reposDir, authorize, ensure, scans, hook }) {
   const url = new URL(req.url ?? "/", "http://git.local");
   const m = ROUTE.exec(url.pathname);
   if (!m) return false;
@@ -86,7 +89,7 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure, scans 
   const key = await ensure(grant);
   const scan = rest === "git-receive-pack" && scans ? openScan(scans.dir, await scans.policy(grant)) : null;
   const child = spawn("git", ["http-backend"], {
-    env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant, scan: scan?.env }),
+    env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant, scan: scan?.env, hook: rest === "git-receive-pack" ? hook : {} }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   req.pipe(child.stdin);

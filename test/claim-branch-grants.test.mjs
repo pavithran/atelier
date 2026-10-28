@@ -10,6 +10,7 @@
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
 import { request as httpRequest } from "node:http";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,13 +187,13 @@ test("revoking the agent token revokes the task grant and the read grant minted 
 });
 
 // One request over node:http, where the Host header and any header can be set.
-function raw(path, headers, body) {
+function raw(path, headers, body, target = null) {
   return new Promise((ok, fail) => {
     const url = new URL(path, base);
-    const req = httpRequest({ host: url.hostname, port: url.port, path: url.pathname, method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", ...headers } }, (res) => {
+    const req = httpRequest({ host: url.hostname, port: url.port, path: target ?? url.pathname, method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", ...headers } }, (res) => {
       let text = "";
       res.on("data", (d) => { text += d; });
-      res.on("end", () => ok({ status: res.statusCode, body: JSON.parse(text) }));
+      res.on("end", () => { let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; } ok({ status: res.statusCode, body: parsed }); });
     });
     req.on("error", fail);
     req.end(JSON.stringify(body ?? {}));
@@ -211,4 +212,83 @@ test("the advertised remote is the address the server accepted the connection on
   // A loopback request that came through the tunnel is given the public origin.
   const tunnelled = await raw("/api/projects/demo", { "cf-connecting-ip": "203.0.113.9", "x-atelier-git-origin": "http://127.0.0.1:1" });
   assert.equal(tunnelled.body.baseline.remote, `http://localhost:${new URL(server.url).port}/git/demo.git`);
+});
+
+test("a request target that is not a path starting with one / is refused, and forwarding headers do not move the public remote", async () => {
+  for (const target of ["http://evil.example/api/projects/demo", "//evil.example/api/projects/demo"]) {
+    const r = await raw("/api/projects/demo", {}, {}, target);
+    assert.equal(r.status, 400, `${target}: ${JSON.stringify(r.body)}`);
+  }
+  const forwarded = await raw("/api/projects/demo", { "x-forwarded-for": "203.0.113.9", "x-forwarded-host": "evil.example", "x-forwarded-proto": "https", host: "evil.example" });
+  assert.equal(forwarded.status, 200, JSON.stringify(forwarded.body));
+  assert.equal(forwarded.body.baseline.remote, `${server.settings.PUBLIC_ORIGIN}/git/demo.git`);
+});
+
+// A push whose request is let in while its grant is live, its pack held back
+// until after the grant stops counting. `before` runs between the two.
+async function heldPush(id, grant, before) {
+  const dir = join(root, `held-${id}`);
+  await git(root, ...bearer(OWNER), "clone", "-q", "--single-branch", "--branch", `t/${id.slice(1)}`, remote(), dir);
+  const old = await git(dir, "rev-parse", "HEAD");
+  writeFileSync(join(dir, "held.txt"), "held back\n");
+  await git(dir, "add", ".");
+  await git(dir, "commit", "-q", "-m", "held back");
+  const sha = await git(dir, "rev-parse", "HEAD");
+  const pack = execFileSync("git", ["pack-objects", "--stdout", "--revs"], { cwd: dir, input: `${sha}\n^${old}\n`, env: gitEnv });
+  const line = `${old} ${sha} refs/heads/t/${id.slice(1)}\0report-status\n`;
+  const body = Buffer.concat([Buffer.from(`${(line.length + 4).toString(16).padStart(4, "0")}${line}0000`), pack]);
+  const url = new URL(`${remote()}/git-receive-pack`);
+  const answer = new Promise((ok, fail) => {
+    const req = httpRequest({ host: url.hostname, port: url.port, path: url.pathname, method: "POST", headers: { authorization: `Bearer ${grant}`, "content-type": "application/x-git-receive-pack-request", "content-length": body.length } }, (res) => {
+      let text = "";
+      res.on("data", (d) => { text += d; });
+      res.on("end", () => ok({ status: res.statusCode, text }));
+    });
+    req.on("error", fail);
+    req.flushHeaders();
+    // The server authorises on the headers alone; the pack follows later.
+    setTimeout(async () => { try { await before(); req.end(body); } catch (error) { fail(error); } }, 400);
+  });
+  return { old, sha, ...(await answer) };
+}
+
+test("a push let in while its grant was live is refused at hook time when the grant stops counting before the pack arrives", async () => {
+  // Control: held back with nothing changed meanwhile, the push lands.
+  const kept = await newTask("Held push, kept");
+  const g0 = await claim(kept);
+  const ok = await heldPush(kept, g0, async () => {});
+  assert.equal(ok.status, 200);
+  assert.match(ok.text, /ok refs\/heads\/t\//, ok.text);
+  assert.equal((await run("git", [...bearer(OWNER), "ls-remote", remote(), `refs/heads/t/${kept.slice(1)}`])).stdout.split("\t")[0], ok.sha);
+
+  for (const [what, stop] of [
+    ["released", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/release`, { note: "mid-push" }, agentToken, BUILDER)).status, 200)],
+    ["handed over", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/handoff`, { to: OTHER, note: "mid-push" }, agentToken, BUILDER)).status, 200)],
+    ["abandoned", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/abandon`, { note: "mid-push" })).status, 200)],
+  ]) {
+    const id = await newTask(`Held push, ${what}`);
+    const grant = await claim(id);
+    const r = await heldPush(id, grant, () => stop(id));
+    assert.doesNotMatch(r.text, /ok refs\/heads\/t\//, `${what}: ${r.text}`);
+    assert.match(r.text, /ng refs\/heads\/t\/\d+ pre-receive hook declined/, `${what}: ${r.text}`);
+    assert.equal((await run("git", [...bearer(OWNER), "ls-remote", remote(), `refs/heads/t/${id.slice(1)}`])).stdout.split("\t")[0], r.old, `${what}: the ref did not move`);
+  }
+
+  // Revoking the agent token mid-push refuses it too.
+  const made = await api("POST", "/tokens", { actor: "codex/gpt-6", projects: ["demo"] });
+  const id = await newTask("Held push, token revoked");
+  const grant = await claim(id, made.body.token, "codex/gpt-6");
+  const r = await heldPush(id, grant, async () => assert.equal((await api("DELETE", `/tokens/${made.body.id}`)).body.revoked, true));
+  assert.match(r.text, /pre-receive hook declined/, r.text);
+  assert.equal((await run("git", [...bearer(OWNER), "ls-remote", remote(), `refs/heads/t/${id.slice(1)}`])).stdout.split("\t")[0], r.old);
+});
+
+test("the hook's grant check answers only a loopback caller with the hook's secret", async () => {
+  const ask = (headers) => fetch(`${base}/internal/grant-live`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ grant: "owner" }) });
+  assert.equal((await ask({})).status, 404, "no secret");
+  assert.equal((await ask({ "x-atelier-hook-secret": "0".repeat(64) })).status, 404, "a wrong secret");
+  const right = await ask({ "x-atelier-hook-secret": server.git.hookSecret });
+  assert.equal(right.status, 200);
+  assert.deepEqual(await right.json(), { live: true });
+  assert.equal((await fetch(`${base}/internal/grant-live`, { headers: { "x-atelier-hook-secret": server.git.hookSecret } })).status, 404, "a GET");
 });

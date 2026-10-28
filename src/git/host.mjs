@@ -4,7 +4,7 @@
 // env.GIT; `handle(req, res)` answers /git/PROJECT.git/... requests. For a
 // push it gives the hook the policy its scans need from the Ledger and
 // records what the secret scan found (rules 5 and 6, src/git/scan.mjs).
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import { gitRequest } from "./http.mjs";
 import { ensureRepo, repoDir } from "./repos.mjs";
 import { branchTip, createBranch, holds, moveBranch, setHead } from "./branches.mjs";
 
+export const GRANT_LIVE = "/internal/grant-live";
 export const HOOKS_DIR = fileURLToPath(new URL("../../hooks", import.meta.url));
 
 function same(a, b) {
@@ -41,6 +42,55 @@ export class GitHost {
     this.pruning = setInterval(() => this.grants.prune(), 24 * 3600e3);
     this.pruning.unref();
     this.ready = new Set();
+    // The pre-receive hook asks the server, at hook time, whether the grant
+    // a push was let in with is still live (POST /internal/grant-live), so
+    // a revocation, handoff or closure while the pack was still arriving
+    // refuses the push. The hook proves itself with this per-process value,
+    // which only the hook's environment carries; it is never stored or logged.
+    this.hookSecret = randomBytes(32).toString("hex");
+    this.callback = null;
+  }
+  // Where the hook reaches this process: its own address once it listens,
+  // the loopback one when it listens on every address.
+  listening({ address, port }) {
+    const host = address === "0.0.0.0" || address === "::" ? "127.0.0.1" : address.includes(":") ? `[${address}]` : address;
+    this.callback = `http://${host}:${port}${GRANT_LIVE}`;
+  }
+  hookEnv() {
+    return this.callback ? { ATELIER_GRANT_CHECK: this.callback, ATELIER_HOOK_SECRET: this.hookSecret } : {};
+  }
+  // Whether a task grant still writes: the Ledger records it as the item's
+  // write token, the task is open to work, and the grant's actor holds it.
+  async stillHeld(key, g) {
+    const L = this.ledger(key);
+    const recorded = await L.tokenId(g.task).catch(() => null);
+    if (recorded !== `git:${g.hash}`) return false;
+    const item = await L.item(g.task).catch(() => null);
+    return !!item && !["merged", "abandoned", "integrated"].includes(item.state) && item.owner === g.actor;
+  }
+  // The grant under `id` is live now: the owner's (the server token) always;
+  // any other while the store holds it, and a task or plan grant while its
+  // task is still held (stillHeld).
+  async live(id) {
+    if (id === "owner") return true;
+    const g = this.grants.findById(id);
+    if (!g) return false;
+    return g.kind === "task" || g.kind === "plan" ? this.stillHeld(g.project, g) : true;
+  }
+  // POST /internal/grant-live, the hook's question. Answered only to a
+  // loopback caller that sends the hook's secret; anything else is 404, as
+  // if there were no such route.
+  async handleInternal(req, res) {
+    const answer = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    const from = String(req.socket?.remoteAddress ?? "").replace(/^::ffff:/, "");
+    const loopback = /^127\./.test(from) || from === "::1";
+    const secret = req.headers["x-atelier-hook-secret"];
+    if (req.method !== "POST" || !loopback || typeof secret !== "string" || !same(secret, this.hookSecret)) { req.resume(); return answer(404, { error: "not_found" }); }
+    let text = "";
+    for await (const chunk of req) { text += chunk; if (text.length > 1024) return answer(400, { error: "too_long" }); }
+    let id;
+    try { id = JSON.parse(text).grant; } catch { return answer(400, { error: "bad_body" }); }
+    return answer(200, { live: await this.live(id) });
   }
   binding() {
     return {
@@ -112,15 +162,9 @@ export class GitHost {
     if (owner && same(token, owner)) return { id: "owner", project: key, key, kind: "owner", task: null, actor: this.settings.OWNER_ACTOR || "owner", branch, accepted: null };
     const g = this.grants.find(token);
     if (!g || g.project !== key) return null;
-    if (g.kind === "task" || g.kind === "plan") {
-      const L = this.ledger(key);
-      const recorded = await L.tokenId(g.task).catch(() => null);
-      if (recorded !== `git:${g.hash}`) return null;
-      // Beside the record, the task itself: a grant writes only for a task
-      // still open to work and still held by the actor it was minted to.
-      const item = await L.item(g.task).catch(() => null);
-      if (!item || ["merged", "abandoned", "integrated"].includes(item.state) || item.owner !== g.actor) return null;
-    }
+    // Beside the record, the task itself: a grant writes only for a task
+    // still open to work and still held by the actor it was minted to.
+    if ((g.kind === "task" || g.kind === "plan") && !await this.stillHeld(key, g)) return null;
     return { id: g.id, project: key, key, kind: g.kind, task: g.task, actor: g.actor, branch, accepted: g.accepted };
   }
   ledger(key) { return this.namespace.get(this.namespace.idFromName(`project:${key}`)); }
@@ -144,6 +188,7 @@ export class GitHost {
     return gitRequest(req, res, {
       reposDir: this.reposDir,
       authorize: (token, name) => this.authorize(token, name),
+      hook: this.hookEnv(),
       scans: { dir: this.scanDir, policy: (grant) => this.scanPolicy(grant), record: (grant, report) => this.recordScan(grant, report) },
       ensure: (grant) => {
         this.repo(grant.key, grant.branch);
