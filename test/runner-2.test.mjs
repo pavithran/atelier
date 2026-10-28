@@ -816,9 +816,13 @@ test("a blocked final report preserves the commit without finish, including on r
     return f;
   };
   const held = restart("after");
-  const again = await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", held.io);
+  const again = await runTask({ ...assignment, item: heldItem({ head: "recorded", validationBlockedAt: "2026-10-28T10:00:00.000Z" }) }, config, "home:studio", held.io);
   assert.equal(runOutcome(again), "validation_blocked");
   assert.deepEqual(held.calls, []);
+  // The server never accepted that report (G5), so the marker alone holds nothing back.
+  const unrecorded = restart("after");
+  await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", unrecorded.io);
+  assert.ok(unrecorded.calls.some((c) => c.argv?.[0] === "claim"), "the marker without a recorded block does not stop the claim");
 });
 
 
@@ -969,7 +973,7 @@ test('a project without preparation keeps the validation-block skip before claim
   f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', taskKey: taskRevisionKey(assignment.item), detail: 'validation_blocked: unchanged environment' });
   f.io.hasPreparation = async () => false;
   f.io.prepare = async () => assert.fail('must not prepare');
-  const state = await runTask(assignment, config, 'home:test', f.io);
+  const state = await runTask({ ...assignment, item: { ...assignment.item, validationBlockedAt: '2026-10-28T10:00:00.000Z' } }, config, 'home:test', f.io);
   assert.equal(state.validationBlocked, true);
   assert.equal(f.calls.some((c) => c.argv?.[0] === 'claim' || c.harness), false);
 });
@@ -982,7 +986,7 @@ test('successful preparation clears a pre-preparation validation blocker but kee
     f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', taskKey: taskRevisionKey(assignment.item), detail: 'validation_blocked: old environment', prepared, ...(prepared ? { prepareKey: 'ready' } : {}) });
     f.io.prepare = async () => ({ key: 'ready' });
     f.io.clearValidationBlock = async () => { cleared = true; };
-    const state = await runTask(assignment, config, 'home:studio', f.io);
+    const state = await runTask({ ...assignment, item: { ...assignment.item, validationBlockedAt: '2026-10-28T10:00:00.000Z' } }, config, 'home:studio', f.io);
     assert.equal(cleared, !prepared);
     assert.equal(state.validationBlocked === true, prepared);
     assert.equal(f.calls.some((c) => c.harness), !prepared);

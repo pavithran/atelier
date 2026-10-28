@@ -47,7 +47,7 @@ for (const failure of ['network', 'timeout', 'HTTP 503', 'HTTP 429', 'HTTP 403',
       assert.match(error.message, /preparation policy could not be read/);
       return true;
     });
-    const state = await runTask({ project: 'demo', item: { id: 't1' }, agent: 'opencode', model: 'model', actor: 'opencode/model' }, {
+    const state = await runTask({ project: 'demo', item: { id: 't1', validationBlockedAt: '2026-10-28T10:00:00.000Z' }, agent: 'opencode', model: 'model', actor: 'opencode/model' }, {
       agents: [{ agent: 'opencode', models: ['model'], command: ['harness'] }],
     }, 'home:test', {
       workspacePath: () => process.cwd(),

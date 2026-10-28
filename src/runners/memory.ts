@@ -13,7 +13,14 @@ export interface RunnerMemory {
   sameExits: { key: string; count: number; signature: string; exit: Record<string, string | number | null> }[];
   skipHeads: { key: string; heads: (string | null)[] }[];  // the heads a skip began at (noteSkipHeads)
   reasons: { task: string; why: string }[];  // the last reason each task is passed by, in words
+  backoff: { key: string; count: number }[];        // failed runs in a row waiting out a backoff, by backoffKey
+  notReady: { key: string; since: number; tries: number; detail: string; expired: boolean }[];  // forks still being prepared
+  pauses: ProviderPause[];                           // provider limits this runner met; the server shares them
 }
+
+// A provider's usage limit: every model of the harness is paused until the
+// reset, on every runner on the account (G5).
+export interface ProviderPause { harness: string; reason: string; resetAt: string; since: string; fallback: boolean }
 
 export const MEMORY_MAX = 200;
 const KEY_MAX = 600;
@@ -37,19 +44,59 @@ export function parseMemory(raw: unknown): RunnerMemory | null {
     infrastructure: entries(r.infrastructure, counted),
     sameExits: entries(r.sameExits, (x) => {
       const n = count(x.count);
-      if (n === null || typeof x.signature !== "string" || !x.exit || typeof x.exit !== "object") return null;
+      if (n === null || typeof x.signature !== "string" || x.signature.length > 64 || !x.exit || typeof x.exit !== "object") return null;
       const exit: Record<string, string | number | null> = {};
       for (const [name, v] of Object.entries(x.exit as Record<string, unknown>).slice(0, 8)) {
         if (typeof v === "string") exit[name.slice(0, 32)] = v.slice(0, 1500);
         else if (typeof v === "number" || v === null) exit[name.slice(0, 32)] = v;
       }
-      return { count: n, signature: x.signature.slice(0, 1500), exit };
+      return { count: n, signature: x.signature, exit };
     }),
     skipHeads: entries(r.skipHeads, (x) => Array.isArray(x.heads) ? { heads: x.heads.slice(0, 16).flatMap((h) => typeof h === "string" && h.length <= 64 ? [h] : h === null ? [null] : []) } : null),
+    backoff: entries(r.backoff, counted),
+    notReady: entries(r.notReady, (x) => {
+      const since = typeof x.since === "number" && Number.isFinite(x.since) ? x.since : null, tries = count(x.tries);
+      return since === null || tries === null ? null : { since, tries, detail: typeof x.detail === "string" ? x.detail.slice(0, 300) : "", expired: x.expired === true };
+    }),
+    pauses: list(r.pauses).flatMap((e) => {
+      const x = (e ?? {}) as Record<string, unknown>;
+      return typeof x.harness === "string" && x.harness.length <= 64 && typeof x.resetAt === "string" && Number.isFinite(Date.parse(x.resetAt))
+        ? [{ harness: x.harness, reason: typeof x.reason === "string" ? x.reason.slice(0, 300) : "", resetAt: new Date(x.resetAt).toISOString(), since: typeof x.since === "string" && Number.isFinite(Date.parse(x.since)) ? new Date(x.since).toISOString() : new Date(x.resetAt).toISOString(), fallback: x.fallback === true }]
+        : [];
+    }),
     reasons: list(r.reasons).flatMap((e) => {
       const x = (e ?? {}) as { task?: unknown; why?: unknown };
       return typeof x.task === "string" && typeof x.why === "string" ? [{ task: x.task.slice(0, 120), why: x.why.slice(0, 300) }] : [];
     }),
   };
   return memory;
+}
+
+// The task a runner's key names, "project/id": every key is a JSON list
+// starting with the project and the task id (cli/runner.mjs).
+export function taskOfKey(key: string): string | null {
+  try {
+    const [project, id] = JSON.parse(key);
+    return typeof project === "string" && typeof id === "string" ? `${project}/${id}` : null;
+  } catch { return null; }
+}
+
+// The memory without the entries of the named tasks ("project/id"), and how
+// many entries went (atelier runner forget-skip, G5).
+export function dropTasks(memory: RunnerMemory, tasks: readonly string[]): { memory: RunnerMemory; removed: number } {
+  let removed = 0;
+  const keep = <T extends { key: string }>(list: T[]): T[] => list.filter((e) => {
+    const gone = tasks.includes(taskOfKey(e.key) ?? "");
+    if (gone) removed++;
+    return !gone;
+  });
+  const keys = (list: string[]) => keep(list.map((key) => ({ key }))).map((e) => e.key);
+  const cut: RunnerMemory = {
+    ...memory,
+    refused: keys(memory.refused), gaveUp: keys(memory.gaveUp),
+    failures: keep(memory.failures), infrastructure: keep(memory.infrastructure), sameExits: keep(memory.sameExits),
+    skipHeads: keep(memory.skipHeads), backoff: keep(memory.backoff), notReady: keep(memory.notReady),
+    reasons: memory.reasons.filter((r) => !tasks.includes(r.task)),
+  };
+  return { removed, memory: cut };
 }

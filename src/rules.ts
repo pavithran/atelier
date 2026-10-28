@@ -41,6 +41,9 @@ export interface Item {
   // carries it so a runner's validation-block marker, older than that, is not
   // replayed (G5). Absent for a task never unblocked.
   unblockedAt?: string;
+  // When the server last accepted a validation_blocked report of the task (the
+  // block its release recorded): the only record that holds a build back.
+  validationBlockedAt?: string;
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
   // The owner's standing permission for an override from the command line
   // (t371): given on the task's page under the owner's own sign-in, for one

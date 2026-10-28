@@ -7,14 +7,17 @@
 //   4. A runner's memory is kept with its offer, survives polls that carry
 //      none, and is given back by GET /runners/me.
 import { strict as assert } from "node:assert";
+import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { promisify } from "node:util";
 import { Namespace } from "../src/runtime/namespace.mjs";
 import { startServer } from "../src/runtime/server.mjs";
 import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import { parseMemory } from "../src/runners/memory.ts";
+import { stopAfter, stopped } from "../src/review/stopped.ts";
 
 const dirs = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -127,7 +130,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
     const me = async () => (await (await call("GET", "/runners/me", undefined, runnerToken)).json());
     // Nothing remembered yet.
     assert.equal((await me()).memory, undefined);
-    const memory = { refused: [], gaveUp: ['["demo","t13","2026-10-28T09:00:00.000Z"]'], failures: [{ key: '["demo","t13","2026-10-28T09:00:00.000Z"]', count: 2 }], infrastructure: [], sameExits: [], skipHeads: [], reasons: [{ task: "demo/t13", why: "skipped after 2 failed runs under this dispatch" }] };
+    const memory = { refused: [], gaveUp: ['["demo","t13","2026-10-28T09:00:00.000Z"]'], failures: [{ key: '["demo","t13","2026-10-28T09:00:00.000Z"]', count: 2 }], infrastructure: [], sameExits: [], skipHeads: [], backoff: [{ key: '["demo","t14","2026-10-28T09:00:00.000Z"]', count: 4 }], notReady: [{ key: '["demo","t15","2026-10-28T09:00:00.000Z"]', since: 1000, tries: 2, detail: "still being prepared", expired: false }], pauses: [], reasons: [{ task: "demo/t13", why: "skipped after 2 failed runs under this dispatch" }] };
     assert.equal((await poll({ memory })).status, 200);
     assert.deepEqual((await me()).memory, memory);
     // A heartbeat or an older runner's poll carries none, and the last stands.
@@ -137,8 +140,100 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
     // The runner stops polling: the owner's listing still shows its last reasons.
     const listed = await (await call("GET", "/runners")).json();
     assert.deepEqual(listed.find((o) => o.runner === "home:studio").memory.reasons, memory.reasons);
+    // A provider limit the runner met is the account's: the server shares it with every runner, and drops it once past.
+    const pause = { harness: "opencode", reason: "Weekly limit", resetAt: iso(Date.now() + 3600e3), since: iso(Date.now()), fallback: false };
+    assert.equal((await poll({ memory: { ...memory, pauses: [pause] } })).status, 200);
+    const other = (await (await call("POST", "/tokens", { runner: "home:other", projects: ["demo"] })).json()).token;
+    const seen = await (await call("GET", "/runners/me", undefined, other)).json();
+    assert.deepEqual(seen.pauses, [pause]);
+    assert.equal(seen.memory, undefined, "another runner's memory is not given to this one");
+    // The developer has the runner forget a task: its entries go from the stored memory at once, the runner is told, a poll still
+    // carrying them is cut, and one that does not ends the instruction. A task nothing is remembered of is not an error.
+    const forgot = await call("POST", "/runners/forget-skip", { project: "demo", item: "t13", runner: "home:studio" });
+    assert.equal(forgot.status, 200);
+    const forgotBody = await forgot.json();
+    assert.equal(forgotBody.forgotten, 2);
+    let mine = await me();
+    assert.deepEqual([mine.memory.failures, mine.memory.gaveUp, mine.memory.reasons], [[], [], []]);
+    assert.deepEqual(mine.forget, ["demo/t13"]);
+    assert.equal((await poll({ memory })).status, 200);
+    assert.deepEqual((await me()).memory.failures, [], "a stale poll cannot bring it back");
+    assert.equal((await poll({ memory: { ...memory, failures: [], gaveUp: [], reasons: [] } })).status, 200);
+    assert.deepEqual((await me()).forget, []);
+    const none = await call("POST", "/runners/forget-skip", { project: "demo", item: "t99" });
+    assert.equal(none.status, 200);
+    assert.equal((await none.json()).forgotten, 0);
+    // The command exits 0 either way.
+    const config = join(root, "config");
+    mkdirSync(config, { recursive: true });
+    const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1" };
+    delete env.ATELIER_PROJECT;
+    const cli = (...argv) => promisify(execFile)(process.execPath, ["cli/atelier.mjs", ...argv], { env, cwd: process.cwd(), timeout: 60_000 });
+    await cli("login", "--server", server.url);
+    assert.match((await cli("forget-skip", "t99", "--project", "demo")).stdout, /no remembered skip of t99/);
+    assert.match((await cli("forget-skip", "t99", "--project", "demo", "--runner", "home:studio")).stdout, /no remembered skip of t99 on home:studio/);
     // The next poll replaces it.
     assert.equal((await poll({ memory: { ...memory, failures: [], gaveUp: [], reasons: [] } })).status, 200);
     assert.deepEqual((await me()).memory.failures, []);
   } finally { await server.close(); }
+});
+
+test("two runners claiming one dispatch at once through the real server: exactly one wins, and the other is told who holds it", async () => {
+  const root = scratch();
+  const secrets = join(root, "secrets");
+  mkdirSync(secrets, { mode: 0o700 });
+  const OWNER = "atl_00112233445566778899aabbccddeeff";
+  writeFileSync(join(secrets, "ATELIER_TOKEN"), OWNER, { mode: 0o600 });
+  writeFileSync(join(secrets, "OVERRIDE_SECRET"), "override-secret-4f1c9e", { mode: 0o600 });
+  const artifacts = { create: async () => ({ name: "demo" }), get: async (repo) => ({
+    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
+    fork: async () => ({}),
+    log: async () => [{ hash: "a".repeat(40) }],
+    createToken: async (scope) => ({ id: "tok1", plaintext: "art_dummy", scope, expiresAt: iso(Date.now() + 3600e3) }),
+    revokeToken: async () => true, [Symbol.dispose]() {},
+  }) };
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
+  const call = (method, path, body, bearer = OWNER, actor = "owner") => fetch(`${server.url}/api${path}`, {
+    method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "x-atelier-actor": actor },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  try {
+    assert.equal((await call("PUT", "/projects/demo", {})).status, 200);
+    const made = await (await call("POST", "/projects/demo/items", { title: "Claimed once", scope: ["docs/**"] })).json();
+    const id = (made.item ?? made).id;
+    assert.equal((await call("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode" })).status, 200);
+    const runners = {};
+    for (const name of ["home:a", "home:b"]) {
+      const t = await (await call("POST", "/tokens", { runner: name, projects: ["demo"] })).json();
+      runners[name] = t.token;
+      const polled = await call("POST", "/queue", { runner: name, kind: "home", jobs: ["build"], agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, t.token, "runner/" + name.split(":")[1]);
+      assert.equal(polled.status, 200, await polled.clone().text());
+    }
+    const claim = (name) => call("POST", `/projects/demo/items/${id}/claim`, {}, runners[name], A);
+    const results = await Promise.all(["home:a", "home:b"].map(async (name) => { const r = await claim(name); return { name, status: r.status, body: await r.json() }; }));
+    const won = results.filter((r) => r.status === 200), lost = results.filter((r) => r.status !== 200);
+    assert.equal(won.length, 1, JSON.stringify(results));
+    assert.equal(lost.length, 1);
+    assert.equal(lost[0].status, 409);
+    assert.equal(lost[0].body.error, "claimed");
+    assert.match(lost[0].body.detail, new RegExp(`is claimed by ${A} on ${won[0].name}`));
+    const held = (await (await call("GET", `/projects/demo/items/${id}`)).json()).item;
+    assert.equal(held.runner, won[0].name);
+  } finally { await server.close(); }
+});
+
+test("a review request's stop counts the same exit across releases by its signature, and stops at the limit whoever ran it", () => {
+  const sig = "0123456789abcdef0123456789abcdef", other = "fedcba9876543210fedcba9876543210";
+  const at = "2026-10-28T10:00:00.000Z";
+  const one = stopAfter(null, "h".repeat(40), "no-verdict", `harness exited 2; exit-signature: ${sig}`, at);
+  assert.deepEqual([one.count, one.exit, one.same], [1, sig, 1]);
+  assert.equal(stopped(one), false);
+  // Another exit starts the same-exit count again; the tries go on counting.
+  const diff = stopAfter(one, "h".repeat(40), "no-verdict", `harness exited 2; exit-signature: ${other}`, at);
+  assert.deepEqual([diff.count, diff.same], [2, 1]);
+  const same = stopAfter(one, "h".repeat(40), "no-verdict", `harness exited 2; exit-signature: ${sig}`, at);
+  assert.deepEqual([same.count, same.same], [2, 2]);
+  assert.equal(stopped(same), true);
+  // A note with no signature leaves it unrecorded; the signature is a hash, never cut.
+  assert.equal(stopAfter(null, "h".repeat(40), "no-verdict", "harness exited 2", at).exit, undefined);
 });

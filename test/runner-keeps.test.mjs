@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runTask, runRunner, commitWorkInProgress, isWorkInProgress, stalledWorkMessage, runnerMemory, restoreMemory, passedBy, failureKey, refusedKey, taskKey, sameExitAfter } from "../cli/runner.mjs";
+import { runTask, runRunner, commitWorkInProgress, isWorkInProgress, stalledWorkMessage, runnerMemory, restoreMemory, forgetTask, validationBlockedReport, exitSignature, passedBy, failureKey, refusedKey, taskKey, sameExitAfter } from "../cli/runner.mjs";
 import { config, assignment, fixture as sharedFixture } from "./runner-shared.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { serveRunner } from "./helpers/runner-server.mjs";
@@ -181,30 +181,34 @@ async function markerFor(over) {
   return marker({ taskKey: key, ...over });
 }
 
+const withItem = (extra) => ({ ...assignment, item: { ...assignment.item, ...extra } });
+
+test("a marker with no block recorded on the server is ignored and cleared, whatever it says, and the builder runs", async () => {
+  // Flagged blocked, unflagged, with no time: none of it decides anything.
+  for (const over of [{}, { blocked: true }, { at: undefined }]) {
+    const { io, calls, logs, state } = fixture({ block: await markerFor(over) });
+    await runTask(withItem({}), config, "home:studio", io);
+    assert.ok(calls.some((c) => c.harness), `the builder ran: ${JSON.stringify(over)}`);
+    assert.equal(state.block, null, "the marker is cleared");
+    assert.ok(logs.some((l) => /server records no validation_blocked report/.test(l)), logs.join("\n"));
+  }
+});
+
 test("a marker older than the developer's unblock is ignored, and the builder runs", async () => {
   const { io, calls, logs, state } = fixture({ block: await markerFor() });
-  await runTask({ ...assignment, item: { ...assignment.item, unblockedAt: UNBLOCKED_AT } }, config, "home:studio", io);
-  assert.ok(commands(calls).includes("claim"), "the task is claimed");
+  await runTask(withItem({ validationBlockedAt: BLOCKED_AT, unblockedAt: UNBLOCKED_AT }), config, "home:studio", io);
   assert.ok(calls.some((c) => c.harness), "the builder ran");
   assert.ok(logs.some((l) => l.startsWith("the developer unblocked the task at ")), logs.join("\n"));
   assert.equal(state.block, null);
 });
 
-test("a marker whose block flag was never written is ignored the same way, and so is one with no time", async () => {
-  // The write of `blocked: true` failed (markBlocked), so the marker carries no flag, only its time.
-  for (const over of [{}, { at: undefined }]) {
-    const { io, calls } = fixture({ block: await markerFor(over) });
-    await runTask({ ...assignment, item: { ...assignment.item, unblockedAt: UNBLOCKED_AT } }, config, "home:studio", io);
-    assert.ok(calls.some((c) => c.harness), JSON.stringify(over));
-  }
-});
-
-test("a marker written after the unblock still holds the task, and with no unblock on record the marker holds as before", async () => {
-  const newer = await markerFor({ at: "2026-10-28T12:00:00.000Z" });
-  for (const item of [{ ...assignment.item, unblockedAt: UNBLOCKED_AT }, { ...assignment.item }]) {
-    const { io, calls, state } = fixture({ block: newer });
-    const result = await runTask({ ...assignment, item }, config, "home:studio", io);
-    assert.equal(result.validationBlocked, true);
+test("a block the server accepted and the developer has not answered holds the task through the marker", async () => {
+  const held = await markerFor();
+  // Blocked, never unblocked; and unblocked before the block was reported.
+  for (const extra of [{ validationBlockedAt: BLOCKED_AT }, { validationBlockedAt: UNBLOCKED_AT, unblockedAt: BLOCKED_AT }]) {
+    const { io, calls, state } = fixture({ block: held });
+    const result = await runTask(withItem(extra), config, "home:studio", io);
+    assert.equal(result.validationBlocked, true, JSON.stringify(extra));
     assert.ok(!calls.some((c) => c.harness || c.argv), "nothing is claimed or run");
     assert.ok(state.block, "the marker stays");
   }
@@ -212,18 +216,19 @@ test("a marker written after the unblock still holds the task, and with no unblo
 
 test("no marker at all decides nothing: the unblocked task runs", async () => {
   const { io, calls } = fixture({ block: null });
-  await runTask({ ...assignment, item: { ...assignment.item, unblockedAt: UNBLOCKED_AT } }, config, "home:studio", io);
+  await runTask(withItem({ validationBlockedAt: BLOCKED_AT, unblockedAt: UNBLOCKED_AT }), config, "home:studio", io);
   assert.ok(calls.some((c) => c.harness));
 });
 
 // 4. Memory goes with the poll and comes back after a restart.
 
 const task = (over = {}) => ({ ...assignment, item: { ...assignment.item, dispatch: { at: "2026-10-28T09:00:00.000Z", job: "build" }, head: "h1", updatedAt: "u1", ...over } });
-const maps = () => ({ refused: new Set(), gaveUpTasks: new Set(), failures: new Map(), infrastructureFailures: new Map(), sameExits: new Map(), skipHeads: new Map() });
+const maps = () => ({ refused: new Set(), gaveUpTasks: new Set(), failures: new Map(), infrastructureFailures: new Map(), sameExits: new Map(), skipHeads: new Map(), backoff: new Map(), notReady: new Map() });
 const passes = (m, t) => passedBy(t, ["build", "review"], { refused: m.refused, failures: m.failures, infrastructureFailures: m.infrastructureFailures, gaveUpTasks: m.gaveUpTasks, sameExits: m.sameExits });
 
 test("what the runner passes by is snapshotted with its reasons and restored into a new process", () => {
-  const before = maps(), a = task(), b = task({ id: "t14" }), review = task({ id: "t15", dispatch: { at: "2026-10-28T09:00:00.000Z", job: "review" }, request: 7 });
+  const before = maps(), a = task(), b = task({ id: "t14" }), review = task({ id: "t15", dispatch: { at: "2026-10-28T09:00:00.000Z", job: "criteria-review" }, request: 7 });
+  const plainReview = task({ id: "t16", dispatch: { at: "2026-10-28T09:00:00.000Z", job: "review" }, request: 8 });
   before.failures.set(failureKey(a), 2);
   before.infrastructureFailures.set(failureKey(b), 3);
   before.refused.add(refusedKey(b));
@@ -232,8 +237,16 @@ test("what the runner passes by is snapshotted with its reasons and restored int
   const exit = { kind: "exited", code: 2, stderr: "boom" };
   const same = sameExitAfter(sameExitAfter(undefined, review, { phase: "failed", harnessExit: exit }), review, { phase: "failed", harnessExit: exit });
   before.sameExits.set(failureKey(review), same);
+  before.sameExits.set(failureKey(plainReview), sameExitAfter(sameExitAfter(undefined, plainReview, { phase: "failed", harnessExit: exit }), plainReview, { phase: "failed", harnessExit: exit }));
+  before.backoff.set(failureKey(b), { count: 4, due: 9 });
+  before.notReady.set(taskKey(a), { since: 1_000, tries: 2, due: 5, detail: "repo is still being prepared", expired: false });
   const memory = JSON.parse(JSON.stringify(runnerMemory(before)));
   assert.deepEqual(memory.failures, [{ key: failureKey(a), count: 2 }]);
+  // The signature is a short hash, so no bound can cut it between two processes, and a review's count is the server's (its stop).
+  assert.match(memory.sameExits[0].signature, /^[0-9a-f]{32}$/);
+  assert.deepEqual(memory.sameExits.map((e) => e.key), [failureKey(review)]);
+  assert.deepEqual(memory.backoff, [{ key: failureKey(b), count: 4 }]);
+  assert.equal(memory.notReady[0].tries, 2);
   const said = Object.fromEntries(memory.reasons.map((r) => [r.task, r.why]));
   assert.match(said["atelier/t13"], /gave it up|skipped after 2 failed runs/);
   assert.match(said["atelier/t14"], /infrastructure failures|claim refused/);
@@ -242,8 +255,13 @@ test("what the runner passes by is snapshotted with its reasons and restored int
   const after = maps();
   assert.equal(passes(after, a), null);
   const restored = restoreMemory(memory, after);
-  assert.equal(restored, memory.refused.length + memory.gaveUp.length + memory.failures.length + memory.infrastructure.length + memory.sameExits.length + memory.skipHeads.length);
+  assert.equal(restored, memory.refused.length + memory.gaveUp.length + memory.failures.length + memory.infrastructure.length + memory.sameExits.length + memory.skipHeads.length + memory.backoff.length + memory.notReady.length);
   for (const t of [a, b, review]) assert.ok(passes(after, t), `${t.item.id} is still passed by`);
+  // The waits are restored too: a backoff is due again in as many polls as its count asks, and the fork's first answer keeps its time.
+  assert.equal(after.backoff.get(failureKey(b)).count, 4);
+  assert.ok(after.backoff.get(failureKey(b)).due > 0);
+  assert.deepEqual([after.notReady.get(taskKey(a)).since, after.notReady.get(taskKey(a)).tries], [1_000, 2]);
+  assert.equal(passes(after, plainReview), null, "a review's same-exit count is not kept here");
   assert.deepEqual([...after.skipHeads.get(failureKey(a))], ["h1", null]);
   assert.equal(after.sameExits.get(failureKey(review)).count, 2);
   // A task the old process never passed by is taken.
@@ -319,4 +337,77 @@ test("a restarted runner reads its memory back from the server, passes by what i
   kept = null;
   const fresh = await run();
   assert.deepEqual(fresh.claimed, ["t13"]);
+});
+
+// Criterion 6: a report about a reviewer's sandbox is not a blocked build.
+
+test("a report about a reviewer's sandbox is not read as a blocked build, and a true block still is", () => {
+  assert.equal(validationBlockedReport("The reviewer could not run tests in its sandbox. I ran all required checks locally and they passed."), null);
+  assert.equal(validationBlockedReport("The review model could not run the test suite: EPERM.\nDone; all checks pass."), null);
+  for (const report of [
+    "validation_blocked: npm test could not run: listen EPERM",
+    "I could not run the required checks: listen EPERM on 127.0.0.1.",
+    "The tests did not run because of permission denied on the npm cache.",
+    "npm test could not run in this sandbox.",
+    "The reviewer could not run tests in its sandbox.\nI could not run the required checks either: EPERM.",
+  ]) assert.ok(validationBlockedReport(report), report);
+});
+
+// Criterion 5: the same-exit signature is a hash that compares and stores alike.
+
+test("the exit signature is a short hash of the normalised exit, the same wherever it is compared or stored", () => {
+  const exit = { kind: "exited", code: 1, stderr: `${"x".repeat(5000)} request 81 failed` };
+  const sig = exitSignature(exit);
+  assert.match(sig, /^[0-9a-f]{32}$/);
+  assert.equal(exitSignature({ ...exit, stderr: exit.stderr.replace("81", "82") }), sig, "ids and numbers are normalised");
+  assert.notEqual(exitSignature({ ...exit, code: 2 }), sig);
+});
+
+// Criterion 7: forgetting a task's remembered stops.
+
+test("forgetting a task drops its entries from every map and leaves the others; none to drop drops nothing", () => {
+  const m = maps(), a = task(), b = task({ id: "t14" });
+  m.failures.set(failureKey(a), 2);
+  m.refused.add(refusedKey(a));
+  m.gaveUpTasks.add(taskKey(a));
+  m.skipHeads.set(failureKey(a), new Set(["h1"]));
+  m.backoff.set(failureKey(a), { count: 3, due: 2 });
+  m.notReady.set(taskKey(a), { since: 1, tries: 1, due: 1 });
+  m.failures.set(failureKey(b), 2);
+  assert.equal(forgetTask("atelier/t13", m), 6);
+  assert.deepEqual([...m.failures.keys()], [failureKey(b)]);
+  assert.equal(m.refused.size + m.gaveUpTasks.size + m.skipHeads.size + m.backoff.size + m.notReady.size, 0);
+  assert.equal(forgetTask("atelier/t13", m), 0);
+  assert.equal(forgetTask("atelier/t99", m), 0);
+});
+
+test("a runner told by the server to forget a task takes it again, though it restored a skip of it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-keeps-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const said = [];
+  t.mock.method(console, "log", (...args) => said.push(args.join(" ")));
+  const exitBefore = process.exitCode;
+  t.after(() => { process.exitCode = exitBefore; });
+  const stop = task();
+  const before = maps();
+  before.failures.set(failureKey(stop), 2);
+  const memory = JSON.parse(JSON.stringify(runnerMemory(before)));
+  const run = async (forget) => {
+    const claimed = [];
+    const { io } = sharedFixture();
+    io.cli = async (argv) => { if (argv[0] === "claim") claimed.push(argv[1]); };
+    let polls = 0;
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+      tokenProjects: async () => ({ projects: ["atelier"], names: [["atelier"]], memory }),
+      readServer: async () => ({ pauses: [], forget }),
+      async queue() { if (++polls > 1) process.emit("SIGTERM"); return [stop]; },
+    });
+    return claimed;
+  };
+  assert.deepEqual(await run([]), [], "remembered, so passed by");
+  assert.deepEqual(await run(["atelier/t13"]), ["t13"], "forgotten, so taken");
+  assert.ok(said.some((l) => /forgot what it remembered of atelier\/t13/.test(l)), said.join("\n"));
 });

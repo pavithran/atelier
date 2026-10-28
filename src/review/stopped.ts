@@ -16,7 +16,15 @@ export interface ReviewStop {
   count: number;
   last: string;
   at: string;
+  // The hash of the last harness exit that ended a try (the runner's note
+  // carries it, EXIT_SIGNATURE), and how many tries in a row ended the same
+  // way (G5): the same-exit count is the server's, shared by every runner and
+  // kept across a restart. Hashed by the runner, never truncated.
+  exit?: string;
+  same?: number;
 }
+
+export const exitSignatureOf = (note: string): string | null => /\bexit-signature: ([0-9a-f]{32})\b/.exec(note)?.[1] ?? null;
 
 // Releases that count towards a stop: a harness that timed out, and one that
 // ended without a verdict. A provider's usage limit is the harness's, an
@@ -35,7 +43,7 @@ export function parseStop(raw: unknown): ReviewStop | null {
   if (typeof raw !== "string" || !raw) return null;
   try {
     const s = JSON.parse(raw) as Partial<ReviewStop>;
-    return typeof s.head === "string" && typeof s.reason === "string" && Number.isInteger(s.count) ? { head: s.head, reason: s.reason, count: s.count!, last: String(s.last ?? ""), at: String(s.at ?? "") } : null;
+    return typeof s.head === "string" && typeof s.reason === "string" && Number.isInteger(s.count) ? { head: s.head, reason: s.reason, count: s.count!, last: String(s.last ?? ""), at: String(s.at ?? ""), ...(typeof s.exit === "string" ? { exit: s.exit } : {}), ...(Number.isInteger(s.same) ? { same: s.same } : {}) } : null;
   } catch { return null; }
 }
 
@@ -47,10 +55,12 @@ export function stopAfter(prev: ReviewStop | null, head: string, reason: string 
   const kept = prev && prev.head === head ? prev : null;
   if (!reason) return kept;
   const count = kept ? kept.count + 1 : 1;
-  return { head, reason, count, last: note.replace(/\s+/g, " ").trim().slice(0, 300), at };
+  const exit = exitSignatureOf(note);
+  const same = exit ? (kept?.exit === exit ? (kept.same ?? 1) + 1 : 1) : undefined;
+  return { head, reason, count, last: note.replace(/\s+/g, " ").trim().slice(0, 300), at, ...(exit ? { exit, same } : {}) };
 }
 
-export const stopped = (stop: ReviewStop | null | undefined): stop is ReviewStop => !!stop && stop.count >= STOP_LIMIT;
+export const stopped = (stop: ReviewStop | null | undefined): stop is ReviewStop => !!stop && (stop.count >= STOP_LIMIT || (stop.same ?? 0) >= STOP_LIMIT);
 
 // What the stuck report and the landing say, with the decision it needs.
 // A merged task's request is its post-merge review (t331), which stays owed

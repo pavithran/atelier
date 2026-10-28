@@ -2356,7 +2356,8 @@ test("two identical harness exits on one review request stop this runner taking 
   // Each release says the exit alone, which the server's stop counts
   // whatever the stderr says; that stops the request for every runner of the model.
   const notes = calls.filter((c) => c.argv?.[0] === "review-release").map((c) => c.argv[c.argv.indexOf("--note") + 1]);
-  assert.deepEqual(notes, ["harness exited 1", "harness exited 1"]);
+  assert.match(notes[0], /^harness exited 1; exit-signature: [0-9a-f]{32}$/);
+  assert.equal(notes[1], notes[0], "the same exit has the same signature, which the server counts");
   assert.equal(skips.length, 1, "the skip is reported once");
   assert.equal(skips[0].request, 2);
   assert.match(skips[0].note, /leaves it for another model/);

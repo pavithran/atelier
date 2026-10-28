@@ -80,6 +80,7 @@ import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
+import { dropTasks, type ProviderPause } from "./runners/memory.ts";
 import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { ReviewerRecords, SuggestionRecords } from "./models/suggest.ts";
@@ -2324,12 +2325,14 @@ export class Ledger extends DurableObject<Env> {
   // OFFER_REFRESH_MS, so a runner polling unchanged rewrites its row about
   // once a minute rather than on every poll, and the projects are returned
   // for the queue to read. `at` stays within OFFER_REFRESH_MS of the last ask.
-  askQueue(offer: RunnerOffer | null, at: string): ProjectRecord[] {
+  askQueue(asked: RunnerOffer | null, at: string): ProjectRecord[] {
     const projects = this.projects();
-    if (offer) {
+    if (asked) {
+      const offer = this.cutForgotten(asked);
       const scoped = offer.projects
         ? { ...offer, projects: [...new Set([...offer.projects, ...projects.filter((p) => inScope({ projects: offer.projects }, [p.name, ...(p.formerly ?? [])])).map((p) => p.name)])] }
         : offer;
+      if (offer.memory?.pauses.length) this.mergePauses(offer.memory.pauses, Date.parse(at));
       const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, offer.runner).toArray()[0];
       const seen = row ? (JSON.parse(row.json as string) as SeenOffer) : null;
       // An ask that carries no memory (an older runner's, or a heartbeat)
@@ -2341,6 +2344,70 @@ export class Ledger extends DurableObject<Env> {
       if (!same || !fresh) this.putRunnerOffer(keeps ? { ...scoped, memory: kept } : scoped, at);
     }
     return projects;
+  }
+
+  // The provider limits runners have met (G5): one pause per harness, shared
+  // by every runner on the account, so another machine does not run into the
+  // same limit. A later reset replaces an earlier one; a pause past its reset
+  // is dropped when read.
+  private mergePauses(pauses: readonly ProviderPause[], now: number): void {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'provider-pauses'`).toArray()[0];
+    const kept: Record<string, ProviderPause> = row ? JSON.parse(row.value as string) : {};
+    for (const p of pauses) {
+      if (Date.parse(p.resetAt) <= now) continue;
+      const held = kept[p.harness];
+      if (!held || Date.parse(held.resetAt) < Date.parse(p.resetAt)) kept[p.harness] = p;
+    }
+    const value = JSON.stringify(kept);
+    if (value !== (row?.value ?? null)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('provider-pauses', ?)`, value);
+  }
+
+  // A memory still holding a task the developer had the runner forget (a poll
+  // sent before it read that) is cut of it; one that no longer does ends the
+  // instruction.
+  private cutForgotten(offer: RunnerOffer): RunnerOffer {
+    const forget = this.forgotten(offer.runner);
+    if (!forget.length || !offer.memory) return offer;
+    const cut = dropTasks(offer.memory, forget);
+    if (cut.removed) return { ...offer, memory: cut.memory };
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-forget:${offer.runner.toLowerCase()}`);
+    return offer;
+  }
+
+  // The tasks whose remembered skip the developer cleared for a runner
+  // (forgetSkip), as "project/id", until the runner's memory no longer holds
+  // them: the runner drops them from its own maps when it reads this.
+  forgotten(runner: string): string[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `runner-forget:${runner.toLowerCase()}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : [];
+  }
+
+  // Clears what a runner (every runner when none is named) remembers of a
+  // task. Returns how many remembered entries it removed; none is not an error.
+  forgetSkip(runner: string | null, project: string, item: string): number {
+    let removed = 0;
+    const task = `${project}/${item}`;
+    for (const row of this.sql.exec(`SELECT runner, json FROM runner_offers`).toArray()) {
+      const name = row.runner as string;
+      if (runner && name.toLowerCase() !== runner.toLowerCase()) continue;
+      const offer = JSON.parse(row.json as string) as SeenOffer;
+      if (offer.memory) {
+        const dropped = dropTasks(offer.memory, [task]);
+        if (dropped.removed) {
+          removed += dropped.removed;
+          this.sql.exec(`UPDATE runner_offers SET json = ? WHERE runner = ?`, JSON.stringify({ ...offer, memory: dropped.memory }), name);
+        }
+      }
+      const held = this.forgotten(name);
+      if (!held.includes(task)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-forget:${name.toLowerCase()}`, JSON.stringify([...held, task]));
+    }
+    return removed;
+  }
+
+  providerPauses(now = Date.now()): ProviderPause[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'provider-pauses'`).toArray()[0];
+    const kept: Record<string, ProviderPause> = row ? JSON.parse(row.value as string) : {};
+    return Object.values(kept).filter((p) => Date.parse(p.resetAt) > now);
   }
 
   runnerOffers(): SeenOffer[] {
@@ -3738,7 +3805,10 @@ export class Ledger extends DurableObject<Env> {
   private withUnblockedAt<T extends Item>(items: T[]): T[] {
     return items.map((i) => {
       const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind = 'item.unblocked' ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
-      return row ? { ...i, unblockedAt: row.at as string } : i;
+      // The last validation_blocked report the server accepted: the block
+      // its release recorded (release, validationBlocked).
+      const block = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind = 'item.blocked' AND json_extract(data, '$.validationBlocked') = 1 ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
+      return row || block ? { ...i, ...(row ? { unblockedAt: row.at as string } : {}), ...(block ? { validationBlockedAt: block.at as string } : {}) } : i;
     });
   }
 

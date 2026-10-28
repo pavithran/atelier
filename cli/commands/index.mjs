@@ -31,6 +31,7 @@ import command_fast from "./fast.mjs";
 import command_finding from "./finding.mjs";
 import command_finish from "./finish.mjs";
 import command_flow from "./flow.mjs";
+import command_forget_skip from "./forget-skip.mjs";
 import command_gc from "./gc.mjs";
 import command_guide from "./guide.mjs";
 import command_handoff from "./handoff.mjs";
@@ -128,6 +129,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/finding.mjs", run: command_finding },
   { path: "cli/commands/finish.mjs", run: command_finish },
   { path: "cli/commands/flow.mjs", run: command_flow },
+  { path: "cli/commands/forget-skip.mjs", run: command_forget_skip },
   { path: "cli/commands/gc.mjs", run: command_gc },
   { path: "cli/commands/guide.mjs", run: command_guide },
   { path: "cli/commands/handoff.mjs", run: command_handoff },

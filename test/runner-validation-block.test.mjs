@@ -12,10 +12,14 @@ const item = { ...assignment.item, brief: "Make the runner build the task.", acc
 const BLOCKED = "Committed the change.\nvalidation_blocked: none. The task needs a scope change from the developer";
 const RETRY = /retries because the task changed/;
 
-// A workspace whose marker lives in memory, across runs of the runner.
+// A workspace whose marker lives in memory, across runs of the runner. The
+// server's record of the block stands beside it (G5): once a run's release
+// blocked the task, the queue names the time (validationBlockedAt), as the
+// server does, and the marker holds only while that record does.
 function workspace() {
-  const disk = { marker: null, cleared: 0 };
-  const run = async (task, { prepared = false, harness } = {}) => {
+  const disk = { marker: null, cleared: 0, serverBlock: null };
+  const run = async (given, { prepared = false, harness } = {}) => {
+    const task = disk.serverBlock ? { ...given, validationBlockedAt: disk.serverBlock } : given;
     const f = fixture();
     f.io.readValidationBlock = async () => disk.marker;
     f.io.writeValidationBlock = async (cwd, block) => { disk.marker = block; };
@@ -28,6 +32,7 @@ function workspace() {
     const run = f.io.harness;
     if (harness) f.io.harness = async (...args) => { await run(...args); return harness(); };
     const state = await runTask({ ...assignment, item: task }, config, "home:studio", f.io);
+    if (state.validationBlocked || state.blocked) disk.serverBlock ??= "2026-10-28T10:00:00.000Z";
     return { state, ...f, built: f.calls.some((c) => c.harness), claimed: f.calls.some((c) => c.argv?.[0] === "claim") };
   };
   return { disk, run };

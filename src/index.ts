@@ -1789,7 +1789,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // What the runner last sent of the tasks it passes by (G5), so a restart
     // loses none of it. It stays after the runner stops polling.
     const memory = (await index(env).runnerOffers()).find((o) => o.runner.toLowerCase() === c.token!.runner!.toLowerCase())?.memory ?? null;
-    return json({ runner: c.token.runner, projects: c.token.projects ?? [], names, expiresAt: c.token.expiresAt, ...(memory ? { memory } : {}) });
+    return json({ runner: c.token.runner, projects: c.token.projects ?? [], names, expiresAt: c.token.expiresAt, ...(memory ? { memory } : {}), pauses: await index(env).providerPauses(), forget: await index(env).forgotten(c.token.runner) });
+  }
+  // The developer clears what a runner remembers of a task (G5): a skip, a
+  // refusal, a failure count, a wait. No remembered skip is not an error.
+  if (parts[0] === "runners" && parts.length === 2 && parts[1] === "forget-skip" && m === "POST") {
+    requireOwner(env, actor);
+    const project = typeof body.project === "string" ? body.project : "", item = typeof body.item === "string" ? body.item : "";
+    if (!project || !/^t[0-9]+$/.test(item)) throw new RuleError("bad_task", "name the project and the task, such as t13", 400);
+    const runner = typeof body.runner === "string" && body.runner ? parseRunner(body.runner)?.runner ?? null : null;
+    if (typeof body.runner === "string" && body.runner && !runner) throw new RuleError("bad_runner", "name the runner as home:NAME", 400);
+    return json({ forgotten: await index(env).forgetSkip(runner, project, item) });
   }
   if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
     requireOwner(env, actor);
