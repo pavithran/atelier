@@ -784,7 +784,8 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
 
   await L.undispatch(item.id, "owner");
   expect(await L.waiting()).toEqual([]);
-  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", /^t\d+ is not queued for a runner, so there is no dispatch to withdraw$/);
+  // A repeat of the withdrawal answers already, and logs nothing more.
+  expect(await L.undispatch(item.id, "owner")).toMatchObject({ already: true });
   // Withdrawn, it is an ordinary open task again.
   const { item: byHand } = await L.claim(item.id, A);
   expect(byHand.owner).toBe(A);

@@ -25,6 +25,7 @@ export default async function approveCommand() {
   // the approval records as fields of their own, apart from the note.
   const { quote } = directionArg(`approve ${kind} --head ${head}`);
   const a = await call("POST", `${P(name)}/actions`, { kind, commit: head, ...(args.note ? { note: args.note } : {}), ...(quote ? { quote } : {}), expires }, OWNER, quote ? actingHeaders() : {});
+  if (a.already) return console.log(`${a.id}: ${a.kind} is already approved at ${short(a.commit)} until ${at(a.expiresAt)}; nothing changed. To change its note or expiry, withdraw it first: atelier approvals withdraw ${a.id}`);
   const said = a.quote ? ` on ${directionText(a)}` : "";
   console.log(`${a.id}: ${a.kind} approved at ${short(a.commit)} until ${at(a.expiresAt)}${said}. The next atelier ship at that revision uses it, once. To withdraw it: atelier approvals withdraw ${a.id}`);
 }

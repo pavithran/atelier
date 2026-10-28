@@ -11,5 +11,6 @@ export default async function reviewWithdrawCommand() {
     reason: args.reason,
     ...(args.request !== undefined ? { request: Number(args.request) } : {}),
   }, OWNER);
+  if (r.already) return console.log(`${id}'s review request ${r.request} at ${String(r.head).slice(0, 8)} is already withdrawn; nothing changed.`);
   console.log(`${id}'s review request ${r.request}${r.reviewer ? ` for ${r.reviewer}` : ""} at ${String(r.head).slice(0, 8)} withdrawn: ${r.reason}. Ask another reviewer with atelier land ${id} --reviewer H/M.`);
 }

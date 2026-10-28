@@ -3271,7 +3271,7 @@ export class Ledger extends DurableObject<Env> {
       this.dropToken(id, token);
       this.dropRunnerJobs(id);
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
-      this.log(id, actor, "item.released", { from: item.owner, note: TAKEN_BACK }, d.at);
+      this.log(id, actor, "item.released", { from: item.owner, by: actor, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
@@ -3378,10 +3378,13 @@ export class Ledger extends DurableObject<Env> {
     return !!item.owner && ["claimed", "submitted", "accepted"].includes(item.state);
   }
 
-  undispatch(id: string, actor: string): Item {
+  undispatch(id: string, actor: string): Item & { already?: true } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a dispatch", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    // A rerun: no dispatch stands and the last word on it was this actor's withdrawal.
+    const last = this.lastEvent(id, ["item.dispatched", "item.undispatched"]);
+    if (!item.dispatch && last?.kind === "item.undispatched" && last.actor === actor) return { ...item, already: true };
     if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`);
     // A claimed or submitted task keeps its dispatch, and waits in the queue
     // again if it is released; an accepted, merged or abandoned one never does.
@@ -4333,13 +4336,17 @@ export class Ledger extends DurableObject<Env> {
 
   // The summary is recorded in the event and nowhere else; a later submit
   // without one leaves the new revision with none.
-  submit(id: string, actor: string, summary?: string, origin?: string, proved = false): Item {
+  submit(id: string, actor: string, summary?: string, origin?: string, proved = false, head?: string): Item & { already?: true } {
     const item = this.item(id);
     assertLive(item);
     assertOwner(item, actor);
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting");
     // Cleaned first: a summary over its limit is refused before anything is written.
     const text = cleanSummary(summary);
+    // A rerun of the submit that already stands: the caller names the head it
+    // submits, and it is the one submitted and still the task's head. A newer
+    // head, or none named, is a submit like any other.
+    if (head !== undefined && head === item.head && item.state === "submitted" && this.lastEvent(id, ["item.submitted"])?.data.head === head) return { ...item, already: true };
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
     this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
@@ -4545,16 +4552,19 @@ export class Ledger extends DurableObject<Env> {
     return forkReplacements(events, id) >= FORK_REPLACEMENTS;
   }
 
+  // A task closed as delivered by another names a task that has merged.
+  private assertDelivered(id: string, deliveredBy?: string): void {
+    if (deliveredBy === undefined) return;
+    if (deliveredBy === id) throw new RuleError("bad_delivered_by", `${id} cannot be delivered by itself`, 400);
+    const by = this.item(deliveredBy);
+    if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409);
+  }
+
   private abandonAllowed(id: string, actor: string, note: string, deliveredBy?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403);
     assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
-    // A task closed as delivered by another names a task that has merged.
-    if (deliveredBy !== undefined) {
-      if (deliveredBy === id) throw new RuleError("bad_delivered_by", `${id} cannot be delivered by itself`, 400);
-      const by = this.item(deliveredBy);
-      if (by.state !== "merged") throw new RuleError("not_delivered", `${deliveredBy} is ${by.state}, not merged, so it has not delivered ${id}`, 409);
-    }
+    this.assertDelivered(id, deliveredBy);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     // A plan's parts go with it; stopping the plan closes them in one step.
     const open = item.kind === "plan" ? this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned") : [];
@@ -4603,7 +4613,7 @@ export class Ledger extends DurableObject<Env> {
       return this.item(id);
     }
     this.update(id, { owner: null, state: "open" }, at);
-    this.log(id, actor, "item.released", { from: item.owner, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
+    this.log(id, actor, "item.released", { from: item.owner, by: actor, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -5894,6 +5904,32 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
+  // The task's latest event of the kinds named, or undefined.
+  private lastEvent(id: string, kinds: string[]): LedgerEvent | undefined {
+    const row = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT 1`, id, ...kinds).toArray()[0];
+    return row ? eventOf(row) : undefined;
+  }
+
+  // A rerun of a release that already stands, for the route to answer before
+  // it revokes anything: the task, or null when the call is new. It is a
+  // rerun only for the one who made the last release, and only while nobody
+  // holds the task; anything else takes the normal path.
+  repeatedRelease(id: string, actor: string): Item | null {
+    const item = this.item(id);
+    return item.state === "open" && !item.owner && this.lastEvent(id, ["item.released"])?.data.by === actor ? item : null;
+  }
+
+  // A rerun of an abandon, asked after the request's own checks (the owner,
+  // the note, deliveredBy): the task was abandoned with the same deliveredBy.
+  // One abandoned with another is not a rerun and the normal path refuses it.
+  repeatedAbandon(id: string, actor: string, note: string, deliveredBy?: string): Item | null {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403);
+    assertLength(note, NOTE_MAX, "the abandonment note");
+    this.assertDelivered(id, deliveredBy);
+    const item = this.item(id);
+    return item.state === "abandoned" && this.lastEvent(id, ["item.abandoned"])?.data.deliveredBy === deliveredBy ? item : null;
+  }
+
   private eventAt(seq: number): LedgerEvent | undefined {
     const row = this.sql.exec(`SELECT * FROM events WHERE seq = ?`, seq).toArray()[0];
     return row ? eventOf(row) : undefined;
@@ -6383,7 +6419,7 @@ export class Ledger extends DurableObject<Env> {
     return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
   }
 
-  approveAction(body: Record<string, unknown>, actor: string, acting: string | null = null): ApprovalView {
+  approveAction(body: Record<string, unknown>, actor: string, acting: string | null = null): ApprovalView & { already?: true } {
     this.project();
     return approveAction(this.actionStore, actor, body, new Date().toISOString(), acting);
   }
@@ -8670,7 +8706,7 @@ export class Ledger extends DurableObject<Env> {
   // empty commit (a new head) let it go. A claimed request is being served
   // and is refused: its verdict, or its claim lapsing, ends it. `request`
   // names one; without it, the gate's newest live request at the head.
-  withdrawReviewRequest(itemId: string, actor: string, reason: unknown, request?: unknown, proved = false): { request: number; head: string; reviewer: string | null; reason: string } {
+  withdrawReviewRequest(itemId: string, actor: string, reason: unknown, request?: unknown, proved = false): { request: number; head: string; reviewer: string | null; reason: string; already?: true } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a review request", 403);
     if (reason !== undefined && typeof reason !== "string") throw new RuleError("bad_reason", "a reason is text", 400);
     const why = (reason ?? "").replace(/\s+/g, " ").trim();
@@ -8687,6 +8723,8 @@ export class Ledger extends DurableObject<Env> {
     const d = JSON.parse(live.dispatch as string) as Dispatch;
     const reviewer = d.agent && d.model ? `${d.agent}/${d.model}` : null;
     const head = live.head as string;
+    // The request this call names was withdrawn already: a rerun.
+    if (live.state === "withdrawn") return { request: live.id as number, head, reviewer, reason: why, already: true };
     if (live.state === "claimed") throw new RuleError("review_claimed", `the review of ${itemId} at ${head.slice(0, 8)} (request ${live.id}) is claimed by ${live.claimedBy ?? reviewer}, so it is being served and is not withdrawn; wait for its verdict, or let its claim lapse`, 409);
     if (live.state !== "open") throw new RuleError("no_request", `review request ${live.id} of ${itemId} is ${live.state}, so there is nothing to withdraw`, 409);
     const at = new Date().toISOString();
