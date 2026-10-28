@@ -926,7 +926,10 @@ export async function runLand(io) {
     current = "merge-main";
     guardLease();
     const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
-    const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, "merge", id, "--landing", "--project", name], { cwd: p.path, env: io.env });
+    // The merge names this landing's attempt in every call it makes, so it
+    // records nothing against an attempt another landing has started.
+    const mergeEnv = Number.isInteger(failureAttempt) ? { ...(io.env ?? process.env), ATELIER_LAND_ATTEMPT: String(failureAttempt) } : io.env;
+    const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, "merge", id, "--landing", "--project", name], { cwd: p.path, env: mergeEnv });
     if (!r.passed) {
       // The merge records its own failing step; one it could not record (it
       // was killed, or failed before its first step) is recorded here.

@@ -230,3 +230,59 @@ test("a merge that fails after another landing started a new attempt fails nothi
   assert.equal(now.failedStep, null, "the new attempt is not failed by the old one");
   assert.equal(now.step, "start");
 });
+
+// The merge child carries the attempt atelier land named for it. Attempt B
+// starting after A named its attempt and before A's child enters its merge:
+// the child records nothing against B.
+test("a merge child named for attempt A enters nothing and records nothing once attempt B has started", async (t) => {
+  const w = await landingWorld(t);
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  assert.equal((await w.api("POST", `/projects/demo/items/${id}/accept`, { head: (await w.detail(id)).item.head })).status, 200);
+  const post = (body) => w.api("POST", `/projects/demo/items/${id}/land`, { ms: 0, ...body });
+  assert.equal((await post({ step: "start" })).status, 200);
+  const a = (await w.detail(id)).landing.attempt;
+  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
+  assert.equal((await post({ step: "start" })).status, 200);
+  const b = (await w.detail(id)).landing;
+  assert.equal(b.attempt, a + 1);
+  const main = await w.tip();
+  const r = await w.cli(["merge", id, "--landing"], { env: { ATELIER_LAND_ATTEMPT: String(a) } });
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /stale_landing: t\d+'s landing record is at attempt \d+, not \d+/);
+  assert.deepEqual((await w.detail(id)).landing, b, "attempt B is untouched");
+  assert.equal(await w.tip(), main);
+  // Nor is any step of A's taken against B.
+  const late = await post({ step: "merge-main", attempt: a });
+  assert.equal(late.status, 409); assert.equal(late.json.error, "stale_landing");
+  assert.deepEqual((await w.detail(id)).landing, b);
+});
+
+// The retry: main moves between the checks and the push, and attempt B
+// starts in the same moment; the child's next round keeps attempt A and is
+// refused, recording nothing against B.
+test("a merge child's retry after main moved keeps its own attempt, so a new attempt is never written by it", async (t) => {
+  const w = await landingWorld(t);
+  const { writeFileSync } = await import("node:fs");
+  const script = `${w.root}/move.sh`, count = `${w.root}/moves`, url = w.remote("atl_00112233445566778899aabbccddeeff");
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  writeFileSync(script, `#!/bin/sh
+export HOME=${w.root} GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+n=$(cat ${count} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${count}
+if [ $n -eq 1 ]; then
+  d=$(mktemp -d) && git clone -q ${url} $d && cd $d && echo moved > moved.txt && git add . && git -c user.name=Demo -c user.email=t@example.test commit -q -m "main moves" && git push -q origin HEAD:refs/heads/main
+  curl -s -X POST -H "authorization: Bearer atl_00112233445566778899aabbccddeeff" -H "x-atelier-actor: owner" -H "content-type: application/json" -d '{"step":"start","ms":0}' ${w.base}/api/projects/demo/items/${id}/land > /dev/null
+fi
+exit 0
+`, { mode: 0o700 });
+  await w.setPolicy({ checks: [`sh ${script}`], checkClasses: [{ command: `sh ${script}`, by: "owner", note: "a test double that moves main and starts an attempt" }] });
+  // The check's evidence at the head, as the builder's finish records it.
+  const head = (await w.detail(id)).item.head;
+  await w.L().addEvidence({ itemId: id, claim: `sh ${script}`, grade: "observed", head, passed: true, by: "codex/gpt-6", at: new Date().toISOString(), changedPaths: ["task.txt"] });
+  const r = await w.cli(["land", id]);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /stale_landing/);
+  const d = await w.detail(id);
+  assert.equal(d.landing.step, "start", "attempt B stands as it began");
+  assert.equal(d.landing.failedStep, null);
+  assert.equal(w.log().filter((l) => / Merge t\d+:/.test(l)).length, 0, "nothing of the task was pushed");
+});

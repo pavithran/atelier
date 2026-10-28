@@ -210,7 +210,12 @@ export default async function mergeCommand() {
     if(lander){
       // It names the attempt it belongs to, which the Ledger checks against
       // the task's landing record and its live lease.
-      landAttempt=(await request('GET',I(name,id),undefined,OWNER).catch(()=>null))?.landing?.attempt;
+      // atelier land names its attempt in ATELIER_LAND_ATTEMPT and it holds
+      // for every round; run by hand, the record's current attempt is read once.
+      if(round===0){
+        const named=Number(process.env.ATELIER_LAND_ATTEMPT);
+        landAttempt=Number.isInteger(named)&&named>=1?named:(await request('GET',I(name,id),undefined,OWNER).catch(()=>null))?.landing?.attempt;
+      }
       // A refused entry is this call's, not the landing's: it ends here with
       // the refusal and records nothing on the task.
       try{await request('POST',`${I(name,id)}/land-merge`,landAttempt===undefined?{}:{attempt:landAttempt},OWNER);}
