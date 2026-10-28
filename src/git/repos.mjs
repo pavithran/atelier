@@ -12,12 +12,13 @@ export function repoDir(reposDir, key) {
   return join(reposDir, `${key}.git`);
 }
 
-// Creates the repository when missing, and sets its hook path and receive
-// settings either way, so a moved hooks directory is picked up.
+// Creates the repository when missing, with no template (no sample hooks),
+// and sets its hook path and receive settings either way, so a moved hooks
+// directory is picked up.
 export function ensureRepo({ reposDir, hooksDir, key, branch }) {
   const dir = repoDir(reposDir, key);
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
-  if (!existsSync(join(dir, "HEAD"))) execFileSync("git", ["init", "--bare", "--quiet", `--initial-branch=${branch}`, dir], { stdio: ["ignore", "ignore", "pipe"] });
+  if (!existsSync(join(dir, "HEAD"))) execFileSync("git", ["init", "--bare", "--quiet", "--template=", `--initial-branch=${branch}`, dir], { stdio: ["ignore", "ignore", "pipe"] });
   git("config", "core.hooksPath", hooksDir);
   git("config", "receive.fsckObjects", "true");
   git("config", "receive.denyNonFastForwards", "false");

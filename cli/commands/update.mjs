@@ -43,8 +43,14 @@ export default async function updateCommand() {
       console.log(`${id}: this workspace's commits now sit on the ${n} the fork held that it lacked:\n${missing}`);
     }
   }
-  const t = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
-  git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
+  // On the Node server the baseline is a branch of origin itself (atelier.base-branch,
+  // Atelier 2.0, task 5), fetched with the workspace's own credential: one remote.
+  const baseBranch = wsConfig("base-branch");
+  if (baseBranch) await workspaceGit(name, id, as, ["fetch", "--quiet", "origin", baseBranch]);
+  else {
+    const t = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
+    git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
+  }
   const baseline = short(git(["rev-parse", "FETCH_HEAD"]));
   // A HEAD that already holds the baseline, such as after a conflict merge
   // was resolved and committed (t691), has nothing to take: a rebase would

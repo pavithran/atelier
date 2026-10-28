@@ -3102,7 +3102,7 @@ export class Ledger extends DurableObject<Env> {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
       if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor) {
         const gone = orphanedBy(item, this.runnerPolls());
-        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409);
+        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409, `only the developer can: run atelier dispatch ${id} --to home${gone ? "" : ` once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`);
       }
     }
     throw runnerDenied(token);
@@ -4663,6 +4663,17 @@ export class Ledger extends DurableObject<Env> {
   // leave the developer's Macs, which the pre-receive hook refuses in any
   // pushed commit (design section 4.4, rule 6). Setting them replaces the
   // list; each is checked as the list in iCloud is.
+  // The text of the project's prose standard (task 5), which init sends
+  // with the path and a claim hands to its builder; null when none is kept.
+  proseStandardText(): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'prose-standard-text'`).toArray()[0];
+    return row ? row.value as string : null;
+  }
+  setProseStandardText(text: string | null): void {
+    if (text === null) this.sql.exec(`DELETE FROM meta WHERE key = 'prose-standard-text'`);
+    else this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('prose-standard-text', ?)`, text);
+  }
+
   privatePaths(): string[] {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'private-paths'`).toArray()[0];
     return row ? JSON.parse(row.value as string) : [];

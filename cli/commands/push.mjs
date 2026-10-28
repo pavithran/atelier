@@ -8,6 +8,9 @@ import { pushCommitsInTurn, refused413 } from "../push-steps.mjs";
 // The server refused the workspace token while the push read the fork (t705).
 class TokenRefused extends Error {}
 
+// A task's branch on the Node server.
+const TASK_BRANCH = /^(?:t|plan)\/[1-9][0-9]*$/;
+
 // A workspace a runner claimed pushes through the runner route (t488).
 const RUNNER_ROUTE = /\/git\/runner\/[^/?#]+\/[^/?#]+$/i;
 
@@ -27,7 +30,12 @@ export default async function pushCommand() {
   // comparison below still reports a head Atelier did not see.
   // The workspace's token is renewed first when it lapsed (t705), so the read
   // of the fork's branch is not refused and skipped.
-  const recorded = wsConfig("branch"), reads = ownerPort ? forkBranch() : await workspaceForkBranch(name, id, as);
+  // On the Node server the workspace pushes the task's own branch (t/N,
+  // Atelier 2.0, task 5), which Atelier reads the head from, whatever the
+  // repository's HEAD names: there is no fork branch to compare.
+  const recorded = wsConfig("branch");
+  const onBranch = TASK_BRANCH.test(recorded ?? "");
+  const reads = onBranch ? null : ownerPort ? forkBranch() : await workspaceForkBranch(name, id, as);
   if (recorded && reads && recorded !== reads) {
     die(`${id}'s fork reads its head from ${reads}, but this workspace pushes to ${recorded} (git config atelier.branch); nothing was pushed. Run atelier claim ${id} to refresh the workspace's branch, then push again.`);
   }
@@ -169,8 +177,9 @@ export default async function pushCommand() {
     die(`git ${pushArgs.join(" ")} failed:\n${said}`);
   }
   const item = await call("POST", `${I(name, id)}/push`, { head, ...(rebasedFrom ? { rebasedFrom } : {}) }, as);
-  if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
-  console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
+  const where = onBranch ? `${branch} on the server` : "Artifacts";
+  if (item.head !== head) die(`pushed ${short(head)} but ${where} reports ${short(item.head)}; recorded what ${where} reports`);
+  console.log(`${id} head ${short(item.head)} (observed in ${where}).`);
   // The push's secret scan (t332), as the answer reports it: a flag names
   // file and line, never the value; a scan still pending blocks the gate
   // until a later push, or Atelier's own retry, completes it.

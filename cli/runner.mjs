@@ -2496,7 +2496,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // A review clones into a folder of its own beside the task's workspace,
     // never into the builder's, and the folder is removed when the job ends.
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
-    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
+    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace, claimed.readToken.branch ?? null);
     if (io.stopped()) throw new Error("interrupted");
     if (claimed.landed) {
       await fetchLandedCommit(io, workspace, claimed, { project, actor });
@@ -2992,7 +2992,7 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     // A scratch clone of its own, beside the task's workspace and never it,
     // removed when the job ends; its merge commits are never pushed.
     workspace = `${io.workspacePath(project, item.id)}-prereview-${randomUUID().slice(0, 8)}`;
-    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
+    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace, claimed.readToken.branch ?? null);
     if (io.stopped()) throw new Error("interrupted");
     const git = (args, options = {}) => io.git(args, { cwd: workspace, ...options });
     if ((await git(["checkout", "--quiet", "--detach", head], { allowFail: true })).status !== 0) {
@@ -4611,8 +4611,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // Each clone gets the merge configuration its .gitattributes needs
     // (cli/merge-pipeline.mjs) before anything merges in it, the harness's
     // own merges included.
-    clone: async (remote, token, dir) => {
-      const out = await checked(["git", "clone", "--quiet", remote, dir], { env: lowSpeedEnv(gitAuth(token)), signal: controller.signal, step: "clone" }, executeChild);
+    // `branch`, on the Node server, is the one branch the read clones
+    // (Atelier 2.0, task 5): the task's t/N, read with a read grant.
+    clone: async (remote, token, dir, branch = null) => {
+      const out = await checked(["git", "clone", "--quiet", ...(branch ? ["--single-branch", "--branch", branch] : []), remote, dir], { env: lowSpeedEnv(gitAuth(token)), signal: controller.signal, step: "clone" }, executeChild);
       installMergeConfig(dir);
       return out;
     },

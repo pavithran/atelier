@@ -54,6 +54,16 @@ For later:
 
 Every repository names the hook through `core.hooksPath`, and a pushed tree cannot carry a hook into a bare repository.
 
+## The claim, the workspace and the reads
+
+`atelier claim tN` records the claim, then makes `refs/heads/t/N` at the tip of the project's branch unless it exists (`src/git/branches.mjs`, through `git update-ref` with the old value named). A part starts from its plan's branch, `plan/N`. The claim records the branch as the item's fork, under the name `PROJECT/t/N`; `src/git/artifacts.mjs` reads that name as the branch, so every read of a task's head, history, scan and diff reads it. The claim records that tip as the base, mints the task grant and records it as the item's write token. It answers with the remote (`ORIGIN/git/PROJECT.git`), the branch, the base, the grant and the project's prose standard with its text. A runner's claim is the same, and its workspace token is the task grant. A branch that holds nothing of its own is moved to the tip its start has reached since, on the next claim.
+
+The remote is given at the address the request came to when that is this machine's or the tailnet's (100.64.0.0/10), and at the public origin otherwise (`gitOrigin` in `src/runtime/server.mjs`). The CLI accepts plain `http://` to a tailnet address, which WireGuard encrypts.
+
+The CLI clones the branch alone (`git clone --single-branch --branch t/N`) and fetches the project's branch from the same remote as the baseline: one remote, `origin`. `atelier push` pushes `HEAD:refs/heads/t/N`. A check's clean clone, `atelier diff` and a review job clone `t/N` alone with a read grant, which `read-token`, `base-token` and `review-claim` answer on this server.
+
+`atelier init` makes the project's repository, its HEAD on the project's branch, and mints nothing: the owner pushes the project's branch with the server token. Init sends the prose standard's text with its path, so a claim can hand it to a builder with no checkout.
+
 Before Git reads a byte, the server checks the credential. A request with no live grant for this project gets 401 at `info/refs`. A read grant asking to push gets 403.
 
 ## What the isolation rests on
@@ -66,8 +76,9 @@ That makes the macOS user boundary the whole of the isolation. An agent with the
 
 - `src/git/grants.mjs`: the grant store.
 - `src/git/http.mjs`: Git over HTTP through `git http-backend`.
-- `src/git/repos.mjs`: the bare repositories.
+- `src/git/repos.mjs`: the bare repositories; `src/git/branches.mjs`: a task's branch.
 - `src/git/host.mjs`: checks each request against the Ledgers.
 - `hooks/pre-receive`: the hook.
 - `src/git/scan.mjs`: rules 5 and 6; `src/git/policy.mjs`: the policy and report files; `src/git/reader.mjs`: reads objects through `git cat-file --batch`.
 - `test/git-hook.test.mjs` and `test/git-scan.test.mjs`: push with the real client against the real hook.
+- `test/claim-branch.test.mjs` and `test/claim-branch-runner.test.mjs`: the claim, the CLI and the runner against the real server.

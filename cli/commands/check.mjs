@@ -28,7 +28,7 @@ export default async function checkCommand() {
   // The base a part is measured against is its plan's fork, not the baseline
   // (docs/orchestrator.md, section 5).
   const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
-  const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name);
+  const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name, ws.branch ?? null);
   // The clone goes however this command ends: below once the checks are
   // recorded, or on the way out when a step ends the command first.
   const cleanup = () => removeClone(dir);

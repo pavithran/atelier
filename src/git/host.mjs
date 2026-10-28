@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GrantStore } from "./grants.mjs";
 import { gitRequest } from "./http.mjs";
-import { ensureRepo } from "./repos.mjs";
+import { ensureRepo, repoDir } from "./repos.mjs";
+import { branchTip, createBranch, holds, moveBranch, setHead } from "./branches.mjs";
 
 export const HOOKS_DIR = fileURLToPath(new URL("../../hooks", import.meta.url));
 
@@ -45,7 +46,52 @@ export class GitHost {
     return {
       mint: (grant) => this.grants.mint(grant),
       revoke: (id) => this.grants.revoke(id),
+      createRepo: (args) => this.createRepo(args),
+      claimBranch: (args) => this.claimBranch(args),
+      moveEmptyBranch: (args) => this.moveEmptyBranch(args),
     };
+  }
+  // The project's bare repository, made when missing and set up once per
+  // process (core.hooksPath and the receive settings).
+  repo(key, branch) {
+    if (!this.ready.has(key)) {
+      ensureRepo({ reposDir: this.reposDir, hooksDir: this.hooksDir, key, branch });
+      this.ready.add(key);
+    }
+    return repoDir(this.reposDir, key);
+  }
+  // Project registration (atelier init): the repository, with its HEAD on
+  // the project's branch, which the baseline reader and a plain clone read.
+  async createRepo({ key, branch }) {
+    this.ready.delete(key);
+    const dir = this.repo(key, branch);
+    await setHead(dir, branch);
+    return { created: true };
+  }
+  // A claim's branch (design section 4.5): `branch` (t/N, or plan/N) made at
+  // the tip of `from` (the project's branch, or a part's plan branch) unless
+  // it exists. Answers { base, head, created }: base is the tip of `from`,
+  // null when that branch has no commits yet, and then nothing is made.
+  async claimBranch({ key, projectBranch, branch, from }) {
+    const dir = this.repo(key, projectBranch);
+    const base = await branchTip(dir, from);
+    if (!base) return { base: null, head: await branchTip(dir, branch), created: false };
+    const made = await createBranch(dir, branch, base);
+    return { base, head: made.head, created: made.created };
+  }
+  // A claimed branch that holds nothing of its own, its head the recorded
+  // base or a commit `from` already holds, moved to the tip `from` has
+  // reached since (moveEmptyFork's successor). Answers the new head, or null
+  // when nothing moved: `from` has not moved, or the branch holds a commit of
+  // its own, or a push moved it meanwhile.
+  async moveEmptyBranch({ key, projectBranch, branch, from, base }) {
+    const dir = this.repo(key, projectBranch);
+    const tip = await branchTip(dir, from);
+    if (!tip || tip === base) return null;
+    const head = await branchTip(dir, branch);
+    if (head === tip) return tip;
+    if (head && head !== base && !(await holds(dir, head, tip))) return null;
+    return await moveBranch(dir, branch, tip, head) ? tip : null;
   }
   // The registered project a URL names, by any name it has had or its key,
   // as every other route resolves it (resolveProject), or null.
@@ -66,7 +112,7 @@ export class GitHost {
     if (owner && same(token, owner)) return { id: "owner", project: key, key, kind: "owner", task: null, actor: this.settings.OWNER_ACTOR || "owner", branch, accepted: null };
     const g = this.grants.find(token);
     if (!g || g.project !== key) return null;
-    if (g.kind === "task") {
+    if (g.kind === "task" || g.kind === "plan") {
       const recorded = await this.ledger(key).tokenId(g.task).catch(() => null);
       if (recorded !== `git:${g.hash}`) return null;
     }
@@ -95,11 +141,7 @@ export class GitHost {
       authorize: (token, name) => this.authorize(token, name),
       scans: { dir: this.scanDir, policy: (grant) => this.scanPolicy(grant), record: (grant, report) => this.recordScan(grant, report) },
       ensure: (grant) => {
-        // Set up once per repository per process.
-        if (!this.ready.has(grant.key)) {
-          ensureRepo({ reposDir: this.reposDir, hooksDir: this.hooksDir, key: grant.key, branch: grant.branch });
-          this.ready.add(grant.key);
-        }
+        this.repo(grant.key, grant.branch);
         return grant.key;
       },
     });

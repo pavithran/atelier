@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { isAbsolute, join, resolve, sep } from "node:path";
-import { PROSE_STANDARD_COPY, proseStandardLine } from "../src/prose-standard.ts";
+import { PROSE_STANDARD_COPY, PROSE_TEXT_FILE, proseStandardLine } from "../src/prose-standard.ts";
 import { excludeScratch } from "./scratch.mjs";
 
 // The prose standard inside the agent's own workspace (t676). The project
@@ -82,14 +82,25 @@ function lstatOrNull(path) {
 // Copies the standard into `workspace`. `checkout` is the registered folder
 // of the project (null when this machine registers none). Returns
 // { sha256 } or { failed } with the reason, in words for the brief.
+// Where the source cannot be read from this machine (a builder on the Studio
+// has no checkout), the text the claim carried and kept in the workspace's
+// Git directory (PROSE_TEXT_FILE, Atelier 2.0 task 5) is copied instead.
 export function stageProseStandard(workspace, checkout, path) {
   const source = isAbsolute(path) ? path : checkout ? resolve(checkout, path) : null;
-  if (!source) return { failed: "this machine registers no checkout of the project to resolve the relative path from" };
+  const kept = () => { try { return readFileSync(join(workspace, ".git", PROSE_TEXT_FILE)); } catch { return null; } };
   let bytes;
-  try { bytes = readFileSync(source); }
-  catch (e) { return { failed: `${source} cannot be read: ${e?.code ?? "read error"}` }; }
-  if (!bytes.length) return { failed: `${source} is empty` };
-  if (bytes.length > MAX_BYTES) return { failed: `${source} is ${bytes.length} bytes, over the ${MAX_BYTES} a copy may be` };
+  if (!source) {
+    bytes = kept();
+    if (!bytes) return { failed: "this machine registers no checkout of the project to resolve the relative path from" };
+  } else {
+    try { bytes = readFileSync(source); }
+    catch (e) {
+      bytes = kept();
+      if (!bytes) return { failed: `${source} cannot be read: ${e?.code ?? "read error"}` };
+    }
+  }
+  if (!bytes.length) return { failed: `${source ?? path} is empty` };
+  if (bytes.length > MAX_BYTES) return { failed: `${source ?? path} is ${bytes.length} bytes, over the ${MAX_BYTES} a copy may be` };
   try { writeCopy(workspace, bytes); }
   catch (e) { return { failed: `the copy could not be written in the workspace: ${e?.refusal ?? e?.code ?? "write error"}` }; }
   return { sha256: createHash("sha256").update(bytes).digest("hex") };

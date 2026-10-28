@@ -121,6 +121,10 @@ export const RUNNER_ROUTES: readonly { method: string; pattern: string }[] = [
   { method: "GET", pattern: "projects/:project/decisions" },
   { method: "GET", pattern: "projects/:project/baseline-head" },
   { method: "POST", pattern: "projects/:project/baseline-token" },
+  // A Git credential for the project's repository on the Node server
+  // (Atelier 2.0, docs/branches.md): a read grant, or the task grant of a
+  // task the runner's job holds, which the route gives only to the holder.
+  { method: "POST", pattern: "projects/:project/git-token" },
   { method: "GET", pattern: RUNNER_ITEM },
   ...["brief", "job-brief", "diff"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}` })),
   ...["logs", "diffs"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}/*` })),

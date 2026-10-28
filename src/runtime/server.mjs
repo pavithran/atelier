@@ -65,10 +65,33 @@ export function settings({ env, port, secretsDir, vars = {}, processEnv = proces
   return out;
 }
 
+// The origin a Git remote is given at for a request that reached this
+// process directly over the tailnet or from this machine: http://HOST, the
+// address the client used (design section 4.3: builders push over the
+// tailnet, which WireGuard encrypts). Any other request, the tunnel's
+// included, is given the public origin. The value names only where the
+// requester itself reaches the server, so a Host it chose misleads no one but
+// itself.
+export const GIT_ORIGIN_HEADER = "x-atelier-git-origin";
+export function gitOrigin(host) {
+  if (typeof host !== "string" || !/^[A-Za-z0-9.:[\]-]{1,100}$/.test(host)) return null;
+  let url;
+  try { url = new URL(`http://${host}`); } catch { return null; }
+  const name = url.hostname;
+  const tailnet = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name);
+  const ok = name === "localhost" || name === "127.0.0.1" || name === "[::1]"
+    || (tailnet && Number(tailnet[1]) >= 64 && Number(tailnet[1]) <= 127 && Number(tailnet[2]) <= 255 && Number(tailnet[3]) <= 255);
+  return ok ? url.origin : null;
+}
+
 async function toRequest(req, origin) {
   const url = new URL(req.url ?? "/", origin);
   const headers = new Headers();
-  for (let i = 0; i < req.rawHeaders.length; i += 2) headers.append(req.rawHeaders[i], req.rawHeaders[i + 1]);
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    if (req.rawHeaders[i].toLowerCase() !== GIT_ORIGIN_HEADER) headers.append(req.rawHeaders[i], req.rawHeaders[i + 1]);
+  }
+  const git = gitOrigin(req.headers.host);
+  if (git) headers.set(GIT_ORIGIN_HEADER, git);
   const body = req.method === "GET" || req.method === "HEAD" ? undefined : Readable.toWeb(req);
   return new Request(url, { method: req.method, headers, body, duplex: body ? "half" : undefined });
 }

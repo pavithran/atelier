@@ -1,7 +1,8 @@
 import { postMergeArgs } from "../post-merge-policy.mjs";
 // atelier init. Its forms, flags and help are declared in src/usage/commands/init.ts.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { PROSE_TEXT_MAX } from "../../src/prose-standard.ts";
 import { checkFiles, parseRiskReviews, preparationPaths } from "../../src/rules.ts";
 import { appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
@@ -9,7 +10,7 @@ import { pushHistory } from "../push-steps.mjs";
 import { discoverPrivate, guardedPush, moveProjectEntryOnDisk, privateGuardFor, remoteBases } from "../private-guard.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
-import { OWNER, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, saveConfig, short, wsConfig } from "../atelier.mjs";
+import { OWNER, P, agentsMdOffer, apiToken, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, saveConfig, short, wsConfig } from "../atelier.mjs";
 
 // The project owner, in the project's checkout.
 export default async function initCommand() {
@@ -142,6 +143,9 @@ export default async function initCommand() {
     const values = args.multi[flag];
     if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
   }
+  // The prose standard's text goes with its path (Atelier 2.0, task 5), so a
+  // claim can hand it to a builder that has no checkout to read it from.
+  const proseText = proseStandardText(top, args["prose-standard"]);
   const r = await call("PUT", P(name), {
     ...policy,
     ...(reset ? { reset: true } : {}),
@@ -154,6 +158,7 @@ export default async function initCommand() {
     // The path of the document the project's prose follows, named in every
     // build, plan and review brief (t675); omitted keeps it, "" clears it.
     ...(args["prose-standard"] !== undefined ? { proseStandard: args["prose-standard"] } : {}),
+    ...(proseText ? { proseStandardText: proseText } : {}),
     // The model that triages a landing's diff against the task's criteria
     // before its review (t475), harness/model; omitted keeps it, "" clears it.
     ...(args.triage !== undefined ? { triage: args.triage } : {}),
@@ -172,6 +177,9 @@ export default async function initCommand() {
     ...(args.title === undefined ? {} : { title: args.title }),
     defaultBranch: branch,
   }, OWNER);
+  // The Node server mints no token for the developer's push of the project's
+  // branch: the developer pushes with the server token (docs/branches.md).
+  if (r.baseline && !r.baseline.token) r.baseline.token = apiToken();
   // A project too large for Artifacts joins with its recent history only
   // (cli/fresh.mjs). Once set up that way it stays that way: a later init
   // changes the policy and pushes nothing; atelier sync carries new commits.
@@ -279,4 +287,17 @@ export default async function initCommand() {
   try { agentsMd = readFileSync(join(top, "AGENTS.md"), "utf8"); } catch {}
   const offer = agentsMdOffer(agentsMd);
   if (offer) console.log(`\n${offer}`);
+}
+
+// The text of the prose standard at `path` (from the checkout `top` when
+// relative), or null with a warning when it cannot be read or is too long.
+function proseStandardText(top, path) {
+  if (typeof path !== "string" || !path.trim()) return null;
+  const source = isAbsolute(path) ? path : resolve(top, path);
+  let text;
+  try { text = readFileSync(source, "utf8"); }
+  catch (error) { console.log(`Warning: the prose standard ${source} cannot be read (${error.code ?? error.message}); its path is recorded, but builders on the Studio will not have its text.`); return null; }
+  if (!text) return null;
+  if (text.length > PROSE_TEXT_MAX) { console.log(`Warning: the prose standard ${source} is ${text.length} characters, over the ${PROSE_TEXT_MAX} the server keeps; its path is recorded without its text.`); return null; }
+  return text;
 }
