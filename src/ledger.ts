@@ -439,7 +439,7 @@ function landingWorkflowRecord(instance: string, options: LandingWorkflowOptions
 // the registered checkout and `checks` the project's checks on that merged
 // tree (G2); `merge` and `check` are the workspace's merge of main and the
 // checks at the head, which the Workflow landing still records.
-const LAND_STEPS = new Set(["start", "lease", "merge", "merge-main", "regenerate", "push", "check", "checks", "submit", "triage", "review", "accept", "merged", "release"]);
+const LAND_STEPS = new Set(["start", "fetch", "moved-code", "lease", "merge", "merge-main", "regenerate", "push", "check", "checks", "submit", "triage", "review", "accept", "merged", "release"]);
 // The steps of a landing that has begun its merge under the lease (G1): a
 // queued landing at one of them is past the merge step, and a cancel of its
 // queue row refuses rather than interrupt it.
@@ -6073,9 +6073,12 @@ export class Ledger extends DurableObject<Env> {
     // the record) stops the task's land job and rewrites its record, so only
     // the landing that holds this task's live lease, in the record's current
     // attempt, records one (G1). Anyone else changes nothing.
+    // A lease that lapsed mid-step with no landing taking it over still
+    // records its failure, so the fence against retries holds; a lease
+    // another task's landing holds now, live or lapsed, refuses it.
     if (clean.failed === true && LAND_PAST_MERGE.has(step)) {
       const held = this.projectLanding(), record = this.landingRecord(id);
-      if (!held || held.item !== id || !this.landingLive(held, at)) throw new RuleError("no_lease", `${id}'s landing holds no live landing lease, so a failure of its ${step} step is not recorded; nothing was changed`, 409, `run atelier land ${id}`);
+      if (held && held.item !== id) throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}, so a failure of ${id}'s ${step} step is not recorded; nothing was changed`, 409, `run atelier land ${id}`);
       if (!record || clean.attempt !== record.attempt) throw new RuleError("stale_landing", `${id}'s landing record is at attempt ${record?.attempt ?? "none"}, not ${clean.attempt ?? "unnamed"}, so this failure belongs to no current attempt; nothing was changed`, 409, `run atelier land ${id}`);
     }
     this.log(id, actor, `land.${step}`, { ms: Math.round(ms), ...clean }, at, proved);

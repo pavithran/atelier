@@ -410,7 +410,9 @@ export async function runLand(io) {
   // nothing to land and records nothing.
   const recorder = landRecorder(io, itemPath);
   let started = false, failureRecorded = false;
-  const record = async (step, ms, data = {}) => { if (data.failed === true) failureRecorded = true; return recorder(step, ms, data); };
+  // A failure counts as recorded only once the server took it, so the
+  // fallback below still records one the server refused.
+  const record = async (step, ms, data = {}) => { const ok = await recorder(step, ms, data); if (ok && data.failed === true) failureRecorded = true; return ok; };
   const startAttempt = async (head) => { if (started) return; started = true; await record("start", 0, head ? { head } : {}); };
   const refuse = async (message) => {
     const state = detail.item?.state, closed = ["merged", "abandoned"].includes(state) || detail.item?.kind === "plan";
@@ -842,15 +844,16 @@ export async function runLand(io) {
       // The two revisions in one repository, no ref moved: the claimed
       // task's workspace, or else the registered checkout.
       const at = claimed ? dir : p.path;
-      current = "merge-main";
+      current = "fetch";
       const t0 = Date.now();
       let mainHead, target;
       try { ({ mainHead, target } = await fetchLanding(io, { at, id, name, head })); }
       catch (error) { throw new StepError(`${id}'s head ${short(head)} or main could not be fetched, so the landing stops before anything merges: ${error.message}`); }
       // Edits main moved to another file stop the landing before anything
       // merges (t471), as they did before the merge of main into the workspace.
+      current = "moved-code";
       if (git(["merge-base", "--is-ancestor", mainHead, head], { cwd: at, allowFail: true }).status !== 0) {
-        await compareMoved(io, { dir: at, id, name, record, moved, t0, mainHead, head, step: "merge-main" });
+        await compareMoved(io, { dir: at, id, name, record, moved, t0, mainHead, head, step: "moved-code" });
       } else print(`main at ${short(mainHead)} is already in ${id}'s head ${short(head)}. With main already merged there is nothing to compare, so this landing cannot detect edits that an earlier merge of main left in code main had moved to another file.`);
       current = "triage";
       const triageAt = { triage, dir: at, id, itemPath, head, mainHead, target, record, guard: unleased };
@@ -903,6 +906,9 @@ export async function runLand(io) {
     // A queued landing the developer cancelled before its merge began stops
     // here, merging nothing (G1, atelier land --queue --cancel).
     const now = await request("GET", itemPath);
+    // The attempt this landing is, which a failure under the lease names,
+    // a signal's included.
+    if (Number.isInteger(now.landing?.attempt)) failureAttempt = now.landing.attempt;
     if (now.landing?.cancelled) {
       throw new StepError(`${id}'s queued landing was cancelled (atelier land ${id} --queue --cancel) before its merge began, so it stops here and merges nothing`);
     }
@@ -926,7 +932,7 @@ export async function runLand(io) {
       // was killed, or failed before its first step) is recorded here.
       const after = await request("GET", itemPath).catch(() => null);
       if (after?.landing?.failedStep) failureRecorded = true;
-      else if (after?.landing?.step) { current = after.landing.step; failureAttempt = after.landing.attempt; }
+      else if (after?.landing?.step) { current = after.landing.step; if (Number.isInteger(after.landing.attempt)) failureAttempt = after.landing.attempt; }
       throw new StepError(`atelier merge failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
     }
     print(`${id} landed: merged as ${short(mergeHead())}.`);
@@ -1178,8 +1184,8 @@ export async function recordedHeadStillStands(io, itemPath, expected) {
 // the landing goes on, for the record is not the step.
 function landRecorder(io, itemPath) {
   return async (step, ms, data = {}) => {
-    try { await io.request("POST", `${itemPath}/land`, { step, ms: Math.max(0, Math.round(ms)), ...data }); }
-    catch (error) { io.print(`Warning: the landing's ${step} step could not be recorded: ${error.message}`); }
+    try { await io.request("POST", `${itemPath}/land`, { step, ms: Math.max(0, Math.round(ms)), ...data }); return true; }
+    catch (error) { io.print(`Warning: the landing's ${step} step could not be recorded: ${error.message}`); return false; }
   };
 }
 

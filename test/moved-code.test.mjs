@@ -417,7 +417,7 @@ test("plain land: an edit in moved code stops it before the merge, Git unchanged
   unchanged(w, head);
   assert.equal(l.leased(), false);
   assert.deepEqual(l.commands, []);
-  const merge = l.records().find((r) => r.step === "merge-main");
+  const merge = l.records().find((r) => r.step === "moved-code");
   assert.equal(merge.failed, true);
   assert.deepEqual(merge.conflicts, ["cli/atelier.mjs", "cli/commands/report.mjs"]);
   assert.ok(merge.reason.startsWith(`moved-code comparison at task ${head}, main ${main}, merge base ${mergeBase}: 1 finding stopped the landing before the merge`), merge.reason);
@@ -563,7 +563,7 @@ test("a comparison that fails, or finds no merge base, stops the landing with th
   assert.match(error.message, /the comparison of t1's edits with code main moved to another file failed \(task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}\), so the landing stops before merging main; Git and the workspace are unchanged: git diff-tree failed:\nfatal: injected failure/);
   unchanged(w, head);
   assert.equal(failing.leased(), false);
-  assert.equal(failing.records().find((r) => r.step === "merge-main").failed, true);
+  assert.equal(failing.records().find((r) => r.step === "moved-code").failed, true);
   // Main replaced by a history unrelated to the task's.
   git(w.mainClone, "checkout", "-q", "--orphan", "other"); apply(w.mainClone, { "other.txt": "unrelated\n" });
   git(w.mainClone, "add", "-A"); git(w.mainClone, "commit", "-qm", "unrelated"); git(w.mainClone, "push", "-q", "-f", "origin", "other:main");

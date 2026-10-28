@@ -145,3 +145,61 @@ test("in fast mode the landing's review step records without a warning", async (
   assert.equal(d.item.state, "merged");
   assert.deepEqual(eventsOf(d, "land.review").map((e) => [e.data.skipped, e.data.fast]), [[true, true]]);
 });
+
+test("a failure under the lease is recorded for the current attempt unless another landing took the lease", async (t) => {
+  const w = await landingWorld(t);
+  const { id: other } = await w.task({ files: { "other.txt": "other\n" } });
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  const post = (body) => w.api("POST", `/projects/demo/items/${id}/land`, { ms: 0, ...body });
+  for (const step of ["start", "lease"]) assert.equal((await post({ step })).status, 200);
+  const attempt = (await w.detail(id)).landing.attempt;
+  // Another task's landing holds the lease now: refused, nothing changed.
+  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: other })).status, 200);
+  const before = (await w.detail(id)).landing;
+  const taken = await post({ step: "checks", failed: true, tail: "FAIL", attempt });
+  assert.equal(taken.status, 409); assert.equal(taken.json.error, "landing_lease");
+  assert.deepEqual((await w.detail(id)).landing, before);
+  // The lease gone with no takeover (as one that lapsed mid-step): a stale
+  // attempt is refused, the current one recorded, and the fence holds.
+  await w.api("POST", "/projects/demo/landing-lease", { cancel: true, item: other });
+  const stale = await post({ step: "checks", failed: true, tail: "FAIL", attempt: attempt + 1 });
+  assert.equal(stale.status, 409); assert.equal(stale.json.error, "stale_landing");
+  assert.equal((await post({ step: "checks", failed: true, tail: "FAIL npm test", attempt })).status, 200);
+  const d = await w.detail(id);
+  assert.equal(d.landing.failedStep, "checks");
+  assert.equal(d.landing.tail, "FAIL npm test");
+});
+
+test("a fetch that fails before the lease is recorded as the fetch step", async (t) => {
+  const w = await landingWorld(t);
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  // Every Git request goes to a proxy that answers nothing; the API does not.
+  const r = await w.cli(["land", id], { env: { http_proxy: "http://127.0.0.1:9", HTTP_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "", no_proxy: "" } });
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /could not be fetched, so the landing stops before anything merges/);
+  const d = await w.detail(id);
+  assert.equal(d.landing.failedStep, "fetch");
+  assert.match(d.landing.tail, /could not be fetched/);
+});
+
+test("SIGTERM during the merged-tree checks is recorded as the step the landing was at, in its attempt", async (t) => {
+  const w = await landingWorld(t);
+  const { writeFileSync, existsSync } = await import("node:fs");
+  const entered = `${w.root}/entered`, script = `${w.root}/wait.sh`;
+  writeFileSync(script, `#!/bin/sh\ntouch ${entered}\nsleep 120\n`, { mode: 0o700 });
+  await w.setPolicy({ checks: [`sh ${script}`], checkClasses: [{ command: `sh ${script}`, by: "owner", note: "a test double that waits" }] });
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  const main = await w.tip();
+  const landing = w.spawnCli(["land", id]);
+  for (let i = 0; i < 600 && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
+  assert.ok(existsSync(entered), "the check on the merged tree started");
+  const attempt = (await w.detail(id)).landing.attempt;
+  landing.child.kill("SIGTERM");
+  const ended = await landing.done;
+  assert.equal(ended.status, 143);
+  const d = await w.detail(id);
+  assert.equal(d.landing.failedStep, "merge-main");
+  assert.equal(d.landing.attempt, attempt);
+  assert.match(d.landing.tail, /SIGTERM ended the landing/);
+  assert.equal(await w.tip(), main, "nothing was pushed");
+});

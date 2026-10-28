@@ -113,7 +113,7 @@ so the task's branch and its approvals stay as they were reviewed.
      task's workspace, or else the registered checkout), with no ref moved,
      and the task's edits are compared with code main moved to another file
      since their merge base (t471). A finding stops the landing here, named
-     as a `merge-main` failure; `--moved-ok` records the developer's
+     as a `moved-code` failure (a fetch that fails is the `fetch` step); `--moved-ok` records the developer's
      approval of exactly those findings and goes on.
    - The triage, where the landing has one (below).
    - A claimed task has its required checks run at its recorded head, in a
@@ -180,7 +180,10 @@ as its landing record, which `atelier show t9 --json` carries:
              "failedStep": "checks", "tail": "…the failing check's last lines…" }
 ```
 
-`start` opens an attempt at the task's head. A failed step stays named as
+`start` opens an attempt at the task's head. A failure of a step under the
+lease (`merge-main` to `merged`) is recorded only for the current attempt,
+and not once another task's landing has taken the lease; a lease that
+lapsed with no takeover still records it. A failed step stays named as
 `failedStep` with `tail`, the last lines (at most 2,000 characters) of that
 step's own output — the failing check's, not what ran before it — and, for a
 conflict, `files`. A refusal before any step (a blocked task, a workspace

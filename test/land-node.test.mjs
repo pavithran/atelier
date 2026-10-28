@@ -273,8 +273,8 @@ test("merge --landing without the lease leaves an unfinished attempt's record as
   assert.match(r.output, /next: run atelier land t\d+/);
   assert.deepEqual((await w.detail(id)).landing, before, "the record is unchanged");
   assert.equal(await w.tip(), main);
-  // Nor can anyone record a failure of a step under the lease without it.
-  const direct = await w.api("POST", `/projects/demo/items/${id}/land`, { step: "merge-main", ms: 0, failed: true, attempt: before.attempt });
-  assert.equal(direct.status, 409); assert.equal(direct.json.error, "no_lease");
+  // Nor is a failure of a step under the lease taken for an attempt that is not the current one.
+  const direct = await w.api("POST", `/projects/demo/items/${id}/land`, { step: "merge-main", ms: 0, failed: true, attempt: before.attempt + 1 });
+  assert.equal(direct.status, 409); assert.equal(direct.json.error, "stale_landing");
   assert.deepEqual((await w.detail(id)).landing, before);
 });
