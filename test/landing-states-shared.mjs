@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { buildHistory, savePairs } from '../cli/fresh.mjs';
 import { landingDir, landingJournal, landingJournalFile } from '../cli/landing.mjs';
 import { SERVER_CAPABILITIES } from '../src/route-level.ts';
-export async function landing(t, { fresh = false } = {}) {
+export async function landing(t, { fresh = false, env: extra = {} } = {}) {
   const p = realpathSync(mkdtempSync(join(tmpdir(), 'atelier-states-')));
   t.after(() => rmSync(p, { recursive: true, force: true }));
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), HOME: join(p, 'home'), GIT_CONFIG_GLOBAL: join(p, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
@@ -68,7 +68,7 @@ export async function landing(t, { fresh = false } = {}) {
   const url = `http://127.0.0.1:${server.address().port}`;
   writeFileSync(join(config, 'config.json'), JSON.stringify({ server: url, owner: 'owner', projects: { proj: { path: checkout, branch: 'main', ...(fresh ? { fresh: true } : {}) } } }));
   const run = async (...args) => {
-    const child = spawn(process.execPath, [resolve('cli/atelier.mjs'), ...args, '--project', 'proj'], { cwd: checkout, env: { ...env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: 'fixture', ATELIER_CACHE: cache, ATELIER_SERVER: url } });
+    const child = spawn(process.execPath, [resolve('cli/atelier.mjs'), ...args, '--project', 'proj'], { cwd: checkout, env: { ...env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: 'fixture', ATELIER_CACHE: cache, ATELIER_SERVER: url, ...extra } });
     let output = '';
     child.stdout.on('data', (s) => { output += s; });
     child.stderr.on('data', (s) => { output += s; });

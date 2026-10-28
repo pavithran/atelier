@@ -141,7 +141,7 @@ test('a merge removes the task\'s workspace once its work is in main, and keeps 
 // The ledger failed the read that comes before the workspace's removal, and
 // the merge, already made, exited 4 before what follows it (t561 pre-review).
 test('a ledger that fails after the merge leaves the workspace and does not fail the merge', async (t) => {
-  const f = await landing(t);
+  const f = await landing(t, { env: { ATELIER_RETRY_MS: '0,0,0' } });
   const ws = join(f.cache, 'work', 'proj', 't1');
   mkdirSync(join(f.cache, 'work', 'proj'), { recursive: true });
   f.git(f.p, 'clone', '-q', f.fork, ws);
@@ -150,7 +150,9 @@ test('a ledger that fails after the merge leaves the workspace and does not fail
   const r = await f.run('merge', 't1');
   assert.equal(r.status, 0, r.output);
   assert.equal(f.box.state, 'merged');
-  assert.ok(r.output.includes("t1's workspace was left in place: temporary: ledger down"), r.output);
+  // The read is retried (G10) and, still failing, says nothing was recorded.
+  assert.ok(r.output.includes("t1's workspace was left in place: server request failed: 503 temporary: ledger down."), r.output);
+  assert.ok(r.output.includes('is not answering after 4 tries; nothing was recorded'), r.output);
   assert.ok(r.output.includes('The project branch was not pushed to its own remotes.'), r.output);
   assert.ok(existsSync(ws));
 });

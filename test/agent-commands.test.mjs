@@ -219,7 +219,9 @@ for (const blockers of [[], ["protected paths need an independent approval", "re
   assert.match(r.output, blockers.length ? /Unresolved gates: 2/ : /Unresolved gates: none/);
   assert.match(r.output, /Developer action: (accept t1 at [0-9a-f]{8}: atelier accept t1 --head [0-9a-f]{40}|clear the first blocker: protected paths)/);
   assert.match(r.output, /Deploy: not covered by done/);
-  assert.deepEqual(f.posts.find((p) => p.path.endsWith("/submit")).body, { summary: "Edited docs" });
+  // The submit names the head the workspace holds, so a rerun of one that
+  // stands answers already (G10).
+  assert.deepEqual(f.posts.find((p) => p.path.endsWith("/submit")).body, { summary: "Edited docs", head: git(f.workspace, "rev-parse", "HEAD") });
 });
 
 
@@ -252,11 +254,15 @@ test("done's help names each outcome, its exit code and --json", async (t) => {
 
 for (const failStep of ["push", "submit"]) test(`done names a failed ${failStep} and keeps the infrastructure exit code`, async (t) => {
   if (failStep === "submit" && !canInspectSlots(t)) return;
-  const f = await fixture(t, { failStep });
+  const f = await fixture(t, { failStep, env: { ATELIER_RETRY_MS: "0,0,0" } });
   await f.run(["start", "t1"]);
   const r = await f.run(["done", "Edited docs"], f.workspace);
   assert.equal(r.status, 4, r.output);
-  assert.ok(r.output.includes(`${failStep} failed: unavailable: try later`));
+  assert.ok(r.output.includes(`${failStep} failed: server request failed: 503 unavailable: try later`), r.output);
+  // A push is repeatable and is tried four times; a submit that failed
+  // uncertainly stops at once, in doubt (G10).
+  assert.equal(f.posts.filter((p) => p.path.endsWith(`/${failStep}`)).length, failStep === "push" ? 4 : 1, r.output);
+  assert.ok(r.output.includes("may have applied: run atelier show t1"), r.output);
   if (failStep === "push") assert.ok(!f.posts.some((p) => /\/(evidence|submit)$/.test(p.path)));
 });
 

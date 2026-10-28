@@ -14,7 +14,7 @@ export const brief = {
 };
 export const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 export const head = "a".repeat(40), passed = [{ claim: "npm test", result: "passed", where: "in a clean clone on this machine" }];
-export async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch, policy = {}, kind, evidence = [], logs = {}, prepare = null } = {}) {
+export async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch, policy = {}, kind, evidence = [], logs = {}, prepare = null, env = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "cache", "work", "proj", "t1");
@@ -63,7 +63,7 @@ export async function fixture(t, { failed = false, dirtyWorkspace = false, block
   writeFileSync(join(root, "config.json"), JSON.stringify({ projects: { proj: { path: source } } }));
   const origin = `http://127.0.0.1:${server.address().port}`;
   async function run(argv, cwd = source) {
-    const child = spawn(process.execPath, [cli, ...argv], { cwd, env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: origin } });
+    const child = spawn(process.execPath, [cli, ...argv], { cwd, env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: origin, ...env } });
     let output = "", stdout = "";
     child.stdout.on("data", (s) => { output += s; stdout += s; });
     child.stderr.on("data", (s) => output += s);
