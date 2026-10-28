@@ -295,8 +295,20 @@ test("a manual merge --landing with no attempt named is refused while another la
   }
   const after = await w.detail(id);
   assert.deepEqual(after.landing, before.landing, "nothing recorded");
+
   assert.equal(after.events.length, before.events.length);
   assert.equal(await w.tip(), main);
+  // With --head and --approve, a submitted task is neither approved nor
+  // accepted before the refusal.
+  const { id: other, head } = await w.task({ files: { "other.txt": "other\n" }, approve: false });
+  const reviews = (await w.detail(other)).reviews.length;
+  const refused = await w.cli(["merge", other, "--landing", "--head", head, "--approve", "--note", "fine"]);
+  assert.notEqual(refused.status, 0, refused.output);
+  assert.match(refused.output, /--landing is the landing's own merge and needs the attempt/);
+  const untouched = await w.detail(other);
+  assert.equal(untouched.item.state, "submitted", "not accepted");
+  assert.equal(untouched.reviews.length, reviews, "no review recorded");
+  assert.equal(untouched.events.filter((e) => e.kind === "item.accepted").length, 0);
   // The server refuses a step under the lease that names no attempt.
   const bare = await w.api("POST", `/projects/demo/items/${id}/land`, { step: "checks", ms: 0, failed: true });
   assert.equal(bare.status, 409); assert.equal(bare.json.error, "stale_landing");

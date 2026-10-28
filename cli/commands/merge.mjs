@@ -73,6 +73,10 @@ export default async function mergeCommand() {
   // An override is recorded only while accepting, which needs the revision.
   if ((args["override-review"] !== undefined || args.quote !== undefined) && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
   const name = project(), id = itemArg();
+  // --landing is the landing's own merge: without the attempt atelier land
+  // names it could write to another landing's attempt, so it is refused
+  // here, before anything is written (an approval, an acceptance or a step).
+  if (args.landing === true && !/^[1-9][0-9]*$/.test(process.env.ATELIER_LAND_ATTEMPT ?? "")) die(`--landing is the landing's own merge and needs the attempt atelier land names for it (ATELIER_LAND_ATTEMPT); nothing was merged or recorded.\nnext: run atelier land ${id}, or atelier merge ${id} without --landing`);
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = needCheckout(name, p);
   // Ends a landing. It holds the landing lock throughout, as merge does, so
   // it never runs beside a merge of this checkout that may be publishing.
@@ -213,11 +217,8 @@ export default async function mergeCommand() {
       // atelier land names its attempt in ATELIER_LAND_ATTEMPT and it holds
       // for every round; run by hand, the record's current attempt is read once.
       if(round===0){
-        const named=Number(process.env.ATELIER_LAND_ATTEMPT);
-        // Without the attempt atelier land names, this merge could write to
-        // another landing's attempt: refused, recording nothing.
-        if(!/^[1-9][0-9]*$/.test(process.env.ATELIER_LAND_ATTEMPT??''))die(`--landing is the landing's own merge and needs the attempt atelier land names for it (ATELIER_LAND_ATTEMPT); nothing was merged or recorded.\nnext: run atelier land ${id}, or atelier merge ${id} without --landing`);
-        landAttempt=named;
+        // Checked before any write, at the top of the command.
+        landAttempt=Number(process.env.ATELIER_LAND_ATTEMPT);
       }
       // A refused entry is this call's, not the landing's: it ends here with
       // the refusal and records nothing on the task.
