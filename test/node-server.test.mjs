@@ -304,7 +304,10 @@ test("the real Ledger's alarm runs under the Node runtime within a second of its
     const at = Date.now() + 300;
     await ns.get(ns.idFromName("project:demo")).items();
     ns.object("project:demo").setAlarm(at);
-    await new Promise((r) => setTimeout(r, 900));
+    // Polled rather than a fixed wait, so a loaded machine's late timer
+    // fails on the lateness below, not on the count.
+    for (let i = 0; i < 60 && !fired.length; i++) await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 100));
     assert.equal(fired.length, 1);
     assert.ok(fired[0] >= at && fired[0] - at < 1000);
     assert.equal(ns.object("project:demo").stored(), null);
