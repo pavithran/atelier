@@ -18,6 +18,7 @@ import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refu
 import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
+import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
@@ -1927,6 +1928,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The path of the project's prose standard, named in every build, plan
       // and review brief: a path, or null or "" to clear it.
       ...(has("proseStandard") ? { proseStandard: proseStandardArg(body.proseStandard) } : {}),
+      // The check limit (G7): the hard ceiling and the silence limit in
+      // minutes from the held test slot, "" for the default, and the checks
+      // that declare their own silence limit.
+      ...(has("checkLimitMinutes") ? { checkLimitMinutes: limitArg(body.checkLimitMinutes, "--check-limit") } : {}),
+      ...(has("silenceLimitMinutes") ? { silenceLimitMinutes: limitArg(body.silenceLimitMinutes, "--silence-limit") } : {}),
+      ...(has("startupLimitMinutes") ? { startupLimitMinutes: limitArg(body.startupLimitMinutes, "--startup-limit") } : {}),
+      ...(has("checkSilence") ? { checkSilence: checkSilenceArg(body.checkSilence) } : {}),
       // The model that triages a landing before its review (t475):
       // harness/model, or null or "" to clear it.
       ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
@@ -2616,6 +2624,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         at: new Date().toISOString(),
         ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
         ...(failureLines ? { failureLines } : {}),
+        // A run stopped at its limit (G7): what stopped it, never a pass.
+        ...(check && body.stopped !== undefined && body.passed !== true ? { stopped: stoppedArg(body.stopped) } : {}),
         // The load the caller read when the check started (t403); a number or
         // nothing, never a value the caller made up for it.
         ...(check && Number.isFinite(Number(body.load)) ? { load: Number(body.load) } : {}),
@@ -2740,8 +2750,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
       return json(await L.block(id, actor, body.reason, !!c.token, body.until, itemDirection(c, "block", id, ref.name, env)));
-    case "unblock":
-      return json(await L.unblock(id, actor, !!c.token, itemDirection(c, "unblock", id, ref.name, env)));
+    case "unblock": {
+      // A block that is a fact (G7: a run stopped at its limit) is lifted by
+      // the model as a fact: no developer's words are asked for, though words
+      // given are still checked and recorded.
+      const blocked = (c.body as Record<string, unknown>).quote === undefined ? (await L.item(id)).blocked : null;
+      return json(await L.unblock(id, actor, !!c.token, blocked?.fact ? null : itemDirection(c, "unblock", id, ref.name, env)));
+    }
     case "clear-secret":
       requireOwner(env, actor);
       return json(await L.clearSecret(id, actor, body.reason, !!c.token, itemDirection(c, "clear-secret", id, ref.name, env)));

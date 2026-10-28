@@ -4,6 +4,7 @@ import { prepareChecks } from "../../src/check-preparation.ts";
 import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
 import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
+import { stopText } from "../../src/check-limit.ts";
 import { appliesText, preparationBinding, refusalOf, refusalText, reusableResult } from "../../src/checks.ts";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, git, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
@@ -53,11 +54,13 @@ export default async function checkCommand() {
   const evidenceBody = (cmd, r, note) => {
     const lead = [note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
     const tailSize = lead ? Math.max(500, LOCAL_OUTPUT_TAIL - lead.length) : LOCAL_OUTPUT_TAIL;
-    const failureLines = !r.passed && r.output.length > tailSize ? collectFailureLines(r.output) : "";
+    const failureLines = !r.passed && !r.stopped && r.output.length > tailSize ? collectFailureLines(r.output) : "";
     return {
       kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
       outputTail: lead ? `${lead}\n\n${r.output.slice(-tailSize)}\n[sha256 of full output: ${r.sha}]` : `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
       ...(failureLines ? { failureLines } : {}),
+      // A run stopped at the check limit says so (G7): not a failed test.
+      ...(r.stopped ? { stopped: r.stopped } : {}),
       ...(mainHead ? { merged: true, mainHead } : {}),
       reuse: { base: forkBase, preparation: preparationBinding(policy.prepare) },
     };
@@ -72,7 +75,7 @@ export default async function checkCommand() {
     if (args.merged) ({ main: mainHead, provenance } = await mergeWithMain(dir, id, name));
     // Preparation is skipped when every command is answered by a reused result.
     const toRun = cmds.filter((cmd) => !reusable(cmd) && !(!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false));
-    if (toRun.length) await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next()), secrets).catch((error) => die(error.message, 2));
+    if (toRun.length) await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next(), undefined, policy), secrets).catch((error) => die(error.message, 2));
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
     for (const cmd of cmds) {
       // A registered check whose paths this change does not touch is not
@@ -95,18 +98,19 @@ export default async function checkCommand() {
         console.log(`PASS  ${cmd}  @ ${short(ws.head)}${on}  (reused evidence #${reused.id}; atelier check --fresh runs it again)`);
         continue;
       }
-      let r = await runCheck(cmd, dir, secrets, sequence.next());
+      let r = await runCheck(cmd, dir, secrets, sequence.next(), undefined, policy);
       // A check that fails is run once more at the same head (t744): a
       // result that changes with nothing else changed is the machine's, not
       // the change's. Both results are recorded, the failure first, so the
       // history shows the flake, and the gate counts the later pass. A check
-      // that fails twice stays failed, and one that timed out is not run again.
+      // that fails twice stays failed, and one stopped at the check limit
+      // (timed out or silent, G7) is not run again.
       let flake = false;
-      if (!r.passed && !r.timedOut) {
+      if (!r.passed && !r.timedOut && !r.stopped) {
         process.stderr.write(`atelier: \`${cmd}\` failed; running it once more at the same head\n`);
         const first = r;
         await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, first, ""), as);
-        r = await runCheck(cmd, dir, secrets, sequence.next());
+        r = await runCheck(cmd, dir, secrets, sequence.next(), undefined, policy);
         flake = r.passed;
       }
       // The Worker measures the changed paths from Artifacts and ignores this
@@ -120,8 +124,9 @@ export default async function checkCommand() {
       const d = await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, r, flake ? FLAKE_NOTE : ""), as);
       const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
       if (row) recorded = row.changedPaths;
-      doneChecks.push({ claim: cmd, result: r.passed ? "passed" : "failed", where: CLEAN_CLONE });
-      console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${flake ? `  (${FLAKE_NOTE})` : ""}`);
+      doneChecks.push({ claim: cmd, result: r.passed ? "passed" : "failed", ...(r.stopped ? { stopped: r.stopped } : {}), where: CLEAN_CLONE });
+      // A stopped run is printed as what stopped it, never as FAIL: no test failed.
+      console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${flake ? `  (${FLAKE_NOTE})` : ""}${r.stopped ? `  (${stopText(r.stopped)}, counted from its held test slot; not a failed test)` : ""}`);
       if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
     }
   } finally {

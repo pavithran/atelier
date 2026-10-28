@@ -2,6 +2,7 @@
 import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
 import { I, OWNER, RequestError, actor, args, call, die, flat, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
 import { stageText } from "../status.mjs";
+import { checkLimits, limitText } from "../../src/check-limit.ts";
 import { stageOf } from "../../src/rules.ts";
 import { preparingLine, queueReasons } from "../status.mjs";
 import { fenceText, PREREVIEW_JOB, prereviewLines } from "../../src/dispatch/prereview.ts";
@@ -59,10 +60,14 @@ export default async function showCommand() {
   // The stage is stageOf's, from the task's own record; a server that sends
   // no detail leaves none.
   const stage = d.item ? stageOf(d.item, { events: d.events?.filter((e) => e.itemId === id), policy: d.policy, evidence: d.evidence, reviews: d.reviews }) : null;
-  if (args.json) return console.log(JSON.stringify({ ...brief, ...(stage ? { stage } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
+  // The project's check limit (G7), as the server's policy sets it: every
+  // check of the task, by `atelier check`, a landing or a runner, goes by it.
+  const limit = d.policy ? checkLimits(d.policy) : null;
+  if (args.json) return console.log(JSON.stringify({ ...brief, ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
+  if (limit) blocks.push(`Check limit: ${limitText(d.policy)}`);
   if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
   if (d.preparing) blocks.push(`Fork: ${preparingLine(d.preparing)}`);
   if (prereview || fence) blocks.push([...(prereview ? prereviewLines(prereview) : []), ...(fence ? [`Fenced: ${fenceText(id, fence)}`] : [])].join("\n"));

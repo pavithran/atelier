@@ -23,6 +23,16 @@ export async function hasPreparation(project, actor) {
   }
 }
 
+// The project's policy, for the check limit (G7) a runner's own clean-clone
+// run of the tests goes by. Read through the same declared "project" call.
+export async function projectPolicy(project, actor) {
+  const { runnerTransport } = await import("../runner.mjs");
+  const transport = runnerTransport({ server: server(), credential: apiToken(), runner: tokenRunner });
+  const res = await transport.send("project", { project }, { actor });
+  if (!res.ok || !res.data?.project?.policy) throw new Error(`the project policy could not be read: HTTP ${res.status}`);
+  return res.data.project.policy;
+}
+
 // A helper's console line, stamped as every runner log line is (logLine
 // supplies the ISO UTC time and the "runner:" label, so a message's own
 // leading label is dropped).
@@ -65,6 +75,7 @@ export default async function runnerCommand() {
     await runRunner(args, {
       credential: apiToken(),
       api: { server, I },
+      projectPolicy,
       workspacePath,
       // Where the developer's checkout of a project is on this Mac, which the
       // project's prose standard (a path from it) is copied from (t676).

@@ -862,7 +862,8 @@ waiting row's newest `prereview`.
 | `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then land the task again |
 | `Starting no more landings: …` | A failed landing left post-merge work open, so a wave starts nothing more | `atelier land tN --post-merge status`, resolve it, then run the same command |
 | `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Land the task again: the next landing starts a fresh run |
-| `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head, or ran out of time (`check exceeded its time limit` in the landing's output) | If it timed out, the machine was too loaded: lower the load, or raise `ATELIER_CHECK_TIMEOUT` for the landing, and land it again. Otherwise run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
+| `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head | Run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
+| `STOP … npm test @ SHA` | The check was stopped at the project's check limit, counted from its held test slot: silent for N minutes, or timed out at the hard ceiling. Not a failed test | Read the limit with `atelier show ID`; raise it with `atelier init --check-limit MINUTES --silence-limit MINUTES` (or `--check-silence CMD=MINUTES` for a check silent by design) if the run was progressing, and land it again. A build blocked by it is a timeout fact: lift it with `atelier unblock ID`, no developer's words needed |
 
 ### Conflicts
 

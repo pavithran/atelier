@@ -5,6 +5,7 @@ import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
 import type { LargeRef } from "./large.ts";
 import type { CommitIdentityPolicy } from "./commit-identity.ts";
+import type { CheckSilence, CheckStop, TIMEOUT_FACT } from "./check-limit.ts";
 import { criteriaOf } from "./criteria.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -111,6 +112,10 @@ export interface Block {
   // was recorded on the developer's direction (t178).
   quote?: string;
   acting?: string;
+  // Set when the block is a fact about a run rather than anyone's decision
+  // (G7): "timeout", a check or suite stopped at its limit. The model lifts
+  // it with atelier unblock, recorded as a fact, with no developer's words.
+  fact?: typeof TIMEOUT_FACT;
 }
 
 // One entry of the secret flag the push scan records: where a key pattern was
@@ -321,6 +326,9 @@ export interface Evidence {
   // output of a failed run on a machine whose tail was cut (t569,
   // collectFailureLines in src/check-failure.ts), kept beside the tail.
   failureLines?: string;
+  // Set when the run was stopped at its limit rather than ending by itself
+  // (G7, src/check-limit.ts): a timeout or a silence, never a failed test.
+  stopped?: CheckStop;
   // The whole output of an observed check, kept in R2 by reference (src/large.ts)
   // when it is longer than the tail kept inline; `outputTail` is its end. Only
   // Only Atelier's own code records one, and nothing posted to the API can
@@ -668,6 +676,14 @@ export interface ProjectPolicy {
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
+  // The check limit (G7, src/check-limit.ts): the hard ceiling and the
+  // silence limit of a check's run, in minutes counted from its held test
+  // slot, and the checks that declare a silence limit of their own. Absent,
+  // the defaults hold (DEFAULT_CHECK_LIMIT_MINUTES, DEFAULT_SILENCE_LIMIT_MINUTES).
+  checkLimitMinutes?: number;
+  silenceLimitMinutes?: number;
+  startupLimitMinutes?: number;
+  checkSilence?: CheckSilence[];
   // The ship order as the policy records it (cli/ship.mjs shipPolicy, sent at
   // init and sync): the commands its runs execute, whose files changeClass
   // guards like a check's, and the approval kinds it needs, which the inbox

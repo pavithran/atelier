@@ -68,7 +68,7 @@ Local checks also run this command once in each clean checked
 tree, after merging for `--merged`, before any checks or not-applicable
 results. Clean-clone preparation is
 not cached between attempts and uses the same command safety policy and
-execution deadline as checks (`ATELIER_CHECK_TIMEOUT`, default 20 minutes). A failure stops the attempt without
+check limit as checks: the project's `checkLimitMinutes` and silence limit (`atelier init --check-limit MINUTES --silence-limit MINUTES`, default 20 and 10), counted from the held test slot. A failure stops the attempt without
 adding check evidence; earlier evidence remains. Its report names the command,
 exit status or signal and a redacted output tail of at most 4,000 characters.
 

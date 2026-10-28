@@ -30,7 +30,7 @@ import { writeFileSync } from 'node:fs';
 import { HOST_POOL, slotStatus, poolTransaction } from ${JSON.stringify(pathToFileURL(f.slotWrapper).href)};
 await assert.rejects(poolTransaction({path:${JSON.stringify(outside)}}), /outside its temporary pool/);
 writeFileSync(${JSON.stringify(proof)}, JSON.stringify({pool:HOST_POOL, lease:process.env.ATELIER_TEST_LEASE, status:await slotStatus()}));`);
-  const result = f.runWith({ ATELIER_CHECK_TIMEOUT: '10000', ATELIER_TEST_LEASE: undefined, FAKE_CHECKS: JSON.stringify([command(probe)]) }, "wrap", "Isolated check");
+  const result = f.runWith({ ATELIER_TEST_LEASE: undefined, FAKE_CHECKS: JSON.stringify([command(probe)]) }, "wrap", "Isolated check");
   assert.equal(result.status, 0, result.stderr);
   const observed = JSON.parse(readFileSync(proof, "utf8"));
   assert.equal(observed.pool, f.slotPool);
@@ -58,7 +58,7 @@ const invocation=slotInvocation([process.execPath,${JSON.stringify(probe)}],{},c
 assert.equal(invocation.env.NODE_OPTIONS,undefined);
 const result=spawnSync(invocation.argv[0],invocation.argv.slice(1),{env:invocation.env,stdio:'inherit'});
 process.exitCode=result.status ?? 1;`);
-  const result = f.runWith({ ATELIER_CHECK_TIMEOUT: '10000', FAKE_CHECKS: JSON.stringify([command(nested)]) }, "wrap", "Nested check");
+  const result = f.runWith({ FAKE_CHECKS: JSON.stringify([command(nested)]) }, "wrap", "Nested check");
   assert.equal(result.status, 0, result.stderr);
   const observed = JSON.parse(readFileSync(proof, "utf8"));
   assert.equal(observed.pool, f.slotPool);
@@ -75,7 +75,7 @@ test("sync and async fixtures ignore an occupied outer pool and its inherited le
   if (!canInspectSlots(t)) return;
   const outer = fixture(t), ready = join(outer.dir, "ready"), hold = join(outer.dir, "hold.mjs");
   writeFileSync(hold, `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`);
-  const holder = outer.spawnWith({ ATELIER_CHECK_TIMEOUT: '20000', FAKE_CHECKS: JSON.stringify([command(hold)]) }, "wrap", "Occupied temporary pool");
+  const holder = outer.spawnWith({ FAKE_CHECKS: JSON.stringify([command(hold)]) }, "wrap", "Occupied temporary pool");
   const finished = new Promise((done) => holder.once("close", (status, signal) => done({status, signal})));
   try {
     const deadline = Date.now() + 10000;
@@ -86,7 +86,7 @@ test("sync and async fixtures ignore an occupied outer pool and its inherited le
     for (const asynchronous of [false, true]) {
       const f = fixture(t), proof = join(f.dir, "lease"), script = join(f.dir, "lease.mjs");
       writeFileSync(script, `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(proof)},process.env.ATELIER_TEST_LEASE);`);
-      const env = { ATELIER_CHECK_TIMEOUT: "10000", ATELIER_TEST_LEASE: active.lease, ATELIER_TEST_SLOTS: "9", FAKE_CHECKS: JSON.stringify([command(script)]) };
+      const env = { ATELIER_TEST_LEASE: active.lease, ATELIER_TEST_SLOTS: "9", FAKE_CHECKS: JSON.stringify([command(script)]) };
       if (asynchronous) {
         const child = f.spawnWith(env, "wrap", "Async isolation");
         const status = await new Promise((done) => child.once("close", (code) => done(code)));

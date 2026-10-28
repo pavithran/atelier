@@ -87,6 +87,7 @@
 import { LARGE_MAX, type LargeRef } from "./large.ts";
 import { FAILURE_LINES_CHARS } from "./text.ts";
 import { blockingMergedRuns, countingRunsAt, evidenceAt, type Evidence, type ProjectPolicy } from "./rules.ts";
+import { stopText, type CheckStop } from "./check-limit.ts";
 
 // What a check run on someone's machine keeps of its output inline:
 // `atelier check` posts the output's last LOCAL_OUTPUT_TAIL characters and a
@@ -149,6 +150,7 @@ export interface CheckFailure {
   outputTail: string;
   failureLines: string;    // the failure lines read from the whole output, posted beside the tail; "" when none
   log: LargeRef | null;
+  stopped?: CheckStop;     // the run was stopped at its limit (G7): a timeout or a silence, not a failed test
 }
 
 const failureOf = (e: Evidence, attempt: number, attempts: number): CheckFailure => ({
@@ -167,6 +169,7 @@ const failureOf = (e: Evidence, attempt: number, attempts: number): CheckFailure
   outputTail: String(e.outputTail ?? ""),
   failureLines: typeof e.failureLines === "string" ? e.failureLines : "",
   log: e.log ?? null,
+  ...(e.stopped ? { stopped: e.stopped } : {}),
 });
 
 // The one numbering of the runs at a head (see the head of this file):
@@ -634,9 +637,11 @@ export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[]
   const failing = summaryFailureLines(f);
   const fails = fit.failLines === undefined ? failing : failing.slice(0, Math.max(0, fit.failLines));
   const all = f.logRead.failureLines?.length ?? 0;
+  // A run stopped at its limit (G7) is said as what it is: no test failed,
+  // so no failing tests are listed from the output it left.
   return [
-    `\`${flatLine(f.claim)}\` failed${on} ${WHERE_TEXT[f.where]} at ${when(f.at)}${f.load !== null ? `, load ${f.load}` : ""}: ${ident}`,
-    `  ${failingTestsLine(f.tests, f.logRead.whole, fit.names, all > 0)}`,
+    `\`${flatLine(f.claim)}\` ${f.stopped ? `${stopText(f.stopped)}, counted from its held test slot; it was stopped, not a failed test,` : "failed"}${on} ${WHERE_TEXT[f.where]} at ${when(f.at)}${f.load !== null ? `, load ${f.load}` : ""}: ${ident}`,
+    ...(f.stopped ? [] : [`  ${failingTestsLine(f.tests, f.logRead.whole, fit.names, all > 0)}`]),
     ...(all ? [`  failure lines, read from the whole output: ${fails.length < all ? `first ${fails.length} of ${all}` : `${count(all, "line")}`}${fails.length ? ":" : ""}`, ...fails.map((line) => `    ${line}`)] : []),
     `  log: ${f.logRead.label}; ${shown}${lines.length ? ":" : ""}`,
     ...lines.map((line) => `    ${line}`),
@@ -716,7 +721,8 @@ export function failureJson(f: ResolvedFailure) {
     claim: f.claim, head: f.head, id: f.id, run: f.run, at: f.at, by: f.by, where: f.where,
     merged: f.merged, mainHead: f.mainHead, load: f.load, attempt: f.attempt, attempts: f.attempts,
     log: { source: f.logRead.source, whole: f.logRead.whole, label: f.logRead.label, sha256: f.log?.sha256 ?? null, bytes: f.log?.bytes ?? null },
-    failingTests: f.tests,
+    failingTests: f.stopped ? null : f.tests,
+    ...(f.stopped ? { stopped: f.stopped } : {}),
     ...(f.logRead.failureLines ? { failureLines: f.logRead.failureLines } : {}),
     tail: tail.lines, lines: tail.total, cut: tail.cut,
   };

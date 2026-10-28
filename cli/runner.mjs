@@ -40,6 +40,8 @@ import { callPath, declaredCall, RUNNER_COMMANDS } from "../src/tokens.ts";
 import { mergeMainAndRegenerate } from "./land.mjs";
 import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
+import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
+import { checkLimits, limitMs, minutesText, stopOf, stopText as checkStopText } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 import { redactKeys } from "../src/models/pool.ts";
@@ -262,7 +264,13 @@ export function versionRefusal(version, jobs = [...DEFAULT_JOBS, "review"]) {
 // The suite's time budget in seconds, counted from slot acquisition (t219).
 export const SUITE_BUDGET_SECONDS = 2400;
 
-export function briefFor(item, project) {
+// `limits` is the project's check limit as the server's job brief gives it
+// (G7, checkLimits in src/check-limit.ts): the suite's budget is its hard
+// ceiling, and a timeout is reported in Atelier's words for a stop, which
+// the server records as a fact the model lifts. Without it (an older
+// server) the budget is SUITE_BUDGET_SECONDS.
+export function briefFor(item, project, limits = null) {
+  const budget = limits?.limitMinutes ? Math.round(limits.limitMinutes * 60) : SUITE_BUDGET_SECONDS;
   return [
     "Rules:",
     "Stay in scope. Work only in this workspace.",
@@ -271,7 +279,8 @@ export function briefFor(item, project) {
     // passes (BUILDER_TESTS). The budget is a `timeout` run inside the slot
     // wrapper, so it starts once the slot is held and cannot spend queue time.
     ...BUILDER_TESTS,
-    `For example: node ${quoteShell(SLOT_WRAPPER)} -- sh -c 'date +%s; exec timeout ${SUITE_BUDGET_SECONDS} npm test' (gtimeout where timeout is missing). The date line is printed inside the slot, before the suite starts, so it marks slot acquisition even if the suite is silent: note the time before you run it; that time to the printed one is the slot wait, and the printed one to the end is the run time.`,
+    `For example: node ${quoteShell(SLOT_WRAPPER)} -- sh -c 'date +%s; exec timeout ${budget} npm test' (gtimeout where timeout is missing). The date line is printed inside the slot, before the suite starts, so it marks slot acquisition even if the suite is silent: note the time before you run it; that time to the printed one is the slot wait, and the printed one to the end is the run time.`,
+    ...(limits?.limitMinutes ? [`The project's check limit is ${minutesText(limits.limitMinutes)} from the held slot, and a run silent for ${minutesText(limits.silenceMinutes)} (no output, no process activity) is stopped too. If the suite is stopped at either, end your report with the line validation_blocked: timed out after ${minutesText(limits.limitMinutes)} (or silent for ${minutesText(limits.silenceMinutes)}${limits.startupMinutes ? `, or no command completed in ${minutesText(limits.startupMinutes)}` : ""}), then the slot wait and the run time.`] : []),
     BUILDER_SCREENSHOTS,
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
@@ -446,22 +455,31 @@ export function killGroups() {
 // SIGTERM. The result comes back once the group is gone, so nothing the
 // child started still runs in its folder. A process that leaves the group
 // (setsid) is beyond this.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
+//
+// The check limit (G7, cli/check-clock.mjs): given `silenceMs`, a child that
+// prints nothing and shows no process activity for that long is ended, and
+// `timeoutMs` is its hard ceiling; given `fromSlot`, `argv` is the test-slot
+// wrapper and both count from when it reports the slot held. The result then
+// carries `stopped`, {kind: "timeout" | "silent", ms}, with `timedOut` set.
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
-    const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
-      stdio: ["ignore", capture ? "pipe" : "inherit", captureError ? "pipe" : "inherit"] });
+    const clocked = silenceMs !== undefined || startupMs !== undefined || fromSlot;
+    const childEnv = fromSlot ? { ...(env ?? process.env), [SLOT_HELD_FD]: "3" } : env;
+    const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(childEnv ? { env: childEnv } : {}),
+      stdio: ["ignore", capture ? "pipe" : "inherit", captureError ? "pipe" : "inherit", ...(fromSlot ? ["pipe"] : [])] });
     const pid = child.pid;
     if (pid) liveGroups.add(pid);
-    let output = "", stderr = "", error, timedOut = false, closed, ending = false, ended = !pid;
+    let output = "", stderr = "", error, timedOut = false, stopped, closed, ending = false, ended = !pid;
     // A signal to every process in the group; false once none is left.
     const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
     const finish = () => {
       if (!closed || !ended) return;
       clearTimeout(deadline);
+      watch.end();
       signal?.removeEventListener("abort", end);
       if (error) reject(error);
-      else resolve({ ...closed, output: output.trim(), stderr: stderr.trim(), timedOut });
+      else resolve({ ...closed, output: output.trim(), stderr: stderr.trim(), timedOut, ...(stopped ? { stopped } : {}) });
     };
     const end = () => {
       if (ending || ended) return;
@@ -480,10 +498,14 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
       send("SIGTERM");
       wait();
     };
-    const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
+    const deadline = timeoutMs === undefined || clocked ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
+    const watch = !clocked || !pid ? { output() {}, end() {} } : watchRun({
+      pid, held: fromSlot ? child.stdio[3] : null, ceilingMs: timeoutMs, silenceMs, startupMs,
+      onStop: (stop) => { if (closed || ending) return; stopped = stop; timedOut = true; end(); },
+    });
     signal?.addEventListener("abort", end, { once: true });
-    child.stdout?.on("data", (chunk) => { output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
-    child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
+    child.stdout?.on("data", (chunk) => { watch.output(); output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
+    child.stderr?.on("data", (chunk) => { watch.output(); stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
     child.on("exit", () => { clearTimeout(deadline); end(); });
@@ -856,7 +878,10 @@ export function summarizeTestOutput(text) {
   for (const m of clean.matchAll(/^\s*FAIL\s+(.+?)\s*$/gm)) names.add(m[1]);
   return { ...(passed === undefined ? {} : { passed, failed }), failing: [...names].slice(0, RUNNER_EVIDENCE_NAMES) };
 }
-export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
+// The tests and the typecheck go by the project's check limit (G7), `limits`
+// (checkLimits in src/check-limit.ts, from the server's policy), counted from
+// the held slot: a run stopped at it is 'not-run', said as what stopped it.
+export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, limits = checkLimits(null), prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
   const dir = `${source}-evidence-${id}`;
   const notRun = (reason) => ({ status: "not-run", reason });
   const lost = (reason) => ({ head, tests: notRun(reason), typecheck: notRun(reason) });
@@ -864,13 +889,14 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
   const trim = (text) => text.length > RUNNER_EVIDENCE_OUTPUT ? text.slice(-RUNNER_EVIDENCE_OUTPUT) : text;
   const exec = async (command, argv) => {
     let result;
-    try { result = await run(argv, { cwd: dir, capture: true, captureError: true, signal, timeoutMs, env: checkEnv(process.env) }); }
+    const { ceilingMs, silenceMs, startupMs } = limitMs(limits);
+    try { result = await run(argv, { cwd: dir, capture: true, captureError: true, signal, timeoutMs: ceilingMs, silenceMs, startupMs, fromSlot: true, env: checkEnv(process.env) }); }
     catch (error) {
       if (signal?.aborted) throw error;
       return { command, ...notRun(`the runner failed to start it: ${error.message}`) };
     }
     if (signal?.aborted) throw new Error("interrupted");
-    if (result.timedOut) return { command, ...notRun(`it timed out after ${Math.round(timeoutMs / 1000)} seconds`) };
+    if (result.timedOut) return { command, ...notRun(`${checkStopText(stopOf(result.stopped, limits) ?? { kind: "timeout", minutes: limits.limitMinutes })}, counted from its held test slot; stopped at the project's check limit, not a failed test`) };
     if (result.code === null || result.code === undefined) return { command, ...notRun(`it ended on signal ${result.signal ?? "unknown"}`) };
     const output = [result.output, result.stderr].filter(Boolean).join("\n");
     return { command, status: result.code === 0 ? "pass" : "fail", output: trim(output), outputLength: output.length, ...summarizeTestOutput(output) };
@@ -1765,7 +1791,7 @@ export async function runTask(assignment, config, name, io) {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
       const context = await briefContext();
-      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`, context?.proseStandard ?? null);
+      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project, context?.checkLimits ?? null)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`, context?.proseStandard ?? null);
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -1980,7 +2006,7 @@ export async function runTask(assignment, config, name, io) {
       const context = item.kind === "part" ? fetched : await withHistory({ git: (a, o = {}) => io.git(a, { cwd: workspace, ...o }), log: io.log }, fetched, before);
       const serverBrief = item.kind === "part" ? context : null;
       const reworked = item.kind === "part" ? null : context;
-      const local = briefFor({ ...item, owner: actor }, project);
+      const local = briefFor({ ...item, owner: actor }, project, fetched?.checkLimits ?? null);
       // A merge-main task's brief (t243) is the local one with the job's own
       // instructions (mergeMainSection) and the conflicts after it.
       const body = serverBrief
@@ -2555,7 +2581,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // nothing else to prove a criterion with.
     let runnerEvidence;
     if (io.runnerEvidence) {
-      try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from }); }
+      try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from, project, actor }); }
       catch (error) {
         if (io.stopped()) throw new Error("interrupted");
         io.log(`clean-clone run failed: ${error.message}`);
@@ -4277,7 +4303,7 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -4549,7 +4575,16 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
     prepareReview: (cwd, source) => prepareReviewDependencies(cwd, source, { executeChild, signal: controller.signal }),
     // The clean-clone run holds no token (checkEnv), so it runs outside executeChild.
-    runnerEvidence: (args) => collectRunnerEvidence({ ...args, run: execute, signal: controller.signal }),
+    // It goes by the project's check limit (G7), read from the server; a
+    // policy that cannot be read leaves the defaults, said in the log.
+    runnerEvidence: async ({ project, actor, ...args }) => {
+      let policy = null;
+      if (project && projectPolicy) {
+        try { policy = await projectPolicy(project, actor); }
+        catch (error) { line(`the check limit could not be read (${error.message}); the clean-clone run goes by the defaults`); }
+      }
+      return collectRunnerEvidence({ ...args, limits: checkLimits(policy), run: execute, signal: controller.signal });
+    },
     prepare: async (cwd) => {
       if (!existsSync(join(cwd, ".git"))) return null;
       const git = (argv) => checked(["git", ...argv], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
