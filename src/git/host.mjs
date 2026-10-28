@@ -5,7 +5,7 @@
 // push it gives the hook the policy its scans need from the Ledger and
 // records what the secret scan found (rules 5 and 6, src/git/scan.mjs).
 import { timingSafeEqual } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GrantStore } from "./grants.mjs";
@@ -27,6 +27,9 @@ export class GitHost {
     mkdirSync(reposDir, { recursive: true, mode: 0o700 });
     this.reposDir = reposDir;
     this.scanDir = join(dataDir, "hook-scans");
+    // Each push's policy and report go with its request; any left here are
+    // from a server that stopped mid-push.
+    rmSync(this.scanDir, { recursive: true, force: true });
     this.hooksDir = hooksDir;
     this.namespace = namespace;
     this.settings = settings;

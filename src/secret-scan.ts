@@ -302,7 +302,7 @@ async function scanPair(reader: Reader, baseTree: string, headTree: string, allo
 // and the most commits of the task's own the scan reads. A task over the
 // second throws, and the scan stays pending.
 const MAIN_COMMITS = 1000;
-const TASK_COMMITS = 1000;
+export const TASK_COMMITS = 1000;
 const LOG_PAGE = 100;
 
 // The empty tree, the base a root commit is scanned against. No repository

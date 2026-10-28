@@ -36,9 +36,21 @@ The added commits are those the new head reaches and the old tip does not, for t
 The hook runs in its own process and cannot reach the Ledger. For each push the server writes the task's clearances and the project's private paths to a policy file. The hook writes what the scan found to a report file. Both are mode 600, in a directory of the request's own under `data/ENV/hook-scans`, and both go when the request ends. The environment names their paths and holds no token. When the push ends, the server records the report on the task (`hookScanned` in `src/ledger.ts`):
 
 - A refused push's findings are recorded on the item at once, so the owner can clear them.
-- A push the hook let through is kept, and becomes the scan record when `atelier push` records that head. Nothing is left pending.
+- A push the hook let through is kept, in a slot of its own for that head (`hook-scan:ITEM:HEAD`), so two pushes to one task do not replace each other. `atelier push` takes the slot for the head it records, and that becomes the scan record. Nothing is left pending. The slots go when the item merges or is abandoned.
 
-A push to the project's branch or to `dev/*` has no item, so only the refusal answers it. The private paths are set with the Ledger's `setPrivatePaths`.
+What refuses and what is recorded:
+
+- A key-shaped line the owner has not cleared refuses the push, on every branch.
+- A private path refuses the push, on every branch.
+- A push that adds more than 1000 commits (`TASK_COMMITS`, as `scanCommit`) is refused, naming the cap.
+- An unscanned file (a blob over 8 MiB, `SCAN_BYTES`; a non-media binary; a submodule) on `t/N` or `plan/N` is recorded on the item with its reason and does not refuse. On the project's branch or `dev/*`, which have no item to record on, it refuses the push, naming the files, unless the owner cleared it on the grant's task.
+
+The server sweeps leftover policy and report directories from `data/ENV/hook-scans` when it starts. The private paths are set with the Ledger's `setPrivatePaths`.
+
+For later:
+
+- A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task.
+- Allowed lines (`docs/atelier/privacy-allow.json`) are dropped before the report. The owner sees them only in the allowance file's diff.
 
 Every repository names the hook through `core.hooksPath`, and a pushed tree cannot carry a hook into a bare repository.
 

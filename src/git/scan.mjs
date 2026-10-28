@@ -12,7 +12,7 @@
 // a later push cannot drop a finding an earlier one recorded.
 import { execFileSync } from "node:child_process";
 import { privateCommits, privateCommitsText } from "../../cli/private-guard.mjs";
-import { readAllowanceList, scanHistory, withEmptyTree } from "../secret-scan.ts";
+import { TASK_COMMITS, readAllowanceList, scanHistory, withEmptyTree } from "../secret-scan.ts";
 import { readPolicy, writeReport } from "./policy.mjs";
 import { openReader } from "./reader.mjs";
 import { repoReader } from "../diff.ts";
@@ -32,8 +32,10 @@ function baseOf({ old, ref, branch }) {
 
 // { hash, treeHash, parents } of each commit, and the tree of each.
 function commitsOf(sha, base) {
-  const out = git("rev-list", "--no-commit-header", "--format=%H %T %P", sha, ...(base.length ? ["--not", ...base] : []));
-  const commits = out.split("\n").filter(Boolean).map((line) => {
+  const out = git("rev-list", `--max-count=${TASK_COMMITS + 1}`, "--no-commit-header", "--format=%H %T %P", sha, ...(base.length ? ["--not", ...base] : []));
+  const lines = out.split("\n").filter(Boolean);
+  if (lines.length > TASK_COMMITS) throw new Error(`the push adds more than ${TASK_COMMITS} commits, more than the scan reads`);
+  const commits = lines.map((line) => {
     const [hash, treeHash, ...parents] = line.split(" ");
     return { hash, treeHash, parents };
   });
@@ -76,7 +78,16 @@ export async function checkPush({ old, sha, ref, branch, task, policyPath, repor
     const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, head.treeHash));
     const cleared = (h) => policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint);
     const standing = scan.hits.filter((h) => !cleared(h));
+    // A push to a task's or a plan's branch records an unscanned file on its
+    // item. The project's branch and dev/* have no item, so an unscanned
+    // file there refuses the push, unless the owner cleared it on the grant's
+    // task (a landing grant carries one).
+    const recorded = /^refs\/heads\/(t|plan)\/\d+$/.test(ref);
+    const unread = recorded ? [] : scan.unscanned.filter((u) => !cleared(u));
     writeReport(reportPath, { ref, head: sha, hits: scan.hits, unscanned: scan.unscanned, refused: standing.length > 0 });
+    if (unread.length) {
+      refusals.push(`the secret scan could not read ${unread.slice(0, LISTED).map((u) => `${u.file} in ${u.commit.slice(0, 12)} (${u.reason})`).join(", ")}${more(unread)}, and this branch has no task to record that on`);
+    }
     if (standing.length) {
       refusals.push(`the secret scan found a key-shaped line: ${standing.slice(0, LISTED).map(where).join(", ")}${more(standing)}. Take it out of the commit that adds it (rewrite the commits), or ask the owner to clear it${task ? ` (atelier clear-secret ${task})` : ""}, then push again`);
     }

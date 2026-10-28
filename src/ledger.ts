@@ -3966,7 +3966,7 @@ export class Ledger extends DurableObject<Env> {
     // On the Node server the pre-receive hook scanned this head before the
     // ref moved (hookScanned); what it found is the push's scan record, so
     // nothing is left pending.
-    const found = scan ? this.hookScan(id) : null;
+    const found = scan ? this.takeHookScan(id, observedHead) : null;
     if (found && found.head === observedHead) return this.setSecret(id, "atelier/hook", observedHead, found.hits, found.unscanned);
     return this.item(id);
   }
@@ -4511,15 +4511,28 @@ export class Ledger extends DurableObject<Env> {
   hookScanned(id: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[], refused: boolean): Item {
     if (!/^[0-9a-f]{40,64}$/.test(head)) throw new RuleError("bad_head", "a hook scan names the full commit it scanned", 400);
     this.item(id);
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `hook-scan:${id}`, JSON.stringify({ head, hits, unscanned }));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `hook-scan:${id}:${head}`, JSON.stringify({ head, hits, unscanned }));
     if (refused) return this.setSecret(id, "atelier/hook", head, hits, unscanned, true);
     return this.item(id);
   }
 
-  // The report hookScanned kept last for the item, or null.
-  hookScan(id: string): { head: string; hits: SecretHit[]; unscanned: UnscannedFile[] } | null {
-    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `hook-scan:${id}`).toArray()[0];
+  // The report hookScanned kept for the item's `head`, or null. Each head has
+  // its own slot, so two pushes to one task do not replace each other's.
+  hookScan(id: string, head: string): { head: string; hits: SecretHit[]; unscanned: UnscannedFile[] } | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `hook-scan:${id}:${head}`).toArray()[0];
     return row ? JSON.parse(row.value as string) : null;
+  }
+
+  // The report for `head`, which recordPush consumes: the slot is emptied.
+  private takeHookScan(id: string, head: string) {
+    const found = this.hookScan(id, head);
+    if (found) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `hook-scan:${id}:${head}`);
+    return found;
+  }
+
+  // Every report kept for the item, once it merges or is abandoned.
+  private dropHookScans(id: string): void {
+    this.sql.exec(`DELETE FROM meta WHERE key LIKE ?`, `hook-scan:${id}:%`);
   }
 
   // The project's private paths (cli/private-guard.mjs): files that never
@@ -5853,6 +5866,7 @@ export class Ledger extends DurableObject<Env> {
     if (!post) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
+    this.dropHookScans(id);
     // A merge in fast mode (t300) lands on the checks alone; the independent
     // review is owed after it, and `fast` marks the event so that review may
     // be same-family and a rejection files a fix task (mergedFast).
@@ -5921,6 +5935,7 @@ export class Ledger extends DurableObject<Env> {
     // Closing a blocked task ends the block with it.
     const at = new Date().toISOString();
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
+    this.dropHookScans(id);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}), ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {}) }, at);
     this.afterPlanChange(id);
@@ -6248,6 +6263,7 @@ export class Ledger extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       this.update(id, { head: receipt.commit, accepted_head: receipt.commit }, at);
       this.update(id, { state: "merged", owner: null }, at);
+      this.dropHookScans(id);
       this.log(id, actor, "item.landed_fast", { ...receipt }, at);
       this.log(id, actor, "item.merged", { mergeCommit: receipt.mergeCommit, head: receipt.commit, observedOnBaseline: false, fast: true }, at);
     });
@@ -6329,6 +6345,7 @@ export class Ledger extends DurableObject<Env> {
       this.assertNoClaimInFlight(id);
       this.dropToken(id, workspace.token);
       this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
+      this.dropHookScans(id);
       this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
       // GET /api/version reads main's head from the ledger (t142). The first
       // record made while none is stored takes the baseline tip read while
@@ -7175,6 +7192,7 @@ export class Ledger extends DurableObject<Env> {
       for (const t of [...targets].reverse()) {
         if (tokens) this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, t.id);
         this.update(t.id, { state: "abandoned", owner: null }, at);
+        this.dropHookScans(t.id);
         this.log(t.id, actor, "item.abandoned", { note, plan: id }, at);
       }
       this.log(id, actor, "plan.stopped", { note, closed: targets.map((t) => t.id) }, at);
@@ -7531,6 +7549,7 @@ export class Ledger extends DurableObject<Env> {
       record.blocked = null;
       this.savePlanRecord(id, record);
       this.update(id, { state: "merged", owner: null }, at);
+      this.dropHookScans(id);
       this.log(id, ORCHESTRATOR, "plan.completed", { approval: approval.hash, parts: Object.fromEntries(parts.map((p) => [p.id, p.state])) }, at);
       return;
     }

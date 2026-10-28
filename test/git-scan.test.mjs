@@ -47,14 +47,20 @@ const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 function api(method, path, body, token = OWNER, actor = "owner") {
   return fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
-// A commit on `parent` that writes `files` ({ path: text }) to its tree.
-function commit(message, parent, files) {
+// A commit on `parent` (and any `more` parents) that writes `files`
+// ({ path: text }) to its tree.
+function commit(message, parent, files, ...more) {
   git("read-tree", parent);
   for (const [path, text] of Object.entries(files)) {
+    if (text === null) {
+      // A submodule: a commit of another repository.
+      git("update-index", "--add", "--cacheinfo", `160000,${"a".repeat(40)},${path}`);
+      continue;
+    }
     const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: work, env: gitEnv, input: text }).toString().trim();
     git("update-index", "--add", "--cacheinfo", `100644,${blob},${path}`);
   }
-  return git("commit-tree", git("write-tree"), "-p", parent, "-m", message);
+  return git("commit-tree", git("write-tree"), "-p", parent, ...more.flatMap((p) => ["-p", p]), "-m", message);
 }
 function refused(r, text) {
   assert.notEqual(r.status, 0, `the push succeeded:\n${r.stdout}${r.stderr}`);
@@ -154,4 +160,81 @@ test("no key, token or found value reaches the data directory, the hook's files 
   // Each push's policy and report went with its request.
   assert.deepEqual(readdirSync(join(data, "hook-scans")), []);
   for (const line of errors) for (const secret of [KEY, t5, OWNER]) assert.equal(line.includes(secret), false, `a log line holds a secret: ${line}`);
+});
+
+const meta = { holdsRecorded: true, rebasedFrom: null };
+const unreadable = { "blob.bin": "PK\0\u0001\0binary\0", "big.txt": "a".repeat(8 * 1024 * 1024 + 1), "sub": null };
+
+test("a file the scan cannot read is recorded on a task's push, and refuses the owner's push", async () => {
+  // On a task: recorded, not refused, with the reason (a blob over SCAN_BYTES included).
+  const c = commit("unreadable", main(), unreadable);
+  const ok = await push(t5, `+${c}:refs/heads/t/5`);
+  assert.equal(ok.status, 0, ok.stderr);
+  const item = await L().recordPush("t5", AGENT, c, c, false, meta, [], true);
+  assert.deepEqual(item.secret.map((f) => [f.file, !!f.unscanned, f.reason]).sort(), [
+    ["big.txt", true, `${8 * 1024 * 1024 + 1} bytes, over the ${8 * 1024 * 1024} the scan reads`],
+    ["blob.bin", true, "binary content"],
+    ["sub", true, "a submodule, whose content is in another repository"],
+  ]);
+  // On the project's branch and dev/*: refused, naming each file.
+  for (const ref of ["refs/heads/main", "refs/heads/dev/x"]) {
+    refused(await push(OWNER, `${c}:${ref}`), /could not read (?=.*big\.txt in [0-9a-f]{12} \(8388609 bytes, over the 8388608 the scan reads\))(?=.*blob\.bin in [0-9a-f]{12} \(binary content\))(?=.*sub in [0-9a-f]{12} \(a submodule).*no task to record/s);
+  }
+  for (const file of Object.keys(unreadable)) refused(await push(OWNER, `${commit(file, main(), { [file]: unreadable[file] })}:refs/heads/main`), new RegExp(`could not read ${file} in`));
+  assert.equal(await tip("refs/heads/main"), main());
+  // A landing grant carrying the task applies its clearances: cleared by
+  // content, the same files pass.
+  await L().clearSecret("t5", "owner", "the files the test made");
+  const accepted = c;
+  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted });
+  const merge = commit("merge t5", main(), {}, accepted);
+  const landed = await push(landing.token, `${merge}:refs/heads/main`);
+  assert.equal(landed.status, 0, landed.stderr);
+  git("update-ref", "refs/heads/main", merge);
+});
+
+test("two pushes to one task keep a report each, and recordPush takes the one for the head it records", async () => {
+  const a = commit("a", main(), { "a.bin": "\0a\0" });
+  const b = commit("b", main(), { "b.bin": "\0b\0" });
+  assert.equal((await push(t5, `+${a}:refs/heads/t/5`)).status, 0);
+  assert.equal((await push(t5, `+${b}:refs/heads/t/5`)).status, 0);
+  assert.deepEqual((await L().hookScan("t5", a)).unscanned.map((u) => u.file), ["a.bin"]);
+  const first = await L().recordPush("t5", AGENT, a, a, false, meta, [], true);
+  assert.deepEqual(first.secret.map((f) => [f.file, f.head]), [["a.bin", a]]);
+  assert.equal(await L().hookScan("t5", a), null, "the report is consumed");
+  const second = await L().recordPush("t5", AGENT, b, b, false, meta, [], true);
+  assert.deepEqual(second.secret.map((f) => [f.file, f.head]), [["b.bin", b]]);
+});
+
+test("a merge commit carrying a line the allowance list permits passes, and one the list leaves out refuses", async () => {
+  const line = `SERVICE_TOKEN=${KEY.replace("TESTONLY", "MERGED00")}`;
+  const side = commit("side adds fixture", main(), { "fixture.env": `${line}\n` });
+  const mainSide = commit("main side", main(), { "m.txt": "m\n" });
+  const merge = commit("merge", mainSide, { "fixture.env": `${line}\n` }, side);
+  const entry = (hash) => ({ commit: hash, file: "fixture.env", sha256: sha256(line), reason: "a dummy fixture" });
+  const allow = (...hashes) => ({ "docs/atelier/privacy-allow.json": JSON.stringify({ allowances: hashes.map(entry) }) });
+  refused(await push(t5, `+${commit("allow side only", merge, allow(side))}:refs/heads/t/5`), new RegExp(`fixture\\.env:1 in ${merge.slice(0, 12)}`));
+  const head = commit("allow both", merge, allow(side, merge));
+  const ok = await push(t5, `+${head}:refs/heads/t/5`);
+  assert.equal(ok.status, 0, ok.stderr);
+  const item = await L().recordPush("t5", AGENT, head, head, false, meta, [], true);
+  assert.deepEqual((item.secret ?? []).filter((f) => f.file === "fixture.env"), []);
+});
+
+test("a push adding more commits than the scan reads is refused, naming the cap", async () => {
+  let c = main();
+  const sizes = 1001;
+  // One fast-import stream makes the long history in a moment.
+  const stream = Array.from({ length: sizes }, (_, i) => `commit refs/heads/long\ncommitter t <t@example.test> ${1700000000 + i} +0000\ndata 1\nx\n${i === 0 ? `from ${c}\n` : ""}\n`).join("");
+  execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: stream });
+  c = git("rev-parse", "refs/heads/long");
+  refused(await push(t5, `+${c}:refs/heads/t/5`), /adds more than 1000 commits, more than the scan reads/);
+});
+
+test("abandoning a task drops the reports kept for it", async () => {
+  const h = "c".repeat(40);
+  await L().hookScanned("t4", h, [], [], false);
+  assert.ok(await L().hookScan("t4", h));
+  await L().abandon("t4", "owner", "not needed");
+  assert.equal(await L().hookScan("t4", h), null);
 });

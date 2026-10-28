@@ -4,8 +4,8 @@
 // server with the real hook (hooks/pre-receive) and pushes with the real git
 // client over HTTP. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
-import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -195,4 +195,20 @@ test("a malformed project name is answered 404, and a renamed project's old name
   assert.equal(renamed.status, 200, await renamed.clone().text());
   assert.equal((await infoRefs(read.token, "other", "git-upload-pack")).status, 200);
   assert.equal((await infoRefs(read.token, "other-renamed", "git-upload-pack")).status, 200);
+});
+
+test("a push with no scan policy is refused by the hook before anything is scanned", () => {
+  const hook = join(import.meta.dirname, "..", "hooks", "pre-receive");
+  const env = { ...process.env, ATELIER_KIND: "owner", ATELIER_BRANCH: "main", ATELIER_POLICY: "", ATELIER_REPORT: "" };
+  const r = spawnSync(process.execPath, [hook], { cwd: work, env, input: `${"0".repeat(40)} ${git(work, "rev-parse", "main")} refs/heads/main\n`, encoding: "utf8" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no scan policy from the server; nothing was pushed/);
+});
+
+test("the policy and report directories a stopped server left are swept when the next one starts", async () => {
+  const data = join(root, "data3");
+  mkdirSync(join(data, "hook-scans", "push-old"), { recursive: true });
+  writeFileSync(join(data, "hook-scans", "push-old", "policy.json"), "{}");
+  const s = await startServer({ env: "test", dataDir: data, host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  try { assert.equal(existsSync(join(data, "hook-scans", "push-old")), false); } finally { await s.close(); }
 });
