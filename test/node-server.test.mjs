@@ -134,7 +134,7 @@ test("an alarm fires within a second of its time, and again after a restart", as
   let ns = new Namespace({ dir, Class: Timed, env: {} });
   const at = Date.now() + 300;
   assert.equal(await ns.get(ns.idFromName("project:a")).arm(at), at);
-  await new Promise((r) => setTimeout(r, 900));
+  for (let i = 0; i < 60 && !fired.length; i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(fired.length, 1);
   assert.ok(fired[0] >= at && fired[0] - at < 1000, `fired ${fired[0] - at} ms after its time`);
   // Set, then the server stops before it is due: the next start fires it.
@@ -143,7 +143,7 @@ test("an alarm fires within a second of its time, and again after a restart", as
   await ns.close();
   ns = new Namespace({ dir, Class: Timed, env: {} });
   ns.start();
-  await new Promise((r) => setTimeout(r, 1000));
+  for (let i = 0; i < 60 && fired.length < 2; i++) await new Promise((r) => setTimeout(r, 50));
   await ns.close();
   assert.equal(fired.length, 2);
   assert.ok(fired[1] >= later && fired[1] - later < 1000, `fired ${fired[1] - later} ms after its time`);
