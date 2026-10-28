@@ -166,7 +166,7 @@ test("no plaintext token is kept in the grant store or put in the hook's environ
   const hooks = join(root, "recording-hooks");
   mkdirSync(hooks);
   const dump = join(root, "hook-env.json");
-  writeFileSync(join(hooks, "pre-receive"), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'require("fs").writeFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env))'\ncat >/dev/null\n`);
+  writeFileSync(join(hooks, "pre-receive"), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'const fs = require("fs"); fs.writeFileSync(${JSON.stringify(dump)}, JSON.stringify({ ...process.env, POLICY_TEXT: fs.readFileSync(process.env.ATELIER_POLICY, "utf8"), POLICY_MODE: fs.statSync(process.env.ATELIER_POLICY).mode & 0o777 }))'\ncat >/dev/null\n`);
   chmodSync(join(hooks, "pre-receive"), 0o755);
   const recorder = await startServer({ env: "test", dataDir: join(root, "data2"), host: "127.0.0.1", hooksDir: hooks, vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
   try {
@@ -177,6 +177,13 @@ test("no plaintext token is kept in the grant store or put in the hook's environ
     assert.equal(seen.includes(OWNER), false, "the hook saw the token");
     assert.equal(JSON.parse(seen).ATELIER_GRANT, "owner");
     assert.equal(JSON.parse(seen).ATELIER_KIND, "owner");
+    // The scans' policy file and report path are the request's own, and go
+    // with it.
+    const { ATELIER_POLICY, ATELIER_REPORT, POLICY_TEXT, POLICY_MODE } = JSON.parse(seen);
+    assert.deepEqual(JSON.parse(POLICY_TEXT), { clearances: [], private: [] });
+    assert.equal(POLICY_MODE, 0o600);
+    assert.ok(ATELIER_POLICY.startsWith(join(root, "data2", "hook-scans")) && ATELIER_REPORT.startsWith(join(root, "data2", "hook-scans")));
+    assert.deepEqual(readdirSync(join(root, "data2", "hook-scans")), []);
   } finally { await recorder.close(); }
 });
 

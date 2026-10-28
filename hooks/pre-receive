@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Atelier's pre-receive hook (Atelier 2.0, task 2; design section 4.4): write
+// Atelier's pre-receive hook (Atelier 2.0, tasks 2 and 3; design section 4.4): write
 // isolation on one repository. The server runs `git receive-pack` as its own
 // user with the grant in the environment (src/git/http.mjs); this hook,
 // named by core.hooksPath and out of every agent's reach, refuses each ref
-// update the grant does not cover. It reads the ref commands and the
-// commits' parents, never a pushed file.
+// update the grant does not cover.
 //   1. One ref per push, the one the grant names: task tN writes
 //      refs/heads/t/N, plan tN refs/heads/plan/N, landing the project's
 //      branch, owner the project's branch and refs/heads/dev/*.
@@ -12,11 +11,17 @@
 //   3. Fast-forward only on the project's branch and plan/*.
 //   4. A landing push is a merge whose first parent is the branch's tip and
 //      whose parents include the accepted head.
+// Then, for a push those four allow, the two rules that read the pushed
+// files (src/git/scan.mjs), with the policy the server wrote for this push
+// (ATELIER_POLICY, src/git/policy.mjs):
+//   5. The secret scan of the commits the push adds; a key-shaped line the
+//      owner has not cleared refuses the push, naming file and line.
+//   6. The private-file guard: no commit adds a private path.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const ZERO = /^0+$/;
-const { ATELIER_KIND: kind = "", ATELIER_TASK: task = "", ATELIER_BRANCH: branch = "", ATELIER_ACCEPTED: accepted = "" } = process.env;
+const { ATELIER_KIND: kind = "", ATELIER_TASK: task = "", ATELIER_BRANCH: branch = "", ATELIER_ACCEPTED: accepted = "", ATELIER_POLICY: policy = "", ATELIER_REPORT: report = "" } = process.env;
 
 function refuse(message) {
   process.stderr.write(`atelier: ${message}\n`);
@@ -49,3 +54,10 @@ if (kind === "landing") {
   if (parents[0] !== old) refuse(`a landing's first parent is ${branch}'s tip ${old.slice(0, 12)}`);
   if (!/^[0-9a-f]{40}$/.test(accepted) || !parents.includes(accepted)) refuse(`a landing merges the accepted head ${accepted.slice(0, 12) || "(none)"}, which this commit's parents do not include`);
 }
+// The server writes a policy for every push it serves; a push without one
+// is not scanned, so it is refused.
+if (!policy) refuse("this push has no scan policy from the server; nothing was pushed");
+await import("../src/runtime/loader.mjs");
+const { checkPush } = await import("../src/git/scan.mjs");
+const refusal = await checkPush({ old, sha, ref, branch, task, policyPath: policy, reportPath: report });
+if (refusal) refuse(refusal);
