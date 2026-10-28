@@ -19,7 +19,11 @@
 //   runtime's own wording, which missingLedgerMethod reads.
 // - An alarm the object sets is kept in DIR/alarms.sqlite and fires at its
 //   time, after a restart too, retried up to six times with backoff when
-//   `alarm()` throws; `ctx.abort()` drops the instance, and the next call
+//   `alarm()` throws. Delivery is at least once: the kept alarm is removed
+//   only after the call that ran `alarm()` has committed, so a crash in
+//   between fires it again on the next start. While `alarm()` runs,
+//   `getAlarm()` answers null unless it set a new one, as the Workers
+//   runtime answers. `ctx.abort()` drops the instance, and the next call
 //   builds a new one over the same file.
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -81,6 +85,7 @@ class Obj {
     this.depth = 0;
     this.timer = null;
     this.retries = 0;
+    this.firing = null;
     this.held = new Set();
   }
   get live() {
@@ -127,8 +132,12 @@ class Obj {
     if (reason) console.log(`${this.name}: restarted (${reason})`);
     this.instance = null;
   }
-  alarmAt() {
+  stored() {
     return this.ns.alarms.prepare("SELECT at FROM alarms WHERE name = ?").get(this.name)?.at ?? null;
+  }
+  alarmAt() {
+    const at = this.stored();
+    return at === this.firing ? null : at;
   }
   setAlarm(at) {
     if (at === null || !Number.isFinite(at)) {
@@ -150,23 +159,35 @@ class Obj {
   }
   fire(at) {
     this.timer = null;
+    let ran = false;
     void this.run(async () => {
-      if (this.alarmAt() !== at) return;
-      this.ns.alarms.prepare("DELETE FROM alarms WHERE name = ? AND at = ?").run(this.name, at);
+      if (this.stored() !== at) return;
       const instance = this.live;
-      if (typeof instance.alarm !== "function") return;
+      if (typeof instance.alarm !== "function") { ran = true; return; }
+      this.firing = at;
       try {
         await instance.alarm({ retryCount: this.retries, isRetry: this.retries > 0 });
-        this.retries = 0;
-      } catch (err) {
-        console.error(`${this.name}: alarm failed (try ${this.retries + 1}):`, err);
-        if (this.retries < ALARM_RETRIES && this.alarmAt() === null) {
-          this.retries++;
-          const again = Date.now() + 2 ** this.retries * 1000;
-          this.ns.alarms.prepare("INSERT INTO alarms (name, at) VALUES (?, ?)").run(this.name, again);
-          this.arm(again);
-        } else this.retries = 0;
+        ran = true;
+      } finally {
+        this.firing = null;
       }
+    }).then(() => {
+      if (!ran) return;
+      // Committed: the delivered alarm goes, unless alarm() set a new one.
+      this.retries = 0;
+      this.ns.alarms.prepare("DELETE FROM alarms WHERE name = ? AND at = ?").run(this.name, at);
+    }, (err) => {
+      console.error(`${this.name}: alarm failed (try ${this.retries + 1}):`, err);
+      if (this.stored() !== at) return;
+      if (this.retries >= ALARM_RETRIES) {
+        this.retries = 0;
+        this.ns.alarms.prepare("DELETE FROM alarms WHERE name = ? AND at = ?").run(this.name, at);
+        return;
+      }
+      this.retries++;
+      const again = Date.now() + 2 ** this.retries * 1000;
+      this.ns.alarms.prepare("UPDATE alarms SET at = ? WHERE name = ? AND at = ?").run(again, this.name, at);
+      this.arm(again);
     });
   }
   close() {
@@ -209,18 +230,22 @@ export class Namespace {
   get(id) {
     const name = typeof id === "string" ? id : id.name;
     const o = this.object(name);
-    const call = (method, args) => o.run(async () => {
+    const call = (method, given) => {
+      let args;
+      try { args = structuredClone(given); } catch (err) { return Promise.reject(crossed(err)); }
+      return o.run(async () => {
       const instance = o.live;
       const fn = instance[method];
       if (typeof fn !== "function" || method.startsWith("#") || method === "constructor") {
         throw new TypeError(`The RPC receiver does not implement the method "${method}".`);
       }
       try {
-        return structuredClone(await fn.apply(instance, structuredClone(args)));
+        return structuredClone(await fn.apply(instance, args));
       } catch (err) {
         throw crossed(err);
       }
-    });
+      });
+    };
     return new Proxy({}, {
       get(_, prop) {
         if (prop === "id") return o.id;

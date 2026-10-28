@@ -105,6 +105,7 @@ export class SqlStorage {
       return s;
     }
     s = this.#db.prepare(sql);
+    s.setReadBigInts(true);
     this.#cache.set(sql, s);
     if (this.#cache.size > CACHE_MAX) this.#cache.delete(this.#cache.keys().next().value);
     return s;
@@ -124,14 +125,10 @@ export class SqlStorage {
       const { changes } = s.run(...bound);
       return new Cursor([], columns, Number(changes));
     }
-    let rows;
-    try {
-      rows = s.all(...bound);
-    } catch (err) {
-      if (err?.code !== "ERR_OUT_OF_RANGE") throw err;
-      s.setReadBigInts(true);
-      try { rows = s.all(...bound); } finally { s.setReadBigInts(false); }
-    }
+    // Integers are read as BigInts and converted after, so an integer past
+    // 2^53 comes back as the nearest number, as the Workers runtime gives it,
+    // and a statement that writes is never run a second time to read it.
+    const rows = s.all(...bound);
     const changes = /^\s*(INSERT|UPDATE|DELETE|REPLACE|WITH)\b/i.test(sql) ? Number(this.#db.prepare("SELECT changes() AS n").get().n) : 0;
     return new Cursor(rows.map(plain), columns, changes);
   }

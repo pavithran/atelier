@@ -189,3 +189,124 @@ test("the data directory is the owner's alone and holds no secret value", async 
     for (const secret of [OWNER, OVERRIDE, agent]) assert.equal(bytes.includes(secret), false, `${f} holds a secret value`);
   }
 });
+
+test("a write that returns an integer past 2^53 runs once and reads back as a number", async () => {
+  class Big extends DurableObject {
+    put() {
+      const sql = this.ctx.storage.sql;
+      sql.exec("CREATE TABLE IF NOT EXISTS t (n INTEGER)");
+      const r = sql.exec("INSERT INTO t VALUES (9223372036854775807) RETURNING n").one();
+      return { r, count: sql.exec("SELECT COUNT(*) AS c FROM t").one().c };
+    }
+  }
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Big, env: {} });
+  try {
+    const { r, count } = await ns.get(ns.idFromName("x")).put();
+    assert.equal(count, 1);
+    assert.equal(typeof r.n, "number");
+  } finally { await ns.close(); }
+});
+
+test("a transactionSync that throws rolls back alone; the call's other writes commit", async () => {
+  class Tx extends DurableObject {
+    go() {
+      const sql = this.ctx.storage.sql;
+      sql.exec("CREATE TABLE IF NOT EXISTS t (v TEXT)");
+      sql.exec("INSERT INTO t VALUES ('outside')");
+      try { this.ctx.storage.transactionSync(() => { sql.exec("INSERT INTO t VALUES ('inner')"); throw new Error("no"); }); } catch {}
+      this.ctx.storage.transactionSync(() => this.ctx.storage.transactionSync(() => sql.exec("INSERT INTO t VALUES ('nested')")));
+      throw new Error("the call fails after its writes");
+    }
+    read() { return this.ctx.storage.sql.exec("SELECT v FROM t").toArray().map((r) => r.v); }
+  }
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Tx, env: {} });
+  try {
+    const stub = ns.get(ns.idFromName("x"));
+    await assert.rejects(stub.go(), /the call fails/);
+    assert.deepEqual(await stub.read(), ["outside", "nested"]);
+  } finally { await ns.close(); }
+});
+
+test("arguments are cloned when the stub is called, not when the call runs", async () => {
+  class Echo extends DurableObject {
+    async hold() { await new Promise((r) => setTimeout(r, 30)); }
+    echo(v) { return v; }
+  }
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Echo, env: {} });
+  try {
+    const stub = ns.get(ns.idFromName("x"));
+    const payload = { n: 1 };
+    const held = stub.hold();
+    const echoed = stub.echo(payload);
+    payload.n = 2;
+    await held;
+    assert.deepEqual(await echoed, { n: 1 });
+  } finally { await ns.close(); }
+});
+
+test("an alarm is kept until its call commits, reads null while it runs, and is retried when it throws", async () => {
+  const seen = [];
+  const dir = join(scratch(), "data");
+  class Flaky extends DurableObject {
+    async arm(at) { await this.ctx.storage.setAlarm(at); }
+    async alarm(info) {
+      seen.push({ retry: info.isRetry, during: await this.ctx.storage.getAlarm() });
+      if (!info.isRetry) throw new Error("first delivery fails");
+    }
+  }
+  const ns = new Namespace({ dir, Class: Flaky, env: {} });
+  try {
+    await ns.get(ns.idFromName("x")).arm(Date.now() + 100);
+    await new Promise((r) => setTimeout(r, 400));
+    assert.deepEqual(seen, [{ retry: false, during: null }]);
+    assert.ok(ns.object("x").stored() !== null, "the failed alarm is kept for its retry");
+    await new Promise((r) => setTimeout(r, 2500));
+    assert.deepEqual(seen, [{ retry: false, during: null }, { retry: true, during: null }]);
+    assert.equal(ns.object("x").stored(), null);
+  } finally { await ns.close(); }
+});
+
+test("an alarm whose delivery was cut off by a stop fires again on the next start", async () => {
+  const dir = join(scratch(), "data");
+  let release;
+  const fired = [];
+  class Slow extends DurableObject {
+    async arm(at) { await this.ctx.storage.setAlarm(at); }
+    async alarm() { fired.push("start"); await new Promise((r) => { release = r; }); fired.push("end"); }
+  }
+  const ns = new Namespace({ dir, Class: Slow, env: {} });
+  await ns.get(ns.idFromName("x")).arm(Date.now() + 50);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(fired, ["start"]);
+  // A crash here: the process ends with alarm() unfinished. The kept row
+  // is what a restart reads.
+  assert.ok(ns.object("x").stored() !== null);
+  ns.object("x").arm(null);
+  ns.alarms.close();
+  for (const o of ns.objects.values()) o.db.close();
+  const again = new Namespace({ dir, Class: class extends DurableObject { async alarm() { fired.push("again"); } }, env: {} });
+  again.start();
+  await new Promise((r) => setTimeout(r, 300));
+  await again.close();
+  // The first process's alarm() never finishes: that process is gone.
+  assert.equal(typeof release, "function");
+  assert.deepEqual(fired, ["start", "again"]);
+});
+
+test("the real Ledger's alarm runs under the Node runtime within a second of its time", async () => {
+  const { Ledger } = await import("../src/index.ts");
+  const fired = [];
+  class Watched extends Ledger {
+    async alarm() { fired.push(Date.now()); return await super.alarm(); }
+  }
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Watched, env: {} });
+  try {
+    const at = Date.now() + 300;
+    await ns.get(ns.idFromName("project:demo")).items();
+    ns.object("project:demo").setAlarm(at);
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(fired.length, 1);
+    assert.ok(fired[0] >= at && fired[0] - at < 1000);
+    assert.equal(ns.object("project:demo").stored(), null);
+  } finally { await ns.close(); }
+});
