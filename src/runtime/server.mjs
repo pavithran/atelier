@@ -16,6 +16,7 @@ import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { Namespace, notSupported } from "./namespace.mjs";
+import { GitHost } from "../git/host.mjs";
 
 export const SETTINGS = [
   "ATELIER_TOKEN", "OWNER_ACTOR", "OWNER_NAME", "TIMEZONE", "PUBLIC_ORIGIN", "DEPLOYED_MAIN", "OVERRIDE_SECRET",
@@ -85,7 +86,9 @@ async function send(res, response, head) {
 // namespace, close }.
 // `bindings` replaces the refusing ARTIFACTS, LARGE or LANDING_WORKFLOW with a
 // test's own until the tasks that replace them land.
-export async function startServer({ env = "staging", dataDir, port = 0, host = "0.0.0.0", secretsDir, vars, bindings: given = {} } = {}) {
+// reposDir holds the bare repositories (default DATA/repos), hooksDir the
+// hooks they name (default the checkout's hooks/).
+export async function startServer({ env = "staging", dataDir, reposDir, hooksDir, port = 0, host = "0.0.0.0", secretsDir, vars, bindings: given = {} } = {}) {
   if (env !== "production" && env !== "staging" && env !== "test") throw new Error(`--env is production or staging, not ${env}`);
   if (!dataDir) throw new Error("--data DIR names the environment's data directory");
   process.umask(0o077);
@@ -96,8 +99,17 @@ export async function startServer({ env = "staging", dataDir, port = 0, host = "
   const bindings = { ARTIFACTS: unsupported("ARTIFACTS"), LARGE: unsupported("LARGE"), LANDING_WORKFLOW: unsupported("LANDING_WORKFLOW"), ...given };
   const workerEnv = {};
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
+  const git = new GitHost({ dataDir: dir, reposDir: resolve(reposDir ?? join(dir, "repos")), hooksDir, namespace, settings: workerEnv });
+  bindings.GIT ??= git.binding();
   const pending = new Set();
   const server = createServer(async (req, res) => {
+    if (req.url?.startsWith("/git/") && !req.url.startsWith("/git/runner/")) {
+      const done = git.handle(req, res).then((handled) => { if (!handled) { res.writeHead(404, { "content-type": "text/plain" }); res.end("no such Git route\n"); } })
+        .catch((err) => { console.error("git request failed:", err); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
+      pending.add(done);
+      done.finally(() => pending.delete(done));
+      return;
+    }
     const kept = [];
     const ctx = { waitUntil: (p) => kept.push(Promise.resolve(p).catch((err) => console.error("work kept after a request failed:", err))), passThroughOnException() {}, props: {} };
     const done = (async () => {
@@ -121,9 +133,15 @@ export async function startServer({ env = "staging", dataDir, port = 0, host = "
   const url = `http://localhost:${bound}`;
   let closing;
   const close = () => closing ??= (async () => {
-    await new Promise((ok) => { server.close(() => ok()); server.closeIdleConnections?.(); });
+    // No new connections; requests in flight finish; then every connection
+    // closes, kept-alive ones included.
+    const closed = new Promise((ok) => server.close(() => ok()));
+    server.closeIdleConnections();
     await Promise.all([...pending]);
+    server.closeAllConnections();
+    await closed;
     await namespace.close();
+    git.close();
   })();
-  return { url, port: bound, env, namespace, close, settings: workerEnv };
+  return { url, port: bound, env, namespace, git, close, settings: workerEnv };
 }

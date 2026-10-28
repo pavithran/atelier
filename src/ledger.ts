@@ -3041,6 +3041,14 @@ export class Ledger extends DurableObject<Env> {
     return row.claim_gen === grant.generation ? grant : null;
   }
 
+  // The item's write-token slot: its holder, its claim generation and the
+  // token recorded now, for a Git credential that rotates it (recordToken).
+  tokenSlot(id: string): { owner: string | null; generation: number; replaces: string | null } {
+    const row = this.sql.exec(`SELECT owner, claim_gen, token_id FROM items WHERE id = ?`, id).toArray()[0];
+    if (!row) throw new RuleError("not_found", `no item ${id}`, 404);
+    return { owner: (row.owner as string | null) ?? null, generation: row.claim_gen as number, replaces: (row.token_id as string | null) ?? null };
+  }
+
   tokenId(id: string): string | null {
     const row = this.sql.exec(`SELECT token_id FROM items WHERE id = ?`, id).toArray()[0];
     return (row?.token_id as string | null) ?? null;

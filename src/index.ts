@@ -270,6 +270,16 @@ function ownerName(env: Env): string | null {
   return (env as unknown as Settings).OWNER_NAME || null;
 }
 
+// The Git host the Node server gives as env.GIT (src/git/host.mjs); absent
+// on the Workers deploy.
+type GitHost = {
+  mint(grant: { project: string; kind: "task" | "read"; task?: string; actor: string; generation?: number }): { id: string; token: string; hash: string; expiresAt: string };
+  revoke(id: string): boolean;
+};
+function gitHost(env: Env): GitHost | null {
+  return (env as unknown as { GIT?: GitHost }).GIT ?? null;
+}
+
 function serverToken(env: Env): string | undefined {
   return (env as unknown as { ATELIER_TOKEN?: string }).ATELIER_TOKEN;
 }
@@ -1387,7 +1397,9 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!tokenId || tokenId.startsWith("runner:")) return;
+  // A Git credential of the Node server (`git:HASH`) is live only while the
+  // Ledger records it; the change of record is its revocation.
+  if (!tokenId || tokenId.startsWith("runner:") || tokenId.startsWith("git:")) return;
   // A write token is recorded only once its fork exists (the claim route
   // sets the fork, then mints and records the token), so a token with no
   // repository means the caller read the fork before a claim made both. It
@@ -1811,6 +1823,35 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const ran = await index(env).tickRan();
     return json({ ranAt: ran?.at ?? null, read: ran?.read ?? 0, unread: ran?.unread ?? 0, now: new Date().toISOString() });
+  }
+
+  // A Git credential for the project's repository on the Node server
+  // (Atelier 2.0, task 2; docs/branches.md). `read` reads every branch of the
+  // project. `task` writes the task's branch t/N alone, for the task's
+  // holder: the Ledger records it as the item's write token (`git:HASH`), so
+  // a new one rotates it and every change of holder revokes it. 404 where the
+  // server hosts no Git (the Workers deploy).
+  if (parts[2] === "git-token" && parts.length === 3 && m === "POST") {
+    const git = gitHost(env);
+    if (!git) throw new RuleError("not_found", "this server hosts no Git repositories", 404);
+    const p = await L.project();
+    const branch = await projectBranch(env, p);
+    const remote = `${c.url.origin}/git/${encodeURIComponent(project)}.git`;
+    if (body.kind === "read") {
+      const g = git.mint({ project: ref.key, kind: "read", actor });
+      return json({ kind: "read", remote, token: g.token, expiresAt: g.expiresAt, defaultBranch: branch });
+    }
+    if (body.kind !== "task") throw new RuleError("bad_kind", "kind is read or task", 400);
+    const id = String(body.item ?? "");
+    const item = await L.item(id);
+    if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409);
+    const slot = await L.tokenSlot(id);
+    const g = git.mint({ project: ref.key, kind: "task", task: id, actor, generation: slot.generation });
+    if (!await L.recordToken(id, actor, slot.generation, slot.replaces, `git:${g.hash}`)) {
+      git.revoke(g.id);
+      throw new RuleError("claim_superseded", `${id} changed holder while its Git credential was made; no credential was issued`, 409);
+    }
+    return json({ kind: "task", remote, token: g.token, expiresAt: g.expiresAt, branch: `t/${id.slice(1)}`, defaultBranch: branch });
   }
 
   if (parts[2] === "reviewers") {

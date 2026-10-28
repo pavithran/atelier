@@ -85,7 +85,10 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
     // areas stays readable so that an older CLI's agent gets the 410 the route
     // answers (t769) and not a 403.
     if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions", "board", "areas", "refreshes"].includes(section);
-    return section === "baseline-token" && method === "POST" && body.scope !== "write";
+    // git-token is the Node server's Git credential (Atelier 2.0): a read of
+    // the project, or the write of the task's branch for its holder alone,
+    // which the route checks against the Ledger.
+    return method === "POST" && (section === "baseline-token" && body.scope !== "write" || section === "git-token");
   }
   if (section !== "items" || !id) return false;
   // criteria-reviews reads where a task's criteria review stands, and
