@@ -66,9 +66,10 @@ test("login --server NEW asks for a token for NEW and never sends the stored one
 
 for (const status of [401, 503]) test(`a token NEW answers ${status} to is not stored, and config.json stays as it was`, async (t) => {
   const f = await setup(t, { status });
-  const r = await f.run(["login", "--server", `${f.url}/`], { input: `${TYPED}\n` });
+  const r = await f.run(["login", "--server", `${f.url}/`], { input: `${TYPED}\n`, env: { ATELIER_RETRY_MS: "0,0,0" } });
   assert.notEqual(r.code, 0, r.output);
-  assert.deepEqual(f.seen, [`Bearer ${TYPED}`], "only the token given for NEW reached it");
+  // The login's read is retried on a 503 (G10), with the same token each time.
+  assert.deepEqual(f.seen, Array(status === 503 ? 4 : 1).fill(`Bearer ${TYPED}`), "only the token given for NEW reached it");
   assert.deepEqual(f.config(), f.before, "config.json changed on a refused login");
   assert.equal(f.stored(), STORED, "the store changed on a refused login");
 });
@@ -175,9 +176,10 @@ for (const [configured, envServer, envToken, sends] of TABLE) {
 
 for (const status of [401, 503]) test(`ATELIER_TOKEN for SELF that SELF answers ${status} to leaves the store paired with its own server`, async (t) => {
   const f = await setup(t, { status });
-  const r = await f.run(["login", "--server", f.url], { input: `${TYPED}\n`, env: { ATELIER_SERVER: f.url, ATELIER_TOKEN: ENV } });
+  const r = await f.run(["login", "--server", f.url], { input: `${TYPED}\n`, env: { ATELIER_SERVER: f.url, ATELIER_TOKEN: ENV, ATELIER_RETRY_MS: "0,0,0" } });
   assert.notEqual(r.code, 0, r.output);
-  assert.deepEqual(f.seen, [`Bearer ${ENV}`]);
+  // The login's read is retried on a 503 (G10), with the same token each time.
+  assert.deepEqual(f.seen, Array(status === 503 ? 4 : 1).fill(`Bearer ${ENV}`));
   assert.deepEqual(f.config(), f.before, "config.json changed on a refused login");
   assert.equal(f.stored(), STORED, "the store changed on a refused login");
 });
