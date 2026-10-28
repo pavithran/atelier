@@ -292,25 +292,13 @@ const run = promisify(execFile);
 const OWNER = "atl_00112233445566778899aabbccddeeff";
 const BUILDER = "claude-code/sonnet-5.5";
 const MODEL = "claude-code/opus-5.5";
-const artifacts = {
-  create: async () => ({ name: "demo" }),
-  get: async (repo) => ({
-    fork: async () => true,
-    log: async () => [{ hash: "c".repeat(40) }],
-    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-    createToken: async (scope) => ({ id: "tok1", plaintext: "art_dummy", scope, expiresAt: new Date(Date.now() + 3600e3).toISOString() }),
-    revokeToken: async () => true,
-    [Symbol.dispose]() {},
-  }),
-};
-
 async function serve() {
   const root = temp("server");
   const secrets = join(root, "secrets");
   mkdirSync(secrets, { mode: 0o700 });
   writeFileSync(join(secrets, "ATELIER_TOKEN"), OWNER, { mode: 0o600 });
   writeFileSync(join(secrets, "OVERRIDE_SECRET"), "override-secret-4f1c9e", { mode: 0o600 });
-  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets });
   const api = async (method, path, body, actor = "owner") => {
     const res = await fetch(`${server.url}/api${path}`, { method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: res.status, body: await res.json() };
@@ -324,6 +312,17 @@ async function serve() {
     catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
   };
   assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
+  // A claim on the Node server makes the task's branch from the project's
+  // (task 5), so the owner pushes the project's branch first, as init does.
+  const seed = join(root, "seed");
+  mkdirSync(seed);
+  const gitEnv = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const git = (...args) => run("git", ["-c", "credential.helper=", ...args], { cwd: seed, env: gitEnv });
+  await git("init", "-q", "-b", "main");
+  writeFileSync(join(seed, "a.txt"), "one\n");
+  await git("add", "a.txt");
+  await git("commit", "-q", "-m", "first");
+  await git("-c", `http.extraHeader=Authorization: Bearer ${OWNER}`, "push", "-q", `${server.url}/git/demo.git`, "HEAD:refs/heads/main");
   await cli(["login", "--server", server.url]);
   return { server, api, cli };
 }
@@ -397,7 +396,8 @@ test("a stopped check's evidence is said as a timeout in show, not as a failed t
     const id = (await api("POST", "/projects/demo/items", { title: "Stopped", scope: ["lib/**"] })).body.id;
     const claimed = await api("POST", `/projects/demo/items/${id}/claim`, {}, BUILDER);
     assert.equal(claimed.status, 200);
-    const head = "c".repeat(40);
+    // The head the server reads from the task's branch (task 5).
+    const head = claimed.body.item.head;
     const posted = await api("POST", `/projects/demo/items/${id}/evidence`, { kind: "check", claim: "npm test", head, passed: false, outputTail: "ok 1 - a\n✖ fake (3ms)\n[atelier] check silent for 10 minutes", stopped: { kind: "silent", minutes: 10 } }, BUILDER);
     assert.equal(posted.status, 200, JSON.stringify(posted.body));
     const refused = await api("POST", `/projects/demo/items/${id}/evidence`, { kind: "check", claim: "npm test", head, passed: false, outputTail: "", stopped: { kind: "slow" } }, BUILDER);

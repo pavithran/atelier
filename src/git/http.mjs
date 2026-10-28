@@ -31,7 +31,9 @@ export function tokenOf(header) {
 // The environment `git http-backend`, `git receive-pack` and the hook run
 // with. Nothing from the server's own environment passes but PATH. `scan`
 // is the push's ATELIER_POLICY and ATELIER_REPORT.
-export function backendEnv({ reposDir, key, rest, method, query, contentType, encoding, protocol, grant, scan = {} }) {
+// `hook` is what the hook re-checks the grant with at hook time
+// (ATELIER_GRANT_CHECK, ATELIER_HOOK_SECRET; GitHost.hookEnv).
+export function backendEnv({ reposDir, key, rest, method, query, contentType, encoding, protocol, grant, scan = {}, hook = {} }) {
   const env = {
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`,
     HOME: reposDir,
@@ -50,6 +52,7 @@ export function backendEnv({ reposDir, key, rest, method, query, contentType, en
     ATELIER_BRANCH: grant.branch,
     ATELIER_ACCEPTED: grant.accepted ?? "",
     ...scan,
+    ...hook,
   };
   if (contentType) env.CONTENT_TYPE = contentType;
   if (encoding) env.HTTP_CONTENT_ENCODING = encoding;
@@ -71,10 +74,25 @@ function deny(res, status, text) {
 // its key. `scans`, for a push: `dir`, where each push's policy and report
 // are written, `policy(grant)`, the policy, and `record(grant, report)`,
 // called with the hook's report before the answer ends.
-export async function gitRequest(req, res, { reposDir, authorize, ensure, scans }) {
+// The longest a push may run: its backend is ended past it, so a change that
+// waits for the pushes in flight on a task (GitHost.lock) waits no longer.
+export const PUSH_MAX_MS = 15 * 60_000;
+
+// `guard(grant)`, for a push: waits for the task's lock, then confirms the
+// grant is still live; answers the release, held until the backend exits, or
+// null when the grant stopped counting while it waited.
+// `onSpawn()` is told of each backend started.
+export async function gitRequest(req, res, { reposDir, authorize, ensure, scans, hook, guard, onSpawn }) {
   const url = new URL(req.url ?? "/", "http://git.local");
   const m = ROUTE.exec(url.pathname);
   if (!m) return false;
+  // A client that goes while its request waits (for its authorization or its
+  // locks) is noticed at once: a lock it waits for is given up, one it holds
+  // is released, and no backend is started for it.
+  const gone = new AbortController();
+  const leave = () => { if (!gone.signal.aborted && !res.writableFinished) gone.abort(new Error("the client went away")); };
+  req.on("close", () => { if (!req.complete) leave(); });
+  res.on("close", leave);
   const [, raw, rest] = m;
   let project;
   try { project = decodeURIComponent(raw); } catch { req.resume(); deny(res, 404, "atelier: no such repository"); return true; }
@@ -83,13 +101,27 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure, scans 
   const grant = await authorize(tokenOf(req.headers.authorization), project);
   if (!grant) { req.resume(); deny(res, 401, `atelier: no live Git credential for ${project}`); return true; }
   if (service === "git-receive-pack" && grant.kind === "read") { req.resume(); deny(res, 403, "atelier: this credential reads only"); return true; }
-  const key = await ensure(grant);
-  const scan = rest === "git-receive-pack" && scans ? openScan(scans.dir, await scans.policy(grant)) : null;
-  const child = spawn("git", ["http-backend"], {
-    env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant, scan: scan?.env }),
+  // A push holds its task's lock from here until its backend exits, so a
+  // release, handoff, closure or revocation either comes before it (and the
+  // grant is refused here, or at hook time) or waits for it to end.
+  const release = rest === "git-receive-pack" && guard ? await guard(grant, gone.signal) : () => {};
+  if (gone.signal.aborted) { release?.(); return true; }
+  if (!release) { req.resume(); deny(res, 401, `atelier: no live Git credential for ${project}`); return true; }
+  let key, scan, child = null;
+  gone.signal.addEventListener("abort", () => { if (!child) release(); }, { once: true });
+  try {
+    key = await ensure(grant);
+    scan = rest === "git-receive-pack" && scans ? openScan(scans.dir, await scans.policy(grant)) : null;
+  } catch (error) { release(); throw error; }
+  if (gone.signal.aborted) { scan?.close(); return true; }
+  onSpawn?.();
+  child = spawn("git", ["http-backend"], {
+    env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant, scan: scan?.env, hook: rest === "git-receive-pack" ? hook : {} }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   req.pipe(child.stdin);
+  const limit = rest === "git-receive-pack" ? setTimeout(() => { if (child.exitCode === null) child.kill("SIGTERM"); }, PUSH_MAX_MS) : null;
+  child.on("close", () => { clearTimeout(limit); release(); });
   // A client gone mid-request takes its backend with it.
   res.on("close", () => { if (child.exitCode === null && !res.writableFinished) child.kill("SIGTERM"); });
   child.stdin.on("error", () => {});

@@ -179,7 +179,10 @@ class Obj {
   }
   fire(gen) {
     this.timer = null;
-    void this.run(async () => {
+    // The alarm takes the locks `around` names for it before it joins the
+    // object's queue, as a call does (src/runtime/ledger-locks.mjs).
+    const around = this.ns.around ?? ((name, method, args, go) => go());
+    void around(this.name, "alarm", [], () => this.run(async () => {
       const kept = this.row();
       if (kept.gen !== gen || kept.at === null) return;
       const instance = this.live;
@@ -197,7 +200,7 @@ class Obj {
         const retry = Date.now() + 2 ** (kept.retries + 1) * 1000;
         this.write(now.gen !== gen && now.at !== null ? Math.min(now.at, retry) : retry, kept.retries + 1);
       }
-    }).finally(() => { if (!this.ns.closed) this.rearm(); });
+    })).catch((err) => console.error(`${this.name}: alarm not run:`, err?.message ?? err)).finally(() => { if (!this.ns.closed) this.rearm(); });
   }
   close() {
     this.arm(null);
@@ -214,6 +217,9 @@ export class Namespace {
     this.env = env;
     this.closed = false;
     this.objects = new Map();
+    // around(name, method, args, call): wraps every call and alarm of an
+    // object, outside its queue; the server sets it (ledgerLocks).
+    this.around = null;
     mkdirSync(join(dir, "ledgers"), { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
     chmodSync(join(dir, "ledgers"), 0o700);
@@ -242,6 +248,10 @@ export class Namespace {
     const call = (method, given) => {
       let args;
       try { args = structuredClone(given); } catch (err) { return Promise.reject(crossed(err)); }
+      if (this.around) return this.around(name, method, args, () => run(method, args)).catch((err) => { throw crossed(err); });
+      return run(method, args);
+    };
+    const run = (method, args) => {
       return o.run(async () => {
       const instance = o.live;
       const fn = instance[method];

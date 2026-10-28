@@ -17,7 +17,7 @@ import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
 import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
-import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
+import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -275,11 +275,65 @@ function ownerName(env: Env): string | null {
 // The Git host the Node server gives as env.GIT (src/git/host.mjs); absent
 // on the Workers deploy.
 type GitHost = {
-  mint(grant: { project: string; kind: "task" | "read"; task?: string; actor: string; generation?: number }): { id: string; token: string; hash: string; expiresAt: string };
+  mint(grant: { project: string; kind: "task" | "read" | "plan"; task?: string; actor: string; generation?: number }): { id: string; token: string; hash: string; expiresAt: string };
   revoke(id: string): boolean;
+  createRepo(args: { key: string; branch: string }): Promise<{ created: boolean }>;
+  claimBranch(args: { key: string; projectBranch: string; branch: string; from: string }): Promise<{ base: string | null; head: string | null; created: boolean }>;
+  moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
+  revokeAfterPushes(id: string): Promise<boolean>;
 };
+
 function gitHost(env: Env): GitHost | null {
   return (env as unknown as { GIT?: GitHost }).GIT ?? null;
+}
+
+// The remote of a project's repository on the Node server: at the tailnet or
+// loopback address the server accepted the request on, which the Node server
+// reads from the socket and names in x-atelier-git-origin (gitOrigin in
+// src/runtime/server.mjs), and at the configured PUBLIC_ORIGIN otherwise, as
+// through the tunnel: never at an origin the request itself names.
+function gitRemote(c: Ctx, project: string): string {
+  const origin = c.req.headers.get("x-atelier-git-origin") || ((c.env as unknown as Settings).PUBLIC_ORIGIN ?? "").trim().replace(/\/+$/, "");
+  if (!origin) throw new RuleError("no_public_origin", "this server names no PUBLIC_ORIGIN, so it cannot give a Git remote outside the tailnet", 503, "only the developer can: set PUBLIC_ORIGIN for the server");
+  return `${origin}/git/${encodeURIComponent(project)}.git`;
+}
+
+// A task's branch (design section 4.3): t/N, or plan/N for a plan's
+// integration branch; and the branch it starts from: the plan's branch for
+// a part, the project's for anything else.
+function itemBranch(item: { id: string; kind?: string | null }): string {
+  return `${item.kind === "plan" ? "plan" : "t"}/${item.id.slice(1)}`;
+}
+function startBranch(item: { kind?: string | null; plan?: string | null }, projectBranchName: string): string {
+  return item.kind === "part" && item.plan ? `plan/${item.plan.slice(1)}` : projectBranchName;
+}
+
+// A Git grant minted for a request made with an agent or runner token is
+// recorded against that token, as an Artifacts token is (mintFor, t598),
+// so revoking the token revokes the grant. A grant that cannot be recorded
+// is revoked at once and never returned.
+async function keepGitGrant(c: Ctx, git: GitHost, key: string, g: { id: string; expiresAt: string }): Promise<void> {
+  if (!c.token) return;
+  let kept: boolean;
+  try {
+    kept = await index(c.env).recordArtifactsToken(c.token.id, `git:${key}`, `grant:${g.id}`, g.expiresAt);
+  } catch (err) {
+    git.revoke(g.id);
+    throw err;
+  }
+  if (!kept) {
+    git.revoke(g.id);
+    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git credential was issued", 401, "ask the developer for a new token, then run atelier login");
+  }
+}
+
+// A read grant for the project's repository: it reads every branch. Answered
+// in the shape a read token had (remote, token, defaultBranch), with
+// `defaultBranch` the branch the caller is to fetch.
+async function gitRead(c: Ctx, git: GitHost, key: string, project: string, actor: string, branch: string): Promise<{ remote: string; token: string; expiresAt: string; defaultBranch: string }> {
+  const g = git.mint({ project: key, kind: "read", actor });
+  await keepGitGrant(c, git, key, g);
+  return { remote: gitRemote(c, project), token: g.token, expiresAt: g.expiresAt, defaultBranch: branch };
 }
 
 function serverToken(env: Env): string | undefined {
@@ -943,6 +997,15 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The text of the prose standard as init sends it: the document's text, at
+// most PROSE_TEXT_MAX characters, or null or "" to forget it.
+function proseStandardTextArg(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") throw new RuleError("bad_prose_standard", "the prose standard's text is the document's text, or \"\" to forget it", 400);
+  assertLength(value, PROSE_TEXT_MAX, "the prose standard's text");
+  return value;
+}
+
 // The project's prose standard (src/prose-standard.ts) as init sends it: the
 // path of the document the project's prose follows, which every build, plan
 // and review brief names. One line with no backticks, so the brief's code
@@ -1144,6 +1207,71 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
   const scan = await scanCommit(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head, item.base);
   if (scan.head !== head) throw new Error(`secret scan: ${item.id}'s scan read ${scan.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
+}
+
+// A claim on the Node server (Atelier 2.0, task 5; design section 4.5),
+// after L.claim recorded it: the task's branch, t/N (plan/N for a plan), is
+// made in the project's repository at the tip of the branch it starts from
+// (the project's, or a part's plan branch) unless it exists, and recorded as
+// the item's fork (KEY/t/N, which src/git/artifacts.mjs reads as the branch)
+// with that tip as its base. A branch already recorded that holds nothing of
+// its own is moved to the tip its start has reached since, as moveEmptyFork
+// re-forked an empty fork. The task grant is minted and recorded as the
+// item's write token, which rotates the old one; a runner's claim gets the
+// same grant as its workspace token. No Artifacts call is made. A failure
+// gives up a claim this call took; a holder claiming again keeps the item.
+type GitClaim = { key: string; project: string; id: string; actor: string; item: Item; needsFork: boolean; generation: number; replaces: string | null; heldBefore: boolean };
+async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t: GitClaim) {
+  const { key, id, actor, item, generation } = t;
+  const proved = !!c.token;
+  const giveUp = async (err: unknown) => {
+    if (!t.heldBefore) await L.unclaim(id, actor, codeOf(err).trim(), proved, generation).catch((e) => console.error(errorLine(`give up ${id} after its branch failed`, e)));
+  };
+  const p = await L.project();
+  const main = await projectBranch(c.env, p);
+  const branch = itemBranch(item), from = startBranch(item, main);
+  const fork = `${key}/${branch}`;
+  try {
+    // A workspace recorded on an Artifacts fork is moved to this server by
+    // the migration, not by a claim.
+    if (item.fork && item.fork !== fork) {
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: move ${id} to this server, then run atelier claim ${id} --as ${actor}`);
+    }
+    const made = await git.claimBranch({ key, projectBranch: main, branch, from });
+    if (!made.head) {
+      throw new RuleError("empty_branch", `${from} has no commits on this server yet, so ${id} has nothing to start from`, 409,
+        from === main ? `only the developer can: run atelier init in ${p.name}'s checkout, which pushes ${main}` : `claim ${item.plan} first, then run atelier claim ${id} --as ${actor}`);
+    }
+    if (!item.fork) await L.setFork(id, fork, made.head, actor, proved, generation);
+    else if (item.kind !== "plan" && (!item.head || item.head === item.base)) {
+      const to = await git.moveEmptyBranch({ key, projectBranch: main, branch, from, base: item.base });
+      if (to && to !== item.base) await L.moveFork(id, actor, fork, item.base, to, proved);
+    }
+  } catch (err) {
+    await giveUp(err);
+    throw err;
+  }
+  const g = git.mint({ project: key, kind: item.kind === "plan" ? "plan" : "task", task: id, actor, generation });
+  await keepGitGrant(c, git, key, g);
+  if (!await L.recordToken(id, actor, generation, t.replaces, `git:${g.hash}`)) {
+    git.revoke(g.id);
+    throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's credential was made; no credential was issued`, 409, `run atelier claim ${id} --as ${actor}`);
+  }
+  const remote = gitRemote(c, t.project);
+  const now = await L.item(id);
+  const prose = p.policy.proseStandard ? { path: p.policy.proseStandard, text: await L.proseStandardText() } : null;
+  return {
+    item: now,
+    // One remote: the branch is cloned alone and pushed as HEAD:refs/heads/t/N,
+    // and the branch it starts from is fetched from the same remote.
+    workspace: { remote, branch, base: now.base, token: g.token, expiresAt: g.expiresAt, defaultBranch: main },
+    baseline: { remote, token: g.token, defaultBranch: from },
+    commitIdentity: p.policy.commitIdentity ?? null,
+    // The project's prose standard with its text (the lessons audit's
+    // amendment to task 5): a builder on the Studio has no checkout of the
+    // project to read the path from.
+    proseStandard: prose,
+  };
 }
 
 // A part whose fork holds nothing beyond the commit it forked from starts
@@ -1402,6 +1530,10 @@ async function revoke(env: Env, repo: string | null, tokenId: string | null) {
   // A Git credential of the Node server (`git:HASH`) is live only while the
   // Ledger records it; the change of record is its revocation.
   if (!tokenId || tokenId.startsWith("runner:") || tokenId.startsWith("git:")) return;
+  // A grant recorded against an agent token (keepGitGrant) is revoked in the
+  // grant store.
+  // It waits for the pushes made with the grant, so none ends after this.
+  if (tokenId.startsWith("grant:")) { await gitHost(env)?.revokeAfterPushes(tokenId.slice("grant:".length)); return; }
   // A write token is recorded only once its fork exists (the claim route
   // sets the fork, then mints and records the token), so a token with no
   // repository means the caller read the fork before a claim made both. It
@@ -1851,22 +1983,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!git) throw new RuleError("not_found", "this server hosts no Git repositories", 404);
     const p = await L.project();
     const branch = await projectBranch(env, p);
-    const remote = `${c.url.origin}/git/${encodeURIComponent(project)}.git`;
+    const remote = gitRemote(c, project);
     if (body.kind === "read") {
-      const g = git.mint({ project: ref.key, kind: "read", actor });
-      return json({ kind: "read", remote, token: g.token, expiresAt: g.expiresAt, defaultBranch: branch });
+      const g = await gitRead(c, git, ref.key, project, actor, branch);
+      return json({ kind: "read", ...g });
     }
     if (body.kind !== "task") throw new RuleError("bad_kind", "kind is read or task", 400);
     const id = String(body.item ?? "");
+    if (!/^t[0-9]+$/.test(id)) throw new RuleError("bad_item", "name the task as tN", 400);
+    // The actor a runner token names is only its header's word: the runner
+    // must hold this task's job itself (assertRunnerJob), as on the item's
+    // own routes. An agent token speaks for its own actor alone.
+    if (c.token?.runner) await L.assertRunnerJob(c.token, id, actor);
+    else if (c.token && c.token.actor !== actor) throw new RuleError("actor_mismatch", `this agent token speaks for ${c.token.actor}, not ${actor}; no Git credential was issued`, 403, `send the request as ${c.token.actor}`);
     const item = await L.item(id);
     if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
+    // recordToken waits for the pushes in flight on the task (src/runtime/ledger-locks.mjs).
     const slot = await L.tokenSlot(id);
-    const g = git.mint({ project: ref.key, kind: "task", task: id, actor, generation: slot.generation });
+    const g = git.mint({ project: ref.key, kind: item.kind === "plan" ? "plan" : "task", task: id, actor, generation: slot.generation });
+    await keepGitGrant(c, git, ref.key, g);
     if (!await L.recordToken(id, actor, slot.generation, slot.replaces, `git:${g.hash}`)) {
       git.revoke(g.id);
       throw new RuleError("claim_superseded", `${id} changed holder while its Git credential was made; no credential was issued`, 409, `run atelier claim ${id} --as ${actor}`);
     }
-    return json({ kind: "task", remote, token: g.token, expiresAt: g.expiresAt, branch: `t/${id.slice(1)}`, defaultBranch: branch });
+    return json({ kind: item.kind === "plan" ? "plan" : "task", remote, token: g.token, expiresAt: g.expiresAt, branch: itemBranch(item), defaultBranch: branch });
   }
 
   if (parts[2] === "reviewers") {
@@ -1975,7 +2115,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the Ledger decides the same again when it records the init.
     mergeProject(await L.project().catch(() => null), init, new Date().toISOString());
     const known = ref.registered || await L.project().then(() => true, () => false);
-    try {
+    // The text of the prose standard, which the CLI reads from the
+    // developer's checkout and sends with the path, so a claim can carry it
+    // to a builder with no checkout (the lessons audit's amendment to task 5).
+    const proseText = has("proseStandardText") ? proseStandardTextArg(body.proseStandardText) : undefined;
+    const git = gitHost(env);
+    if (git) {
+      // On the Node server the project's repository is a bare repository the
+      // server hosts (design section 4.3), made here with its HEAD on the
+      // project's branch; the developer pushes it with the server token.
+      const existing = known ? (await L.project().catch(() => null))?.branch ?? null : null;
+      if (!existing) init.branch ??= "main";
+      await git.createRepo({ key: ref.key, branch: branch ?? existing ?? "main" });
+    } else try {
       await env.ARTIFACTS.create(repo, { description: baselineMark(project), setDefaultBranch: branch ?? "main" });
       // A baseline created without a branch named was created on main.
       init.branch ??= "main";
@@ -1986,6 +2138,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!known) await assertMadeAs(env, repo, baselineMark(project), `${project}'s baseline`);
     }
     const record = await L.initProject(init, actor);
+    // The text goes with the path it was read from: a path given without
+    // text, a cleared standard and a reset each forget the text kept before.
+    if (proseText !== undefined || has("proseStandard") || init.reset) await L.setProseStandardText(init.proseStandard === null ? null : proseText ?? null);
     // The pool and the role assignments standing now, so a project made
     // after an assignment for every project reads it from the start
     // (gpt-6-astra's review of t622, finding 3); registered first, so no
@@ -2004,6 +2159,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
       install: async (snapshot) => { await L.poolChanged(models, snapshot); const standard = await standardReviewers(env); await L.setStandardReviewers(standard.admissions, standard.version); },
     });
+    // The developer's push of the project's branch: on the Node server to
+    // the repository's remote with the server token, so no token is minted.
+    if (git) return json({ project: record, baseline: { remote: gitRemote(c, project), defaultBranch: await projectBranch(env, record) } });
     return json({ project: record, baseline: await mintFor(c, repo, "write", await projectBranch(env, record)) });
   }
   if (parts.length === 2 && m === "DELETE") {
@@ -2195,6 +2353,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
     const p = await L.project();
+    // On the Node server a read is a read grant; the developer writes the
+    // project's branch with the server token itself (docs/branches.md).
+    const git = gitHost(env);
+    if (git && scope === "read") return json(await gitRead(c, git, ref.key, project, actor, await projectBranch(env, p)));
+    if (git) return json({ remote: gitRemote(c, project), token: null, defaultBranch: await projectBranch(env, p) });
     return json(await mintFor(c, p.repo, scope, await projectBranch(env, p)));
   }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
@@ -2429,6 +2592,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
       try {
+        const git = gitHost(env);
+        if (git) return json(await claimOnGit(c, git, L, { key: ref.key, project, id, actor, item, needsFork, generation, replaces, heldBefore: before.owner === actor }));
         const p = await L.project();
         let fork = item.fork, moved = false;
         if (needsFork) {
@@ -2545,6 +2710,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "read-token": {
       const item = await L.item(id);
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+      // On the Node server a read grant for the project's repository, with
+      // the task's branch to clone alone (`branch`).
+      const git = gitHost(env);
+      if (git) {
+        const branch = itemBranch(item);
+        const t = await gitRead(c, git, ref.key, project, actor, await projectBranch(env, await L.project()));
+        return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, branch, head: item.head, base: item.base });
+      }
       const t = await mintFor(c, item.fork, "read", await projectBranch(env, await L.project()));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
     }
@@ -2555,6 +2728,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (body.scope === "write") throw new RuleError("read_only", "a base token is read-only", 403, "ask for a write token: run atelier claim ID --as H/M");
       const item = await L.item(id);
       const p = await L.project();
+      // On the Node server a read grant for the project's repository, naming
+      // the branch to fetch: the plan's branch for a part, the project's
+      // otherwise.
+      const git = gitHost(env);
+      if (git) {
+        const t = await gitRead(c, git, ref.key, project, actor, startBranch(item, await projectBranch(env, p)));
+        return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch });
+      }
       const repo = await baseRepo(env, L, item, p.repo);
       const t = await mintFor(c, repo, "read", await projectBranch(env, p));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch });
@@ -2813,6 +2994,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const p = await L.project();
         const branch = await projectBranch(env, p);
         const landed = landingOf(claim.item, claim.events);
+        // On the Node server one read grant reads both: the task's branch (or,
+        // once landed, the branch it landed on) and the branch it merges into.
+        const git = gitHost(env);
+        if (git) {
+          const into = startBranch(claim.item, branch);
+          const r = await gitRead(c, git, ref.key, project, actor, branch);
+          return json({
+            ...claim,
+            ...(landed ? { landed } : {}),
+            ...(diffRef ? { diffRef } : {}),
+            readToken: { remote: r.remote, token: r.token, defaultBranch: branch, branch: landed ? (landed.onPlanBranch ? into : branch) : itemBranch(claim.item) },
+            target: { remote: r.remote, token: r.token, branch: into },
+          });
+        }
         const repo = landed?.onPlanBranch ? await baseRepo(env, L, claim.item, p.repo) : p.repo;
         const t = await mintFor(c, landed ? repo : claim.item.fork!, "read", branch);
         const b = await mintFor(c, await baseRepo(env, L, claim.item, p.repo), "read", branch);

@@ -4725,6 +4725,17 @@ export class Ledger extends DurableObject<Env> {
   // leave the developer's Macs, which the pre-receive hook refuses in any
   // pushed commit (design section 4.4, rule 6). Setting them replaces the
   // list; each is checked as the list in iCloud is.
+  // The text of the project's prose standard (task 5), which init sends
+  // with the path and a claim hands to its builder; null when none is kept.
+  proseStandardText(): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'prose-standard-text'`).toArray()[0];
+    return row ? row.value as string : null;
+  }
+  setProseStandardText(text: string | null): void {
+    if (text === null) this.sql.exec(`DELETE FROM meta WHERE key = 'prose-standard-text'`);
+    else this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('prose-standard-text', ?)`, text);
+  }
+
   privatePaths(): string[] {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'private-paths'`).toArray()[0];
     return row ? JSON.parse(row.value as string) : [];
@@ -10623,6 +10634,11 @@ export class Ledger extends DurableObject<Env> {
     if (("owner" in fields && fields.owner !== null || "claim_gen" in fields) && !this.#ownerAssignment) {
       throw new RuleError("owner_assignment", "owner assignment and claim reservation require assignOwner", 409);
     }
+    // A task that closes (merged, abandoned, or a part integrated into its
+    // plan) takes its write token with it, in the same write: a Git grant
+    // counts only while the item records it (src/git/host.mjs), so no
+    // credential outlives the work it was for.
+    if (fields.state === "merged" || fields.state === "abandoned" || fields.state === "integrated") fields = { ...fields, token_id: null };
     if (fields.state === "merged" || fields.state === "abandoned") {
       this.ctx.storage.transactionSync(() => {
         const state = fields.state!;
