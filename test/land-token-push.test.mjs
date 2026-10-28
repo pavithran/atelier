@@ -1,6 +1,10 @@
 // The land push when the workspace token has expired (t317). On 2026-10-26
 // miqra/t126's land job failed three times saying the workspace held commits
 // the recorded head lacked, until atelier push renewed the token and pushed.
+// Since G2 the plain landing pushes nothing to the task's branch, so the
+// renewal of a refused push stays with the Workflow landing alone; what is
+// left here is the next landing's reading of a merge an earlier one could
+// not push.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -32,60 +36,10 @@ function withUnpushed(l) {
 // renewal failed: no "Invalid or expired token" in it.
 const pushRenewalFailed = "The server refused this workspace's token as expired. Renewing it failed: t1 is held elsewhere. Run atelier start t1 --as codex/test to issue a new token.";
 
-test("a land push that atelier push could not renew is renewed by the lander and pushed again (t317)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: far(), push: [pushRenewalFailed] });
-  const store = withUnpushed(l);
-  await runLand(l.io);
-  assert.deepEqual(l.commands, ["push", "push", "check", "submit"]);
-  assert.equal(l.claims().length, 1);
-  assert.equal(l.claims()[0].as, "codex/test");
-  assert.equal(l.adopted.length, 1);
-  assert.equal(store.has(LAND_UNPUSHED), false);
-});
 
-test("a renewal that fails says the workspace token expired and how to recover, and records the head it could not push (t317)", async (t) => {
-  for (const refusal of ["remote: Invalid or expired token\nfatal: unable to access the fork", pushRenewalFailed]) {
-    const l = tokenLanding(t, { expiresAt: far(), claim: "not_owner: refused", push: [refusal] });
-    const store = withUnpushed(l);
-    await assert.rejects(runLand(l.io), (error) => {
-      assert.match(error.message, /t1's workspace token expired, and renewing it for its holder failed: not_owner: refused\./);
-      assert.match(error.message, /Run atelier push in .*, which renews the token .* then run atelier land t1 again/);
-      assert.doesNotMatch(error.message, /the recorded head lacks/);
-      // Its last line says it, so the land job's report, a tail of the output, carries it.
-      assert.match(error.message.split("\n").at(-1), /workspace token expired/);
-      return true;
-    });
-    assert.deepEqual(l.commands, ["push"]);
-    assert.equal(store.get(LAND_UNPUSHED), HEAD);
-    assert.equal(l.leaseTaken(), false);
-  }
-});
 
-test("a renewed token the fork refuses again says the workspace token expired, and is not renewed a second time (t317)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: far(), push: ["Invalid or expired token", "Invalid or expired token"] });
-  const store = withUnpushed(l);
-  await assert.rejects(runLand(l.io), /atelier push failed[\s\S]*Invalid or expired token\nt1's workspace token expired, and the fork refused the renewed token too\. Run atelier push in /);
-  assert.deepEqual(l.commands, ["push", "push"]);
-  assert.equal(l.claims().length, 1);
-  assert.equal(store.get(LAND_UNPUSHED), HEAD);
-});
 
-test("a push that fails for another reason records nothing (t317)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: far(), push: ["error: failed to push some refs (non-fast-forward)"] });
-  const store = withUnpushed(l);
-  await assert.rejects(runLand(l.io), /non-fast-forward/);
-  assert.equal(store.has(LAND_UNPUSHED), false);
-});
 
-test("a token that expired before the landing and cannot be refreshed is named as an expired workspace token (t317)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: "2026-10-26T09:00:00.000Z", claim: "not_owner: refused" });
-  await assert.rejects(runLand(l.io), (error) => {
-    assert.match(error.message, /t1's workspace token expired 2026-10-26 09:00 UTC, and it could not be refreshed, so the landing stops before taking the lease/);
-    assert.match(error.message, /atelier push in .*atelier claim t1/);
-    return true;
-  });
-  assert.deepEqual(l.commands, []);
-});
 
 // A workspace a landing merged main into and could not push, as t126's was.
 function aheadWorkspace(t) {

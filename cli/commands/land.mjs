@@ -9,10 +9,10 @@ import { I, OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, p
 import { serverFetch } from "../server-fetch.mjs";
 import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../land-queue.mjs";
 
-// The project owner lands one task whole: the lease on the server, the
-// merge of main into the task's workspace, the project's fixture
-// regeneration, the checks, the independent review, then accept and merge
-// (cli/land.mjs). Steps run as this CLI's own commands where they have one,
+// The project owner lands one task whole: the independent review of the
+// head as it stands, then, under the lease on the server, the acceptance and
+// the merge of that head into the project's branch, with the project's
+// checks on the merged tree before the push (G2, cli/land.mjs). Steps run as this CLI's own commands where they have one,
 // and each is recorded on the ledger as a land.* event.
 export default async function landCommand() {
   const ids = uniqueIds(args._.slice(1));
@@ -26,10 +26,22 @@ export default async function landCommand() {
   const name = project(), id = itemArg();
   // Queued for a runner that holds the registered checkout (t226): nothing
   // runs here.
+  if (args.cancel !== undefined && args.queue === undefined) die(`--cancel removes a queued landing: atelier land ${id} --queue --cancel`);
   if (args.queue !== undefined) {
     if (ids.length > 1) die("--queue acts on one task: atelier land ID --queue");
+    // --cancel removes the queued landing (G1); run twice, the second finds
+    // nothing queued, says so and changes nothing. A landing past its merge
+    // step is refused by the server, naming the step, and runs on.
+    if (args.cancel !== undefined) {
+      if (args.quote !== undefined) die("--cancel removes the queued landing and takes no --quote");
+      const r = await call("POST", `${P(name)}/items/${encodeURIComponent(id)}/land-job`, { cancel: true }, OWNER);
+      console.log(r.cancelled ? `${id}'s queued landing is cancelled; no runner takes it. A landing of ${id} already running stops before its merge.` : `${id} is not queued to land; nothing was changed.`);
+      return;
+    }
     const queued = await call("POST", `${P(name)}/items/${encodeURIComponent(id)}/land-job`, typeof args.quote === "string" ? { quote: args.quote } : {}, OWNER);
-    console.log(queued.queued ? `${id} is queued to land on a runner that holds ${name}'s registered checkout and offers the land job.` : `${id} is already queued to land (since ${queued.at}).`);
+    console.log(queued.requeued
+      ? `${id} is queued to land again: its landing failed at the ${queued.requeued.failedStep} step (attempt ${queued.requeued.attempt}), and a runner that holds ${name}'s registered checkout tries it once more.`
+      : queued.queued ? `${id} is queued to land on a runner that holds ${name}'s registered checkout and offers the land job.` : `${id} is already queued to land (since ${queued.at}).`);
     return;
   }
   // A machine with no registered checkout cannot run the landing; it records

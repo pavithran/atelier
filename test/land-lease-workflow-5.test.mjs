@@ -225,6 +225,8 @@ test("land --workflow runs the required checks here in a clean clone after the p
 test("a landing whose check fails ends with the failure summary every landing prints: the run the gate reads, its tests and its log tail", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
+  // A claimed task's checks run at its recorded head before the review (G2).
+  f.box.states.t1 = "claimed";
   f.box.checks = ["printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3"];
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);

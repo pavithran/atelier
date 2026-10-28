@@ -51,7 +51,10 @@ test("--wait gives up behind the landing that queued first, saying it is still f
   assert.equal(takesOf(f).length, 1);
   assert.deepEqual(grantedTo(f), []);
   assert.deepEqual(f.box.waiting.map((w) => w.item), ["t2"]);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review"]);
+  // The lease step is the one that failed, with its reason (G1).
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease"]);
+  assert.equal(f.posts("/land").at(-1).body.failed, true);
+  assert.match(f.posts("/land").at(-1).body.tail, /still first in the queue/);
   assert.equal(f.box.states.t1, "submitted");
 });
 
@@ -111,7 +114,7 @@ test("--dry-run says where the merge would wait, and --wait gives up after its l
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
   const dry = await f.run(f.checkout, "land", "t1", "--wait", "--dry-run");
   assert.equal(dry.status, 0, dry.output);
-  assert.match(dry.output, /7\. wait behind owner's landing of t2 \(since 2026-10-06 09:30 UTC\) \(as the lease stands now\), then take the project's landing lease for t1/);
+  assert.match(dry.output, /\d\. wait behind owner's landing of t2 \(since 2026-10-06 09:30 UTC\) \(as the lease stands now\), then take the project's landing lease for t1/);
   f.env = { ATELIER_LAND_POLL_MS: "40", ATELIER_LAND_WAIT_TIMEOUT: "2000" };
   const r = await f.run(f.checkout, "land", "t1", "--wait");
   assert.equal(r.status, 1, r.output);
@@ -122,76 +125,52 @@ test("--dry-run says where the merge would wait, and --wait gives up after its l
   assert.deepEqual(asked[0].body, { item: "t1" });
   for (const x of asked.slice(1, -1)) assert.deepEqual(x.body, { item: "t1", queued: true });
   assert.deepEqual(asked.at(-1).body, { item: "t1", queued: true, leave: true });
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease"]);
+  assert.match(f.posts("/land").at(-1).body.tail, /the landing lease was not free within 2 seconds/);
   assert.equal(f.box.states.t1, "submitted");
 });
 
 
-test("a conflict stops the landing with the files named and the merge left for the owner", async (t) => {
+test("a conflict stops the landing at merge-main with the files named, nothing pushed and nothing left in the checkout (G2)", async (t) => {
   const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits the same file" } });
-  const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
+  const before = { fork: f.forkHead("t1"), workspace: git(f.workspace("t1"), "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
-  assert.match(r.output, /The merge is left in the workspace for you to resolve/);
-  // The conflict can also go back to the task's builder (t243): the message
-  // names the holder and the dispatch that sends the work there.
-  assert.match(r.output, new RegExp(`Or send them back to the task's builder, codex/test, to resolve in this workspace: atelier dispatch t1 --job merge-main --agent codex --model test; its runner merges main at ${f.mainCommit.slice(0, 8)} into the workspace again`));
-  assert.match(r.output, /and then atelier land t1 again\.$/m);
-  // The policy's regenerate command settles nothing: it never ran.
-  assert.doesNotMatch(r.output, /Regenerat(ing|ed) /);
-  // The merge is in progress in the workspace, nothing was pushed or merged.
-  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
+  assert.match(r.output, /merge conflicts; nothing was merged and t1 stays accepted\.\nSource conflicts to resolve:\n  work\.txt\n/);
+  // Who resolves it is not the lander's to decide: the message names the
+  // ways, the builder's merge of main among them (t243).
+  assert.match(r.output, /atelier dispatch t1 --job merge-main/);
+  // Nothing was pushed or merged, the workspace is as it was, and the
+  // checkout holds no merge of its own.
   assert.equal(f.forkHead("t1"), before.fork);
+  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
   assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.baseline);
-  assert.equal(f.box.states.t1, "submitted");
+  assert.ok(!existsSync(join(f.checkout, ".git", "MERGE_HEAD")));
+  assert.equal(git(f.checkout, "status", "--porcelain"), "");
+  assert.equal(f.box.states.t1, "accepted");
   assert.deepEqual(f.posts("/push"), []); assert.deepEqual(f.posts("/merged"), []);
-  // The step that stopped is recorded, with the file and who resolves it.
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.failed, true); assert.deepEqual(merge.body.conflicts, ["work.txt"]); assert.deepEqual(merge.body.source, ["work.txt"]);
-  assert.equal(merge.body.resolvedBy, "the developer, by hand");
-  // The project declares no manifest, so the regenerate command's
-  // settlement was tried and could not settle the conflict, and says so.
-  assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
-  assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it/);
-  // The conflict ended the landing before the lease, which was never asked
-  // for (t550).
-  assert.deepEqual(f.posts("/landing-lease"), []);
+  // The step that stopped is recorded, with the file.
+  const merge = f.posts("/land").find((x) => x.body.step === "merge-main");
+  assert.equal(merge.body.failed, true); assert.deepEqual(merge.body.files, ["work.txt"]);
+  assert.match(merge.body.tail, /work\.txt/);
 });
 
 
-// A project that declares no merge manifest keeps the regenerate
-// command's settlement (main's, before t463): a conflict only in files the
-// command rewrites is settled by taking either side and regenerating.
-test("a conflict only in files the regenerate command rewrites is settled by taking either side and regenerating, and the landing goes on", async (t) => {
+// The landing's merge onto the project's branch runs no command in the
+// checkout, so a conflict in a file the regenerate command rewrites stops
+// it like any other; the builder's own merge of main (atelier dispatch
+// --job merge-main, which runs mergeMainAndRegenerate) still settles one by
+// taking either side and regenerating, keeping its approval (t288).
+test("a conflict only in files the regenerate command rewrites stops the landing at merge-main too (G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
-  // The task's own regeneration of the same file, so the two sides conflict in it.
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
   git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
-  const before = { fork: f.forkHead("t1"), checkout: git(f.checkout, "rev-parse", "HEAD") };
   const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /taking either side and regenerating with `echo generated > gen-fixtures\.txt`/);
-  assert.match(r.output, /took either side and let the command write them again/);
-  // The workspace holds the merge, with what the command wrote as the resolution.
-  assert.match(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Merge main into t1/);
-  assert.equal(readFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "utf8"), "generated\n");
-  // The registered checkout and the baseline hold a merge of the task's head.
-  const merged = git(f.checkout, "rev-parse", "HEAD");
-  const parents = git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ");
-  assert.equal(parents[1], before.checkout);
-  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), merged);
-  assert.equal(f.box.states.t1, "merged");
-  assert.equal(f.box.lease, null);
-  // The whole landing ran, and the merge step records the conflicts it settled and how.
-  const events = f.posts("/land");
-  assert.deepEqual(events.map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
-  const merge = events.find((x) => x.body.step === "merge");
-  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
-  assert.equal(merge.body.resolvedBy, "atelier land, taking either side and regenerating");
-  assert.equal(merge.body.failed, undefined);
-  // The regeneration had already settled the file, so the second run changed nothing.
-  assert.equal(events.find((x) => x.body.step === "regenerate").body.changed, false);
+  assert.equal(r.status, 1, r.output);
+  const merge = f.posts("/land").find((x) => x.body.step === "merge-main");
+  assert.equal(merge.body.failed, true);
+  assert.deepEqual(merge.body.files, ["gen-fixtures.txt"]);
+  assert.equal(f.box.states.t1, "accepted");
 });

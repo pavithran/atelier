@@ -2422,9 +2422,11 @@ export function missingKey(task) {
 // the head has moved, and read no more often than this.
 // A land job (t226) runs as long as a landing may: the review wait (an
 // hour) and the queue for the lease (three hours) are the command's own. A
-// landing that failed is tried again after this many polls.
+// landing that failed is not tried again on a timer (G1): the server stops
+// offering it until the task's head changes or the developer queues it
+// again, and the runner passes it by while the job's head and queue time
+// are the ones it failed at, in case the failure never reached the server.
 export const LAND_JOB_TIMEOUT_MS = 5 * 60 * 60_000;
-export const LAND_RETRY_POLLS = 20;
 
 export const MISSING_RECHECK_MS = 5 * 60_000;
 
@@ -4782,6 +4784,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         const gitDir = await git(["rev-parse", "--absolute-git-dir"]);
         return gitDir.code === 0 && pairedProjectCommit(gitDir.output.trim(), base) === here;
       },
+      // The task's landing record (G1), read after a failure for the step
+      // and tail the failure line names.
+      landingRecord: async () => {
+        const shown = await asDeveloper(["show", taskId, "--json"]);
+        return shown.code === 0 ? JSON.parse(shown.output).landing ?? null : null;
+      },
       land: async () => {
         const r = await executeChild([process.execPath, fileURLToPath(new URL("./atelier.mjs", import.meta.url)), "land", item.id, "--project", project], { cwd: dir, env, capture: true, captureError: true, signal: controller.signal, timeoutMs: LAND_JOB_TIMEOUT_MS });
         return { code: r.code, output: [r.output, r.stderr].filter(Boolean).join("\n"), timedOut: r.timedOut };
@@ -4790,16 +4798,23 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     if (result.ok) { landWaits.delete(taskKey(task)); return { phase: "done" }; }
     if (result.waiting) landWaits.set(taskKey(task), { key: result.key, kind: result.waiting, reason: result.reason });
     else landWaits.delete(taskKey(task));
-    return { phase: "failed", refused: result.refused, waiting: result.waiting, reason: result.reason };
+    return { phase: "failed", refused: result.refused, waiting: result.waiting, failed: result.failed, reason: result.reason };
   };
-  // The reasons already said for a land job, by task, so a failure that
-  // repeats is told once; and the poll each failed job is tried again on.
-  const landSaid = new Map(), landDue = new Map();
+  // A land job that was refused (the checkout dirty) is asked about again on
+  // the next poll; one whose landing failed is passed by while the job is
+  // the one it failed as (the task's head and the time it was queued), so a
+  // failure is never retried unseen (G1). Each failure is one log line.
+  const landDue = new Map(), landStopped = new Map(), landSaid = new Map();
+  const landJobKey = (task) => `${task.item.head ?? ""}|${task.item.dispatch?.at ?? ""}`;
   const landOutcome = (task, state) => {
     const key = taskKey(task);
-    if (state.phase !== "failed") { landSaid.delete(key); landDue.delete(key); io.log(`landed ${task.project}/${task.item.id}`); return; }
-    if (landSaid.get(key) !== state.reason) { landSaid.set(key, state.reason); io.log(`${task.project}/${task.item.id}: ${state.refused ? "refused: " : ""}${state.reason}`); }
-    landDue.set(key, polls + (state.refused ? 1 : LAND_RETRY_POLLS));
+    if (state.phase !== "failed") { landDue.delete(key); landStopped.delete(key); landSaid.delete(key); io.log(`landed ${task.project}/${task.item.id}`); return; }
+    // A refusal or a wait that repeats is told once; a failed attempt is
+    // told every time, one line each.
+    if (state.failed || landSaid.get(key) !== state.reason) io.log(`${task.project}/${task.item.id}: ${state.refused ? "refused: " : ""}${state.reason}`);
+    landSaid.set(key, state.reason);
+    if (state.refused) landDue.set(key, polls + 1);
+    else if (state.failed) landStopped.set(key, landJobKey(task));
   };
   try {
     // The home runner refuses at start when the server's routes are older
@@ -4971,7 +4986,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
         }
         const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
-        for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0))) {
+        for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0) && !(task.item.dispatch?.job === "land" && landStopped.get(taskKey(task)) === landJobKey(task)))) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
           // A harness the readiness check dropped from the offer is not served

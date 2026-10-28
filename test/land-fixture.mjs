@@ -461,7 +461,7 @@ export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test"
   // Git as a landing asks it: main already merged, nothing to compare or
   // regenerate, the config above.
   const fakeGit = (args, o = {}) => {
-    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? committed ? "a".repeat(40) : null : "";
+    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? committed ? "a".repeat(40) : null : args[0] === "ls-remote" ? `${"b".repeat(40)}\trefs/heads/main` : "";
     if (o.allowFail) return { status: out === null ? 1 : 0, stdout: out ?? "", stderr: "" };
     return out ?? "";
   };

@@ -434,7 +434,35 @@ function landingWorkflowRecord(instance: string, options: LandingWorkflowOptions
   };
 }
 
-const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "triage", "review", "accept", "merged", "release"]);
+// `start` begins an attempt (G1): the landing record's attempt counts them.
+// `merge-main` is the merge of the accepted head into the project's branch in
+// the registered checkout and `checks` the project's checks on that merged
+// tree (G2); `merge` and `check` are the workspace's merge of main and the
+// checks at the head, which the Workflow landing still records.
+const LAND_STEPS = new Set(["start", "lease", "merge", "merge-main", "regenerate", "push", "check", "checks", "submit", "triage", "review", "accept", "merged", "release"]);
+// The steps of a landing that has begun its merge under the lease (G1): a
+// queued landing at one of them is past the merge step, and a cancel of its
+// queue row refuses rather than interrupt it.
+const LAND_PAST_MERGE = new Set(["merge-main", "regenerate", "checks", "push", "merged"]);
+// The landing record's tail: the last lines of the failing step's own output.
+export const LAND_TAIL_MAX = 2000;
+// What `show --json` carries as `landing` (G1): the step a landing reached,
+// its attempt, and where one failed, the failing step, the last lines of that
+// step's own output and the files a conflict stopped on. `head` is the head
+// the attempt began at; a failed attempt stops the land job until the head
+// changes or the developer queues it again (`requeued`). `cancelled` is when
+// `land --queue --cancel` removed the queue row.
+export interface LandingRecord {
+  step: string;
+  attempt: number;
+  at: string;
+  head: string | null;
+  failedStep: string | null;
+  tail: string | null;
+  files?: string[];
+  requeued?: string;
+  cancelled?: string;
+}
 
 // What a land.* event may carry beside its duration, and as what: hashes and
 // actors, the commits that came from main, the files a conflict stopped on,
@@ -442,7 +470,7 @@ const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "su
 // cut to its first entries by the ledger itself, which adds the count of the
 // whole list beside it (`fromMainCount`, cutLandLists below), so no caller
 // sends those counts.
-const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "regenerated" | "ms"> = {
+const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "regenerated" | "ms" | "tail" | "count"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   // A merge's main head, and the route levels where main and the task each
   // raised it (t248: base, main, task, what the merge left, what was set).
@@ -460,6 +488,10 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "r
   // reviewed against), the time the landing spent before it and the time it
   // waited in the queue for it, in milliseconds (t550).
   main: "string", beforeLease: "ms", waited: "ms",
+  // G1: why a review step was skipped (fast mode), the last lines of a failed
+  // step's own output, the files a merge stopped on, the check that failed,
+  // and how many times main moved between the checks and the push (G2).
+  fast: "boolean", tail: "tail", files: "strings", failedCheck: "string", rounds: "count",
 };
 export const LAND_JSON_MAX = 4000;
 // What a review request answers: the request made or standing, and any
@@ -480,6 +512,8 @@ const LAND_KIND_TEXT: Record<string, string> = {
   levels: "route levels by name (base, main, task, was, set)",
   regenerated: "a list of generators, each with its name, outputs (path and what it matches), log and logSha",
   ms: "a duration in milliseconds, thirty days at most",
+  tail: `text, cut to its last ${2000} characters`,
+  count: "a whole number from 0 to 100",
 };
 const ROUTE_LEVEL_KEYS = ["base", "main", "task", "was", "set"];
 const MATCHES = new Set(["ours", "theirs", "neither side"]);
@@ -516,6 +550,8 @@ function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
     if (!kind) throw new RuleError("bad_field", `${key} is not a field a landing step records`, 400);
     const shaped = kind === "levels" ? cleanLevels(value) : kind === "regenerated" ? cleanRegenerated(value) : null;
     if (kind === "string" && typeof value === "string") out[key] = value.slice(0, 500);
+    else if (kind === "tail" && typeof value === "string") out[key] = value.slice(-LAND_TAIL_MAX);
+    else if (kind === "count" && Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 100) out[key] = value;
     else if (kind === "boolean" && typeof value === "boolean") out[key] = value;
     else if (kind === "strings" && Array.isArray(value) && value.length <= 200 && value.every((s) => typeof s === "string")) out[key] = value.slice(0, 200).map((s) => s.slice(0, 200));
     else if (shaped) out[key] = shaped;
@@ -6018,7 +6054,55 @@ export class Ledger extends DurableObject<Env> {
     const clean = cleanLandData(data);
     const at = new Date().toISOString();
     this.log(id, actor, `land.${step}`, { ms: Math.round(ms), ...clean }, at, proved);
+    this.noteLandingStep(id, step, clean, at);
     return this.item(id);
+  }
+
+  // The landing record (G1), kept beside the land.* events so a model reads
+  // where a landing stands in one field: `start` opens an attempt at the
+  // task's head; each later step names itself; a failed step stays named as
+  // `failedStep` with the last lines of its own output (`tail`) and any files
+  // it stopped on, and the record keeps it until the next attempt starts.
+  // The release step names nothing: it follows the step that ended the
+  // landing, which stays the one the record shows.
+  private noteLandingStep(id: string, step: string, data: Record<string, unknown>, at: string): void {
+    if (step === "release") return;
+    const prev = this.landingRecord(id);
+    if (step === "start" && data.failed !== true) {
+      const item = this.item(id);
+      const head = typeof data.head === "string" ? data.head : item.head ?? null;
+      this.saveLandingRecord(id, { step, attempt: (prev?.attempt ?? 0) + 1, at, head, failedStep: null, tail: null });
+      return;
+    }
+    // A step recorded with no attempt begun (a landing from before G1, or the
+    // Workflow's) opens the first.
+    const base: LandingRecord = prev ?? { step, attempt: 1, at, head: this.item(id).head ?? null, failedStep: null, tail: null };
+    // A failure already recorded in this attempt stands; what follows it (a
+    // triage record, the release) does not clear it.
+    if (base.failedStep) return;
+    const failed = data.failed === true;
+    const files = Array.isArray(data.files) ? data.files as string[] : Array.isArray(data.conflicts) ? data.conflicts as string[] : null;
+    const tail = typeof data.tail === "string" ? data.tail : typeof data.reason === "string" ? data.reason : null;
+    const { requeued: _r, cancelled: _c, files: _f, ...kept } = base;
+    this.saveLandingRecord(id, { ...kept, step, at, failedStep: failed ? step : null, tail: failed ? tail : null, ...(failed && files?.length ? { files } : {}), ...(!failed && base.cancelled ? { cancelled: base.cancelled } : {}) });
+  }
+
+  landingRecord(id: string): LandingRecord | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing-record:${id}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) as LandingRecord : null;
+  }
+
+  private saveLandingRecord(id: string, record: LandingRecord): void {
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-record:${id}`, JSON.stringify(record));
+  }
+
+  // Whether a failed landing stops the task's land job (G1): it failed at
+  // the head the task still has, and the developer has not queued it again
+  // since. The lander never tries it again on a timer; a new head or
+  // `atelier land ID --queue` lets it run.
+  private landingStopped(item: Item): LandingRecord | null {
+    const record = this.landingRecord(item.id);
+    return record?.failedStep && !record.requeued && record.head === (item.head ?? null) ? record : null;
   }
 
   merged(id: string, actor: string, mergeCommit: string, observed: boolean, acceptedHead?: string | null): Item {
@@ -6869,7 +6953,7 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
-    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
+    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -10128,16 +10212,50 @@ export class Ledger extends DurableObject<Env> {
   // Queues a task's landing for a runner that holds the registered checkout
   // (t226, atelier land ID --queue). A task already merged or closed has no
   // landing to run; one already queued keeps its place.
-  requestLand(id: string, by: string, quote?: string): { item: string; by: string; at: string; quote?: string; queued: boolean } {
+  requestLand(id: string, by: string, quote?: string): { item: string; by: string; at: string; quote?: string; queued: boolean; requeued?: { failedStep: string; attempt: number } } {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409, "run atelier ls to pick another task");
     const at = new Date().toISOString();
+    if (item.state === "blocked") throw new RuleError("blocked", `${id} is blocked, so it is not queued to land: ${item.blocked?.reason ?? "no reason recorded"}`, 409, `run atelier unblock ${id}, then atelier land ${id} --queue`);
     const existing = this.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
-    if (existing) return { item: id, by: existing.by as string, at: existing.at as string, ...(existing.quote ? { quote: existing.quote as string } : {}), queued: false };
+    // A landing that failed at this head is queued again only by asking
+    // again (G1): the record says so, and the lander may take it once more.
+    const stopped = this.landingStopped(item);
     const said = quote?.trim().slice(0, 500) || null;
+    if (stopped) {
+      this.saveLandingRecord(id, { ...stopped, requeued: at });
+      if (existing) this.sql.exec(`UPDATE land_jobs SET at = ? WHERE item = ?`, at, id);
+      else this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote) VALUES (?, ?, ?, ?)`, id, by, at, said);
+      this.log(id, by, "land.requested", { by, requeued: true, failedStep: stopped.failedStep, attempt: stopped.attempt, ...(said ? { quote: said } : {}) }, at);
+      return { item: id, by, at, ...(said ? { quote: said } : {}), queued: true, requeued: { failedStep: stopped.failedStep!, attempt: stopped.attempt } };
+    }
+    if (existing) return { item: id, by: existing.by as string, at: existing.at as string, ...(existing.quote ? { quote: existing.quote as string } : {}), queued: false };
     this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote) VALUES (?, ?, ?, ?)`, id, by, at, said);
     this.log(id, by, "land.requested", { by, ...(said ? { quote: said } : {}) }, at);
     return { item: id, by, at, ...(said ? { quote: said } : {}), queued: true };
+  }
+
+  // Removes a task's queued landing (G1, atelier land ID --queue --cancel).
+  // Nothing queued answers so, changing nothing, so the command may be run
+  // twice. A landing of the task that holds the lease and has begun its
+  // merge is not interrupted: the cancel refuses, naming the step it is at.
+  // One before its merge loses its queue row, and the record says when, so
+  // the landing stops before it merges.
+  cancelLand(id: string, by: string): { item: string; queued: boolean; cancelled: boolean; at?: string } {
+    if (by !== this.owner) throw new RuleError("not_project_owner", "only the developer cancels a queued landing", 403, `only the developer can: atelier land ${id} --queue --cancel`);
+    this.item(id);
+    const record = this.landingRecord(id);
+    const held = this.projectLanding();
+    const at = new Date().toISOString();
+    if (record && !record.failedStep && LAND_PAST_MERGE.has(record.step) && held?.item === id && this.landingLive(held, at)) {
+      throw new RuleError("landing_past_merge", `${id}'s landing (attempt ${record.attempt}) is at its ${record.step} step, past the merge, so it is not cancelled or interrupted; it ends on its own, landed or failed`, 409, `run atelier show ${id} --json to read the landing as it goes; if it fails, it is not tried again unless you run atelier land ${id} --queue`);
+    }
+    const existing = this.sql.exec(`SELECT 1 FROM land_jobs WHERE item = ?`, id).toArray().length > 0;
+    if (!existing) return { item: id, queued: false, cancelled: false };
+    this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, id);
+    if (record) this.saveLandingRecord(id, { ...record, cancelled: at });
+    this.log(id, by, "land.cancelled", { by, ...(record ? { step: record.step, attempt: record.attempt } : {}) }, at);
+    return { item: id, queued: false, cancelled: true, at };
   }
 
   // The land jobs a runner is offered (t226): the queued landings, to a
@@ -10156,6 +10274,10 @@ export class Ledger extends DurableObject<Env> {
       // was reported by the landing that ran it, so it is not offered again.
       const run = item.state === "merged" ? this.postMergeRun(item.id) : null;
       if (item.state === "abandoned" || (item.state === "merged" && (!run || run.state === "complete" || run.state === "failed"))) { this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id); continue; }
+      // A blocked task is never landed, and a landing that failed at the
+      // task's head is not tried again until the head changes or the
+      // developer queues it again (G1): the job stays queued, unoffered.
+      if (item.state === "blocked" || item.blocked || this.landingStopped(item)) continue;
       jobs.push({ ...item, dispatch: { to: "home", agent: "atelier", model: "lander", by: r.by as string, at: r.at as string, note: `land ${item.id}`, job: "land" } });
     }
     return jobs;

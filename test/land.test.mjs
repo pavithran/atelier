@@ -45,78 +45,48 @@ import { git, landFixture, grantedTo, recordedAt } from "./land-fixture.mjs";
 // landing Workflow and the write token. The fixture and helpers are in
 // test/land-fixture.mjs.
 
-test("a clean landing merges main, checks and is reviewed without the lease, then takes it for the merge alone (t550)", async (t) => {
+test("a clean landing is reviewed without the lease, then takes it to merge the reviewed head, check the merge and push it alone (t550, G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  const before = { fork: f.forkHead("t1"), checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
+  const before = { fork: f.forkHead("t1"), workspace: git(f.workspace("t1"), "rev-parse", "HEAD"), checkout: git(f.checkout, "rev-parse", "HEAD") };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  // The workspace holds a merge of main and the regeneration commit.
-  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
-  assert.match(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Regenerate after merging main into t1/);
-  assert.match(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Merge main into t1/);
-  assert.equal(readFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "utf8"), "generated\n");
-  assert.notEqual(head, before.fork);
-  // The registered checkout and the baseline hold a merge commit with the
-  // task's head as its second parent.
+  // Nothing was merged into the workspace or pushed to the fork (G2).
+  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
+  assert.equal(f.forkHead("t1"), before.fork);
+  // The registered checkout and the baseline hold the merge commit: main's
+  // tip as its first parent, the reviewed head as its second, and the
+  // regenerated fixtures in its own tree.
   const merged = git(f.checkout, "rev-parse", "HEAD");
   const parents = git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ");
-  assert.equal(parents[1], before.checkout); assert.equal(parents[2], head);
+  assert.equal(parents[1], before.checkout); assert.equal(parents[2], before.fork);
   assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), merged);
+  assert.equal(git(f.checkout, "show", "HEAD:gen-fixtures.txt"), "generated");
   assert.equal(f.box.states.t1, "merged");
   // The lease was taken for t1 once, and released at the end.
   assert.equal(grantedTo(f).length, 1);
   assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
   assert.equal(f.box.lease, null);
-  // The review was requested and the verdict waited for.
+  // The review was requested for the head as it stands.
   const ask = f.posts("/review-request").at(-1);
   assert.equal(ask.body.reviewer, undefined); assert.equal(ask.path, "/api/projects/proj/items/t1/review-request");
-  // Each step is recorded, in order, with its duration and the commits from
-  // main: the lease comes after the checks and the review, before the
-  // acceptance and the merge alone.
+  // Each step is recorded, in order, with its duration: the lease comes
+  // after the review, and the merge, its checks and the push under it.
   const steps = f.posts("/land").map((x) => x.body.step);
-  assert.deepEqual(steps, ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
-  // Nothing asked the lease route before the review was decided: no take,
-  // no renewal, no queue.
+  assert.deepEqual(steps, ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged", "release"]);
   const firstLease = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.method === "POST");
   assert.ok(firstLease > recordedAt(f, "review"), "the lease was asked for before the review was decided");
-  assert.ok(firstLease > f.box.requests.findIndex((x) => x.path.endsWith("/review-request")));
   const events = f.posts("/land");
   for (const e of events) assert.ok(Number.isFinite(e.body.ms) && e.body.ms >= 0, `${e.body.step} records no duration`);
-  assert.deepEqual(events.find((e) => e.body.step === "merge").body.fromMain, [f.mainCommit]);
-  assert.deepEqual(events.find((e) => e.body.step === "regenerate").body, { step: "regenerate", ms: events.find((e) => e.body.step === "regenerate").body.ms, command: f.box.regen, changed: true });
+  assert.equal(events.find((e) => e.body.step === "start").body.head, before.fork);
+  assert.equal(events.find((e) => e.body.step === "merge-main").body.mainHead, before.checkout);
+  assert.equal(events.find((e) => e.body.step === "regenerate").body.changed, true);
   assert.equal(events.find((e) => e.body.step === "review").body.verdict, "approve");
+  assert.equal(events.find((e) => e.body.step === "checks").body.mergeCommit, merged);
   assert.equal(events.find((e) => e.body.step === "merged").body.mergeCommit, merged);
-  // Under the lease, main was read again and found where the head was merged with it.
-  assert.match(r.output, new RegExp(`main is still at ${f.mainCommit.slice(0, 8)}, the commit ${head.slice(0, 8)} was checked and reviewed against\\.`));
+  // No main is confirmed under the lease any longer: the merge is checked instead (G2).
+  assert.equal(f.box.requests.filter((x) => x.body?.confirm === true).length, 0);
   assert.match(r.output, /Landing lease taken for t1 \(submitted\) for its merge alone/);
-});
-
-
-// t550 pre-review finding: nothing on the server held a head to the main it
-// was checked against, so a landing that lost its lease before it merged
-// could merge into a main another landing had moved. The landing records
-// the main it confirmed under the lease, and the server checks it itself.
-test("under the lease the landing records the main it confirmed, before it accepts (t550)", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  const main = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.deepEqual(f.box.confirmed, [{ item: "t1", main }]);
-  const confirm = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.body.confirm === true);
-  assert.ok(confirm > recordedAt(f, "lease") && confirm < recordedAt(f, "accept"), "main is confirmed under the lease, before the acceptance");
-});
-
-
-test("a server that reads main elsewhere than this machine fetched it stops the landing unaccepted (t550)", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  f.box.serverMain = "f".repeat(40);
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /the server reads main at ffffffff, not [a-f0-9]{8} as this machine fetched it, so t1 is not accepted or merged/);
-  assert.equal(f.posts("/accept").length, 0);
-  assert.notEqual(f.box.states.t1, "merged");
-  assert.equal(f.box.lease, null);
 });
 
 
@@ -126,11 +96,9 @@ test("a server that records the landing's timing gets the time before the lease 
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   const events = f.posts("/land");
-  assert.deepEqual(events.map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  assert.deepEqual(events.map((x) => x.body.step), ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged", "release"]);
   const lease = events.find((e) => e.body.step === "lease").body;
-  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
-  assert.equal(lease.head, head);
-  assert.equal(lease.main, f.mainCommit);
+  assert.equal(lease.head, f.forkHead("t1"));
   assert.ok(Number.isFinite(lease.beforeLease) && lease.beforeLease > 0, "no time before the lease");
   assert.ok(Number.isFinite(lease.waited) && lease.waited >= 0);
   const release = events.find((e) => e.body.step === "release").body;
@@ -146,7 +114,7 @@ test("a server from before t550 lands the same way, the timing said rather than 
   f.box.capabilities = null;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged"]);
   assert.deepEqual(Object.keys(f.posts("/land").find((x) => x.body.step === "lease").body).sort(), ["head", "ms", "step"]);
   assert.match(r.output, /t1 spent \d+ (s|min) landing without the lease and held it \d+ s\./);
   assert.doesNotMatch(r.output, /could not be recorded/);
@@ -163,9 +131,10 @@ test("a rejection before the lease ends the landing with the lease never asked f
   f.box.review.approve = false;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /codex\/gpt-6-astra rejected t1 at \w+: Land fixture rejects\.+ The task goes back to its holder with the findings; the merge of main stays in its workspace, and the landing lease was never taken/);
+  assert.match(r.output, /codex\/gpt-6-astra rejected t1 at \w+: Land fixture rejects\.+ The task goes back to its holder with the findings; nothing was merged, and the landing lease was never taken/);
   assert.deepEqual(f.posts("/landing-lease"), []);
   assert.deepEqual(f.box.leaseLog, []);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review"]);
+  assert.equal(f.posts("/land").at(-1).body.failed, true, "the rejection is the review step failing");
   assert.equal(f.posts("/accept").length, 0);
 });

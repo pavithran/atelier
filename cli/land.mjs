@@ -19,12 +19,29 @@ import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
 import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync, findingKey } from "../src/moved-code.ts";
-import { LAND_UNPUSHED, appendMovedCodeRecord, prepareRecordedWorkspace } from "./landing.mjs";
+import { LAND_UNPUSHED, appendMovedCodeRecord, prepareRecordedWorkspace, tailOf } from "./landing.mjs";
 import { workspaceNotice } from "./review-notice.mjs";
 import { reviewerOffered } from "./review-oneshot.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
+//
+// Atelier 2.0 (lessons gaps G1 and G2, docs/landing.md "The order of a
+// landing"): the plain landing lands the head the task was checked and
+// reviewed at, and never pushes to the task's branch, so its approvals stand.
+// Before the lease it compares moved code, triages, checks and submits a
+// task still claimed (at its recorded head, in its workspace), and asks for
+// the review; under the lease it accepts and runs `atelier merge ID
+// --landing` in the registered checkout, which merges the head into the
+// project's branch, runs the project's checks on the merged tree and pushes
+// the merge alone, redoing the merge and checks when main moved before the
+// push. Every step goes on the task's landing record, a failure with the
+// failing step and the last lines of its own output; a refusal before any
+// step is the start step failing. The workspace merge of main described
+// below (mergeMainAndRegenerate) is the Workflow landing's and a runner's
+// merge-main, no longer the plain landing's; where the paragraphs below say
+// the plain landing merges main, pushes, confirms main under the lease or
+// goes round again when main moved, read them as the 1.x order.
 //
 // Review before the runway (t550): the lease is held for the merge alone.
 // The merge of main, the push, the triage, the checks, the submission and
@@ -215,11 +232,6 @@ const TRIAGE_TIMEOUT_MS = Number(process.env.ATELIER_LAND_TRIAGE_TIMEOUT ?? 30 *
 // its own renewal of the token failed (t317).
 const EXPIRED_TOKEN = /Invalid or expired token|refused this workspace's token|this workspace's token expired at/i;
 
-// How many times main may move under the lease before the landing stops
-// (t550): each time it releases the lease, merges main again, checks and
-// asks for the review again, so a main that never settles cannot keep a
-// landing going round for ever.
-const MAIN_MOVED_ROUNDS = Number(process.env.ATELIER_LAND_MAIN_MOVED_ROUNDS ?? 5);
 // The capability of a server that reviews before the lease (t550): its
 // landing Workflow takes the lease for the merge alone, and its land step
 // route records the release step and the time before the lease.
@@ -391,10 +403,26 @@ export async function runLand(io) {
   // the process at once (throwing), so the landing's own ending leaves the
   // queue it holds a place in, exactly as it releases a lease it took.
   const heldNote = lease && lease.item === id ? ` The landing lease of ${name} is still held for ${id} since ${since(lease)}, from an earlier landing; atelier land ${id} --release-lease frees it.` : "";
-  const refuse = (message) => die(message + heldNote);
+  // Each landing that gets past the dry run is an attempt on the task's
+  // landing record (G1): `start` opens it, and a refusal before any step is
+  // recorded as the start step failing, with its words as the tail, so the
+  // model reads why it never began. A task merged, abandoned or a plan has
+  // nothing to land and records nothing.
+  const recorder = landRecorder(io, itemPath);
+  let started = false, failureRecorded = false;
+  const record = async (step, ms, data = {}) => { if (data.failed === true) failureRecorded = true; return recorder(step, ms, data); };
+  const startAttempt = async (head) => { if (started) return; started = true; await record("start", 0, head ? { head } : {}); };
+  const refuse = async (message) => {
+    const state = detail.item?.state, closed = ["merged", "abandoned"].includes(state) || detail.item?.kind === "plan";
+    if (!dryRun && !closed) {
+      await startAttempt(detail.item?.state === "accepted" ? detail.item.acceptedHead : detail.item?.head);
+      await record("start", 0, { failed: true, tail: tailOf(message + heldNote) });
+    }
+    die(message + heldNote);
+  };
   let needsPreparation = false;
   const preflight = async (throwing = false, prepare = false) => {
-    const no = (message) => { if (throwing) throw new StepError(message + heldNote); refuse(message); };
+    const no = (message) => { throw new StepError(message + (throwing ? heldNote : "")); };
     const d = throwing ? await request("GET", itemPath) : detail;
     if (["merged", "abandoned"].includes(d.item.state)) no(`${id} is ${d.item.state}; there is nothing to land.`);
     // A plan's branch holds only the integrator's recorded integrations and
@@ -406,7 +434,16 @@ export async function runLand(io) {
     // acceptance (the merge the Workflow waits for).
     // The plain landing finishes it: the accept is held, so the merge is all
     // that is left, and it needs no workspace (t188).
+    // A blocked task is never landed (G1), whoever asks: the block is the
+    // server's record, lifted with atelier unblock.
+    if (d.item.state === "blocked" || d.item.blocked) no(`${id} is blocked${d.item.blocked?.reason ? ` (${d.item.blocked.reason})` : ""}, and a blocked task is never landed. Lift the block with atelier unblock ${id}, then run atelier land ${id} again.`);
     if (d.item.state === "accepted" && !workflow) return d;
+    // A submitted task lands the head it was checked and reviewed at (G2):
+    // the merge is made in the registered checkout, so its workspace is not
+    // needed and nothing is pushed to its branch.
+    if (d.item.state === "submitted" && !workflow) return d;
+    if (!workflow && d.item.state !== "claimed") no(`${id} is ${d.item.state}, so there is nothing to land: a landing takes a task its holder has pushed (claimed), submitted or accepted.`);
+    if (!workflow && !d.item.head) no(`${id} has nothing pushed yet, so there is nothing to land; its holder pushes with atelier push first.`);
     // Inspect before queuing, but replace a workspace only while holding the lease.
     needsPreparation = await prepareRecordedWorkspace(prepare || dryRun ? io : { ...io, print: () => {} }, { dir, itemPath, detail: d, dryRun: !prepare });
     if (!prepare && needsPreparation) return d;
@@ -420,11 +457,12 @@ export async function runLand(io) {
     if (git(["status", "--porcelain"], { cwd: dir })) no(`${id}'s workspace has uncommitted changes; commit or set them aside before landing.`);
     return d;
   };
-  let d0 = await preflight();
+  let d0;
+  try { d0 = await preflight(); } catch (error) { await refuse(error.message); }
   // A landing a blocking pre-review fenced (t524) is refused the lease until
   // `atelier unblock`; said here, before a merge, a check or a review is
   // spent on a landing that could not take the lease for its merge.
-  if (d0.prereviewFence) refuse(fenceText(id, d0.prereviewFence));
+  if (d0.prereviewFence) await refuse(fenceText(id, d0.prereviewFence));
   if (d0.item.head) print(`Landing ${id} from recorded source ${d0.item.head}.`);
   // A reviewer who contributed to the task can never review it, whatever the
   // change class, so the ledger's answer is known before the lease is taken
@@ -454,7 +492,7 @@ export async function runLand(io) {
   // and the checks, with the policy that requires it (t422). A dry run skips
   // it: measuring needs a baseline fetch into the workspace, and a dry run
   // changes nothing.
-  if (!noReview && !dryRun && !needsPreparation) {
+  if (!noReview && !dryRun && !needsPreparation && existsSync(join(dir, ".git"))) {
     const baseline = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" }).catch(() => undefined);
     const notice = workspaceNotice((argv, o) => git(argv, { allowFail: true, ...o }), dir, d0.policy, { baseline, part: d0.item?.kind === "part" });
     if (notice) for (const line of notice) print(line);
@@ -464,37 +502,36 @@ export async function runLand(io) {
   // and the command a stopped landing is run again with.
   const moved = { ok: movedOk, approved: null, again: `atelier land ${id}${workflow ? " --workflow" : ""}` };
 
-  if (dryRun && d0.item.state === "accepted") {
-    print(`Dry run: ${id} is accepted at ${short(d0.item.acceptedHead)}; atelier land ${id} would take the landing lease, merge it in ${p.path} (fetching again after a transient failure) and release the lease. Nothing was changed.`);
-    return;
-  }
   if (dryRun) {
     // Where the dry run would wait: behind the holder of the lease, and
     // behind the landings queued for it ahead of this one (t249).
     const ahead = aheadOf(waitingRows);
     const queuedAhead = ahead.length ? `${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${ahead.map((w) => `${w.item} (queued ${since(w)})`).join(", ")}` : null;
-    print(`Dry run: atelier land ${id} in ${name} would:`);
-    const route = d0.item.state === "accepted" ? null : runnerRouteOf(io, dir);
-    if (route) print(`  (first) re-claim ${id} for its holder ${d0.item.owner ?? "(its workspace's builder)"}${d0.item.runner ? ` on ${d0.item.runner}` : ""}, since its workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)} with the runner's Git credential, and take the fork remote and write token the claim answers as origin (a dry run claims nothing and leaves the workspace's remotes and credentials as they are)`);
-    print(`  Without the landing lease (t550), beside any other task's landing:`);
-    print(`  1. merge main into ${id}'s workspace (${dir}) once a comparison from their merge base finds none of ${id}'s edits in code main moved to another file (one it finds stops the landing before the merge, naming source and destination${movedOk ? "; --moved-ok records your approval of exactly the findings it detects, then goes on" : ""}), through the merge pipeline: declared record files unite by key and declared generated outputs are regenerated once the sources merge; on source or record conflicts, stop before generating anything and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch ${id} --job merge-main; where main and the task each raised the route level (src/route-level.ts) from one base, raise the merged level past both, wherever the workspace's HEAD holds main — this landing's own merge, a rerun of one you resolved by hand, or a merge that brought main in through a side branch`);
-    const preview = await previewLanding(io, { dir, id, name });
-    if (preview) print(`     ${preview.split("\n").join("\n     ")}`);
-    print(`  2. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; where the project declares no merge manifest, a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
-    print(`  3. push the merged head to ${id}'s fork`);
-    print(`  4. ${await dryRunTriage(io, triage, d0.item)}run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of the pushed head`);
-    print(`  5. submit ${id} with a summary of the merge`);
-    print(noReview
-      ? "  6. skip the review (--no-review): leave the task submitted for you to settle by hand, never taking the lease"
-      : `  6. ${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs"} at the pushed head and record a land request${args.quote ? ` (quote: ${args.quote})` : ""}, without waiting for the verdict: with no approval counted yet the landing stops here, and the land job runs once one is; a failed check or a conflict ends the landing here, the lease never taken`);
-    if (!noReview) {
-      print(`  Then, with the head checked and approved, for the merge alone:`);
-      print(`  7. ${waitingOn || queuedAhead ? `wait behind ${[waitingOn ? `${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)})` : null, queuedAhead].filter(Boolean).join(", and ")} (as the lease stands now), then ` : ""}take the project's landing lease for ${id} (one merge at a time in ${name}, in the order the landings queued)`);
-      print(`  8. confirm main is still the commit merged in step 1; if it moved, release the lease without merging and go again from step 1, where the server says whether the approval carries over the clean merge of main or asks for a new review`);
-      print(`  9. accept ${id} at the pushed head`);
-      print(` 10. merge ${id} in ${p.path} and publish the merge to the baseline`);
+    const state = d0.item.state, head = state === "accepted" ? d0.item.acceptedHead : d0.item.head;
+    print(`Dry run: atelier land ${id} in ${name} would land ${id} at ${short(head)}, the head ${state === "accepted" ? "it was accepted at" : "recorded for it"}, pushing nothing to its branch:`);
+    let n = 0;
+    const line = (text) => print(`${String(++n).padStart(3)}. ${text}`);
+    if (state !== "accepted") {
+      print(`  Without the landing lease (t550), beside any other task's landing:`);
+      line(`compare ${id}'s edits with code main moved to another file since their merge base (one found stops the landing before anything merges, naming source and destination${movedOk ? "; --moved-ok records your approval of exactly the findings it detects, then goes on" : ""})`);
+      if (state === "claimed") line(`${await dryRunTriage(io, triage, d0.item)}run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of ${short(head)}, and submit ${id}`);
+      else if (triage.mode !== "off") line(`${(await dryRunTriage(io, triage, d0.item)).replace(/; then $/, "")}`);
+      line(noReview
+        ? "skip the review (--no-review): leave the task submitted for you to settle by hand, never taking the lease"
+        : `${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs"} at ${short(head)} and record a land request${args.quote ? ` (quote: ${args.quote})` : ""}, without waiting for the verdict: with no approval counted yet the landing stops here, and the land job runs once one is`);
     }
-    print(`${noReview ? "  7" : " 11"}. record each step, its duration, the commits from main, the time before the lease and the time holding it as land.* events${noReview ? "" : `; release the lease (renewed every ${Math.round(LEASE_RENEW_MS / 1000)}s meanwhile, and released on SIGINT or SIGTERM)`}`);
+    if (!noReview) {
+      print(`  Then, with the head checked and approved, under the lease:`);
+      line(`${waitingOn || queuedAhead ? `wait behind ${[waitingOn ? `${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)})` : null, queuedAhead].filter(Boolean).join(", and ")} (as the lease stands now), then ` : ""}take the project's landing lease for ${id} (one merge at a time in ${name}, in the order the landings queued)`);
+      if (state !== "accepted") line(`accept ${id} at ${short(head)}`);
+      line(`merge ${short(head)} into ${p.branch} in ${p.path} through the merge pipeline; a conflict stops here with the files named (failed step merge-main), nothing pushed and the approval standing`);
+      const preview = await previewLanding(io, { at: p.path, id, name, head });
+      if (preview) print(`     ${preview.split("\n").join("\n     ")}`);
+      line(`${regenerate ? `regenerate with \`${regenerate}\` on the merged tree, folding what changes into the merge commit, then ` : ""}run the required checks (${d0.policy?.checks?.join(", ") || "none"}) once on the merged tree; a failure pushes nothing, and ${id} stays accepted, not rejected`);
+      line(`push the merge commit to ${p.branch} alone; if main moved since the merge, the push is refused and the merge and checks are made again on the new main, twice at most`);
+      line(`record the merge`);
+    }
+    line(`record each step on ${id}'s landing record (atelier show ${id} --json: landing), a failure with the failing step and the last lines of its own output${noReview ? "" : `; release the lease (renewed every ${Math.round(LEASE_RENEW_MS / 1000)}s meanwhile, and released on SIGINT or SIGTERM)`}`);
     print("Nothing was changed.");
     return;
   }
@@ -514,12 +551,9 @@ export async function runLand(io) {
     if (!needsPreparation) await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
     return runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, moved });
   }
-  if (!needsPreparation) await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
-
   // From here every failure throws rather than dying, so a lease taken is
   // released and the step recorded before the command ends. The recorder
   // is the module's own (below), shared with the Workflow executor (t280).
-  const record = landRecorder(io, itemPath);
   // Whether the server records the time a landing held the lease (the
   // release step) and the time before it (t550); an older server refuses
   // both, so they are printed here alone rather than warned of.
@@ -598,7 +632,7 @@ export async function runLand(io) {
   // end the landing with the cancel unanswered; a third forces the exit,
   // and the lease then lapses on its own, as an unreleased lease does. The
   // first signal's status stands unless the exit is forced.
-  let stopping = null, signals = 0;
+  let stopping = null, signals = 0, stepFailure = null;
   const statusOf = (signal) => signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
   const lapses = `The landing lease of ${name} lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes, unless atelier land ${id} --release-lease frees it first.`;
   const onSignal = (signal) => {
@@ -606,7 +640,7 @@ export async function runLand(io) {
     if (stopping && signals === 2) return print(`${signal} received again; still releasing the landing lease of ${name}; press again to force quit, and the lease then lapses on its own.`);
     if (stopping) { print(`${signal} received a third time; quitting without waiting for the release. ${lapses}`); process.exit(statusOf(signal)); }
     print(`${signal} received; releasing the landing lease of ${name}…`);
-    stopping = release(`${signal} ended the landing`).finally(() => process.exit(statusOf(signal)));
+    stopping = Promise.resolve(stepFailure?.(`${signal} ended the landing`)).catch(() => {}).then(() => release(`${signal} ended the landing`)).finally(() => process.exit(statusOf(signal)));
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, onSignal);
 
@@ -778,70 +812,59 @@ export async function runLand(io) {
   };
 
   const began = Date.now();
+  // The step under way, for the landing record (G1): a failure that no step
+  // recorded itself (a lease not taken, a gate that does not stand, a signal)
+  // is recorded as this step failing, with the failure's own words.
+  let current = "start";
+  const recordFailure = async (message) => {
+    if (failureRecorded) return;
+    await record(current, 0, { failed: true, tail: tailOf(message) });
+  };
+  stepFailure = recordFailure;
   try {
-    for (let round = 0; ; round++) {
-      // An accepted task has only its merge left (t188): under the lease,
-      // as the merge of a fresh landing is, with the retries landStep gives it.
-      if (d0.item.state === "accepted") {
-        const { waited, took } = await takeLease();
-        startBeating();
-        await record("lease", took, { head: d0.item.acceptedHead, waited });
-        print(`${id} is accepted at ${short(d0.item.acceptedHead)}; merging it.`);
-        await renewBeforePublish();
-        guardLease();
-        const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
-        await landStep(io, record, "merged", ["merge", id], p.path, () => ({ mergeCommit: mergeHead() }));
-        print(`${id} landed: merged as ${short(mergeHead())}.`);
-        break;
+    // ── Before the lease (t550) ──────────────────────────────────────────
+    // A submitted or accepted task lands the head it was checked and
+    // reviewed at (G2): nothing is merged into its workspace and nothing is
+    // pushed to its branch, so its approvals stand as given. A claimed task
+    // is checked and submitted at its recorded head first, in its workspace.
+    // A conflict with main, a failed check, a stopped triage or a rejection
+    // ends the landing here, the lease never taken.
+    d0 = await preflight(true, d0.item.state === "claimed");
+    const head = d0.item.state === "accepted" ? d0.item.acceptedHead : d0.item.head;
+    await startAttempt(head);
+    if (d0.prereviewFence) throw new StepError(fenceText(id, d0.prereviewFence));
+    const step = (kind, argv, cwd, data = {}) => { current = kind; guardLease(); return landStep(io, record, kind, argv, cwd, data); };
+    const roundBegan = Date.now();
+    if (d0.item.state !== "accepted") {
+      const claimed = d0.item.state === "claimed";
+      if (claimed && git(["rev-parse", "HEAD"], { cwd: dir }) !== head) throw new StepError(`${id}'s workspace is not at its recorded head ${short(head)}; push what it holds with atelier push in ${dir}, then run atelier land ${id} again`);
+      // The two revisions in one repository, no ref moved: the claimed
+      // task's workspace, or else the registered checkout.
+      const at = claimed ? dir : p.path;
+      current = "merge-main";
+      const t0 = Date.now();
+      let mainHead, target;
+      try { ({ mainHead, target } = await fetchLanding(io, { at, id, name, head })); }
+      catch (error) { throw new StepError(`${id}'s head ${short(head)} or main could not be fetched, so the landing stops before anything merges: ${error.message}`); }
+      // Edits main moved to another file stop the landing before anything
+      // merges (t471), as they did before the merge of main into the workspace.
+      if (git(["merge-base", "--is-ancestor", mainHead, head], { cwd: at, allowFail: true }).status !== 0) {
+        await compareMoved(io, { dir: at, id, name, record, moved, t0, mainHead, head, step: "merge-main" });
       }
-      // ── Before the lease (t550) ──────────────────────────────────────
-      // The merge of main, the push, the triage, the checks, the submission
-      // and the review run without the landing lease, beside any other
-      // task's landing; a conflict, a failed check, a stopped triage or a
-      // rejection ends the landing here with the lease never taken.
-      const roundBegan = Date.now();
-      d0 = await preflight(true, true);
-      if (d0.prereviewFence) throw new StepError(fenceText(id, d0.prereviewFence));
-      await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
-
-      // Merge main into the workspace, no-ff, so the task carries main's
-      // commits as a merge of their own; settle what the project's
-      // regenerate command can settle, raise the merged route level where
-      // both sides raised it and regenerate the fixtures — the workspace half
-      // of a landing, shared with the Workflow executor (t280).
-      const { head, mainHead, mergedIn, target } = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard: unleased, d0, moved });
-
-      // Push, checks and submission run as this CLI's own commands in the
-      // workspace, so their output is their own and a failure still ends the
-      // landing here, with the step recorded.
-      const step = (kind, argv, cwd, data = {}) => { guardLease(); return landStep(io, record, kind, argv, cwd, data); };
-      await recordedHeadStillStands(io, itemPath, d0.item.head);
-      await pushRefreshing(io, { dir, id, itemPath }, () => step("push", ["push"], dir, { head }));
-      print(`Pushed ${short(head)} to ${id}'s fork.`);
-      // The triage, before the checks and the submission (t475): each can
-      // draw a review request. A submission asks for the review, and the
-      // checks' passing evidence asks again, at the pushed head, for a review
-      // request the push withdrew from a task already submitted at an older
-      // head (Ledger.reaskReview). So a triage that stops has asked nothing
-      // of a reviewer. The gate reads the criteria again after the model
-      // answers, and once more here: criteria changed meanwhile triage again,
-      // still with nothing asked.
-      const triageAt = { triage, dir, id, itemPath, head, mainHead, target, record, guard: unleased };
+      current = "triage";
+      const triageAt = { triage, dir: at, id, itemPath, head, mainHead, target, record, guard: unleased };
       let triaged = await triageGate(io, triageAt);
       triaged = await triageGate(io, { ...triageAt, previous: triaged });
-      await checkStep(io, itemPath, id, step, dir);
-      await step("submit", ["submit", "--summary", mergedIn ? `Merged with main at ${short(mainHead)}; the required checks pass.` : "The required checks pass."], dir);
-
+      if (claimed) {
+        await checkStep(io, itemPath, id, step, dir);
+        await step("submit", ["submit", "--summary", "The required checks pass at the recorded head."], dir);
+      }
       // The review: the server says whether the gate needs one and who
       // reviews; --no-review leaves the task submitted for the owner to
-      // settle by hand, and never takes the lease. On a later round (main
-      // moved under the lease) the same ask is where an approval carries
-      // over a merge of main that leaves the task's files alone
-      // (retainApprovals in src/ledger.ts): the server answers that none
-      // is needed, or asks for a new review, which this landing waits for
-      // as any other.
+      // settle by hand, and never takes the lease.
+      current = "review";
       if (noReview) {
-        print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id} (main is already merged; run atelier land ${id} again if the head moves). The landing lease was never taken.`);
+        print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier land ${id} again. The landing lease was never taken.`);
         await record("review", 0, { skipped: true });
         for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
         return NOT_LANDED;
@@ -849,12 +872,12 @@ export async function runLand(io) {
       await triageStillStands(io, { triaged, id, itemPath, head, retry: triageRetry(io, triage, id) });
       // In fast mode (t300) the gate asks no review before the merge: the
       // review is asked after it (askPostMergeReview), and owed until a
-      // verdict stands.
+      // verdict stands. The step says so, as a fact the record keeps (G1).
       const fast = d0.mode?.mode === "fast";
       const reviewed = fast ? undefined : await reviewStep(io, { id, name, itemPath, reviewer, head, record, oneShot: !noWait });
       if (fast) {
         print(`${name} is in fast mode: ${id} lands on its passing checks, and its independent review is asked after the merge.`);
-        await record("review", 0, { skipped: true });
+        await record("review", 0, { skipped: true, fast: true });
       }
       await recordLandRequest(io, itemPath, id);
       if (reviewed === "asked") {
@@ -862,78 +885,55 @@ export async function runLand(io) {
         for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
         return NOT_LANDED;
       }
-
       // The gate as accept will read it, asked before the lease: the head
-      // the landing merges must be the one checked and approved, with the
-      // checks passing and an approval the gate counts (or none needed).
-      // Anything else ends the landing here, the lease never taken.
+      // must be the one checked and approved, with the checks passing and an
+      // approval the gate counts (or none needed).
+      current = "accept";
       await gateStands(io, { id, itemPath, head });
-
-      // ── Under the lease, for the merge alone ─────────────────────────
-      const beforeLease = Date.now() - roundBegan;
-      // The lease step's duration is the taking alone: time spent queued
-      // behind another landing's merge is not this task's cost of landing,
-      // and is recorded beside it (`waited`), with the time spent before it.
-      const { waited, took } = await takeLease();
-      startBeating();
-      await record("lease", took, timing ? { head, main: mainHead, beforeLease, waited } : { head });
-      print(`${short(head)} was merged with main, checked and reviewed in ${span(beforeLease)} without the lease${waited >= 1000 ? `; ${id} waited ${span(waited)} for its turn` : ""}.`);
-
-      // Main must be the commit the head was checked and reviewed against.
-      // Where it moved meanwhile (another landing merged), the lease is
-      // released without accepting or merging, and the landing goes again
-      // from the merge of main: only a merge that leaves the task's files
-      // alone carries the approval (retainApprovals in src/ledger.ts), and
-      // otherwise the new head is reviewed again; a conflict ends it.
-      guardLease();
-      let mainNow = await readMain(io, { dir, id, name });
-      guardLease();
-      // The server reads main itself and records it with the head (t550),
-      // so the merge of this head into any other main is refused even if
-      // this landing loses the lease before it merges; one that finds main
-      // moved meanwhile says so, and the landing goes round again.
-      if (mainNow === mainHead && timing) {
-        try { await request("POST", leasePath, { item: id, confirm: true, main: mainHead }); }
-        catch (error) {
-          // A takeover the heartbeat has not reported is learned here, as
-          // the renewal before publishing would learn it (t232).
-          if (/^(no_lease|landing_lease|stale_landing): /.test(error.message)) {
-            loseLease(error.message);
-            throw new StepError(`the landing lease is no longer ${id}'s (${error.message}); this landing stops before accepting or merging ${id}. Nothing was merged; run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
-          }
-          const moved = /^main_moved: main is at ([a-f0-9]{8})/.exec(error.message);
-          if (!moved) throw new StepError(`main ${short(mainHead)} could not be recorded under the lease, so ${id} is not accepted or merged: ${error.message}`);
-          mainNow = await readMain(io, { dir, id, name });
-          if (mainNow === mainHead) throw new StepError(`the server reads main at ${moved[1]}, not ${short(mainHead)} as this machine fetched it, so ${id} is not accepted or merged; run atelier land ${id} again`);
-        }
-      }
-      if (mainNow !== mainHead) {
-        await release(`main moved from ${mainHead} to ${mainNow}`);
-        if (round + 1 >= MAIN_MOVED_ROUNDS) throw new StepError(`main moved under the lease ${MAIN_MOVED_ROUNDS} times (now at ${short(mainNow)}, where ${short(head)} was checked and reviewed against ${short(mainHead)}), so the landing stops without merging ${id}; ${id} stays submitted. Run atelier land ${id} again once main settles`);
-        print(`main moved from ${short(mainHead)} to ${short(mainNow)} while ${id} was checked and reviewed, so ${short(head)} is not what main would become: released the lease without accepting or merging, and merging main again. The server says whether the approval carries over a clean merge of main or asks for a new review.`);
-        continue;
-      }
-      print(`main is still at ${short(mainHead)}, the commit ${short(head)} was checked and reviewed against.`);
-
-      // Accept and merge, again as this CLI's own commands. merge runs in
-      // the registered checkout's project, publishes the merge to the
-      // baseline and records it on the ledger. The lease is asked for by
-      // hand first: these are the steps that publish to main, and a landing
-      // that slept through losing it stops here rather than merge beside the
-      // landing that holds the lease now (t232).
-      await renewBeforePublish();
-      await recordedHeadStillStands(io, itemPath, head);
-      await step("accept", ["accept", id], p.path);
-      await recordedHeadStillStands(io, itemPath, head);
-      const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
-      await step("merged", ["merge", id], p.path, () => ({ mergeCommit: mergeHead() }));
-      print(`${id} landed: merged as ${short(mergeHead())}.`);
-      break;
     }
+
+    // ── Under the lease: the merge, its checks and the push ──────────────
+    const beforeLease = Date.now() - roundBegan;
+    current = "lease";
+    const { waited, took } = await takeLease();
+    startBeating();
+    await record("lease", took, timing ? { head, beforeLease, waited } : { head });
+    if (waited >= 1000) print(`${id} waited ${span(waited)} for its turn.`);
+    // A queued landing the developer cancelled before its merge began stops
+    // here, merging nothing (G1, atelier land --queue --cancel).
+    const now = await request("GET", itemPath);
+    if (now.landing?.cancelled) {
+      throw new StepError(`${id}'s queued landing was cancelled (atelier land ${id} --queue --cancel) before its merge began, so it stops here and merges nothing`);
+    }
+    // The steps that publish to main ask for the lease by hand first, so a
+    // landing that slept through losing it stops here rather than merge
+    // beside the landing that holds it now (t232).
+    await renewBeforePublish();
+    await recordedHeadStillStands(io, itemPath, head);
+    if (now.item.state !== "accepted") await step("accept", ["accept", id], p.path);
+    await recordedHeadStillStands(io, itemPath, head);
+    // The merge itself, as this CLI's own command in the registered
+    // checkout (cli/commands/merge.mjs --landing): the merge of the head
+    // into the project's branch, the checks on the merged tree, the push of
+    // the merge alone and the record, each a step it records itself.
+    current = "merge-main";
+    guardLease();
+    const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
+    const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, "merge", id, "--landing", "--project", name], { cwd: p.path, env: io.env });
+    if (!r.passed) {
+      // The merge records its own failing step; one it could not record (it
+      // was killed, or failed before its first step) is recorded here.
+      const after = await request("GET", itemPath).catch(() => null);
+      if (after?.landing?.failedStep) failureRecorded = true;
+      else if (after?.landing?.step) current = after.landing.step;
+      throw new StepError(`atelier merge failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
+    }
+    print(`${id} landed: merged as ${short(mergeHead())}.`);
   } catch (error) {
     // A step the signal ended fails here before its release is answered,
     // and a signal can come while this release is: either way the signal's
     // handler ends the landing, with the signal's status.
+    await recordFailure(error.message);
     await release(`stopped: ${String(error.message).split("\n")[0]}`);
     if (stopping) await stopping;
     die(error.message);
@@ -971,14 +971,6 @@ async function askPostMergeReview(io, { itemPath, id, reviewer }) {
 
 // What a duration reads as in a message.
 const span = (ms) => ms < 60_000 ? `${Math.round(ms / 1000)} s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
-
-// Main's head as the baseline holds it now, fetched as the merge of main
-// fetches it, for the comparison under the lease (t550).
-async function readMain(io, { dir, id, name }) {
-  const read = await io.request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
-  await io.git(["fetch", "--quiet", read.remote, read.defaultBranch], { cwd: dir, token: read.token });
-  return await io.git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
-}
 
 // Before the lease (t550): the server's gate, as accept reads it, must hold
 // the head this landing checked and reviewed, with nothing blocking it — the
@@ -1146,8 +1138,9 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
   const { verdict } = landingVerdict(d.reviews ?? [], head, ask.at);
   if (verdict) {
     if (!verdict.approve) {
-      await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
-      throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${rejectionText(verdict)}. The task goes back to its holder with the findings; the merge of main stays in its workspace, and the landing lease was never taken`);
+      const message = `${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${rejectionText(verdict)}. The task goes back to its holder with the findings; nothing was merged, and the landing lease was never taken`;
+      await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by, failed: true, tail: tailOf(message) });
+      throw new StepError(message);
     }
     print(`${verdict.by} approved ${id} at ${short(head)}.`);
     await record("review", Date.now() - t0, { verdict: "approve", reviewer: verdict.by, resolvedBy: verdict.by });
@@ -1628,7 +1621,7 @@ export async function landStep(io, record, kind, argv, cwd, data = {}) {
     }
   }
   if (!r.passed) {
-    await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500) });
+    await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500), tail: tailOf(r.output) });
     throw new StepError(`atelier ${argv[0]} failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
   }
   // A function names fields only the finished step knows, such as the
@@ -1637,27 +1630,49 @@ export async function landStep(io, record, kind, argv, cwd, data = {}) {
   return r;
 }
 
-// The dry run's preview of the merge of main into the workspace, from
-// merge-tree, which touches neither the index nor the work tree: source
-// conflicts apart from the regenerable outputs, and the generators the
-// merge would run. null where main cannot be read; the dry run goes on.
-async function previewLanding(io, { dir, id, name }) {
+// The dry run's preview of the landing's merge (G2): the head merged into
+// main's head, from merge-tree, which touches neither the index nor the work
+// tree of the registered checkout `at`; the objects are fetched into it, no
+// ref moves. Source conflicts apart from the regenerable outputs, and the
+// generators the merge would run. null where main cannot be read; the dry
+// run goes on.
+async function previewLanding(io, { at, id, name, head }) {
   const { request, git } = io;
   try {
-    const base = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
-    git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
-    const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
-    if (git(["merge-base", "--is-ancestor", mainHead, "HEAD"], { cwd: dir, allowFail: true }).status === 0) return `Preview: the workspace already holds main at ${short(mainHead)}.`;
-    const preview = previewMerge(dir, "HEAD", mainHead, { git });
+    const { mainHead } = await fetchLanding(io, { at, id, name, head });
+    if (git(["merge-base", "--is-ancestor", head, mainHead], { cwd: at, allowFail: true }).status === 0) return `Preview: main at ${short(mainHead)} already holds ${short(head)}.`;
+    const preview = previewMerge(at, mainHead, head, { git });
     if (preview.error) return `Preview: merge-tree could not preview the merge (${preview.error}).`;
     const conflicts = describeConflicts(preview);
     const regen = preview.regenerate.length ? `\nIt would regenerate with ${preview.regenerate.join(", ")}.` : "";
     return preview.clean
-      ? `Preview: main at ${short(mainHead)} merges cleanly.${conflicts ? `\n${conflicts}` : ""}${regen}`
-      : `Preview: main at ${short(mainHead)} would stop the merge, generating nothing.\n${conflicts}`;
+      ? `Preview: ${short(head)} merges cleanly into main at ${short(mainHead)}.${conflicts ? `\n${conflicts}` : ""}${regen}`
+      : `Preview: ${short(head)} would stop on conflicts with main at ${short(mainHead)}, generating nothing.\n${conflicts}`;
   } catch (error) {
     return `Preview: main could not be read (${error.message.split("\n")[0]}).`;
   }
+}
+
+// The landing's two revisions, fetched into `at` (the registered checkout,
+// or a claimed task's workspace) without moving a ref: the task's head from
+// its branch, unless `at` holds it already, and main's head. Answers main's
+// head and the branch it was read from.
+// Two landings of different tasks run this beside each other in the one
+// checkout (t550), so nothing here writes FETCH_HEAD: main's head is read
+// with ls-remote and the objects are fetched without it.
+async function fetchLanding(io, { at, id, name, head }) {
+  const { request, git } = io;
+  const has = (sha) => git(["cat-file", "-e", `${sha}^{commit}`], { cwd: at, allowFail: true }).status === 0;
+  if (!has(head)) {
+    const ws = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/read-token`, {});
+    await git(["fetch", "--quiet", "--no-write-fetch-head", ws.remote, head], { cwd: at, token: ws.token });
+  }
+  const read = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
+  const listed = String(await git(["ls-remote", read.remote, `refs/heads/${read.defaultBranch}`], { cwd: at, token: read.token })).trim();
+  const mainHead = listed.split(/\s/)[0];
+  if (!/^[0-9a-f]{40,64}$/.test(mainHead)) throw new Error(`main (${read.defaultBranch}) could not be read from the baseline`);
+  if (!has(mainHead)) await git(["fetch", "--quiet", "--no-write-fetch-head", read.remote, mainHead], { cwd: at, token: read.token });
+  return { mainHead, target: read.defaultBranch };
 }
 
 // The comparison before the merge of main (t471): the task's head and main's
@@ -1682,14 +1697,16 @@ async function previewLanding(io, { dir, id, name }) {
 // since the runner's git runs each command as a child (the landing's
 // synchronous git does not mind), and the detector reads through
 // detectMovedEditsAsync for the same reason.
-async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) {
+async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead, head = null, step = "merge" }) {
   const { request, git, print } = io;
-  const taskHead = await git(["rev-parse", "HEAD"], { cwd: dir });
+  // The plain landing (G2) compares the recorded head, fetched into the
+  // registered checkout, and records a stop on its merge-main step.
+  const taskHead = head ?? await git(["rev-parse", "HEAD"], { cwd: dir });
   // A stop records the failed merge step (`reason`, cut to the ledger's
   // length, the message when none is given) and answers the StepError, whose
   // data adds what only this CLI reads.
   const stop = async (message, { reason = message, ...data } = {}, only = {}) => {
-    await record("merge", Date.now() - t0, { failed: true, reason: reason.slice(0, 500), ...data });
+    await record(step, Date.now() - t0, { failed: true, reason: reason.slice(0, 500), tail: tailOf(message), ...data });
     return new StepError(message, { ...data, ...only });
   };
   const based = await git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true });

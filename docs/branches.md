@@ -49,7 +49,8 @@ The server sweeps leftover policy and report directories from `data/ENV/hook-sca
 
 For later:
 
-- A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task.
+- A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task (task 6).
+- Until then the landing's push carries the developer's credential. Since G2 it is one function, `pushMergeToProjectBranch` in `cli/landing.mjs`, which pushes the merge commit alone to the project's branch (rule 4's shape: first parent the branch's tip, the accepted head among the parents); task 6 swaps that credential for a landing grant minted to the holder of the landing lease. The provenance notes go on a push of their own, which the hook refuses (one ref per push, and no grant writes `refs/notes/atelier`), so on this server they stay in the developer's checkout.
 - Allowed lines (`docs/atelier/privacy-allow.json`) are dropped before the report. The owner sees them only in the allowance file's diff.
 
 Every repository names the hook through `core.hooksPath`, and a pushed tree cannot carry a hook into a bare repository.

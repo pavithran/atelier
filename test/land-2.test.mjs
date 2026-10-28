@@ -9,13 +9,17 @@ import { git, landFixture, mainMovesDuringReview } from "./land-fixture.mjs";
 test("a failed check before the lease ends the landing with no review asked and the lease never asked for (t550)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
+  // A task still claimed has its checks run at its recorded head before the
+  // review (G2); a submitted one's checks are its holder's.
+  f.box.states.t1 = "claimed";
   f.box.checks = ["exit 3"];
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /atelier check failed/);
   assert.deepEqual(f.posts("/landing-lease"), []);
   assert.deepEqual(f.posts("/review-request"), []);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "check"]);
+  assert.equal(f.posts("/land").at(-1).body.failed, true);
 });
 
 
@@ -32,79 +36,40 @@ test("a gate that does not hold the reviewed head ready stops the landing before
 });
 
 
-test("main moved before the lease and merges clean: the lease is released unmerged, main merged again and the new head reviewed again (t550)", async (t) => {
+// G2: the landing lands the head that was reviewed. Main moving while the
+// review ran does not send the head back for a merge of main and a second
+// review: the head is merged onto main as it is under the lease, and the
+// checks on that merged tree decide.
+test("main moved during the review: the reviewed head is merged onto the new main with no second review and nothing pushed to its fork (G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
+  const fork = git(f.p, "--git-dir", f.baseline.replace("baseline.git", "fork-t1.git"), "rev-parse", "main");
   const moved = await mainMovesDuringReview(f);
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.ok(moved());
-  const main2 = git(f.p, "--git-dir", f.baseline, "rev-parse", "main~1");
-  assert.match(r.output, /main moved from \w{8} to \w{8} while t1 was checked and reviewed, so \w{8} is not what main would become: released the lease without accepting or merging, and merging main again\./);
-  // Two rounds, two heads reviewed; the lease taken twice and released once
-  // between, with nothing accepted until the second take.
-  const asks = f.box.reviewAsks.filter((x) => x.item === "t1");
-  assert.equal(asks.length, 2);
-  assert.notEqual(asks[0].head, asks[1].head);
-  assert.deepEqual(f.box.leaseLog.map((x) => `${x.item} ${x.kind}`), ["t1 take", "t1 release", "t1 take", "t1 release"]);
-  const accepted = f.box.requests.findIndex((x) => x.method === "POST" && x.path.endsWith("/accept"));
-  assert.ok(accepted > f.box.leaseLog[2].i, "accepted before the lease of the second round");
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), [
-    "merge", "regenerate", "push", "check", "submit", "review", "lease", "release",
-    "merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release",
-  ]);
-  assert.match(f.posts("/land").find((x) => x.body.step === "release").body.reason, /^main moved from [a-f0-9]{40} to [a-f0-9]{40}$/);
-  // The merged head holds both main's new commit and the task.
-  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
-  assert.equal(asks[1].head, head);
-  git(f.workspace("t1"), "merge-base", "--is-ancestor", main2, head);
-  assert.equal(readFileSync(join(f.checkout, "other.txt"), "utf8"), "another task\n");
-  assert.equal(readFileSync(join(f.checkout, "work.txt"), "utf8"), "task\n");
+  assert.equal(f.box.reviewAsks.filter((x) => x.item === "t1").length, 1);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged", "release"]);
+  assert.equal(git(f.p, "--git-dir", f.baseline.replace("baseline.git", "fork-t1.git"), "rev-parse", "main"), fork, "nothing was pushed to the task's fork");
+  const tip = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
+  const [first, second] = git(f.p, "--git-dir", f.baseline, "rev-list", "--parents", "-n", "1", tip).split(" ").slice(1);
+  assert.equal(second, fork);
+  assert.match(git(f.p, "--git-dir", f.baseline, "log", "-1", "--format=%s", first), /Another task merged/);
   assert.equal(f.box.states.t1, "merged");
 });
 
 
-test("main moved before the lease: an approval the server carries over the clean merge needs no second review (t550, t56)", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  await mainMovesDuringReview(f);
-  // The server answers the second round's ask as a server with t56's
-  // approval retention would: the approval covers the clean merge of main.
-  const ask = f.box.review;
-  let asked = 0;
-  Object.defineProperty(ask, "needed", { get: () => ++asked === 1, configurable: true });
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /main moved from/);
-  assert.match(r.output, /No review request was needed: an independent approval already covers this change\./);
-  assert.deepEqual(f.posts("/land").filter((x) => x.body.step === "review").map((x) => x.body.verdict), ["approve", "none-needed"]);
-  assert.equal(f.box.states.t1, "merged");
-});
-
-
-test("main moved before the lease and conflicts: the lease is released unmerged and the landing stops on the conflict (t550)", async (t) => {
+test("main moved during the review and conflicts: the landing stops at merge-main naming the file, pushing nothing (G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   await mainMovesDuringReview(f, { file: "work.txt", text: "main's own line\n" });
   const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /main moved from/);
-  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
-  assert.deepEqual(f.box.leaseLog.map((x) => `${x.item} ${x.kind}`), ["t1 take", "t1 release"]);
-  assert.equal(f.box.lease, null);
-  assert.equal(f.posts("/accept").length, 0);
-  assert.equal(f.box.states.t1, "submitted");
-});
-
-
-test("main that keeps moving under the lease stops the landing after its limit, unmerged (t550)", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.env = { ATELIER_LAND_MAIN_MOVED_ROUNDS: "1" };
-  await mainMovesDuringReview(f);
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /main moved under the lease 1 times .* so the landing stops without merging t1; t1 stays submitted/);
-  assert.equal(f.box.lease, null);
-  assert.equal(f.posts("/accept").length, 0);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /merge conflicts; nothing was merged/);
+  assert.match(git(f.p, "--git-dir", f.baseline, "log", "-1", "--format=%s", "main"), /Another task merged/, "main is where the other task left it");
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), git(f.p, "--git-dir", f.baseline, "rev-parse", "main"));
+  const failed = f.posts("/land").find((x) => x.body.failed);
+  assert.equal(failed.body.step, "merge-main");
+  assert.deepEqual(failed.body.files, ["work.txt"]);
+  assert.equal(f.posts("/merged").length, 0);
 });

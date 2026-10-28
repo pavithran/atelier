@@ -3129,6 +3129,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // checkout (t226, atelier land ID --queue). The developer's alone: a
       // runner or agent token cannot name the verb.
       requireOwner(env, actor);
+      // { cancel: true } removes the queued landing (G1, --queue --cancel).
+      if (body.cancel === true) return json(await L.cancelLand(id, actor));
       return json(await L.requestLand(id, actor, typeof body.quote === "string" ? body.quote : undefined), 201);
     }
     case "refresh-lease": {

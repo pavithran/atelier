@@ -4,7 +4,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathCollisions } from "../../src/rules.ts";
 import { acceptancePolicy, evidenceAt, mergeContext, mergePolicyDecision } from "../../src/rules.ts";
-import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, touchedExecutables, treeEntries } from "../landing.mjs";
+import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, pushMergeToProjectBranch, tailOf, touchedExecutables, treeEntries } from "../landing.mjs";
+import { runRegenerateIn } from "../land.mjs";
+import { releaseSequence } from "../load.mjs";
+import { prepareChecks } from "../../src/check-preparation.ts";
+import { refusalOf, refusalText } from "../../src/checks.ts";
+import { stopLine } from "../../src/check-limit.ts";
 import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { guardedPush, privateGuardFor, privateRefusal } from "../private-guard.mjs";
@@ -12,7 +17,7 @@ import { describeConflicts, indexBeyond, mergeThrough, previewMerge, readManifes
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, request, saveConfig, server, short } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, apiToken, args, at, call, cfg, cleanClone, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, redact, removeClone, request, runCheck, saveConfig, server, short } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
@@ -169,21 +174,44 @@ export default async function mergeCommand() {
     }
   }
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
+  // The lander's merge (G2, --landing, run by atelier land under the lease):
+  // the merge commit is made here, the project's checks run on its tree, and
+  // only then is it pushed to the project's branch; each step is recorded on
+  // the task's landing record (G1), a failure with the last lines of its own
+  // output. Main moving between the checks and the push is refused (by Git
+  // and the hook: the push is not a fast-forward); the merge and the checks
+  // are then made again on the new main, at most MAIN_MOVED_REDOS times.
+  const lander=args.landing===true;
+  let step='merge-main', stepAt=Date.now();
+  const begin=(s)=>{step=s;stepAt=Date.now();};
+  const record=async(s,ms,data={})=>{
+    if(!lander)return;
+    try{await request('POST',`${I(name,id)}/land`,{step:s,ms:Math.max(0,Math.round(ms)),...data},OWNER);}
+    catch(error){console.error(`Warning: the landing's ${s} step could not be recorded: ${error.message}`);}
+  };
+  // Every stop of the lander's merge names its step on the record, with the
+  // last lines of what that step said, before the command ends.
+  const fail=async(message,data={},code=1)=>{
+    if(lander)await record(step,Date.now()-stepAt,{failed:true,tail:tailOf(message),...data});
+    die(message,code??1);
+  };
   let unlock;
-  try { unlock=landingLock(landing); } catch (error) { die(error.message); }
+  try { unlock=landingLock(landing); } catch (error) { await fail(error.message); }
   try {
-    try { adoptOldLanding(gitDir,landing); } catch (error) { die(error.message); }
+    try { adoptOldLanding(gitDir,landing); } catch (error) { await fail(error.message); }
+    for (let round=0; ; round++) {
+    begin('merge-main');
     const d=await call("GET",I(name,id),undefined,OWNER), item=d.item;
     // A landing begun at an acceptance that has since been withdrawn or
     // moved cannot be finished: what it merged is no longer what is accepted.
     let begun;
-    try { begun=landingJournal(landing,{project:name,item:id}).state; } catch (error) { die(error.message); }
+    try { begun=landingJournal(landing,{project:name,item:id}).state; } catch (error) { await fail(error.message); }
     if (begun && (begun.head!==item.acceptedHead || !['accepted','merged'].includes(item.state))) {
       const left=landingLeft(git,cwd,gitDir,begun,p.branch,`Atelier: ${name}/${id} accepted at ${begun.head}`);
-      die(`${id} is ${item.state==='accepted'?`accepted at ${short(item.acceptedHead)}`:item.state}, no longer accepted at ${short(begun.head)}, where this checkout began landing it, so that landing cannot be finished. Cancel it with: atelier merge ${id} --cancel${left.held||left.merging?' --discard-local':''}${item.state==='accepted'?', then merge again':''}`);
+      await fail(`${id} is ${item.state==='accepted'?`accepted at ${short(item.acceptedHead)}`:item.state}, no longer accepted at ${short(begun.head)}, where this checkout began landing it, so that landing cannot be finished. Cancel it with: atelier merge ${id} --cancel${left.held||left.merging?' --discard-local':''}${item.state==='accepted'?', then merge again':''}`);
     }
-    if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
-    if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
+    if (!['accepted','merged'].includes(item.state)) await fail(`${id} is ${item.state}; accept the reviewed revision first`);
+    if (args.head && args.head!==item.acceptedHead) await fail("the accepted revision differs from --head; review it before merging");
     const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
     if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); await cleanWorkspace(name, id, p.branch, cwd); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
     // The merge compares the project's stored policy as the item's detail
@@ -196,27 +224,27 @@ export default async function mergeCommand() {
     const context = mergeContext(d, items);
     const warning = mergePolicyDecision(acceptedPolicy, nowPolicy, [], false, context).warning;
     if (warning) console.error(warning);
-    if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
-    if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) die(`check out ${p.branch} in ${cwd} first`);
+    if (git(["status","--porcelain"],{cwd})) await fail("the registered checkout has uncommitted changes; preserve them before retrying");
+    if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) await fail(`check out ${p.branch} in ${cwd} first`);
     const base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
     git(['fetch','--quiet',base.remote,p.branch],{cwd,token:base.token});
     const baselineHead=git(['rev-parse','FETCH_HEAD'],{cwd});
     const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
     git(['fetch','--quiet',ws.remote,item.acceptedHead],{cwd,token:ws.token});
     const fetched=git(['rev-parse','FETCH_HEAD'],{cwd});
-    if (fetched!==item.acceptedHead) die(`fetched revision differs from the approval: fetched ${fetched}, approved ${item.acceptedHead}`);
+    if (fetched!==item.acceptedHead) await fail(`fetched revision differs from the approval: fetched ${fetched}, approved ${item.acceptedHead}`);
     // The commits the task adds to the baseline carry the project's
     // address or an agent address its policy allows (t451); what the
     // baseline already holds is not read.
-    const identity=d.policy?.commitIdentity ?? die(`${NO_IDENTITY(name)}. Nothing was merged.`);
-    try { pinCheckoutIdentity(cwd,identity); } catch (error) { die(`${error.message}. Nothing was merged.`); }
+    const identity=d.policy?.commitIdentity ?? await fail(`${NO_IDENTITY(name)}. Nothing was merged.`);
+    try { pinCheckoutIdentity(cwd,identity); } catch (error) { await fail(`${error.message}. Nothing was merged.`); }
     const taskRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,item.acceptedHead);
-    if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's holder rewrites those commits under an allowed identity and submits a new revision, or the developer allows the address with atelier init --agent-email EMAIL.`);
+    if (taskRefusals.length) await fail(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's holder rewrites those commits under an allowed identity and submits a new revision, or the developer allows the address with atelier init --agent-email EMAIL.`);
     // The project's private files (t645) reach the baseline through no task.
     const guard=privateGuardFor(name);
-    if (guard.refusal) die(`${id} was not merged: ${guard.refusal}`);
+    if (guard.refusal) await fail(`${id} was not merged: ${guard.refusal}`);
     const taskPrivate=privateRefusal(cwd,guard.paths,item.acceptedHead,[baselineHead],`${id}'s accepted revision`);
-    if (taskPrivate) die(`${taskPrivate} Nothing was merged.`);
+    if (taskPrivate) await fail(`${taskPrivate} Nothing was merged.`);
     // The accepted revision's own changes: those since the newest baseline
     // commit it holds, which atelier update moves past the recorded base. With
     // neither, every path that differs from the baseline: more than the
@@ -225,39 +253,48 @@ export default async function mergeCommand() {
     const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base ?? baselineHead;
     const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
     const decision = mergePolicyDecision(acceptedPolicy, nowPolicy, paths, args['policy-changed-ok'] === true, context);
-    if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
+    if (decision.refusal) await fail(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
+    const fresh=p.fresh===true, pairs=fresh?loadPairs(gitDir,name):null;
+    // The lander brings a checkout that only lags the baseline up to it
+    // before merging (G2): a clean checkout whose branch the baseline holds,
+    // with no landing of its own begun, is fast-forwarded, as atelier pull
+    // would. A partial-history project keeps its pairing step (sync).
+    if (lander && !fresh && !journal.state && git(['rev-parse','HEAD'],{cwd})!==baselineHead
+      && git(['merge-base','--is-ancestor','HEAD',baselineHead],{cwd,allowFail:true,env:REAL_HISTORY_ENV}).status===0) {
+      git(['merge','--quiet','--ff-only',baselineHead],{cwd});
+      console.log(`${p.branch} in ${cwd} was behind the baseline; fast-forwarded it to ${short(baselineHead)} before merging ${id}.`);
+    }
     const local=git(['rev-parse','HEAD'],{cwd});
     const owners=[...new Set(d.events.filter(e=>['item.claimed','item.handoff'].includes(e.kind)).map(e=>e.data.to??e.actor))];
     const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
     const marker=`Atelier: ${name}/${id} accepted at ${item.acceptedHead}`;
     // A project whose baseline holds part of its history (cli/fresh.mjs)
     // merges the task's commits rebuilt onto the paired project commit.
-    const fresh=p.fresh===true, pairs=fresh?loadPairs(gitDir,name):null;
     // Another checkout has carried commits to the baseline (t644): pull
     // brings them in before this checkout lands anything on top.
     const behind=()=>`${p.branch} does not hold the baseline's ${p.branch} (${short(baselineHead)}): another checkout has carried commits to the baseline since this one last matched it. Nothing was merged. Run atelier pull --project ${name} to bring them into this checkout, then atelier merge ${id} again.`;
     if (!journal.state) {
       if (fresh) {
         const paired=pairs[baselineHead];
-        if (!paired) die(behind());
-        if (local!==paired) die(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
+        if (!paired) await fail(behind());
+        if (local!==paired) await fail(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
       }
-      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true,env:REAL_HISTORY_ENV}).status!==0) die(behind());
+      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true,env:REAL_HISTORY_ENV}).status!==0) await fail(behind());
       journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
     }
     if (!journal.state.mergeCommit) {
       // What is merged: the accepted head, or its rebuilt twin on the project's commits.
       let target=item.acceptedHead;
       if (fresh) {
-        try { target=carryTask(git,cwd,journal.state.baselineStart??baselineHead,item.acceptedHead,pairs); } catch (error) { journal.clear(); die(error.message); }
-        if (!target) { journal.clear(); die('the accepted revision adds nothing to the baseline'); }
+        try { target=carryTask(git,cwd,journal.state.baselineStart??baselineHead,item.acceptedHead,pairs); } catch (error) { journal.clear(); await fail(error.message); }
+        if (!target) { journal.clear(); await fail('the accepted revision adds nothing to the baseline'); }
       }
       // Recover a commit made just before a crash prevented the journal update.
       const parents=git(['rev-list','--parents','-n','1','HEAD'],{cwd}).split(' ');
       const ownCommit=parents.length===3 && parents[1]===journal.state.start && parents[2]===target && git(['log','-1','--format=%B'],{cwd}).split('\n').includes(marker);
       if (ownCommit) journal.save({mergeCommit:local,phase:'committed'});
       else {
-        if(local!==journal.state.start) die('checkout moved during an interrupted merge; inspect the journal before retrying');
+        if(local!==journal.state.start) await fail('checkout moved during an interrupted merge; inspect the journal before retrying');
         // Paths that differ only by letter case or Unicode form are one file
         // on a Mac, so Git would write one over the other here and in every
         // clone on a Mac. The baseline is shared, so this is refused on every
@@ -270,7 +307,7 @@ export default async function mergeCommand() {
         const tree=/^[0-9a-f]{40,64}$/.test(mergedTree)?mergedTree:target;
         const entries=treeEntries(git(['ls-tree','-r','-z','--full-tree',tree],{cwd,raw:true}));
         const clashes=pathCollisions(entries.map(e=>e.path));
-        if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's holder must rename or remove all but one of each and submit a new revision`);}
+        if(clashes.length){journal.clear();await fail(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's holder must rename or remove all but one of each and submit a new revision`);}
         // A file that this checkout's Git configuration runs (a hook, a
         // filter or merge driver script, an included configuration file)
         // and that the merge would change would run during the merge, or
@@ -278,8 +315,8 @@ export default async function mergeCommand() {
         // are those between this checkout and the merge's own tree.
         let runs;
         try{runs=touchedExecutables(git(['diff','--name-only','--no-renames','-z',local,tree],{cwd,raw:true}).split('\0').filter(Boolean),executablePaths(cwd,gitEnv()));}
-        catch(error){journal.clear();die(error.message);}
-        if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${describeTouched(runs)}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's holder submit a revision that leaves them alone`);}
+        catch(error){journal.clear();await fail(error.message);}
+        if(runs.length){journal.clear();await fail(`the accepted change touches files that this checkout's Git configuration runs: ${describeTouched(runs)}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's holder submit a revision that leaves them alone`);}
         // The merge onto the baseline goes through the merge pipeline
         // (cli/merge-pipeline.mjs) and runs no generator in this checkout.
         // Where it needs one, verifyAccepted runs the merge first in a
@@ -296,17 +333,25 @@ export default async function mergeCommand() {
           const verified=await verifyAccepted(cwd,local,target,{git,identity});
           const moved=git(['rev-parse','HEAD'],{cwd});
           if(verified.ok&&moved!==local)Object.assign(verified,{ok:false,reason:`${p.branch} moved from ${short(local)} to ${short(moved)} while the outputs were compared`});
-          if(!verified.ok){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}), and ${verified.reason}. Outputs that are not the accepted revision's were never checked or reviewed, so nothing was merged and ${id} stays accepted. The generators' logs and the comparison are in ${verified.kept}. The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}
+          if(!verified.ok){journal.clear();await fail(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}), and ${verified.reason}. Outputs that are not the accepted revision's were never checked or reviewed, so nothing was merged and ${id} stays accepted. The generators' logs and the comparison are in ${verified.kept}. The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}
           adopt={tree:verified.tree,regenerated:verified.regenerated};
         }
         const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false,adopt});
-        if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
-        if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
+        if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){
+          journal.clear();
+          if(item.kind==='plan')await planConflicted(name,id,item);
+          // A conflict names its files on the landing record (G1); the
+          // approval stands at the accepted head, and who resolves it is not
+          // the lander's to decide.
+          const files=[...(result.source??[]),...(result.records??[]),...(result.generated??[])];
+          await fail(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`,files.length?{files,mainHead:baselineHead}:{mainHead:baselineHead});
+        }
+        if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); await fail('this revision is already in the checkout without this merge record; reconcile its history first'); }
         // The tree published is the one verifyAccepted compared: anything
         // else the merge left in the index refuses.
         if(adopt){
           const left=indexBeyond(cwd,adopt.tree,{git});
-          if(left.length){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die(`the merge would publish ${left.join(', ')}, which the compared tree does not hold. Nothing was merged and ${id} stays accepted`);}
+          if(left.length){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();await fail(`the merge would publish ${left.join(', ')}, which the compared tree does not hold. Nothing was merged and ${id} stays accepted`);}
         }
         // The merge commit is the landing's own, made under the project's
         // identity whatever this checkout or its environment would give,
@@ -314,15 +359,27 @@ export default async function mergeCommand() {
         git(['commit','--quiet','-m',[`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`,...result.provenance].join('\n')],{cwd,env:identityEnv(identity)});
         journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});
       }
+      await record('merge-main',Date.now()-stepAt,{head:item.acceptedHead,mainHead:journal.state.baselineStart??baselineHead,mergeCommit:journal.state.mergeCommit});
     }
+    // The lander's checks on the merged tree (G2), before anything is
+    // published: a failure puts the checkout back where the merge began and
+    // pushes nothing, and the task stays accepted with its approvals.
+    if (lander && journal.state.checked!==journal.state.mergeCommit) {
+      const undo=()=>{git(['reset','--quiet','--hard',journal.state.start],{cwd});journal.clear();};
+      const checked=await checkMergedTree({name,id,cwd,policy:d.policy,identity,commit:journal.state.mergeCommit,secrets:[apiToken(),base.token,ws.token],begin,
+        stop:async(message,data)=>{undo();await fail(message,data);},record});
+      journal.save({mergeCommit:checked,checked});
+    }
+    begin('push');
     const mergeCommit=journal.state.mergeCommit;
     const at=git(['rev-parse','HEAD'],{cwd});
-    if(at!==mergeCommit)die(`the checkout moved after the merge: ${p.branch} is at ${short(at)}, not at the merge commit ${short(mergeCommit)}. Put ${p.branch} back on ${short(mergeCommit)}, moving any commits of yours off it, then run atelier merge ${id} again, or cancel the landing with: atelier merge ${id} --cancel`);
+    if(at!==mergeCommit)await fail(`the checkout moved after the merge: ${p.branch} is at ${short(at)}, not at the merge commit ${short(mergeCommit)}. Put ${p.branch} back on ${short(mergeCommit)}, moving any commits of yours off it, then run atelier merge ${id} again, or cancel the landing with: atelier merge ${id} --cancel`);
     // Take the landing lease: it confirms the acceptance has not moved and
     // stops a push over this revision until the merge is recorded.
     // A refusal ends the command here with the server's reason; the local
     // merge commit is kept for reconciliation.
-    await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
+    try { await request('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER); }
+    catch (error) { await fail(error.message,{},error.code); }
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
     const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily,checkedTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead,mergeCommit)});
     // The notes commits refs/notes/atelier holds that FROM (a remote's notes
@@ -336,7 +393,8 @@ export default async function mergeCommand() {
       return publicRefusals(identity,parseIdentityLog(log));
     };
     // Reconcile provenance independently: a previous push can publish only one ref.
-    const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
+    const listedNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token,allowFail:true});
+    const remoteNotes=listedNotes.status===0?listedNotes.stdout.trim():'';
     if(remoteNotes){
       git(['fetch','--quiet',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
       if(git(['rev-parse','--verify','refs/notes/atelier'],{cwd,allowFail:true}).status===0)
@@ -352,7 +410,7 @@ export default async function mergeCommand() {
     // Every commit the push adds to the baseline, the landing's generated
     // merge commit and its twin included, is checked again before it goes.
     const landingRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,published);
-    if(landingRefusals.length)die(`the landing would put commits on the baseline whose identity the project's policy refuses:\n  ${landingRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);
+    if(landingRefusals.length)await fail(`the landing would put commits on the baseline whose identity the project's policy refuses:\n  ${landingRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);
     for(const c of new Set([mergeCommit,published])){
       const priorNote=git(['notes','--ref=atelier','show',c],{cwd,allowFail:true});
       if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,c],{cwd,...(identity?{env:identityEnv(identity)}:{})});
@@ -360,14 +418,53 @@ export default async function mergeCommand() {
     // The notes ref is history too: every notes commit the push adds, the ones
     // merge and add just made included, carries the project's identity (t451).
     const notesRefusals=identity?notesRangeRefusals(remoteNotes.split(/\s/)[0]||null):[];
-    if(notesRefusals.length)die(`the landing would push provenance notes whose identity the project's policy refuses:\n  ${notesRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, fix refs/notes/atelier, then merge again.`);
+    if(notesRefusals.length)await fail(`the landing would push provenance notes whose identity the project's policy refuses:\n  ${notesRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, fix refs/notes/atelier, then merge again.`);
     const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
+    // The push itself (G2): the merge commit to the project's branch and
+    // nothing else, through one function (pushMergeToProjectBranch), so the
+    // credential it carries can be swapped for a landing grant (task 6).
     // Nor through the checkout's own commits the push carries with it (t645).
-    guardedPush({project:name,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>die(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`)},
-      ()=>git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token}));
+    let pushed=null, refusedPush=null;
+    try {
+      pushed=alreadyPublished?{status:0}:guardedPush({project:name,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>{throw new GuardStop(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);}},
+        (sha)=>pushMergeToProjectBranch({git,cwd,remote:base.remote,token:base.token,commit:sha,branch:p.branch}));
+    } catch (error) { if (error instanceof GuardStop) refusedPush=error.message; else throw error; }
+    if (refusedPush) await fail(refusedPush);
+    if (pushed.status!==0) {
+      const said=String(pushed.stderr||pushed.stdout||'').split(base.token||'\0').join('[redacted]').trim();
+      // Main moved since the merge was made: the push was not a fast-forward
+      // (Git refuses it, and the hook would). Read main again to tell that
+      // from any other refusal.
+      const again=git(['fetch','--quiet',base.remote,p.branch],{cwd,token:base.token,allowFail:true});
+      const now=again.status===0?git(['rev-parse','FETCH_HEAD'],{cwd}):null;
+      const moved=!!now&&now!==baselineHead&&git(['merge-base','--is-ancestor',published,now],{cwd,allowFail:true}).status!==0;
+      if (moved && lander && !fresh) {
+        // Nothing reached main: the landing record of the merge is given
+        // back, the checkout returns to where the merge began, and the
+        // merge and the checks are made again on the new main.
+        await request('POST',`${I(name,id)}/landing`,{cancel:true},OWNER).catch((error)=>console.error(`Warning: the landing record could not be released after main moved: ${error.message}`));
+        git(['reset','--quiet','--hard',journal.state.start],{cwd});
+        journal.clear();
+        if (round>=MAIN_MOVED_REDOS) await fail(`main moved from ${short(baselineHead)} to ${short(now)} between the checks and the push, ${round+1} times in a row, so ${id} was not merged: each merge was checked and then refused as not a fast-forward, and nothing was pushed. ${id} stays accepted with its approvals; run atelier land ${id} again once main settles`,{rounds:round+1,mainHead:now});
+        console.log(`main moved from ${short(baselineHead)} to ${short(now)} after ${id}'s merge was checked, so the push was refused and nothing reached main. Merging and checking again on the new main (${round+1} of ${MAIN_MOVED_REDOS}).`);
+        await record('push',Date.now()-stepAt,{reason:`refused: main moved from ${baselineHead} to ${now}; merging and checking again`,rounds:round+1,mainHead:now});
+        continue;
+      }
+      await fail(`the push of ${id}'s merge ${short(published)} to ${p.branch} was refused${moved?` (main moved from ${short(baselineHead)} to ${short(now)})`:''}:\n${said}\nNothing was published; the merge commit is kept in the checkout. Run atelier merge ${id} again to retry, or cancel with atelier merge ${id} --cancel --discard-local.`);
+    }
+    // The provenance notes go on a push of their own, after the merge, and
+    // never decide it: the Node server's hook takes one ref per push and
+    // keeps no notes ref, so there they stay in this checkout.
+    const notesPushed=git(['push','--quiet',base.remote,'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token,allowFail:true});
+    if(notesPushed.status!==0){const lines=String(notesPushed.stderr||'').split('\n').filter(Boolean);console.log(`Provenance notes were not published to the baseline (${(lines.find((l)=>/atelier:/.test(l))??lines.at(-1)??'refused').replace(/^remote:\s*/,'').split(base.token||'\0').join('[redacted]')}); they stay in this checkout under refs/notes/atelier.`);}
     journal.save({phase:'published'});
-    const recorded = await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
+    await record('push',Date.now()-stepAt,{mergeCommit:published,mainHead:baselineHead,...(round?{rounds:round}:{})});
+    begin('merged');
+    let recorded;
+    try { recorded = await request('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER); }
+    catch (error) { await fail(error.message,{},error.code); }
     journal.clear();
+    await record('merged',Date.now()-stepAt,{mergeCommit:published});
     const privatePublication = (recorded.postMerge?.policy ?? d.policy.postMerge)?.steps.some(s => s.class === 'publish');
     // A public notes remote gets only notes history whose identities pass; one
     // whose tip cannot be read is not pushed to (fail closed).
@@ -386,5 +483,71 @@ export default async function mergeCommand() {
     await cleanWorkspace(name, id, p.branch, cwd);
     if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
     else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
-  } finally { unlock(); }
+    break;
+    }
+  } finally { unlock?.(); }
+}
+
+// How many times the lander's merge is made and checked again after main
+// moved between its checks and its push (G2): twice, so at most three merges
+// are checked, and each is pushed once at most.
+export const MAIN_MOVED_REDOS = 2;
+class GuardStop extends Error {}
+
+// The project's checks on the merged tree (G2), in a clean clone of the merge
+// commit made from the registered checkout: first the project's regenerate
+// command where its policy declares one, whose changes are folded into the
+// merge commit (its parents stay the branch's tip and the accepted head, as
+// the hook's rule 4 wants), then each required check, once. A check observed
+// once per merge result: a failure is not run again, so a flaky pass on a
+// second run is never what lands. Each is recorded as a landing step, a
+// failure with the last lines of the failing check's own output. Answers the
+// merge commit the checks passed on.
+async function checkMergedTree({ name, id, cwd, policy, identity, commit, secrets, begin, stop, record }) {
+  const cmds = Array.isArray(policy?.checks) ? policy.checks : [];
+  const regenerate = typeof policy?.regenerate === "string" && policy.regenerate ? policy.regenerate : null;
+  begin("checks");
+  const refused = [...(policy?.prepare ? [policy.prepare.command] : []), ...cmds].flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+  if (refused.length) await stop(`${refused.join(".\n")}.\nNothing was merged or pushed; ${id} stays accepted.`);
+  if (!cmds.length && !regenerate) { await record("checks", 0, { skipped: true, reason: "the project declares no required checks" }); return commit; }
+  const { dir } = cleanClone(cwd, null, commit, null, name);
+  const sequence = releaseSequence({ project: name, task: id, actor: OWNER });
+  const cleanup = () => removeClone(dir);
+  process.once("exit", cleanup);
+  try {
+    let checked = commit;
+    if (regenerate) {
+      begin("regenerate");
+      const t0 = Date.now();
+      console.log(`Regenerating with \`${regenerate}\` on the merged tree…`);
+      const r = await runRegenerateIn(dir, regenerate, { redact, secrets: () => secrets }, policy);
+      if (!r.ok) await stop(`the regeneration command \`${regenerate}\` failed on the merged tree (${r.why}); nothing was pushed and ${id} stays accepted. Fix the command (atelier init --regenerate), then run atelier land ${id} again`, { command: regenerate });
+      const changed = !!landingGit(["status", "--porcelain", "-uall"], { cwd: dir });
+      if (changed) {
+        landingGit(["add", "-A"], { cwd: dir });
+        landingGit(["commit", "--quiet", "--amend", "--no-edit"], { cwd: dir, env: identityEnv(identity) });
+        checked = landingGit(["rev-parse", "HEAD"], { cwd: dir });
+        landingGit(["fetch", "--quiet", dir, "HEAD"], { cwd });
+        landingGit(["reset", "--quiet", "--hard", checked], { cwd });
+        console.log(`The regeneration changed the merged tree; folded into the merge commit ${short(checked)}.`);
+      }
+      await record("regenerate", Date.now() - t0, { command: regenerate, changed, mergeCommit: checked });
+      begin("checks");
+    }
+    if (!cmds.length) return checked;
+    const t0 = Date.now();
+    await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next(), undefined, policy), secrets).catch((error) => stop(`the checks' preparation failed on the merged tree: ${error.message}\nNothing was pushed; ${id} stays accepted.`));
+    for (const cmd of cmds) {
+      const r = await runCheck(cmd, dir, secrets, sequence.next(), undefined, policy);
+      console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(checked)} (the merge of ${id} into main)`);
+      if (!r.passed) {
+        const why = r.stopped ? stopLine(r.stopped) : r.error ? r.error.message : `exit ${r.status ?? "by a signal"}`;
+        await stop(`the check \`${cmd}\` failed on the merged tree (${why}), so nothing was pushed to main; ${id} stays accepted with its approvals, and is not rejected. Its output ends:\n${tailOf(r.output)}`, { failedCheck: cmd, tail: tailOf(r.output), mergeCommit: checked });
+      }
+    }
+    await record("checks", Date.now() - t0, { mergeCommit: checked, statuses: cmds.map((c) => `passed: ${c}`.slice(0, 200)) });
+    return checked;
+  } finally {
+    try { await sequence.close(); } finally { process.off("exit", cleanup); cleanup(); }
+  }
 }

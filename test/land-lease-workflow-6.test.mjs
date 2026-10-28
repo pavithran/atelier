@@ -39,70 +39,26 @@ test("land --workflow reports a finished landing, not a lost one, when the merge
 });
 
 
-test("a write token expiring within the window is refreshed for the holder before the lease is taken (t275)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), runner: "home:mbp" });
-  await runLand(l.io);
-  assert.equal(l.claims().length, 1);
-  // The re-claim is made as the holder, with the runner holding the task, never as the owner.
-  assert.equal(l.claims()[0].as, "codex/test");
-  assert.notEqual(l.claims()[0].as, "owner");
-  assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
-  assert.deepEqual(l.adopted.map((a) => [a.where, a.token, a.expiresAt]), [[l.dir, "fresh-token", l.fresh]]);
-  const claimAt = l.calls.findIndex((c) => c.path.endsWith("/claim"));
-  // Before the merge of main, and so before anything that could take the
-  // lease (which --no-review never takes, t550).
-  const mergeAt = l.calls.findIndex((c) => c.path.endsWith("/base-token"));
-  assert.ok(claimAt >= 0 && mergeAt > claimAt, "the refresh comes before the merge of main");
-  assert.equal(l.leaseTaken(), false);
-  assert.ok(l.lines.some((x) => /write token expires .*refreshing it for its holder before the landing takes the lease/.test(x)), l.lines.join("\n"));
-  assert.deepEqual(l.commands, ["push", "check", "submit"]);
-});
-
-
-test("a write token far from expiry is not refreshed, and an unknown expiry is refreshed once and recorded (t275)", async (t) => {
-  const far = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString() });
-  await runLand(far.io);
-  assert.equal(far.claims().length, 0);
-  assert.deepEqual(far.commands, ["push", "check", "submit"]);
-  const unknown = tokenLanding(t, { expiresAt: null });
-  await runLand(unknown.io);
-  assert.equal(unknown.claims().length, 1);
-  assert.equal(unknown.claims()[0].as, "codex/test");
-  assert.ok(unknown.lines.some((x) => /records no write token expiry/.test(x)), unknown.lines.join("\n"));
-  // The refresh recorded the expiry, so the next landing reads it and claims nothing.
-  await runLand(unknown.io);
-  assert.equal(unknown.claims().length, 1);
-});
-
-
-test("a refresh the server refuses stops the landing before the lease, naming atelier claim (t275)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: new Date(Date.now() - 60_000).toISOString(), claim: "owned: t1 is held by codex/test on home:mbp, not a claim made without a runner" });
-  await assert.rejects(runLand(l.io), (error) => {
-    assert.match(error.message, /could not be refreshed, so the landing stops before taking the lease/);
-    assert.match(error.message, /atelier claim t1/);
-    return true;
-  });
-  assert.equal(l.claims().length, 1);
-  assert.equal(l.leaseTaken(), false);
-  assert.deepEqual(l.commands, []);
-  assert.deepEqual(l.adopted, []);
-});
-
-
-test("a workspace whose recorded actor is not the task's holder is not refreshed: nothing is claimed, as the owner or anyone (t275)", async (t) => {
-  for (const holder of ["owner", "claude-code/opus-5.5"]) {
-    const l = tokenLanding(t, { expiresAt: null, holder });
-    await assert.rejects(runLand(l.io), /atelier claim t1/);
-    assert.equal(l.claims().length, 0, `held by ${holder}`);
+// G2: the plain landing pushes nothing to the task's branch, so it needs no
+// write token and refreshes none, whatever the workspace records (the t275
+// refresh before the push stays with the Workflow landing, below), and it
+// never claims a task to land it.
+test("the plain landing claims nothing and pushes nothing, whatever the workspace token's expiry (G2)", async (t) => {
+  for (const expiresAt of [new Date(Date.now() - 60_000).toISOString(), new Date(Date.now() + 10 * 60_000).toISOString(), null]) {
+    const l = tokenLanding(t, { expiresAt, runner: "home:mbp" });
+    await runLand(l.io);
+    assert.equal(l.claims().length, 0);
+    assert.deepEqual(l.adopted, []);
+    assert.ok(!l.commands.includes("push"), l.commands.join(", "));
     assert.equal(l.leaseTaken(), false);
   }
 });
 
 
-test("land preserves ownership and dispatch of an unclaimed workspace", async (t) => {
+test("land claims nothing and withdraws no dispatch of an unclaimed task", async (t) => {
   for (const dispatch of [null, { to: "home" }]) {
     const l = tokenLanding(t, { holder: null, dispatch, expiresAt: null });
-    await assert.rejects(runLand(l.io), /unclaimed; landing cannot claim it or withdraw its dispatch/);
+    await assert.rejects(runLand(l.io), /t1 is open, so there is nothing to land/);
     assert.equal(l.claims().length, 0);
     assert.ok(!l.calls.some(c => c.path.endsWith("/undispatch")));
     assert.equal(l.leaseTaken(), false);
@@ -121,31 +77,6 @@ test("land --workflow refreshes the write token before starting the Workflow, an
   const refused = tokenLanding(t, { expiresAt: new Date(Date.now() + 60_000).toISOString(), workflow: true, claim: "not_owner: refused" });
   await assert.rejects(runLand(refused.io), /atelier claim t1/);
   assert.equal(refused.calls.filter((c) => c.method === "POST" && c.path.endsWith("/landing-workflow")).length, 0);
-});
-
-
-test("a push refused for an expired token is refreshed for the holder and tried exactly once more (t275)", async (t) => {
-  const once = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["remote: Invalid or expired token\nfatal: unable to access the fork"] });
-  await runLand(once.io);
-  assert.deepEqual(once.commands, ["push", "push", "check", "submit"]);
-  assert.equal(once.claims().length, 1);
-  assert.equal(once.claims()[0].as, "codex/test");
-  assert.equal(once.adopted.length, 1);
-  // Refused again after the refresh: no third push, and the landing ends.
-  const twice = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["Invalid or expired token", "Invalid or expired token"] });
-  await assert.rejects(runLand(twice.io), /atelier push failed[\s\S]*Invalid or expired token/);
-  assert.deepEqual(twice.commands, ["push", "push"]);
-  assert.equal(twice.claims().length, 1);
-  // The push ends the landing before the lease, which it never took (t550).
-  assert.equal(twice.leaseTaken(), false);
-});
-
-
-test("a push that fails for any other reason is not refreshed or retried (t275)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["error: failed to push some refs (non-fast-forward)"] });
-  await assert.rejects(runLand(l.io), /non-fast-forward/);
-  assert.deepEqual(l.commands, ["push"]);
-  assert.equal(l.claims().length, 0);
 });
 
 
@@ -310,8 +241,12 @@ test("land accepts a project-admitted reviewer alias despite its harness lacking
 
 
 
+// A task still claimed is checked and submitted in its workspace (G2), so
+// its workspace is prepared at the recorded head first; a submitted task
+// needs none.
 for (const state of ["missing", "stale", "diverged"]) test(`land reconstructs a ${state} workspace at the ledger head and runs the gates`, async t => {
   const f = await landFixture(t);
+  f.box.states.t1 = "claimed";
   const dir = f.workspace("t1"), head = git(dir, "rev-parse", "HEAD");
   if (state === "missing") rmSync(dir, { recursive: true });
   else if (state === "stale") {
@@ -326,12 +261,12 @@ for (const state of ["missing", "stale", "diverged"]) test(`land reconstructs a 
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.ok(r.output.includes(`Prepared t1 at recorded source ${head}`), r.output);
-  // The recorded head is prepared before the merge of main, which since
-  // t550 runs without the lease, and the lease follows the review.
+  // The recorded head is prepared before its checks, which run without the
+  // lease, and the lease follows the review.
   const read = f.box.requests.findIndex(x => x.path.endsWith("/read-token"));
-  const merge = recordedAt(f, "merge");
+  const merge = recordedAt(f, "check");
   const take = f.box.requests.findIndex(x => x.path.endsWith("/landing-lease") && x.method === "POST" && !x.body.cancel);
-  assert.ok(read >= 0 && merge > read && take > merge, "recovery fetch precedes the merge of main, and the lease follows");
+  assert.ok(read >= 0 && merge > read && take > merge, "recovery fetch precedes the checks, and the lease follows");
   if (state !== "missing") assert.match(r.output, /Preserved t1's previous workspace at .*backup-/);
   if (state === "diverged") {
     const backup = r.output.match(/Preserved t1's previous workspace at (\S+)\./)[1];
@@ -341,13 +276,15 @@ for (const state of ["missing", "stale", "diverged"]) test(`land reconstructs a 
   assert.equal(existsSync(join(dir, "local-only")), false);
   assert.equal(f.box.states.t1, "merged");
   const steps = f.posts("/land").map(x => x.body.step);
-  for (const step of ["push", "check", "review", "accept", "merged"]) assert.ok(steps.includes(step), steps.join(", "));
-  assert.deepEqual(f.posts("/claim").map(x => x.as), ["codex/test"]);
+  for (const step of ["check", "submit", "review", "accept", "merge-main", "checks", "push", "merged"]) assert.ok(steps.includes(step), steps.join(", "));
+  // The preparation re-claims the workspace for its holder; nothing else claims.
+  assert.ok(f.posts("/claim").every(x => x.as === "codex/test"));
 });
 
 
-test("land stops before the lease when the workspace holds commits the recorded head lacks", async t => {
+test("land stops before the lease when a claimed task's workspace holds commits the recorded head lacks", async t => {
   const f = await landFixture(t);
+  f.box.states.t1 = "claimed";
   const dir = f.workspace("t1"), head = git(dir, "rev-parse", "HEAD");
   writeFileSync(join(dir, "fix"), "the orchestrator's fix");
   git(dir, "add", "."); git(dir, "commit", "-m", "Fix found in review");
@@ -371,6 +308,7 @@ test("land stops before the lease when the workspace holds commits the recorded 
 for (const wait of [false, true]) test(`workspace recovery runs before the lease, preserving the old workspace (wait: ${wait})`, async t => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
+  f.box.states.t1 = "claimed";
   const dir = f.workspace("t1"), recorded = git(dir, "rev-parse", "HEAD");
   git(dir, "reset", "--hard", "HEAD^");
   writeFileSync(join(dir, "precious"), "unpublished notes");
@@ -382,8 +320,8 @@ for (const wait of [false, true]) test(`workspace recovery runs before the lease
   const backup = /Preserved t1's previous workspace at (\S+)\./.exec(r.output)?.[1];
   assert.ok(backup, r.output);
   assert.equal(readFileSync(join(backup, "precious"), "utf8"), "unpublished notes");
-  // The prepared workspace was merged with main from the recorded head.
-  git(dir, "merge-base", "--is-ancestor", recorded, "HEAD");
+  // The prepared workspace is at the recorded head: nothing is merged into it (G2).
+  assert.equal(git(dir, "rev-parse", "HEAD"), recorded);
   assert.match(r.output, /t1 is checked and approved but not merged/);
   assert.deepEqual(f.box.leaseLog, []);
   assert.equal(f.posts("/merged").length, 0);

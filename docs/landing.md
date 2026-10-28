@@ -36,7 +36,9 @@ Merging records a journal for the registered checkout under the CLI's cache,
 `~/Library/Caches/ai-projects/cloudflare-git/landing/KEY/journal.json`, with
 the lock that keeps merges one at a time beside it. KEY is derived from the
 checkout's Git directory; neither file lives in that directory, which iCloud
-Drive syncs and where it renames a file it finds in conflict to a copy. If
+Drive syncs and where it renames a file it finds in conflict to a copy. The
+publish pushes the merge commit alone to the project's branch, and the
+provenance notes on a push of their own that never decides the merge. If
 publishing the baseline or recording the merge fails, rerun the same command.
 It resumes from the local merge commit. It refuses a different revision, a
 dirty checkout, or concurrent merge. If a process stops during the
@@ -95,84 +97,108 @@ to its own remotes remain separate decisions.
 ## Landing a task whole
 
 `atelier land t9` runs the whole second half in one command, for the project
-developer in the registered checkout: it merges main into the task's workspace,
-regenerates the project's fixtures when its policy declares how, pushes, runs
-the required checks, submits and waits for the independent review the gate
-needs — all without the landing lease — and only then takes the lease,
-confirms main has not moved, and accepts and merges.
+developer in the registered checkout. Since Atelier 2.0 (lessons gaps G1 and
+G2) it lands the head the task was checked and reviewed at, and never pushes
+to the task's branch: the landing push already is a merge of the accepted
+head onto the project's branch (the hook's rule 4, [branches](branches.md)),
+so the task's branch and its approvals stay as they were reviewed.
 
-### Review before the runway (t550)
+### The order of a landing (G2)
 
-The project's landing lease is held for the merge alone. The orchestrator's
-landing-queue timing log measured 71 landings between 2026-10-11 21:03 and
-2026-10-12 16:47 UTC: together they held the single lease for 11.5 hours,
-and the 34 that review rejected held it about 11 minutes each before they
-failed, since the lease was taken first and kept through the merge of main,
-the checks and the review. Now:
+1. **Before the lease**, beside any other task's landing:
+   - The task must not be blocked, merged, abandoned or a plan. A claimed
+     task needs its workspace at its recorded head, with nothing unpushed;
+     a submitted or accepted task needs no workspace at all.
+   - The task's head and main are fetched into one repository (the claimed
+     task's workspace, or else the registered checkout), with no ref moved,
+     and the task's edits are compared with code main moved to another file
+     since their merge base (t471). A finding stops the landing here, named
+     as a `merge-main` failure; `--moved-ok` records the developer's
+     approval of exactly those findings and goes on.
+   - The triage, where the landing has one (below).
+   - A claimed task has its required checks run at its recorded head, in a
+     clean clone (`atelier check`), and is submitted. A submitted task's
+     checks are the ones its holder ran at that head.
+   - The review the gate needs, asked and not waited for (t264), or settled
+     by an approval already recorded at the head. In fast mode the review
+     step is recorded as skipped, `{ skipped: true, fast: true }`, and the
+     review is asked after the merge.
+   - The gate, as `accept` reads it: the head with its checks passing and an
+     approval it counts (or none needed).
+2. **The lease**, queued for in the order the landings asked (below).
+3. **Accept** the head, under the lease.
+4. **`merge-main`**: `atelier merge t9 --landing` merges the accepted head
+   into the project's branch in the registered checkout, through the merge
+   pipeline, with every guard `atelier merge` has (the commit identity, the
+   private files, paths a Mac stores as one, files the checkout's Git runs,
+   declared outputs). A checkout that only lags the baseline is
+   fast-forwarded to it first. A conflict stops the landing here: the merge
+   is undone, nothing is pushed anywhere, the record names the files, and
+   the approval stands at the head. Whether the builder or the developer
+   resolves it is not the lander's to decide: `atelier dispatch t9 --job
+   merge-main` sends it back to the builder, whose own clean merge of main
+   keeps its approval under the review-retention rule (t288, t56).
+5. **`regenerate`**, where the project's policy declares a regenerate
+   command (`atelier init --regenerate`): it runs on the merged tree in a
+   clean clone, and what it changes is folded into the merge commit, whose
+   parents stay the branch's tip and the accepted head.
+6. **`checks`**: the project's required checks run once each on the merged
+   tree, in that clean clone. A check is observed once per merge result: a
+   failure is not run again, so a flaky pass on a second run never lands. A
+   failure puts the checkout back where the merge began and pushes nothing;
+   the task stays accepted with its approvals, and is not rejected.
+7. **`push`**: the merge commit, and nothing else, goes to the project's
+   branch (`pushMergeToProjectBranch` in `cli/landing.mjs`, the one function
+   that pushes it; task 6 gives it a landing grant minted to the lease
+   holder in place of the developer's credential). If main moved between
+   the checks and the push, Git and the hook refuse it, since it is not a
+   fast-forward: the merge is undone and steps 4 to 6 run again on the new
+   main, at most twice, and each merge is pushed at most once. A third
+   refusal stops the landing with the fact: how often main moved, from
+   where to where, with nothing pushed. The provenance notes go on a push of
+   their own afterwards and never decide the landing; the Node server's hook
+   takes one ref per push and keeps no notes ref, so there they stay in the
+   checkout.
+8. **`merged`**: the merge is recorded, and the lease released.
 
-1. **Without the lease**, beside any other task's landing: the merge of main
-   (with the moved-code comparison, t471), the regeneration, the push, the
-   triage (t475), the required checks, the submission and the review. Two
-   landings of different tasks check and review at the same time. A
-   conflict, a failed check, a stopped triage, a rejection, a review timeout
-   or a request no runner will serve ends the landing here, and the lease is
-   never asked for.
-2. **The gate**, asked before the lease: the server's gate, as `accept`
-   reads it, must hold the pushed head with its required checks passing and
-   an approval it counts (or none needed). Anything else stops the landing
-   with the lease never taken.
-3. **The lease, for the merge alone.** Every landing that reaches this point
-   queues for the lease if another landing holds it, `--wait` or not: what
-   it waits behind is another landing's merge, which takes minutes, never
-   its checks or review. The queue keeps its order (below).
-4. **Main confirmed under the lease.** The landing reads main again and
-   merges only if it is still the commit the head was merged with, checked
-   and reviewed against. If another landing merged meanwhile, it releases
-   the lease without accepting or merging and goes round again from step 1:
-   it merges the new main into the workspace, checks it and asks for the
-   review again. An approval may carry over that merge of main, and the
-   server decides when it is pushed (the review-retention rule, t56): it
-   carries only a merge of main into the approved head that changes none of
-   the task's files, in which nobody but the task's holder committed and
-   no conflict was resolved, and where the only files both sides changed
-   are outputs the project's generator manifest declares and the merge
-   regenerated. A carried approval stands at the new head as a record of its
-   own, naming the approval it came from, both heads, main's commit and the
-   paths compared; the original review stays as it was given. Acceptance
-   never carries, the required checks run again at the new head, and the
-   gate counts the carried approval as any other: its reviewer must still be
-   authorized and independent, one approval per model. A merge it does not
-   cover, or one the server could not read, asks for a new review, which the
-   landing waits for as any other. The CLI never judges the carry itself, so
-   an older server asks for a new review and the landing still works. A new
-   conflict ends the landing as
-   in step 1. After five rounds (`ATELIER_LAND_MAIN_MOVED_ROUNDS`) of main
-   moving, it stops, unmerged.
-5. **Accept and merge**, renewing the lease first (t232), then release it.
-   Before accepting, the landing sends the main it confirmed to the server
-   (`{ item, confirm: true, main }` on the landing-lease route), which reads
-   main itself, refuses one it does not hold (`main_moved`, and the landing
-   goes round again) and records the confirmed main with the head. The merge
-   of that head into any other main is then refused by the server
-   (`main_moved`), even if the landing loses the lease before it merges: the
-   head goes back for a merge of main, new checks and a review.
+The developer's own `atelier merge t9` (without `--landing`) still merges
+and publishes an accepted head by hand, pushing only the merge to the
+project's branch, without the merged-tree checks.
 
-A head pushed while the landing waits for the lease is not merged: the
-recorded head is checked again before the acceptance and before the merge,
-and a moved head stops the landing. `--no-review` leaves the task submitted
-after step 1 and never takes the lease.
+### The landing record (G1)
 
-The landing records the time it spent before the lease and the time it held
-it: the `land.lease` event carries `beforeLease` (milliseconds from the
-round's start to the ask for the lease), `waited` (milliseconds in the
-queue), the `head` and the `main` it was merged with, and a `land.release`
-event's duration is the time the lease was held, with the `reason` it was
-let go (`merged`, `main moved from A to B`, or the failure). The CLI also
-prints both at the end. A server from before t550 does not publish
-`land.review-first.v1` and refuses the new fields, so against it the plain
-landing records only the `head` with the lease and prints the timing
-instead; `--workflow` needs the capability and refuses such a server,
-saying to deploy.
+Every landing that gets past the dry run is an attempt. Its steps are
+recorded as `land.*` events (`land.start`, `land.lease`, `land.accept`,
+`land.merge-main`, `land.regenerate`, `land.checks`, `land.push`,
+`land.merged`, and `land.triage`, `land.check`, `land.submit` and
+`land.review` before the lease), and the Ledger keeps the latest on the task
+as its landing record, which `atelier show t9 --json` carries:
+
+```json
+"landing": { "step": "checks", "attempt": 2, "at": "…", "head": "…",
+             "failedStep": "checks", "tail": "…the failing check's last lines…" }
+```
+
+`start` opens an attempt at the task's head. A failed step stays named as
+`failedStep` with `tail`, the last lines (at most 2,000 characters) of that
+step's own output — the failing check's, not what ran before it — and, for a
+conflict, `files`. A refusal before any step (a blocked task, a workspace
+with unpushed commits) is the `start` step failing, its words the tail; a
+lease the landing could not take is the `lease` step failing. A signal that
+ends the landing is recorded as the step it was at failing.
+
+A failed landing is not tried again on a timer. The server stops offering
+its land job to the lander while the task's head is the one it failed at,
+and the runner passes the job by while it is the one that failed; the
+lander's log has one line per attempt, naming the failing step, the attempt
+and the tail. `atelier land t9 --queue` queues it again (the record notes
+`requeued`), and a new head lets it run.
+
+`atelier land t9 --queue --cancel` removes a queued landing. Run when nothing
+is queued, it says so, exits 0 and changes nothing. A landing of the task
+that holds the lease and has begun its merge (`merge-main` or later) is not
+cancelled or interrupted: the cancel refuses, naming the step it is at. One
+still before its merge stops when it reaches the lease, merging nothing.
 
 The lease is released when the landing ends, on success or failure alike; a
 landing stopped partway can be resumed by running `atelier land t9` again,
@@ -203,11 +229,11 @@ and merged nothing, and says whose landing holds the lease now; before the
 accepting and merging steps it also asks for the lease again, so a loss it
 slept through cannot slip between renewals, and the server itself refuses a
 merge while another task's landing holds the lease. Whatever is left of the
-stopped landing (a merged main, a pushed head, a review already approved)
+stopped landing (a review already approved, an acceptance)
 stands, and `atelier land t9` again, or `atelier merge t9` once the task is
 accepted, finishes it after the other landing ends.
 
-The steps in between:
+Details of the steps:
 
 1. Clients from before capabilities require the server to be at their route
    level or newer. `GET /api/version`
@@ -295,10 +321,10 @@ The steps in between:
    runner job but the review requires it, so a runner refuses a server that
    reports only a route level and starts on one that publishes the name.
 
-2. Main is fetched into the task's workspace and merged with `--no-ff`,
-   without the lease (t550), through the merge pipeline (`cli/merge-pipeline.mjs`), the same one
-   every merge Atelier makes with Git goes through: the developer's merge onto
-   the baseline, `atelier update` (a pipeline merge wherever a declared
+2. The merge goes through the merge pipeline (`cli/merge-pipeline.mjs`),
+   the same one every merge Atelier makes with Git goes through: the
+   landing's merge of the head into the project's branch in the registered
+   checkout, `atelier update` (a pipeline merge wherever a declared
    generator must run, otherwise a rebase through the clone's merge
    drivers), a runner's merge-main, integrate and refresh merges, and the
    speculative merge `atelier check --merged` checks in its clean clone.
@@ -313,65 +339,45 @@ The steps in between:
    entry files (one per command or route declaration) must keep unique keys;
    `.gitattributes` routes each declared output to `merge=atelier-generated`
    and each record file to `merge=atelier-records`. The pipeline first
-   installs those drivers in the clone's own Git config (a fresh clone has
-   none; without them Git would merge the paths as plain text), then merges
-   the sources. Record files unite by key, while a key both sides changed
+   installs those drivers in the clone's own Git config, then merges the
+   sources. Record files unite by key, while a key both sides changed
    differently, an edit against a deletion or a duplicate registry key stays
-   a conflict. Generated outputs are left in conflict, unmarked, until every
-   source has merged: a source or record conflict stops the merge there,
-   with nothing generated, and the preview (`--dry-run`) and the stop both
-   list source conflicts apart from regenerable outputs. Once the sources
-   merge, each generator whose inputs or outputs both sides changed runs
-   twice; a failing command, a missing output, a write outside its outputs
-   or a second run that changes anything stops the merge. Output identical
-   to one side is valid. The merge commit names which generators ran and
-   what each output matches, the generator's log is kept under the clone's
-   Git directory, and the landing's `land.merge` record carries the same
-   provenance (`regenerated`). The regenerated head is pushed, so its checks
-   and review are of the final output; nothing carries over from the head
-   before. On
-   conflicts the landing stops, leaves the merge in the workspace for the
-   developer to resolve, and names the files. After resolving and committing,
-   run `atelier push` in the workspace to record the resolution before running
-   `atelier land t9` again. A rerun before that push stops before taking the
-   lease, naming the commits the recorded head lacks and `atelier push`. Any
-   other workspace not already set up at the recorded head (one behind it, one
-   that has diverged from it, or one at it but not configured for the task) is
-   moved to a backup; land names the backup and, for a diverged workspace, the
-   commits it holds. The conflicts can also go
-   back to the task's builder instead: `atelier dispatch t9 --job merge-main`
-   (naming the holder with `--agent` and `--model`, as the message the
-   landing prints says) sends the task to a runner, whose merge-main job
-   merges main into the workspace again and leaves the conflicts for the
-   builder to resolve, commit and push with `atelier push`; then `atelier land t9` again, with main
-   already merged. See [Dispatch](runners.md#dispatch).
+   a conflict. In the landing's merge onto the project's branch no generator
+   runs in the checkout: where one would, `verifyAccepted` merges first in a
+   throwaway clone, and only outputs equal to the accepted head's, which
+   were checked and reviewed with it, are merged; anything else stops the
+   landing with nothing merged. On conflicts the landing stops, naming the
+   files (`failedStep: merge-main`), and leaves nothing in the checkout. The
+   conflicts go back to the task's builder: `atelier dispatch t9 --job
+   merge-main` (naming the holder with `--agent` and `--model`) sends the
+   task to a runner, whose merge-main job merges main into the workspace and
+   leaves the conflicts for the builder to resolve, commit and push with
+   `atelier push`; then `atelier land t9` again. See
+   [Dispatch](runners.md#dispatch).
 3. When the project's policy declares a `regenerate` command
-   (`atelier init --regenerate "CMD"`), it runs in the workspace like a check
-   runs, and what it changes is committed before the push, so generated
-   fixtures are current with both lines before the checks see them. The
-   landing adds no typecheck of its own: the project's required checks are
-   the whole gate, and they run through `atelier check` in a clean clone of
-   the pushed head.
+   (`atelier init --regenerate "CMD"`), it runs on the merged tree in the
+   clean clone the checks use, as a check runs, and what it changes joins
+   the merge commit before the checks see it. The landing adds no typecheck
+   of its own: the project's required checks are the whole gate, run once
+   on the merged tree.
 4. If the gate needs an independent review, the landing requests one through the
-   review-request routes and waits for the verdict: the reviewer is the one named with
+   review-request routes: the reviewer is the one named with
    `--reviewer H/M`, or a model of another family than every contributor
-   picked from the pool, still without the lease. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection or a timeout stops the landing (the request stays open and the task stays submitted). `--no-review` skips the waiting and leaves the task submitted for the developer to settle by hand.
-5. With the head checked and approved, the landing takes the lease,
-   confirms main has not moved (above), and accepts and merges through the
-   CLI's own `accept` and `merge` commands, each run as this CLI's child,
-   so their checks and their journals behave exactly as when the developer runs
-   them.
+   picked from the pool, still without the lease. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection stops the landing (the request stays open and the task stays submitted). `--no-review` leaves the task submitted for the developer to settle by hand.
+5. With the head checked and approved, the landing takes the lease, accepts
+   through the CLI's own `accept`, and merges through `atelier merge t9
+   --landing`, each run as this CLI's child, so their checks and their
+   journals behave exactly as when the developer runs them. The merge's
+   journal lets a landing killed partway resume where it stopped.
 
 Each step, its duration and what it settled are recorded on the task as
-`land.*` events (the commits that came from main, the files a conflict
-stopped on and who resolved it, the reviewer and the verdict), so the cost
-of integrating a task can be read from the ledger. A record is capped at
-4,000 characters of JSON: a merge that brings more commits from main than
-that (t293's landing once brought 103, and its merge step was refused
-whole) is recorded as the first commit hashes with the count of all of
-them beside it (`fromMainCount`); the hashes themselves are in the merge,
-which names main's head. `--dry-run` prints the steps and the refusals
-without changing anything.
+`land.*` events (the files a conflict stopped on, the reviewer and the
+verdict, the merge commit, the checks and how often main moved before the
+push), so the cost of integrating a task can be read from the ledger, and
+the landing record carries the latest (above). A record is capped at 4,000
+characters of JSON, a list in it cut to its first entries with the count of
+all of them beside it. `--dry-run` prints the steps, with a preview of the
+merge, and the refusals without changing anything.
 
 ### Triage before the review
 
@@ -436,6 +442,11 @@ landing goes on under the review rules as they are, whether no review is
 needed, an approval already covers the change, or `--no-review` was given.
 
 ## Landing through a Cloudflare Workflow
+
+The Workflow landing keeps the 1.x order, merging main into the task's
+workspace and pushing it before the checks and the review; G2's order above
+is the plain landing's. The Node server does not run Workflows, so on it
+`--workflow` fails with `not_supported`.
 
 `atelier land t9 --workflow` lands the task through a Cloudflare Workflow
 (`src/landing-workflow.ts`, the `LANDING_WORKFLOW` binding in
@@ -665,4 +676,4 @@ production create visibility or duplicate-ID behavior.
 
 ## Integration basis
 
-The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts fork from an updated basis. For a single task, `atelier land` merges main into the task's workspace before checks run. Local verification does not establish a successful production container run.
+The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts fork from an updated basis. For a single task, `atelier land` merges the accepted head into the project's branch in the registered checkout and runs the checks on that merged tree before it pushes. Local verification does not establish a successful production container run.

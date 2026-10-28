@@ -48,7 +48,7 @@ test("--wait queues behind another landing, says whose each time it changes, and
   assert.ok(freedAt > 0 && grantedTo(f)[0].i >= freedAt, "the lease was taken before it was free");
   assert.ok(f.posts("/landing-lease").filter((x) => x.body.queued === true).length > 3, "the landing asked again while it waited");
   assert.match(r.output, /Landing lease taken for t1/);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged", "release"]);
   assert.equal(f.box.lease, null);
 });
 
@@ -116,7 +116,7 @@ test("--wait keeps the queue's order: the landing that queued first takes the le
   assert.ok(f.posts("/landing-lease").filter((x) => x.body.queued === true && x.body.item === "t1").length > 2, "the landing asked again while it waited");
   assert.equal(grantedTo(f).length, 1);
   assert.match(r.output, /Landing lease taken for t1/);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged", "release"]);
   assert.equal(f.box.states.t1, "merged");
   assert.equal(f.box.lease, null);
 });

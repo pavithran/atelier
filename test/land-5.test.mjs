@@ -114,42 +114,33 @@ test("guard: a withdrawn or tier approval, or a gate not ready still asks for th
 
 // Finding t344: while t320 waited for review the video agent kept editing its
 // workspace, and the landing's regenerate step committed those half-finished
-// edits with `git add -A`. The stand-in server writes the other agent's file when the landing
-// records its merge step, after the landing began and before it regenerates.
-test("a landing whose workspace gains uncommitted edits after it began refuses before regenerating, naming them, and commits nothing of them (t344)", async (t) => {
+// edits with `git add -A`. Since G2 the landing regenerates and checks in a
+// clean clone of its merge, made from the registered checkout, so an edit
+// another agent makes in the task's workspace cannot reach what it lands.
+test("edits another agent makes in the workspace after the landing began never reach the merge (t344, G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  f.box.onLand = (step) => { if (step.step === "merge") writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished narration\n"); };
+  f.box.onLand = (step) => { if (step.step === "start") { writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished narration\n"); writeFileSync(join(f.workspace("t1"), "work.txt"), "edited by another agent\n"); } };
   const r = await f.run(f.checkout, "land", "t1");
-  assert.notEqual(r.status, 0, r.output);
-  assert.match(r.output, /gained uncommitted changes since the landing began \(video\.md\)/);
-  assert.ok(!existsSync(join(f.workspace("t1"), "gen-fixtures.txt")), "the regenerate command ran anyway");
-  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Regenerate after merging/);
-  assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "?? video.md");
-  assert.notEqual(f.box.states.t1, "merged");
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.box.states.t1, "merged");
+  const main = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
+  assert.equal(git(f.p, "--git-dir", f.baseline, "ls-tree", "--name-only", main, "video.md"), "");
+  assert.equal(git(f.p, "--git-dir", f.baseline, "show", `${main}:work.txt`), "task");
+  assert.deepEqual(git(f.workspace("t1"), "status", "--porcelain").split("\n").map((l) => l.trim()).sort(), ["?? video.md", "M work.txt"], "the agent's edits stay in the workspace, uncommitted");
 });
 
 
-test("a landing refuses a tracked edit made after it began, naming the file whole (t344, round 1: the status listing was trimmed)", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  f.box.onLand = (step) => { if (step.step === "merge") writeFileSync(join(f.workspace("t1"), "work.txt"), "edited by another agent\n"); };
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.notEqual(r.status, 0, r.output);
-  assert.match(r.output, /since the landing began \(work\.txt\)/);
-  assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "M work.txt");
-});
-
-
-test("the regenerate step commits a tracked file its command modified, under its whole name (t344, round 1)", async (t) => {
+test("the regenerate step folds what its command modified into the merge commit on main (t344, G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   f.box.regen = "echo regenerated >> work.txt";
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  const commit = git(f.workspace("t1"), "log", "--grep=^Regenerate after merging", "--format=%H", "-1");
-  assert.ok(commit, "no regeneration commit");
-  assert.equal(git(f.workspace("t1"), "show", "--name-only", "--format=", commit), "work.txt");
+  const main = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
+  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-list", "--parents", "-n", "1", main).split(" ").length, 3, "main's tip is the merge itself");
+  assert.equal(git(f.p, "--git-dir", f.baseline, "show", `${main}:work.txt`), "task\nregenerated");
+  assert.ok(f.posts("/land").some((x) => x.body.step === "regenerate" && x.body.changed === true));
 });
 
 
@@ -167,8 +158,9 @@ for (const [how, command] of [["rm", "rm obsolete.json"], ["git rm", "git rm -q 
     f.box.regen = command;
     const r = await f.run(f.checkout, "land", "t1");
     assert.equal(r.status, 0, r.output);
-    assert.equal(git(f.workspace("t1"), "ls-files", "obsolete.json"), "");
-    assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "");
+    const main = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
+    assert.equal(git(f.p, "--git-dir", f.baseline, "ls-tree", "--name-only", main, "obsolete.json"), "");
+    assert.equal(git(f.checkout, "status", "--porcelain"), "");
   });
 }
 
