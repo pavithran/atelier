@@ -1,9 +1,10 @@
 // The Atelier server under Node (Atelier 2.0, task 1; design section 4.2):
 // one process serving `src/index.ts`'s `fetch` over Node's `http`, with the
 // Ledger Durable Objects as SQLite files under the environment's data
-// directory (src/runtime/namespace.mjs). Artifacts, R2 and the landing
-// Workflow are bindings that refuse with `not_supported` until the tasks
-// that replace them (Git hosting, files for `large`) land.
+// directory (src/runtime/namespace.mjs). Artifacts reads the bare
+// repositories and `large` is files (src/git/artifacts.mjs, large.mjs); the
+// Artifacts writes and the landing Workflow refuse with `not_supported`
+// until the tasks that replace them land.
 //
 // Settings come from three places, later ones winning: defaults for the
 // environment, the process environment (only the names in SETTINGS), and a
@@ -17,6 +18,8 @@ import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { Namespace, notSupported } from "./namespace.mjs";
 import { GitHost } from "../git/host.mjs";
+import { LocalArtifacts } from "../git/artifacts.mjs";
+import { LocalLarge } from "./large.mjs";
 
 export const SETTINGS = [
   "ATELIER_TOKEN", "OWNER_ACTOR", "OWNER_NAME", "TIMEZONE", "PUBLIC_ORIGIN", "DEPLOYED_MAIN", "OVERRIDE_SECRET",
@@ -96,10 +99,12 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const { Ledger, default: worker } = await import("../index.ts");
   globalThis.caches ??= { default: { match: async () => undefined, put: async () => undefined, delete: async () => false } };
-  const bindings = { ARTIFACTS: unsupported("ARTIFACTS"), LARGE: unsupported("LARGE"), LANDING_WORKFLOW: unsupported("LANDING_WORKFLOW"), ...given };
+  const repos = resolve(reposDir ?? join(dir, "repos"));
+  const artifacts = new LocalArtifacts({ reposDir: repos });
+  const bindings = { ARTIFACTS: artifacts, LARGE: new LocalLarge(join(dir, "large")), LANDING_WORKFLOW: unsupported("LANDING_WORKFLOW"), ...given };
   const workerEnv = {};
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
-  const git = new GitHost({ dataDir: dir, reposDir: resolve(reposDir ?? join(dir, "repos")), hooksDir, namespace, settings: workerEnv });
+  const git = new GitHost({ dataDir: dir, reposDir: repos, hooksDir, namespace, settings: workerEnv });
   bindings.GIT ??= git.binding();
   const pending = new Set();
   const server = createServer(async (req, res) => {
@@ -142,6 +147,7 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
     await closed;
     await namespace.close();
     git.close();
+    artifacts.close();
   })();
   return { url, port: bound, env, namespace, git, close, settings: workerEnv };
 }
