@@ -90,7 +90,10 @@ export async function verifyWorker({ cwd = process.cwd(), env = process.env, fet
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const { action, environment, versionUrl } = parseArgs(process.argv.slice(2));
-    const head = action === "deploy" ? deployWorker({ environment }) : await verifyWorker({ versionUrl });
+    // SHIP_VERIFY_WINDOW_MS shortens the retry window, for tests that serve a
+    // mismatch on purpose.
+    const windowMs = process.env.SHIP_VERIFY_WINDOW_MS === undefined ? VERIFY_WINDOW_MS : Number(process.env.SHIP_VERIFY_WINDOW_MS);
+    const head = action === "deploy" ? deployWorker({ environment }) : await verifyWorker({ versionUrl, windowMs });
     console.log(`${action === "deploy" ? "Deployed" : "Verified deployed source"}: ${head}`);
   } catch (error) {
     console.error(error.message);
