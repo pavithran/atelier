@@ -107,6 +107,8 @@ class Obj {
     } catch (err) {
       this.db.exec(`ROLLBACK TO ${point}`);
       this.db.exec(`RELEASE ${point}`);
+      // The rollback may have restored an alarm the callback changed.
+      this.rearm();
       throw err;
     } finally {
       this.depth--;
@@ -122,6 +124,8 @@ class Obj {
         return await fn();
       } finally {
         if (this.db.isTransaction) this.db.exec("COMMIT");
+        // The timer follows the committed alarm, whatever the call did.
+        if (!this.ns.closed) this.rearm();
       }
     };
     const result = this.tail.then(go, go);

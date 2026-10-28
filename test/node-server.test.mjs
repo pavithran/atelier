@@ -382,3 +382,26 @@ test("an alarm() that sets a later alarm and then throws is retried, not left to
     assert.deepEqual(seen, [false, true]);
   } finally { await ns.close(); }
 });
+
+test("an alarm deleted inside a transactionSync that throws is restored, and its timer with it", async () => {
+  let fired = 0;
+  class Undo extends DurableObject {
+    async arm(at) { await this.ctx.storage.setAlarm(at); }
+    async undo() {
+      try {
+        this.ctx.storage.transactionSync(() => { void this.ctx.storage.deleteAlarm(); throw new Error("rolled back"); });
+      } catch {}
+      return await this.ctx.storage.getAlarm();
+    }
+    async alarm() { fired++; }
+  }
+  const ns = new Namespace({ dir: join(scratch(), "data"), Class: Undo, env: {} });
+  try {
+    const at = Date.now() + 200;
+    const stub = ns.get(ns.idFromName("x"));
+    await stub.arm(at);
+    assert.equal(await stub.undo(), at);
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(fired, 1);
+  } finally { await ns.close(); }
+});
