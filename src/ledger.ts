@@ -81,7 +81,7 @@ import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
 import { dropTasks, type ProviderPause } from "./runners/memory.ts";
-import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
+import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { ReviewerRecords, SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -5584,7 +5584,7 @@ export class Ledger extends DurableObject<Env> {
   private prereviewWaiting(): (Item & { request: number })[] {
     const rows = this.sql.exec(`SELECT * FROM prereviews WHERE state = 'open' AND dispatch IS NOT NULL ORDER BY id`).toArray();
     const now = Date.now();
-    return rows.flatMap((r) => {
+    return this.withSameExit("prereview", rows.flatMap((r) => {
       const id = r.item as string;
       if (this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'open' LIMIT 1`, id).toArray().length) return [];
       let item: Item;
@@ -5597,7 +5597,7 @@ export class Ledger extends DurableObject<Env> {
       }
       const binding = JSON.parse(r.binding as string) as PrereviewBinding;
       return [{ ...item, head: binding.head, request: prereviewRequest(r.id as number), dispatch: JSON.parse(r.dispatch as string) as Dispatch }];
-    });
+    }));
   }
 
   // The open pre-review of `itemId` asked of `actor`, unless a gate request
@@ -8869,7 +8869,11 @@ export class Ledger extends DurableObject<Env> {
   }
 
   releaseReview(itemId: string, actor: string, note: string, proved = false, request?: number): void {
-    if (isPrereviewRequest(request)) { this.prereviewOutcome(itemId, actor, request, parseOutcomeNote(String(note ?? "")), proved); return; }
+    if (isPrereviewRequest(request)) {
+      this.prereviewOutcome(itemId, actor, request, parseOutcomeNote(String(note ?? "")), proved);
+      this.noteExit("prereview", itemId, request!, String(note ?? ""));
+      return;
+    }
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
     this.item(itemId);
@@ -9163,6 +9167,38 @@ export class Ledger extends DurableObject<Env> {
 
   // Open criteria reviews, as the queue offers them: the item with its
   // dispatch overlaid by the review's, whose job names "criteria-review".
+  // The same-exit count of a job with no request stop of its own (G5): how
+  // many tries of one criteria review or pre-review ended in the same harness
+  // exit, by the signature hash the runner's note carries. It is the
+  // server's, so every runner reads the one count, across restarts.
+  private exitCounts(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS exit_counts (job TEXT NOT NULL, item TEXT NOT NULL, request INTEGER NOT NULL, sig TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (job, item, request))`);
+  }
+
+  noteExit(job: "criteria-review" | "prereview", item: string, request: number, note: string): void {
+    const sig = exitSignatureOf(note);
+    if (!sig) return;
+    this.exitCounts();
+    const row = this.sql.exec(`SELECT sig, count FROM exit_counts WHERE job = ? AND item = ? AND request = ?`, job, item, request).toArray()[0];
+    const count = row && row.sig === sig ? (row.count as number) + 1 : 1;
+    this.sql.exec(`INSERT OR REPLACE INTO exit_counts (job, item, request, sig, count) VALUES (?, ?, ?, ?, ?)`, job, item, request, sig, count);
+  }
+
+  sameExitOf(job: "criteria-review" | "prereview", item: string, request: number): { signature: string; count: number } | null {
+    this.exitCounts();
+    const row = this.sql.exec(`SELECT sig, count FROM exit_counts WHERE job = ? AND item = ? AND request = ?`, job, item, request).toArray()[0];
+    return row ? { signature: row.sig as string, count: row.count as number } : null;
+  }
+
+  private withSameExit<T extends Item & { request: number }>(job: "criteria-review" | "prereview", items: T[]): (T & { sameExit?: { signature: string; count: number } })[] {
+    if (!items.length) return items;
+    this.exitCounts();
+    return items.map((i) => {
+      const row = this.sql.exec(`SELECT sig, count FROM exit_counts WHERE job = ? AND item = ? AND request = ?`, job, i.id, i.request).toArray()[0];
+      return row ? { ...i, sameExit: { signature: row.sig as string, count: row.count as number } } : i;
+    });
+  }
+
   criteriaReviewWaiting(): (Item & { request: number })[] {
     const rows = this.sql.exec(`SELECT id, item, dispatch FROM criteria_reviews WHERE state = 'open' ORDER BY id`).toArray();
     if (!rows.length) return [];
@@ -9171,10 +9207,10 @@ export class Ledger extends DurableObject<Env> {
     // The row's request is the criteria review's own number, the one the
     // runner's claim answers with (claimCriteriaReview), so the runner keys
     // the review's refusals and failures by it, apart from the task's build.
-    return rows.flatMap((r) => {
+    return this.withSameExit("criteria-review", rows.flatMap((r) => {
       const item = items.get(r.item as string);
       return item ? [{ ...item, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch }] : [];
-    });
+    }));
   }
 
   // Binds an open criteria review to the reviewer asked, atomically, and

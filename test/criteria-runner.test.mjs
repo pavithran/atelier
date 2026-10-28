@@ -95,9 +95,9 @@ test("a rejection carries its findings; an unparsable reply, a failing harness a
   assert.ok(posted.includes("--reject"));
   assert.equal(posted[posted.indexOf("--findings") + 1], JSON.stringify([{ file: "criterion-1", line: null, severity: "blocking", text: "Fast is not a measurement." }]));
 
-  for (const [options, reason] of [
+  for (const [options, reason, noted = reason] of [
     [{ verdict: "Looks fine to me." }, /states no verdict/],
-    [{ code: 2 }, /^harness exited 2$/],
+    [{ code: 2 }, /^harness exited 2$/, /^harness exited 2; exit-signature: [0-9a-f]{32}$/],
     [{ timedOut: true }, /^harness timed out$/],
   ]) {
     const { io, calls } = fixture(options);
@@ -107,7 +107,7 @@ test("a rejection carries its findings; an unparsable reply, a failing harness a
     assert.match(state.reason, reason);
     const failed = calls.find((c) => c.argv?.[0] === "criteria-review-failed").argv;
     assert.deepEqual(failed.slice(0, 8), ["criteria-review-failed", "t21", "--project", "atelier", "--as", `opencode/${model}`, "--request", "7"]);
-    assert.match(failed[failed.indexOf("--note") + 1], reason);
+    assert.match(failed[failed.indexOf("--note") + 1], noted);
     assert.ok(!calls.some((c) => c.argv?.[0] === "criteria-verdict"), "no verdict is posted");
   }
 });

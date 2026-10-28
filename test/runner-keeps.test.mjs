@@ -243,27 +243,24 @@ test("what the runner passes by is snapshotted with its reasons and restored int
   const memory = JSON.parse(JSON.stringify(runnerMemory(before)));
   assert.deepEqual(memory.failures, [{ key: failureKey(a), count: 2 }]);
   // The signature is a short hash, so no bound can cut it between two processes, and a review's count is the server's (its stop).
-  assert.match(memory.sameExits[0].signature, /^[0-9a-f]{32}$/);
-  assert.deepEqual(memory.sameExits.map((e) => e.key), [failureKey(review)]);
+  assert.deepEqual(memory.sameExits, [], "every same-exit count is the server's, so none is kept here");
   assert.deepEqual(memory.backoff, [{ key: failureKey(b), count: 4 }]);
   assert.equal(memory.notReady[0].tries, 2);
   const said = Object.fromEntries(memory.reasons.map((r) => [r.task, r.why]));
   assert.match(said["atelier/t13"], /gave it up|skipped after 2 failed runs/);
   assert.match(said["atelier/t14"], /infrastructure failures|claim refused/);
-  assert.match(said["atelier/t15"], /same way 2 times/);
   // A new process starts empty, reads the memory back, and passes by what the old one did.
   const after = maps();
   assert.equal(passes(after, a), null);
   const restored = restoreMemory(memory, after);
   assert.equal(restored, memory.refused.length + memory.gaveUp.length + memory.failures.length + memory.infrastructure.length + memory.sameExits.length + memory.skipHeads.length + memory.backoff.length + memory.notReady.length);
-  for (const t of [a, b, review]) assert.ok(passes(after, t), `${t.item.id} is still passed by`);
+  for (const t of [a, b]) assert.ok(passes(after, t), `${t.item.id} is still passed by`);
   // The waits are restored too: a backoff is due again in as many polls as its count asks, and the fork's first answer keeps its time.
   assert.equal(after.backoff.get(failureKey(b)).count, 4);
   assert.ok(after.backoff.get(failureKey(b)).due > 0);
   assert.deepEqual([after.notReady.get(taskKey(a)).since, after.notReady.get(taskKey(a)).tries], [1_000, 2]);
   assert.equal(passes(after, plainReview), null, "a review's same-exit count is not kept here");
   assert.deepEqual([...after.skipHeads.get(failureKey(a))], ["h1", null]);
-  assert.equal(after.sameExits.get(failureKey(review)).count, 2);
   // A task the old process never passed by is taken.
   assert.equal(passes(after, task({ id: "t99" })), null);
 });
@@ -410,4 +407,28 @@ test("a runner told by the server to forget a task takes it again, though it res
   assert.deepEqual(await run([]), [], "remembered, so passed by");
   assert.deepEqual(await run(["atelier/t13"]), ["t13"], "forgotten, so taken");
   assert.ok(said.some((l) => /forgot what it remembered of atelier\/t13/.test(l)), said.join("\n"));
+});
+
+// Criterion 5: the same-exit stop of a criteria review and a pre-review is read from the server.
+
+test("a criteria review or pre-review the server counts at the same-exit limit is passed by, whichever runner ran it", () => {
+  for (const job of ["criteria-review", "prereview"]) {
+    const t = task({ dispatch: { at: "2026-10-28T09:00:00.000Z", job }, request: 7 });
+    const sig = "0123456789abcdef0123456789abcdef";
+    assert.equal(passedBy({ ...t, item: { ...t.item, sameExit: { signature: sig, count: 1 } } }, ["build", job], { refused: new Set(), failures: new Map(), infrastructureFailures: new Map() }), null, job);
+    assert.match(passedBy({ ...t, item: { ...t.item, sameExit: { signature: sig, count: 2 } } }, ["build", job], { refused: new Set(), failures: new Map(), infrastructureFailures: new Map() }), /as the server counts them across runners/, job);
+  }
+});
+
+test("with no marker, a claimed task the server blocked and then unblocked runs the builder, not the resume shortcut", async () => {
+  const held = { state: "claimed", owner: actor, head: "recorded" };
+  // A local commit ahead of the recorded head, after a block and an unblock the server recorded.
+  const unblocked = fixture({ heads: ["local"], block: null });
+  const result = await runTask(withItem({ ...held, validationBlockedAt: BLOCKED_AT, unblockedAt: UNBLOCKED_AT }), config, "home:studio", unblocked.io);
+  assert.ok(unblocked.calls.some((c) => c.harness), "the builder ran");
+  assert.ok(!unblocked.logs.some((l) => /^resumed:/.test(l)), unblocked.logs.join("\n"));
+  // The same commit with no such record is a dead run's: finished without the builder.
+  const plain = fixture({ heads: ["local"], block: null });
+  await runTask(withItem(held), config, "home:studio", plain.io);
+  assert.ok(!plain.calls.some((c) => c.harness), "no builder: the commit is finished as before");
 });

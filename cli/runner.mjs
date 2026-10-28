@@ -1840,13 +1840,16 @@ export async function runTask(assignment, config, name, io) {
     // runs. A task the developer unblocked is also not finished without the
     // builder (unblocked).
     const serverBlock = !!item.validationBlockedAt && !(Date.parse(item.unblockedAt) >= Date.parse(item.validationBlockedAt));
+    // Whether the developer unblocked a block the server recorded is the
+    // server's word alone, marker or none: such a task is not finished from a
+    // local commit without the builder.
+    if (!serverBlock && item.unblockedAt && item.validationBlockedAt) unblocked = true;
     if (priorBlock && !serverBlock) {
       io.log(item.unblockedAt
         ? `the developer unblocked the task at ${item.unblockedAt}, after the validation_blocked report in the workspace, so the runner clears that report and runs the builder`
         : "the server records no validation_blocked report for the task, so the runner ignores and clears the marker in the workspace and runs the builder");
       await io.clearValidationBlock?.(workspace);
       priorBlock = null;
-      unblocked = !!item.unblockedAt;
     }
     if (priorBlock && priorBlock.taskKey !== taskKey) {
       io.log(priorBlock.taskKey
@@ -2888,8 +2891,11 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
         io.log(`criteria review failed: ${why}`);
         return { phase: "failed", reason: why, skipped: true };
       }
-      await fail(`harness exited ${result.code}`);
-      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
+      // The exit's signature goes with the note, so the server counts the same
+      // exit of this criteria review across runners (G5).
+      const exit = failedExitOf(result);
+      await fail(`harness exited ${result.code}; exit-signature: ${exitSignature(exit)}`);
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: exit };
     }
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
@@ -3077,8 +3083,9 @@ export async function runPrereview(assignment, config, name, runnerIO) {
         io.log(`pre-review released: ${why}`);
         return failed(why, { skipped: true });
       }
-      await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}` });
-      return failed(`harness exited ${result.code}`, { taskFailure: true, harnessExit: failedExitOf(result) });
+      const exit = failedExitOf(result);
+      await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}; exit-signature: ${exitSignature(exit)}` });
+      return failed(`harness exited ${result.code}`, { taskFailure: true, harnessExit: exit });
     }
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
@@ -3806,6 +3813,11 @@ export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? 
 export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), sameExits = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
+  // A criteria review's and a pre-review's same-exit count is the server's
+  // (G5): the one count every runner reads, kept across restarts. A review's
+  // is on its stop (below).
+  const shared = task.item.sameExit;
+  if (SAME_EXIT_JOBS.has(task.item.dispatch?.job) && shared?.count >= SAME_EXIT_LIMIT) return `Passed by: its harness exited the same way ${shared.count} times in a row, as the server counts them across runners; it is left for another model. It is tried again at a new head or request.`;
   const same = SAME_EXIT_JOBS.has(task.item.dispatch?.job) ? sameExits.get(failureKey(task)) : null;
   if (sameExitStopped(same)) return `Passed by: its harness exited the same way ${same.count} times in a row (${exitDetail(same.exit)}); this runner takes this request no more, and it is left for another model. It is tried again at a new head or once this runner restarts.`;
   const preparing = notReady.get(notReadyKey(task));
@@ -3899,15 +3911,13 @@ export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFai
   for (const [key, n] of infrastructureFailures) if (n >= 3) say(key, `skipped after ${n} infrastructure failures in a row under this dispatch`);
   for (const key of gaveUpTasks) say(key, "gave it up and released it; passed by until it is dispatched again");
   for (const [key, entry] of sameExits) if (sameExitStopped(entry)) say(key, `its harness exited the same way ${entry.count} times in a row`);
-  // A review's same-exit count is the server's, on its stop (the key has a
-  // head as its third part); the others are kept here.
-  const kept = [...sameExits].filter(([key]) => { try { return JSON.parse(key).length !== 3; } catch { return false; } });
   return {
     refused: newest(refused),
     gaveUp: newest(gaveUpTasks),
     failures: counted(failures),
     infrastructure: counted(infrastructureFailures),
-    sameExits: newest(kept).map(([key, entry]) => ({ key, count: entry.count, signature: entry.signature, exit: entry.exit })),
+    // Every same-exit count is the server's now (a review's stop, the others' exit counts).
+    sameExits: [],
     skipHeads: newest(skipHeads).map(([key, heads]) => ({ key, heads: [...heads] })),
     reasons: newest(reasons).map(([task, why]) => ({ task, why })),
     backoff: newest([...backoff].map(([key, entry]) => [key, entry.count])).map(([key, count]) => ({ key, count })),

@@ -237,3 +237,33 @@ test("a review request's stop counts the same exit across releases by its signat
   // A note with no signature leaves it unrecorded; the signature is a hash, never cut.
   assert.equal(stopAfter(null, "h".repeat(40), "no-verdict", "harness exited 2", at).exit, undefined);
 });
+
+test("alternating runners reach the shared same-exit limit for a criteria review and for a pre-review, each counted apart", async () => {
+  const { ns, L } = await world();
+  try {
+    const sig = "0123456789abcdef0123456789abcdef", other = "fedcba9876543210fedcba9876543210";
+    // The notes the runners send: a criteria review's, and a pre-review's JSON outcome (outcomeNote).
+    const notes = {
+      "criteria-review": (s) => `harness exited 2; exit-signature: ${s}`,
+      prereview: (s) => JSON.stringify({ outcome: "runner", detail: `the reviewer's harness exited 2; exit-signature: ${s}` }),
+    };
+    for (const job of ["criteria-review", "prereview"]) {
+      assert.equal(await L.sameExitOf(job, "t1", 7), null);
+      // Runner A, then runner B, then A: the count is the server's, whoever ran.
+      await L.noteExit(job, "t1", 7, notes[job](sig));
+      assert.equal((await L.sameExitOf(job, "t1", 7)).count, 1);
+      await L.noteExit(job, "t1", 7, notes[job](sig));
+      assert.equal((await L.sameExitOf(job, "t1", 7)).count, 2, `${job} reaches the limit`);
+      await L.noteExit(job, "t1", 7, notes[job](sig));
+      assert.equal((await L.sameExitOf(job, "t1", 7)).count, 3);
+      // Another exit starts the count again; another request and the other job are apart.
+      await L.noteExit(job, "t1", 7, notes[job](other));
+      assert.deepEqual(await L.sameExitOf(job, "t1", 7), { signature: other, count: 1 });
+      assert.equal(await L.sameExitOf(job, "t1", 8), null);
+      // A note without a signature (a timeout, a bad reply) counts nothing.
+      await L.noteExit(job, "t1", 8, job === "prereview" ? notes.prereview("").replace("; exit-signature: ", "") : "harness timed out");
+      assert.equal(await L.sameExitOf(job, "t1", 8), null);
+    }
+    assert.equal((await L.sameExitOf("prereview", "t2", 7)), null);
+  } finally { await ns.close(); }
+});

@@ -3444,7 +3444,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // timed out or wrote a reply no verdict could be read from.
     case "criteria-review-failed": {
       if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
-      return json(await L.failCriteriaReview(id, actor, body.request, String(body.note ?? ""), !!c.token));
+      const failed = await L.failCriteriaReview(id, actor, body.request, String(body.note ?? ""), !!c.token);
+      await L.noteExit("criteria-review", id, body.request, String(body.note ?? ""));
+      return json(failed);
     }
     // The owner's answer to one finding of a criteria review.
     case "criteria-finding": {
