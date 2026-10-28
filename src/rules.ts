@@ -5,6 +5,7 @@ import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
 import type { LargeRef } from "./large.ts";
 import type { CommitIdentityPolicy } from "./commit-identity.ts";
+import type { CheckSilence, CheckStop, TIMEOUT_FACT } from "./check-limit.ts";
 import { criteriaOf } from "./criteria.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -111,6 +112,10 @@ export interface Block {
   // was recorded on the developer's direction (t178).
   quote?: string;
   acting?: string;
+  // Set when the block is a fact about a run rather than anyone's decision
+  // (G7): "timeout", a check or suite stopped at its limit. The model lifts
+  // it with atelier unblock, recorded as a fact, with no developer's words.
+  fact?: typeof TIMEOUT_FACT;
 }
 
 // One entry of the secret flag the push scan records: where a key pattern was
@@ -321,6 +326,9 @@ export interface Evidence {
   // output of a failed run on a machine whose tail was cut (t569,
   // collectFailureLines in src/check-failure.ts), kept beside the tail.
   failureLines?: string;
+  // Set when the run was stopped at its limit rather than ending by itself
+  // (G7, src/check-limit.ts): a timeout or a silence, never a failed test.
+  stopped?: CheckStop;
   // The whole output of an observed check, kept in R2 by reference (src/large.ts)
   // when it is longer than the tail kept inline; `outputTail` is its end. Only
   // Only Atelier's own code records one, and nothing posted to the API can
@@ -668,6 +676,15 @@ export interface ProjectPolicy {
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
+  // The check limit (G7, src/check-limit.ts): the hard ceiling and the
+  // silence limit of a check's run, in minutes counted from its held test
+  // slot, and the checks that declare a silence limit of their own. Absent,
+  // the defaults hold (DEFAULT_CHECK_LIMIT_MINUTES, DEFAULT_SILENCE_LIMIT_MINUTES).
+  checkLimitMinutes?: number;
+  silenceLimitMinutes?: number;
+  startupLimitMinutes?: number;
+  slotWaitLimitMinutes?: number;
+  checkSilence?: CheckSilence[];
   // The ship order as the policy records it (cli/ship.mjs shipPolicy, sent at
   // init and sync): the commands its runs execute, whose files changeClass
   // guards like a check's, and the approval kinds it needs, which the inbox
@@ -2791,6 +2808,10 @@ export interface RecordedMerge {
   // The developer says the merge's declared protected actions already ran
   // (t754), with a short note of what ran, such as a deploy version id.
   shipped?: string;
+  // The reason of the developer's override of the independent review that
+  // stood at the commit merged, when the named approvals did not satisfy it
+  // (recordedMergeIndependence, G16).
+  override?: string;
   outside: true;
   at: string;
   by: string;
@@ -2850,6 +2871,95 @@ export function recordedMergeRefusal(record: { mergeCommit: string; commit: stri
   if (baseline.parents.length < 2) return new RuleError("not_a_merge", `${m} has ${baseline.parents.length} parent${baseline.parents.length === 1 ? "" : "s"}, so it is not a merge`, 409, "name the merge commit on main with --merge SHA");
   if (baseline.parents[1] !== record.commit) return new RuleError("second_parent_differs", `${m}'s second parent is ${baseline.parents[1].slice(0, 8)}, not ${record.commit.slice(0, 8)}, the commit named as the task's head`, 409, "name the merge commit whose second parent is the task's head with --merge SHA");
   return null;
+}
+
+// The independence a recorded merge needs (G16): the gate's own, applied to
+// the approvals the developer names at the commit merged. The change's class
+// is read from the paths Atelier observed at that commit; paths never
+// observed are taken as a protected change's, the safe side, as the gate
+// lands nothing whose paths it has not read. A change the gate asks no review
+// of keeps record-merge's own rule (one approval at the commit, from
+// recordedMerge). Otherwise the approvals named must be ones the gate would
+// count, or an override the developer recorded at that commit stands in for
+// them, as in the gate; a project that forbids overrides (noOverride) counts
+// none and refuses the record. In fast mode the gate asks no review before
+// the merge, so neither does this; the post-merge review is asked after.
+//
+// The verdicts are resolved as the gate resolves them (countingReviews: the
+// latest standing review per reviewer at the commit and the criteria now),
+// over the reviews the Ledger holds and the ones named. A named approval
+// keeps the provenance of the Ledger's standing review by that reviewer at
+// that commit, as the gate reads it: the reviewer's own token, or the
+// developer's token answering a review request the reviewer claimed for that
+// head (claimed). One the Ledger has no standing review for is the
+// developer's word in a model's name, so it is unproved (proved: false).
+// As at the gate, proof is asked of a protected change's review only
+// (unprovedReview in independentApproval); a coordinated change's review
+// counts whoever recorded it. A named rejection is a
+// verdict like any other, so it withdraws an earlier approval of its
+// reviewer, as a later rejection does at the gate. An approval counts only
+// when it is named and still its reviewer's standing verdict. Where the
+// project allows overrides, unproved approvals that would otherwise count
+// stand in as the developer's override, named as such on the record.
+export function recordedMergeIndependence(
+  record: { commit: string; reviews: readonly RecordedReview[]; at: string },
+  item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, fast = false,
+): { refusal: RuleError | null; override: ReviewOverride | null } {
+  const ok = { refusal: null, override: null };
+  if (fast) return ok;
+  const paths = evidenceAt(policy, evidence, record.commit).changedPaths;
+  const kind = paths === null ? "protected" : changeClass(paths, policy);
+  const need = approvalsNeeded(policy, kind, paths);
+  if (!need.as || !need.count) return ok;
+  const as = need.as;
+  const contributors = contributorsOf(item);
+  const single = singleFamily(policy);
+  const at: ReviewBinding = { head: record.commit, criteria: criteriaOf(item) };
+  const held = reviews.filter((r) => standingReview(r, at));
+  const given = record.reviews.filter((r) => r.head === record.commit);
+  // The named reviews the Ledger does not already hold as standing, in the
+  // order given; one with no date is as of the record.
+  const named: Review[] = given
+    .filter((r) => r.verdict === "reject" || !held.some((h) => h.by === r.by))
+    .map((r) => ({ itemId: item.id, by: r.by, head: r.head, approve: r.verdict === "approve", note: "", at: r.at ?? record.at, criteria: at.criteria, recordedBy: owner, proved: false, claimed: false }));
+  const approvers = new Set(given.filter((r) => r.verdict === "approve").map((r) => r.by));
+  const standing = countingReviews([...held, ...named], at, policy, owner);
+  const candidates = standing.filter((r) => r.approve && approvers.has(r.by));
+  // Counted by the gate's own counting (approvalsCounted): independentApproval,
+  // one per model, and a tier approval as any other where two or more are needed.
+  const judged = { ...item, head: record.commit };
+  const counted = approvalsCounted(judged, policy, candidates, kind, paths, owner, {});
+  if (counted.length >= need.count) return ok;
+  const message = need.risk ? riskBlocker(need.risk, need.count, counted.length, single) : protectedNeed(single);
+  // Why each approval named does not count, in the words the review routes use.
+  const why = [...approvers].filter((by) => !counted.some((r) => r.by === by)).map((by) => {
+    const r = standing.find((s) => s.by === by);
+    const reason = !r ? "no standing review at this commit"
+      : !r.approve ? "withdrawn by its later rejection"
+      : contributed(r.by, contributors) ? "a contributor, and no model reviews its own work"
+      : sameActor(r.by, owner) ? "the developer, whose decision is not also the second opinion"
+      : companyRefusal(r.by, single) ?? (as === "protected" ? familyRefusal(r.by, contributors, single) : null)
+        ?? (as === "protected" && unprovedReview(r) ? unprovedBlocker(r) : null)
+        ?? (r.tier && need.count < 2 ? "a tier review, which is never the independent review" : null) ?? "already counted as the same model";
+    return `${by}: ${reason}`;
+  });
+  const detail = `${item.id} ${message}${why.length ? `; ${why.join("; ")}` : ""}`;
+  const review = `atelier record-merge ${item.id} --merge SHA --head ${record.commit} --review H/M=approve@${record.commit}`;
+  if (policy.noOverride) {
+    return { refusal: new RuleError("override_forbidden", `${detail}. ${overrideForbidden(single)}`, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
+  }
+  const override = overrideAt({ head: record.commit, reviewOverride: item.reviewOverride }, owner);
+  if (override && !override.rejectionsOnly) return { refusal: null, override };
+  // Where overrides are allowed, approvals that would count but for their
+  // proof stand in for the review as the developer's override, and the
+  // record says so; they are never counted as the independent review.
+  const withProof = approvalsCounted(judged, policy, candidates.map((r) => (unprovedReview(r) ? { ...r, proved: true } : r)), kind, paths, owner, {});
+  const unproved = withProof.filter((r) => !counted.some((c) => c.by === r.by));
+  if (unproved.length && withProof.length >= need.count) {
+    const reason = `the developer's record of ${unproved.map((r) => r.by).join(", ")}'s approval, which no review the Ledger holds proves`;
+    return { refusal: null, override: { head: record.commit, by: owner, reason, at: record.at } };
+  }
+  return { refusal: new RuleError("not_independent", detail, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
 }
 
 // The builder a commit's message names: its last Agent: line, as harness/model.
@@ -3475,18 +3585,18 @@ export function shipChanges(before: PolicyFields, after: PolicyFields): string[]
     .map((k) => `ship ${k === "shipRuns" ? "commands" : "approval kinds"}: ${JSON.stringify(before[k] ?? [])} -> ${JSON.stringify(after[k] ?? [])}`);
 }
 
-// What the merge guard needs of the item beyond its changed paths: who
-// contributed to it, which required checks were observed passing at the
-// accepted revision, and which live items its scope overlaps.
-export interface MergeContext { contributors?: string[]; passed?: string[]; overlapping?: string[] }
+// What the merge guard needs of the item beyond its changed paths: which
+// required checks were observed passing at the accepted revision, and which
+// live items its scope overlaps. Its contributors fed only the retired
+// eligible list's comparison (G16), so they are not read here.
+export interface MergeContext { passed?: string[]; overlapping?: string[] }
 
 export function mergeContext(
-  detail: { item: { id: string; scope: string[]; acceptedHead: string | null }; policy: ProjectPolicy; evidence: Evidence[]; events: { actor: string; kind: string; data: Record<string, unknown> }[] },
+  detail: { item: { id: string; scope: string[]; acceptedHead: string | null }; policy: ProjectPolicy; evidence: Evidence[] },
   items: { id: string; state: string; owner: string | null; scope: string[] }[] = [],
 ): MergeContext {
   const { item } = detail;
   return {
-    contributors: pushActors(detail.events),
     passed: evidenceAt(detail.policy, detail.evidence, item.acceptedHead).checks.filter((c) => c.grade === "observed" && c.passed).map((c) => c.claim),
     overlapping: items.filter((o) => o.id !== item.id && holdsScope(o) && scopesOverlap(item.scope, o.scope)).map((o) => `${o.id} (${o.owner ?? "unowned"})`),
   };

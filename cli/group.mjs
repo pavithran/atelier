@@ -1,5 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { constants as osConstants } from "node:os";
+import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
+
+// A limit in milliseconds, said in minutes.
+const minutes = (ms) => { const n = Math.round(ms / 600) / 100; return `${n} ${n === 1 ? "minute" : "minutes"}`; };
 
 // The process groups that hold group `pgid`'s processes and everything they
 // started: `pgid` itself, then the group of every process descended from a
@@ -76,11 +80,19 @@ function untrack(pid) {
 // output. Each stream then keeps its last half of maxBytes characters.
 // captureOrder additionally returns output in arrival order, capped to the
 // last maxBytes characters on overflow, under the same byte-counted stop.
-export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, onData, captureOrder = false, stdio = "pipe" } = {}) {
+//
+// The check limit (G7, cli/check-clock.mjs): given `silenceMs`, a run that
+// prints nothing and shows no process activity for that long is ended as
+// silent, and `timeoutMs` is its hard ceiling. Given `fromSlot`, `argv` is
+// the test-slot wrapper (cli/load.mjs) and both count from when it reports
+// the slot held, not from the spawn. The result then carries `stopped`,
+// {kind: "timeout" | "silent" | "startup" | "slot", ms}, and `silent` beside `timedOut`.
+export function runGroup(argv, { cwd, env, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, probe, every, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, onData, captureOrder = false, stdio = "pipe" } = {}) {
   return new Promise((done) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ["ignore", stdio, stdio] });
+    const clocked = silenceMs !== undefined || startupMs !== undefined || fromSlot;
+    const child = spawn(argv[0], argv.slice(1), { cwd, env: fromSlot ? { ...(env ?? process.env), [SLOT_HELD_FD]: "3" } : env, detached: true, stdio: ["ignore", stdio, stdio, ...(fromSlot ? ["pipe"] : [])] });
     const pid = child.pid;
-    let stdout = "", stderr = "", output = "", error, timedOut = false, bytes = 0, closed, ending = false, ended = !pid;
+    let stdout = "", stderr = "", output = "", error, timedOut = false, silent = false, stopped, bytes = 0, closed, ending = false, ended = !pid;
     const left = () => { try { process.kill(-pid, 0); return true; } catch { return false; } };
     const onExit = () => killTree(pid);
     if (pid) { process.on("exit", onExit); track(pid); onSpawn?.(pid); }
@@ -89,8 +101,9 @@ export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes =
       process.off("exit", onExit);
       untrack(pid);
       clearTimeout(deadline);
+      watch.end();
       signal?.removeEventListener("abort", onAbort);
-      done({ ...closed, stdout, stderr, ...(captureOrder ? { output } : {}), timedOut, error: error ?? (closed.signal ? new Error(`terminated by ${closed.signal}`) : undefined) });
+      done({ ...closed, stdout, stderr, ...(captureOrder ? { output } : {}), timedOut, ...(clocked ? { silent, stopped } : {}), error: error ?? (closed.signal ? new Error(`terminated by ${closed.signal}`) : undefined) });
     };
     function end() {
       if (ending || ended) return;
@@ -103,15 +116,29 @@ export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes =
       };
       wait();
     }
-    const deadline = timeoutMs === undefined ? undefined : setTimeout(() => {
+    const deadline = timeoutMs === undefined || clocked ? undefined : setTimeout(() => {
       timedOut = true;
       error ??= new Error(`exceeded its time limit of ${Math.round(timeoutMs / 1000)} s`);
       end();
     }, timeoutMs);
+    const watch = !clocked || !pid ? { output() {}, end() {} } : watchRun({
+      pid, held: fromSlot ? child.stdio[3] : null, ceilingMs: timeoutMs, silenceMs, startupMs, slotWaitMs, probe, every,
+      onStop: (stop) => {
+        if (closed || ending) return;
+        stopped = stop;
+        if (stop.kind === "silent") silent = true; else timedOut = true;
+        error ??= new Error(stop.kind === "silent" ? `was silent for ${minutes(stop.ms)}: no output, no process activity and no live child process`
+          : stop.kind === "startup" ? `showed no work in ${minutes(stop.ms)}: no output, no child process seen, no CPU time`
+          : stop.kind === "slot" ? `waited ${minutes(stop.ms)} for a test slot and was not started`
+          : `timed out after ${minutes(stop.ms)}, counted from its held test slot`);
+        end();
+      },
+    });
     function onAbort() { error ??= new Error("interrupted"); end(); }
     if (signal?.aborted) onAbort();
     else signal?.addEventListener("abort", onAbort, { once: true });
     const append = (key, chunk) => {
+      watch.output();
       if (onData) return onData(key, chunk);
       if (error) return;
       bytes += Buffer.byteLength(chunk);

@@ -9,7 +9,9 @@ export interface SessionData {
   next: string;
   head: string;
   dirty: boolean;
-  checks: { command: string; passed: boolean; grade: "reported" }[];
+  // `stopped` is what stopped a run at the check limit (G7), in Atelier's
+  // words ("timed out after 60 minutes"): not a failed test.
+  checks: { command: string; passed: boolean; grade: "reported"; stopped?: string }[];
   checksSkipped: boolean;
   // The registered checks that failed and `wrap --allow-failing` committed
   // past, by command. Absent when every check passed, when the checks were
@@ -35,7 +37,8 @@ export function cleanSession(value: Record<string, unknown>): SessionData {
   if (!Array.isArray(value.checks) || value.checks.length > 100) throw new Error("checks must be an array of at most 100 results");
   const checks = value.checks.map((c) => {
     if (!c || typeof c !== "object" || !sessionText(c.command) || typeof c.passed !== "boolean") throw new Error("a check needs a command and boolean result");
-    return { command: sessionText(c.command), passed: c.passed, grade: "reported" as const };
+    if (c.stopped !== undefined && (c.passed || !sessionText(c.stopped, 200))) throw new Error("a stopped check is a check that did not pass, with what stopped it");
+    return { command: sessionText(c.command), passed: c.passed, grade: "reported" as const, ...(c.stopped !== undefined ? { stopped: sessionText(c.stopped, 200) } : {}) };
   });
   const metadata: Partial<SessionData> = {};
   if (value.sessionAt !== undefined) {
@@ -96,7 +99,7 @@ export function sessionNoteText(note?: SessionNote): string {
     ...(d.commit ? [`Session commit: ${d.commit}`] : []),
     ...(d.pushes ?? []).map((p) => `Remote ${sessionText(p.remote, 200)}: ${p.passed ? "pushed" : "failed"}.`),
     ...(d.found?.length ? [`Filed tasks: ${d.found.join(", ")}`] : []),
-    ...d.checks.map((c) => `Reported: ${c.command}: ${c.passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`),
+    ...d.checks.map((c) => `Reported: ${c.command}: ${c.passed ? "passed" : c.stopped ? `${c.stopped}; stopped, not a failed test` : "failed"} (developer's checkout, not a clean clone).`),
     ...(d.checksSkipped ? ["Registered checks skipped (--no-check)."] : []),
     ...(d.checksOverridden?.length ? [`Failing checks overridden by --allow-failing: ${d.checksOverridden.join(", ")}.`] : [])].join("\n");
 }
@@ -104,9 +107,10 @@ export function sessionNoteText(note?: SessionNote): string {
 // A registered check that did not pass, with how it ended: `status` is its
 // exit status, or null when a signal ended it, `timedOut` when that signal
 // was wrap's own timeout.
-export interface FailedCheck { command: string; status: number | null; signal: string | null; timedOut: boolean }
+export interface FailedCheck { command: string; status: number | null; signal: string | null; timedOut: boolean; stopped?: string }
 
 function checkEnding(c: FailedCheck): string {
+  if (c.stopped) return `${c.stopped}; stopped at the check limit, not a failed test`;
   if (c.status !== null) return `exited ${c.status}`;
   if (c.timedOut) return "timed out";
   return c.signal ? `ended by ${c.signal}` : "did not run";

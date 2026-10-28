@@ -3,6 +3,12 @@ import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { closeSync, writeSync } from "node:fs";
+
+// The variable naming the descriptor the held slot is reported on (G7); the
+// same name as SLOT_HELD_FD in cli/check-clock.mjs, written out here so this
+// wrapper stays one file a test may copy on its own.
+const SLOT_HELD_FD = "ATELIER_SLOT_HELD_FD";
 
 // Host-wide, deliberately independent of HOME, ATELIER_CACHE, project and
 // runner configuration. Containers have their own /tmp and process namespace.
@@ -236,6 +242,23 @@ export function releaseSequence(metadata = {}, options = {}) {
   };
 }
 
+// The descriptor the caller asked the held slot to be reported on (G7,
+// cli/check-clock.mjs), or null.
+function heldFd(env = process.env) {
+  const fd = env[SLOT_HELD_FD];
+  return fd !== undefined && /^[3-9]$/.test(fd) ? Number(fd) : null;
+}
+
+// Once the slot is held and the command started, its pid goes to the
+// caller's descriptor, which is then closed: the caller's clock starts here,
+// and the time queued for the slot is not counted. A descriptor that cannot
+// be written (the caller has gone) changes nothing for the command.
+function reportHeld(pid) {
+  const fd = heldFd();
+  if (fd === null || !pid) return;
+  try { writeSync(fd, `${pid}\n`); closeSync(fd); } catch { /* nobody reads it */ }
+}
+
 export function slotInvocation(argv, metadata = {}, base = process.env) {
   const env = { ...base };
   // Scrubbed check environments explicitly retain only slot coordination.
@@ -306,7 +329,10 @@ async function main(argv) {
   // Start with the nonce in the exec environment (setting process.env later
   // is not reliably visible to ps). Never put it in argv or persisted scripts.
   if (!process.env[MARKER]) {
-    const child = spawn(process.execPath, [SLOT_WRAPPER, ...argv], { env: { ...process.env, [MARKER]: randomUUID() }, stdio: "inherit" });
+    // The descriptor a caller reads the held slot from (G7) goes to the
+    // wrapper that holds the slot.
+    const report = heldFd();
+    const child = spawn(process.execPath, [SLOT_WRAPPER, ...argv], { env: { ...process.env, [MARKER]: randomUUID() }, stdio: ["inherit", "inherit", "inherit", ...(report === null ? [] : [report])] });
     const forward = (signal) => { child.kill(signal); };
     const onInt = () => forward("SIGINT"), onTerm = () => forward("SIGTERM");
     process.on("SIGINT", onInt).on("SIGTERM", onTerm);
@@ -338,7 +364,11 @@ export async function runSlotCommand(command, metadata = {}, options = {}) {
     }
     acquired ??= await acquireSlot(metadata, { ...options, signal: controller.signal });
     if (controller.signal.aborted) throw new Error("test slot wait cancelled");
-    const child = spawn(command[0], command.slice(1), { stdio: "inherit" });
+    // The command runs without the report's variable, so a wrapper nested in
+    // it never reports a slot it only reuses.
+    const { [SLOT_HELD_FD]: _held, ...commandEnv } = process.env;
+    const child = spawn(command[0], command.slice(1), { stdio: "inherit", env: commandEnv });
+    reportHeld(child.pid);
     let ended = false, code = 1, spawnError;
     child.once("error", (error) => { spawnError = error; ended = true; });
     child.once("exit", (exit, signal) => { code = exit ?? (signal === "SIGINT" ? 130 : 143); exitSignal = signal; ended = true; });

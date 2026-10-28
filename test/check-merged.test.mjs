@@ -19,7 +19,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
 
 // `mainChange` and `taskChange` write each side's commit; `onMain` builds the
 // task's commit on top of main's newer commit instead of the fork point.
-async function fixture(t, { mainChange, taskChange, onMain = false, check, prepare, onEvidence }) {
+async function fixture(t, { mainChange, taskChange, onMain = false, check, prepare, onEvidence, limits = {} }) {
   const root = mkdtempSync(join(tmpdir(), "atelier-merged-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const identity = (cwd) => { git(cwd, "config", "user.name", "Test"); git(cwd, "config", "user.email", "test@example.invalid"); };
@@ -61,7 +61,7 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check, prepa
       posts.push({ path, body: JSON.parse(raw) });
       if (path.endsWith("/evidence")) onEvidence?.(JSON.parse(raw));
     }
-    let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: Array.isArray(check) ? check : [check], prepare, protected: [] }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
+    let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: Array.isArray(check) ? check : [check], prepare, protected: [], ...limits }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
     if (path.endsWith("/read-token")) data = { remote: fork, token: "fake-fork-token", head, defaultBranch: "main" };
     if (path.endsWith("/baseline-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
     // A task with no plan is measured against the baseline, so its base token names it.
@@ -189,13 +189,15 @@ test("preparation failure reports its command, status and bounded redacted outpu
   assert.equal(statSync(log).mode & 0o777, 0o600);
 });
 
-test("preparation timeout stops checks and names the signal", async (t) => {
+// The preparation goes by the project's check limit (G7), from the server's
+// policy: silent here, and stopped as silent.
+test("preparation stopped at the check limit stops checks and names the stop", async (t) => {
   if (!canInspectSlots(t)) return;
-  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), prepare: { command: "sleep 30", inputs: ["STATE.md"], outputs: ["ready"] }, check: "true" });
-  const r = await f.run(["check", "t1", "--project", "proj"], { ATELIER_CHECK_TIMEOUT: "200" });
+  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), prepare: { command: "sleep 30", inputs: ["STATE.md"], outputs: ["ready"] }, check: "true", limits: { silenceLimitMinutes: 0.005 } });
+  const r = await f.run(["check", "t1", "--project", "proj"]);
   assert.equal(r.status, 2);
   assert.match(r.stderr, /Preparation `sleep 30` failed: (signal|exit)/);
-  assert.match(r.stderr, /timed out/);
+  assert.match(r.stderr, /silent for 0\.005 minutes/);
   assert.deepEqual(f.evidence(), []);
 });
 

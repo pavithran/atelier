@@ -32,12 +32,13 @@ import {
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, reviewNotes, openNotes, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
-  recordedMerge, recordedMergeRefusal, type RecordedMerge,
+  recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
   forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
+import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
@@ -330,6 +331,13 @@ export interface ProjectInit {
   reviewBar?: string | null;
   // The project's prose standard; null clears it (see ProjectPolicy.proseStandard).
   proseStandard?: string | null;
+  // The check limit (G7): null returns each to the default, and an empty
+  // list clears the checks' own silence limits (see ProjectPolicy.checkLimitMinutes).
+  checkLimitMinutes?: number | null;
+  silenceLimitMinutes?: number | null;
+  startupLimitMinutes?: number | null;
+  slotWaitLimitMinutes?: number | null;
+  checkSilence?: CheckSilence[];
   // The model that triages a landing before its review; null clears it
   // (see ProjectPolicy.triage).
   triage?: string | null;
@@ -685,6 +693,16 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
   const proseStandard = i.proseStandard === undefined ? p?.proseStandard : i.proseStandard ?? undefined;
+  const checkLimitMinutes = i.checkLimitMinutes === undefined ? p?.checkLimitMinutes : i.checkLimitMinutes ?? undefined;
+  const silenceLimitMinutes = i.silenceLimitMinutes === undefined ? p?.silenceLimitMinutes : i.silenceLimitMinutes ?? undefined;
+  const startupLimitMinutes = i.startupLimitMinutes === undefined ? p?.startupLimitMinutes : i.startupLimitMinutes ?? undefined;
+  const slotWaitLimitMinutes = i.slotWaitLimitMinutes === undefined ? p?.slotWaitLimitMinutes : i.slotWaitLimitMinutes ?? undefined;
+  // A check's own silence limit stands while the command is a check or the
+  // preparation; one for a command the policy no longer runs is dropped.
+  const runs = new Set([...checks, ...(prepare ? [prepare.command] : [])]);
+  const stranger = (i.checkSilence ?? []).find((c) => !runs.has(c.command));
+  if (stranger) throw new RuleError("bad_check_silence", `--check-silence names \`${stranger.command}\`, which is not one of the project's checks or its preparation; name a command given with --check`, 400);
+  const checkSilence = (i.checkSilence ?? p?.checkSilence ?? []).filter((c) => runs.has(c.command));
   const triage = i.triage === undefined ? p?.triage : i.triage ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const resolvers = i.resolvers ?? p?.resolvers ?? [];
@@ -717,6 +735,11 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(regenerate ? { regenerate } : {}),
       ...(reviewBar ? { reviewBar } : {}),
       ...(proseStandard ? { proseStandard } : {}),
+      ...(checkLimitMinutes ? { checkLimitMinutes } : {}),
+      ...(silenceLimitMinutes ? { silenceLimitMinutes } : {}),
+      ...(startupLimitMinutes ? { startupLimitMinutes } : {}),
+      ...(slotWaitLimitMinutes ? { slotWaitLimitMinutes } : {}),
+      ...(checkSilence.length ? { checkSilence } : {}),
       ...(triage ? { triage } : {}),
       ...(reviewTier.length ? { reviewTier: [...reviewTier] } : {}),
       ...(resolvers.length ? { resolvers: [...resolvers] } : {}),
@@ -3102,7 +3125,7 @@ export class Ledger extends DurableObject<Env> {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
       if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor) {
         const gone = orphanedBy(item, this.runnerPolls());
-        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409, `only the developer can: run atelier dispatch ${id} --to home${gone ? "" : ` once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`);
+        throw new RuleError("claimed", `${id} is claimed by ${item.owner} on ${item.runner}${gone ? `, which last polled at ${gone.lastPoll}, so the dispatch can be given to another runner now` : `; the dispatch can be given to another runner once ${item.runner} has not polled for ${RUNNER_GONE_MS / 60_000} minutes`}`, 409, "leave this dispatch to its holder and take the next one: atelier runner polls again");
       }
     }
     throw runnerDenied(token);
@@ -4539,7 +4562,10 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     const fence = this.prereviewFence(id);
     if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`, 409, "run atelier show ID");
-    if (actor !== this.owner) assertOwner(item, actor);
+    // A block that is a fact (G7: a run stopped at its limit) waits on no
+    // one's decision, so any model with standing in the project lifts it.
+    const fact = !fence && item.blocked?.fact ? item.blocked.fact : null;
+    if (actor !== this.owner && !fact) assertOwner(item, actor);
     const at = new Date().toISOString();
     const said = direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {};
     if (fence) {
@@ -4548,7 +4574,7 @@ export class Ledger extends DurableObject<Env> {
     }
     if (item.state !== "blocked" || !item.blocked) return this.item(id);
     this.update(id, { state: item.blocked.from, blocked: null }, at);
-    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from, ...said }, at, proved);
+    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from, ...(fact ? { fact } : {}), ...said }, at, proved);
     return this.item(id);
   }
 
@@ -4801,9 +4827,16 @@ export class Ledger extends DurableObject<Env> {
     this.dropRunnerJobs(id);
     const at = new Date().toISOString();
     if (blocks) {
-      const record: Block = { reason, by: actor, at, from: item.state };
+      // A build that stopped at the check limit (G7) is blocked as a fact:
+      // its report starts with Atelier's words for a stop, or the newest
+      // observed check at its head was stopped. The model lifts it.
+      const latest = item.head ? this.evidenceFor(id).filter((e) => e.grade === "observed" && e.head === item.head).at(-1) : undefined;
+      // The runner's note may repeat the report's own `validation_blocked:` line.
+      const said = note.slice(VALIDATION_BLOCKED.length).replace(/^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:/i, "").trim();
+      const fact = STOP_WORDS.test(said) || !!latest?.stopped;
+      const record: Block = { reason, by: actor, at, from: item.state, ...(fact ? { fact: TIMEOUT_FACT } : {}) };
       this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
-      this.log(id, actor, "item.blocked", { reason, from: item.state, validationBlocked: true, note }, at, proved);
+      this.log(id, actor, "item.blocked", { reason, from: item.state, validationBlocked: true, note, ...(fact ? { fact: TIMEOUT_FACT } : {}) }, at, proved);
       return this.item(id);
     }
     this.update(id, { owner: null, state: "open" }, at);
@@ -6504,9 +6537,12 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "plan") throw new RuleError("plan_merge", `${id} is a plan; a plan's merge lands its parts, and atelier merge records it`, 409, `run atelier merge ${id}`);
     const refusal = recordedMergeRefusal(record, baseline);
     if (refusal) throw refusal;
+    // The gate's independence, and the project's ban on overrides (G16).
+    const independence = recordedMergeIndependence(record, item, this.project().policy, this.evidenceFor(id), this.reviewsFor(id), this.owner, this.mode().mode === "fast");
+    if (independence.refusal) throw independence.refusal;
     this.assertPostMergeFree(id);
     this.assertNoClaimInFlight(id);
-    return { item, record, repeat: null };
+    return { item, record: independence.override ? { ...record, override: independence.override.reason } : record, repeat: null };
   }
 
   // The task's workspace and its write token, read together, so the token
@@ -7062,7 +7098,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; history?: HistoryRead }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -7093,7 +7129,9 @@ export class Ledger extends DurableObject<Env> {
       // runner alone can tell which of those files exist at the commit its
       // build starts from, so it filters and renders them. A field an older
       // runner does not read changes nothing for it.
-      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item) };
+      // The project's check limit (G7), which the runner's brief gives the
+      // builder as its suite's budget, counted from the held test slot.
+      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
     }
     assertOwner(item, actor);
     const project = this.project();

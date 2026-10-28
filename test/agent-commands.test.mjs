@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { doneReport, formatBrief, formatTask } from "../cli/atelier.mjs";
+import { checkLimits, limitText } from "../src/check-limit.ts";
 import { cli, actor, brief, git, head, passed, fixture } from "./agent-commands-shared.mjs";
 
 const submitted = { state: "submitted" };
@@ -149,7 +150,7 @@ test("show prints no failure block while the gate reads none: a check that faile
   evidence.push(row({ id: 1, head: "b".repeat(40), at: "2026-10-10T11:00:00.000Z" }), row({ id: 2, at: "2026-10-10T12:00:00.000Z" }), row({ id: 3, at: "2026-10-10T12:01:00.000Z", passed: true }));
   const r = await f.run(["show", "t1"]);
   assert.equal(r.status, 0, r.output);
-  assert.equal(r.output.trim(), `${formatBrief("proj", "t1", brief, f.origin)}\n\nStage: built at ${f.head.slice(0, 8)}`);
+  assert.equal(r.output.trim(), `${formatBrief("proj", "t1", brief, f.origin)}\n\nStage: built at ${f.head.slice(0, 8)}\n\nCheck limit: ${limitText(null)}`);
   assert.deepEqual(JSON.parse((await f.run(["show", "t1", "--json"])).stdout).failedChecks, []);
 });
 
@@ -271,12 +272,12 @@ test("show prints the owner brief and preserves JSON output", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["show", "t1"]);
   assert.equal(r.status, 0, r.output);
-  assert.equal(r.output.trim(), `${formatBrief("proj", "t1", brief, f.origin)}\n\nStage: built at ${f.head.slice(0, 8)}`);
+  assert.equal(r.output.trim(), `${formatBrief("proj", "t1", brief, f.origin)}\n\nStage: built at ${f.head.slice(0, 8)}\n\nCheck limit: ${limitText(null)}`);
   const json = await f.run(["show", "t1", "--json"]);
   assert.equal(json.status, 0, json.output);
   // show's JSON carries the reviews and any unparsable replies kept on the
   // task (t407); this fixture records none.
-  assert.deepEqual(JSON.parse(json.stdout), { ...brief, stage: { stage: "built", detail: { head: f.head, source: "push" } }, reviews: [], unparsable: [], failedChecks: [] });
+  assert.deepEqual(JSON.parse(json.stdout), { ...brief, stage: { stage: "built", detail: { head: f.head, source: "push" } }, checkLimit: { ...checkLimits(null), checkSilence: [] }, reviews: [], unparsable: [], failedChecks: [] });
 });
 
 

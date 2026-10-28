@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { checkEnv } from "./check-env.mjs";
+import { checkLimits, limitMs, stopOf, stopText } from "../src/check-limit.ts";
 import { runGroup } from "./group.mjs";
 import { describeConflicts, mergeThrough, previewMerge } from "./merge-pipeline.mjs";
 import { excludeScratch } from "./scratch.mjs";
@@ -200,7 +201,6 @@ const READ_BACKOFF_MAX_MS = 30_000;
 // How long a machine with no registered checkout follows the land job before
 // it stops following; the request stays recorded.
 const FOLLOW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_FOLLOW_TIMEOUT ?? 3 * 60 * 60_000);
-const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
 const LEASE_RENEW_MS = Number(process.env.ATELIER_LAND_RENEW_MS ?? 60_000);
 // How long --wait queues for the landing lease before it gives up, so a
 // landing left holding the lease does not keep a queued one waiting for ever.
@@ -1554,12 +1554,18 @@ function generatorOutput(regenerated) {
 // runs it, to bring every fixture current with the merged tree. Conflicts
 // are no longer settled through it: only the generators the project
 // declares (cli/merge-pipeline.mjs) write outputs during a merge. It leads a process group of its own
-// (runGroup), ended whole when its shell exits or its time limit passes.
-async function runRegenerateIn(dir, regenerate, io) {
-  const r = await runGroup(["/bin/sh", "-c", regenerate], { cwd: dir, env: checkEnv(), timeoutMs: CHECK_TIMEOUT_MS });
-  const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
+// (runGroup), ended whole when its shell exits or when it passes the
+// project's check limit (G7, src/check-limit.ts), read from `policy`, the
+// server's: silent for the silence limit, or at the hard ceiling.
+export async function runRegenerateIn(dir, regenerate, io, policy = null) {
+  const limits = checkLimits(policy, regenerate);
+  const { ceilingMs, silenceMs, startupMs } = limitMs(limits);
+  const r = await runGroup(["/bin/sh", "-c", regenerate], { cwd: dir, env: checkEnv(), timeoutMs: ceilingMs, silenceMs, startupMs });
+  const stopped = stopOf(r.stopped, limits) ?? null;
+  const why = stopped ? `${stopText(stopped)}; stopped at the project's check limit` : r.error ? r.error.message : `exit ${r.status}`;
+  const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${stopped ? why : r.error.message}` : ""}`, io.secrets());
   if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
-  return { ok: !r.error && r.status === 0, why: r.error ? r.error.message : `exit ${r.status}` };
+  return { ok: !r.error && r.status === 0, why, ...(stopped ? { stopped } : {}) };
 }
 
 // The check step of either landing (t436): `atelier check` as a step of its
@@ -1840,7 +1846,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
         taken.set(file, await shaOf(file));
       }
       if (either) {
-        regen = await runRegenerateIn(dir, regenerate, io);
+        regen = await runRegenerateIn(dir, regenerate, io, d0?.policy);
         if (regen.ok) {
           unwritten = [];
           for (const file of conflicts) if (await shaOf(file) === taken.get(file)) unwritten.push(file);
@@ -1976,7 +1982,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
     if (dirtyBefore) throw new StepError(`${id}'s workspace gained uncommitted changes since the landing began (${dirtyPaths(dirtyBefore).join(", ")}); the landing stops before regenerating so it does not commit them. Commit or set them aside, then run atelier land ${id} again`);
     const start = Date.now();
     print(`Regenerating with \`${regenerate}\`…`);
-    const r = await runRegenerateIn(dir, regenerate, io);
+    const r = await runRegenerateIn(dir, regenerate, io, d0?.policy);
     if (!r.ok) {
       await record("regenerate", Date.now() - start, { command: regenerate, failed: true });
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);

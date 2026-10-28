@@ -4,6 +4,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
+import { checkLimits, stopLine, stopOf } from "../../src/check-limit.ts";
 import { OWNER, P, actor, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 import { pushCheckoutRemote } from "../checkout-push.mjs";
@@ -38,11 +39,16 @@ export default async function wrapCommand() {
   const sequence = releaseSequence({ project: name, actor: as, class: "release" });
   try {
     if (!data.checksSkipped) for (const command of record.policy.checks) {
-      const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: sequence.next() });
+      // The project's check limit (G7), from the server's policy.
+      const limits = checkLimits(record.policy, command);
+      const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: sequence.next(), limits });
       const passed = result.status === 0 && !result.error;
-      data.checks.push({ command, passed, grade: "reported" });
-      console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
-      if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut });
+      // A run stopped at the check limit is said as what stopped it, not as a failure.
+      const stop = passed ? undefined : stopOf(result.stopped, limits);
+      const stopped = stop ? stopLine(stop) : undefined;
+      data.checks.push({ command, passed, grade: "reported", ...(stopped ? { stopped } : {}) });
+      console.log(`Reported: ${command}: ${passed ? "passed" : stopped ? `${stopped}; stopped, not a failed test` : "failed"} (developer's checkout, not a clean clone).`);
+      if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut, ...(stopped ? { stopped } : {}) });
     }
   } finally { await sequence.close(); }
   // A failing registered check stops wrap here, with every result printed

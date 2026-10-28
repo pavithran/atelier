@@ -24,7 +24,8 @@ export default async function finishCommand() {
   await checkCommand();
   const changed = git(["status","--porcelain"], { raw: true }).split("\n").filter(Boolean).map((line) => line.slice(3));
   // A failed check is the outcome even when it also changed the workspace; the changed files are named with it.
-  if (doneChecks.some((c) => c.result === "failed")) return { id, head, checks: doneChecks, changed };
+  // A check stopped at the check limit (G7) ends done as a failed one does: nothing is submitted.
+  if (doneChecks.some((c) => c.result === "failed" || c.result === "stopped")) return { id, head, checks: doneChecks, changed };
   if (git(["rev-parse","HEAD"]) !== head || changed.length) die("the workspace changed while finishing; inspect it and finish again");
   const current = await call("GET", I(name,id), undefined, as);
   if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
