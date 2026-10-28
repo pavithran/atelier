@@ -225,13 +225,13 @@ test("a landing that joins or leaves the lease wait queue writes landing.queued 
   await L().cancelProjectLanding(holder, "owner");
 });
 
-test("an event written for an earlier time carries no stage", async () => {
+test("the release a dispatch takes back carries a stage, as every event of a task does", async () => {
   const id = await newTask("Replayed");
   const claim = await L().claim(id, AGENT);
   await L().recordToken(id, AGENT, claim.generation, null, null);
   await L().dispatch(id, "owner", { to: "home", release: true, note: "again" });
   const released = await lastOf(id, "item.released");
-    assert.equal(released.stage, undefined);
+  assert.equal(typeof released.stage, "string");
   assert.equal((await lastOf(id, "item.dispatched")).stage, "queued");
 });
 

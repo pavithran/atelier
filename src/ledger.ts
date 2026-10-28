@@ -2660,8 +2660,8 @@ export class Ledger extends DurableObject<Env> {
         const item = this.newItem(shortTitle(`Revert ${original.id}: ${original.title}`), original.scope, actor, {
           brief: `Undo ${original.id} by reverting its recorded merge commit ${mergeCommit} with git revert -m1. Resolve conflicts in this workspace, then run the normal checks and independent review.`,
         });
-        this.log(item.id, actor, "item.reverts", revert, item.createdAt, false, true);
-        this.log(original.id, actor, "item.revert_requested", { itemId: item.id, mergeCommit }, item.createdAt, false, true);
+        this.log(item.id, actor, "item.reverts", revert, item.createdAt);
+        this.log(original.id, actor, "item.revert_requested", { itemId: item.id, mergeCommit }, item.createdAt);
         return { ...item, revert };
       });
     }
@@ -3276,7 +3276,7 @@ export class Ledger extends DurableObject<Env> {
       this.dropToken(id, token);
       this.dropRunnerJobs(id);
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
-      this.log(id, actor, "item.released", { from: item.owner, note: TAKEN_BACK }, d.at, false, true);
+      this.log(id, actor, "item.released", { from: item.owner, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
@@ -6087,6 +6087,12 @@ export class Ledger extends DurableObject<Env> {
   // owner's switch writes, and each switch is a standing decision too: fast
   // mode records one with the owner's reason, and the switch back to full
   // withdraws it, so every review brief says while it stands.
+  // Whether the project is in fast mode, read without the project record.
+  private fastMode(): boolean {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode'`).toArray()[0];
+    return projectMode(row ? JSON.parse(row.value as string) : null).mode === "fast";
+  }
+
   mode(): ProjectMode & { line: string } {
     this.project();
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode'`).toArray()[0];
@@ -10471,16 +10477,18 @@ export class Ledger extends DurableObject<Env> {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) return null;
     const item = toItem(row);
+    // The tick shows no stage for a plan, so its events carry none.
+    if (item.kind === "plan") return null;
     if (item.state === "merged" || item.state === "integrated" || item.state === "abandoned" || item.state === "blocked") return eventStage(item);
     const events = this.events(id, Number.MAX_SAFE_INTEGER);
     const criteria = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, id).one();
     return eventStage(item, {
       events, ready: standingFastReady(events), agreed: (criteria.n as number) > 0 && (item.accept?.length ?? 0) > 0,
-      policy: this.project().policy, evidence: this.evidenceFor(id), reviews: this.reviewsFor(id), owner: this.owner, fast: this.mode().mode === "fast",
+      policy: this.project().policy, evidence: this.evidenceFor(id), reviews: this.reviewsFor(id), owner: this.owner, fast: this.fastMode(),
     });
   }
 
-  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false, replay = false): void {
+  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
     // An acting model recorded since names are converted where typed is an
     // exact pool id, marked so: the judgement record reads it as it is and
     // only an unmarked one, from before, through the aliases (canonicalModel;
@@ -10488,9 +10496,7 @@ export class Ledger extends DurableObject<Env> {
     if (typeof data.acting === "string" && (ACTING_EVENTS as readonly string[]).includes(kind)) data = { ...data, actingExact: true };
     // The stage is read from the item as it stands, so a caller logs after it
     // has changed the item.
-    // An event written for an earlier time (a replay) has no stage: the item
-    // now is not the item then.
-    const stage = itemId === null || replay ? null : this.stageNow(itemId);
+    const stage = itemId === null ? null : this.stageNow(itemId);
     const seq = Number(this.sql.exec(
       `INSERT INTO events (item_id, at, actor, kind, data, proved, stage) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
       itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null, stage,
