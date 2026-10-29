@@ -62,7 +62,7 @@ test("each command's flag list describes every flag it takes and no other, and i
       assert.ok(what.length > 8, `${cmd}: ${key} needs a description`);
       assert.doesNotMatch(what, /\s[–—-]\s|[–—]/, `${cmd}: ${key}: use a colon, semicolon or full stop`);
     }
-    assert.ok(help.example.replace(/^ATELIER_ACTING=[^\s]+ /, "").startsWith(`atelier ${cmd}`), `${cmd}: the example runs another command: ${help.example}`);
+    assert.ok(help.example.replace(/^ATELIER_(?:ACTING|TOKEN)=[^\s]+ /, "").startsWith(`atelier ${cmd}`), `${cmd}: the example runs another command: ${help.example}`);
   }
   assert.deepEqual(Object.keys(COMMAND_USAGE).sort(), OWN.slice().sort());
   assert.throws(() => commandUsage("ops"), /no help for atelier ops/);
@@ -86,7 +86,7 @@ test("every command answers --help with its usage, what it does, its flags and a
       for (const form of formsOf(cmd)) assert.ok(lines.includes(`usage: atelier ${form}`) || lines.includes(`       atelier ${form}`), `${cmd}: no usage line for ${form}`);
       if (accepted(cmd).size) assert.ok(lines.includes("Flags:"), `${cmd}: no flag list`);
       assert.ok(lines.includes("Every command also takes --project NAME and --as harness/model (or ATELIER_ACTOR); --help prints this."), `${cmd}: no line on the common flags`);
-      assert.ok(lines.at(-2).replace(/^Example: ATELIER_ACTING=[^\s]+ /, "Example: ").startsWith(`Example: atelier ${cmd}`), `${cmd}: the help does not end with an example`);
+      assert.ok(lines.at(-2).replace(/^Example: ATELIER_(?:ACTING|TOKEN)=[^\s]+ /, "Example: ").startsWith(`Example: atelier ${cmd}`), `${cmd}: the help does not end with an example`);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

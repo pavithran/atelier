@@ -520,8 +520,11 @@ The runner builds it as in step 4, and the agent's `done` leaves it
 submitted. Then the developer lands it whole, in the registered checkout:
 
 ```sh
-atelier land t13 --reviewer claude-code/opus-5.5 --project demo --as claude-code/opus-5.5
+export ATELIER_ACTING=claude-code/opus-5.5
+atelier land t13 --reviewer claude-code/opus-5.5 --project demo
 ```
+
+Export `ATELIER_ACTING` so the child `accept` and `merge` commands inherit the acting model; `land` does not forward `--as`.
 
 ```text
 Landing t13 from recorded source 5d31b9c0….

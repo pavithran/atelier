@@ -7,7 +7,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 4, slot: 63,
       form: "refresh-pushing ID --lease ID --main-head SHA --expected-head SHA --head SHA",
-      about: "A task refresh's leaseholder says it pushes the refreshed merge next (t462). Refused when the task moved from the head the lease found, or is busy or landing; taken, no landing of the task begins until the push is reconciled: recorded by the leaseholder, or, once its lease lapses, by the integrator's next refresh job, or released by the developer with `refresh-lease ID --release LEASE --reason TEXT`.",
+      about: "Run as the leaseholder: the integrator uses its own `ATELIER_TOKEN` (the example reads it from `INTEGRATOR_TOKEN`); a resolver uses its own agent token or the developer token with `--as H/M` naming that resolver. A task refresh's leaseholder says it pushes the refreshed merge next (t462). Refused when the task moved from the head the lease found, or is busy or landing; taken, no landing of the task begins until the push is reconciled: recorded by the leaseholder, or, once its lease lapses, by the integrator's next refresh job, or released by the developer with `refresh-lease ID --release LEASE --reason TEXT`.",
     },
   ],
   flags: { lease: false, "main-head": false, "expected-head": false, head: false },
@@ -18,7 +18,7 @@ const spec: CommandSpec = {
       "--expected-head SHA": "the task's head the lease found",
       "--head SHA": "the refreshed merge about to be pushed",
     },
-    example: "atelier refresh-pushing t3 --lease 0f3c... --main-head 0123... --expected-head 4567... --head 89ab... --project demo",
+    example: 'ATELIER_TOKEN="$INTEGRATOR_TOKEN" atelier refresh-pushing t3 --lease 0f3c1234-5678-49ab-8cde-0123456789ab --main-head 0123456789abcdef0123456789abcdef01234567 --expected-head 456789abcdef0123456789abcdef0123456789ab --head 89abcdef0123456789abcdef0123456789abcdef --project demo',
   },
 };
 

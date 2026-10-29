@@ -7,12 +7,12 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 5, slot: 50,
       form: "refreshed ID --main-head SHA [--merge-commit SHA]",
-      about: "The integrator reports a refresh: main's head, the one the refresh job names, merged into the plan's branch. The server checks the merge commit against the branch before recording it, and it becomes the commit later parts branch from and later integrations build on. Without `--merge-commit` the branch already held main's head, which the server checks.",
+      about: "Run with the integrator's own `ATELIER_TOKEN` (the example reads it from `INTEGRATOR_TOKEN`), bound to `atelier/integrator`; the developer token cannot act as the integrator. The integrator reports a refresh: main's head, the one the refresh job names, merged into the plan's branch. The server checks the merge commit against the branch before recording it, and it becomes the commit later parts branch from and later integrations build on. Without `--merge-commit` the branch already held main's head, which the server checks.",
     },
     {
       group: "Agents", line: 4, slot: 51,
       form: "refreshed ID --lease ID --main-head SHA --expected-head SHA [--head SHA] [--diff-before ID --diff-after ID] [--transformations LIST]",
-      about: "A task refresh's leaseholder reports the merge it pushed (t462): the server checks it is the branch's head, with the head the lease found and main's head as its parents, and that its Agent line names who made it: the integrator for a clean merge, or the resolver for a resolved one, who joins the task's contributors. The task's head becomes the merge; an accepted task goes back to submitted, and the new head needs its own review. Without `--head` the task's head already held main. A repeated report answers the recorded outcome.",
+      about: "Run as the leaseholder: the integrator uses its own `ATELIER_TOKEN`; a resolver uses its own agent token or the developer token with `--as H/M` naming that resolver. A task refresh's leaseholder reports the merge it pushed (t462): the server checks it is the branch's head, with the head the lease found and main's head as its parents, and that its Agent line names who made it: the integrator for a clean merge, or the resolver for a resolved one, who joins the task's contributors. The task's head becomes the merge; an accepted task goes back to submitted, and the new head needs its own review. Without `--head` the task's head already held main. A repeated report answers the recorded outcome.",
     },
   ],
   flags: { "main-head": false, "merge-commit": false, lease: false, "expected-head": false, head: false, "diff-before": false, "diff-after": false, transformations: false },
@@ -27,7 +27,7 @@ const spec: CommandSpec = {
       "--diff-after ID": "the patch id of the task's own diff against main after it",
       "--transformations LIST": "the mechanical transformations a resolver's merge applied, comma-separated",
     },
-    example: "atelier refreshed t3 --main-head 0123456789abcdef0123456789abcdef01234567 --merge-commit 89abcdef0123456789abcdef0123456789abcdef --project demo",
+    example: 'ATELIER_TOKEN="$INTEGRATOR_TOKEN" atelier refreshed t3 --main-head 0123456789abcdef0123456789abcdef01234567 --merge-commit 89abcdef0123456789abcdef0123456789abcdef --project demo',
   },
 };
 

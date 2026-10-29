@@ -305,8 +305,11 @@ of its own (see [Further setup](#further-setup)).
 **6. Land it.** Back in the project checkout:
 
 ```sh
-atelier land t1 --as claude-code/opus-5.5
+export ATELIER_ACTING=claude-code/opus-5.5
+atelier land t1
 ```
+
+Export `ATELIER_ACTING` so the child `accept` and `merge` commands inherit the acting model; `land` does not forward `--as`.
 
 `land` checks the task's head without the project's landing lease.
 This task needs no review if it changes only unprotected paths. When the
