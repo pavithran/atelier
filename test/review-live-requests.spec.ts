@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { Ledger, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { Evidence } from "../src/rules.ts";
@@ -64,15 +64,31 @@ it("a superseded request is not offered", async () => {
   expect(await offered(L)).toEqual([]);
 });
 
-it("a request for a head that is no longer the task's head is not offered; the one carried to the head is", async () => {
+// G6: a request the head moved past is withdrawn, and carried to the new head
+// only under the developer's standing reask-on-resubmit (fast mode).
+async function standingReask(L: ReturnType<typeof ledger>) {
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  await L.recordDecision({ standing: { key: "reask-on-resubmit", value: "on" }, quote: "ask again" }, "owner", OPUS);
+}
+
+it("a request for a head that is no longer the task's head is not offered; under the standing instruction the one carried to the head is", async () => {
   // A request left open at an old head, as requests made before t300 could be.
   const { L, id, request } = await asked("live-request-old-head");
+  await standingReask(L);
   const OLD = "9".repeat(40);
   await sql(L, `UPDATE review_requests SET head = ? WHERE id = ?`, OLD, request);
   const now = await offered(L);
   expect(now.map((o) => o.head)).toEqual([HEAD]);
   expect(now[0].request).not.toBe(request);
   expect((await L.reviewRequests(id)).map((r) => ({ head: r.head, state: r.state }))).toEqual([{ head: OLD, state: "withdrawn" }, { head: HEAD, state: "open" }]);
+});
+
+it("without the standing instruction a request at an old head is withdrawn and nothing is offered (G6)", async () => {
+  const { L, id, request } = await asked("live-request-old-head-plain");
+  await sql(L, `UPDATE review_requests SET head = ? WHERE id = ?`, "9".repeat(40), request);
+  expect(await offered(L)).toEqual([]);
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["withdrawn"]);
 });
 
 it("a request at an old head whose current head needs no review yet is closed and nothing is offered", async () => {

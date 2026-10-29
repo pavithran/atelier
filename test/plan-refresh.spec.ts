@@ -1,11 +1,16 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+
+// The routes the developer names at an approval (G17: Atelier picks none): every part built by
+// zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.
+const routesOf = async (L: { planView(id: string): Promise<{ plan?: { parts: { key: string }[] } | null }> }, id: string) =>
+  Object.fromEntries(((await L.planView(id)).plan?.parts ?? []).map((p) => [p.key, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
 
 // Refreshing a plan's branch with main (docs/orchestrator.md, section 5):
 // the owner's atelier plan refresh and its refusals, the tick's refresh
@@ -73,7 +78,7 @@ async function readyPlan(L: L) {
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   const [a, b] = [parts[0].id, parts[1].id];
   await submitApproved(L, a, PART_A, "a");
   return { id: item.id, a, b };
@@ -147,7 +152,7 @@ async function landedPlan(L: L) {
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   await submitApproved(L, parts[0].id, PART_A, "a");
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
   await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
@@ -183,7 +188,7 @@ it("a part landed on main by itself does not move the record, so the plan is not
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   const [a, b] = [parts[0].id, parts[1].id];
   // Part a is landed on main by itself, as the owner merges it there by hand.
   const d = (await L.item(a)).dispatch!;
@@ -292,7 +297,7 @@ it("a submitted plan refreshed by its owner goes back to building first", async 
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   await submitApproved(L, parts[0].id, PART_A, "a");
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
   await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
@@ -319,9 +324,10 @@ function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>)
   } as unknown as Artifacts;
 }
 
+// G18: an owner-token write names the acting model.
 function call(name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts, method = "POST") {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 }
@@ -404,7 +410,12 @@ it("POST refresh-failed needs the branch rolled back to its integration head, an
   const ok = await call(name, `${id}/refresh-failed`, INTEGRATOR, { mainHead: M1, reason: "merging main conflicted", kind: "conflict" }, moved);
   expect(ok.status).toBe(200);
   expect((await L.planView(id)).refresh?.last).toMatchObject({ state: "failed", kind: "conflict", reason: "merging main conflicted" });
-  // The conflict adds the merge-main part, which goes before b.
+  // The conflict adds the merge-main part, which goes before b. G17: no builder is picked for it, so
+  // it is unrouted and blocks the plan until the developer reroutes it to a named one.
   expect((await L.item(b)).dispatch).toBeNull();
-  expect((await L.planView(id)).parts.find((p) => p.key === "merge-main-11111111")?.dispatch).toMatchObject({ job: "merge-main", head: M1 });
+  const added = (await L.planView(id)).parts.find((p) => p.key === "merge-main-11111111")!;
+  expect(added.dispatch).toBeNull();
+  expect((await L.planView(id)).blocked).toMatch(/part merge-main-11111111 is unrouted: no builder is named for it; candidates: .*Name one with atelier plan reroute/);
+  await L.reroutePlan(added.id, "owner", "zcode/glm-5.3");
+  expect((await L.planView(id)).parts.find((p) => p.key === "merge-main-11111111")?.dispatch).toMatchObject({ job: "merge-main", head: M1, agent: "zcode" });
 });

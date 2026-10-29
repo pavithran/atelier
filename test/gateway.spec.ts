@@ -1,9 +1,10 @@
-import { env } from "cloudflare:workers";
-import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { createExecutionContext, waitOnExecutionContext } from "./support/workers.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 import worker, { readGateway } from "../src/index.ts";
 import { Ledger } from "../src/ledger.ts";
 import { renderModels } from "../src/ui.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // The AI Gateway's figures inside the Worker: the Models page in each state
 // (off, refused, no calls, figures), GET /api/usage's `gateway` field, and
@@ -76,10 +77,11 @@ it("nothing pulls the gateway's logs: the scheduled handler takes model snapshot
   try {
     // The scheduled handler is back for the daily model snapshots (t623);
     // it asks Cloudflare for nothing.
-    await worker.scheduled({ scheduledTime: NOW, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, ON);
+    await scheduled({ scheduledTime: NOW, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, ON);
     expect(spy.mock.calls.some(([u]) => String(u).includes("api.cloudflare.com"))).toBe(false);
     const ctx = createExecutionContext();
-    const req = new Request("https://atelier.test/api/queue", { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    // The poll is an owner-token write: it names the acting model (G18).
+    const req = new Request("https://atelier.test/api/queue", { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
       body: JSON.stringify({ runner: "home:test", kind: "home", agents: [], jobs: ["review"] }) });
     const res = await worker.fetch(req, { ...ON, ATELIER_TOKEN: TOKEN } as unknown as Env, ctx);
     await waitOnExecutionContext(ctx);

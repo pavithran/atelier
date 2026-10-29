@@ -22,6 +22,7 @@
 // An event the owner annotated as served by another model (src/models/served.ts)
 // counts under that model, as buildRecord counts it.
 
+import { cleanRunFacts, runFactsText, type RunFacts } from "../run-facts.ts";
 import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, redactKeys, type PoolFamily } from "./pool.ts";
 import { matchesAny, modelKey, pushAuthors, RuleError, sameActor, validActor } from "../rules.ts";
@@ -34,7 +35,7 @@ export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 // A run that ended on the infrastructure, not on the model (t591): a review
 // job whose merge commit no source held. The runner reports it so the miss
 // is on record with what was missing, and it counts against no model: not
-// in its record, its speed, the stall exclusion nor the dispatch skip.
+// in its record, its speed nor the dispatch skip.
 export const INFRASTRUCTURE_OUTCOMES = ["infrastructure_miss"] as const;
 export type InfrastructureOutcome = (typeof INFRASTRUCTURE_OUTCOMES)[number];
 export const isInfrastructureOutcome = (outcome: string): outcome is InfrastructureOutcome => (INFRASTRUCTURE_OUTCOMES as readonly string[]).includes(outcome);
@@ -107,7 +108,8 @@ export interface RunReport {
   outcome: RunOutcome | InfrastructureOutcome;
   project: string | null;
   item: string | null;
-  detail: string;
+  detail: string;           // the facts' line (src/run-facts.ts), never the run's output
+  facts?: RunFacts | null;  // what the runner reported of the run, structured
   runner: string;           // kind:name, from X-Atelier-Runner
   at: string;               // when the server received it
 }
@@ -616,7 +618,13 @@ export function cleanRun(body: Record<string, unknown>, at: string, runner: stri
   if (project !== null && !PROJECT.test(project)) throw bad("project must be a project's name");
   const item = body.item === undefined || body.item === null ? null : str(body.item).trim();
   if (item !== null && !ITEM.test(item)) throw bad("item must be a task id such as t12");
-  return { actor, role: role as RunRole, outcome: outcome as RunOutcome | InfrastructureOutcome, project, item, detail: plain(str(body.detail), 300), runner, at };
+  // No text of a run's output reaches the server from a runner: its detail
+  // is dropped, and the report keeps its structured facts and the line built
+  // from them. A run the developer records by hand ("owner") keeps the
+  // developer's own words, redacted, as before.
+  const facts = cleanRunFacts(body.facts);
+  const detail = runner === "owner" ? plain(str(body.detail), 300) : runFactsText(facts);
+  return { actor, role: role as RunRole, outcome: outcome as RunOutcome | InfrastructureOutcome, project, item, detail, ...(facts ? { facts } : {}), runner, at };
 }
 
 // ── defects ────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { branchesRepoName, repoName } from "../src/rules.ts";
 
@@ -69,7 +69,7 @@ async function setup(name = `branches-${++serial}`, world = newWorld()) {
   } as unknown as Artifacts;
   const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as typeof env;
   const request = (method: string, path: string, token: string, actor: string | null, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}) },
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
   const owner = (method: string, path: string, body?: unknown) => request(method, path, OWNER, "owner", body);
@@ -130,9 +130,12 @@ it("an agent token, a runner token and the developer's token naming an agent are
     expect((await t.request("POST", `/projects/${t.name}/branches`, token, actor, { name: "wip/idea", commit: WIP, host: "studio" })).status, `${who} record`).toBe(403);
   }
   expect(t.minted).toEqual([]);
-  // The baseline's read token an agent may mint is the baseline's, as before.
-  expect((await t.request("POST", `/projects/${t.name}/baseline-token`, agent.token, AGENT, { scope: "read" })).status).toBe(200);
-  expect(t.minted).toEqual([{ repo: t.name, scope: "read" }]);
+  // The baseline's read token an agent may mint is the baseline's, as before:
+  // on the Node server a read grant (task 2), with no Artifacts token minted.
+  const baseline = await t.request("POST", `/projects/${t.name}/baseline-token`, agent.token, AGENT, { scope: "read" });
+  expect(baseline.status).toBe(200);
+  expect(await baseline.json()).toMatchObject({ repository: "server", token: expect.stringMatching(/^atl_/) });
+  expect(t.minted).toEqual([]);
 });
 
 it("a push is recorded with its commit and Mac only once the branches repository holds that commit on that branch, and listed newest first", async () => {
@@ -181,67 +184,16 @@ it("no project can be registered with a baseline of the branches repositories' f
   expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
 });
 
-it("Astra's order: a branches repository made first, then a claim whose fork would take its name, refuses the claim and mints nothing for it", async () => {
-  // A legacy project whose task fork is named as another project's
-  // branches repository is the worst case; it is made here by giving the
-  // claim's fork name to demo's branches repository directly.
-  const world = newWorld();
-  const demo = await setup(undefined, world);
-  expect((await demo.owner("POST", `/projects/${demo.name}/branches/token`, { scope: "write" })).status).toBe(200);
-  const legacy = await setup(`legacy-${serial}`, world);
-  await legacy.L.newItem("Build", [], "owner");
-  const fork = repoName(legacy.name, "t1");
-  // demo's branches repository, as it would stand under the fork's name.
-  world.repos.add(fork); world.refs[fork] = { main: HEAD, "wip/idea": WIP }; world.descriptions[fork] = world.descriptions[demo.branches];
-  world.minted.length = 0;
-  const agent = await (await legacy.owner("POST", "/tokens", { actor: AGENT, projects: [legacy.name] })).json() as { token: string };
-  const claim = await legacy.request("POST", `/projects/${legacy.name}/items/t1/claim`, agent.token, AGENT, {});
-  expect(claim.status, await claim.clone().text()).toBe(409);
-  const text = await claim.text();
-  expect(text).toContain("repo_foreign");
-  expect(text).not.toContain("upstream-secret");
-  expect(world.minted).toEqual([]);
-  expect((await legacy.L.item("t1")).fork ?? null).toBe(null);
-});
-
-// A fork under the claim's name is taken by what its description says it
-// was made for, never because it is there: each description below is
-// first refused and then, for the claim's own, taken. Without the check,
-// the first claim would take a fork made for another project or task.
-for (const [form, own] of [["now", (t: { name: string }, fork: string) => `Atelier: the task fork ${fork}`], ["before t641", (t: { name: string }) => `${t.name} t1: A title edited since`]] as const) {
-  it(`a claim takes a fork an earlier attempt of its own made, described as Atelier describes one ${form}, and refuses one described for another project or task`, async () => {
-    const t = await setup();
-    await t.L.newItem("Build", [], "owner");
-    const fork = repoName(t.name, "t1");
-    t.repos.add(fork); t.refs[fork] = { main: HEAD };
-    const agent = await (await t.owner("POST", "/tokens", { actor: AGENT, projects: [t.name] })).json() as { token: string };
-    const claim = () => t.request("POST", `/projects/${t.name}/items/t1/claim`, agent.token, AGENT, {});
-    for (const foreign of [`other-project t1: ${t.name}`, `${t.name} t2: Build`, `${t.name}-x t1: Build`, `Atelier: the task fork other--t1`, null]) {
-      t.descriptions[fork] = foreign;
-      const refused = await claim();
-      expect(refused.status, String(foreign)).toBe(409);
-      expect(await refused.text()).toContain("repo_foreign");
-    }
-    expect(t.minted).toEqual([]);
-    t.descriptions[fork] = own(t, fork);
-    const taken = await claim();
-    expect(taken.status, await taken.clone().text()).toBe(200);
-    expect((await t.L.item("t1")).fork).toBe(fork);
-  });
-}
-
-it("Argon's case: project branches's fork of t1 and project t1's branches repository are different repositories", async () => {
+// Task 5 retired the task fork, so a claim no longer meets a branches
+// repository under a fork's name; the two names still differ.
+it("Argon's case: project branches's fork name for t1 and project t1's branches repository are different names", async () => {
   const world = newWorld();
   const t1 = await setup(`t1x${serial}`, world);
   const branches = await setup(`branches${serial}`, world);
   expect(repoName(branches.name, "t1")).not.toBe(t1.branches);
   expect(repoName("branches", "t1")).not.toBe(await branchesRepoName("t1"));
   expect((await t1.owner("POST", `/projects/${t1.name}/branches/token`, { scope: "write" })).status).toBe(200);
-  await branches.L.newItem("Build", [], "owner");
-  const agent = await (await branches.owner("POST", "/tokens", { actor: AGENT, projects: [branches.name] })).json() as { token: string };
-  world.minted.length = 0;
-  expect((await branches.request("POST", `/projects/${branches.name}/items/t1/claim`, agent.token, AGENT, {})).status).toBe(200);
-  expect(world.minted.map((m) => m.repo)).not.toContain(t1.branches);
+  expect(world.minted.map((m) => m.repo)).toEqual([t1.branches]);
 });
 
 it("a project with a 63-character key pushes and lists its branches", async () => {
@@ -286,16 +238,6 @@ it("a branches repository made for this project whose record was lost is taken b
   expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
   expect(await t.L.branchesRepo()).toBe(t.branches);
   expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
-});
-
-it("init refuses to take as a new project's baseline a repository Atelier made for something else", async () => {
-  const world = newWorld();
-  const t = await setup(undefined, world);
-  const name = `fresh-${serial}`;
-  world.repos.add(name); world.refs[name] = { main: HEAD }; world.descriptions[name] = `Atelier: the task fork ${name}`;
-  const res = await t.owner("PUT", `/projects/${name}`, {});
-  expect(res.status, await res.clone().text()).toBe(409);
-  expect(await res.text()).toContain("repo_foreign");
 });
 
 // Astra's third review of t641, finding 1: Mac A's push is checked, then

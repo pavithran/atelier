@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+// Atelier's post-receive hook (Atelier 2.0, task 8; design section 4.4): the
+// push event Artifacts sent the Worker's queue, without a queue. Once the
+// ref has moved, it POSTs { project, ref, before, after, grant } to the
+// server's own internal listener on the loopback address (ATELIER_PUSHED),
+// with the per-process secret the pre-receive hook proves itself with
+// (ATELIER_HOOK_SECRET), and waits for the answer. The server records a push
+// to a task's branch as its holder's push (observePushed in src/index.ts);
+// it reads the branch itself and takes the grant's holder from its own
+// record, never from this body alone.
+//
+// Nothing here can undo the push: the ref stays moved whatever the answer.
+// A failure (no answer, an error, a refusal) is written to stderr, which Git
+// relays to the pusher (the server logs its own failures), and the next
+// `atelier push` records the head, as the push route reads the branch itself.
+import { readFileSync } from "node:fs";
+
+const { ATELIER_PUSHED: url = "", ATELIER_HOOK_SECRET: secret = "", ATELIER_PROJECT: project = "", ATELIER_GRANT: grant = "" } = process.env;
+const say = (line) => process.stderr.write(`atelier: post-receive: ${line}\n`);
+const short = (ref) => ref.replace(/^refs\/heads\//, "");
+
+const lines = readFileSync(0, "utf8").split("\n").filter(Boolean);
+for (const line of lines) {
+  const [before, after, ref] = line.split(" ");
+  if (!url || !secret) { say(`the server gave this push no way to report it, so the push of ${short(ref)} is not recorded yet; run atelier push to record it`); continue; }
+  let failure = null, answer = null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-atelier-hook-secret": secret },
+      body: JSON.stringify({ project, ref, before, after, grant }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (res.ok) answer = await res.json();
+    else failure = `the server answered ${res.status}`;
+  } catch (err) {
+    failure = err?.name === "TimeoutError" ? "the server did not answer within 60 seconds" : `the server could not be reached (${err?.message ?? err})`;
+  }
+  if (failure) say(`${failure}, so the push of ${short(ref)} to ${after.slice(0, 12)} is not recorded yet; the branch moved, and atelier push records it`);
+  else if (answer && answer.observed === false && /^refs\/heads\/(?:t|plan)\//.test(ref)) say(`${short(ref)} at ${after.slice(0, 12)} is not recorded: ${answer.reason ?? "no reason given"}`);
+}
+process.exit(0);

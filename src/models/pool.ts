@@ -252,18 +252,49 @@ const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 // An assignment whose name holds TOKEN, KEY, SECRET or PASSWORD (API_TOKEN=abc,
 // PASSWORD="x y", written without spaces around the =) loses its value; the name
 // stays so the note still reads. Spaced assignments are left, as code has them.
-// A name inside a path (/srv/keys=prod/app.log) is not an assignment (G15),
-// and neither is a value that is an absolute or home path (KEY_FILE=/etc/k).
-const SECRET_ASSIGNMENT = /(?<![\/\\])\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*=)(?!\/|~\/)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
-// An Authorization header loses its whole value, whatever its scheme, and a
-// Bearer or Basic credential loses its value in any case (G15): bearer abc…,
-// BASIC dXNl…, authorization: token abc.
-const AUTH_HEADER = /\b(authorization\s*[:=]\s*)(?:(?:bearer|basic|token|digest)\s+)?("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
-const AUTH_SCHEME = /\b(bearer|basic)\s+[A-Za-z0-9._~+\/=-]{8,}/gi;
+// An assignment whose name holds key, token, secret, password, passwd, pwd,
+// auth or credential, in any case, loses everything from its = to the end of
+// the line, whatever the value looks like: no quoting, escaping, odd space or
+// path shape keeps any of it. The name must start a word, so a directory
+// named so mid-path (/srv/keys=prod/app.log) is not an assignment.
+// The one list of what names a credential, for assignments and quoted
+// fields alike; AUTH covers authorization.
+const CREDENTIAL_NAMES = "KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|AUTH|CREDENTIAL|COOKIE";
+// The same goes for a dotenv or YAML line (PASSWORD = x, password: x): a
+// credential name, then optional spaces, = or :, optional spaces. A query
+// parameter (?token=..., &password=...) loses only its value, to the next
+// &, whitespace or line end; a URL's user:pass@ loses the pass. A value
+// another rule already removed whole is left as it is.
+const SECRET_ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_/.~?&])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*[ \\t]*[=:][ \\t]*(?![ \\t]))(?!\\[key removed\\](?:['"\\s]|$))[^\\r\\n]+`, "gi");
+const SECRET_QUERY = new RegExp(`([?&][A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*=)[^&\\s]*`, "gi");
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/:@]*:)([^\s@/]+)(@)/gi;
 
+// A credential header (Authorization:, Proxy-Authorization:, X-Api-Key:, any
+// case) loses everything after its colon: to the quote that closes it when
+// the header stands in a quoted argument (-H 'Authorization: ...'), else to
+// the end of the line, so every quoted value of a Digest credential
+// (response="...", nonce="...") goes with it; a quoted key naming a credential ("x-api-key": "...",
+// 'authorization': '...', "token": "...") loses its quoted value; a bearer
+// or basic credential, any case and any shape, its token, unless the token is
+// a placeholder (${VAR}, {env:NAME}, <token>, [key removed]).
+const HEADER_NAME = "((?:proxy-)?authorization|x-api-key|x-auth-token|api-key)";
+const CREDENTIAL_HEADER = new RegExp(`(['"])${HEADER_NAME}(\\s*:\\s*)(?:(?!\\1)[^\\r\\n])*|\\b${HEADER_NAME}(\\s*:\\s*)[^\\r\\n]*`, "gi");
+// A quoted credential field loses its value whatever its type: a quoted
+// string to its closing quote, anything else (a number, true, null, an object
+// or array) to the end of the line.
+const QUOTED_SECRET_KEY = new RegExp(`(["'])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*)\\1(\\s*[=:]\\s*)(?:(["'])(?:\\\\.|(?!\\4)[^\\\\])*\\4|[^\\r\\n]*)`, "gi");
+// bearer or basic, any case, then whitespace: the next word goes, whatever it
+// is, punctuation included, to the next ASCII whitespace ("basic auth" too).
+// Only a word that is wholly one placeholder holding no secret stays:
+// ${NAME}, {env:NAME}, $NAME, or a credential already removed.
+const SCHEME_TOKEN = /\b(bearer|basic)(\s+)(\[key removed\](?=[ \t\r\n\f\v]|$)|\[key removed\][^ \t\r\n\f\v]+|[^ \t\r\n\f\v]+)/gi;
+const PLACEHOLDER = /^(?:\$\{[A-Z0-9_]+\}|\{env:[A-Za-z0-9_]+\}|\$[A-Z0-9_]+|\[key removed\])$/;
 export function redactKeys(s: string): string {
-  return s.replace(AUTH_HEADER, "$1[key removed]")
-    .replace(AUTH_SCHEME, "$1 [key removed]")
+  return s.replace(QUOTED_SECRET_KEY, (_m, q: string, name: string, colon: string, vq: string | undefined) => vq ? `${q}${name}${q}${colon}${vq}[key removed]${vq}` : `${q}${name}${q}${colon}[key removed]`)
+    .replace(CREDENTIAL_HEADER, (_m, q: string | undefined, qname: string | undefined, qcolon: string | undefined, name: string | undefined, colon: string | undefined) => q ? `${q}${qname}${qcolon}[key removed]` : `${name}${colon}[key removed]`)
+    .replace(SCHEME_TOKEN, (m, scheme: string, space: string, token: string) => PLACEHOLDER.test(token) ? m : `${scheme}${space}[key removed]`)
+    .replace(URL_PASSWORD, "$1[key removed]$3")
+    .replace(SECRET_QUERY, "$1[key removed]")
     .replace(SECRET_ASSIGNMENT, "$1[key removed]")
     .replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
     .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));

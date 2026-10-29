@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
+import { env } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it, vi } from "vitest";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 import { Ledger } from "../src/ledger.ts";
 import worker from "../src/index.ts";
 
@@ -115,7 +115,7 @@ it("a review that clears a rejection notifies through the review route", async (
       const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
       const ARTIFACTS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
       const response = await worker.fetch(new Request("https://atelier.test/api/projects/notify-review/items/t1/review", {
-        method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": "owner", "content-type": "application/json" },
+        method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
         body: JSON.stringify({ head: H1, criteria: NO_CRITERIA, approve: true }),
       }), { ...env, LEDGER, ARTIFACTS, ATELIER_TOKEN: "test-token" } as typeof env);
       expect(response.status).toBe(200);

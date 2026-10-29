@@ -1,9 +1,10 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { world } from "./helpers/retention-world.ts";
 import { gate, parseRuleError, type Evidence, type Item, type ProjectPolicy, type Review, type RetentionFacts, type RetentionRead } from "../src/rules.ts";
+import { observePushed } from "../src/index.ts";
 
 // An approval kept across a merge of main (t56): the Ledger's side of the
 // rule, against its real storage. The finding it would have caught is the one
@@ -45,7 +46,8 @@ const merge = (over: Partial<RetentionFacts> = {}, head = R1, from = H1, main = 
 async function approved(L: L, title: string, by: string | null = GPT, to: "submitted" | "accepted" = "submitted", head = H1, holder = OPUS) {
   const { id } = await L.newItem(title, ["src/**"], "owner");
   await L.claim(id, holder);
-  await L.setFork(id, `fork-${crypto.randomUUID().slice(0, 8)}-${id}`, H0, holder);
+  // Task 8: a push is told by the post-receive hook for the branch t/N, so the workspace is that branch.
+  await L.setFork(id, `${(await L.project()).name}/${id.replace("t", "t/")}`, H0, holder);
   await L.recordPush(id, holder, head, head);
   await L.addEvidence(passed(id, head));
   await L.submit(id, holder);
@@ -208,8 +210,11 @@ it("a carried approval counts only while its reviewer is authorized and independ
 
 // ── through the routes, on a stand-in for the two repositories ──────────────
 // The Worker reads the merge itself (retentionOf in src/index.ts) before the
-// Ledger records the head, so these run a push, a push seen on the fork and a
-// refresh through their routes over trees that can overlap or not.
+// Ledger records the head, so these run a push, a push the post-receive hook
+// tells (observePushed, task 8) and a refresh through their routes over trees
+// that can overlap or not.
+const told = (name: string, id: string, after: string, ARTIFACTS: Artifacts) =>
+  observePushed({ ...env, ARTIFACTS } as typeof env, { project: name, ref: `refs/heads/${id.replace("t", "t/")}`, after });
 
 const TOKEN = "review-retention-token";
 
@@ -225,9 +230,10 @@ function repos(name: string, overlap: boolean, agent = INTEGRATOR) {
   const ARTIFACTS = { get: async (repo: string) => Object.assign(repo === `${name}--baseline` ? w.repo(m) : w.repo(n), { [Symbol.dispose]() {} }) } as unknown as Artifacts;
   return { o, m, n, ARTIFACTS };
 }
+// Since G18 a write by a reserved actor (the integrator) on the developer token names the acting model.
 const call = (name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts) =>
   worker.fetch(new Request(`https://atelier.test/api/projects/${name}/${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === INTEGRATOR ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 
 for (const overlap of [false, true]) {
@@ -249,7 +255,7 @@ for (const overlap of [false, true]) {
     }
   });
 
-  it(`a push seen on the fork is read the same way (${overlap ? "overlap" : "disjoint"})`, async () => {
+  it(`a push the post-receive hook tells is read the same way (${overlap ? "overlap" : "disjoint"})`, async () => {
     const name = `rr-route-queue-${overlap}`;
     const record = { name, repo: `${name}--baseline`, branch: "main", policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: at() };
     const L = ledger(name);
@@ -257,10 +263,7 @@ for (const overlap of [false, true]) {
     await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
     const { o, n, ARTIFACTS } = repos(name, overlap);
     const id = await approved(L, "Seen on the fork", GPT, "submitted", o);
-    let acked = 0;
-    const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: (await L.item(id)).fork }, payload: { ref: "refs/heads/main", after: n } };
-    await worker.queue({ messages: [{ body: notice, ack: () => { acked++; }, retry: () => { throw new Error("retried"); } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS } as typeof env);
-    expect(acked).toBe(1);
+    expect(await told(name, id, n, ARTIFACTS)).toMatchObject({ observed: true, item: id, head: n });
     expect((await L.item(id)).head).toBe(n);
     expect(await retainedAt(L, id, n)).toHaveLength(overlap ? 0 : 1);
   });
@@ -296,7 +299,7 @@ it("a repository that cannot be opened for the read carries nothing, and the ref
   expect((await events(L, id)).find((e) => e.kind === "review.not_retained")?.data.reason).toMatch(/the merge could not be read \(the repositories could not be read\)/);
 });
 
-it("a push event that recorded the head before the refresh report leaves the refresh to say what was carried", async () => {
+it("a push the hook told, recorded before the refresh report leaves the refresh to say what was carried", async () => {
   const name = "rr-route-first";
   const record = { name, repo: `${name}--baseline`, branch: "main", policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: at() };
   const L = ledger(name);
@@ -307,8 +310,7 @@ it("a push event that recorded the head before the refresh report leaves the ref
   await L.noteMainHead(m);
   const lease = (await L.leaseRefresh(id, INTEGRATOR, "home:studio", "refresh")).lease;
   await L.refreshPushing(id, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n });
-  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: (await L.item(id)).fork }, payload: { ref: "refs/heads/main", after: n } };
-  await worker.queue({ messages: [{ body: notice, ack: () => {}, retry: () => { throw new Error("retried"); } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS } as typeof env);
+  await told(name, id, n, ARTIFACTS);
   // The head is recorded by the event, but a refresh lease is held, so the report decides.
   expect((await L.item(id)).head).toBe(n);
   expect(await retainedAt(L, id, n)).toEqual([]);
@@ -365,8 +367,7 @@ it("a merge a resolver made, who is also the task's holder, carries nothing when
   const lease = (await L.leaseRefresh(id, GPT, "home:gpt", "resolve")).lease;
   const body = { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n };
   await L.refreshPushing(id, GPT, body);
-  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: (await L.item(id)).fork }, payload: { ref: "refs/heads/main", after: n } };
-  await worker.queue({ messages: [{ body: notice, ack: () => {}, retry: () => { throw new Error("retried"); } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS } as typeof env);
+  await told(name, id, n, ARTIFACTS);
   expect((await L.item(id)).head).toBe(n);
   expect(await retainedAt(L, id, n)).toEqual([]);
   const res = await call(name, `items/${id}/refreshed`, GPT, body, ARTIFACTS);
@@ -390,8 +391,7 @@ it("a reviewer who has judged the new head before the refresh report keeps that 
   const lease = (await L.leaseRefresh(id, INTEGRATOR, "home:studio", "refresh")).lease;
   const body = { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n };
   await L.refreshPushing(id, INTEGRATOR, body);
-  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: (await L.item(id)).fork }, payload: { ref: "refs/heads/main", after: n } };
-  await worker.queue({ messages: [{ body: notice, ack: () => {}, retry: () => { throw new Error("retried"); } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS } as typeof env);
+  await told(name, id, n, ARTIFACTS);
   await L.addReview({ itemId: id, by: GPT, head: n, criteria: await L.criteria(id), approve: false, note: "The merge broke it.", at: at() }, undefined, true);
   await L.addEvidence(passed(id, n));
   const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, body, ARTIFACTS);

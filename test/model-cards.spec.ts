@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { CardRecord, CardView } from "../src/models/cards.ts";
@@ -18,10 +18,11 @@ const entry = (id: string, harness: ModelEntry["harness"], aliases: string[] = [
 });
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 
+// A write on the owner token names the acting model (G18); claude-code/opus-5.5 is in the pool.
 function call(method: string, path: string, body?: unknown, actor = "owner", token: string | null = TOKEN) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

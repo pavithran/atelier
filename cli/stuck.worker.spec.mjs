@@ -1,5 +1,5 @@
-import { env } from 'cloudflare:workers';
-import { expect, it } from 'vitest';
+import { env } from "../test/support/workers.ts";
+import { expect, it } from "../test/support/vitest.ts";
 import worker from '../src/index.ts';
 const TOKEN = 'stuck-test-token';
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN };

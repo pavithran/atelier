@@ -4,7 +4,7 @@
 //    (or ATELIER_CAPTURE_CHROMIUM, a browser already on this machine). It
 //    never downloads one: a missing browser ends the run before anything.
 // 2. Draws every page state in docs/design/brief.md from the seeded fixture
-//    (test/fixtures/design/render.design.ts, in the Workers pool, with the
+//    (test/fixtures/design/render.design.ts, on the Node server, with the
 //    production renderers and CSS, test-only Access sign-in and stubbed
 //    Artifacts), as JSON lines in a temporary file.
 // 3. Loads each page into the browser at 1440 and 390 px, serving the page
@@ -61,9 +61,9 @@ function browserPath(): string {
 async function draw(): Promise<{ fixture: Record<string, unknown>; pages: Page[]; assets: Asset[] }> {
   const dir = await mkdtemp(join(tmpdir(), "atelier-design-"));
   const out = join(dir, "pages.jsonl");
-  const child = spawn(join(ROOT, "node_modules/.bin/vitest"), ["run", "--config", "scripts/design/vitest.config.ts", "--no-color"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, ATELIER_DESIGN_OUT: out } });
+  const child = spawn(process.execPath, ["--import", "./src/runtime/loader.mjs", "--test", "--test-reporter=dot", "test/fixtures/design/render.design.ts"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, ATELIER_DESIGN_OUT: out } });
   const code = await new Promise<number | null>((resolve) => child.on("close", resolve));
-  if (code !== 0) fail(`the render step (vitest) exited ${code}`);
+  if (code !== 0) fail(`the render step (node --test) exited ${code}`);
   const text = existsSync(out) ? await readFile(out, "utf8") : "";
   await rm(dir, { recursive: true, force: true });
   const lines = text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);

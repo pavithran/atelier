@@ -1,0 +1,144 @@
+// The Workers types the server's sources name, for the Node server (Atelier
+// 2.0, task 7). They were generated into worker-configuration.d.ts by
+// wrangler's types command; wrangler is gone, and this declares only what
+// the code uses, as the Node runtime provides it: the bindings (Env), the Durable
+// Object state and stubs (src/runtime/namespace.mjs), SQL storage
+// (src/runtime/sql.mjs), the Artifacts reader (src/git/artifacts.mjs), the
+// LARGE store (src/runtime/large.mjs), and the handler types of
+// src/index.ts's default export (src/runtime/server.mjs calls its fetch).
+
+interface Env {
+  LARGE: R2Bucket;
+  ARTIFACTS: Artifacts;
+  AI_GATEWAY_ID: string;
+  PUBLIC_ORIGIN: string;
+  ARTIFACTS_NAMESPACE: string;
+  LEDGER: DurableObjectNamespace<import("./index").Ledger>;
+}
+
+declare module "cloudflare:workers" {
+  export abstract class DurableObject<E = unknown> {
+    protected ctx: DurableObjectState;
+    protected env: E;
+    constructor(ctx: DurableObjectState, env: E);
+  }
+  export const env: Env;
+}
+
+// ── Durable Objects ───────────────────────────────────────────────────────
+interface DurableObjectId { readonly name?: string; toString(): string; equals(other: DurableObjectId): boolean }
+// A call through a stub crosses as a structured clone and always answers a promise.
+type DurableObjectStub<T = unknown> = {
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+} & { readonly id: DurableObjectId; readonly name?: string };
+interface DurableObjectNamespace<T = unknown> {
+  idFromName(name: string): DurableObjectId;
+  get(id: DurableObjectId): DurableObjectStub<T>;
+}
+interface DurableObjectStorage {
+  readonly sql: SqlStorage;
+  transactionSync<T>(fn: () => T): T;
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number | Date): Promise<void>;
+  deleteAlarm(): Promise<void>;
+  getCurrentBookmark(): Promise<string>;
+  getBookmarkForTime(time: number | Date): Promise<string>;
+  onNextSessionRestoreBookmark(bookmark: string): Promise<string>;
+  sync(): Promise<void>;
+}
+interface DurableObjectState {
+  readonly id: DurableObjectId;
+  readonly storage: DurableObjectStorage;
+  waitUntil(promise: Promise<unknown>): void;
+  abort(reason?: string): void;
+  blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
+}
+
+// ── SQL storage ───────────────────────────────────────────────────────────
+type SqlStorageValue = ArrayBuffer | string | number | null;
+interface SqlStorageCursor<T extends Record<string, SqlStorageValue>> extends Iterable<T> {
+  toArray(): T[];
+  one(): T;
+  raw<U extends SqlStorageValue[]>(): IterableIterator<U>;
+  next(): IteratorResult<T>;
+  readonly columnNames: string[];
+  readonly rowsRead: number;
+  readonly rowsWritten: number;
+}
+interface SqlStorage {
+  exec<T extends Record<string, SqlStorageValue>>(query: string, ...bindings: any[]): SqlStorageCursor<T>;
+  readonly databaseSize: number;
+}
+
+// ── LARGE ─────────────────────────────────────────────────────────────────
+interface R2Bucket {
+  put(key: string, value: string | ArrayBuffer | Uint8Array, options?: { customMetadata?: Record<string, string> }): Promise<{ key: string; size: number } | null>;
+  get(key: string): Promise<{ text(): Promise<string> } | null>;
+}
+
+// ── Artifacts, the reader over the server's bare repositories ─────────────
+interface ArtifactsCommitMetadata {
+  hash: string;
+  treeHash: string;
+  message: string;
+  author: { name: string; email: string };
+  committer: { name: string; email: string };
+  parents: string[];
+  authoredAt: number;
+  committedAt: number;
+}
+interface ArtifactsTreeEntry { name: string; mode: string; hash: string; type: "tree" | "blob" | "symlink" | "gitlink" | "exec" }
+interface ArtifactsRepoInfo {
+  id: string; name: string; description: string | null; defaultBranch: string; createdAt: string; updatedAt: string;
+  lastPushAt: string | null; source: string | null; readOnly: boolean; remote: string;
+}
+interface ArtifactsCreateRepoResult { id: string; name: string; description: string | null; defaultBranch: string; remote: string; token: string }
+interface ArtifactsCreateTokenResult { id: string; plaintext: string; scope: "read" | "write"; expiresAt: string }
+interface ArtifactsTokenInfo { id: string; scope: "read" | "write"; state: "active" | "expired" | "revoked"; createdAt: string; expiresAt: string }
+interface ArtifactsRepo extends Disposable {
+  createToken(scope?: "write" | "read", ttl?: number): Promise<ArtifactsCreateTokenResult>;
+  listTokens(): Promise<{ tokens: ArtifactsTokenInfo[]; total: number }>;
+  revokeToken(tokenOrId: string): Promise<boolean>;
+  info(): Promise<ArtifactsRepoInfo>;
+  readBlob(hash: string): Promise<Blob | null>;
+  readTree(hash: string): Promise<ArtifactsTreeEntry[] | null>;
+  readCommit(hash: string): Promise<ArtifactsCommitMetadata | null>;
+  readFile(args: { ref: string; path: string }): Promise<Blob | null>;
+  log(opts?: { ref?: string; limit?: number; offset?: number }): Promise<ArtifactsCommitMetadata[]>;
+  fork(name: string, opts?: { description?: string; readOnly?: boolean; defaultBranchOnly?: boolean }): Promise<ArtifactsCreateRepoResult>;
+}
+interface Artifacts {
+  create(name: string, opts?: { readOnly?: boolean; description?: string; setDefaultBranch?: string }): Promise<ArtifactsCreateRepoResult>;
+  get(name: string): Promise<ArtifactsRepo>;
+  import(params: { source: { url: string; branch?: string; depth?: number }; target: { name: string; opts?: { description?: string; readOnly?: boolean } } }): Promise<ArtifactsCreateRepoResult>;
+  list(opts?: { limit?: number; cursor?: string }): Promise<{ repos: Omit<ArtifactsRepoInfo, "remote">[]; total: number; cursor?: string }>;
+  delete(name: string): Promise<boolean>;
+}
+
+// ── The handler ───────────────────────────────────────────────────────────
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+  readonly props: unknown;
+}
+interface ScheduledController { readonly scheduledTime: number; readonly cron: string; noRetry(): void }
+interface MessageBatch<Body = unknown> {
+  readonly queue: string;
+  readonly messages: readonly { readonly id: string; readonly timestamp: Date; readonly body: Body; readonly attempts: number; ack(): void; retry(): void }[];
+  ackAll(): void;
+  retryAll(): void;
+}
+interface ExportedHandler<E = unknown> {
+  fetch?(request: Request, env: E, ctx: ExecutionContext): Response | Promise<Response>;
+  scheduled?(controller: ScheduledController, env: E, ctx: ExecutionContext): void | Promise<void>;
+  queue?(batch: MessageBatch<unknown>, env: E, ctx: ExecutionContext): void | Promise<void>;
+}
+// The cache the imported history is kept in; the Node server's answers nothing.
+declare var caches: { default: { match(key: Request): Promise<Response | undefined>; put(key: Request, value: Response): Promise<void>; delete(key: Request): Promise<boolean> } };
+
+// The landing Workflow's instance status, kept on records written before task 6 removed it.
+type InstanceStatus = { status: "queued" | "running" | "paused" | "errored" | "terminated" | "complete" | "waiting" | "waitingForPause" | "rollingBack" | "unknown"; error?: { name: string; message: string }; output?: unknown };
+
+// The web stream type src/runner-git.ts names, which Node keeps in node:stream/web.
+type ReadableStreamReadResult<T> = import("node:stream/web").ReadableStreamReadResult<T>;

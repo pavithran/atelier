@@ -84,7 +84,7 @@ after(async () => { await server?.close(); });
 
 test("a runner that does not hold the task's job cannot take its grant through git-token, posing as the holder; the holder's runner can", async () => {
   const id = await newTask("Held by runner a");
-  assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode" })).status, 200);
+  assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3" })).status, 200);
   const runners = {};
   for (const name of ["home:a", "home:b"]) {
     runners[name] = (await api("POST", "/tokens", { runner: name, projects: ["demo"] })).body.token;
@@ -186,6 +186,40 @@ test("revoking the agent token revokes the task grant and the read grant minted 
   assert.equal((await api("DELETE", `/tokens/${made.body.id}`)).body.revoked, true);
   assert.equal(await infoRefs(grant), 401);
   assert.equal(await infoRefs(read.body.token), 401);
+});
+
+// The 1.x test of this (agent-token-revoke.spec.ts, retired with Artifacts
+// tokens in task 7) checked that another agent's tokens stayed live; its
+// grant form: A's task and read grants die with A's token, B's still push
+// and read.
+test("revoking one agent's token leaves another agent's task and read grants writing and reading", async () => {
+  const A = "codex/gpt-6", B = "zcode/glm-5.3";
+  const a = (await api("POST", "/tokens", { actor: A, projects: ["demo"] })).body;
+  const b = (await api("POST", "/tokens", { actor: B, projects: ["demo"] })).body;
+  const aTask = await newTask("A's task"), bTask = await newTask("B's task");
+  const aGrant = await claim(aTask, a.token, A), bGrant = await claim(bTask, b.token, B);
+  const aRead = (await api("POST", "/projects/demo/git-token", { kind: "read" }, a.token, A)).body.token;
+  const bRead = (await api("POST", "/projects/demo/git-token", { kind: "read" }, b.token, B)).body.token;
+  for (const g of [aGrant, bGrant, aRead, bRead]) assert.equal(await infoRefs(g), 200);
+  assert.equal((await api("DELETE", `/tokens/${a.id}`)).body.revoked, true);
+  // A's grants are refused, at a read and at a push, and its token mints none.
+  assert.equal(await infoRefs(aGrant), 401);
+  assert.equal(await infoRefs(aRead), 401);
+  const bWork = await pushTask(bTask, bGrant, "b-first.txt");
+  const late = await run("git", ["-c", "credential.helper=", ...bearer(aGrant), "push", "-q", remote(), `HEAD:refs/heads/t/${aTask.slice(1)}`], { cwd: bWork.dir });
+  assert.notEqual(late.code, 0, "A's revoked task grant pushes nothing");
+  assert.equal((await api("POST", "/projects/demo/git-token", { kind: "read" }, a.token, A)).status, 401);
+  // B's still read, and its task grant still pushes to its branch.
+  assert.equal(await infoRefs(bGrant), 200);
+  assert.equal(await infoRefs(bRead), 200);
+  writeFileSync(join(bWork.dir, "src", "b-second.txt"), "b-second\n");
+  await git(bWork.dir, "add", ".");
+  await git(bWork.dir, "commit", "-q", "-m", "add b-second.txt");
+  const again = await run("git", ["-c", "credential.helper=", ...bearer(bGrant), "push", "-q", remote(), `HEAD:refs/heads/t/${bTask.slice(1)}`], { cwd: bWork.dir });
+  assert.equal(again.code, 0, again.stderr);
+  const head = await git(bWork.dir, "rev-parse", "HEAD");
+  const tip = await git(root, ...bearer(bRead), "ls-remote", remote(), `refs/heads/t/${bTask.slice(1)}`);
+  assert.ok(tip.startsWith(head), tip);
 });
 
 // One request over node:http, where the Host header and any header can be set.

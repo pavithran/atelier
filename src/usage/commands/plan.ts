@@ -5,8 +5,8 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Plans", line: 1, slot: 10,
-      form: 'plan "goal" [--scope GLOB]... [--planner H/M]',
-      about: "The developer states a goal. Atelier creates the plan task and queues it as a plan job for the planner named, or else for the first model in the pool for research work that is not refused, not paid per token and may plan. A project has one active plan at a time. A runner that offers plan jobs takes it: the planner claims the plan task, reads its brief from the job-brief route and posts the plan document the harness wrote; by hand, a planner claims with `--runner` and runs `plan post`.",
+      form: 'plan "goal" --planner H/M [--scope GLOB]...',
+      about: "The developer states a goal. Atelier creates the plan task and queues it as a plan job for the planner named; without `--planner` it lists the pool's candidates, each refused one with why, and refuses (Atelier picks no planner). A project has one active plan at a time. A runner that offers plan jobs takes it: the planner claims the plan task, reads its brief from the job-brief route and posts the plan document the harness wrote; by hand, a planner claims with `--runner` and runs `plan post`.",
     },
     {
       group: "Plans", line: 1, slot: 20,
@@ -15,8 +15,8 @@ const spec: CommandSpec = {
     },
     {
       group: "Plans", line: 2, slot: 10,
-      form: "plan approve ID --hash HASH [--allow-paid]",
-      about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no independent model can review under the family policy (by default another family than every contributor; in single-family mode a different model of the selected company from every contributor), refuses the approval; a reviewer counts only when a live runner offers it for the review job, and when no runner is live the pool stands, with the routing saying so. `--allow-paid` lets models paid per token build and review.",
+      form: "plan approve ID --hash HASH --route KEY=BUILDER:REVIEWER... [--allow-paid]",
+      about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. Each part's builder and reviewer are named with `--route KEY=BUILDER:REVIEWER`, once per part; without them the approval is refused, listing each part's candidates as the routing reads them (Atelier picks no route). The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no independent model can review under the family policy (by default another family than every contributor; in single-family mode a different model of the selected company from every contributor), refuses the approval; a reviewer counts only when a live runner offers it for the review job, and when no runner is live the pool stands, with the routing saying so. `--allow-paid` lets models paid per token build and review.",
     },
     {
       group: "Plans", line: 2, slot: 20,
@@ -54,6 +54,7 @@ const spec: CommandSpec = {
     planner: false,
     json: true,
     hash: false,
+    route: false,
     "allow-paid": true,
     note: false,
     to: false,
@@ -65,6 +66,7 @@ const spec: CommandSpec = {
       "--planner H/M": "with a goal, the model that plans the work",
       "--json": "with show, prints the plan as JSON",
       "--hash HASH": "with approve, the full hash of the newest proposal",
+      "--route KEY=BUILDER:REVIEWER": "with approve, the builder and reviewer of the part KEY, each as harness/model; once per part",
       "--allow-paid": "with approve, lets models paid per token build parts",
       "--note TEXT": "with revise or stop, why; kept with the event",
       "--to H/M": "with reroute, the model that builds from now on, reviews a submitted part, or plans before approval; with refresh --resolve, the model that builds the merge-main part",
@@ -75,7 +77,7 @@ const spec: CommandSpec = {
   subcommands: {
     "": { takes: ["scope", "planner"] },
     show: { takes: ["json"] },
-    approve: { takes: ["hash", "allow-paid"] },
+    approve: { takes: ["hash", "route", "allow-paid"] },
     revise: { takes: ["note"] },
     reroute: { takes: ["to"] },
     retry: { takes: [] },

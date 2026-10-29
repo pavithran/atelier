@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dueNotices, noticeKey, NOTICE_AFTER_MS } from "../src/stuck/notices.ts";
+import { dueNotices, noticeKey } from "../src/stuck/notices.ts";
+import { LIMITS } from "../src/limits.ts";
+const NOTICE_AFTER_MS = LIMITS.noticeAfterMs;
 import { stuckBatchRequests } from "../src/notify.ts";
 import type { Transition } from "../src/stuck/episodes.ts";
 

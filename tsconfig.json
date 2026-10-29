@@ -4,7 +4,7 @@
     "lib": ["es2023", "esnext.disposable"],
     "module": "es2022",
     "moduleResolution": "bundler",
-    "types": [],
+    "types": ["node"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
@@ -12,5 +12,5 @@
     "isolatedModules": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["worker-configuration.d.ts", "src/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

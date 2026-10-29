@@ -66,7 +66,7 @@ test("dispatched: the answer carries the next command, as text and as JSON", asy
   const { server, api, cli, task } = await serve();
   try {
     const id = await task("Waits for a runner", "lib/**");
-    assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home" })).status, 200);
+    assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "codex", model: "gpt-6" })).status, 200);
     const refused = await api("POST", `/projects/demo/items/${id}/claim`, {}, OTHER);
     assert.equal(refused.status, 409);
     assert.deepEqual(refused.body, { error: "dispatched", detail: `${id} is waiting for a home runner; withdraw the dispatch to claim it by hand`, next: `atelier undispatch ${id}` });

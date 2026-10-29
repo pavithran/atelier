@@ -4,8 +4,8 @@
 // task is placed under the owner, not left in review; once the pool offers a
 // reviewer of another family, every view moves it back to review.
 import { holdLiveOffers } from "./helpers/live-offers.ts";
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";

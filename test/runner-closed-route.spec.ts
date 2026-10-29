@@ -1,6 +1,6 @@
-import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
-import { afterEach, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { env, runInDurableObject, server } from "./support/workers.ts";
+import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { TERMINAL_TASK_EXITS, terminalTaskExit } from "../src/tokens.ts";
 
@@ -13,7 +13,7 @@ import { TERMINAL_TASK_EXITS, terminalTaskExit } from "../src/tokens.ts";
 // token are answered as before. Blocked, accepted and integrated are not
 // closed and keep their own answers.
 
-const OWNER = "runner-closed-owner", ACTOR = "codex/gpt-6-astra", HEAD = "a".repeat(40), PUSHED = "b".repeat(40);
+const OWNER = "runner-closed-owner", ACTOR = "codex/gpt-6-astra", PUSHED = "b".repeat(40);
 const STATES = Object.keys(TERMINAL_TASK_EXITS) as (keyof typeof TERMINAL_TASK_EXITS)[];
 const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 let serial = 0;
@@ -29,23 +29,15 @@ async function setup() {
   await I().registerProject(p);
   await L.newItem("Build", [], "owner");
   await L.newItem("Never offered", [], "owner");
-  await L.claim("t1", ACTOR);
-  await L.setFork("t1", `${name}--t1`, HEAD, ACTOR);
-  await L.release("t1", ACTOR, "seed fork");
+  // A runner's claim branches t1 from main (task 5), so main needs a commit.
+  const dir = (server as unknown as { git: { repo(key: string, branch: string): string } }).git.repo(name, "main");
+  const author = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const first = execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "first"], { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+  execFileSync("git", ["update-ref", "refs/heads/main", first], { cwd: dir });
   await L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
-  let forkHead = HEAD;
-  const artifacts = { get: async (repo: string) => ({
-    fork: async () => {},
-    readTree: async () => [],
-    log: async () => [{ hash: repo === name ? HEAD : forkHead, treeHash: "c".repeat(40), parents: repo === name ? [] : [HEAD], message: "Change", author: { name: "Builder" } }],
-    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-    createToken: async (_scope: string, ttl: number) => ({ id: "up", plaintext: "upstream-secret", expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }),
-    revokeToken: async () => true,
-    [Symbol.dispose]() {},
-  }) };
-  const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as unknown as typeof env;
+  const bindings = { ...env, ATELIER_TOKEN: OWNER } as unknown as typeof env;
   const request = (method: string, path: string, token = OWNER, actor: string | null = "owner", body?: unknown, runner?: string) => worker.fetch(new Request(`https://atelier.test${path.startsWith("/git/") ? "" : "/api"}${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(runner ? { "x-atelier-runner": runner } : {}) },
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(runner ? { "x-atelier-runner": runner } : {}), ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }), bindings);
   const issue = async (runner: string) => {
@@ -75,13 +67,20 @@ async function setup() {
   const force = (state: string, id = "t1") => runInDurableObject(L, (instance) => {
     (instance as unknown as { update(id: string, fields: Record<string, string | null>, at: string): void }).update(id, { state }, new Date().toISOString());
   });
-  return { name, L, token, api, request, issue, offer, base, poll, claim, close, force, push: () => { forkHead = PUSHED; } };
+  // A commit on the task's branch t/1 (claimed first), as a push of the builder would leave: the head the push record observes.
+  const push = () => {
+    const parent = execFileSync("git", ["rev-parse", "refs/heads/t/1"], { cwd: dir, encoding: "utf8" }).trim();
+    const sha = execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-p", parent, "-m", "work"], { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+    execFileSync("git", ["update-ref", "refs/heads/t/1", sha], { cwd: dir });
+    return sha;
+  };
+  return { name, L, token, api, request, issue, offer, base, poll, claim, close, force, push };
 }
 
 async function terminal(res: Response, state: keyof typeof TERMINAL_TASK_EXITS, id = "t1") {
   expect(res.status).toBe(409);
   const body = await res.json() as Json;
-  expect(body).toEqual({ error: "task_terminal", detail: `${id} is ${state === "abandoned" ? "closed" : "merged"} (state: ${state})` });
+  expect(body).toEqual({ error: "task_terminal", detail: `${id} is ${state === "abandoned" ? "closed" : "merged"} (state: ${state})`, next: "stop work on this task; run atelier show ID" });
   expect(terminalTaskExit(body)).toBe(TERMINAL_TASK_EXITS[state]);
 }
 
@@ -169,7 +168,7 @@ for (const state of STATES) for (const transition of ["release", "other runner",
     await t.claim();
     let current: Awaited<ReturnType<typeof t.issue>> | undefined;
     if (transition === "release" || transition === "other runner") {
-      expect((await t.api("POST", `${t.base}/release`, { note: "give up" })).status).toBe(200);
+      expect((await t.api("POST", `${t.base}/release`, { note: "step harness; exit 1" })).status).toBe(200);
       if (transition === "other runner") {
         current = await t.issue("home:other");
         expect((await t.request("POST", "/queue", current.token, ACTOR, { ...t.offer, runner: "home:other" })).status).toBe(200);
@@ -242,22 +241,18 @@ for (const state of STATES) it(`a job two runners were offered and neither claim
   expect(((await raced.json()) as Json).error).not.toBe("task_terminal");
 });
 
-for (const state of STATES) it(`a held job ${state} during its push is answered task_terminal by the Git route and the push record`, async () => {
+for (const state of STATES) it(`a held job ${state} during its push has its Git grant refused and is answered task_terminal by the push record`, async () => {
   const t = await setup();
   const workspace = await t.claim();
-  const git = `/git/runner/${t.name}/t1.git`;
-  // While the job is live, the Worker relays the push to the fork.
-  const send = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("0000", { headers: { "content-type": "application/x-git-receive-pack-result" } }));
-  expect((await t.request("POST", `${git}/git-receive-pack`, workspace.token, null, "0000")).status).toBe(200);
-  expect(send).toHaveBeenCalledTimes(1);
+  // Since task 5 a runner pushes with its task grant straight to the Git host (the /git/runner relay is gone).
+  const refs = (token: string) => fetch(`${server.url.replace("localhost", "127.0.0.1")}/git/${t.name}.git/info/refs?service=git-receive-pack`, { headers: { authorization: `Bearer ${token}` } });
+  expect((await refs(workspace.token)).status).toBe(200);
   await t.close(state);
-  // Closing moves the claim generation on, which retires the Git credential
-  // (runnerGit in src/ledger.ts): the push is refused and relayed nowhere.
-  // Git reports only the refusal, so atelier push reads the item next, and
-  // that answer, like the push record's, names the state.
-  expect((await t.request("GET", `${git}/info/refs?service=git-receive-pack`, workspace.token, null)).status).toBe(401);
-  expect((await t.request("POST", `${git}/git-receive-pack`, workspace.token, null, "0000")).status).toBe(401);
-  expect(send).toHaveBeenCalledTimes(1);
+  // Closing ends the grant (the Ledger no longer records it for a held task):
+  // the push is refused at the Git host. Git reports only the refusal, so
+  // atelier push reads the item next, and that answer, like the push record's,
+  // names the state.
+  expect((await refs(workspace.token)).status).toBe(401);
   await terminal(await t.api("GET", t.base), state);
   await terminal(await t.api("POST", `${t.base}/push`, { head: PUSHED }), state);
   // The route check still comes first: a route no runner has stays forbidden.
@@ -270,13 +265,13 @@ for (const state of STATES) it(`a held job ${state} during its push is answered 
 for (const state of STATES) it(`a held job ${state} during finish, after its push was recorded, is answered task_terminal at every step`, async () => {
   const t = await setup();
   await t.claim();
-  t.push();
-  expect((await t.api("POST", `${t.base}/push`, { head: PUSHED })).status).toBe(200);
+  const pushed = t.push();
+  expect((await t.api("POST", `${t.base}/push`, { head: pushed })).status).toBe(200);
   await t.close(state);
   await terminal(await t.api("GET", t.base), state);
   await terminal(await t.api("POST", `${t.base}/read-token`, {}), state);
   await terminal(await t.api("POST", `${t.base}/base-token`, { scope: "read" }), state);
-  await terminal(await t.api("POST", `${t.base}/evidence`, { kind: "check", claim: "npm test", head: PUSHED, passed: true }), state);
+  await terminal(await t.api("POST", `${t.base}/evidence`, { kind: "check", claim: "npm test", head: pushed, passed: true }), state);
   await terminal(await t.api("POST", `${t.base}/submit`, { summary: "Built" }), state);
   await terminal(await t.api("POST", `${t.base}/release`, {}), state);
   await terminal(await t.api("POST", `${t.base}/claim`, {}), state);

@@ -1,11 +1,12 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker, { replayModelSnapshot, takeModelSnapshots } from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { ModelComparison } from "../src/models/compare.ts";
 import { addDays, BACKFILL_DAYS, daysDue, measureHeading, trendPointText, utcDay, type ModelTrend, type SnapshotTake } from "../src/models/snapshot.ts";
 import { suggestionRecords } from "../src/models/suggestion-records.ts";
 import { signIn } from "./signin.ts";
+import { scheduled as runScheduled } from "./workers-removed.ts";
 
 // t623 through the Worker and the index Ledger: the scheduled handler takes
 // each ended UTC day once, a retried, repeated or concurrent run stores
@@ -30,14 +31,15 @@ const entry = (id: string, harness: ModelEntry["harness"], extra: Partial<ModelE
 });
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const L = (key = NAME) => env.LEDGER.get(env.LEDGER.idFromName(`project:${key}`));
+// Owner-token writes name the acting model (G18); OPUS is in the pool.
 const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body),
+  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": OPUS, "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body),
 }), testEnv);
 const takes = (from: string, to: string) => index().modelSnapshotTakes(from, to) as unknown as Promise<SnapshotTake[]>;
 // Seven minutes past a UTC midnight `days` days from today, so later runs the
 // same day stay on it.
 const past = (days: number) => Date.parse(`${addDays(TODAY, days)}T00:07:00.000Z`);
-const scheduled = (at: number) => worker.scheduled({ scheduledTime: at, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, testEnv);
+const scheduled = (at: number) => runScheduled({ scheduledTime: at, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, testEnv);
 
 let seeded = false;
 async function seed() {

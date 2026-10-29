@@ -57,7 +57,10 @@ test("a validation_blocked run's uncommitted work is committed, pushed unsubmitt
   assert.match(commit.commitWork.join("\n\n"), /listen EPERM/);
   assert.deepEqual(calls.find((c) => c.argv?.[0] === "push").argv, ["push", "t13", "--project", "atelier", "--as", actor]);
   const release = calls.find((c) => c.argv?.[0] === "release").argv;
-  assert.match(release.at(-1), /^validation_blocked: .*committed as wip01234 and pushed unsubmitted for the next run to continue/);
+  // Round 14: the report in --blocked, the commit among the note's facts
+  // (a hex hash; this stub's is not one, so the grammar keeps the step alone).
+  assert.equal(release[release.indexOf("--blocked") + 1], BLOCKED);
+  assert.equal(release[release.indexOf("--note") + 1], "step check");
   assert.ok(logs.includes("blocked for the developer: work in progress wip01234 pushed unsubmitted for the run after the unblock"));
   assert.ok(!commands(calls).includes("finish"));
 });
@@ -67,7 +70,7 @@ test("a validation_blocked run with nothing uncommitted blocks the task with no 
   const state = await runTask(assignment, config, "home:studio", io);
   assert.equal(runOutcome(state), "validation_blocked");
   assert.deepEqual(commands(calls), ["claim", "release"]);
-  assert.match(calls.find((c) => c.argv?.[0] === "release").argv.at(-1), /^validation_blocked: /);
+  assert.equal(calls.find((c) => c.argv?.[0] === "release").argv.at(-1), BLOCKED);
   assert.ok(logs.includes("blocked for the developer: validation_blocked with no new commit"));
 });
 

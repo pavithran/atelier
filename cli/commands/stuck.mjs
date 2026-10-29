@@ -1,8 +1,10 @@
 // atelier stuck. Forms, flags and help live in src/usage/commands/stuck.ts.
-import { OWNER, P, actor, args, call, die, project } from "../atelier.mjs";
+import { OWNER, P, args, call, die, project } from "../atelier.mjs";
 
 export default async function stuckCommand() {
-  const name = project(), as = await actor(OWNER), query = new URLSearchParams();
+  // A read needs no acting model, and the report is the developer's: it goes
+  // as the developer whatever --as or ATELIER_ACTOR names (G4).
+  const name = project(), as = OWNER, query = new URLSearchParams();
   for (const [flag, key] of Object.entries({ "no-push-hours": "noPushHours", "unanswered-hours": "unansweredHours", "core-hold-minutes": "coreHoldMinutes", "runner-poll-minutes": "runnerPollMinutes", "review-answer-hours": "reviewAnswerHours" })) {
     if (args[flag] !== undefined) {
       if (!Number.isFinite(Number(args[flag])) || Number(args[flag]) <= 0) die(`--${flag} must be a positive finite number`);

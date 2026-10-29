@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { criteriaHash } from "../src/criteria.ts";
@@ -75,10 +75,20 @@ async function landingMerge(L: L, id: string, head: string) {
   await L.submit(id, OPUS, "Merged with main.");
 }
 
+// G6: the server carries a request to the new head, or asks again after a
+// change of criteria, only under the developer's standing reask-on-resubmit
+// instruction, which acts in fast mode. Without it the withdrawal is the fact.
+async function standingReask(L: L) {
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  await L.recordDecision({ standing: { key: "reask-on-resubmit", value: "on" }, quote: "ask again" }, "owner", OPUS);
+}
+
 const gateRequests = async (L: L, id: string) => (await L.reviewRequests(id)).filter((r) => !r.tier).map((r) => ({ head: r.head, state: r.state }));
 
 it("t282: a review asked at A, then the landing pushes B and submits — the A request is closed and the runner's claim gets B, for the named reviewer", async () => {
   const L = await setup("move-t282");
+  await standingReask(L);
   const id = await task(L);
   await submittedAt(L, id, A);
   // atelier land --reviewer codex/gpt-6-astra asks for a wanted review at A.
@@ -102,11 +112,25 @@ it("t282: a review asked at A, then the landing pushes B and submits — the A r
   expect(await L.item(id)).toMatchObject({ state: "accepted" });
 });
 
-it("a picked reviewer's request follows the head too, and a claimed request at the old head is closed with it", async () => {
-  const L = await setup("move-picked");
+it("without the standing instruction the head moving only withdraws the request; the model asks again by command (G6)", async () => {
+  const L = await setup("move-plain");
   const id = await task(L);
   await submittedAt(L, id, A);
-  expect(await L.requestReview(id, "owner", null, POOL)).toMatchObject({ requested: true, reviewer: GPT });
+  await L.requestReview(id, "owner", GPT, POOL, true);
+  await landingMerge(L, id, B);
+  expect(await gateRequests(L, id)).toEqual([{ head: A, state: "withdrawn" }]);
+  expect(await L.reviewWaiting()).toEqual([]);
+  expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { head: A, reviewer: GPT, reason: "the head moved to bbbbbbbb" } });
+  expect(await L.requestReview(id, "owner", GPT, POOL, true)).toMatchObject({ requested: true, head: B, reviewer: GPT });
+  expect((await L.reviewWaiting()).map((i) => i.head)).toEqual([B]);
+});
+
+it("a picked reviewer's request follows the head too, and a claimed request at the old head is closed with it", async () => {
+  const L = await setup("move-picked");
+  await standingReask(L);
+  const id = await task(L);
+  await submittedAt(L, id, A);
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: true, reviewer: GPT });
   // The reviewer's runner has claimed it at A when the head moves.
   const lease1 = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
   await landingMerge(L, id, B);
@@ -119,6 +143,7 @@ it("a picked reviewer's request follows the head too, and a claimed request at t
 
 it("the review is asked at the new head only once the gate needs it: a push alone closes the old request, and the passing checks ask again", async () => {
   const L = await setup("move-pending");
+  await standingReask(L);
   const id = await task(L);
   await submittedAt(L, id, A);
   await L.requestReview(id, "owner", GPT, POOL);
@@ -136,6 +161,7 @@ it("the review is asked at the new head only once the gate needs it: a push alon
 
 it("the owner naming another reviewer at the new head replaces the carried request rather than being refused", async () => {
   const L = await setup("move-rename");
+  await standingReask(L);
   const id = await task(L);
   await submittedAt(L, id, A);
   await L.requestReview(id, "owner", GPT, POOL, true);
@@ -144,21 +170,31 @@ it("the owner naming another reviewer at the new head replaces the carried reque
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}@${i.head!.slice(0, 1)}`)).toEqual([`${GEMINI}@b`]);
 });
 
-it("a tier request at the old head is closed and asked again beside the carried gate request", async () => {
+// G17: the tier review is recorded as needed (review.tier_needed, with the
+// candidates) at each head the gate request is carried to, and asked by command.
+it("a tier review is recorded as needed at the old head and again at the carried head; the model asks it by command beside the gate request", async () => {
   const L = await setup("move-tier", { ...policy, reviewTier: [OPUS, SONNET] });
+  await standingReask(L);
   const id = await task(L);
   await submittedAt(L, id, A);
   await L.requestReview(id, "owner", GPT, POOL);
-  expect((await L.reviewRequests(id)).filter((r) => r.tier).map((r) => r.head)).toEqual([A]);
+  const needed = async () => (await events(L, id)).filter((e) => e.kind === "review.tier_needed").map((e) => e.data.head).sort();
+  expect(await needed()).toEqual([A]);
+  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
   await landingMerge(L, id, B);
-  expect((await L.reviewRequests(id)).filter((r) => r.tier).map((r) => ({ head: r.head, state: r.state }))).toEqual([
-    { head: A, state: "withdrawn" }, { head: B, state: "open" },
-  ]);
+  expect(await needed()).toEqual([A, B]);
+  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
+  expect(await L.requestTierReview(id, "owner", SONNET, POOL, undefined)).toMatchObject({ requested: true, head: B, reviewer: SONNET });
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}@${i.head!.slice(0, 1)}`)).toEqual([`${GPT}@b`, `${SONNET}@b`]);
+  // The tier request at B is closed with the gate's when the head moves again, and not carried (G6).
+  await landingMerge(L, id, C);
+  expect((await L.reviewRequests(id)).filter((r) => r.tier).map((r) => ({ head: r.head, state: r.state }))).toEqual([{ head: B, state: "withdrawn" }]);
+  expect(await needed()).toEqual([A, B, C]);
 });
 
 it("a request left open at an old head is closed by the first claim, which gets the current head's, and never loops", async () => {
   const L = await setup("move-legacy");
+  await standingReask(L);
   const id = await task(L);
   await submittedAt(L, id, A);
   await L.requestReview(id, "owner", GPT, POOL, true);
@@ -178,6 +214,7 @@ it("a request left open at an old head is closed by the first claim, which gets 
 
 it("a stale request whose new head the gate does not need reviewed yet is closed by the claim, which is refused once and then finds nothing", async () => {
   const L = await setup("move-legacy-pending");
+  await standingReask(L);
   const id = await task(L);
   await submittedAt(L, id, A);
   await L.requestReview(id, "owner", GPT, POOL);
@@ -199,6 +236,7 @@ it("a stale request whose new head the gate does not need reviewed yet is closed
 // move of the head carries only the request that stands.
 it("a change of criteria withdraws the request at the head and asks the same reviewer again there; changing back reopens nothing", async () => {
   const L = await setup("move-criteria");
+  await standingReask(L);
   const ONE = ["The landing asks for the head it waits on"], TWO = [...ONE, "And says so"];
   const id = (await L.newItem("Landing", [], "owner", { accept: ONE })).id;
   await submittedAt(L, id, A);

@@ -1,11 +1,13 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // t223 through the Worker and the Ledgers: the */5 tick records stage.stuck
-// once per task, stage and head, stage.told in the same tick, stage.cleared
-// when the task leaves the stage, and tick.ran on the index. A project that
-// cannot be read records nothing.
+// once per task, stage and head, stage.cleared when the task leaves the stage,
+// and tick.ran on the index. A project that cannot be read records nothing.
+// No stage.told: the tick tells nobody (G6, 2.0 task 8); the record is the
+// fact and the model reads it.
 
 const TOKEN = "stage-tick-test-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
@@ -24,11 +26,11 @@ async function project(name: string) {
 }
 const task = async (key: string, title: string) => (await L(key).newItem(title, ["src/a.ts"], "owner", { accept: ["It works"] })).id;
 // The 5 minute cron firing, `hours` after now.
-const tick = (hours: number, e: typeof env = testEnv) => worker.scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, e);
+const tick = (hours: number, e: typeof env = testEnv) => scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, e);
 const stageEvents = async (key: string) => ((await L(key).events(undefined, 1000)) as unknown as { itemId: string; kind: string; data: Record<string, unknown> }[])
   .filter((e) => e.kind.startsWith("stage.")).reverse().map((e) => [e.itemId, e.kind, e.data.stage]);
 
-it("a filed task is stuck after 24 hours: one stuck and one told however many ticks follow", async () => {
+it("a filed task is stuck after 24 hours: one stuck however many ticks follow", async () => {
   await project("st-a");
   const id = await task("st-a", "Waiting");
   await tick(23.9);
@@ -36,7 +38,7 @@ it("a filed task is stuck after 24 hours: one stuck and one told however many ti
   await tick(24.1);
   await tick(24.2);
   await tick(30);
-  expect(await stageEvents("st-a")).toEqual([[id, "stage.stuck", "filed"], [id, "stage.told", "filed"]]);
+  expect(await stageEvents("st-a")).toEqual([[id, "stage.stuck", "filed"]]);
 });
 
 it("a task that leaves the stage clears it, and returning past the limit is stuck again", async () => {
@@ -49,8 +51,7 @@ it("a task that leaves the stage clears it, and returning past the limit is stuc
   await L("st-b").release(id, AGENT, "stop");
   await tick(26);
   expect(await stageEvents("st-b")).toEqual([
-    [id, "stage.stuck", "filed"], [id, "stage.told", "filed"], [id, "stage.cleared", "filed"],
-    [id, "stage.stuck", "filed"], [id, "stage.told", "filed"],
+    [id, "stage.stuck", "filed"], [id, "stage.cleared", "filed"], [id, "stage.stuck", "filed"],
   ]);
 });
 
@@ -62,7 +63,7 @@ it("a task being built has no limit, and tasks of other projects are kept apart"
   const other = await task("st-d", "Waiting");
   await tick(100);
   expect(await stageEvents("st-c")).toEqual([]);
-  expect(await stageEvents("st-d")).toEqual([[other, "stage.stuck", "filed"], [other, "stage.told", "filed"]]);
+  expect(await stageEvents("st-d")).toEqual([[other, "stage.stuck", "filed"]]);
 });
 
 it("each run records tick.ran on the index and the route says when", async () => {
@@ -99,13 +100,13 @@ it("a project that cannot be read records nothing, and the run is still recorded
   expect(await stageEvents("st-f")).toEqual([]);
   expect((await I().tickRan())!.unread).toBeGreaterThanOrEqual(1);
   await tick(200.1);
-  expect((await stageEvents("st-f")).map((e) => e[1])).toEqual(["stage.stuck", "stage.told"]);
+  expect((await stageEvents("st-f")).map((e) => e[1])).toEqual(["stage.stuck"]);
 });
 
 it("the stuck episodes of t196 keep working beside the stage tick", async () => {
   await project("st-g");
   const id = await task("st-g", "Silent");
   await L("st-g").claim(id, AGENT);
-  await worker.scheduled({ scheduledTime: Date.now() + 7 * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, testEnv);
+  await scheduled({ scheduledTime: Date.now() + 7 * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, testEnv);
   expect((await I().stuckEpisodes("st-g")).map((t) => [t.item, t.kind])).toEqual([[id, "opened"]]);
 });

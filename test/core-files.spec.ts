@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { mergeProject } from "../src/ledger.ts";
 import type { Evidence } from "../src/rules.ts";
@@ -26,10 +26,11 @@ const artifacts = {
   }),
 } as unknown as Artifacts;
 
+// A write on the owner token names the acting model (G18).
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
 }
@@ -79,7 +80,7 @@ it("the queue holds core overlaps during building and landing, but offers them w
   const elsewhere = await create("Non-core overlap", ["src/index.ts"]);
   const allowed = await create("Core edit, owner allows", ["src/ledger.ts"]);
   for (const [id, body] of [[core, {}], [elsewhere, {}], [allowed, { overlapOk: true }]] as const) {
-    const sent = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", ...body });
+    const sent = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3-flash", ...body });
     expect(sent.status, await sent.clone().text()).toBe(200);
   }
   const offer = { runner: "home:studio", agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }] };
@@ -118,7 +119,7 @@ it("a claim a runner gives up lifts the core-file hold at once and reaches the i
   const live = await L.newItem("Merge main", ["src/**"], "owner");
   await L.claim(live.id, A);
   const waiting = await L.newItem("Core edit", ["src/ledger.ts"], "owner");
-  await L.dispatch(waiting.id, "owner", { to: "home", agent: "opencode" });
+  await L.dispatch(waiting.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash" });
   expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toMatchObject({ id: live.id, state: "claimed" });
   const gone = await L.dispatch(live.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra", overlapOk: true, release: true });
   expect(gone.state).toBe("open");
@@ -129,7 +130,8 @@ it("a claim a runner gives up lifts the core-file hold at once and reaches the i
   expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toBeUndefined();
   const entry = (await L.inbox(new Date().toISOString())).find((e) => e.itemId === live.id);
   expect(entry).toMatchObject({ kind: "gave-up" });
-  expect(entry?.reason).toBe(`the merge failed twice (its commits are pushed); run \`atelier dispatch ${live.id}\` to send it out again`);
+  // Round 11: a give-up's note is read as facts alone.
+  expect(entry?.reason).toBe(`step merge; run \`atelier dispatch ${live.id}\` to send it out again`);
   // A release that does not start with the runner's word is no give-up, and a new claim ends one.
   await L.claim(live.id, A, { runner: "home:studio", kind: "home" });
   expect((await L.inbox(new Date().toISOString())).some((e) => e.kind === "gave-up")).toBe(false);
@@ -151,7 +153,8 @@ it("a give-up reported for a task the runner already released reaches the inbox 
   expect(await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit")).toBe(true);
   await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit");
   const entries = (await L.inbox(new Date().toISOString())).filter((e) => e.kind === "gave-up");
-  expect(entries.map((e) => e.reason)).toEqual([`harness made no new commit; run \`atelier dispatch ${item.id}\` to send it out again`]);
+  // Round 10: the runner's words are not kept; the give-up is said from its facts, here none.
+  expect(entries.map((e) => e.reason)).toEqual([`the runner gave it up; run \`atelier dispatch ${item.id}\` to send it out again`]);
   const events = (await L.events(item.id)) as unknown as { kind: string }[];
   expect(events.filter((e) => e.kind === "item.gave_up")).toHaveLength(1);
 });

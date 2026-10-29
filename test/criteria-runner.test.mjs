@@ -95,10 +95,11 @@ test("a rejection carries its findings; an unparsable reply, a failing harness a
   assert.ok(posted.includes("--reject"));
   assert.equal(posted[posted.indexOf("--findings") + 1], JSON.stringify([{ file: "criterion-1", line: null, severity: "blocking", text: "Fast is not a measurement." }]));
 
-  for (const [options, reason, noted = reason] of [
-    [{ verdict: "Looks fine to me." }, /states no verdict/],
-    [{ code: 2 }, /^harness exited 2$/, /^harness exited 2; exit-signature: [0-9a-f]{32}$/],
-    [{ timedOut: true }, /^harness timed out$/],
+  // Round 12: the note sent is facts by the fixed grammar; the reason stays in the runner's log.
+  for (const [options, reason, noted] of [
+    [{ verdict: "Looks fine to me." }, /states no verdict/, /^step run; the reply states no verdict$/],
+    [{ code: 2 }, /^harness exited 2$/, /^step harness; exit 2; exit-signature: [0-9a-f]{32}$/],
+    [{ timedOut: true }, /^harness timed out$/, /^step harness; timed out$/],
   ]) {
     const { io, calls } = fixture(options);
     const state = await runCriteriaReview(assignment, config, "home:studio", io);

@@ -1,12 +1,15 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { scheduled } from "./workers-removed.ts";
 
-// t225 through the Worker and the Ledgers: the tick releases a review claim
-// unanswered past reviewAnswerHours and asks again once per task and head, then
-// tells; it re-points a review request unclaimed 10 minutes to another reviewer
-// a live runner offers, or records stuck and told when none is offered.
+// t225 through the Worker and the Ledgers, as 2.0 left it (G6, G17): the tick
+// records a review request unclaimed 10 minutes as stage.stuck with its
+// reviewer and age and leaves it as asked (no re-point, no told); a review
+// claim unanswered past reviewAnswerHours is not released nor asked again;
+// the tier's separate request is asked by command (--tier-review), and waits
+// the same 10 minutes as its own stage.
 
 const TOKEN = "stage-tick-review-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
@@ -24,7 +27,7 @@ const POOL = [entry("claude-code", "opus-5.5"), entry("claude-code", "sonnet-5.5
 // The runner offers `models` for the review job for `key` alone, as it asked at the time of the tick.
 const offers = (key: string, models: string[], ms: number) =>
   I().putRunnerOffer({ runner: "home:review", kind: "home", agents: [{ agent: "claude-code", models }], projects: [key], jobs: ["build", "review"] }, new Date(Date.now() + ms).toISOString());
-const tick = (ms: number) => worker.scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
+const tick = (ms: number) => scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
 const stage = async (key: string) => ((await L(key).events(undefined, 1000)) as unknown as { itemId: string; kind: string; data: Record<string, unknown> }[])
   .filter((e) => e.kind.startsWith("stage.")).reverse();
 const kinds = async (key: string) => (await stage(key)).map((e) => [e.kind, e.data.stage]);
@@ -51,7 +54,7 @@ async function checked(key: string) {
   return id;
 }
 
-it("a review request unclaimed 10 minutes is re-pointed once to another offered reviewer, and repeated ticks change nothing", async () => {
+it("a review request unclaimed 10 minutes is recorded stuck once, with its reviewer, and stays as asked of that reviewer, however many ticks follow", async () => {
   const key = "sr-reroute", id = await checked(key);
   await offers(key, ["opus-5.5", "sonnet-5.5"], 5 * MIN);
   await tick(5 * MIN);
@@ -59,48 +62,29 @@ it("a review request unclaimed 10 minutes is re-pointed once to another offered 
   expect(await asked(key, id)).toEqual([OPUS]);
   await offers(key, ["opus-5.5", "sonnet-5.5"], 11 * MIN);
   await tick(11 * MIN);
-  expect(await asked(key, id)).toEqual([SONNET]);
-  expect(await kinds(key)).toEqual([["stage.rerouted", "checked"]]);
-  expect((await stage(key))[0].data).toMatchObject({ head: HEAD, from: OPUS, to: SONNET });
-  await offers(key, ["opus-5.5", "sonnet-5.5"], 12 * MIN);
-  await tick(12 * MIN);
-  await tick(13 * MIN);
-  expect(await kinds(key)).toEqual([["stage.rerouted", "checked"]]);
-  expect(await asked(key, id)).toEqual([SONNET]);
-});
-
-it("a re-pointed request left unclaimed another 10 minutes is stuck and told, never re-pointed again", async () => {
-  const key = "sr-twice", id = await checked(key);
-  await offers(key, ["opus-5.5", "sonnet-5.5"], 11 * MIN);
-  await tick(11 * MIN);
+  // Another reviewer is offered, and the tick re-points nothing (G6).
+  expect(await asked(key, id)).toEqual([OPUS]);
+  expect(await kinds(key)).toEqual([["stage.stuck", "checked"]]);
+  expect((await stage(key))[0].data).toMatchObject({ head: HEAD });
+  expect(String((await stage(key))[0].data.note)).toMatch(new RegExp(`asked of ${OPUS} is unclaimed since`));
   await offers(key, ["opus-5.5", "sonnet-5.5"], 22 * MIN);
   await tick(22 * MIN);
   await tick(23 * MIN);
-  expect(await kinds(key)).toEqual([["stage.rerouted", "checked"], ["stage.stuck", "checked"], ["stage.told", "checked"]]);
-  expect(String((await stage(key))[2].data.note)).toMatch(/already re-pointed once/);
-  expect(await asked(key, id)).toEqual([SONNET]);
+  expect(await kinds(key)).toEqual([["stage.stuck", "checked"]]);
+  expect(await asked(key, id)).toEqual([OPUS]);
 });
 
-it("with no other reviewer offered the stage is stuck and told, and the request stays", async () => {
+it("with no other reviewer offered the stage is recorded stuck in the same way, and the request stays", async () => {
   const key = "sr-none", id = await checked(key);
   await offers(key, ["opus-5.5"], 11 * MIN);
   await tick(11 * MIN);
   await tick(12 * MIN);
-  expect(await kinds(key)).toEqual([["stage.stuck", "checked"], ["stage.told", "checked"]]);
-  expect(String((await stage(key))[1].data.note)).toMatch(/no other reviewer a live runner offers qualifies/);
+  expect(await kinds(key)).toEqual([["stage.stuck", "checked"]]);
+  expect(String((await stage(key))[0].data.note)).toMatch(new RegExp(`asked of ${OPUS} is unclaimed since`));
   expect(await asked(key, id)).toEqual([OPUS]);
 });
 
-it("never re-points to a reviewer of a contributor's family", async () => {
-  const key = "sr-family", id = await checked(key);
-  await offers(key, ["opus-5.5", "glm-5.3"], 11 * MIN);
-  await I().putRunnerOffer({ runner: "home:review", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "zcode", models: ["glm-5.3"] }], projects: [key], jobs: ["build", "review"] }, new Date(Date.now() + 11 * MIN).toISOString());
-  await tick(11 * MIN);
-  expect(await kinds(key)).toEqual([["stage.stuck", "checked"], ["stage.told", "checked"]]);
-  expect(await asked(key, id)).toEqual([OPUS]);
-});
-
-it("a claim unanswered past reviewAnswerHours is released and asked again once, a second stale claim at the head is told", async () => {
+it("a claim unanswered past reviewAnswerHours stays claimed: the tick releases nothing and asks nothing again", async () => {
   const key = "sr-stale", id = await checked(key);
   await L(key).claimReview(id, OPUS, RUNNER);
   await offers(key, ["opus-5.5", "sonnet-5.5"], HOUR);
@@ -108,18 +92,12 @@ it("a claim unanswered past reviewAnswerHours is released and asked again once, 
   expect(await kinds(key)).toEqual([]);
   await offers(key, ["opus-5.5", "sonnet-5.5"], 2.1 * HOUR);
   await tick(2.1 * HOUR);
-  expect(await kinds(key)).toEqual([["stage.retried", "review"]]);
-  expect((await stage(key))[0].data).toMatchObject({ head: HEAD, reviewer: OPUS });
-  expect(await asked(key, id)).toEqual([OPUS]);
-  // Another claim, keyed by the same task and head though it is a new request number.
-  await L(key).claimReview(id, OPUS, RUNNER);
-  await tick(2.2 * HOUR);
   await tick(5 * HOUR);
   await tick(5.1 * HOUR);
-  expect(await kinds(key)).toEqual([["stage.retried", "review"], ["stage.told", "review"]]);
-  expect(String((await stage(key))[1].data.note)).toMatch(/asked again once at this head/);
-  // Told, not released again: the claim stands.
+  expect((await stage(key)).filter((e) => ["stage.retried", "stage.told", "stage.rerouted"].includes(e.kind))).toEqual([]);
+  // Still claimed, not offered back to the queue.
   expect(await asked(key, id)).toEqual([]);
+  expect((await L(key).detail(id)).reviewClaims.map((c) => c.reviewer)).toEqual([OPUS]);
 });
 
 // A protected task whose gate review is claimed by sonnet-5.5 and whose
@@ -144,45 +122,34 @@ async function tiered(key: string) {
   const made = await L(key).requestReview(id, "owner", SONNET, TIER_POOL, false, false, undefined, await I().runnerOffers());
   expect(made).toMatchObject({ requested: true, reviewer: SONNET });
   await L(key).claimReview(id, SONNET, RUNNER);
+  // The tier's request is asked by command, naming the tier model (G17).
+  expect(await L(key).requestTierReview(id, "owner", "claude-code/sonnet-5.4", TIER_POOL, await I().runnerOffers())).toMatchObject({ requested: true });
   expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.4"]);
   return id;
 }
 
-it("an unclaimed tier request is re-pointed once to another of the tier's models, and repeated ticks change nothing", async () => {
+it("an unclaimed tier request is recorded stuck on its own stage after 10 minutes and stays on the model asked, however many ticks follow", async () => {
   const key = "sr-tier-reroute", id = await tiered(key);
   await offers(key, ALL, 11 * MIN);
   await tick(11 * MIN);
-  expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.3"]);
-  expect(await kinds(key)).toEqual([["stage.rerouted", "checked-tier"]]);
-  await offers(key, ALL, 12 * MIN);
-  await tick(12 * MIN);
-  await tick(13 * MIN);
-  expect(await kinds(key)).toEqual([["stage.rerouted", "checked-tier"]]);
-  // Unclaimed another 10 minutes: stuck and told, not re-pointed again.
+  expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.4"]);
+  expect(await kinds(key)).toEqual([["stage.stuck", "checked-tier"]]);
+  expect(String((await stage(key))[0].data.note)).toMatch(/asked of claude-code\/sonnet-5\.4 is unclaimed since/);
   await offers(key, ALL, 22 * MIN);
   await tick(22 * MIN);
-  expect(await kinds(key)).toEqual([["stage.rerouted", "checked-tier"], ["stage.stuck", "checked-tier"], ["stage.told", "checked-tier"]]);
-  expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.3"]);
-});
-
-it("an unclaimed tier request with no other tier model offered is stuck and told", async () => {
-  const key = "sr-tier-none", id = await tiered(key);
-  await offers(key, ["sonnet-5.5", "sonnet-5.4"], 11 * MIN);
-  await tick(11 * MIN);
-  await tick(12 * MIN);
-  expect(await kinds(key)).toEqual([["stage.stuck", "checked-tier"], ["stage.told", "checked-tier"]]);
+  await tick(23 * MIN);
+  expect(await kinds(key)).toEqual([["stage.stuck", "checked-tier"]]);
   expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.4"]);
 });
 
-it("a stale tier claim is released and asked again once, apart from the gate's claim at the same head", async () => {
+it("a tier claim unanswered past reviewAnswerHours stays claimed, apart from the gate's claim at the same head: nothing is released or asked again", async () => {
   const key = "sr-tier-stale", id = await tiered(key);
   await L(key).claimReview(id, "claude-code/sonnet-5.4", RUNNER);
   await offers(key, ALL, 2.1 * HOUR);
   await tick(2.1 * HOUR);
-  expect((await kinds(key)).sort()).toEqual([["stage.retried", "review"], ["stage.retried", "review-tier"]]);
-  expect((await asked(key, id)).sort()).toEqual(["claude-code/sonnet-5.4", SONNET]);
-  await L(key).claimReview(id, "claude-code/sonnet-5.4", RUNNER);
   await tick(5 * HOUR);
   await tick(5.1 * HOUR);
-  expect((await kinds(key)).filter(([k, st]) => k === "stage.told" && st === "review-tier")).toEqual([["stage.told", "review-tier"]]);
+  expect((await stage(key)).filter((e) => ["stage.retried", "stage.told", "stage.rerouted"].includes(e.kind))).toEqual([]);
+  expect(await asked(key, id)).toEqual([]);
+  expect((await L(key).detail(id)).reviewClaims.map((c) => c.reviewer).sort()).toEqual(["claude-code/sonnet-5.4", SONNET]);
 });

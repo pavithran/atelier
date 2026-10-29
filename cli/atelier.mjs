@@ -37,7 +37,7 @@ import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
 import { absolute, expiredBlocksLine, overrideTail, preparingLine, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
-import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
+import { formatProcesses, liveProcesses, parseLsof, parsePs, withinTree } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { runnerCredential, readSecret } from "./credentials.mjs";
@@ -73,10 +73,21 @@ export const cliState = { doneStep: undefined, loginToken: null, loginServer: nu
 export const doneChecks = [];
 export const CLEAN_CLONE = "in a clean clone on this machine";
 
-export function die(msg, code = 1) {
+// Under --json or ATELIER_JSON=1 every error is one JSON object on stderr,
+// {code, detail, next} (G4, G8): a server's refusal as the server gave it
+// (call), and any other error here, with "unreachable" for a server that
+// could not be reached (exit 4), else "refused", and the command that
+// resolves it when the caller names one.
+export function die(msg, code = 1, next = null) {
   if (cliState.doneStep) msg = `${cliState.doneStep} failed: ${msg}`;
-  process.stderr.write(`atelier: ${msg}\n`);
+  if (jsonWanted()) process.stderr.write(`${JSON.stringify({ code: code === 4 ? "unreachable" : "refused", detail: msg, next })}\n`);
+  else process.stderr.write(`atelier: ${msg}${next ? `\nnext: ${next}` : ""}\n`);
   process.exit(code);
+}
+function jsonWanted() {
+  let json = false;
+  try { json = !!args.json; } catch { /* args is not parsed yet */ }
+  return json || process.env.ATELIER_JSON === "1";
 }
 
 function loadConfig() {
@@ -392,7 +403,11 @@ const commandOf = (argv) => {
     if (plain.has(a.slice(2)) ? next === "true" || next === "false" : next !== undefined && !next.startsWith("--")) i++;
   }
 };
-const switchesFor = (argv) => (commandFor(commandOf(argv) ?? "") === "status" ? SWITCHES : new Set([...SWITCHES].filter((flag) => flag !== "brief")));
+// `wait --all tA,tB` and `--any tA,tB` (G3) take task ids, where `ls --all` is a switch.
+const switchesFor = (argv) => {
+  const cmd = commandFor(commandOf(argv) ?? "");
+  return new Set([...SWITCHES].filter((flag) => (flag !== "brief" || cmd === "status") && !(cmd === "wait" && (flag === "all" || flag === "any"))));
+};
 
 export function parseArgs(argv, switches = switchesFor(argv)) {
   const out = { _: [], multi: {}, bare: [], problems: [] };
@@ -935,7 +950,9 @@ export function requireWorkspace(cmd, name, id, as) {
 
 export async function resolveTokenActor() {
   if (resolvedCredential === apiToken() || !apiToken().startsWith("atl_")) return;
-  const config = await call("GET", "/config");
+  // Thrown, not ended here: a caller that rides through an unreachable
+  // server (atelier wait) reads it again; call() ends on it as before.
+  const config = await request("GET", "/config");
   tokenActor = config.actor;
   tokenRunner = config.runner;
   resolvedCredential = apiToken();
@@ -1089,7 +1106,8 @@ export async function request(method, path, body, as, extra = {}, signal) {
     if (attempt >= waits.length) {
       die(`server request failed: ${failure.message}. Atelier at ${server()} is not answering after ${attempt + 1} tries; ${maybe ? check : "nothing was recorded"}; work in this workspace is kept`, 4);
     }
-    process.stderr.write(`atelier: ${method} ${path} failed (${failure.message}); trying again in ${waits[attempt] / 1000}s (${attempt + 1} of ${waits.length})\n`);
+    // Under --json stderr carries the one JSON object alone, so the retries go unsaid.
+    if (!jsonWanted()) process.stderr.write(`atelier: ${method} ${path} failed (${failure.message}); trying again in ${waits[attempt] / 1000}s (${attempt + 1} of ${waits.length})\n`);
     await RETRY.sleep(waits[attempt]);
   }
   let data;
@@ -2006,11 +2024,15 @@ export async function localStanding(name, as) {
 // The runners and agent processes live on this machine, read as columns from
 // ps and the working directories from lsof (cli/procs.mjs): no command line
 // is kept. null when either tool could not be run.
-export function liveHere(project = null) {
+// `ownTree`: under npm test, only the test file's own process tree
+// (withinTree), for the runner's start guard.
+export function liveHere(project = null, { ownTree = false } = {}) {
   const ps = spawnSync("ps", ["-axo", "pid=,ppid=,etime=,args="], { encoding: "utf8", maxBuffer: 64 << 20 });
   const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpcn"], { encoding: "utf8", maxBuffer: 64 << 20 });
   if (ps.error || ps.status !== 0 || !lsof.stdout) return null;
-  return liveProcesses({ ps: parsePs(ps.stdout), lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
+  const testRoot = ownTree ? Number(process.env.ATELIER_TEST_PROCESS) || 0 : 0;
+  const rows = parsePs(ps.stdout);
+  return liveProcesses({ ps: testRoot ? withinTree(rows, testRoot) : rows, lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
 }
 export const liveText = (live) => (live ? formatProcesses(live) : "Live on this Mac:\n  the process table could not be read");
 
@@ -2223,5 +2245,6 @@ if (isMain) {
   // The flags are checked first, so a misuse is refused without a request;
   // then the server's capabilities, before the handler's first request.
   await requireCapabilities(cmd);
-  await fn();
+  // Under --json an error no handler caught is still {code, detail, next}.
+  try { await fn(); } catch (error) { if (jsonWanted()) die(error?.message ?? String(error)); throw error; }
 }

@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import { runnerGitRequest, type RunnerGitRuntime } from "../src/runner-git.ts";
 
 // t528: the runner Git route buffered whole packs in Worker memory, both the

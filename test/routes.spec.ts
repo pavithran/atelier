@@ -1,8 +1,8 @@
-import { env } from "cloudflare:workers";
+import { env, server } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import { NO_OWNER_FACTOR } from "../src/rules.ts";
-import { expect, it } from "vitest";
-import worker from "../src/index.ts";
+import { expect, it } from "./support/vitest.ts";
+import worker, { observePushed } from "../src/index.ts";
 import { signIn } from "./signin.ts";
 
 // The queue and claim routes driven through the Worker's own fetch handler,
@@ -12,11 +12,16 @@ import { signIn } from "./signin.ts";
 
 const TOKEN = "routes-test-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
+// Since G18 a write by the "owner" actor on the developer token names the acting model.
+// The pool is shared by the file's tests and later holds gpt-6-astra (the reviewer of
+// the tests that follow), so the acting model is one that is in it throughout.
+const ACTING = "codex/gpt-6-astra";
+const actingFor = (actor: string | null | undefined, token = TOKEN) => actor === "owner" && token === TOKEN ? { "x-atelier-acting": ACTING } : {};
 
 function call(method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...headers },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...actingFor(actor), "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
@@ -53,7 +58,7 @@ it("dispatch through the API, then the queue answers the owner and a matching ru
 it("a claim on a dispatched task is refused without the right runner header", async () => {
   await project("routes-b");
   const created = await (await call("POST", "/projects/routes-b/items", "owner", { title: "Edit", scope: ["a/**"] })).json() as { id: string };
-  await call("POST", `/projects/routes-b/items/${created.id}/dispatch`, "owner", { to: "home", agent: "opencode" });
+  await call("POST", `/projects/routes-b/items/${created.id}/dispatch`, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash" });
   const claim = (actor: string, runner?: string) =>
     call("POST", `/projects/routes-b/items/${created.id}/claim`, actor, {}, runner ? { "x-atelier-runner": runner } : {});
 
@@ -73,10 +78,10 @@ it("a claim on a dispatched task is refused without the right runner header", as
 it("the queue offers a runner the claim its dead run left held, to it alone", async () => {
   await project("routes-held");
   const created = await (await call("POST", "/projects/routes-held/items", "owner", { title: "Build", scope: ["a/**"] })).json() as { id: string };
-  // No agent named, so the offer's own choice of agent takes the claim.
-  await call("POST", `/projects/routes-held/items/${created.id}/dispatch`, "owner", { to: "home" });
-  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-held"));
+  // G17: the dispatch names its agent and model; the claim is that actor's.
   const model = "Qwen3-Coder-Next-4bit:studio-code";
+  await call("POST", `/projects/routes-held/items/${created.id}/dispatch`, "owner", { to: "home", agent: "opencode", model });
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-held"));
   const actor = `opencode/${model}`;
   await L.claim(created.id, actor, { runner: "home:mbp", kind: "home" });
   await L.setFork(created.id, "routes-held--t1", "0".repeat(40), actor);
@@ -88,9 +93,9 @@ it("the queue offers a runner the claim its dead run left held, to it alone", as
 
   const other = await offered({ runner: "home:mbp-2", agents: [{ agent: "opencode", models: [model] }] }) as { project: string; item: { id: string } }[];
   expect(other.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
-  // An offer whose assignment would name another actor cannot take the claim
-  // over (claim refuses another's holder), so it is not offered at all.
-  const rerouted = await offered({ runner: "home:mbp", agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "opencode", models: [model] }] }) as { project: string; item: { id: string } }[];
+  // An offer that cannot run the dispatch's own agent and model (G17: the dispatch names them)
+  // cannot take the claim over (claim refuses another's holder), so it is not offered at all.
+  const rerouted = await offered({ runner: "home:mbp", agents: [{ agent: "claude-code", models: ["opus-5.5"] }] }) as { project: string; item: { id: string } }[];
   expect(rerouted.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
   // The owner's queue listing counts waiting work, not claims held of it.
   const all = await (await call("GET", "/queue", "owner")).json() as { project: string; item: { id: string } }[];
@@ -113,15 +118,15 @@ it("a merge-main dispatch names main's head from the baseline, and needs one whe
   } as unknown as Artifacts);
   const post = (body: unknown, art: Artifacts) =>
     worker.fetch(new Request(`https://atelier.test/api${path}`, {
-      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
       body: JSON.stringify(body),
     }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: art } as typeof env);
 
   // The task has no workspace yet: main's head is read first, and a baseline
   // that answers nothing refuses the headless form asking for one.
-  const unreadable = await post({ job: "merge-main" }, artifacts(null));
+  const unreadable = await post({ job: "merge-main", agent: "claude-code", model: "opus-5.5" }, artifacts(null));
   expect([unreadable.status, ((await unreadable.json()) as { error: string }).error]).toEqual([503, "bad_head"]);
-  const bare = await post({ job: "merge-main", head: M }, artifacts(M));
+  const bare = await post({ job: "merge-main", head: M, agent: "claude-code", model: "opus-5.5" }, artifacts(M));
   expect([bare.status, ((await bare.json()) as { error: string }).error]).toEqual([409, "no_fork"]);
 
   const ledger = env.LEDGER.get(env.LEDGER.idFromName("project:routes-merge-main"));
@@ -130,7 +135,7 @@ it("a merge-main dispatch names main's head from the baseline, and needs one whe
   await ledger.release(created.id, "claude-code/opus-5.5", "built");
   // With no head named, the route reads main's head from the baseline and
   // the dispatch carries it, ready for a runner that offers the job.
-  const res = await post({ job: "merge-main" }, artifacts(M));
+  const res = await post({ job: "merge-main", agent: "claude-code", model: "opus-5.5" }, artifacts(M));
   expect(res.status).toBe(200);
   const sent = await res.json() as { dispatch: { job: string; head: string } | null };
   expect(sent.dispatch).toMatchObject({ job: "merge-main", head: M, task: true });
@@ -156,7 +161,8 @@ it("each runner's offer is recorded as it asks for work, and /runners answers th
 it("the model pool: anyone signed in reads it, only the owner changes it, a runner reports status", async () => {
   const api = (method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}) =>
     worker.fetch(new Request(`https://atelier.test/api/models${path}`, {
-      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...headers },
+      // The pool is empty until the first PUT, so the acting model is the one this test adds, which the later writes then name.
+      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": "opencode/gemini-3.1-pro" } : {}), "content-type": "application/json", ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), testEnv);
   const entry = { harness: "opencode", where: "cloud", provider: "google", keychain: "gemini.API_KEY" };
@@ -241,7 +247,7 @@ it("init again changes only what it names, and --reset starts over", async () =>
     get: async () => ({ info: async () => ({ remote: "https://example/r.git", defaultBranch: "main" }), createToken: async () => ({ plaintext: "t", id: "i", expiresAt: "x" }), [Symbol.dispose]() {} }),
   } as unknown as Artifacts;
   const put = (body: unknown) => worker.fetch(new Request("https://atelier.test/api/projects/kept", {
-    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...testEnv, ARTIFACTS } as typeof env);
   const policy = async () => (await (await put({})).json() as { project: { title?: string; policy: Record<string, unknown> } }).project;
 
@@ -265,7 +271,7 @@ it("init again changes only what it names, and --reset starts over", async () =>
   expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], refuseOverlap: false });
   // A first init of a new project with nothing named gets the defaults.
   const fresh = await worker.fetch(new Request("https://atelier.test/api/projects/fresh", {
-    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: "{}",
+    method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: "{}",
   }), { ...testEnv, ARTIFACTS } as typeof env);
   expect((await fresh.json() as { project: { policy: unknown } }).project.policy).toMatchObject({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"] });
 });
@@ -289,7 +295,7 @@ it("a merge's lease cannot be cancelled once the merge is on the baseline", asyn
   let published = false;
   const ARTIFACTS = { get: async () => ({ log: async () => (published ? [{ hash: M, parents: [H0, H1] }] : [{ hash: H0, parents: [] }]), [Symbol.dispose]() {} }) } as unknown as Artifacts;
   const cancel = () => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/landing`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
   }), { ...testEnv, ARTIFACTS } as typeof env);
   published = true;
   const refused = await cancel();
@@ -313,7 +319,7 @@ const artifactsEnv = { ...testEnv, ARTIFACTS: artifacts };
 function putTitle(name: string, title: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify({ checks: ["npm test"], protected: [], ...(title === undefined ? {} : { title }) }),
   }), artifactsEnv);
 }
@@ -336,7 +342,7 @@ it("the review bar route cleans the bar, keeps it on re-init, clears it on an em
   await project("routes-review-bar");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-bar", {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
   }), artifactsEnv);
   const barOf = async (fields: Record<string, unknown>) =>
@@ -359,7 +365,7 @@ it("the prose standard route keeps a path, clears it on an empty one, and refuse
   await project("routes-prose-standard");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-prose-standard", {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
   }), artifactsEnv);
   const proseOf = async (fields: Record<string, unknown>) =>
@@ -383,7 +389,7 @@ it("the single-family route records the company with who and when, records the r
   await project("routes-single-family");
   const put = (fields: Record<string, unknown>, actor = "owner") => worker.fetch(new Request("https://atelier.test/api/projects/routes-single-family", {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...actingFor(actor), "content-type": "application/json" },
     body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
   }), artifactsEnv);
   const modeOf = async (fields: Record<string, unknown>, actor = "owner") =>
@@ -416,8 +422,9 @@ it("the single-family route records the company with who and when, records the r
   expect(refusal.error).toBe("single_family");
   expect(refusal.detail).toBe("gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode (anthropic): use one of anthropic's models, or return to cross-family review with atelier init --cross-family");
   expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status).toBe(200);
-  // A dispatch that names no model leaves the choice to the runner's offer, as before.
-  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" })).status).toBe(200);
+  // G17: a dispatch that names no model is refused (builder_needed); the runner's offer no longer chooses.
+  const unnamed = await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" });
+  expect([unnamed.status, ((await unnamed.json()) as { error: string }).error]).toEqual([409, "builder_needed"]);
   // Back under the default any model may be named.
   await put({ singleFamily: null });
   expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
@@ -427,7 +434,7 @@ it("the review tier route takes models separated by commas or a list, keeps the 
   await project("routes-review-tier");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-tier", {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
   }), artifactsEnv);
   const tierOf = async (fields: Record<string, unknown>) =>
@@ -455,7 +462,7 @@ it("a first init with no title creates the project without one", async () => {
 it("init refuses an approval over its limit instead of cutting it", async () => {
   const put = (approval: unknown) => worker.fetch(new Request("https://atelier.test/api/projects/routes-approval", {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify({ approval }),
   }), artifactsEnv);
   const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-approval"));
@@ -469,6 +476,9 @@ it("init refuses an approval over its limit instead of cutting it", async () => 
   expect((await L.project()).policy.approval).toBe("b".repeat(500));
 });
 
+// The Ledger of the refused name is its own: on macOS's case-insensitive
+// disk it opened the registered one's file until Ledger file names escaped
+// uppercase letters (src/runtime/ledger-file.mjs, found by task 7).
 it("init refuses another name for a registered baseline before touching Artifacts", async () => {
   await project("repo-collision");
   const res = await call("PUT", "/projects/Repo-Collision", "owner", { title: "Duplicate" });
@@ -572,7 +582,7 @@ it("removal counts an open item queued for a runner as live work", async () => {
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Queued for a runner", [], "owner");
-  await L.dispatch("t1", "owner", { to: "home" });
+  await L.dispatch("t1", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   const refused = await call("DELETE", `/projects/${name}`, "owner");
   expect(refused.status).toBe(409);
   expect(await refused.json()).toMatchObject({ error: "live_work", detail: expect.stringContaining("queued for a runner") });
@@ -644,7 +654,7 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
   const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
-      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...actingFor(actor, bearer), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), { ...testEnv, ARTIFACTS } as typeof env);
   const owner = as(TOKEN, "owner");
@@ -722,7 +732,7 @@ it("the evidence route measures against main's head, so a crafted merge cannot h
   const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
-      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...actingFor(actor, bearer), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), { ...testEnv, ARTIFACTS } as typeof env);
   const owner = as(TOKEN, "owner");
@@ -767,7 +777,7 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   const as = (bearer: string, actor: string | null, on = bindings) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
-      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...actingFor(actor, bearer), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), on);
   const owner = as(TOKEN, "owner");
@@ -799,7 +809,7 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   // what to set. One permission takes one override, for 15 minutes.
   const unconfirmed = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(unconfirmed.status).toBe(403);
-  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the developer's confirmation: open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; or run it again with --quote "the developer's words" and --as H/M naming the model acting on them; the developer token alone does not confirm it` });
+  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the developer's confirmation: open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; or run it again with --quote "the developer's words" and --as H/M naming the model acting on them; the developer token alone does not confirm it`, next: `only the developer can: open /p/${name}/t1 as the developer, press "Allow an override from the command line" confirming as the developer, then run the command again within 15 minutes; or run it again with --quote "the developer's words" and --as H/M naming the model acting on them; the developer token alone does not confirm it` });
   expect((await L.item("t1")).state).toBe("submitted");
   // On a server with neither Access nor a secret, the refusal says what to set.
   const nowhere = await as(TOKEN, "owner", bare)("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
@@ -857,7 +867,8 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
 it("t629: the developer token overrides a missing review on the developer's quoted words and the acting model", async () => {
   const name = "override-direction", A = "claude-code/opus-5.5", G = "codex/gpt-6-astra", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
   await project(name, ["AGENTS.md"]);
-  for (const [harness, id] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"]]) {
+  // Since G18 the pool's own writes name an acting model that is in it; gpt-6-astra goes first, into an empty pool.
+  for (const [harness, id] of [["codex", "gpt-6-astra"], ["claude-code", "opus-5.5"]]) {
     expect((await call("PUT", `/models/${id}`, "owner", { harness, where: "cloud" })).status).toBe(200);
   }
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
@@ -883,8 +894,9 @@ it("t629: the developer token overrides a missing review on the developer's quot
   const bare = await post("/items/t1/accept", { head: H1, overrideReview: reason }, acting);
   expect(bare.status).toBe(403);
   expect(await bare.json()).toMatchObject({ error: "override_unconfirmed", detail: expect.stringContaining("--quote") });
-  // Words without an acting model, blank words, or words with no override: refused.
-  expect(await (await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: QUOTE }, {})).json()).toMatchObject({ error: "no_acting" });
+  // Words without an acting model, blank words, or words with no override: refused. Since G18
+  // the developer token's write with no acting model is refused first, as acting_required.
+  expect(await (await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: QUOTE }, {})).json()).toMatchObject({ error: "acting_required", next: expect.stringContaining("--as H/M") });
   expect(await (await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: " " }, acting)).json()).toMatchObject({ error: "bad_quote" });
   expect(await (await post("/items/t1/accept", { head: H1, quote: QUOTE }, acting)).json()).toMatchObject({ error: "bad_quote" });
   // An agent token is refused, with or without an acting header.
@@ -932,7 +944,7 @@ it("t371: a project that forbids overrides refuses them through the API and the 
   // A server that takes the confirmation secret, given: the prohibition is told even to a confirmed owner.
   const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "developer-only-word" } as typeof env;
   const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
   }), bindings);
   expect([api.status, (await api.json() as { error: string }).error]).toEqual([403, "override_forbidden"]);
   const cookie = await signIn(TOKEN, bindings);
@@ -978,7 +990,7 @@ it("decision 2026-10-09: the accept route names the reviewer that could replace 
   const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
-      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...actingFor(actor, bearer), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), { ...testEnv, ARTIFACTS } as typeof env);
   const owner = as(TOKEN, "owner");
@@ -1001,7 +1013,7 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" } as never);
   await L.submit("t1", agent, "Did the work");
   await L.newItem("Queued", [], "owner");
-  await L.dispatch("t2", "owner", { to: "home" });
+  await L.dispatch("t2", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   for (const actor of ["owner", agent]) {
     const res = await call("GET", `/projects/${name}/standing`, actor);
     expect(res.status).toBe(200);
@@ -1025,7 +1037,7 @@ it("the project page carries the same standing as the route", async () => {
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("A queued <task>", [], "owner");
-  await L.dispatch("t1", "owner", { to: "cloud" });
+  await L.dispatch("t1", "owner", { to: "cloud", agent: "claude-code", model: "opus-5.5" });
   const signedIn = await signIn(TOKEN, testEnv);
   const page = await worker.fetch(new Request(`https://atelier.test/p/${name}`, { headers: { cookie: signedIn } }), testEnv);
   expect(page.status).toBe(200);
@@ -1191,7 +1203,8 @@ it("sessions record, clean, cap and read newest first, and only the project owne
   const refused = await call("POST", path, "codex/gpt-6-astra", { ...input, summary: "Not the developer" });
   expect(refused.status).toBe(403);
   expect(((await refused.json()) as { error: string }).error).toBe("not_project_owner");
-  expect((await call("POST", path, "someone-else", input)).status).toBe(403);
+  // A name that is no model reaches the owner check only with an acting model named (G18 asks for one first).
+  expect((await call("POST", path, "someone-else", input, { "x-atelier-acting": ACTING })).status).toBe(403);
   expect((await call("POST", path, "owner", { ...input, summary: "s".repeat(3000) })).status).toBe(201);
   // Reading stays open to any signed-in actor.
   const notes = await (await call("GET", path, "codex/gpt-6-astra")).json() as { actor: string; data: { summary: string } }[];
@@ -1212,98 +1225,93 @@ it("sessions record, clean, cap and read newest first, and only the project owne
   expect(standing.session.data.summary).toBe("Note 5");
 });
 
-// Artifacts as it behaved for llm-basics: a fork's repository info names a
-// branch (main) its HEAD does not (master). `info` gives each repository's
-// reported default branch by name; forks are named with "--". Creating a
-// repository a second time fails as the binding does.
-function branchArtifacts(info: { baseline: string; fork: string }) {
-  const created = new Set<string>(), calls: { create: string[]; forks: string[] } = { create: [], forks: [] };
-  const artifacts = {
-    create: async (name: string, opts: { setDefaultBranch?: string }) => {
-      calls.create.push(`${name}:${opts.setDefaultBranch}`);
-      if (created.has(name)) throw new Error(`repo already exists: ${name}`);
-      created.add(name);
-      return {};
-    },
-    get: async (name: string) => ({
-      info: async () => ({ remote: `https://git.test/${name}.git`, defaultBranch: name.includes("--") ? info.fork : info.baseline }),
-      createToken: async () => ({ plaintext: "token", id: `id-${name}`, expiresAt: "soon" }),
-      revokeToken: async () => true,
-      fork: async (fork: string) => { calls.forks.push(fork); return {}; },
-      log: async () => [{ hash: "0".repeat(40) }],
-      [Symbol.dispose]() {},
-    }),
-  } as unknown as Artifacts;
-  const send = (method: string, path: string, actor: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+// The project's branch on the Node server (task 5): init makes the project's bare
+// repository with its HEAD on the branch it names, and a claim before the branch has
+// commits is refused naming it. (This was Artifacts as it behaved for llm-basics: a
+// fork's repository info named a branch its HEAD did not; there are no forks now.)
+function branchSend(method: string, path: string, actor: string, body?: unknown) {
+  return worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...actingFor(actor), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
-  return { artifacts, calls, send };
+  }), testEnv);
 }
+// The branch the server's repository for `key` has as its HEAD.
+const repoBranch = async (key: string) => { using repo = await env.ARTIFACTS.get(key); return (await repo.info()).defaultBranch; };
 
-type Claimed = { workspace: { defaultBranch: string }; baseline: { defaultBranch: string } };
-
-it("init records the branch it names, and every token route gives that branch, whatever any repository's info reports", async () => {
+it("init records the branch it names, and the repository and the claim give that branch", async () => {
   const name = "branch-master", A = "opencode/glm-5.3";
-  // Both report main: only the registration says master.
-  const { calls, send } = branchArtifacts({ baseline: "main", fork: "main" });
-  const init = await send("PUT", `/projects/${name}`, "owner", { checks: ["npm test"], defaultBranch: "master" });
+  const init = await branchSend("PUT", `/projects/${name}`, "owner", { checks: ["npm test"], defaultBranch: "master" });
   expect(init.status).toBe(200);
-  expect(await init.json()).toMatchObject({ project: { branch: "master" }, baseline: { defaultBranch: "master" } });
-  expect(calls.create).toEqual([`${name}:master`]);
-  // Init again without a branch keeps it; the baseline exists, so nothing is created.
-  expect(await (await send("PUT", `/projects/${name}`, "owner", { title: "Kept" })).json()).toMatchObject({ project: { branch: "master" } });
-
-  const item = await (await send("POST", `/projects/${name}/items`, "owner", { title: "Edit", scope: [] })).json() as { id: string };
-  const claimed = await send("POST", `/projects/${name}/items/${item.id}/claim`, A, {});
-  expect(claimed.status).toBe(200);
-  const c = await claimed.json() as Claimed;
-  expect([c.workspace.defaultBranch, c.baseline.defaultBranch]).toEqual(["master", "master"]);
-  expect(calls.forks).toEqual([`${name}--${item.id}`]);
-  // A second claim refreshes the workspace with the same branch.
-  expect(((await (await send("POST", `/projects/${name}/items/${item.id}/claim`, A, {})).json()) as Claimed).workspace.defaultBranch).toBe("master");
-  const read = await (await send("POST", `/projects/${name}/items/${item.id}/read-token`, A, {})).json() as { defaultBranch: string };
-  const base = await (await send("POST", `/projects/${name}/baseline-token`, A, {})).json() as { defaultBranch: string };
-  expect([read.defaultBranch, base.defaultBranch]).toEqual(["master", "master"]);
+  expect(await init.json()).toMatchObject({ project: { branch: "master" }, baseline: { remote: `https://atelier.zone/git/${name}.git`, defaultBranch: "master" } });
+  expect(await repoBranch(name)).toBe("master");
+  // Init again without a branch keeps it; the repository exists, so it is left as it is.
+  expect(await (await branchSend("PUT", `/projects/${name}`, "owner", { title: "Kept" })).json()).toMatchObject({ project: { branch: "master" }, baseline: { defaultBranch: "master" } });
+  expect(await repoBranch(name)).toBe("master");
+  // A claim names the branch the task would start from; it has no commits until the developer pushes it.
+  const item = await (await branchSend("POST", `/projects/${name}/items`, "owner", { title: "Edit", scope: [] })).json() as { id: string };
+  const claimed = await branchSend("POST", `/projects/${name}/items/${item.id}/claim`, A, {});
+  expect(claimed.status).toBe(409);
+  expect(await claimed.json()).toMatchObject({ error: "empty_branch", detail: expect.stringContaining("master has no commits") });
 });
 
-it("a project registered before init recorded its branch takes the baseline's branch, never the fork's", async () => {
+it("a project registered before init recorded its branch takes the repository's branch", async () => {
   const name = "branch-unrecorded";
   await project(name);
-  const { send } = branchArtifacts({ baseline: "master", fork: "main" });
-  const item = await (await send("POST", `/projects/${name}/items`, "owner", { title: "Edit", scope: [] })).json() as { id: string };
-  const c = await (await send("POST", `/projects/${name}/items/${item.id}/claim`, "opencode/glm-5.3", {})).json() as Claimed;
-  expect([c.workspace.defaultBranch, c.baseline.defaultBranch]).toEqual(["master", "master"]);
+  await server.git.createRepo({ key: name, branch: "master" });
+  const item = await (await branchSend("POST", `/projects/${name}/items`, "owner", { title: "Edit", scope: [] })).json() as { id: string };
+  const claimed = await branchSend("POST", `/projects/${name}/items/${item.id}/claim`, "opencode/glm-5.3", {});
+  expect(claimed.status).toBe(409);
+  expect(await claimed.json()).toMatchObject({ error: "empty_branch", detail: expect.stringContaining("master has no commits") });
 });
 
-it("init records main for a baseline it creates without a branch, and refuses a branch Git would not take", async () => {
-  const { calls, send } = branchArtifacts({ baseline: "main", fork: "main" });
-  expect(await (await send("PUT", "/projects/branch-default", "owner", {})).json()).toMatchObject({ project: { branch: "main" } });
-  // Any name Git takes for a branch is taken, slashes and letters beyond ASCII included.
-  expect(await (await send("PUT", "/projects/branch-slash", "owner", { defaultBranch: "release/übersetzung-2" })).json()).toMatchObject({ project: { branch: "release/übersetzung-2" } });
+it("init records main for a repository it creates without a branch, and refuses a branch Git would not take", async () => {
+  expect(await (await branchSend("PUT", "/projects/branch-default", "owner", {})).json()).toMatchObject({ project: { branch: "main" }, baseline: { defaultBranch: "main" } });
+  expect(await repoBranch("branch-default")).toBe("main");
+  // A name Git takes for a branch is taken, slashes included.
+  expect(await (await branchSend("PUT", "/projects/branch-slash", "owner", { defaultBranch: "release/two-2" })).json()).toMatchObject({ project: { branch: "release/two-2" } });
+  expect(await repoBranch("branch-slash")).toBe("release/two-2");
   for (const bad of ["-delete", ".hidden", "a..b", "feature/", "x.lock", "a.lock/b", "has space", "a:b", "a@{1}", "@", "", 7]) {
-    const res = await send("PUT", "/projects/branch-bad", "owner", { defaultBranch: bad });
+    const res = await branchSend("PUT", "/projects/branch-bad", "owner", { defaultBranch: bad });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: "bad_branch" });
   }
-  // Refused before Artifacts is asked to create anything.
-  expect(calls.create).toEqual(["branch-default:main", "branch-slash:release/übersetzung-2"]);
+  // Refused before the repository is made.
+  await expect(repoBranch("branch-bad")).rejects.toThrow();
 });
 
-it("push events are read on the project's branch, not the one the fork's info reports", async () => {
+// The init route took any name Git takes for a branch, letters beyond ASCII
+// included, but the repository the Node server makes takes only ASCII
+// (checkBranch in src/git/branches.mjs), so such a name answered 500 (found
+// by task 7). Both now keep one rule (src/branch-name.ts): init refuses the
+// name, with its next, before any repository is made.
+it("init refuses a branch name with letters beyond ASCII, naming what to do, before making the repository", async () => {
+  const res = await branchSend("PUT", "/projects/branch-unicode", "owner", { defaultBranch: "release/übersetzung-2" });
+  expect(res.status, await res.clone().text()).toBe(400);
+  expect(await res.json()).toEqual({
+    error: "bad_branch",
+    detail: "the default branch must be a branch name of ASCII letters, digits, '.', '_', '/' or '-', such as main or master",
+    next: "check out a branch named that way (such as main) in the project's checkout and run atelier init again",
+  });
+  await expect(repoBranch("branch-unicode")).rejects.toThrow();
+});
+
+// Task 8 retired the Artifacts push event and the branch its info reported: the
+// post-receive hook reports a push to a task's branch (t/N), the head is read from
+// that branch, and a push to the project's own branch records nothing.
+it("a push reported on the project's branch records nothing, and one on the task's branch is read from that branch", async () => {
   const name = "branch-events", A = "opencode/glm-5.3", H0 = "0".repeat(40), H1 = "1".repeat(40), H2 = "2".repeat(40);
   const record = { name, repo: name, branch: "master", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record as never, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
-  await L.newItem("Observe", [], "owner"); await L.claim("t1", A); await L.setFork("t1", `${name}--t1`, H0, A);
-  // The fork's history as the consumer reads it: H2 on top of H0, the base.
+  await L.newItem("Observe", [], "owner"); await L.claim("t1", A); await L.setFork("t1", `${name}/t/1`, H0, A);
+  // The task branch's history as the server reads it: H2 on top of H0, the base.
   const artifacts = { get: async () => ({ info: async () => ({ defaultBranch: "main" }), log: async () => [{ hash: H2, parents: [H0] }, { hash: H0, parents: [] }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
-  const notice = (ref: string) => ({ type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref, after: H1 } });
-  const send = (body: unknown) => worker.queue({ messages: [{ body, ack() {}, retry() {} }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: artifacts });
-  await send(notice("refs/heads/main"));
+  const send = (ref: string) => observePushed({ ...env, ARTIFACTS: artifacts } as typeof env, { project: name, ref, after: H1 });
+  expect(await send("refs/heads/main")).toMatchObject({ observed: false });
+  expect(await send("refs/heads/master")).toMatchObject({ observed: false });
   expect((await L.item("t1")).head).toBe(H0);
-  await send(notice("refs/heads/master"));
+  expect(await send("refs/heads/t/1")).toMatchObject({ observed: true, item: "t1", head: H2 });
   expect((await L.item("t1")).head).toBe(H2);
 });
 
@@ -1326,7 +1334,7 @@ it("a merged check is recorded against both revisions, needs a main head on main
   }, { [T0]: { "README.md": "b".repeat(40) }, [T1]: { "README.md": "c".repeat(40) } });
   const as = (ARTIFACTS: Artifacts, actor = A) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
-      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...actingFor(actor), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), { ...testEnv, ARTIFACTS } as typeof env);
   const rows = async () => (await (await call("GET", `/projects/${name}/items/t1`, "owner")).json()) as { evidence: Record<string, unknown>[]; gate: { ready: boolean; blockers: string[] } };
@@ -1439,7 +1447,7 @@ it("the holder blocks and unblocks through the API, only the owner edits the fra
 
   expect((await holder("edit", { nextGate: "x" })).status).toBe(403);
   const edited = await call("POST", at("edit"), "owner", { stopWhen: ["a test is red"], nextGate: null });
-  expect(edited.status).toBe(200);
+  expect(edited.status, await edited.clone().text()).toBe(200);
   expect(await edited.json() as { nonGoals: string[]; stopWhen: string[]; nextGate: string | null }).toMatchObject({ nonGoals: ["no b"], stopWhen: ["a test is red"], nextGate: null });
 
   const brief = await (await call("GET", at("brief"), "owner")).json() as { nonGoals: string[]; stopWhen: string[]; recommendation: { verdict: string; reason: string } };
@@ -1447,7 +1455,12 @@ it("the holder blocks and unblocks through the API, only the owner edits the fra
   expect(brief.recommendation.verdict).toBe("decide");
   expect(brief.recommendation.reason).toMatch(/^codex\/gpt-6 blocked it: waiting on the developer\. Clear that, then run atelier unblock/);
 
-  expect((await call("POST", at("unblock"), "owner", {})).status).toBe(200);
+  // Since G18 the developer token always names the acting model, and a model acting on it
+  // needs the developer's quoted words to unblock (t629): without them it is stopped.
+  const stopped = await call("POST", at("unblock"), "owner", {});
+  expect([stopped.status, ((await stopped.json()) as { error: string }).error]).toEqual([403, "direction_needed"]);
+  const unblocked = await call("POST", at("unblock"), "owner", { quote: "go on" });
+  expect(unblocked.status, await unblocked.clone().text()).toBe(200);
   expect((await (await call("GET", `/projects/routes-c/items/${created.id}`, "owner")).json() as { item: { state: string } }).item.state).toBe("claimed");
 });
 
@@ -1467,7 +1480,7 @@ it("an older CLI's long title still makes a task, and new and edit take a title,
     expect((await call("POST", "/projects/routes-text/items", "owner", body)).status, JSON.stringify(body).slice(0, 60)).toBe(400);
   }
   const edited = await call("POST", "/projects/routes-text/items/t1/edit", "owner", { title: "Short task titles", accept: ["One", "Two"] });
-  expect(edited.status).toBe(200);
+  expect(edited.status, await edited.clone().text()).toBe(200);
   expect(await edited.json()).toMatchObject({ title: "Short task titles", brief: BRIEF, accept: ["One", "Two"] });
   expect((await call("POST", "/projects/routes-text/items/t1/edit", "owner", { title: "y".repeat(81) })).status).toBe(400);
   expect((await call("POST", "/projects/routes-text/items/t1/edit", "owner", { title: 7 })).status).toBe(400);
@@ -1528,7 +1541,7 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   await L.submit("t1", A);
   const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: "1".repeat(40) }] }, {});
   const api = (actor: string) => (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...actingFor(actor), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...testEnv, ARTIFACTS } as typeof env);
   const owner = api("owner"), reviewer = api(GPT);
   type Detail = { criteria: string; gate: { ready: boolean }; reviews: unknown[] };
@@ -1548,9 +1561,12 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   expect((await L.reviewRequests("t1")).map((r) => r.state)).toEqual(["claimed"]);
 
   // The owner changes the criteria while the reviewer runs: the claim is
-  // withdrawn and the same reviewer is asked again at the same head.
+  // withdrawn. G6: the same reviewer is no longer asked again by itself; the
+  // developer asks again at the same head by command.
   const changed = await (await owner("POST", "/items/t1/edit", { accept: TWO })).json() as { criteriaChange: { reviews: number; requests: number; asked: string[] } };
-  expect(changed.criteriaChange).toMatchObject({ reviews: 0, requests: 1, asked: [GPT] });
+  expect(changed.criteriaChange).toMatchObject({ reviews: 0, requests: 1, asked: [] });
+  expect((await L.reviewRequests("t1")).map((r) => [r.head, r.state])).toEqual([[H1, "withdrawn"]]);
+  await L.requestReview("t1", "owner", GPT, [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }]);
   expect((await L.reviewRequests("t1")).map((r) => [r.head, r.state])).toEqual([[H1, "withdrawn"], [H1, "open"]]);
   // The old verdict, with or without its request, and one with no binding, are refused, saying to refresh.
   for (const [body, error] of [
@@ -1580,7 +1596,7 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
 // maxlength stops a note at 2000 of those, but a browser posts each break as
 // CRLF. A note the form took must not then be refused as 2010 characters, so
 // the form handler stores every break as LF before the limit is checked. The
-// API and CLI text is checked and stored as given.
+// API and CLI text is checked and stored as given. G17: each dispatch names its model.
 it("a dispatch note at the limit posted with CRLF line breaks is taken and stored with LF, while API text is kept as given", async () => {
   const name = "routes-crlf-note";
   await project(name);
@@ -1595,7 +1611,7 @@ it("a dispatch note at the limit posted with CRLF line breaks is taken and store
 
   const cookie = await signIn(TOKEN, testEnv);
   const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/dispatch`, {
-    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ to: "home", agent: "", model: "", note: posted }), redirect: "manual",
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ to: "home", agent: "claude-code", model: "opus-5.5", note: posted }), redirect: "manual",
   }), testEnv);
   expect(form.status, await form.clone().text()).toBe(303);
   expect((await L.item("t1")).dispatch?.note).toBe(stored);
@@ -1603,10 +1619,10 @@ it("a dispatch note at the limit posted with CRLF line breaks is taken and store
   // The API, as atelier dispatch --note-file sends a file, stores the text as
   // given: a lone CR is kept, and CRLF counts as two units, so the same note
   // in CRLF (2010 units) is refused whole, never folded to fit.
-  const api = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: lines.join("\r") });
+  const api = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", agent: "claude-code", model: "opus-5.5", note: lines.join("\r") });
   expect(api.status, await api.clone().text()).toBe(200);
   expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
-  const over = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: posted });
+  const over = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", agent: "claude-code", model: "opus-5.5", note: posted });
   expect(over.status).toBe(400);
   expect(((await over.json()) as { error: string }).error).toBe("too_long");
   expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
@@ -1810,7 +1826,7 @@ it("a legacy ledger loads, renders and takes an unrelated update that keeps its 
   const { name, agents, execution, policy } = await seedLegacy("legacy-governed");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify(fields),
   }), artifactsEnv);
   const read = async (path: string) => { const res = await call("GET", path, "owner"); expect(res.status, path).toBe(200); return res.json() as Promise<Record<string, any>>; };

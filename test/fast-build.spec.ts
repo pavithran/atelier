@@ -1,12 +1,14 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { env, server } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 
 // t228. The fork-less fast build (t589) was removed: in fast mode a build
 // claims with a fork like any build, the queue marks nothing fast, and a
 // runner older than this that calls fast-take or fast-ready is refused with
-// not_fast_build, which sends it to claim with a fork.
+// not_fast_build, which sends it to claim with a fork. 2.0 task 5: a claim
+// makes a branch on the server's own Git host, not a fork on Artifacts.
 
 const OWNER = "fast-build-owner", ACTOR = "codex/gpt-6-astra", MAIN = "a".repeat(40), BUILT = "b".repeat(40);
 const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
@@ -19,6 +21,11 @@ async function setup() {
   const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await I().registerProject(p);
+  // Task 5: a claim makes the task's branch in the project's repository on
+  // this server, from main, so main holds a commit first.
+  const dir = (server.git as unknown as { repo(key: string, branch: string): string }).repo(name, "main");
+  const git = (...args: string[]) => execFileSync("git", ["--git-dir", dir, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" }, input: "" }).trim();
+  git("update-ref", "refs/heads/main", git("commit-tree", git("mktree"), "-m", "Main"));
   await L.newItem("Build it", [], "owner", { accept: ["Works"] });
   await L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
   // Every fork the server asks Artifacts for, and every write token.
@@ -33,8 +40,9 @@ async function setup() {
     [Symbol.dispose]() {},
   }) };
   const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as unknown as typeof env;
+  // G18: a write with the developer token names the model acting; the runner's token is exempt.
   const request = (method: string, path: string, token = OWNER, actor: string | null = "owner", body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}) },
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(token === OWNER ? { "x-atelier-acting": ACTOR } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }), bindings);
   const issued = await request("POST", "/tokens", OWNER, "owner", { runner: "home:studio", projects: [name] });
@@ -67,7 +75,7 @@ for (const mode of ["full", "fast"] as const) {
     expect(await t.L.item("t1")).toMatchObject({ state: "open", owner: null });
     expect(t.forks).toEqual([]);
     expect(t.tokens).toEqual([]);
-    expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
+    const cl = await t.api("POST", `${t.base}/claim`, {}); expect(cl.status, await cl.clone().text()).toBe(200);
     const events = async () => ((await t.L.events("t1")) as unknown as LedgerEvent[]).map((e) => e.kind);
     const before = (await events()).length;
     const ready = await t.api("POST", `${t.base}/fast-ready`, { commit: BUILT, base: MAIN, builder: ACTOR, workspace: "/Users/runner/cache/fast/p/t1" });
@@ -80,13 +88,18 @@ for (const mode of ["full", "fast"] as const) {
   });
 }
 
-it("in fast mode the claim forks like any build", async () => {
+// Task 5: the claim makes the task's branch t/1 in the project's repository
+// and mints a task grant, in fast mode as in full; Artifacts is asked for no
+// fork and no token (was: "the claim forks like any build").
+it("in fast mode the claim makes the task's branch like any build, and asks Artifacts for no fork or token", async () => {
   const t = await setup();
   await t.L.confirmFastMode("owner", "access");
   await t.L.setMode("owner", "fast", "Artifacts fails every new fork");
   await t.poll();
   const claimed = await t.api("POST", `${t.base}/claim`, {});
-  expect(claimed.status).toBe(200);
-  expect(t.forks).toEqual([`${t.name}--t1`]);
-  expect(await claimed.json()).toMatchObject({ workspace: { remote: expect.stringContaining("/git/runner/") } });
+  expect(claimed.status, await claimed.clone().text()).toBe(200);
+  expect(t.forks).toEqual([]);
+  expect(t.tokens).toEqual([]);
+  expect(await t.L.item("t1")).toMatchObject({ state: "claimed", owner: ACTOR, fork: `${t.name}/t/1` });
+  expect(await claimed.json()).toMatchObject({ workspace: { remote: expect.stringContaining(`/git/${t.name}.git`), branch: "t/1", token: expect.any(String) } });
 });

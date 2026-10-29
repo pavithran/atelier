@@ -1,13 +1,13 @@
 import "./refresh/lifecycle.cases.mjs";
-import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
-import { afterEach, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { env, runInDurableObject, server } from "../test/support/workers.ts";
+import { afterEach, expect, it, vi } from "../test/support/vitest.ts";
 import worker from "./index.ts";
 import { sha256, tokenActive } from "./tokens.ts";
 import { SERVER_CAPABILITIES } from "./route-level.ts";
 import { OFFER_LIVE_MS } from "./dispatch/rules.ts";
 
-const OWNER = "runner-tests-owner", ACTOR = "codex/gpt-6-astra", HEAD = "a".repeat(40);
+const OWNER = "runner-tests-owner", ACTOR = "codex/gpt-6-astra";
 const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 let serial = 0;
 afterEach(() => vi.restoreAllMocks());
@@ -19,22 +19,13 @@ async function setup(policy = {}) {
   await I().registerProject(p);
   await L.newItem("Build", [], "owner");
   await L.newItem("Unrelated", [], "owner");
-  await L.claim("t1", ACTOR);
-  await L.setFork("t1", `${name}--t1`, HEAD, ACTOR);
-  await L.release("t1", ACTOR, "seed fork");
+  // A runner's claim branches t1 from main (task 5), so main needs a commit.
+  const dir = server.git.repo(name, "main");
+  const author = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const commit = (parents, message) => execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", ...parents.flatMap((p) => ["-p", p]), "-m", message], { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+  execFileSync("git", ["update-ref", "refs/heads/main", commit([], "first")], { cwd: dir });
   await L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
-  const upstream = [];
-  let forkHead = HEAD;
-  const artifacts = { get: async (repo) => ({
-    fork: async () => {},
-    readTree: async () => [],
-    log: async () => [{ hash: repo === name ? HEAD : forkHead, treeHash: "c".repeat(40), parents: repo === name ? [] : [HEAD], message: "Change", author: { name: "Builder" } }],
-    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-    createToken: async (scope, ttl) => { upstream.push({ scope, ttl }); return { id: `up-${upstream.length}`, plaintext: "upstream-secret", expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }; },
-    revokeToken: async (id) => { upstream.push({ revoked: id }); return true; },
-    [Symbol.dispose]() {},
-  }) };
-  const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts };
+  const bindings = { ...env, ATELIER_TOKEN: OWNER };
   const request = (method, path, token = OWNER, actor = "owner", body, runner) => worker.fetch(new Request(`https://atelier.test${path.startsWith("/git/") || path === "/home" ? "" : "/api"}${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(runner ? { "x-atelier-runner": runner } : {}),
       // A write on the developer token names the model acting (G18).
@@ -49,7 +40,14 @@ async function setup(policy = {}) {
   const base = `/projects/${name}/items/t1`;
   const poll = () => api("POST", "/queue", offer);
   const claim = async () => { await poll(); const res = await api("POST", `${base}/claim`, {}); expect(res.status).toBe(200); return res.json(); };
-  return { name, L, token, api, request, offer, base, poll, claim, upstream, bindings, push: () => { forkHead = "b".repeat(40); } };
+  // A commit on the task's branch t/1 (claimed first), as a builder's push leaves it: answers the head the push route observes.
+  const push = () => {
+    const tip = execFileSync("git", ["rev-parse", "refs/heads/t/1"], { cwd: dir, encoding: "utf8" }).trim();
+    const sha = commit([tip], "work");
+    execFileSync("git", ["update-ref", "refs/heads/t/1", sha], { cwd: dir });
+    return sha;
+  };
+  return { name, L, token, api, request, offer, base, poll, claim, bindings, push };
 }
 
 it("refuses runner tokens on board and area routes", async () => {
@@ -179,7 +177,8 @@ it("validates current offers, actor, runner and dispatch atomically; unrelated a
   for (const response of responses) if (response.status === 200) successful.push(await response.json()); else expect(response.status).toBe(409);
   expect(successful.length).toBeGreaterThan(0);
   const live = [];
-  for (const result of successful) if (await t.L.runnerGit(await sha256(result.workspace.token))) live.push(result.workspace.token);
+  // Since task 5 the runner's workspace credential is its task grant: live while the store holds it and the Ledger records it.
+  for (const result of successful) { const g = server.git.grants.find(result.workspace.token); if (g && await server.git.live(g.id)) live.push(result.workspace.token); }
   expect(live).toHaveLength(1);
 });
 
@@ -192,9 +191,9 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
   // before it submits (t435), is covered in test/runner-baseline-token.spec.ts.
   expect((await t.poll()).status).toBe(200);
   expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
-  expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: HEAD, passed: true })).status).toBe(200);
-  expect((await t.api("POST", `${t.base}/release`, { note: "done" })).status).toBe(200);
-  expect((await t.api("POST", "/runs", { actor: ACTOR, project: t.name, item: "t1", role: "build", outcome: "stalled", detail: "no changes" })).status).toBe(201);
+  expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: (await t.L.item("t1")).head, passed: true })).status).toBe(200);
+  expect((await t.api("POST", `${t.base}/release`, { note: "step harness; no new commit" })).status).toBe(200);
+  expect((await t.api("POST", "/runs", { actor: ACTOR, project: t.name, item: "t1", role: "build", outcome: "stalled", detail: "" })).status).toBe(201);
   expect((await t.api("GET", t.base)).status).toBe(403);
   expect((await t.request("GET", "/config", "invalid")).status).toBe(401);
   await I().revokeAgentToken(t.token.id);
@@ -205,27 +204,20 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
 it.each(["revoke", "expire", "release", "reassign"])("direct Git credentials stop working after %s", async (change) => {
   const t = await setup();
   const { workspace } = await t.claim();
-  const path = new URL(workspace.remote).pathname + "/git-receive-pack";
-  const send = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
-    expect(String(url)).toBe(`https://git.test/${t.name}--t1.git/git-receive-pack`);
-    expect(options.headers.get("authorization")).toBe("Bearer upstream-secret");
-    return new Response("0000", { headers: { "content-type": "application/x-git-receive-pack-result" } });
-  });
-  const pushed = await t.request("POST", path, workspace.token, null, "0000");
-  expect(pushed.status).toBe(200);
-  // The pack streams back (t528): the upstream token is revoked once the body is read.
-  expect(await pushed.text()).toBe("0000");
-  expect(t.upstream.at(-1)).toHaveProperty("revoked");
+  // Since task 5 a runner pushes with its task grant straight to the Git host
+  // (the /git/runner relay is gone): the grant stops writing when the Ledger
+  // stops recording it, or the token that asked for it ends.
+  const refs = (token, project = t.name) => fetch(`${server.url.replace("localhost", "127.0.0.1")}/git/${project}.git/info/refs?service=git-receive-pack`, { headers: { authorization: `Bearer ${token}` } });
+  expect((await refs(workspace.token)).status).toBe(200);
   expect((await t.request("GET", "/config", workspace.token)).status).toBe(401);
-  expect((await t.request("POST", path.replace("t1.git", "t2.git"), workspace.token, null, "0000")).status).toBe(403);
-  expect((await t.request("POST", path.replace(t.name, "unrelated-project"), workspace.token, null, "0000")).status).toBe(401);
-  if (change === "revoke") await I().revokeAgentToken(t.token.id);
+  expect((await refs(workspace.token, "unrelated-project")).status).toBe(401);
+  // The route revokes the grants the token asked for; the Ledger call alone would not.
+  if (change === "revoke") expect((await t.request("DELETE", `/tokens/${t.token.id}`)).status).toBe(200);
   if (change === "expire") vi.spyOn(Date, "now").mockReturnValue(Date.parse(t.token.expiresAt));
   if (change === "release") await t.api("POST", `${t.base}/release`, {});
   if (change === "reassign") await t.request("POST", `${t.base}/handoff`, OWNER, "owner", { to: "codex/other", note: "reassigned" });
-  const res = await t.request("POST", path, workspace.token, null, "0000");
+  const res = await refs(workspace.token);
   expect([401, 403]).toContain(res.status);
-  expect(send).toHaveBeenCalledTimes(1);
   if (change === "expire") expect((await t.api("GET", "/config")).status).toBe(401);
 });
 
@@ -247,8 +239,9 @@ it("permits push, observed checks and submission only on the runner's job", asyn
   const t = await setup();
   await t.claim();
   t.push();
-  expect((await t.api("POST", `${t.base}/push`, { head: "b".repeat(40) })).status).toBe(200);
-  expect((await t.api("POST", `${t.base}/evidence`, { kind: "check", claim: "npm test", head: "b".repeat(40), passed: true })).status).toBe(200);
+  const head = t.push();
+  expect((await t.api("POST", `${t.base}/push`, { head })).status).toBe(200);
+  expect((await t.api("POST", `${t.base}/evidence`, { kind: "check", claim: "npm test", head, passed: true })).status).toBe(200);
   expect((await t.api("POST", `${t.base}/submit`, { summary: "Built the change" })).status).toBe(200);
   expect((await t.L.item("t1")).state).toBe("submitted");
   expect((await t.api("POST", `${t.base}/submit`, {}, "codex/impostor")).status).toBe(403);
@@ -305,7 +298,7 @@ it("concurrent different runners cannot both acquire the same dispatched job", a
 it.each([true, false])("provider-limit release metadata requires a runner token (%s)", async (runner) => {
   const t = await setup();
   await t.claim();
-  const body = { note: "codex usage limit until 2026-10-14T15:00:00.000Z: quota", providerLimit: true };
+  const body = { note: "step harness; codex usage limit until 2026-10-14T15:00:00.000Z", providerLimit: true };
   const response = runner
     ? await t.api("POST", `${t.base}/release`, body)
     : await t.request("POST", `${t.base}/release`, OWNER, ACTOR, body);

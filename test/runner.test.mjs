@@ -461,22 +461,22 @@ test("alreadyComplete weighs the head against the task's record, its ancestry an
 });
 
 
-test("a release note over the server's cap is cut to its end, whatever failed", async () => {
+test("a release note carries facts alone, never the failure's text however long (round 11)", async () => {
   const reason = `prefix ${"x".repeat(3000)} tail`;
   const released = fixture({ head: "before" });
   released.io.brief = async () => { throw new Error(reason); };
   await runTask(assignment, config, "home:studio", released.io);
   const note = released.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
-  assert.equal(note.length, 2000, "the server takes at most 2000 characters (NOTE_MAX)");
-  assert.ok(note.endsWith(" tail"));
+  assert.match(note, /^step run; log [^:]+:\//);
+  assert.ok(!note.includes("prefix") && !note.includes("tail"));
 
   const unclaimed = fixture();
   const { cli } = unclaimed.io;
   unclaimed.io.cli = async (argv, cwd) => { unclaimed.calls.push({ argv, cwd }); if (argv[0] === "claim") throw new Error(reason); };
   await runTask(assignment, config, "home:studio", unclaimed.io);
   const afterClaimFailure = unclaimed.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
-  assert.equal(afterClaimFailure.length, 2000);
-  assert.ok(afterClaimFailure.endsWith(" tail"));
+  assert.match(afterClaimFailure, /^step run; log [^:]+:\//);
+  assert.ok(!afterClaimFailure.includes("prefix") && !afterClaimFailure.includes("tail"));
 });
 
 
@@ -1536,7 +1536,7 @@ test("runner stops retrying after two failures even when the task revision chang
     // report is what tells the server the runner gave up.
     const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
     assert.equal(argvs.filter((x) => x[0] === "release" && x[1] === "t13").length, argvs.filter((x) => x[0] === "claim" && x[1] === "t13").length);
-    assert.ok(skips[0][1].note);
+    assert.ok(skips[0][1].facts && !("note" in skips[0][1]), "facts, never the run's text (round 10)");
   }
 });
 
@@ -1590,15 +1590,17 @@ test("a run that keeps its claim without a result reports it as unfinished, once
   const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
   assert.equal(argvs.filter((a) => a[0] === "release").length, 0, "the committed work keeps its claim");
   assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "unfinished", 1]]);
-  assert.ok(skips[0][1].note);
+  // Round 10: facts, never the run's text; the text stays in the runner's own log.
+  assert.ok(skips[0][1].facts && !("note" in skips[0][1]));
   assert.ok(logs.some((l) => l.includes("ended without a result; its claim holds no core files until it runs again")), logs.join("\n"));
 });
 
 test("only a build that kept its claim without a result is reported unfinished (t325)", () => {
   const task = { project: "atelier", actor: "codex/gpt-6", item: { id: "t13", dispatch: { at: "x" } } };
   const kept = { phase: "failed", claimHeldAt: "/w", reason: "harness made no new commit", taskFailure: true };
-  assert.deepEqual(unfinishedReport(task, kept), { project: "atelier", item: "t13", actor: "codex/gpt-6", role: "build", kind: "unfinished", failures: 1, note: "stalled: harness made no new commit" });
-  assert.equal(unfinishedReport(task, { ...kept, validationBlocked: true, reason: "tests failed" }).note, "validation_blocked: tests failed");
+  // Round 10: no note of the run's text, only the facts it is given.
+  assert.deepEqual(unfinishedReport(task, kept), { project: "atelier", item: "t13", actor: "codex/gpt-6", role: "build", kind: "unfinished", failures: 1 });
+  assert.deepEqual(unfinishedReport(task, kept, null, { exitCode: 1 }).facts, { exitCode: 1 });
   // A released claim, a give-up (its own report goes), a closed task, a
   // provider's limit, and jobs that are not builds send nothing.
   assert.equal(unfinishedReport(task, { ...kept, claimHeldAt: undefined }), null);
@@ -1648,7 +1650,7 @@ test("giving a task up releases the claim even when the push fails, and the note
   assert.equal(await giveUpClaim({ io, project: "atelier", item, actor: assignment.actor, workspace: "/w", reason: "harness exited 1" }), true);
   const release = calls.find((c) => c.argv?.[0] === "release").argv;
   const note = release[release.indexOf("--note") + 1];
-  assert.match(note, /^the runner gave up: harness exited 1 \(its commits are not pushed: push refused\)$/);
+  assert.equal(note, "the runner gave up: step harness; exit 1; its commits are not pushed");
   assert.ok(logs.some((l) => l.includes("released atelier/t13")));
   // A release that fails leaves the claim held, and says so.
   const refused = fixture({ failCommand: "release" });

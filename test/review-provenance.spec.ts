@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
+import { env } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -71,8 +71,9 @@ async function submitted(L: L, head = H1) {
 
 const review = (by: string, head = H1): Review => ({ itemId: "t1", by, head, criteria: NO_CRITERIA, approve: true, note: "Looks right.", at: new Date().toISOString() });
 
+// Since G18 a write by the "owner" actor on the developer token names the acting model (the session, OPUS here).
 const call = (name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/${path}`, {
-  method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
+  method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
 }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 
 it("an approval the owner token recorded in a model's name is not the independent review, and the gate says so", async () => {

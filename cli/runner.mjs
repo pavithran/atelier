@@ -5,7 +5,7 @@ import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, lstatSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -41,6 +41,8 @@ import { mergeMainAndRegenerate } from "./land.mjs";
 import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
+import { progressTracker } from "./progress.mjs";
+import { automaticNote } from "../src/run-facts.ts";
 import { checkLimits, limitMs, minutesText, stopLine, stopOf } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
@@ -414,9 +416,9 @@ export const testSlotNote = slotNote(SLOT_WRAPPER);
 // Starts a harness once node is known to be on its PATH (requireNode).
 // Always capture stderr for the adapter limit marker; keep streaming it
 // unless the caller requested private capture (for example, a review).
-export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs } = {}, executeChild = execute) {
+export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs, onSpawn } = {}, executeChild = execute) {
   requireNode(env, cwd);
-  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), captureError: true, streamError: !captureError });
+  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), captureError: true, streamError: !captureError, ...(onSpawn ? { onSpawn } : {}) });
 }
 
 // Throws unless `node` resolves on the PATH a harness will run with, since its
@@ -468,7 +470,7 @@ export function killGroups() {
 // `timeoutMs` is its hard ceiling; given `fromSlot`, `argv` is the test-slot
 // wrapper and both count from when it reports the slot held. The result then
 // carries `stopped`, {kind: "timeout" | "silent", ms}, with `timedOut` set.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000, onSpawn } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const clocked = silenceMs !== undefined || startupMs !== undefined || fromSlot;
@@ -477,6 +479,9 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
       stdio: ["ignore", capture ? "pipe" : "inherit", captureError ? "pipe" : "inherit", ...(fromSlot ? ["pipe"] : [])] });
     const pid = child.pid;
     if (pid) liveGroups.add(pid);
+    // The harness's pid goes to the progress tracker (G21), which reads the
+    // processes below it.
+    if (pid) onSpawn?.(pid);
     let output = "", stderr = "", error, timedOut = false, stopped, closed, ending = false, ended = !pid;
     // A signal to every process in the group; false once none is left.
     const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
@@ -635,7 +640,11 @@ const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
 // back in the queue. The marker in the workspace then records the block
 // (markBlocked), so a run offered the task again, which only an unblock
 // does, clears it and runs the builder.
-const blockNote = (reason) => `${BLOCKED_NOTE}${String(reason ?? "")}`.slice(0, NOTE_MAX);
+// Since round 14 the note is facts like any runner note, and the builder's
+// report goes in the release's own field, --blocked, the one place the
+// server keeps a builder's words.
+const blockNote = (reason) => String(reason ?? "").slice(0, NOTE_MAX - BLOCKED_NOTE.length);
+const blockArgs = (reason, facts = "step check") => ["--note", automaticNote(facts), "--blocked", blockNote(reason)];
 async function markBlocked(io, workspace) {
   try {
     const block = await io.readValidationBlock?.(workspace);
@@ -2038,7 +2047,16 @@ export async function runTask(assignment, config, name, io) {
         if (refused.length) throw Object.assign(new Error(`commit identity refused before the builder started: ${refused.join("; ")}`), { infrastructure: true });
         advance({ type: "start" });
         taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, runEnv, { capture: true, stream: true });
+        // The task's progress line (G21): the claude-code adapter writes the
+        // builder's stream-json log beside the workspace, which the tracker
+        // reads with the branch and the harness's processes for each poll.
+        const progressLog = io.progress ? `${workspace}.progress.jsonl` : null;
+        if (progressLog) {
+          rmSync(progressLog, { force: true });
+          io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog, harness: agent });
+        }
+        try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
+        finally { io.progress?.end(); }
       } finally {
         if (dataHome) {
           try { await io.removeDataHome(dataHome); }
@@ -2181,7 +2199,7 @@ export async function runTask(assignment, config, name, io) {
       // The commits stay in the workspace, which the next run resets only to
       // its own head; the claim goes back so the same work resumes after the reset.
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", automaticNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
         released = true;
         io.log("released: the same work resumes when the provider's limit resets");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
@@ -2195,7 +2213,7 @@ export async function runTask(assignment, config, name, io) {
       // section 3): the fork keeps the commits, and the plan's tick sends the
       // part back with the failing output in its next brief.
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace);
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, "", workspace)], workspace);
         released = true;
         io.log("released: the part goes back to its plan with the failing output");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
@@ -2247,7 +2265,7 @@ export async function runTask(assignment, config, name, io) {
       if (kept && stalled) {
         state = { ...state, workInProgress: kept };
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} (wip) and pushed for the next run to continue`)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, `work in progress ${kept.slice(0, 8)} pushed`, workspace)], workspace);
           released = true;
           io.log(`released: work in progress ${kept.slice(0, 8)} pushed for the next run`);
         }
@@ -2257,7 +2275,7 @@ export async function runTask(assignment, config, name, io) {
         // a later run on this runner continues from (continuing).
         state = { ...state, workInProgress: pushRefused.wip, pushRefused: pushRefused.why };
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${pushRefused.wip.slice(0, 8)} (wip) but the push was refused, so it is only in this runner's workspace: ${pushRefused.why}`)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, `work in progress ${pushRefused.wip.slice(0, 8)} kept local; push refused`, workspace)], workspace);
           released = true;
           io.log(`released: work in progress ${pushRefused.wip.slice(0, 8)} is local only, the push was refused`);
         }
@@ -2266,7 +2284,7 @@ export async function runTask(assignment, config, name, io) {
         state = { ...state, workInProgress: kept };
         const note = `${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} and pushed unsubmitted for the next run to continue`;
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", blockNote(note)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, ...blockArgs(state.reason, `step check; work in progress ${kept.slice(0, 8)} pushed`)], workspace);
           released = true;
           state = { ...state, blocked: true };
           await markBlocked(io, workspace);
@@ -2275,7 +2293,7 @@ export async function runTask(assignment, config, name, io) {
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else if (head === startedAt() && !unstaged) {
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", error.validationBlocked ? blockNote(state.reason) : releaseNote(state.reason)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, ...(error.validationBlocked ? blockArgs(state.reason) : ["--note", failureReleaseNote(assignment, state, "", workspace)])], workspace);
           // The task is released with nothing committed: nothing is owed.
           await io.clearHarnessFailure?.(workspace).catch((clearError) => io.log(`could not clear the failure marker: ${clearError.message}`));
           unsavedFailures.delete(obligationKey());
@@ -2290,7 +2308,7 @@ export async function runTask(assignment, config, name, io) {
       } else if (!unstaged) io.log("claim preserved: a commit exists or commit status is unknown");
     } else if (claimAttempted && !claimed) {
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, "", workspace)]);
         released = true;
         io.log("released after claim step failed");
       } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
@@ -2314,13 +2332,41 @@ export async function runTask(assignment, config, name, io) {
 // no core files (endedRun in src/dispatch/rules.ts). Null for a run that
 // released its claim, a task given up (its own report goes), a task the
 // server closed, and any job but a build or a task's merge of main.
-export function unfinishedReport(task, state, gaveUp = null) {
+export function unfinishedReport(task, state, gaveUp = null, facts = null) {
   const job = task.item.dispatch?.job;
   if (!state.claimHeldAt || gaveUp || state.terminalState || state.providerLimit) return null;
   if (job && job !== "merge-main") return null;
-  const outcome = runOutcome(state);
-  const why = state.reason ?? "";
-  return { project: task.project, item: task.item.id, actor: task.actor, role: "build", kind: "unfinished", failures: 1, note: outcome && !why.startsWith(outcome) ? `${outcome}: ${why}` : why };
+  return { project: task.project, item: task.item.id, actor: task.actor, role: "build", kind: "unfinished", failures: 1, ...(facts ? { facts } : {}) };
+}
+
+// What a run's report says of it (the round-10 review of G3/G4/G21): its
+// facts alone, never text of its output. The text (the reason, the detail,
+// the harness's stderr) goes to a log on this machine, mode 600, which the
+// facts name by host and path, for the orchestrator to read here.
+let runLogs = 0;
+export const HARNESS_PROGRAMS = { "claude-code": "claude", codex: "codex", opencode: "opencode", antigravity: "agy" };
+export function runFacts(task, state, { dir = null, now = Date.now, host = hostname() } = {}) {
+  const text = [state.reason ?? "", state.detail ?? "", state.harnessExit?.stderr ?? "", state.output ?? ""].filter(Boolean).join("\n");
+  // Beside the task workspaces, or, where that folder cannot be made, in this
+  // machine's temporary folder; mode 700 and 600 either way.
+  let log = null;
+  for (const at of [dir, join(tmpdir(), "atelier-run-logs")].filter(Boolean)) {
+    try {
+      mkdirSync(at, { recursive: true, mode: 0o700 });
+      // Unique per run however the clock reads: a counter and the process beside the time.
+      log = join(at, `${task.project}-${task.item.id}-${now()}-${process.pid}-${++runLogs}.log`.replace(/[^A-Za-z0-9._-]/g, "-"));
+      writeFileSync(log, `${text}\n`, { mode: 0o600 });
+      break;
+    } catch { log = null; }
+  }
+  const exit = state.harnessExit;
+  return {
+    exitCode: exit?.kind === "exited" && Number.isInteger(exit.code) ? exit.code : null,
+    signal: exit?.kind === "signalled" && typeof exit.signal === "string" ? exit.signal : null,
+    program: HARNESS_PROGRAMS[task.agent] ?? "sh",
+    lines: text ? text.split("\n").length : 0, bytes: Buffer.byteLength(text),
+    log, host: String(host).replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 63) || null,
+  };
 }
 
 // A runner that gives a task up (t584) lets go of the claim, so the core-file
@@ -2335,13 +2381,15 @@ export async function giveUpClaim({ io, project, item, actor, workspace, reason,
   const at = ["--project", project, "--as", actor];
   let pushed = "";
   try { await io.cli(["push", item.id, ...at], workspace); }
-  catch (error) { pushed = ` (its commits are not pushed: ${String(error.message).split("\n")[0].slice(0, 120)})`; }
+  // Never the push's error text (round 11): it stays in this runner's log.
+  catch (error) { pushed = "; its commits are not pushed"; io.log(`the give-up's push failed: ${String(error.message).split("\n")[0]}`); }
   // A validation_blocked build is blocked for the developer, not given up
   // to the queue (t326): the same release, with its note marked.
   const prefix = validationBlocked ? BLOCKED_NOTE : GAVE_UP;
-  const note = `${prefix}${String(reason ?? "").slice(-(NOTE_MAX - prefix.length - pushed.length))}${pushed}`;
+  // A give-up's note carries facts alone (automaticNote); a validation_blocked
+  // one is the builder's report, the block's reason.
   try {
-    await io.cli(["release", item.id, ...at, "--note", note], workspace);
+    await io.cli(["release", item.id, ...at, ...(validationBlocked ? blockArgs(String(reason ?? "").slice(-(NOTE_MAX - prefix.length)), `step check${pushed}`) : ["--note", automaticNote(`${GAVE_UP}${String(reason ?? "")}${pushed}`)])], workspace);
     if (validationBlocked) {
       await markBlocked(io, workspace);
       io.log(`blocked ${project}/${item.id} for the developer: its build ended validation_blocked${pushed}`);
@@ -2353,8 +2401,18 @@ export async function giveUpClaim({ io, project, item, actor, workspace, reason,
   }
 }
 
-// The note a release carries when a provider's limit stopped the job.
-const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limit.resetAt).toISOString()}: ${limit.reason}`;
+// The note a release carries when a provider's limit stopped the job: the
+// harness and the reset alone, never the provider's words (round 11).
+const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limit.resetAt).toISOString()}`;
+
+// The note a runner's failure release carries (round 11): the step, the exit,
+// what became of uncommitted work and where the run's log is on this host,
+// rebuilt by the fixed grammar the server applies too (automaticNote). The
+// error's own text goes to the run's local log, never into the note.
+export function failureReleaseNote(task, state, extra = "", workspace = null) {
+  const facts = runFacts(task, state, { dir: workspace ? join(dirname(workspace), "run-logs") : null });
+  return automaticNote([state.reason ?? "", extra, facts.exitCode !== null ? `exit ${facts.exitCode}` : "", facts.log && facts.host ? `log ${facts.host}:${facts.log}` : ""].filter(Boolean).join("; "));
+}
 
 // A task's identity for the failure counts: its project, id and dispatch,
 // so dispatching it again starts the count afresh (t420), as the server's
@@ -2488,7 +2546,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
   const generation = () => request === undefined ? [] : ["--request", String(request)];
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason, ...generation()]); }
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", automaticNote(reason), ...generation()]); }
     catch (error) { io.log(`review release failed: ${error.message}`); }
   };
   try {
@@ -2875,7 +2933,7 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
   let brief, diffFile, workspace, verdictFile, claimed = null, settled = false, io = runnerIO;
   const fail = async (reason) => {
     settled = true;
-    try { await io.cli(["criteria-review-failed", item.id, "--project", project, "--as", actor, "--request", String(claimed.request), "--note", releaseNote(reason)]); }
+    try { await io.cli(["criteria-review-failed", item.id, "--project", project, "--as", actor, "--request", String(claimed.request), "--note", automaticNote(reason)]); }
     catch (error) { io.log(`could not record the criteria review's failure: ${error.message}`); }
   };
   try {
@@ -2988,7 +3046,9 @@ export async function runPrereview(assignment, config, name, runnerIO) {
   let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, ended = false, io = runnerIO;
   const end = async (note) => {
     ended = true;
-    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", outcomeNote(note), "--request", String(request)]); }
+    // The outcome is a fixed word; its detail is facts alone (automaticNote,
+    // round 12), except a malformed verdict's, which says what the reviewer wrote.
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", outcomeNote({ ...note, detail: note.outcome === "malformed" ? note.detail : automaticNote(note.detail) }), "--request", String(request)]); }
     catch (error) { io.log(`pre-review release failed: ${error.message}`); }
   };
   const failed = (reason, extra = {}) => ({ phase: "failed", reason, ...extra });
@@ -3418,7 +3478,7 @@ export async function runIntegrate(assignment, config, name, io) {
   let claimed = false, released = false, before = null, pushed = false;
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["release", item.id, ...at, "--note", releaseNote(reason)]); }
+    try { await io.cli(["release", item.id, ...at, "--note", automaticNote(reason)]); }
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // The branch goes back to its head before the merge, in the workspace and,
@@ -3431,7 +3491,7 @@ export async function runIntegrate(assignment, config, name, io) {
   // Awaited where it is returned, so an error in it reaches the catch below.
   const fail = async (kind, reason) => {
     io.log(`integration of part ${partKey} failed (${kind}): ${reason}`);
-    const posted = JSON.parse(await io.cli(["integration-failed", item.id, ...at, "--part", partKey, "--kind", kind, "--reason", reason]) || "{}");
+    const posted = JSON.parse(await io.cli(["integration-failed", item.id, ...at, "--part", partKey, "--kind", kind, "--reason", automaticNote(reason)]) || "{}");
     io.log(`integration-failed recorded on ${posted.id ?? item.id}; part ${partKey} goes back to its builder`);
     await release(reason);
     return { phase: "failed", reason, taskFailure: true };
@@ -3536,7 +3596,7 @@ export async function runRefresh(assignment, config, name, io) {
   let claimed = false, released = false, before = null, pushed = false;
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["release", item.id, ...at, "--note", releaseNote(reason)]); }
+    try { await io.cli(["release", item.id, ...at, "--note", automaticNote(reason)]); }
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // As in runIntegrate: back to the head before the merge, in the workspace
@@ -3556,7 +3616,7 @@ export async function runRefresh(assignment, config, name, io) {
   };
   const fail = async (kind, reason) => {
     io.log(`refresh from main at ${mainHead.slice(0, 8)} failed (${kind}): ${reason}`);
-    await io.cli(["refresh-failed", item.id, ...at, "--main-head", mainHead, "--kind", kind, "--reason", reason]);
+    await io.cli(["refresh-failed", item.id, ...at, "--main-head", mainHead, "--kind", kind, "--reason", automaticNote(reason)]);
     io.log(`refresh-failed recorded on ${item.id}; no part is charged, and the plan's parts are dispatched without it`);
     await release(reason);
     // The failure is recorded (refresh-failed), so the server handles it:
@@ -3828,7 +3888,9 @@ export function notReadyGiveUp(task, entry) {
 // report, so it is logged as one, and a runner run with --once that ends on
 // it does not exit as failed. Any other refused claim, runner_forbidden
 // among them, is logged and kept as a refusal.
-const HELD_ANSWER = /^atelier: held: /m;
+// A claim of a task that waits on tasks not yet merged (G3, blocked_by) is
+// the same kind of wait: the queue offers it again once they merge.
+const HELD_ANSWER = /^atelier: (?:held|blocked_by): /m;
 export const lostToHold = (state) => !!state.claimRefused && HELD_ANSWER.test(state.reason ?? "");
 export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? ""))
   ? `claim held, waiting: ${oneLine(String(message)).trim()}; it is claimed again at a later poll that offers it`
@@ -4006,9 +4068,13 @@ export function lastErrorLine(result) {
 // error line, or the fallback when it wrote none, and its detail is that line
 // alone for the run report.
 export function planHarnessFailure(result, fallback) {
-  const detail = lastErrorLine(result) || fallback;
+  // The runner's own words for the failure (timed out, exited N, wrote no
+  // plan document), never the harness's: its text stays in the run's local log.
+  const detail = fallback;
   const error = new Error(`the harness failed: ${detail}`);
   error.detail = detail;
+  // The harness's own output goes to the run's local log alone (runFacts).
+  error.output = String(result?.stderr ?? "") || String(result?.output ?? "");
   return error;
 }
 
@@ -4093,6 +4159,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
     if (error.detail) state.detail = error.detail;
+    if (error.output) state.output = error.output;
     if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
     else if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
     else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
@@ -4103,9 +4170,8 @@ export async function runPlanTask(assignment, config, name, io) {
     // claim is given back. A claim whose fate is unknown (the claim step
     // failed without a refusal) is released too, as runTask releases it.
     if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped && state.notReady == null))) {
-      const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace, { providerLimit: !!state.providerLimit });
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.phase === "failed" ? automaticNote(state.reason) : automaticNote("plan job done")], workspace, { providerLimit: !!state.providerLimit });
         io.log(state.phase === "failed" ? "released: the plan job is back in the queue" : "released: the plan job is done");
       } catch (releaseError) { io.log(`claim not released: release failed: ${releaseError.message}`); }
     }
@@ -4366,6 +4432,16 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // What the runner remembers of the tasks it passes by goes with every poll
   // and heartbeat, and is read back at start (runnerMemory, G5).
   const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady, pauses: limits.pauses }) });
+  // The running build's progress line (G21, cli/progress.mjs) goes with every
+  // poll and heartbeat while a build runs, and once more when it has ended.
+  const progress = progressTracker({ now });
+  // Each run's text goes to a log beside the task workspaces, never to the server.
+  const factsOf = (task, state) => {
+    let dir = null;
+    try { dir = workspacePath ? join(dirname(workspacePath(task.project, task.item.id)), "run-logs") : null; } catch { dir = null; }
+    return runFacts(task, state, { dir, now });
+  };
+  const progressReport = () => { const p = progress.report(); return p.length ? { progress: p } : {}; };
   const missing = new Map();
   // Post-merge reviews whose baseline could not be fetched (t591), by
   // missingKey: the commit, the failures so far and the poll the next try
@@ -4531,6 +4607,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     for (const args of [["reset", "--hard", target], ["clean", "-ffd"]]) await git(args);
   };
   const io = {
+    progress,
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
@@ -4887,6 +4964,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // reloads.
     const reloading = reload && !args.once;
     const started = reloading ? await reload.checkout.head().catch(() => null) : null;
+    // The commit this runner runs goes with its offer, so situation can flag
+    // one that differs from the server's (G4).
+    const ownCommit = started ?? (reload ? await reload.checkout.head().catch(() => null) : null);
+    if (ownCommit) offer.commit = ownCommit;
     const target = process.env[RELOAD_TARGET];
     delete process.env[RELOAD_TARGET];
     if (target && (!started || !await reload.checkout.contains(target, started))) {
@@ -4962,8 +5043,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         let tasks;
         await checkReady();
         if (controller.signal.aborted) break;
-        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()) };
-        try { tasks = await queue(pollOffer, controller.signal); }
+        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() };
+        try { tasks = await queue(pollOffer, controller.signal); if (pollOffer.progress) progress.sent(); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
           misses++;
@@ -5045,7 +5126,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()) }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+          // The ended build's last progress (its cost among it) is sent at once,
+          // so the server keeps the run's final line even under --once.
+          if (heartbeat && progress.active()) {
+            try { await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); progress.sent(); }
+            catch (error) { if (!controller.signal.aborted) line(`the build's last progress was not sent: ${error.message}`); }
+          }
           if (controller.signal.aborted) break;
           if (task.item.dispatch?.job === "land") { landOutcome(task, state); continue; }
           if (state.providerLimit) {
@@ -5069,7 +5156,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : (task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) ? "review" : "build";
               const exit = SAME_EXIT_JOBS.has(task.item.dispatch?.job) && state.harnessExit?.kind !== "timed-out" ? state.harnessExit : null;
               const detail = exit && outcome === "refused" ? exitDetail(exit) : state.detail ?? state.reason;
-              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail }, offer.runner, controller.signal);
+              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, facts: factsOf(task, exit && outcome === "refused" ? { ...state, detail } : state) }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }
@@ -5103,7 +5190,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           let missReported = false;
           if (state.missingCommit && reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) {
             missReported = true;
-            await reportSkip(`miss:${missingKey(task)}:${task.item.request}`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: state.reason }, 0, "miss");
+            await reportSkip(`miss:${missingKey(task)}:${task.item.request}`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, facts: factsOf(task, state) }, 0, "miss");
           }
           // A baseline that could not be fetched (t591) is served again after
           // fetchRetryPolls, counted by task and head; at FETCH_TRIES it is
@@ -5123,12 +5210,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               missing.set(fkey, { commit: state.fetchFailed.commit, baseline: head, checked: now(), fetchFailed: true });
               io.log(`${task.project}/${task.item.id}'s post-merge review is passed by after ${FETCH_TRIES} failures before a verdict: ${state.reason}`);
               const note = `gave up the post-merge review of the merge commit ${state.fetchFailed.commit} after ${FETCH_TRIES} failures before a verdict: ${state.reason}`;
-              if (reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) await reportSkip(`miss:${fkey}:fetch`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: note }, 0, "miss");
-              else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
+              if (reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) await reportSkip(`miss:${fkey}:fetch`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, facts: factsOf(task, { ...state, reason: note }) }, 0, "miss");
+              else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, facts: factsOf(task, { ...state, reason: note }) });
             }
           } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
           if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
-            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
+            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, facts: factsOf(task, state) });
           }
           // A build or plan job given up under this dispatch, after its
           // failed runs or infrastructure failures in a row, is reported as
@@ -5154,13 +5241,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           }
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
-            await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, note: state.reason ?? "" }, 0, "run");
+            await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, facts: factsOf(task, state) }, 0, "run");
           }
           // A build that ended without a result and kept its claim says so
           // (t325), so the claim stops holding other dispatches off its core
           // files until this runner claims it again for the next run. Sent
           // once, never retried: a late report would land after that claim.
-          const unfinished = unfinishedReport(task, state, gaveUp);
+          const unfinished = unfinishedReport(task, state, gaveUp, factsOf(task, state));
           if (unfinished && reportRunSkip) {
             try {
               await reportRunSkip(unfinished, offer.runner, controller.signal);

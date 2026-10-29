@@ -267,7 +267,7 @@ test("after its project is renamed and its model removed, an assignment keeps it
 test("applicable assignments go most specific first: the role's own, then review; this project's, then every project's", () => {
   const a = (id: string, role: Assignment["role"], scope: string): Assignment => ({ id, kind: "assigned", scope, role, choices: [], reason: "", quote: "", evidence: [], by: OWNER, at: AT });
   const current = [a("a1", "review", ALL_PROJECTS), a("a2", "security-review", ALL_PROJECTS), a("a3", "review", "atelier"), a("a4", "security-review", "other")];
-  assert.deepEqual(applicableAssignments(current, "atelier", reviewRoles({ sensitive: true })).map((x) => x.id), ["a2", "a3", "a1"]);
+  assert.deepEqual(applicableAssignments(current, "atelier", reviewRoles({ protectedChange: true })).map((x) => x.id), ["a2", "a3", "a1"]);
   assert.deepEqual(applicableAssignments(current, "atelier", reviewRoles({})).map((x) => x.id), ["a3", "a1"]);
   assert.deepEqual(applicableAssignments(current, "other", ["security-review"]).map((x) => x.id), ["a4", "a2"]);
   // A project ledger's copy is already narrowed to the project: any named scope is its own.

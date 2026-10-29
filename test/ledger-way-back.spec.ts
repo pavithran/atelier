@@ -1,6 +1,6 @@
-import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { runInDurableObject } from "./support/workers.ts";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { tokenFromBytes, sha256 } from "../src/tokens.ts";
 import { LEDGER_DUMP_FORMAT } from "../src/rules.ts";
@@ -21,11 +21,12 @@ const staging = {
   LEDGER: { idFromName: (name: string) => env.LEDGER.idFromName(`staging:${name}`), get: (id: DurableObjectId) => env.LEDGER.get(id) },
 } as unknown as typeof env;
 
+// G18: a developer-token request names the acting model.
 type Json = Record<string, any>;
 const send = async (bindings: typeof env, method: string, path: string, body?: unknown, bearer: string | null = OWNER, actor: string | null = "owner", host = "atelier.test") => {
   const res = await worker.fetch(new Request(`https://${host}/api${path}`, {
     method,
-    headers: { ...(bearer === null ? {} : { authorization: `Bearer ${bearer}` }), ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+    headers: { ...(bearer === null ? {} : { authorization: `Bearer ${bearer}` }), ...(actor ? { "x-atelier-actor": actor } : {}), ...(bearer === OWNER ? { "x-atelier-acting": AGENT } : {}), "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }), bindings);
   return { status: res.status, body: await res.json() as Json };
@@ -42,6 +43,18 @@ const importInto = (bindings: typeof env, name: string, dump: Json) => importDum
 
 const ledgerOf = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 const INDEX = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
+
+// The Node runtime keeps no point-in-time history (getCurrentBookmark and
+// onNextSessionRestoreBookmark answer not_supported; backups, task 12, are
+// the way back there), so these tests stand in a storage that takes bookmarks
+// as Cloudflare's does, to keep the route's own rules under test (2.0).
+let marks = 0;
+const standIn = (stub: unknown, restore: (bookmark: string) => Promise<string>) => runInDurableObject(stub, async (instance: Json, state: DurableObjectState) => {
+  instance.standIn = true;
+  const storage = state.storage as unknown as Json;
+  storage.getCurrentBookmark = async () => `${(++marks).toString(16).padStart(5, "0")}-0000000a`;
+  storage.onNextSessionRestoreBookmark = restore;
+});
 
 async function setup(name: string, pasted?: string) {
   const record = {
@@ -142,12 +155,20 @@ it("round-trips a dump through an import into an empty Ledger on another server,
   expect(own.status).toBe(409);
   expect(own.body.error).toBe("ledger_not_empty");
   expect(rowsByTable(await dumpOf(staging, "wb-trip"))).toEqual(rowsByTable(dump));
-  // A dump of another project, and a table whose columns differ, are refused.
+  // A dump of another project is refused.
   const other = await send(staging, "POST", "/projects/wb-elsewhere/ledger/import", { step: "begin", manifest: manifestOf(dump) });
   expect(other.body.error).toBe("project_mismatch");
+  // 2.0 (task 10): a table with fewer columns than this code's is an older
+  // dump, which the import remakes in its own shape and migrates; one with a
+  // column this code does not know was written by newer code and is refused.
   const changed = { ...manifestOf(dump), project: "wb-shape", record: { ...dump.record, name: "wb-shape", repo: "wb-shape" }, tables: manifestOf(dump).tables.map((t: Json) => t.name === "items" ? { ...t, columns: t.columns.slice(1) } : t) };
-  const shape = await send(staging, "POST", "/projects/wb-shape/ledger/import", { step: "begin", manifest: changed });
-  expect(shape.body.error).toBe("schema_mismatch");
+  const older = await send(staging, "POST", "/projects/wb-shape/ledger/import", { step: "begin", manifest: changed });
+  expect([older.status, older.body.reshaped]).toEqual([201, ["items"]]);
+  expect((await send(staging, "POST", "/projects/wb-shape/ledger/import", { step: "abort", import: older.body.import })).status).toBe(200);
+  const newer = { ...changed, tables: manifestOf(dump).tables.map((t: Json) => t.name === "items" ? { ...t, columns: [...t.columns, { name: "from_the_future" }] } : t) };
+  const shape = await send(staging, "POST", "/projects/wb-shape/ledger/import", { step: "begin", manifest: newer });
+  expect([shape.status, shape.body.error]).toEqual([409, "schema_mismatch"]);
+  expect(shape.body.detail).toMatch(/items of the dump has from_the_future, which this server's code does not know/);
   // A table definition that carries a second statement is refused.
   const smuggled = { ...changed, tables: [{ name: "wb_new", sql: "CREATE TABLE wb_new (a TEXT); DROP TABLE items", columns: [{ name: "a" }] }] };
   expect((await send(staging, "POST", "/projects/wb-shape/ledger/import", { step: "begin", manifest: smuggled })).body.error).toBe("bad_dump");
@@ -223,6 +244,8 @@ it("fails a dump whose rows were updated between pages though the count held", a
 
 it("records each Ledger's bookmark, restores only a recorded one on the next start, and records the undo", async () => {
   await setup("wb-mark");
+  const asked: string[] = [];
+  for (const stub of [ledgerOf("wb-mark"), INDEX()]) await standIn(stub, async (bookmark: string) => { asked.push(bookmark); return `0000${asked.length}-00000001`; });
   const recorded = await send(prod, "POST", "/projects/wb-mark/ledger/bookmark");
   expect(recorded.status).toBe(201);
   const b = recorded.body;
@@ -230,17 +253,6 @@ it("records each Ledger's bookmark, restores only a recorded one on the next sta
   expect(b.server).toBe("atelier.test");
   expect(b.ledgers.map((l: Json) => l.name)).toEqual(["project:wb-mark", "__index"]);
   for (const l of b.ledgers) expect(l.bookmark).toMatch(/^[0-9a-f]+(-[0-9a-f]+)+$/);
-
-  // The local runtime keeps no history to restore, so each Ledger's storage
-  // takes the restore here as Cloudflare's does: it answers the bookmark
-  // that undoes it.
-  const asked: string[] = [];
-  for (const stub of [ledgerOf("wb-mark"), INDEX()]) {
-    await runInDurableObject(stub, async (instance: Json, state: DurableObjectState) => {
-      instance.standIn = true;
-      state.storage.onNextSessionRestoreBookmark = async (bookmark: string) => { asked.push(bookmark); return `0000${asked.length}-00000001`; };
-    });
-  }
 
   const unknown = await send(prod, "POST", "/projects/wb-mark/ledger/restore", { bookmark: "b9@atelier.test", server: "atelier.test" });
   expect(unknown.status).toBe(404);
@@ -290,6 +302,7 @@ it("records each Ledger's bookmark, restores only a recorded one on the next sta
 
 it("refuses every bookmark, restore, dump and import request without the developer's token with 403", async () => {
   await setup("wb-guard");
+  for (const stub of [ledgerOf("wb-guard"), INDEX()]) await standIn(stub, async () => "00001-00000001");
   await ok(send(prod, "POST", "/projects/wb-guard/ledger/bookmark"));
   const agent = await ok(send(prod, "POST", "/tokens", { actor: AGENT, projects: ["wb-guard"] }));
   const runner = await ok(send(prod, "POST", "/tokens", { runner: "home:guard", projects: ["wb-guard"] }));
@@ -320,16 +333,10 @@ it("refuses every bookmark, restore, dump and import request without the develop
 
 it("records the first Ledger's undo bookmark when the second refuses the restore", async () => {
   await setup("wb-partial");
-  const b = (await send(prod, "POST", "/projects/wb-partial/ledger/bookmark")).body;
   // The project's Ledger takes the bookmark; the index's storage refuses.
-  await runInDurableObject(ledgerOf("wb-partial"), async (instance: Json, state: DurableObjectState) => {
-    instance.standIn = true;
-    state.storage.onNextSessionRestoreBookmark = async () => "00001-00000001";
-  });
-  await runInDurableObject(INDEX(), async (instance: Json, state: DurableObjectState) => {
-    instance.standIn = true;
-    state.storage.onNextSessionRestoreBookmark = async () => { throw new Error("older than 30 days"); };
-  });
+  await standIn(ledgerOf("wb-partial"), async () => "00001-00000001");
+  await standIn(INDEX(), async () => { throw new Error("older than 30 days"); });
+  const b = (await send(prod, "POST", "/projects/wb-partial/ledger/bookmark")).body;
   const failed = await send(prod, "POST", "/projects/wb-partial/ledger/restore", { bookmark: b.id, server: "atelier.test" });
   expect([failed.status, failed.body.error]).toEqual([500, "restore_partial"]);
   expect(failed.body.detail).toMatch(/__index did not take the bookmark/);

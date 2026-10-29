@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import worker from "../src/index.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
@@ -330,9 +330,9 @@ it("behind Access, the owner's Access sign-in confirms an override, and the reco
     const on = { ...bindings, ARTIFACTS } as typeof env;
     const jwt = await assertion();
     const cookie = await signIn(TOKEN, on, { "cf-access-jwt-assertion": jwt });
-    // The API's refusal names the Access sign-in as the factor this server takes.
+    // The API's refusal (the owner-token write names its acting model, G18) names the Access sign-in as the factor this server takes.
     const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
-      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
+      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
     }), on);
     expect(api.status).toBe(403);
     expect((await api.json() as { detail: string }).detail).toContain(`open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation`);

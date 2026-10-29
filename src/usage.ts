@@ -286,8 +286,10 @@ ${OWNER_LANDING}
   orchestrate: `## Orchestrating
 
 You run Atelier for a project: you file tasks, dispatch them to agents, judge
-their reviews and land their work for the developer. Start with \`atelier status\`
-and \`atelier ls --project NAME\` to see where the work stands. File a task
+their reviews and land their work for the developer. Start with \`atelier situation
+--project NAME --json\`, one read of the project from recorded facts (tasks and
+their stages, holds, review requests, runners, landings, blocks, limits), and
+\`atelier status\` across projects. File a task
 with \`atelier new "title" --accept "TEXT" --scope GLOB\` and dispatch it with
 \`atelier dispatch ID\`.
 
@@ -365,6 +367,13 @@ Standing rules:
   \`bin/orchestrate/post-merge.sh\`, until the developer decides.
 - After each landing, report to the developer with \`atelier status --brief\`: what
   merged, what is deployed, what is running and the spend.
+- Wait with \`atelier wait\`, never a \`sleep\` loop: \`atelier wait --all tA,tB
+  --for merged\` (or \`--any\`, a stage such as \`--for checked\`, \`--for
+  answered\` for a review request, \`--runner home:NAME --silent N\`). It holds
+  no lock and rides through a server restart; it exits 0 met, 1 cannot be met,
+  3 at \`--timeout\`, 4 naming a task that was abandoned. Order work with
+  \`atelier edit ID --blocked-by tA,tB\`: the task is not offered, claimed or
+  landed until each is merged.
 - Report every run that ended without a result with \`atelier run-report\`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then \`atelier handoff\` the task to another model or

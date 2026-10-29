@@ -1,10 +1,15 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import type { Evidence, ProjectPolicy } from "../src/rules.ts";
+
+// The routes the developer names at an approval (G17: Atelier picks none): every part built by
+// zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.
+const routesOf = async (L: { planView(id: string): Promise<{ plan?: { parts: { key: string }[] } | null }> }, id: string) =>
+  Object.fromEntries(((await L.planView(id)).plan?.parts ?? []).map((p) => [p.key, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
 
 // A part sent back because its integration conflicted with the plan's branch
 // (docs/orchestrator.md, section 5) is dispatched again naming the branch's
@@ -56,7 +61,10 @@ async function submitApproved(L: L, partId: string, head: string, path: string, 
   await L.addEvidence(observed(partId, head, path));
   await L.submit(partId, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === partId);
-  const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
+  // G17: a part Atelier added has no routed reviewer, so its review is asked by command.
+  if (!waiting.length) await L.requestReview(partId, "owner", "codex/gpt-6-astra", POOL);
+  const asked = (await L.reviewWaiting()).filter((w) => w.id === partId);
+  const reviewer = `${asked[0].dispatch!.agent}/${asked[0].dispatch!.model}`;
   const reviewClaim1 = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
   await L.addReview({ request: reviewClaim1.request, itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
   return builder;
@@ -71,7 +79,7 @@ async function plan(L: L) {
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   const [a, b] = [parts[0].id, parts[1].id];
   await submitApproved(L, a, PART_A, "src/a/x.ts");
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
@@ -112,6 +120,9 @@ it("a part whose integration conflicted is dispatched again with the plan branch
   const reviewClaim2 = await L.claimReview(b, reviewer, RUNNER) as unknown as ReviewClaim;
   await L.addReview({ request: reviewClaim2.request, itemId: b, criteria: await L.criteria(b), by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
   await failIntegration(L, id, "b", "checks");
+  // G17: the named route has no alternate, so the builder's second attempt ends the plan's patience; the developer retries.
+  expect((await L.planView(id)).blocked).toBe("part b has no alternates left");
+  await L.retryPlan(b, "owner");
   const again = (await L.item(b)).dispatch;
   expect(again).not.toBeNull();
   expect(again?.planHead).toBeUndefined();
@@ -141,6 +152,10 @@ it("a merge-main part whose integration conflicted keeps its merge-main job and 
   await L.claim(id, INTEGRATOR, RUNNER, true);
   await L.refreshFailed(id, INTEGRATOR, M1, "CONFLICT (content): Merge conflict in docs/x.md", "conflict");
   await L.release(id, INTEGRATOR, "refresh failed");
+  // G17: the part Atelier added has no builder until the developer names one.
+  const unnamed = (await L.planView(id)).parts.find((p) => p.key.startsWith("merge-main-"))!;
+  expect(unnamed.dispatch).toBeNull();
+  await L.reroutePlan(unnamed.id, "owner", "zcode/glm-5.3");
   const m = (await L.planView(id)).parts.find((p) => p.key.startsWith("merge-main-"))!;
   expect(m.dispatch).toMatchObject({ job: "merge-main", head: M1 });
   expect(m.dispatch?.planHead).toBeUndefined();
@@ -208,9 +223,10 @@ function artifacts(commits: Record<string, Commit>, heads: Record<string, string
 }
 
 const TOKEN = "merge-plan-token";
+// G18: the developer token's write names the model acting; the integrator's own actor is not one.
 function claimAsIntegrator(name: string, id: string, ARTIFACTS: Artifacts) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/claim`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": INTEGRATOR, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": INTEGRATOR, "x-atelier-acting": "claude-code/opus-5.5", "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 }
 // The pre-check's verdict: conflict_predicted when it refuses; otherwise the

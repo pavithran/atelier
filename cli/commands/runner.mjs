@@ -53,7 +53,7 @@ export default async function runnerCommand() {
   // cannot read the process table, which says so.
   try { runnerUsage(args); } catch (error) { die(error.message); }
   if (!isReloaded(process.env)) {
-    const live = liveHere();
+    const live = liveHere(null, { ownTree: true });
     if (!live) say(NO_PROCESS_TABLE);
     const refusal = live && await guardName({
       runners: live.runners, name: args.name, replace: args.replace === true, say,
@@ -74,6 +74,9 @@ export default async function runnerCommand() {
   try {
     await runRunner(args, {
       credential: apiToken(),
+      // How often a busy runner's heartbeat (and the build's progress line,
+      // G21) goes; a test shortens it.
+      ...(Number(process.env.ATELIER_HEARTBEAT_MS) > 0 ? { heartbeatMs: Number(process.env.ATELIER_HEARTBEAT_MS) } : {}),
       api: { server, I },
       projectPolicy,
       workspacePath,

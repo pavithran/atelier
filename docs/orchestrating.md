@@ -469,10 +469,50 @@ loop, which matches its own command line and cannot see a death:
 `--for merged` (the default) ends when the task merges, `--for submitted`
 when its agent submits, `--for reviewed` when a review is recorded at its
 head and current acceptance criteria, and `--for any-change` at the first
-change of state, head, holder or review count. It prints one line and exits 0 when reached, 1 when the task
-failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
-the task cannot be read. A task whose agent died stays claimed, so pair a
-long wait with `--timeout` and look at `atelier status` when it ends.
+change of state, head, holder or review count. It waits on a condition too
+(G3): `atelier wait --all tA,tB --for merged` until every task merges,
+`--any tA,tB` until one does, `--for STAGE` (filed, agreed, queued,
+building, built, checked, reviewed, landable, landed, shipped) until the
+recorded stage reaches it, `--for answered` until the task's review requests
+are answered, and `atelier wait --runner home:NAME --silent N` until a runner
+has been silent N minutes or never polled. A condition already met returns at
+once. It reads the situation (`GET /projects/P/situation`) and holds no lock,
+so two waits never interfere, and it rides through a server restart, reading
+again once the server is back. It prints one line and exits 0 when met, 1
+when it cannot be (blocked, or rejected in review), 3 at `--timeout`, 4 when
+a task it names was abandoned, naming it, and 5 when the server cannot be
+read. Never poll with `sleep` for a task's state. A task whose agent died
+stays claimed, so pair a long wait with `--timeout` and read `atelier
+situation` when it ends: its progress line says whether the builder still
+runs a command.
+
+`atelier situation --project P` (`--json` for a model) is one read of the
+project from recorded facts: each live task with its state, holder, runner,
+head, scope, recorded stage and how long it has been at it, its last check
+and its progress line; core-file and blocked-by holds; open review requests
+with reviewer and age; runners with their last poll, current job, served
+projects, offered models and the commit they run, flagged when silent five
+minutes, on a commit other than the server's, or never polled; landings;
+blocks and whose words lift them; the check limits and mode; standing
+decisions; free disk where the server runs (a warning under 10 percent); and
+spend per task and model where a run reported it. Under `--json` every error
+is `{code, detail, next}`.
+
+A build's progress line (G21) comes from its runner with each poll and
+heartbeat: commands run so far and the one running now (from the builder's
+stream-json log, which the Claude Code adapter writes beside the workspace),
+whether a process the model started is alive, commits on `t/N`, elapsed
+time, tokens and cost. `situation` flags a stall: no change for 30 minutes
+with no child process alive, or no command completed five minutes after the
+build started (the `claude -p` that hangs on a privacy prompt under launchd).
+
+A task can wait on others: `atelier edit ID --blocked-by tA,tB` (`""`
+clears the list). The queue offers it to no runner, a claim is refused
+(`blocked_by`, naming the wait) and a landing will not accept it until every
+one is merged. An abandoned blocker keeps it waiting and listed, never
+released, until the developer drops it from the list; a cycle is refused
+when it is set. `atelier show` and `atelier situation` list the blockers with
+their states.
 When the
 review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
@@ -483,9 +523,9 @@ A request for an admitted reviewer is refused `no_runner` while no live runner o
 
 A runner is offered the oldest review request it can serve, whatever older ones it cannot; a request whose reviewer no live runner offers for 15 minutes shows in `atelier stuck` as `review-unoffered`: reroute it with `atelier review-request ID --reviewer H/M` to a reviewer a live runner offers, or withdraw it with `atelier review-withdraw ID --reason TEXT` (t220).
 
-The stage tick reroutes a queued dispatch no live runner offers, or one left unclaimed 10 minutes, once to a model a live runner offers (`stage.rerouted`), and replaces a task fork preparing over 30 minutes with no commit recorded twice, under new names; a third miss is `stage.told`, and `atelier stuck` lists the task with its fork names, ages and the way out: `atelier release ID`, then `atelier start ID --as H/M`, which starts the count of replacement forks again and keeps the task's history (t245, t254, t378).
+The stage tick records facts and acts on no judgment of its own (Atelier 2.0, G6). A queued dispatch no live runner offers is `stage.stuck` at once with the note "no live runner offers H/M", and keeps its model; one left unclaimed past 10 minutes is `stage.stuck` too. Nothing reroutes it: dispatch it again with the model you choose. A claim still replaces a task fork preparing over 30 minutes with no commit recorded, until forks are removed (t254, t378). The limits are named in `src/limits.ts`.
 
-The tick also releases a review claim unanswered for 2 hours (`reviewAnswerHours`) and asks again once per task and head (`stage.retried`); the next stale claim at that head is `stage.told`. A checked task whose review request stays unclaimed 10 minutes moves once to another reviewer a live runner offers, of another family than every contributor (`stage.rerouted`); with none, it is `stage.stuck` and `stage.told` (t225).
+A review claim unanswered for 2 hours (`reviewAnswerHours`) shows in `atelier stuck`; the tick releases nothing. A checked task whose review request stays unclaimed 10 minutes is `stage.stuck` with the request, its reviewer and the time it was asked, and `atelier show ID` prints its age; withdraw it with `atelier review-withdraw` and ask another reviewer with `atelier review-request ID --reviewer H/M`. The only automatic actions are the standing instructions the developer records for a project in fast mode, `atelier decide --standing KEY VALUE` (queue-landable, reask-on-resubmit, post-merge-reviewer, notice-delay). A blocking post-merge finding is a note on the goal, which `atelier file-fix ID --from-note N` files as a task; the server files none.
 
 The stage tick queues one land job (`stage.land-queued`), keyed by task and head, for a task left landable over 5 minutes that is accepted or in a project in fast mode, with no landing lease held. A lease lapsed for 15 minutes queues it again; main moving queues it again at most twice. A landable task not yet accepted is `stage.told` naming `atelier accept`, and with no live runner that lists `land` and holds the checkout it is `stage.stuck` and `stage.told` (t253).
 

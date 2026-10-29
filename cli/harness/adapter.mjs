@@ -381,7 +381,8 @@ export async function harnessReady(harness, { env = process.env, command, home =
       const result = await run(executableFor(harness, process.env), ["login", "status"], { env: { ...env }, timeout: timeoutMs });
       return result.code === 0 ? { ready: true } : { ready: false, why: `Codex is not signed in; ${fix}` };
     } catch (error) {
-      return { ready: false, why: `could not check whether Codex is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fix}` };
+      // No error text: the reason goes to the server with the runner's offer (round 12).
+      return { ready: false, why: `could not check whether Codex is signed in; ${fix}` };
     }
   }
   // Antigravity (t195) has no status command; `agy models` asks the service for
@@ -397,7 +398,7 @@ export async function harnessReady(harness, { env = process.env, command, home =
       if (result.code !== 0 && /sign(ed)?[ -]?in|log(ged)?[ -]?in|unauthenticated|unauthori[sz]ed|credential|authenticat/i.test(text) && !NETWORK_ERROR.test(text)) return { ready: false, state: "signed-out", why: `Antigravity is signed out; ${fixed}` };
       return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (agy models ${result.code === 0 ? "printed no model list" : `exited ${result.code}`}); ${fixed}` };
     } catch (error) {
-      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fixed}` };
+      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in; ${fixed}` };
     }
   }
   if (harness !== "claude-code") return { ready: true, state: "unknown" };
@@ -407,7 +408,9 @@ export async function harnessReady(harness, { env = process.env, command, home =
     try { signedIn = result.code === 0 && JSON.parse(result.stdout)?.loggedIn === true; } catch { /* not JSON: not signed in */ }
     return signedIn ? { ready: true } : { ready: false, why: `the Claude CLI is not signed in; ${fix}` };
   } catch (error) {
-    return { ready: false, why: `could not check whether the Claude CLI is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fix}` };
+    // The token file's own fixed words (missing, unreadable, empty), never another error's text.
+    const said = /^Claude token file is (?:missing|unreadable|empty)/.exec(String(error?.message ?? ""))?.[0];
+    return { ready: false, why: `${said ?? "could not check whether the Claude CLI is signed in"}; ${fix}` };
   }
 }
 
@@ -654,13 +657,30 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
+  // A claude-code build the runner follows (G21, cli/progress.mjs) writes its
+  // stream-json events to ATELIER_PROGRESS_LOG, which the runner reads for
+  // the task's progress line; the final answer is printed as text after, as
+  // --output-format text would have printed it.
+  const progressLog = harness === "claude-code" && kind === "build" && typeof env.ATELIER_PROGRESS_LOG === "string" && env.ATELIER_PROGRESS_LOG ? env.ATELIER_PROGRESS_LOG : null;
+  const argvFor = progressLog ? streamJsonArgv(harnessArgv) : harnessArgv;
+  let logFd = null;
+  if (progressLog) {
+    try { logFd = openSync(progressLog, "a", 0o600); } catch (error) { return fail(`could not open the progress log ${progressLog}: ${error.message}`); }
+  }
   const options = {
     cwd: setup?.scratch ?? args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-    stdio: ["pipe", capture ? "pipe" : "inherit", "inherit"],
+    stdio: ["pipe", capture ? "pipe" : logFd ?? "inherit", "inherit"],
+    ...(progressLog ? { progressLog } : {}),
   };
   const limit = harness === "opencode" && kind === "build" ? RUN_LIMITS[setup.providerModel] : null;
   const err = io.stderr ?? ((text) => process.stderr.write(text));
-  const result = limit ? runLimited(spawn, exe, harnessArgv, options, { ms: io.limitMs ?? limit.ms, err, harness }) : spawn(exe, harnessArgv, options);
+  let result;
+  try { result = limit ? runLimited(spawn, exe, argvFor, options, { ms: io.limitMs ?? limit.ms, err, harness }) : spawn(exe, argvFor, options); }
+  finally { if (logFd !== null) closeSync(logFd); }
+  if (progressLog) {
+    const answer = streamResult(progressLog);
+    if (answer) (io.stdout ?? ((text) => process.stdout.write(text)))(`${answer}\n`);
+  }
   if (result.error) return fail(result.error.code === "ETIMEDOUT" && limit ? `${exe} was stopped after its time limit of ${Math.round((io.limitMs ?? limit.ms) / 1000)} s` : `could not run ${exe}: ${result.error.message}`);
   if (result.status !== 0) return result.status ?? 1;
   if (!capture) return verdictFrom === "file" && kind === "review" ? askAgainFromFile(harness, args, setup, brief, { spawn, exe, childEnv, io }) : 0;
@@ -773,4 +793,26 @@ export function joinReplies(first, more) {
 function noVerdict(answer) {
   const parsed = parseVerdict(answer);
   return !parsed.ok && parsed.error === NO_VERDICT;
+}
+
+// The claude-code argv with its output as stream-json events (G21): every
+// tool call and result is a line the runner can count. --verbose is what
+// claude -p needs for stream-json.
+export function streamJsonArgv(argv) {
+  const out = [...argv];
+  const at = out.indexOf("--output-format");
+  if (at === -1) return [...out, "--output-format", "stream-json", "--verbose"];
+  out.splice(at, 2, "--output-format", "stream-json", "--verbose");
+  return out;
+}
+
+// The final answer a stream-json log ends with (its result line), or null.
+export function streamResult(path) {
+  let text;
+  try { text = readFileSync(path, "utf8"); } catch { return null; }
+  for (const line of text.split("\n").reverse()) {
+    if (!line.trim()) continue;
+    try { const e = JSON.parse(line); if (e?.type === "result") return typeof e.result === "string" ? e.result : null; } catch { /* not a whole event */ }
+  }
+  return null;
 }

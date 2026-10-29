@@ -485,5 +485,5 @@ test("a merge-main task whose finish fails keeps the claim until the runner give
   const [push, release] = calls.slice(argv).map((c) => c.argv);
   assert.deepEqual(push, ["push", "t9", "--project", "atelier", "--as", ACTOR]);
   assert.equal(release[0], "release");
-  assert.ok(release[release.indexOf("--note") + 1].startsWith(`${GAVE_UP}main and t9 each raised the route level`));
+  assert.ok(release[release.indexOf("--note") + 1].startsWith(`${GAVE_UP}step `), "a give-up's note carries facts alone (round 11)");
 });

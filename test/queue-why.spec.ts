@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
-import { runInDurableObject } from "cloudflare:test";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
+import { runInDurableObject } from "./support/workers.ts";
 import worker from "../src/index.ts";
 import { RUN_REPORTS } from "../src/ledger.ts";
 import { RUNNER_IDLE_MS } from "../src/dispatch/rules.ts";
@@ -17,10 +17,12 @@ const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 type Why = { kind: string; line: string };
 type Entry = { project: string; item: { id: string; why?: Why[] } };
 
+// Since G18 a write on the developer token names the acting model.
+const ACTING = "claude-code/opus-5.5";
 function request(method: string, path: string, token: string, actor: string, body?: unknown, extraHeaders: Record<string, string> = {}) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json", ...extraHeaders },
+    headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json", ...extraHeaders },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }), testEnv);
 }
@@ -117,7 +119,7 @@ it("a runner's reported infrastructure skip reaches the owner's listing, for a j
   const token = (await issued.json() as { token: string }).token;
   const offer = { runner: "home:why-infra", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build"], started: new Date(Date.now() - 60_000).toISOString() };
   expect((await request("POST", "/queue", token, "codex/gpt-6-astra", offer)).status).toBe(200);
-  const skip = { project: name, item: task.id, actor: "codex/gpt-6-astra", role: "build", kind: "infrastructure", failures: 3, note: "git reset failed: index.lock exists" };
+  const skip = { project: name, item: task.id, actor: "codex/gpt-6-astra", role: "build", kind: "infrastructure", failures: 3 };
   const res = await request("POST", `/projects/${name}/items/${task.id}/run-skip`, token, "codex/gpt-6-astra", skip);
   expect(res.status, await res.clone().text()).toBe(200);
   expect(await res.json()).toEqual({ kept: true });
@@ -126,14 +128,14 @@ it("a runner's reported infrastructure skip reaches the owner's listing, for a j
   expect((await request("POST", `/projects/${name}/items/${task.id}/run-skip`, token, "codex/gpt-6-astra", { ...skip, kind: "tired" })).status).toBe(400);
 
   const listing = async () => (await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[]).find((q) => q.project === name && q.item.id === task.id)?.item.why ?? [];
-  expect(await listing()).toEqual([{ kind: "skipped", line: `Skipped by home:why-infra after 3 infrastructure failures in a row under this dispatch (the last: git reset failed: index.lock exists); that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the runner's workspace, git or harness, then atelier dispatch ${task.id} --to home --agent codex --model gpt-6-astra.` }]);
-  // The owner's token, naming the runner, reports one too (the runner on the owner's token).
+  expect(await listing()).toEqual([{ kind: "skipped", line: `Skipped by home:why-infra after 3 infrastructure failures in a row under this dispatch; that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the runner's workspace, git or harness, then atelier dispatch ${task.id} --to home --agent codex --model gpt-6-astra.` }]);
+  // The owner's token, naming the runner, reports one too (the runner on the owner's token); since G18 it also names the acting model.
   const owned = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${task.id}/run-skip`, {
-    method: "POST", body: JSON.stringify({ ...skip, kind: "failures", failures: 2, note: "harness made no new commit" }),
-    headers: { authorization: `Bearer ${OWNER}`, "x-atelier-actor": "owner", "x-atelier-runner": "home:why-infra", "content-type": "application/json" },
+    method: "POST", body: JSON.stringify({ ...skip, kind: "failures", failures: 2 }),
+    headers: { authorization: `Bearer ${OWNER}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "x-atelier-runner": "home:why-infra", "content-type": "application/json" },
   }), testEnv);
   expect(owned.status, await owned.clone().text()).toBe(200);
-  expect((await listing()).map((r) => r.line)).toEqual([expect.stringMatching(/^Skipped by home:why-infra after 2 failed runs under this dispatch \(the last: harness made no new commit\)/)]);
+  expect((await listing()).map((r) => r.line)).toEqual([expect.stringMatching(/^Skipped by home:why-infra after 2 failed runs under this dispatch;/)]);
   // Dispatching it again starts afresh, as the runner's count does.
   await new Promise((resolve) => setTimeout(resolve, 5));
   await L.dispatch(task.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
@@ -278,14 +280,14 @@ it("explains when an offering runner's token is scoped to another project, when 
   // 4. When home:pavimbp reports a local skip (kind: "skipped"), GET /queue says "Skipped by ..." (never "Refused by ..."),
   // and editing the task clears the skip so the runner will try it again.
   const skipRes = await request("POST", `/projects/${micah}/items/${t6.id}/run-skip`, OWNER, "owner", {
-    actor: "opencode/glm-5.3", kind: "skipped", failures: 1, note: "validation_blocked: broken lockfile",
+    actor: "opencode/glm-5.3", kind: "skipped", failures: 1,
   }, { "x-atelier-runner": "home:paviMBP" });
   expect(skipRes.status).toBe(200);
   const qSkipped = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
   expect((qSkipped.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([
     {
       kind: "skipped",
-      line: `Skipped by home:pavimbp (validation_blocked: broken lockfile); that runner passes it by until it changes (a new head included) or the runner restarts: fix the cause, then atelier dispatch ${t6.id} --to home --agent opencode --model glm-5.3.`,
+      line: `Skipped by home:pavimbp; that runner passes it by until it changes (a new head included) or the runner restarts: fix the cause, then atelier dispatch ${t6.id} --to home --agent opencode --model glm-5.3.`,
     },
   ]);
   await Lmicah.editItem(t6.id, "owner", { title: "Micah job six (fixed)" });

@@ -1,5 +1,6 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { env, server } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { mergeProject } from "../src/ledger.ts";
 
@@ -9,25 +10,14 @@ import { mergeProject } from "../src/ledger.ts";
 // whatever machine claims.
 
 const TOKEN = "commit-identity-test-token";
-const H0 = "0".repeat(40);
 const OWNER = { name: "Project Owner", email: "123+owner@users.noreply.github.com" };
-
-const artifacts = {
-  create: async () => ({}),
-  get: async (repo: string) => ({
-    info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-    createToken: async () => ({ plaintext: "token", id: `id-${Math.random()}`, expiresAt: "soon" }),
-    revokeToken: async () => true,
-    [Symbol.dispose]() {},
-  }),
-} as unknown as Artifacts;
 
 function call(method: string, path: string, body?: unknown, actor = "owner") {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
 }
 
 type Policy = { commitIdentity?: { name: string; email: string; agentEmails: string[]; privateEmails?: string[]; publicMirrors?: string[] } };
@@ -71,9 +61,12 @@ it("every claim answers the project's commit identity, or null for a project tha
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record as never, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
+  // A claim makes t1 as a branch of the project's repository (task 5), so main needs a commit.
+  const git = (server as unknown as { git: { repo(key: string, branch: string): string } }).git;
+  const dir = git.repo(name, "main");
+  const sha = execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "first"], { cwd: dir, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" } }).trim();
+  execFileSync("git", ["update-ref", "refs/heads/main", sha], { cwd: dir });
   await L.newItem("Edit", [], "owner");
-  await L.claim("t1", "owner");
-  await L.setFork("t1", `${name}--t1`, H0, "owner");
   const claim = async () => {
     const res = await call("POST", `/projects/${name}/items/t1/claim`, {});
     expect(res.status, await res.clone().text()).toBe(200);

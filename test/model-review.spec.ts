@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ModelReview } from "../src/models/review.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -16,10 +16,11 @@ const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({ id,
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const L = () => env.LEDGER.get(env.LEDGER.idFromName(`project:${NAME}`));
 
+// Since G18 a write on the developer token names the acting model, one in the pool.
 function call(method: string, path: string, body?: unknown, token: string | null = TOKEN, actor = "owner") {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "x-atelier-actor": actor, "x-atelier-acting": GPT, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

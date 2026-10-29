@@ -68,7 +68,8 @@ test("a harness that exits 0 with changes and no commit leaves a wip commit, pus
   // The builder's own environment, so Git resolves the builder's identity.
   assert.equal(commit.env, calls.find((c) => c.harness).env);
   assert.deepEqual(calls.find((c) => c.argv?.[0] === "push").argv, ["push", "t13", "--project", "atelier", "--as", actor]);
-  assert.match(released(calls), /^harness made no new commit; the uncommitted work is committed as wip01234 \(wip\) and pushed/);
+  // Round 11: facts alone (this fixture's commit is no hash, so it is not named).
+  assert.match(released(calls), /^step harness; no new commit; log [^:]+:\//);
   assert.ok(logs.includes("released: work in progress wip01234 pushed for the next run"));
   assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
   // Released, not blocked for the developer.
@@ -81,8 +82,8 @@ test("a push the server refuses is said in the release note, and nothing is left
   const state = await runTask(assignment, config, "home:studio", io);
   assert.deepEqual(commands(calls), ["claim", "push", "release"]);
   const note = released(calls);
-  assert.match(note, /committed as wip01234 \(wip\) but the push was refused, so it is only in this runner's workspace/);
-  assert.ok(note.includes("secret_scan: src/key.mjs:3"), note);
+  assert.match(note, /push refused/);
+  assert.ok(!note.includes("src/key.mjs"), note);
   assert.equal(state.workInProgress, "wip0123456789");
   assert.match(state.pushRefused, /secret_scan/);
   assert.ok(logs.includes("released: work in progress wip01234 is local only, the push was refused"));
@@ -92,7 +93,7 @@ test("a harness that changed nothing is still released as no new commit, and no 
   const { io, calls } = fixture({ wip: null });
   await runTask(assignment, config, "home:studio", io);
   assert.deepEqual(commands(calls), ["claim", "release"]);
-  assert.equal(released(calls), "harness made no new commit");
+  assert.match(released(calls), /^step harness; no new commit; log [^:]+:\//);
 });
 
 test("the wip commit is made in Git with the task's subject, so untracked files go with it", async () => {

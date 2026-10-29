@@ -95,7 +95,7 @@ test("pickReviewer: the project's assignment outranks every project's, and the r
   const plainReview = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: applicableAssignments(current, "atelier", reviewRoles({})) });
   assert.equal(plainReview.reviewer?.actor, "codex/gpt-6-astra");
   assert.deepEqual(plainReview.assignment?.skipped, [{ id: all.id, why: `outranked by ${mine.id}, which is more specific` }]);
-  const sensitive = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: applicableAssignments(current, "atelier", reviewRoles({ sensitive: true })) });
+  const sensitive = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: applicableAssignments(current, "atelier", reviewRoles({ protectedChange: true })) });
   assert.equal(sensitive.reviewer?.actor, "antigravity/gemini-4-argon");
   // In another project only every project's assignment applies.
   assert.equal(pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: applicableAssignments(current, "other", reviewRoles({})) }).reviewer?.actor, "zcode/glm-5.3");
@@ -104,7 +104,10 @@ test("pickReviewer: the project's assignment outranks every project's, and the r
 test("suggestReviewer passes the assignment through to the gate's selector", () => {
   const item = { id: "t1", title: "Fix the lease race", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] };
   const a = assigned("security-review", ["codex/gpt-6-astra"]);
-  const pick = suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assigned: rolesOf(item, [a]) });
+  // G6/G17: the task's words ("lease race") no longer read security-review;
+  // a protected change does (reviewRolesFor's protectedChange).
+  assert.deepEqual(reviewRolesFor(item), ["review"]);
+  const pick = suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assigned: applicableAssignments([a], "atelier", reviewRolesFor(item, [], null, true)) });
   assert.equal(pick.actor, "codex/gpt-6-astra");
   said(pick.reasons, new RegExp(`Role assignment ${a.id} \\(security-review`));
 });
@@ -179,12 +182,15 @@ test("routeParts: a docs part reads claims-review, then review; an ineligible ch
 // gpt-6-astra's review of t622 at 53bf739d, finding 4 (and gemini-4-argon's
 // finding 1): plan routing read only docs, so a security part was reviewed by
 // the general review assignment, and approval froze that routing.
-test("routeParts: a security, concurrency or gate part reads security-review before review", () => {
+test("routeParts: a part whose paths the project protects reads security-review before review; its words do not", () => {
   const security = assigned("security-review", ["codex/gpt-6-astra"]);
   const review = assigned("review", ["antigravity/gemini-4-argon"]);
   const build = assigned("build", ["claude-code/opus-5.5"]);
-  const gate = part("g", { title: "Harden the authentication gate", brief: "Close the lease race" });
-  const [r] = routeParts(plan(gate), { pool: POOL, events: [], policy, allowPaid: false, assignments: [build, security, review] });
+  const gate = part("g", { title: "Harden the authentication gate", brief: "Close the lease race", scope: ["src/rules.ts"] });
+  const guarded: ProjectPolicy = { ...policy, protected: ["src/rules.ts"] };
+  const [byWords] = routeParts(plan(gate), { pool: POOL, events: [], policy, allowPaid: false, assignments: [build, security, review] });
+  assert.equal(byWords.reviewer?.actor, "antigravity/gemini-4-argon", "the words alone read review");
+  const [r] = routeParts(plan(gate), { pool: POOL, events: [], policy: guarded, allowPaid: false, assignments: [build, security, review] });
   assert.equal(r.reviewer?.actor, "codex/gpt-6-astra");
   said(r.reviewer?.reasons, new RegExp(`Role assignment ${security.id} \\(security-review`));
   const [plainPart] = routeParts(plan(part("p")), { pool: POOL, events: [], policy, allowPaid: false, assignments: [build, security, review] });

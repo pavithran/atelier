@@ -28,11 +28,12 @@ export function tokenOf(header) {
   return pass || (colon < 0 ? text : text.slice(0, colon)) || null;
 }
 
-// The environment `git http-backend`, `git receive-pack` and the hook run
+// The environment `git http-backend`, `git receive-pack` and the hooks run
 // with. Nothing from the server's own environment passes but PATH. `scan`
 // is the push's ATELIER_POLICY and ATELIER_REPORT.
-// `hook` is what the hook re-checks the grant with at hook time
-// (ATELIER_GRANT_CHECK, ATELIER_HOOK_SECRET; GitHost.hookEnv).
+// `hook` is what the pre-receive hook re-checks the grant with at hook time
+// and the post-receive hook tells the server of the push with
+// (ATELIER_GRANT_CHECK, ATELIER_PUSHED, ATELIER_HOOK_SECRET; GitHost.hookEnv).
 export function backendEnv({ reposDir, key, rest, method, query, contentType, encoding, protocol, grant, scan = {}, hook = {} }) {
   const env = {
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`,
@@ -113,7 +114,12 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure, scans,
     key = await ensure(grant);
     scan = rest === "git-receive-pack" && scans ? openScan(scans.dir, await scans.policy(grant)) : null;
   } catch (error) { release(); throw error; }
+  // The push's scan is known to the host while the backend runs, so the
+  // post-receive hook's POST can take the pre-receive report before the
+  // push ends (GitHost.handlePushed); a report taken there is not recorded
+  // again below.
   if (gone.signal.aborted) { scan?.close(); return true; }
+  if (scan) scans.opened?.(grant, scan);
   onSpawn?.();
   child = spawn("git", ["http-backend"], {
     env: backendEnv({ reposDir, key, rest, method: req.method, query: url.search.slice(1), contentType: req.headers["content-type"], encoding: req.headers["content-encoding"], protocol: req.headers["git-protocol"], grant, scan: scan?.env, hook: rest === "git-receive-pack" ? hook : {} }),
@@ -152,7 +158,8 @@ export async function gitRequest(req, res, { reposDir, authorize, ensure, scans,
     });
     child.on("close", async (code) => {
       if (scan) {
-        const report = scan.report();
+        scans.closed?.(grant, scan);
+        const report = scan.recorded ? null : scan.report();
         scan.close();
         if (report) await scans.record(grant, report).catch((error) => console.error(`the secret scan of a push to ${project} (${grant.kind} ${grant.task ?? ""}) was not recorded: ${error.message}`));
       }

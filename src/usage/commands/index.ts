@@ -29,6 +29,7 @@ import command_done from "./done.ts";
 import command_edit from "./edit.ts";
 import command_events from "./events.ts";
 import command_fast from "./fast.ts";
+import command_file_fix from "./file-fix.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
 import command_flow from "./flow.ts";
@@ -57,6 +58,7 @@ import command_open from "./open.ts";
 import command_ops from "./ops.ts";
 import command_owners from "./owners.ts";
 import command_plan from "./plan.ts";
+import command_prereview from "./prereview.ts";
 import command_projects from "./projects.ts";
 import command_pull from "./pull.ts";
 import command_push from "./push.ts";
@@ -85,6 +87,7 @@ import command_served from "./served.ts";
 import command_server_errors from "./server-errors.ts";
 import command_ship from "./ship.ts";
 import command_show from "./show.ts";
+import command_situation from "./situation.ts";
 import command_slots from "./slots.ts";
 import command_start from "./start.ts";
 import command_status from "./status.ts";
@@ -129,6 +132,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/edit.ts", spec: command_edit },
   { path: "src/usage/commands/events.ts", spec: command_events },
   { path: "src/usage/commands/fast.ts", spec: command_fast },
+  { path: "src/usage/commands/file-fix.ts", spec: command_file_fix },
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
   { path: "src/usage/commands/flow.ts", spec: command_flow },
@@ -157,6 +161,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/ops.ts", spec: command_ops },
   { path: "src/usage/commands/owners.ts", spec: command_owners },
   { path: "src/usage/commands/plan.ts", spec: command_plan },
+  { path: "src/usage/commands/prereview.ts", spec: command_prereview },
   { path: "src/usage/commands/projects.ts", spec: command_projects },
   { path: "src/usage/commands/pull.ts", spec: command_pull },
   { path: "src/usage/commands/push.ts", spec: command_push },
@@ -185,6 +190,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/server-errors.ts", spec: command_server_errors },
   { path: "src/usage/commands/ship.ts", spec: command_ship },
   { path: "src/usage/commands/show.ts", spec: command_show },
+  { path: "src/usage/commands/situation.ts", spec: command_situation },
   { path: "src/usage/commands/slots.ts", spec: command_slots },
   { path: "src/usage/commands/start.ts", spec: command_start },
   { path: "src/usage/commands/status.ts", spec: command_status },

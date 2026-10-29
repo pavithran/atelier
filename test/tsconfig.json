@@ -1,8 +1,9 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "types": ["@cloudflare/vitest-plugin/types"],
-    "resolveJsonModule": true
+    "types": ["node"],
+    "resolveJsonModule": true,
+    "module": "esnext"
   },
-  "include": ["../worker-configuration.d.ts", "**/*.spec.ts"]
+  "include": ["../src/workers-env.d.ts", "../src/modules.d.ts", "**/*.spec.ts", "support/*.ts"]
 }

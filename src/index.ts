@@ -3,7 +3,7 @@ import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./s
 import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { readRetention } from "./retention.ts";
-import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, type OwnerDirection } from "./rules.ts";
+import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, VALIDATION_BLOCKED, type OwnerDirection } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergeBase, mergedDiff, pairReader, renderDiffText, repoReader, type ItemDiff } from "./diff";
@@ -25,12 +25,13 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_M
 import { cleanTitle, titleOf, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, redactKeys, type ModelEntry, type PoolFamily } from "./models/pool";
 import { cleanCard, cleanCardModel, cleanWithdrawal } from "./models/cards.ts";
 import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.ts";
-import { suggestBuilder } from "./models/suggest.ts";
+import { builderCandidates, candidatesText } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
+import { validBranch } from "./branch-name.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, isModel, ownerWriteRefusal, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
@@ -49,6 +50,9 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } f
 import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
 import { parseReadiness } from "./runners/readiness";
+import { diskOf, lastRunOf, situationOf } from "./situation.ts";
+import { automaticNote, isFacts, isFactsOutcome } from "./run-facts.ts";
+import { parseOutcomeNote } from "./dispatch/prereview.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -122,14 +126,10 @@ type Settings = {
   // owner's Access identity is the factor there (ownerFactorOf).
   OVERRIDE_SECRET?: string;
   // The origin this Worker answers on, for links built where there is no
-  // request to read it from, such as the stuck notices the cron sends:
+  // request to read it from, such as the stuck notices the timer sends:
   // https://atelier.zone in production, https://next.atelier.zone on the
   // staging copy (wrangler.jsonc, env.staging), https://atelier.zone unset.
   PUBLIC_ORIGIN?: string;
-  // The Artifacts namespace the ARTIFACTS binding names, whose push events
-  // the queue accepts (pushNotice): "atelier" in production and unset,
-  // "atelier-staging" on the staging copy.
-  ARTIFACTS_NAMESPACE?: string;
 };
 
 // The factor no agent holds, which an override's confirmation rests on
@@ -1041,11 +1041,14 @@ async function projectBranch(env: Env, p: ProjectRecord): Promise<string> {
 
 // A branch name as init sends it: one Git would accept for a branch (the
 // rules of git check-ref-format), so the name a workspace is told to push
-// to is a plain ref, never an option.
+// to is a plain ref, never an option, and one the server's repository takes
+// (validBranch, the rule src/git/branches.mjs keeps), so init never records a
+// branch it then cannot make.
 const BAD_REF = /[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|^[-./]|\/\.|[./]$|\.lock(\/|$)/;
 function branchArg(value: unknown): string {
-  if (typeof value !== "string" || !value || value.length > 200 || value === "@" || BAD_REF.test(value)) {
-    throw new RuleError("bad_branch", "the default branch must be a branch name, such as main or master", 400);
+  if (!validBranch(value) || BAD_REF.test(value)) {
+    throw new RuleError("bad_branch", "the default branch must be a branch name of ASCII letters, digits, '.', '_', '/' or '-', such as main or master", 400,
+      "check out a branch named that way (such as main) in the project's checkout and run atelier init again");
   }
   return value;
 }
@@ -2015,6 +2018,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const header = req.headers.get("x-atelier-runner");
       const runner = header === null ? null : parseRunner(header);
       if (header !== null && !runner) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner as kind:name", 400);
+      // The gate (round 13): a runner's run report carries facts, never a detail.
+      if (isRunnerRequest(c) && typeof body.detail === "string" && body.detail) notFacts("free text", "detail");
       if (runner) return json(await I.putRun(cleanRun(body, new Date().toISOString(), runner.runner)), 201);
       // The owner records a run by hand: no runner ran it, so none is named.
       if (actor !== ownerActor(env)) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner", 400);
@@ -2083,6 +2088,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // poll is, and passed to every project, it keeps the claim it is
     // building under holding. It reads no queue and is offered nothing. A
     // server from before it answers as to a poll, which the runner ignores.
+    // The builds' progress lines a runner sends with its poll or heartbeat
+    // (G21), each kept by its task's project; a runner token's alone.
+    if (c.token?.runner && offer && Array.isArray(body.progress) && body.progress.length) {
+      const reports = body.progress.slice(0, 8) as { project?: unknown }[];
+      await Promise.all(projects.map((p) => {
+        const mine = reports.filter((r) => typeof r?.project === "string" && namesOf(p).includes(r.project));
+        return mine.length ? ledgerOf(env, p).recordProgress(c.token!.runner!, mine).catch((e: unknown) => console.error("progress not recorded", String(e))) : null;
+      }));
+    }
     if (offer && body.heartbeat === true) {
       await Promise.all(projects.map((p) => ledgerOf(env, p).recordRunnerPolls(polls).catch(() => {})));
       return json([]);
@@ -2125,6 +2139,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A core-file hold, or an overlap the project refuses (G13), keeps
           // the dispatch queued but offered to no runner until it ends.
           if ("held" in item && item.held || "overlap" in item && item.overlap) return [];
+          // A task waiting on tasks not yet merged is offered to none (G3).
+          if ("waitingOn" in item && (item as { waitingOn?: unknown[] }).waitingOn?.length) return [];
           const a = item.dispatch?.job === "land" ? { agent: "atelier", model: "lander", actor: "atelier/lander" } : item.dispatch ? assign(item.dispatch, offer) : null;
           // A queued landing is not the task's claim: a claimed task lands
           // as ordinary land does, so its holder is not the lander's to match.
@@ -2195,6 +2211,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(await readStuckReport(env, ref, c.url.origin, limits));
   }
 
+  // One read of where the project stands (G4, src/situation.ts): recorded
+  // facts only. `tasks=t1,t2` adds those tasks whatever their state, which
+  // `atelier wait` reads; no lock is taken.
+  if (parts[2] === "situation" && parts.length === 3 && m === "GET") {
+    requireOwner(env, actor);
+    const tasks = (c.url.searchParams.get("tasks") ?? "").split(",").filter((t) => /^t[1-9][0-9]*$/.test(t));
+    const [facts, offers, tokens, record] = await Promise.all([L.situationFacts(tasks), index(env).runnerOffers().catch(() => null), index(env).agentTokens().catch(() => null), L.project()]);
+    const runs = Object.fromEntries(await Promise.all(facts.items.map(async (i) => [i.id, (await index(env).runsForItem(project, i.id).catch(() => []))[0]] as const)));
+    return json(situationOf({ facts, offers, tokens, names: namesOf(record), commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, disk: diskOf(env), now: new Date(), runs }));
+  }
+
   // The recorded transitions of the project's stuck episodes (t198).
   if (parts[2] === "stuck" && parts[3] === "episodes" && parts.length === 4 && m === "GET") {
     requireOwner(env, actor);
@@ -2245,6 +2272,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}, not accepted, so no landing grant was issued`, 409, `run atelier land ${id}`);
       if (item.acceptedHead !== head) throw new RuleError("acceptance_changed", `${id} is accepted at ${String(item.acceptedHead).slice(0, 12)}, not ${head.slice(0, 12)}, so no landing grant was issued for that head`, 409, `run atelier merge ${id} again, which lands the accepted head`);
+      // No landing grant while a task it waits on is unmerged (G3); the hook
+      // checks the same again at push time (stillLanding).
+      await L.assertBlockersMerged(item, "given a landing grant");
       const g = git.mint({ project: ref.key, kind: "landing", task: id, actor, accepted: head, lease: lease.id });
       await keepGitGrant(c, git, ref.key, g);
       return json({ kind: "landing", remote, token: g.token, expiresAt: g.expiresAt, branch, accepted: head });
@@ -2815,7 +2845,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   const id = parts[3];
   const verb = parts[4];
-  if (!verb && m === "GET") return json(await L.detail(id));
+  // The task's newest run report rides with it (its facts and the log's host
+  // and path on the runner; never its output).
+  if (!verb && m === "GET") return json({ ...await L.detail(id), lastRun: lastRunOf((await index(env).runsForItem(project, id).catch(() => []))[0]) });
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);
@@ -3165,23 +3197,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A live claim is not ended by a dispatch unless --release says so; refused
       // first, before a builder is suggested for a task nobody may take (t391).
       await L.refuseLiveHolder(id, body);
-      let suggestion;
-      // atelier dispatch with no --agent asks for the suggestion; a dispatch
-      // that names no agent without asking stays open to any runner's agent.
-      // An overlap override of an existing dispatch keeps its builder
-      // restrictions unless named, so it asks for no suggestion.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && waitingDispatch(await L.item(id)))) {
+      // atelier dispatch with no --agent names no builder (G17): the server
+      // picks none. It prints the candidates, each with its reliability line
+      // and any gate filter that refuses it, and refuses; the model names one.
+      // An overlap override of an existing dispatch keeps its builder, so it
+      // asks for nothing.
+      // Every new dispatch names both its agent and its model, whatever the
+      // client sent: a harness alone, a model alone or neither leaves the
+      // runner to choose, which is a pick the server does not make. An
+      // overlap override of a waiting dispatch that names both keeps it.
+      const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
+      const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
+      const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
+      if (!named && !keptNamed) {
         requireOwner(env, actor);
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
-        // The suggestion is checked against runners' offers for the job this
-        // dispatch will carry, a plain build unless it names another.
-        // Read for this project (offersFor, t652): a model only a runner
-        // scoped to another project offers is not suggested here.
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
-        const slash = suggestion.actor.indexOf("/");
-        body.agent = suggestion.actor.slice(0, slash);
-        body.model = suggestion.actor.slice(slash + 1);
-        body.to = suggestion.where;
+        const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
+        const first = candidates.find((c) => !c.refusal);
+        const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
+        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
       }
       // A merge-main dispatch names the main head its job merges. The owner
       // names none after a landing conflicted, so the head is main's as the
@@ -3203,11 +3237,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reasons, or, for a builder the developer named, each build
       // assignment bearing on the task skipped for it (gpt-6-astra's seventh
       // review of t622, finding 2).
-      const why = suggestion ? suggestion.reasons.join(" ") : await namedBuilderReasons(env, ref.key, body, actor);
-      return json({ ...await L.dispatch(id, actor, body, oldToken, why), ...(suggestion ? { suggestion } : {}) });
+      const why = await namedBuilderReasons(env, ref.key, body, actor);
+      return json(await L.dispatch(id, actor, body, oldToken, why));
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // The tasks a task waits on (G3): the developer replaces the list; the
+    // Ledger refuses a cycle, a closed task and a plan's part.
+    case "blocked-by":
+      return json(await L.setBlockedBy(id, actor, asStrings(body.blockedBy ?? [], "blockedBy")));
+    // The queued-landing pre-review, on the model's request (G17): once per
+    // call, of the reviewer it names; without one, the candidates and a refusal.
+    case "prereview": {
+      requireOwner(env, actor);
+      const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      const records = { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key };
+      return json(await L.requestPrereview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), records), 201);
+    }
+    // A task filed from one of the goal's notes (G6): the server files none
+    // by itself; the model files one with atelier file-fix ID --from-note N.
+    case "file-fix": {
+      requireOwner(env, actor);
+      const filed = await L.fileFix(id, actor, body.note, c.acting ?? null);
+      return json(filed, filed.already ? 200 : 201);
+    }
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit": {
@@ -3313,10 +3366,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
     case "review-renew": {
+      if (isRunnerRequest(c)) notFacts(body.note, "note");
       await L.renewReview(id, actor, Number(body.request));
       return json({ renewed: true });
     }
     case "review-release": {
+      // The gate (round 13): a release of a review on a runner's or a model's
+      // token carries facts (a pre-review's outcome with a facts detail).
+      if (isRunnerRequest(c) && !isFactsOutcome(body.note, parseOutcomeNote)) notFacts(body.note, "note");
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token, body.request);
       return json({ released: true });
     }
@@ -3337,7 +3394,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // against that request alone, never against a later one at the same head.
       const request = body.request;
       if (typeof request !== "number" || !Number.isInteger(request) || request < 1) throw new RuleError("bad_request", "a review skip names the review request it refused, by number", 400);
-      await L.recordReviewSkip(id, request, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
+      if (isRunnerRequest(c) && body.note !== undefined && body.note !== "") notFacts("free text", "note");
+      await L.recordReviewSkip(id, request, head, runner.runner, actor, body.facts, !!c.token);
       return json({ skipped: true });
     }
     // A runner's word that it gives up a dispatched build or plan job under
@@ -3358,7 +3416,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Under a runner token the job's actor is the caller, checked at the gateway.
       const by = c.token?.runner ? actor : String(body.actor ?? "");
       if (!validActor(by)) throw new RuleError("bad_actor", "a run skip names the harness/model the job ran under", 400);
-      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, String(body.note ?? "")) });
+      if (isRunnerRequest(c) && body.note !== undefined && body.note !== "") notFacts("free text", "note");
+      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, body.facts) });
     }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
     // task, its last VERDICT_LIMITS.reply characters with the reviewer and
@@ -3402,6 +3461,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return json(await L.requestReviews(id, actor, body.reviewers as string[], await index(env).models(), body.wanted === true, false, await index(env).runnerOffers(), body.hand === true));
       }
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      // The separate tier review, of the tier model named (G17): never asked
+      // by the server itself.
+      if (body.tier === true) return json(await L.requestTierReview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), body.hand === true));
       const track = reviewer === null ? { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
@@ -3463,6 +3525,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.requestLand(id, actor, typeof body.quote === "string" ? body.quote : undefined), 201);
     }
     case "refresh-lease": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // A task refresh's lease (t462, src/refresh/): the integrator's for a
       // task-refresh job, a resolver's for a task-resolve job. The answer
       // carries a write token for the task's fork, the one live beside its
@@ -3509,6 +3573,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshPushing(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), head: String(body.head ?? "") }));
     }
     case "refresh-checked": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // The refreshed head's required checks ran, by the leaseholder (t462).
       const r = await L.refreshChecked(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), passed: body.passed === true, reason: String(body.reason ?? "") });
       if (r.revoke) await revoke(env, (await L.item(id)).fork, r.revoke);
@@ -3537,6 +3603,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
     }
     case "refresh-failed": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // A task's refresh (t462) that ended without a new head names its
       // lease: its conflicts went to a resolver or back to the builder, or
       // the task moved under it.
@@ -3562,6 +3630,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null, await index(env).runnerOffers()));
     }
     case "integration-failed": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // The integrator reports a failed merge. The Worker checks the branch was
       // restored to its integration head before the part is sent back, so a
       // failure never leaves another part's commits discarded. `kind` names a
@@ -3604,7 +3674,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
     case "release": {
-      const note = String(body.note ?? "");
+      // A runner's release (a failure, a give-up, work in progress) keeps its
+      // facts alone (automaticNote, the round-11 review); a release written
+      // by hand keeps its words.
+      const automatic = isRunnerRequest(c);
+      // The gate (round 13): a runner's release note is facts, or it is
+      // refused. A build that ended validation_blocked sends the builder's
+      // report in its own field, blocked (round 14): words the builder wrote
+      // for the developer, redacted, kept as the block's reason. No note
+      // prefix lets prose through the grammar.
+      if (automatic) notFacts(body.note, "note");
+      if (body.blocked !== undefined && (typeof body.blocked !== "string" || !body.blocked.trim())) throw new RuleError("bad_blocked", "blocked is the builder's validation_blocked report, as text with something in it", 400, "send the report's words in blocked, or leave blocked out");
+      // The runner's facts beyond the step (a work-in-progress commit, its
+      // push) follow the report, as the runner's own note.
+      const facts = automatic ? automaticNote(body.note).replace(/^step [a-z-]+(?:; |$)/, "") : "";
+      const words = typeof body.blocked === "string" ? `${VALIDATION_BLOCKED}${redactKeys(body.blocked.replace(/^\s*validation_blocked:\s*/i, ""))}${facts ? `; ${facts}` : ""}` : null;
+      const note = words ?? (automatic ? automaticNote(body.note) : String(body.note ?? ""));
       // Released by this actor already and held by no one now: the repeat of
       // a release whose answer was lost. Held by someone else, it is refused below.
       const repeated = await L.repeatedRelease(id, actor, note);
@@ -3615,7 +3700,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await revoke(env, before.fork, oldToken);
       // Only a runner credential can exempt this release from plan attempts;
       // neither an actor nor a free-text note establishes infrastructure failure.
-      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true);
+      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true, automatic && !words);
       return json(item);
     }
     case "accept": {
@@ -3807,6 +3892,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // timed out or wrote a reply no verdict could be read from.
     case "criteria-review-failed": {
       if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
+      if (isRunnerRequest(c)) notFacts(body.note, "note");
       return json(await L.failCriteriaReview(id, actor, body.request, String(body.note ?? ""), !!c.token));
     }
     // The owner's answer to one finding of a criteria review.
@@ -3844,7 +3930,9 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       // The runner offers come with the pool, so the routing an approval
       // fixes counts a reviewer only when a live runner offers it for the
       // review job (routeParts in src/plans/route.ts).
-      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers());
+      // The routes are the model's (G17): { KEY: { builder, reviewer } }.
+      if (body.routes !== undefined && (typeof body.routes !== "object" || body.routes === null || Array.isArray(body.routes))) throw new RuleError("bad_route", "routes maps each part's key to { builder, reviewer }", 400, `atelier plan approve ${id} --hash HASH --route KEY=BUILDER:REVIEWER`);
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers(), (body.routes as Record<string, { builder?: unknown; reviewer?: unknown }> | undefined) ?? null);
       return json(await L.planView(id));
     }
     case "revise":
@@ -4074,15 +4162,14 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
   return stuckReport(project, origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names);
 }
 
-// Every 10 minutes: each project's stuck rules are evaluated and the
-// transitions of its episodes recorded. A project that cannot be read at all
+// Every 10 minutes, on the server's timer (src/runtime/timers.mjs): each
+// project's stuck rules are evaluated and the transitions of its episodes
+// recorded. A project that cannot be read at all
 // records nothing, so it clears nothing. Episodes are kept under the project's
 // storage key, which a rename keeps and a released name does not reach, never
 // under its name (t196).
-// The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
-// and the origin the recorded evidence links name: the PUBLIC_ORIGIN var, so
-// the staging copy links to itself, and production's origin when it is unset.
-const STUCK_CRON = "*/10 * * * *";
+// The origin the recorded evidence links name: the PUBLIC_ORIGIN setting, so
+// the staging server links to itself, and production's origin when it is unset.
 const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.trim().replace(/\/+$/, "") || "https://atelier.zone";
 // Sends the project's due episodes (src/stuck/notices.ts) in as many messages
 // as the channel's body limit needs, and records each message's episodes only
@@ -4095,7 +4182,10 @@ const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.tr
 async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, name: string, at: string): Promise<void> {
   const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
   if (!topic) return;
-  const due = await I.stuckDue(key, at);
+  // The project's standing notice-delay (src/standing.ts) replaces the
+  // default wait; an unreadable project waits the default.
+  const delay = await ledger(env, key).standing().then((m) => m.get("notice-delay"), () => undefined);
+  const due = await I.stuckDue(key, at, delay ? Number(delay) * 60_000 : undefined);
   for (const { request, episodes } of stuckBatchRequests(topic, stuckOrigin(env), name, due)) {
     try {
       const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
@@ -4124,11 +4214,10 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
   }
 }
 
-// Every 5 minutes (t223): each registered project's live tasks are read
+// Every 5 minutes, on the server's timer (t223): each registered project's live tasks are read
 // against their stage limits and the stage events recorded (Ledger.stageTick).
 // A project that cannot be read records nothing. The run itself is recorded on
 // the index, which `status` reads for when the tick last ran.
-const STAGE_CRON = "*/5 * * * *";
 export async function recordStageTicks(env: Env, now = new Date()): Promise<{ read: number; unread: number }> {
   const I = index(env);
   let read = 0, unread = 0;
@@ -4357,8 +4446,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const readiness = parseReadiness(body.readiness);
   // What the runner remembers of the tasks it passes by (G5).
   const memory = parseMemory(body.memory);
+  // The commit the runner's checkout runs (G4), which situation compares with the server's.
+  const commit = typeof body.commit === "string" && /^[0-9a-f]{40,64}$/.test(body.commit) ? body.commit : null;
   return {
-    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}),
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}), ...(commit ? { commit } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     ...(Array.isArray(body.checkouts) ? { checkouts: body.checkouts.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {
@@ -4404,7 +4495,10 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
     if (listedApart(item)) return { project, item: runner ? runnerWhyItem(item, undefined) : item };
-    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), cleared: mine(item.clearedSkips), offers, runs: reports, project, offer, busy });
+    const waits = (item as { waitingOn?: { id: string; state: string }[] }).waitingOn ?? [];
+    // A task waiting on tasks not yet merged (G3) says so first: no runner is offered it until they merge.
+    const blockedBy: UnclaimedReason[] = waits.length ? [{ kind: "held", line: `Waiting on ${waits.map((b) => `${b.id} (${b.state})`).join(", ")} to merge${waits.some((b) => b.state === "abandoned") ? `; an abandoned blocker never merges, so the developer drops it with atelier edit ${item.id} --blocked-by` : `; atelier wait --all ${waits.map((b) => b.id).join(",")} --for merged waits for them`}.` }] : [];
+    const why = [...blockedBy, ...unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), cleared: mine(item.clearedSkips), offers, runs: reports, project, offer, busy })];
     if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this
     // listing from an older server's, which carries `held` alone.
@@ -4982,55 +5076,50 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // answers 404 before auth is asked, as it does after it.
 const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
+// A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
+// task 8; design section 4.4): what queue() did for a push event from
+// Artifacts, for one push and with no queue behind it. The hook POSTs
+// { project, ref, before, after, grant } to the loopback internal listener
+// with the per-process secret (src/git/host.mjs) and waits for this answer;
+// a failure is logged there and the ref stays moved, so the next `atelier
+// push` records the head (the push route reads the branch itself).
+// The branch is read again here (headOf), never taken from the hook's word,
+// and observed as the Artifacts event was: a head that does not hold the
+// recorded one is noted (push.unrecorded), not taken as progress; one that
+// does is recorded with the authors its commits name and the retention a
+// merge of main may carry, and the hook's own secret scan becomes its scan
+// record. On the Node server the push's grant names who pushed (`actor`,
+// from the server's own grant record), so the push is recorded as that
+// holder's, as `atelier push` would record it a moment later (recordPush);
+// a push recordPush refuses (a rewrite not declared, a holder no longer
+// holding) is observed as an Artifacts event was (observePush). A push to
+// any other ref, or to the branch of a task that is closed or no longer its
+// workspace, records nothing.
+export type PushedNotice = { project: string; ref: string; before?: string; after?: string; actor?: string };
+export async function observePushed(env: Env, notice: PushedNotice): Promise<{ observed: boolean; item?: string; head?: string | null; reason?: string }> {
+  const branch = /^refs\/heads\/((?:t|plan)\/[1-9][0-9]*)$/.exec(String(notice.ref ?? ""))?.[1];
+  if (!branch) return { observed: false, reason: `${notice.ref} is not a task's branch` };
+  const project = (await index(env).projects()).find((p) => (p.key ?? p.name) === notice.project);
+  if (!project) return { observed: false, reason: `no project ${notice.project}` };
+  const key = project.key ?? project.name;
+  const L = ledgerOf(env, project);
+  const fork = `${key}/${branch}`;
+  const itemId = await L.itemIdOfFork(fork);
+  const item = itemId ? await L.item(itemId) : undefined;
+  if (!item) return { observed: false, reason: `no task's workspace is ${branch}` };
+  if (["merged", "abandoned"].includes(item.state)) return { observed: false, item: item.id, reason: `${item.id} is ${item.state}` };
+  const current = await headOf(env, fork);
+  if (!current) return { observed: false, item: item.id, head: null, reason: `${branch} has no commits` };
+  const { holdsRecorded } = await pushLineage(env, fork, current, item.head, null);
+  const authors = holdsRecorded ? await pushedAuthors(env, fork, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
+  const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
+  let recorded: Item = await L.hookPush(item.id, notice.actor ?? null, current, notice.after ?? null, holdsRecorded, authors, retention);
+  if (recorded.head === current) recorded = await scanRecorded(env, L, recorded);
+  if (recorded.head === current) return { observed: true, item: item.id, head: current };
+  return { observed: false, item: item.id, head: current, reason: holdsRecorded === true ? `${item.id}'s recorded head moved meanwhile` : `${branch} no longer holds ${item.id}'s recorded head; atelier push records it once the rewrite is declared` };
+}
+
 export default {
-  // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
-  // A run with nothing due reads nothing but the index's list of takes.
-  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-    if (controller.cron === STAGE_CRON) { await recordStageTicks(env, new Date(controller.scheduledTime)); return; }
-    if (controller.cron === STUCK_CRON) { await recordStuckEpisodes(env, new Date(controller.scheduledTime)); return; }
-    await takeModelSnapshots(env, controller.scheduledTime);
-  },
-  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
-    for (const message of batch.messages) {
-      try {
-        // Events from the namespace this Worker's ARTIFACTS binding names
-        // alone; another namespace's, such as production's on staging, are dropped.
-        const notice = pushNotice(message.body, (env as unknown as Settings).ARTIFACTS_NAMESPACE?.trim() || undefined);
-        if (notice) {
-          const projects = await index(env).projects();
-          for (const project of projects) {
-            const L = ledgerOf(env, project);
-            const itemId = await L.itemIdOfFork(notice.repo);
-            const item = itemId ? await L.item(itemId) : undefined;
-            if (!item || ["merged","abandoned"].includes(item.state)) continue;
-            // Only a push to the project's branch moves the head headOf reads.
-            if (notice.ref !== `refs/heads/${await projectBranch(env, project)}`) break;
-            const current = await headOf(env,notice.repo);
-            if (current) {
-              // A head that does not hold the recorded one is not taken as
-              // progress (observePush); the compare-and-set retry is for a
-              // head that should have moved and did not.
-              const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
-              const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
-              const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors,true,retention);
-              // The push scan for a push seen on the fork, as the push route
-              // runs it: file and line only, never the value. It runs for the
-              // head recorded with its scan pending, which a sighting that
-              // moved the head just wrote and a redelivery after a failed
-              // scan still finds; a scan that throws leaves the event
-              // retried, so no push is acknowledged with its scan pending. A
-              // duplicate sighting of a scanned head runs nothing.
-              if (recorded.head === current) await scanRecorded(env, L, recorded);
-              if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
-            }
-            break;
-          }
-        }
-        message.ack();
-      } catch (error) { console.error("push event retry", error); message.retry(); }
-    }
-  },
   async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const pathname = url.pathname.endsWith("/") && url.pathname.length > 1 ? url.pathname.slice(0, -1) : url.pathname;
@@ -5184,7 +5273,7 @@ export default {
           // A claim that lost the race to a hold (held, t540) is no
           // refusal: the queue stops offering the task while the hold
           // stands, and offers it again once it clears.
-          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held") return;
+          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held" || rule.code === "blocked_by") return;
           const forbidden = !!token?.runner && rule.status === 403;
           try {
             const held = await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined, forbidden);
@@ -5286,3 +5375,21 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+// The gate on a runner's text (round 13): a field a runner fills from an
+// error, a child process or a log must be facts in the grammar
+// (src/run-facts.ts), or the request is refused; its text stays in the
+// runner's own log.
+// Whether a request is a runner's (round 14), the one test every gate on a
+// runner's text uses: a runner token, or any credential naming a runner in
+// X-Atelier-Runner, as the runner sends on every call it makes (under its
+// own token, the agent token it mints for a job's model, or the developer's
+// token). A model's session writing by hand names no runner and keeps its words.
+function isRunnerRequest(c: Ctx): boolean {
+  return !!c.token?.runner || c.req.headers.has("x-atelier-runner");
+}
+
+function notFacts(value: unknown, field: string): void {
+  if (isFacts(value)) return;
+  throw new RuleError("not_facts", `${field} must be facts in the runner's grammar (the step, the exit, the signal, the log's host and path, a fixed outcome), never text from an error, a process or a log; nothing was recorded`, 400, "send the facts (automaticNote in src/run-facts.ts) and keep the text in the runner's own log");
+}

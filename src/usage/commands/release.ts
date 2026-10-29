@@ -5,14 +5,15 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Agents", line: 3, slot: 20,
-      form: "release ID [--note TEXT]",
+      form: "release ID [--note TEXT] [--blocked TEXT]",
       about: "Gives the task up: it returns to open and the write token is revoked.",
     },
   ],
-  flags: { note: false },
+  flags: { note: false, blocked: false },
   help: {
     flags: {
-      "--note TEXT": "why; kept with the release",
+      "--note TEXT": "why; kept with the release (from a runner, facts only)",
+      "--blocked TEXT": "a validation_blocked build's report, the builder's words: blocks the task for the developer with it as the reason",
     },
     example: 'atelier release t3 --note "Blocked on the schema"',
   },
