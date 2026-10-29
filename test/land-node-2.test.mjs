@@ -270,7 +270,7 @@ export HOME=${w.root} GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
 n=$(cat ${count} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${count}
 if [ $n -eq 1 ]; then
   d=$(mktemp -d) && git clone -q ${url} $d && cd $d && echo moved > moved.txt && git add . && git -c user.name=Demo -c user.email=t@example.test commit -q -m "main moves" && git push -q origin HEAD:refs/heads/main
-  curl -s -X POST -H "authorization: Bearer atl_00112233445566778899aabbccddeeff" -H "x-atelier-actor: owner" -H "content-type: application/json" -d '{"step":"start","ms":0}' ${w.base}/api/projects/demo/items/${id}/land > /dev/null
+  curl -s -X POST -H "authorization: Bearer atl_00112233445566778899aabbccddeeff" -H "x-atelier-actor: owner" -H "x-atelier-acting: claude-code/opus-5.5" -H "content-type: application/json" -d '{"step":"start","ms":0}' ${w.base}/api/projects/demo/items/${id}/land > /dev/null
 fi
 exit 0
 `, { mode: 0o700 });

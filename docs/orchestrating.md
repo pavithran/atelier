@@ -43,6 +43,11 @@ points at it and states the review path (it does not edit the file).
   override: the Models page measures your verdicts as it measures a
   reviewer's. Without `--as` the record cannot tell you from the developer, and
   the page counts the judgement as unknown.
+- Name yourself on every write you make with the developer token:
+  `--as H/M`, or `ATELIER_ACTING=H/M` once for the session. The server
+  refuses a write that names no model, and records the model on every event
+  it writes; criteria you write count as yours, so you never review them
+  (see "Acting on the developer token").
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
   review nothing to bind to. Write with each criterion the edge cases it
@@ -96,6 +101,54 @@ points at it and states the review path (it does not edit the file).
   helper agent of your own while you keep landing; do not stop the queue to
   read a log.
 - Feed what you learn back into Atelier, as the last section says.
+
+## Acting on the developer token
+
+The developer token is the developer's authority, and a model holds it
+whenever it orchestrates. So the record names the model on every act made
+with it (G18; t16, t339), and leaving the name out is refused, never recorded
+as the developer's.
+
+**The rule.** Reads are free. Every write with the developer token names the
+harness/model acting, in one of two ways:
+
+- `--as H/M`, or `ATELIER_ACTOR`, or `ATELIER_ACTING` for the whole session,
+  which the CLI sends as `X-Atelier-Acting` beside the developer's actor;
+- or the model's own actor, for the commands that take one (`atelier new
+  --as H/M` files the task under the model's name).
+
+A write with neither is refused with `acting_required` and
+`next: add --as H/M (or set ATELIER_ACTING) ...`, and nothing is recorded.
+The one other write that passes is a runner's own report on a route a runner
+token may use, sent on the developer's credential with `X-Atelier-Runner`:
+a machine's report, not a model's act.
+
+**The developer.** The developer's own interactive use is the signed-in
+pages, through Cloudflare Access where the server names it; those never
+reach `/api` and record as the developer. The CLI does not try to tell the
+developer at a terminal from a model: every `/api` call on the developer
+token may be a model's, so each write names one. The rule depends on nothing
+a model could leave out: no terminal check, no token source, no flag that
+marks the developer. A model that names another model, or the developer
+token used outside the CLI with a false name, is a false declaration, which
+the record keeps as declared; the rule stops only the omission.
+
+**What is recorded.** The name is checked against the model pool and
+recorded as the pool's exact entry (an empty pool, on a fresh server, keeps
+it as typed). Every event the write records carries `acting`; the event's
+actor stays the developer's, the model beside it. The verbs that need the
+developer's words (block, unblock, abandon, clear-secret, an override, fast
+mode, an approval on their words) also carry `quote`, and without the words
+they are refused (`direction_needed`), since a model is always acting.
+`atelier show ID` lists the task's acts on the developer token, each with
+its model and, where given, the words; `show --json` carries them as
+`acted`.
+
+**Contributions.** Criteria stored on a model's word are that model's
+revision: the criteria review refuses the same model, under any harness, as
+their reviewer. A push recorded on a model's word counts that model as a
+contributor in the gate's independence check, in place of the developer.
+A brief is not read by either check, so it changes nothing there.
 
 ## The shape of the work
 

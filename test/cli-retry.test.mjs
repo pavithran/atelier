@@ -172,7 +172,7 @@ async function world(t) {
     revokeToken: async () => true, [Symbol.dispose]() {} }) };
   const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
   t.after(() => server.close());
-  const send = (method, path, body) => fetch(`${server.url}/api${path}`, { method, body: body && JSON.stringify(body), headers: { authorization: `Bearer ${owner}`, "content-type": "application/json", "x-atelier-actor": "owner" } });
+  const send = (method, path, body) => fetch(`${server.url}/api${path}`, { method, body: body && JSON.stringify(body), headers: { authorization: `Bearer ${owner}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" } });
   assert.equal((await send("PUT", "/projects/demo", {})).status, 200);
   const ledger = server.settings.LEDGER.get(server.settings.LEDGER.idFromName("project:demo"));
   const sql = server.namespace.object("project:demo").live.sql;
@@ -216,14 +216,14 @@ test("abandon repeated with the same deliveredBy answers already; with another i
   const id = await w.file("Abandon twice");
   w.sql.exec(`UPDATE items SET state = 'merged' WHERE id = ?`, delivered);
   const url = `/projects/demo/items/${id}/abandon`;
-  const { first, again } = await w.twice("POST", url, { note: "done elsewhere", deliveredBy: delivered });
+  const { first, again } = await w.twice("POST", url, { note: "done elsewhere", deliveredBy: delivered, quote: "abandon it" });
   assert.equal(first.already, undefined);
   assert.equal(again.already, true);
-  const without = await w.send("POST", url, { note: "done elsewhere" });
+  const without = await w.send("POST", url, { note: "done elsewhere", quote: "abandon it" });
   assert.equal(without.status, 409, "no deliveredBy is a different abandon: refused as closed");
   assert.equal(w.count("item.abandoned"), 1);
   const unmerged = await w.file("Not merged");
-  assert.equal((await w.send("POST", url, { deliveredBy: unmerged })).status, 409, "validated before it can be called a rerun");
+  assert.equal((await w.send("POST", url, { deliveredBy: unmerged, quote: "abandon it" })).status, 409, "validated before it can be called a rerun");
 });
 
 test("doubt survives a redirect and a no_project answer too", async (t) => {

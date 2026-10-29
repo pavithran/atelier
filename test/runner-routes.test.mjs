@@ -612,6 +612,8 @@ before(async () => {
   // A review request names a registered, eligible reviewer since reviewer
   // admissions (t492): REVIEWER is in the pool, as atelier models add puts
   // it, before any test asks it to review.
+  // The model acting on the developer token's writes (G18), in the pool first.
+  await expect(call("PUT", `/models/${ACTING.split("/")[1]}`, { body: { harness: ACTING.split("/")[0], where: "home" } }), 200, "models add (acting)");
   await expect(call("PUT", `/models/${REVIEWER.split("/")[1]}`, { body: { harness: REVIEWER.split("/")[0], where: "home" } }), 200, "models add");
 });
 after(async () => { await mf?.dispose(); });
@@ -619,8 +621,11 @@ after(async () => { await mf?.dispose(); });
 // A request to the gateway, as the CLI sends one: a bearer token, the actor
 // and the runner in their headers, a JSON body.
 // An actor of null sends no X-Atelier-Actor, as the runner's config read does.
+// A write on the developer token under the developer's actor names the model
+// acting (G18), as the CLI sends it.
+const ACTING = "codex/gpt-6";
 const call = (method, path, { token = OWNER_TOKEN, actor = "owner", runner, body } = {}) => mf.dispatchFetch(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${token}`, ...(actor === null ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" },
+  method, headers: { authorization: `Bearer ${token}`, ...(actor === null ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), ...(token === OWNER_TOKEN && actor === "owner" && !runner && method !== "GET" ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" },
   ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
 });
 // The same under a runner token, as the runner's actor unless another is named.

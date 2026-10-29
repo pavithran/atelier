@@ -39,7 +39,7 @@ export async function landingWorld(t) {
   t.after(async () => { await server.close(); rmSync(root, { recursive: true, force: true }); });
 
   const api = async (method, path, body, token = OWNER, actor = "owner") => {
-    const r = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const r = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await r.text();
     let json = null;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
@@ -55,11 +55,11 @@ export async function landingWorld(t) {
   // `token`, as an agent.
   const cli = (args, { env = {}, cwd = checkout, token = OWNER, project = true } = {}) => new Promise((ok) => execFile(process.execPath, [resolve("cli/atelier.mjs"), ...args, ...(project ? ["--project", "demo"] : [])], {
     cwd, timeout: 240_000,
-    env: { ...gitEnv, HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_LAND_POLL_MS: "50", ...env },
+    env: { ...gitEnv, HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_LAND_POLL_MS: "50", ATELIER_ACTING: "claude-code/opus-5.5", ...env },
   }, (err, stdout, stderr) => ok({ status: err ? (err.code ?? 1) : 0, stdout, stderr, output: `${stdout}${stderr}` })));
   // The same CLI as a child the test can stop partway.
   const spawnCli = (args, env = {}) => {
-    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "demo"], { cwd: checkout, env: { ...gitEnv, HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: OWNER, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ...env } });
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "demo"], { cwd: checkout, env: { ...gitEnv, HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: OWNER, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5", ...env } });
     t.after(() => child.kill("SIGKILL"));
     const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
     return { child, done };

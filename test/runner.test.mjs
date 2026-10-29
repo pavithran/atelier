@@ -1324,6 +1324,8 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
       tokenActor: undefined, tokenRunner: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       RUNNER_COMMANDS, declaredHelperCall, commandFor: (name) => name, args: { _: [] },
       server: () => "https://unused", apiToken: () => "unused", ...limits,
+      // The acting header (G18) is ownerActing's, outside the slice.
+      ownerActing: () => ({}),
       serverFetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
