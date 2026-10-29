@@ -40,7 +40,7 @@ import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../mode
 import { byPrecision, precisionLine, precisionOf, precisionTerm, type PrecisionRecord } from "../models/precision.ts";
 import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { measureText, stalledText, type SpeedRecord } from "../models/speed.ts";
-import { assertEligible, modelKey, parseRuleError, singleFamily, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, changeClass, modelKey, parseRuleError, singleFamily, type ProjectPolicy } from "../rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
 // What the owner knows about a tool's usage limits, keyed by actor
@@ -515,12 +515,12 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const reviewers = byPrecision(byPace(others.filter((v) => !v.review.length && independent(v)), ctx, "review"), namesOfVerdict, precision);
   // A review assignment (claims-review for a docs part, then review) picks
   // the first of its choices that qualifies, ahead of the spread.
-  // A security, concurrency or gate part reads security-review first, as a
-  // task's review does (gpt-6-astra's review of t622, finding 4). Every other
-  // model is a candidate with the rule it failed as its refusal.
+  // A part whose paths the project protects reads security-review first, as
+  // a task's review does (gpt-6-astra's review of t622, finding 4). Every
+  // other model is a candidate with the rule it failed as its refusal.
   // The roles as the ledger decides them for the part's review
   // (reviewRolesFor), the part's paths standing for the change to come.
-  const roles = reviewRolesFor(part, [], part);
+  const roles = reviewRolesFor(part, [], part, changeClass([...part.scope], ctx.input.policy) === "protected");
   const reviewRefusal = (v: Verdict) => (v.review.length ? v.review.join("; ")
     : independent(v) ? null : single ? "the same model as the builder" : `same family as the builder (${v.family})`);
   const reviewOrder = assignments.length ? orderByAssignment([...reviewers, ...others.filter((v) => !reviewers.includes(v))], (v) => v.actor, applicableAssignments(assignments, null, roles), reviewRefusal, FALLBACK.review) : null;

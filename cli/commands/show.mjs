@@ -71,7 +71,11 @@ export default async function showCommand() {
   // event naming its acting harness/model, with the developer's words where
   // the verb needs them.
   const acted = actedThroughOwner(d.events ?? [], id);
-  if (args.json) return console.log(JSON.stringify({ ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
+  // The goal's notes, numbered as atelier file-fix takes them, and the review
+  // requests nobody has claimed, with when each was asked (G6): facts the
+  // model acts on by command, since the server files and re-points nothing.
+  const notes = d.notes ?? [], unclaimed = d.openRequests ?? [];
+  if (args.json) return console.log(JSON.stringify({ ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
@@ -84,6 +88,8 @@ export default async function showCommand() {
   // it failed, with the last lines of the failing step's own output.
   if (d.landing) blocks.push(`Landing: attempt ${d.landing.attempt}, ${d.landing.failedStep ? `failed at ${d.landing.failedStep}${d.landing.files?.length ? ` (${d.landing.files.map(flat).join(", ")})` : ""}` : `at ${d.landing.step}`}, ${String(d.landing.at).slice(0, 16).replace("T", " ")} UTC${d.landing.failedStep && d.landing.tail ? `\n  ${String(d.landing.tail).split("\n").map(flat).join("\n  ")}` : ""}`);
   if (deploy) blocks.push(`Last deploy: ${deployText(deploy)}`);
+  if (unclaimed.length) blocks.push(unclaimed.map((r) => unclaimedLine(id, r)).join("\n"));
+  if (notes.length) blocks.push(["Notes (atelier file-fix " + id + " --from-note N files one):", ...notes.map(noteLine)].join("\n"));
   if (acted.length) blocks.push(["Acts on the developer token:", ...acted.map(actedLine)].join("\n"));
   if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [], d?.reviewClaims ?? []));
   if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));
@@ -102,4 +108,18 @@ export function actedThroughOwner(events, id) {
 
 export function actedLine(a) {
   return `  ${String(a.at ?? "").slice(0, 16).replace("T", " ")} ${a.kind} by ${flat(a.actor)}, acting ${flat(a.acting)}${a.quote ? `, on the developer's words: \u201c${flat(a.quote)}\u201d` : ""}`;
+}
+
+// One review request nobody has claimed: whom it asks, since when and how
+// long ago, and the commands that withdraw it or ask another (G6).
+export function unclaimedLine(id, r, now = Date.now()) {
+  const minutes = Math.max(0, Math.floor((now - Date.parse(r.openedAt)) / 60_000));
+  const age = minutes < 60 ? `${minutes} minute${minutes === 1 ? "" : "s"}` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+  return `Review request ${r.request}${r.tier ? " (the tier's)" : ""} asked of ${flat(r.reviewer)} at ${String(r.head).slice(0, 8)} is unclaimed, asked ${String(r.openedAt).slice(0, 16).replace("T", " ")} UTC, ${age} ago; withdraw it with atelier review-withdraw ${id} --request ${r.request} --reason TEXT, or ask another with atelier review-request ${id} --reviewer H/M`;
+}
+
+// One goal note, numbered: where, what, who left it, and the task filed from it.
+export function noteLine(n) {
+  const where = n.file ? `${flat(n.file)}${n.line === null || n.line === undefined ? "" : `:${n.line}`}: ` : "";
+  return `  ${n.n}. ${n.blocking ? "[blocking] " : ""}${where}${flat(n.text)} (${flat(n.by)} at ${String(n.head).slice(0, 8)})${n.filed ? `; filed as ${n.filed}` : ""}`;
 }

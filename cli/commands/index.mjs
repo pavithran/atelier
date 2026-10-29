@@ -28,6 +28,7 @@ import command_done from "./done.mjs";
 import command_edit from "./edit.mjs";
 import command_events from "./events.mjs";
 import command_fast from "./fast.mjs";
+import command_file_fix from "./file-fix.mjs";
 import command_finding from "./finding.mjs";
 import command_finish from "./finish.mjs";
 import command_flow from "./flow.mjs";
@@ -126,6 +127,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/edit.mjs", run: command_edit },
   { path: "cli/commands/events.mjs", run: command_events },
   { path: "cli/commands/fast.mjs", run: command_fast },
+  { path: "cli/commands/file-fix.mjs", run: command_file_fix },
   { path: "cli/commands/finding.mjs", run: command_finding },
   { path: "cli/commands/finish.mjs", run: command_finish },
   { path: "cli/commands/flow.mjs", run: command_flow },

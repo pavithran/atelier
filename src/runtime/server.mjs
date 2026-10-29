@@ -127,6 +127,7 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const dir = resolve(dataDir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const { Ledger, default: worker, observePushed, recordStageTicks, recordStuckEpisodes, takeModelSnapshots } = await import("../index.ts");
+  const { LIMITS } = await import("../limits.ts");
   globalThis.caches ??= { default: { match: async () => undefined, put: async () => undefined, delete: async () => false } };
   const repos = resolve(reposDir ?? join(dir, "repos"));
   const artifacts = new LocalArtifacts({ reposDir: repos });
@@ -195,14 +196,15 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const bound = server.address().port;
   Object.assign(workerEnv, settings({ env, port: bound, secretsDir, vars }), bindings, { LEDGER: namespace });
   namespace.start();
-  // The Worker's crons (wrangler.jsonc gave scheduled() three), each given
-  // the moment it was due, as scheduledTime was.
+  // The Worker's crons (wrangler.jsonc gave scheduled() three), at the
+  // periods src/limits.ts names, each given the moment it was due, as
+  // scheduledTime was.
   const ticking = timing ? new Timers({
     clock: timing.clock ?? realClock,
     jobs: [
-      { name: "stage tick", every: 5 * 60_000, run: (at) => recordStageTicks(workerEnv, at) },
-      { name: "stuck episodes", every: 10 * 60_000, run: (at) => recordStuckEpisodes(workerEnv, at) },
-      { name: "model snapshots", every: 6 * 3600_000, offset: 7 * 60_000, run: (at) => takeModelSnapshots(workerEnv, at.getTime()) },
+      { name: "stage tick", every: LIMITS.timers.stageTickMs, run: (at) => recordStageTicks(workerEnv, at) },
+      { name: "stuck episodes", every: LIMITS.timers.stuckEpisodesMs, run: (at) => recordStuckEpisodes(workerEnv, at) },
+      { name: "model snapshots", every: LIMITS.timers.modelSnapshotsMs, offset: LIMITS.timers.modelSnapshotsOffsetMs, run: (at) => takeModelSnapshots(workerEnv, at.getTime()) },
     ],
   }).start() : null;
   const url = `http://localhost:${bound}`;

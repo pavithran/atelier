@@ -2949,6 +2949,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // A task filed from one of the goal's notes (G6): the server files none
+    // by itself; the model files one with atelier file-fix ID --from-note N.
+    case "file-fix": {
+      requireOwner(env, actor);
+      const filed = await L.fileFix(id, actor, body.note, c.acting ?? null);
+      return json(filed, filed.already ? 200 : 201);
+    }
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit": {
@@ -3985,7 +3992,10 @@ const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.tr
 async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, name: string, at: string): Promise<void> {
   const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
   if (!topic) return;
-  const due = await I.stuckDue(key, at);
+  // The project's standing notice-delay (src/standing.ts) replaces the
+  // default wait; an unreadable project waits the default.
+  const delay = await ledger(env, key).standing().then((m) => m.get("notice-delay"), () => undefined);
+  const due = await I.stuckDue(key, at, delay ? Number(delay) * 60_000 : undefined);
   for (const { request, episodes } of stuckBatchRequests(topic, stuckOrigin(env), name, due)) {
     try {
       const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });

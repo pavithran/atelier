@@ -29,6 +29,7 @@ import command_done from "./done.ts";
 import command_edit from "./edit.ts";
 import command_events from "./events.ts";
 import command_fast from "./fast.ts";
+import command_file_fix from "./file-fix.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
 import command_flow from "./flow.ts";
@@ -127,6 +128,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/edit.ts", spec: command_edit },
   { path: "src/usage/commands/events.ts", spec: command_events },
   { path: "src/usage/commands/fast.ts", spec: command_fast },
+  { path: "src/usage/commands/file-fix.ts", spec: command_file_fix },
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
   { path: "src/usage/commands/flow.ts", spec: command_flow },
