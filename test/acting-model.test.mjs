@@ -65,20 +65,26 @@ test("a write on the developer token with no acting model is refused, naming --a
   // Nothing was filed by either.
   assert.equal((await w.api("GET", "/projects/demo")).body.items.length, 0, "reads need no acting model");
   assert.equal((await w.cli(["ls", "--project", "demo"])).code, 0);
+  // A runner's header on the developer token is no acting model: a write on
+  // a runner route without one is refused too (the review of G18).
+  for (const [method, path, body] of [["POST", "/queue", { runner: "x", agents: [], jobs: ["build"] }], ["POST", "/projects/demo/items/t1/claim", {}]]) {
+    const runnerHeader = await w.api(method, path, body, { "x-atelier-runner": "x" });
+    assert.equal(runnerHeader.status, 400, `${path}: ${JSON.stringify(runnerHeader.body)}`);
+    assert.equal(runnerHeader.body.error, "acting_required");
+  }
   // The same write naming the model is taken: with --as on an owner-only
   // verb, with ATELIER_ACTING, or under a model's own actor.
   assert.equal((await w.cli(["new", "Named by ATELIER_ACTING", "--project", "demo"], { ATELIER_ACTING: OPUS })).code, 0);
   assert.equal((await w.api("POST", "/projects/demo/items", { title: "A model's own actor" }, { "x-atelier-actor": OPUS })).status, 201);
 });
 
-test("the rule: reads free, a write names a model or is a runner's own report, and leaving it out never passes", () => {
-  assert.equal(ownerWriteRefusal("GET", "owner", "owner", null, false), null);
-  assert.equal(ownerWriteRefusal("HEAD", "owner", "owner", null, false), null);
-  assert.equal(ownerWriteRefusal("POST", "owner", "owner", OPUS, false), null);
-  assert.equal(ownerWriteRefusal("POST", OPUS, "owner", null, false), null, "a model's own actor names it");
-  assert.equal(ownerWriteRefusal("POST", "owner", "owner", null, true), null, "a runner's report on a runner route");
+test("the rule: reads free, a write names a model, and leaving it out never passes", () => {
+  assert.equal(ownerWriteRefusal("GET", "owner", "owner", null), null);
+  assert.equal(ownerWriteRefusal("HEAD", "owner", "owner", null), null);
+  assert.equal(ownerWriteRefusal("POST", "owner", "owner", OPUS), null);
+  assert.equal(ownerWriteRefusal("POST", OPUS, "owner", null), null, "a model's own actor names it");
   for (const [method, actor] of [["POST", "owner"], ["PUT", "owner"], ["DELETE", "owner"], ["POST", "atelier/integrator"], ["POST", "pavi"]]) {
-    const r = ownerWriteRefusal(method, actor, "owner", null, false);
+    const r = ownerWriteRefusal(method, actor, "owner", null);
     assert.equal(r?.code, "acting_required", `${method} as ${actor}`);
     assert.match(r.next, /--as H\/M/);
   }

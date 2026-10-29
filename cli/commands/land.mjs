@@ -60,7 +60,7 @@ export default async function landCommand() {
     try {
       res = await serverFetch(server() + "/api" + path, {
         method,
-        headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, ...ownerActing(method, as), "content-type": "application/json", ...extra },
+        headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, ...ownerActing(method), "content-type": "application/json", ...extra },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       text = await res.text();

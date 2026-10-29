@@ -77,16 +77,15 @@ export function cleanActing(header: string | null, owner: string, agentToken: bo
 // own interactive use is the signed-in pages, which never reach /api; every
 // /api request on the developer token comes from the CLI, a runner or a
 // script, which a model may be driving. So reads are free, and a write must
-// name the harness/model acting: the acting header (atelier --as H/M or
-// ATELIER_ACTOR), or an actor that is itself a harness/model (the developer
-// token naming a model's actor, whose events already record it). A runner's
-// own report on a route a runner token may use, made on the developer's
-// credential with X-Atelier-Runner (cli/runner.mjs), is a machine's, not a
-// model's, and passes as it would on a runner token. Leaving the name out
+// name the harness/model acting: the acting header (atelier --as H/M,
+// ATELIER_ACTOR or ATELIER_ACTING), or an actor that is itself a
+// harness/model (the developer token naming a model's actor, whose events
+// already record it). No other header stands in for it: a runner's report
+// passes without a model only on the runner's own token. Leaving the name out
 // never records the write as the developer's: it is refused, naming the flag.
-export function ownerWriteRefusal(method: string, actor: string, owner: string, declaredActing: string | null, runnerReport: boolean): RuleError | null {
+export function ownerWriteRefusal(method: string, actor: string, owner: string, declaredActing: string | null): RuleError | null {
   if (method === "GET" || method === "HEAD" || declaredActing) return null;
-  if (isModel(actor, owner) || runnerReport) return null;
+  if (isModel(actor, owner)) return null;
   return new RuleError("acting_required", "a write with the developer token names the harness/model acting: the developer's own use is the signed-in pages, so every command on the developer token says which model runs it", 400, "add --as H/M (or set ATELIER_ACTING) naming the harness/model you are, such as claude-code/opus-5.5, and run the command again");
 }
 

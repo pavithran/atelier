@@ -118,10 +118,10 @@ harness/model acting, in one of two ways:
   --as H/M` files the task under the model's name).
 
 A write with neither is refused with `acting_required` and
-`next: add --as H/M (or set ATELIER_ACTING) ...`, and nothing is recorded.
-The one other write that passes is a runner's own report on a route a runner
-token may use, sent on the developer's credential with `X-Atelier-Runner`:
-a machine's report, not a model's act.
+`next: add --as H/M (or set ATELIER_ACTING) ...`, and nothing is recorded,
+whatever other headers it carries: `X-Atelier-Runner` on the developer token
+is no acting model. A runner reports without one only on its own runner
+token; a runner left on the developer's credential sends `ATELIER_ACTING`.
 
 **The developer.** The developer's own interactive use is the signed-in
 pages, through Cloudflare Access where the server names it; those never

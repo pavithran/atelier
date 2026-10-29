@@ -16,7 +16,7 @@ export async function holdCheckout({ project, kind, item, what, cwd }) {
   try {
     return await takeCheckoutLease({
       request: (method, path, body) => request(method, path, body, OWNER), project, kind, item, what, head,
-      sync: { url: `${server()}/api`, headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, ...ownerActing("POST", OWNER) } },
+      sync: { url: `${server()}/api`, headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, ...ownerActing("POST") } },
     });
   } catch (error) { die(error.message, error.code ?? 1); }
 }
@@ -35,5 +35,5 @@ export async function stayHeld(lease, before) {
 // The same endpoint for a POST an exit handler makes (syncPost); answers
 // whether the server took it.
 export function postOnExit(path, body) {
-  return syncPost({ url: `${server()}/api`, headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, ...ownerActing("POST", OWNER) } }, path, body);
+  return syncPost({ url: `${server()}/api`, headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, ...ownerActing("POST") } }, path, body);
 }

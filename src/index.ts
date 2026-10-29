@@ -5051,8 +5051,7 @@ export default {
         // A write on the developer token names the model acting (G18), and
         // every Ledger call it makes records that model on its events.
         if (!token) {
-          const runnerReport = req.headers.get("x-atelier-runner") !== null && runnerRoute(req.method, parts.slice(1), body as Record<string, unknown>);
-          const refused = ownerWriteRefusal(req.method, actor, ownerActor(env), declaredActing, runnerReport);
+          const refused = ownerWriteRefusal(req.method, actor, ownerActor(env), declaredActing);
           if (refused) throw refused;
           // The developer token naming a model's own actor records that
           // model as acting too, so every such write is listed alike.
