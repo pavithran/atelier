@@ -15,6 +15,9 @@ import { ensureRepo, repoDir } from "./repos.mjs";
 import { branchTip, createBranch, holds, moveBranch, setHead } from "./branches.mjs";
 
 export const GRANT_LIVE = "/internal/grant-live";
+// The post-receive hook's POST (design section 4.4; Atelier 2.0, task 8).
+export const PUSHED = "/internal/pushed";
+export const INTERNAL_ROUTES = new Set([GRANT_LIVE, PUSHED]);
 export const HOOKS_DIR = fileURLToPath(new URL("../../hooks", import.meta.url));
 
 function same(a, b) {
@@ -50,6 +53,14 @@ export class GitHost {
     // which only the hook's environment carries; it is never stored or logged.
     this.hookSecret = randomBytes(32).toString("hex");
     this.callback = null;
+    this.pushedUrl = null;
+    // What a push to a task's branch is told to once its ref moved
+    // (POST /internal/pushed, from the post-receive hook): set by the server
+    // to src/index.ts's observePushed. Null records nothing.
+    this.onPushed = null;
+    // The scans of the pushes whose backends are running, by grant id, so the
+    // post-receive POST takes the pre-receive report before the push ends.
+    this.inflight = new Map();
     // A push on a task grant and every change that ends a grant take the
     // task's lock (project and task), and a push takes its grant's too, so
     // a change waits for the pushes in flight and blocks new ones while it
@@ -94,9 +105,10 @@ export class GitHost {
   listening({ address, port }) {
     const host = address === "0.0.0.0" || address === "::" ? "127.0.0.1" : address.includes(":") ? `[${address}]` : address;
     this.callback = `http://${host}:${port}${GRANT_LIVE}`;
+    this.pushedUrl = `http://${host}:${port}${PUSHED}`;
   }
   hookEnv() {
-    return this.callback ? { ATELIER_GRANT_CHECK: this.callback, ATELIER_HOOK_SECRET: this.hookSecret } : {};
+    return this.callback ? { ATELIER_GRANT_CHECK: this.callback, ATELIER_PUSHED: this.pushedUrl, ATELIER_HOOK_SECRET: this.hookSecret } : {};
   }
   // Whether a task grant still writes: the Ledger records it as the item's
   // write token, the task is open to work, and the grant's actor holds it.
@@ -116,20 +128,48 @@ export class GitHost {
     if (!g) return false;
     return g.kind === "task" || g.kind === "plan" ? this.stillHeld(g.project, g) : true;
   }
-  // POST /internal/grant-live, the hook's question. Answered only to a
-  // loopback caller that sends the hook's secret; anything else is 404, as
-  // if there were no such route.
+  // The internal listener's two routes: POST /internal/grant-live, the
+  // pre-receive hook's question, and POST /internal/pushed, the
+  // post-receive hook's notice. Answered only to a loopback caller that
+  // sends the hooks' secret; anything else is 404, as if there were no such
+  // route.
   async handleInternal(req, res) {
     const answer = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
     const from = String(req.socket?.remoteAddress ?? "").replace(/^::ffff:/, "");
     const loopback = /^127\./.test(from) || from === "::1";
     const secret = req.headers["x-atelier-hook-secret"];
-    if (req.method !== "POST" || !loopback || typeof secret !== "string" || !same(secret, this.hookSecret)) { req.resume(); return answer(404, { error: "not_found" }); }
+    if (req.method !== "POST" || !INTERNAL_ROUTES.has(req.url) || !loopback || typeof secret !== "string" || !same(secret, this.hookSecret)) { req.resume(); return answer(404, { error: "not_found" }); }
     let text = "";
-    for await (const chunk of req) { text += chunk; if (text.length > 1024) return answer(400, { error: "too_long" }); }
-    let id;
-    try { id = JSON.parse(text).grant; } catch { return answer(400, { error: "bad_body" }); }
-    return answer(200, { live: await this.live(id) });
+    for await (const chunk of req) { text += chunk; if (text.length > 4096) return answer(400, { error: "too_long" }); }
+    let body;
+    try { body = JSON.parse(text); } catch { return answer(400, { error: "bad_body" }); }
+    if (req.url === PUSHED) return answer(200, await this.handlePushed(body ?? {}));
+    return answer(200, { live: await this.live(body?.grant) });
+  }
+  // The post-receive notice: { project, ref, before, after, grant }. The
+  // push it names is taken from the server's own record of the grant (its
+  // project, kind, task and actor), never from the body alone: a task or
+  // plan grant's push of its own branch is observed as its holder's push
+  // (onPushed), with the pre-receive scan report taken first. Any other ref
+  // (the project's branch, dev/*, the notes) records nothing here. The
+  // answer says what was recorded; the hook logs a failure and the ref stays
+  // moved either way.
+  async handlePushed({ project, ref, before, after, grant: id }) {
+    const g = typeof id === "string" ? this.grants.findById(id) : null;
+    if (!g || g.project !== project) return { observed: false, reason: "the push's grant is not live for this project" };
+    const n = /^t(\d+)$/.exec(g.task ?? "")?.[1];
+    const own = g.kind === "task" ? `refs/heads/t/${n}` : g.kind === "plan" ? `refs/heads/plan/${n}` : null;
+    if (!n || ref !== own) return { observed: false, reason: `${ref} is not a task's branch pushed with its own grant` };
+    const scan = this.inflight.get(g.id);
+    if (scan && !scan.recorded) {
+      const report = scan.report();
+      if (report && report.head === after) {
+        await this.recordScan({ ...g, key: g.project }, report);
+        scan.recorded = true;
+      }
+    }
+    if (!this.onPushed) return { observed: false, reason: "this server records no pushes" };
+    return this.onPushed({ project: g.project, ref, before, after, actor: g.actor });
   }
   binding() {
     return {
@@ -231,7 +271,11 @@ export class GitHost {
       hook: this.hookEnv(),
       guard: (grant, signal) => this.guardPush(grant, signal),
       onSpawn: () => { this.backends++; },
-      scans: { dir: this.scanDir, policy: (grant) => this.scanPolicy(grant), record: (grant, report) => this.recordScan(grant, report) },
+      scans: {
+        dir: this.scanDir, policy: (grant) => this.scanPolicy(grant), record: (grant, report) => this.recordScan(grant, report),
+        opened: (grant, scan) => { this.inflight.set(grant.id, scan); },
+        closed: (grant, scan) => { if (this.inflight.get(grant.id) === scan) this.inflight.delete(grant.id); },
+      },
       ensure: (grant) => {
         this.repo(grant.key, grant.branch);
         return grant.key;

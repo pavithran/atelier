@@ -4249,8 +4249,12 @@ export class Ledger extends DurableObject<Env> {
   // search having stopped at its budget) is left the same way, with the
   // reason saying so. The queue delivers an event at least once, so the
   // same sighting is noted once. `scan` is as recordPush takes it: the head
-  // recorded is written with its secret scan pending.
-  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false, retention: RetentionRead | null = null): Item {
+  // recorded is written with its secret scan pending. `source` is where the
+  // sighting came from: "artifacts" (a push event) or "hook" (the
+  // post-receive POST on the Node server, Atelier 2.0 task 8), whose head
+  // the pre-receive hook scanned before the ref moved, so its report becomes
+  // the scan record, as recordPush takes it.
+  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false, retention: RetentionRead | null = null, source: "artifacts" | "hook" = "artifacts"): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
     // While the accepted revision is landing, a push to the fork does not
@@ -4260,7 +4264,7 @@ export class Ledger extends DurableObject<Env> {
       const last = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'push.unrecorded' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const noted = last ? (JSON.parse(last.data as string) as { head?: string; recorded?: string }) : null;
       if (noted?.head !== observedHead || noted.recorded !== item.head) {
-        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source: "artifacts", reason: holdsRecorded === null ? "ancestry_unverified" : "history_rewritten" }, new Date().toISOString());
+        this.log(id, "atelier/events", "push.unrecorded", { head: observedHead, recorded: item.head, source, reason: holdsRecorded === null ? "ancestry_unverified" : "history_rewritten" }, new Date().toISOString());
       }
       return item;
     }
@@ -4268,8 +4272,10 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
       state: item.state === "accepted" ? "submitted" : item.state,
       ...(scan ? { secret_scan: observedHead } : {}) }, now);
-    this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted", ...this.otherAuthors(item, authors) }, now);
+    this.log(id, "atelier/events", "push.observed", { head: observedHead, source, approvalInvalidated: item.state === "accepted", ...this.otherAuthors(item, authors) }, now);
     this.retainApprovals(item, observedHead, this.refreshInFlight(id) ? null : retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
+    const found = scan && source === "hook" ? this.takeHookScan(id, observedHead) : null;
+    if (found && found.head === observedHead) return this.setSecret(id, "atelier/hook", observedHead, found.hits, found.unscanned);
     return this.item(id);
   }
 

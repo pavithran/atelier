@@ -6,6 +6,7 @@ import type { ModelComparison } from "../src/models/compare.ts";
 import { addDays, BACKFILL_DAYS, daysDue, measureHeading, trendPointText, utcDay, type ModelTrend, type SnapshotTake } from "../src/models/snapshot.ts";
 import { suggestionRecords } from "../src/models/suggestion-records.ts";
 import { signIn } from "./signin.ts";
+import { scheduled as runScheduled } from "./workers-removed.ts";
 
 // t623 through the Worker and the index Ledger: the scheduled handler takes
 // each ended UTC day once, a retried, repeated or concurrent run stores
@@ -37,7 +38,7 @@ const takes = (from: string, to: string) => index().modelSnapshotTakes(from, to)
 // Seven minutes past a UTC midnight `days` days from today, so later runs the
 // same day stay on it.
 const past = (days: number) => Date.parse(`${addDays(TODAY, days)}T00:07:00.000Z`);
-const scheduled = (at: number) => worker.scheduled({ scheduledTime: at, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, testEnv);
+const scheduled = (at: number) => runScheduled({ scheduledTime: at, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, testEnv);
 
 let seeded = false;
 async function seed() {
