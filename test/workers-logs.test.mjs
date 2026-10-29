@@ -16,8 +16,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 test("the handbook says how a session queries the logs", () => {
   const md = readFileSync(join(root, "docs/orchestrating.md"), "utf8");
   assert.match(md, /## Reading the server's logs/, "docs/orchestrating.md keeps the section");
-  assert.match(md, /Observability/, "it names the dashboard's Observability view");
-  assert.match(md, /wrangler tail/, "it names wrangler tail for what is live");
+  assert.match(md, /\/Users\/atelierd\/log\//, "it names where the Studio server's log is");
+  assert.match(md, /atelier server-errors/, "it says what atelier server-errors reads");
 });
 
 // Every console.<method> call in a source file, as the TypeScript compiler
