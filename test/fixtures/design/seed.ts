@@ -9,7 +9,7 @@
 // with none, one of them unreadable. fixture.spec.ts asserts the totals and
 // each state; render.design.ts draws the pages for scripts/design/capture.ts.
 
-import { vi } from "vitest";
+import { vi } from "../../support/vitest.ts";
 import { FakeGit } from "./git.ts";
 
 export const FIXED_NOW = "2026-10-10T12:00:00.000Z";

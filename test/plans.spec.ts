@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runDurableObjectAlarm, runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { CriteriaChange, Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { criteriaHash } from "../src/criteria.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "./support/vitest.ts";
 import { buildStanding, renderProject } from "../src/ui.ts";
 import { attentionFor } from "../src/attention.ts";
 import type { Item } from "../src/rules.ts";

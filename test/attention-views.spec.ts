@@ -2,7 +2,7 @@
 // portfolio of test/fixtures/attention.ts: each says, per project, exactly the
 // tasks the waiting rule places under the owner, in its order, once each, as
 // `atelier status` and `atelier inbox` do in test/attention-views.test.mjs.
-import { expect, it } from "vitest";
+import { expect, it } from "./support/vitest.ts";
 import { attentionFor } from "../src/attention";
 import { buildStanding, renderHome, renderInbox, renderProject, type Detail } from "../src/ui";
 import { readStanding, type StandingSource } from "../src/standing-read";

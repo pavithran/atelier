@@ -6,7 +6,7 @@
 // and test/fixtures/design/screens.test.mjs hold the brief, this list and the
 // manifest to one another.
 
-import { vi } from "vitest";
+import { vi } from "../../support/vitest.ts";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import worker from "../../../src/index.ts";
 import { signIn } from "../../signin.ts";

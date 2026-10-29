@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { afterEach, expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 // The staging copy's vars (release split, PAVI 2026-10-26), through the

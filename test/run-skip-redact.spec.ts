@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 
 // t376: a run skip's note is stored with key=value secrets removed, as a
 // usage report's text is.

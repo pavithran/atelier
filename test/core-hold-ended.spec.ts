@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 
 // t325: a claim whose runner reports that its last run ended without a
 // result holds no other dispatch off its core files, through the ledger's

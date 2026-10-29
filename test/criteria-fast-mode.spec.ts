@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import { criteriaReviewLine } from "../src/brief.ts";
 import type { CriteriaReviewClaim, CriteriaReviewView } from "../src/ledger.ts";
 import { familyDeadlock } from "../src/review/criteria.ts";

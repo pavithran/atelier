@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { VALIDATION_BLOCKED, type ProjectPolicy } from "../src/rules.ts";
 

@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { afterAll, expect, it, vi } from "vitest";
+import { env } from "../../support/workers.ts";
+import { afterAll, expect, it, vi } from "../../support/vitest.ts";
 import { EMPTY_PROJECT, FIXED_NOW, PLANS, SECRETS, STATE_OF, TOTAL_TASKS, UNAVAILABLE_PROJECT, seed, total, type Shape } from "./seed.ts";
 import { ALIASES, designEnv, draw, pageStates, serveKeys, session } from "./pages.ts";
 

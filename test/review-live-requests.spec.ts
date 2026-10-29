@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { Ledger, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { Evidence } from "../src/rules.ts";

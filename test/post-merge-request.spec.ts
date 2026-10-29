@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";

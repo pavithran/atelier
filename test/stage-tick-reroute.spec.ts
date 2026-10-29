@@ -1,5 +1,5 @@
-import { env, runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env, runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 // t245 through the Worker and the Ledgers: the tick re-dispatches a queued
