@@ -72,7 +72,7 @@ const spec: CommandSpec = {
       "--cancel": "with --queue, removes the queued landing; nothing queued is said and changes nothing, and a landing past its merge step is refused, naming the step",
       "--queue": "queues the landing for a runner that holds this project's registered checkout and lists the land job (t226); the runner runs atelier land ID there, under the landing lease, and resumes from the landing journal after a kill. It refuses, saying why, when the checkout is dirty or its main is not the baseline's. Nothing runs on this machine. It is refused with --dry-run, which would otherwise queue a real landing",
     },
-    example: "atelier land t3 --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier land t3 --project demo",
   },
 };
 

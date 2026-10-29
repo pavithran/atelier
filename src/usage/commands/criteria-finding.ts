@@ -23,7 +23,7 @@ const spec: CommandSpec = {
       "--verdict V": "confirmed, refuted or fixed; refuted and fixed settle the finding; required",
       "--note TEXT": "why; kept with the verdict and shown in later briefs",
     },
-    example: 'atelier criteria-finding t3 --review 4 --index 1 --verdict refuted --note "The test named in the brief observes it" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier criteria-finding t3 --review 4 --index 1 --verdict refuted --note "The test named in the brief observes it" --project demo',
   },
 };
 

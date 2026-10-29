@@ -25,7 +25,7 @@ const spec: CommandSpec = {
       "--as H/M": "the harness/model recording the decision for the developer, kept beside them as its acting model",
       "--standing KEY": "a standing instruction in place of the text, KEY followed by its VALUE: queue-landable on|off, reask-on-resubmit on|off, post-merge-reviewer H/M|off, notice-delay MINUTES; fast mode only",
     },
-    example: 'atelier decide "Every change is reviewed by a model of another company" --quote "another company reviews everywhere" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier decide "Every change is reviewed by a model of another company" --quote "another company reviews everywhere" --project demo',
   },
 };
 

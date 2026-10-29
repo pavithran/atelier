@@ -15,7 +15,7 @@ const spec: CommandSpec = {
       "--merged": "runs the checks on the head merged with main as it is now, in a temporary merge commit that is never pushed; the result is recorded against both revisions",
       "--fresh": "runs every command, ignoring a matching passing result already recorded",
     },
-    example: "atelier check --merged",
+    example: "atelier check --merged --as claude-code/opus-5.5",
   },
   rest: true,
   localCheck: true,

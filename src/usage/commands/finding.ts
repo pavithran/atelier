@@ -27,7 +27,7 @@ const spec: CommandSpec = {
       "--note TEXT": "why; kept with the verdict",
       "--as H/M": "the harness/model recording the verdict for the developer, kept beside them as its acting model",
     },
-    example: 'atelier finding t3 --head 0123456789abcdef0123456789abcdef01234567 --index 2 --verdict confirmed --note "fixed in t9"',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier finding t3 --head 0123456789abcdef0123456789abcdef01234567 --index 2 --verdict confirmed --note "fixed in t9"',
   },
 };
 

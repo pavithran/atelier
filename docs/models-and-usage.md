@@ -7,9 +7,9 @@ export ATELIER_ACTING=claude-code/opus-5.5
 ```
 
 Use your own registered harness/model. Owner commands such as `ship`,
-`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
-`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
-or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
 name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 The cross-company rules below describe the default policy. With

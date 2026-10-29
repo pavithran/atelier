@@ -17,7 +17,7 @@ const spec: CommandSpec = {
       "--quote WORDS": "the developer's words that approve it, kept as a field of the approval with the model named by --as",
       "--expires DURATION": "how long it stands, from 1m to 30d; 24h unless given",
     },
-    example: "atelier approve deploy --head 0123456789abcdef0123456789abcdef01234567 --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier approve deploy --head 0123456789abcdef0123456789abcdef01234567 --project demo",
   },
 };
 

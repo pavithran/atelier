@@ -7,9 +7,9 @@ export ATELIER_ACTING=claude-code/opus-5.5
 ```
 
 Use your own registered harness/model. Owner commands such as `ship`,
-`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
-`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
-or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
 name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 This walks one goal through Atelier's orchestrator, from the developer
@@ -48,7 +48,7 @@ atelier models add glm-5.3 --harness opencode --where home --as claude-code/opus
 **Register the project.** In the demo checkout:
 
 ```sh
-ATELIER_ACTING=claude-code/opus-5.5 atelier init --name demo --title "Demo" --check "npm test" --protect "src/rules.ts"
+ATELIER_ACTING=claude-code/opus-5.5 atelier init --name demo --title "Demo" --check "npm test" --protect "src/rules.ts" --commit-name "Demo User" --commit-email demo@example.com
 ```
 
 `init` creates the project's bare repository on the server, the baseline, pushes the current
@@ -83,9 +83,25 @@ brief, plan and verdict files; `cli/runner-config.mjs` selects them when
     { "agent": "opencode", "models": ["glm-5.3"], "env": ["ZAI_API_KEY"] },
     { "agent": "claude-code", "models": ["opus-5.5"] }
   ],
-  "jobs": ["build", "plan", "review"]
+  "jobs": ["build", "plan", "review"],
+  "tokens": {
+    "glm-5.3": "agent.glm-5.3",
+    "opus-5.5": "agent.opus-5.5"
+  }
 }
 ```
+
+In the developer session, issue each registered reviewer's agent token:
+
+```sh
+atelier token issue --as opencode/glm-5.3 --project demo --days 30
+atelier token issue --as claude-code/opus-5.5 --project demo --days 30
+```
+
+Store each printed token under the corresponding secret name in `tokens`
+(`agent.glm-5.3` or `agent.opus-5.5`), using the
+[reviewer token instructions](runners.md#reviewers-post-under-their-own-agent-token).
+Runner credentials cannot post review verdicts.
 
 Issue a runner credential with `atelier token issue --runner home:studio
 --project demo --days 30` in the developer session. In a separate terminal,

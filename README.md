@@ -7,9 +7,9 @@ export ATELIER_ACTING=claude-code/opus-5.5
 ```
 
 Use your own registered harness/model. Owner commands such as `ship`,
-`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
-`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
-or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
 name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 **Git keeps the code. Atelier brings the receipts.**
@@ -270,7 +270,7 @@ uses the public origin the tunnel serves.
 with `npm test`:
 
 ```sh
-atelier init --title "My project" --check "npm test" --as claude-code/opus-5.5
+atelier init --title "My project" --check "npm test" --commit-name "Demo User" --commit-email demo@example.com --as claude-code/opus-5.5
 ```
 
 `init` creates the project's bare repository on the server, pushes the current
@@ -305,12 +305,15 @@ of its own (see [Further setup](#further-setup)).
 **6. Land it.** Back in the project checkout:
 
 ```sh
-atelier land t1 --reviewer codex/gpt-6-astra --as claude-code/opus-5.5
+atelier land t1 --as claude-code/opus-5.5
 ```
 
-`land` checks the task's head and asks the named reviewer, all
-without the project's landing lease. If approval is missing, it records a
-land request and stops without waiting. Run it again after approval. Once
+`land` checks the task's head without the project's landing lease.
+This task needs no review if it changes only unprotected paths. When the
+gate requires a review and no approval covers the head, name a qualifying
+reviewer with `--reviewer H/M`; a live runner or local runner config with
+that model and its agent token must be able to serve it. If approval is
+missing, it records a land request and stops without waiting. Run it again after approval. Once
 the head is approved (or needs no review) it takes the lease for the merge alone, accepts the task, merges it
 into the checkout with `--no-ff`, runs the required checks on the merged
 tree, and pushes the merge to the project's branch on the server with a
@@ -372,8 +375,9 @@ gate, check classes and checks that apply to some paths.
 
 [docs/setup.md](docs/setup.md) holds every detail of this section.
 
-- **Agent tokens.** Give each agent its own token, bound to one actor and
-  shown once: `atelier token issue --as codex/gpt-6-astra --project
+- **Agent tokens.** Register the actor first with
+  `ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where cloud`.
+  Then give it a token, bound to one actor and shown once: `atelier token issue --as codex/gpt-6-astra --project
   my-project --days 30 --label "Task runner"`, then `atelier token ls` and
   `atelier token revoke ID`. Set `ATELIER_TOKEN` to it in the agent's
   session. Agent tokens can claim, push, record checks and reports, submit,
@@ -538,7 +542,10 @@ or fails to fix while claiming to, a behaviour change without a test that
 covers it, docs or help that now contradict the code, a breaking change to a
 command, route or API field without a migration, or a visible regression on a
 user-facing page; anything else is a follow-up. `atelier init --review-tier
-H/M,H/M` names a top tier of reviewers that reviews protected changes when a tier model qualifies under the family policy.
+H/M,H/M` names a top tier of reviewers. A qualifying tier model's gate
+review serves both. When a separate tier review is needed, Atelier records
+the need and candidates. Request it with
+`atelier review-request ID --reviewer H/M --tier-review`.
 
 The developer records a verdict on each finding with `atelier finding ID --head
 SHA --index N --verdict confirmed|refuted|fixed`. A later review of the task

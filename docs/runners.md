@@ -7,9 +7,9 @@ export ATELIER_ACTING=claude-code/opus-5.5
 ```
 
 Use your own registered harness/model. Owner commands such as `ship`,
-`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
-`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
-or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
 name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 A runner is a program that asks the Atelier server for work and runs a coding
@@ -264,6 +264,7 @@ harnesses themselves and the credentials, which live in the credential store
    it as `agent.MODEL` (Reviewers post under their own agent token, below):
 
    ```sh
+   ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where home
    atelier token issue --as codex/gpt-6-astra --project atelier --days 90 --label "home:NAME reviews"
    security add-generic-password -U -T /usr/bin/security -s atelier.agent.gpt-6-astra -a "$USER" -w
    ```
@@ -673,11 +674,13 @@ or as `~/.config/atelier/...`), which must be readable by the user alone
 }
 ```
 
-The lead developer issues and stores each reviewer's token once, as the
-developer, on the machine that runs the reviews:
+The lead developer registers each reviewer, then issues and stores its token
+on the machine that runs the reviews. `token issue --as H/M` also sends H/M
+as the acting model, overriding `ATELIER_ACTING`:
 
 ```sh
 # Issue: bound to one actor and, here, one project; shown once.
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where home
 atelier token issue --as codex/gpt-6-astra --project atelier --days 90 --label "home:studio reviews"
 
 # Store the value it printed, by the name the config gives. In the macOS

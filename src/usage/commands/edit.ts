@@ -41,7 +41,7 @@ const spec: CommandSpec = {
       "--context TEXT": 'replaces the context every reviewer\'s brief carries, at most 2000 characters; --context "" clears it',
       "--blocked-by tA,tB": 'replaces the tasks this one waits on, comma-separated; --blocked-by "" clears them. The task is not offered, claimed or accepted until each is merged',
     },
-    example: 'atelier edit t3 --stop-when "The schema needs to change" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier edit t3 --stop-when "The schema needs to change" --project demo',
   },
 };
 

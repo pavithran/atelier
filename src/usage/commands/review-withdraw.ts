@@ -16,7 +16,7 @@ const spec: CommandSpec = {
       "--reason TEXT": "why the request is withdrawn; required, kept with the event",
       "--request N": "the request to withdraw, by number; defaults to the newest request at the task's head",
     },
-    example: 'atelier review-withdraw t3 --reason "No runner serves codex/gpt-6-astra" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier review-withdraw t3 --reason "No runner serves codex/gpt-6-astra" --project demo',
   },
 };
 

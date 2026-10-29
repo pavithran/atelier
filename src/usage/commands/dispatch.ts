@@ -22,7 +22,7 @@ const spec: CommandSpec = {
       "--release": "takes a task a builder holds live (claimed): releases that claim, then queues the task as usual; without it the dispatch is refused and nothing changes",
       "--overlap-ok": "records a core-file hold override and names the hold released, if any; preserves omitted fields of an existing dispatch without suggesting a builder. Does not bypass refuseOverlap; kept with this dispatch only",
     },
-    example: 'atelier dispatch t3 --to home --agent codex --model gpt-6 --note "Keep it small" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier dispatch t3 --to home --agent codex --model gpt-6 --note "Keep it small" --project demo',
   },
 };
 

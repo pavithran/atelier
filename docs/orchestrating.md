@@ -7,9 +7,9 @@ export ATELIER_ACTING=claude-code/opus-5.5
 ```
 
 Use your own registered harness/model. Owner commands such as `ship`,
-`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
-`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
-or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
 name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 The cross-company rules below describe the default policy. With
@@ -17,7 +17,8 @@ The cross-company rules below describe the default policy. With
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
 criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
+models qualify. Atelier records the need and candidates for a separate tier
+review; the developer or orchestrator must request it.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
@@ -964,10 +965,11 @@ claims and verdicts recheck that standing before they can affect the queue.
 The claim binds the request to main's head as the server reads it from the
 project's repository then; a claim made while it cannot be read is refused and the
 request stays open. The runner clones the task's recorded head into a
-scratch folder of its own, merges that main into it as `atelier land` does
-(main moving before the merge makes the pre-review stale), raising the route level
-and regenerating the fixtures, and records the main head it merged and the
-tree it prepared. The reviewer's brief names the merged tree's tests for the
+scratch folder of its own and merges that main into it
+(main moving before the merge makes the pre-review stale). It regenerates
+the declared fixtures and records the main head it merged and the tree it
+prepared. `ROUTE_LEVEL` stays frozen for named capabilities. A landing
+merges the task's head into the registered checkout. The reviewer's brief names the merged tree's tests for the
 changed files, the project's required checks to run there, the task's
 recorded results (from its own tree, not the merged one) and the evidence
 that is missing. Nothing is pushed, and the builder's workspace is never touched.

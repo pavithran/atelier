@@ -15,7 +15,7 @@ const spec: CommandSpec = {
       "--request N": "the current claim's request number; required for agents and runners",
       "--note TEXT": "why the review request is let go; kept with the event",
     },
-    example: 'atelier review-release t3 --request 7 --note "The harness wrote no verdict" --project demo',
+    example: 'atelier review-release t3 --request 7 --note "The harness wrote no verdict" --project demo --as claude-code/opus-5.5',
   },
 };
 

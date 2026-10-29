@@ -18,7 +18,7 @@ const spec: CommandSpec = {
       "--quote WORDS": "the developer's own words directing this; with --as H/M, the model acting on them, they let the developer token alone do it, and both are recorded on the event",
       "--as H/M": "with --quote, the harness/model acting on the developer's words; required with --quote",
     },
-    example: "atelier unblock t3 --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier unblock t3 --quote \"Unblock t3; the schema is settled\" --project demo",
   },
 };
 

@@ -51,7 +51,7 @@ const spec: CommandSpec = {
       "--abort ID": "with import, takes back the import that stopped",
       "--project NAME": "the project; this checkout's or workspace's project unless given",
     },
-    example: "atelier ledger bookmark --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier ledger bookmark --project demo",
   },
 };
 

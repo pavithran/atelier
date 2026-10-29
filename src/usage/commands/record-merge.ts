@@ -26,7 +26,7 @@ const spec: CommandSpec = {
       "--note TEXT": "what the developer says of the merge, kept with the record",
       "--shipped TEXT": "the merge's declared protected actions already ran; TEXT says what ran, such as a deploy version id, and is kept with the run",
     },
-    example: "atelier record-merge t627 --merge a81991fdcf2aef7d75fbf03af9e51c1bee73b703 --review codex/gpt-6-astra=approve@3f313d3b63a07524b807bb6dccce67b615f2b595@2026-10-13 --project atelier",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier record-merge t627 --merge a81991fdcf2aef7d75fbf03af9e51c1bee73b703 --review codex/gpt-6-astra=approve@3f313d3b63a07524b807bb6dccce67b615f2b595@2026-10-13 --project atelier",
   },
 };
 

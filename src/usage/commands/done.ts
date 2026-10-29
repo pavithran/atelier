@@ -18,7 +18,7 @@ const spec: CommandSpec = {
     flags: {
       "--json": "prints the outcome as one object; the progress goes to stderr",
     },
-    example: 'atelier done "The parser takes the new form"',
+    example: 'atelier done "The parser takes the new form" --as claude-code/opus-5.5',
   },
   localCheck: true,
 };

@@ -134,7 +134,8 @@ export const COMMAND_USAGE: Record<string, string> = Object.fromEntries(Object.k
 // Shared owner path for init's project section and every built-in guide.
 export const OWNER_LANDING = `For developer-token writes below, set \`export ATELIER_ACTING=H/M\` to the
 registered model acting for you. Owner commands such as \`ship\`, \`wrap\`,
-\`branch push|fetch\` and \`plan show\` keep the owner actor; do not give them
+\`branch push|fetch\`, \`plan show\`, \`projects\` and \`import-tasks\` keep
+the owner actor; do not give them
 \`--as\`. Builder and reviewer commands name their actor with \`--as H/M\`.
 Leave ATELIER_ACTING unset with agent and runner tokens.
 

@@ -17,7 +17,7 @@ const spec: CommandSpec = {
       "--note TEXT": "why no verdict could be read, as the parser said it; kept with the reply",
       "--reply-file PATH": "the file the harness wrote the reply to; its last 100 KB is kept; required",
     },
-    example: 'atelier review-unparsable t3 --head 0123456789abcdef0123456789abcdef01234567 --note "No VERDICT line" --reply-file verdict.txt --project demo',
+    example: 'atelier review-unparsable t3 --head 0123456789abcdef0123456789abcdef01234567 --note "No VERDICT line" --reply-file verdict.txt --project demo --as claude-code/opus-5.5',
   },
 };
 

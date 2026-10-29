@@ -7,9 +7,9 @@ export ATELIER_ACTING=claude-code/opus-5.5
 ```
 
 Use your own registered harness/model. Owner commands such as `ship`,
-`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
-`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
-or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
 name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 The README's "Quickstart" section gives the steps that take a fresh clone to a
@@ -206,11 +206,14 @@ way.
 Give each agent its own token from a developer session:
 
 ```sh
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where cloud
 atelier token issue --as codex/gpt-6-astra --project my-project --days 30 --label "Task runner"
 atelier token ls
 ATELIER_ACTING=claude-code/opus-5.5 atelier token revoke ID
 ```
 
+`token issue --as H/M` uses H/M for both the new token actor and the
+acting header, overriding `ATELIER_ACTING`; register H/M before issuing.
 Issuing prints the token once. Set `ATELIER_TOKEN` to that value in the
 agent's session. The issue command never writes it to a file. The CLI
 obtains the bound actor from the server, so `--as` is optional and must

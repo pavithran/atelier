@@ -19,7 +19,7 @@ const spec: CommandSpec = {
       "--as H/M": "with --quote, the harness/model acting on the developer's words; required with --quote",
       "--until YYYY-MM-DD": "the last UTC day the wait is expected to hold, today or later; refused if it is missing, not a real calendar date or in the past, and nothing is recorded then. From the next day status shows the block as expired, still blocked",
     },
-    example: 'atelier block t3 "Waiting on the schema decision" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier block t3 "Waiting on the schema decision" --quote "Block t3 until the schema is settled" --project demo',
   },
 };
 

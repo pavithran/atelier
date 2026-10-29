@@ -26,7 +26,7 @@ const spec: CommandSpec = {
       "--note TEXT": "the developer's word on the acceptance, kept with it in the ledger",
       "--as H/M": "with --override-review, the harness/model overriding for the developer, kept beside them as its acting model; required with --quote",
     },
-    example: "atelier accept t3 --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier accept t3 --project demo",
   },
 };
 

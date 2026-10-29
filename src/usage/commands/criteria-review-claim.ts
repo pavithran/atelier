@@ -13,7 +13,7 @@ const spec: CommandSpec = {
   flags: { runner: false },
   help: {
     flags: { "--runner home:NAME": "names the runner that claims the criteria review" },
-    example: "atelier criteria-review-claim t3 --runner home:studio --project demo",
+    example: "atelier criteria-review-claim t3 --runner home:studio --project demo --as claude-code/opus-5.5",
   },
 };
 

@@ -18,7 +18,7 @@ const spec: CommandSpec = {
       "--ref BRANCH": "the fork's branch that holds the task's work; the project's branch unless given",
       "--token-env VAR": "the environment variable holding a token that reads the fork",
     },
-    example: "atelier migrate t2 --from https://artifacts.example/relic-t2.git --token-env ARTIFACTS_TOKEN --project relic",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier migrate t2 --from https://artifacts.example/relic-t2.git --token-env ARTIFACTS_TOKEN --project relic",
   },
 };
 

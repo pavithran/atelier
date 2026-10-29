@@ -15,7 +15,7 @@ const spec: CommandSpec = {
       "--note TEXT": "why; kept with the release (from a runner, facts only)",
       "--blocked TEXT": "a validation_blocked build's report, the builder's words: blocks the task for the developer with it as the reason",
     },
-    example: 'atelier release t3 --note "Blocked on the schema"',
+    example: 'atelier release t3 --note "Blocked on the schema" --as claude-code/opus-5.5',
   },
 };
 

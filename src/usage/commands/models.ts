@@ -122,7 +122,7 @@ const spec: CommandSpec = {
       "--scope PROJECT": "with assign, the one project the assignment is for; every project when not given",
       "--replaces aN": "with assign, the standing assignment it supersedes, so two sessions cannot both replace it",
     },
-    example: "atelier models add gpt-6-astra --harness codex --where cloud",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where cloud",
   },
 };
 

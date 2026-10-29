@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Projects", line: 1, slot: 10,
       form: "projects rename OLD NEW [--release-name]",
-      about: "The developer gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every branch stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused. With `--release-name` the project also gives up OLD: it stops answering to OLD, tokens limited to OLD are limited to NEW, and a project created later under OLD is stored apart, with a ledger and a baseline repository of their own.",
+      about: "Use ATELIER_ACTING=H/M on the developer token; --as changes the actor and is refused. The developer gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every branch stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused. With `--release-name` the project also gives up OLD: it stops answering to OLD, tokens limited to OLD are limited to NEW, and a project created later under OLD is stored apart, with a ledger and a baseline repository of their own.",
     },
     {
       group: "Projects", line: 1, slot: 30,
@@ -40,7 +40,7 @@ const spec: CommandSpec = {
       "--clear-secret REASON": "move-host: clear the key-shaped lines the last refused move found, with why they are safe",
       "--quote WORDS": "move-host with --clear-secret: the developer's words that clear them",
     },
-    example: "atelier projects rename demo demo-site",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier projects rename demo demo-site",
   },
 };
 
