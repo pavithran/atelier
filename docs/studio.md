@@ -9,6 +9,7 @@ The service user `atelierd` owns everything the server writes. It has no passwor
 | Path | Owner | Holds |
 |---|---|---|
 | `/Users/atelierd` | root, group atelierd, 750 | the home; the daemon enters it but cannot rename what is in it |
+| `/Library/Atelier/lock` | root, wheel, 755 | the PID lock shared by setup, installs and rollbacks |
 | `/Library/Atelier/install-server.sh` | root, wheel, 755 | the installer `atelier ship` runs; only `setup-server.sh` changes it |
 | `/Users/atelierd/bin` | root, group atelierd | `node` and `cloudflared`, read-only to the daemon; each setup adds its own and keeps the rest |
 | `/Users/atelierd/server` | root, group atelierd | staging's code, read-only to the daemon, with `COMMIT` |
@@ -50,7 +51,7 @@ Agents run as `pavi`, so nothing `pavi` can write is ever run as root or as `ate
 2. It checks that the branch head staging reports at `/api/version` holds that commit. After a landing it does.
 3. It runs `ssh -t ai-studio sudo /Library/Atelier/install-server.sh --env staging COMMIT`. sudo asks for the administrator password on the terminal. PAVI types it there. Nothing in Atelier reads it.
 
-The installer clears the inherited environment, sets its own PATH, HOME and umask, uses fixed system command paths, and disables curl's configuration files. It takes one PID lock at `/private/var/run/atelier-install.lock` for both environments. A second run refuses; a dead process's lock is reclaimed. The lock is released on exit, after recovery.
+Setup and the installer use privileged Bash (`/bin/bash -p`), which ignores `BASH_ENV`, inherited functions and shell options. As root they discard the inherited environment (setup retains only `SUDO_USER`), set PATH, HOME to `/var/root`, umask 077 and the working directory to `/`. Service-user commands receive an empty environment with explicit HOME, PATH and locale. Health checks disable curl's configuration files. Both scripts take the same PID lock at `/Library/Atelier/lock/install.lock`, under a root-owned directory writable only by root, for both environments. A second run refuses; a dead process's lock is reclaimed. The lock is released on exit, after recovery.
 
 The installer, as root, then:
 
@@ -59,7 +60,7 @@ The installer, as root, then:
 3. Fetches each runtime package the archived lock file installs, as `atelierd`, from the npm registry, and keeps it only if its SHA-512 is the lock file's `integrity`. No install script runs. This is `npm ci --ignore-scripts` for a lock file whose packages come from the registry; the Studio has no npm of root's own, and Homebrew's belongs to `pavi`.
 4. Writes `COMMIT`.
 5. Stops the daemon, moves `server` to `server.prev` and the new release into place, starts the daemon, and waits up to 60 seconds for `/api/version` to report the commit.
-6. On a failure at any of these points it puts back what ran before: the new release moves to `server.failed`, `server.prev` comes back, and the daemon starts again. Every run first settles what an interrupted run left, including rollback moves through `server.swap`, then starts and checks the release at `server` before checking the requested commit. Every later failure also checks that this installed release answers, even if recovery failed. If it cannot start or answer, the installer prints `COULD NOT START` with the environment and log path.
+6. On a failure at any of these points it puts back what ran before: the new release moves to `server.failed`, `server.prev` comes back, and the daemon starts again. Every run first settles what an interrupted run left, including rollback moves through `server.swap`, then proceeds with the requested install or rollback even if the current release cannot answer. At exit it checks that the installed release answers, even if recovery failed. If it cannot start or answer, the installer prints `COULD NOT START` with the environment and log path.
 
 The verify step then reads `https://next.atelier.zone/api/version` and passes only when its commit is the one shipped. With `--push` ship then scans and pushes main to GitHub.
 
@@ -69,10 +70,22 @@ The deploy runs only when the server's code changed since the commit live: `src/
 
 ```
 sudo /usr/bin/install -o root -g wheel -m 700 scripts/studio/setup-server.sh scripts/studio/install-server.sh /private/var/root/
-sudo /bin/bash /private/var/root/setup-server.sh --env staging RELEASE.tar NODE ~/.config/atelier/staging-token
+sudo /bin/bash -p /private/var/root/setup-server.sh --env staging RELEASE.tar NODE ~/.config/atelier/staging-token
 ```
 
+Give setup absolute paths for RELEASE.tar, NODE and OWNER_TOKEN_COPY; it changes directory to `/` before reading inputs. Use the command above with `-p` when invoking Bash explicitly. `DRYRUN=1` is available only without root.
+
+Setup and the installer require `/Library/Developer/CommandLineTools/usr/bin/git` and `llvm-otool`. Each tool and every parent must be root-owned, carry no ACL, and deny group and other writes; symlinks are refused. They never invoke the `/usr/bin` Xcode dispatch shims, and `DEVELOPER_DIR` is unset. If Command Line Tools are missing, PAVI installs them with:
+
+```
+xcode-select --install
+```
+
+Setup checks the copied node with `file` before reading its dependencies through the verified `llvm-otool`. It must be a Mach-O executable with a nonempty system-library list and no tool errors. The server's PATH puts the verified Command Line Tools ahead of `/usr/bin` for git subprocesses.
+
 Setup refuses a source file or any parent that is a symlink, has an ACL, is writable by a group or others, or is owned by anyone but root. It installs the sibling `install-server.sh` at `/Library/Atelier/install-server.sh`; an installer in `RELEASE.tar` is ignored. This installs what the 2026-10-28 setup lacked. Updating the installer requires PAVI to review and copy the pair again and rerun setup from that protected directory. A ship cannot replace it.
+
+Setup refuses unresolved `bin/node.old` or this environment's `server.old` before stopping jobs. It never treats the shared node backup as permission to delete the other environment's server. Recovery records the swap before moving code, stops all service jobs before restoring files, and checks `/api/version` after restarting the restored server. If shutdown or restoration fails, it stops recovery and retains the saved inputs and plist for repair.
 
 At the cut-over, the ship file names `--env production` and `https://atelier.zone/api/version`. The installer then works on `server-production`, `repos/production` and `zone.atelier.server`.
 
@@ -109,7 +122,7 @@ Requests through the tunnel arrive on the tailnet listener. A Git remote is give
 
 Not run yet. At the cut-over, with PAVI's go, in this order:
 
-1. `sudo /bin/bash /private/var/root/setup-server.sh --env production RELEASE.tar NODE ~/.config/atelier/production-token`, after reviewing and copying the pair as above. It stops every `atelierd` job (staging's server, the tunnel, the backups), checks nothing of `atelierd` runs, makes `server-production`, the production daemon on port 4100 and production's owner token, puts node into `bin/` beside `cloudflared`, and starts again every job that ran. On a failure it puts its code and plist back and starts them all.
+1. `sudo /bin/bash -p /private/var/root/setup-server.sh --env production RELEASE.tar NODE ~/.config/atelier/production-token`, after reviewing and copying the pair as above. It stops every `atelierd` job (staging's server, the tunnel, the backups), checks nothing of `atelierd` runs, makes `server-production`, the production daemon on port 4100 and production's owner token, puts node into `bin/` beside `cloudflared`, and starts again every job that ran. On a failure it puts its code and plist back and starts them all.
 2. `sudo bash scripts/studio/setup-tunnel.sh --production CLOUDFLARED CREDENTIALS.json ACCESS_AUD`, with the "atelier owner" application's audience tag. It stops every `atelierd` job the same way, adds `atelier.zone` to the tunnel, writes production's Access settings, gives production the origin `https://atelier.zone`, and starts again every job that ran. It does not touch DNS.
 3. Detach `atelier.zone` from the 1.0 Worker's custom domain, then point it at the tunnel: either run step 2 again with `--route-dns ORIGIN_CERT`, with a cloudflared origin certificate for the `atelier.zone` zone, or change the record by hand. Only `--route-dns` makes the script touch DNS.
 4. Change the ship file to `--env production` and production's version URL.
@@ -238,6 +251,6 @@ Work recorded after the backup was made (at most a day) is lost from the Ledger;
 
 `setup-backup.sh` and `setup-restore.sh` have been run only with `DRYRUN=1`; neither has run on the Studio.
 
-`test/ship-studio.test.mjs` runs `install-server.sh` for real, not as root, against a scratch home holding a bare repository, with stand-in `launchctl`, `lsof`, `curl`, `sudo` and `mv`. It shows that ship passes the installer the environment and the commit alone; that the installer builds the release from the repository with `COMMIT`, refuses a commit off the project's branch or an archive holding a link, and keeps runtime packages only when their SHA-512 matches the lock file; and that a failure at each point of the swap and of a rollback (each move, the daemon's start, the wait) puts back the release that ran. It also kills the installer after each stop, move and start of an install or rollback, then requests an invalid commit and checks that the installed service answers; overlaps two runs to check the lock; and checks environment clearing and curl configuration suppression. These tests use fakes and run without root. `test/ship.test.mjs` runs `atelier ship` with main's ship file and a stand-in `ssh`. `test/setup-server.test.mjs` shows that staging's setup still makes the user, directories, token and plist the 2026-10-28 script made (kept in `test/fixtures/studio/`), that setup checks both source files and every parent for root ownership, permissions, symlinks and ACLs, installs only the sibling installer at `/Library/Atelier` and adds node to `bin/` without touching the rest, what production gets instead, and, through the scripts' own functions, that production's setup and tunnel step stop every `atelierd` job and start again those that ran, on a failure too. `test/version-commit.test.mjs` and `test/claim-branch.test.mjs` cover the commit at `/api/version` and the remote chosen by Host.
+`test/ship-studio.test.mjs` runs `install-server.sh` for real, not as root, against a scratch home holding a bare repository, with stand-in `launchctl`, `lsof`, `curl`, `sudo` and `mv`. It shows that ship passes the installer the environment and the commit alone; that the installer builds the release from the repository with `COMMIT`, refuses a commit off the project's branch or an archive holding a link, and keeps runtime packages only when their SHA-512 matches the lock file; and that a failure at each point of the swap and of a rollback (each move, the daemon's start, the wait) puts back the release that ran. It also kills the installer after each stop, move and start of an install or rollback, then requests an invalid commit and checks that the installed service answers; overlaps two runs to check the lock; and checks environment clearing and curl configuration suppression. It also replaces a live release that cannot answer, through both rollback and a fresh install. These tests use fakes and run without root. `test/ship.test.mjs` runs `atelier ship` with main's ship file and a stand-in `ssh`. `test/setup-server.test.mjs` shows that staging's setup still makes the user, directories, token and server settings the 2026-10-28 script made (kept in `test/fixtures/studio/`), with the verified Command Line Tools added to the server PATH, that setup checks both source files and every parent for root ownership, permissions, symlinks and ACLs, installs only the sibling installer at `/Library/Atelier` and adds node to `bin/` without touching the rest, what production gets instead, and, through the scripts' own functions, that production's setup and tunnel step stop every `atelierd` job and start again those that ran, on a failure too. Additional setup tests cover hostile `BASH_ENV`, environment scrubbing, script shims, empty or erroneous library listings, missing tools, unsafe lock parents, lock contention, shared leftover backups, failed backup moves, failed shutdown and failed recovery health checks. `test/version-commit.test.mjs` and `test/claim-branch.test.mjs` cover the commit at `/api/version` and the remote chosen by Host.
 
 `install-server.sh`, `setup-server.sh --env production` and the tunnel script's production step have not run on the Studio.

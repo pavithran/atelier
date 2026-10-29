@@ -84,7 +84,7 @@ printf '{"commit":"%s","main":null}' "$(cat "$h/server/COMMIT")"`);
   tool("sudo", `echo "sudo $*" >> "$h/sudo.log"
 [ "$1" = "${INSTALLER}" ] || { echo "not the installer: $1" >&2; exit 9; }
 shift
-exec /bin/bash "$TEST_INSTALLER" "$@"`);
+exec /bin/bash -p "$TEST_INSTALLER" "$@"`);
   tool("mv", `last=; for a in "$@"; do last=$a; done
 if [ -n "$FAIL_MV_TO" ] && [ "$last" = "$FAIL_MV_TO" ] && [ ! -e "$h/mv-failed" ]; then : > "$h/mv-failed"; echo "mv: stand-in failure to $last" >&2; exit 1; fi
 /bin/mv "$@" || exit $?
@@ -100,7 +100,7 @@ exec /usr/bin/git "$@"`);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ATELIER_INSTALL_TEST_HOME: home, ATELIER_INSTALL_TEST_WAIT: "2", TEST_INSTALLER: SCRIPT };
   const install = (argv, extra = {}) => new Promise((done) => {
     if (extra.HOLD_ARCHIVE) writeFileSync(join(home, "hold-archive"), "");
-    const child = spawn("/bin/bash", [SCRIPT, ...argv], { env: { ...env, ...extra } });
+    const child = spawn("/bin/bash", ["-p", SCRIPT, ...argv], { env: { ...env, ...extra } });
     let stdout = "", stderr = "";
     child.stdout.on("data", (d) => { stdout += d; });
     child.stderr.on("data", (d) => { stderr += d; });
@@ -378,7 +378,7 @@ test("rollback swaps the two both ways, and recovers from a failure at each of i
 test("the install script runs only as root, unless a test names its scratch home", () => {
   if (process.getuid?.() === 0) return;
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("ATELIER_INSTALL_TEST")));
-  const r = spawnSync("/bin/bash", [SCRIPT, "--env", "staging", "--rollback"], { env, encoding: "utf8" });
+  const r = spawnSync("/bin/bash", ["-p", SCRIPT, "--env", "staging", "--rollback"], { env, encoding: "utf8" });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /run as root \(sudo\)/);
 });
@@ -386,10 +386,10 @@ test("the install script runs only as root, unless a test names its scratch home
 
 test("root discards inherited configuration before commands; health curl disables config first", { skip: darwin }, () => {
   const text = readFileSync(SCRIPT, "utf8");
-  const prelude = text.slice(text.indexOf('if builtin test "$EUID"'), text.indexOf("set -euo pipefail")).replace('builtin test "$EUID" = 0', 'builtin true');
+  const prelude = text.slice(text.indexOf('if builtin test "$EUID"'), text.indexOf("# Atelier 2.0")).replace('builtin test "$EUID" = 0', 'builtin true');
   const h = scratch("hostile-env");
   writeFileSync(join(h, "id"), `#!/bin/sh\necho hijacked > '${h}/ran'\n`); chmodSync(join(h, "id"), 0o755);
-  const r = spawnSync("/bin/bash", ["-c", `${prelude}\n/usr/bin/env`], {
+  const r = spawnSync("/bin/bash", ["-p", "-c", `${prelude}\n/usr/bin/env`], {
     env: { PATH: h, HOME: h, CURL_HOME: h, XDG_CONFIG_HOME: h, NODE_OPTIONS: "--import=evil", ATELIER_INSTALL_TEST_HOME: h, GIT_CONFIG_COUNT: "1" }, encoding: "utf8",
   });
   assert.equal(r.status, 0, r.stderr);
@@ -449,4 +449,17 @@ test("a second overlapping installer refuses without changing the first run's lo
   const r = await first;
   assert.equal(r.status, 0, r.stderr);
   assert.ok(!existsSync(join(s.home, "install.lock")));
+});
+
+test("rollback and a fresh install recover even when the current release cannot answer", { skip: darwin }, async () => {
+  for (const rollback of [true, false]) {
+    const c = checkout(), s = studio(c);
+    await installed(s, c.head());
+    writeFileSync(join(s.home, "server/BROKEN"), "broken live release");
+    const r = await s.install(["--env", "staging", rollback ? "--rollback" : c.head()]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(s.commitOf("server"), rollback ? OLD : c.head());
+    assert.ok(s.loaded());
+    assert.ok(!existsSync(join(s.home, "server/BROKEN")));
+  }
 });

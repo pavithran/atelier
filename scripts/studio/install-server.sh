@@ -1,4 +1,15 @@
-#!/bin/bash
+#!/bin/bash -p
+# Privileged bash ignores BASH_ENV, imported functions and shell options.
+if builtin test "$EUID" = 0; then
+  for inherited in $(builtin compgen -e); do
+    builtin export -n "$inherited"
+    builtin unset "$inherited" 2>/dev/null || :
+  done
+  export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
+fi
+unset DEVELOPER_DIR
+umask 077
+cd /
 # Atelier 2.0 on the Studio: install the server at a commit of the project's
 # branch, or roll back to the release before (design-branches-2026-10-28.md,
 # section 4.1; plan task 9). setup-server.sh installs this script, root's, at
@@ -35,8 +46,8 @@
 # On a failure the daemon is stopped, a new release in place moves to
 # SERVER.failed, SERVER.prev moves back if SERVER is missing, and what is
 # there starts again. Every run first settles what an interrupted run left,
-# then starts and checks SERVER before preparing another release. Failure
-# exits also check SERVER, or report COULD NOT START. A PID lock serializes
+# then prepares the requested release without requiring broken code to
+# answer. Failure exits also check SERVER, or report COULD NOT START. A PID lock serializes
 # installs and rollbacks across both environments.
 # --rollback swaps SERVER and SERVER.prev the same way.
 #
@@ -50,14 +61,6 @@
 # packages from ATELIER_INSTALL_TEST_REGISTRY; as root none of these is read.
 # No external command runs before the privileged environment is discarded.
 # Test controls are available only to a non-root process.
-if builtin test "$EUID" = 0; then
-  for inherited in $(builtin compgen -A function); do builtin unset -f "$inherited"; done
-  for inherited in $(builtin compgen -e); do
-    builtin export -n "$inherited"
-    builtin unset "$inherited" 2>/dev/null || :
-  done
-  export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
-fi
 set -euo pipefail
 umask 077
 # Nothing here reads the caller's directory, which atelierd may not enter.
@@ -91,7 +94,7 @@ else
 fi
 
 SUDO=/usr/bin/sudo
-GIT=/usr/bin/git
+GIT=/Library/Developer/CommandLineTools/usr/bin/git
 STAT=/usr/bin/stat
 LS=/bin/ls
 SED=/usr/bin/sed
@@ -154,12 +157,47 @@ safe_dir() {
   [ $(( 0$("$STAT" -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
   ! "$LS" -lde "$d" | "$SED" -n '2,$p' | "$GREP" -q . || fail "$d carries an ACL"
 }
+trusted_source() {
+  local path=$1 part current= rest
+  case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+  rest=${path#/}
+  trusted_entry / || return 1
+  while [ -n "$rest" ]; do
+    part=${rest%%/*}
+    if [ "$rest" = "$part" ]; then rest=; else rest=${rest#*/}; fi
+    case "$part" in ''|.) continue ;; ..) echo "install: source path contains .." >&2; return 1 ;; esac
+    current="$current/$part"
+    trusted_entry "$current" || return 1
+  done
+  [ -f "$path" ] || { echo "install: $path is not a source file" >&2; return 1; }
+}
+trusted_entry() {
+  local path=$1 listing
+  [ ! -L "$path" ] && { [ -d "$path" ] || [ -f "$path" ]; } || { echo "install: $path is not a plain source" >&2; return 1; }
+  [ "$(stat -f %Su "$path")" = root ] || { echo "install: $path is not root-owned" >&2; return 1; }
+  [ $(( 0$(stat -f %Lp "$path") & 022 )) = 0 ] || { echo "install: $path is group/world-writable" >&2; return 1; }
+  listing=$(ls -lde "$path") || return 1
+  [ -z "$(printf '%s\n' "$listing" | sed -n '2,$p')" ] || { echo "install: $path carries an ACL" >&2; return 1; }
+}
+
+# Never use Apple's xcode-select dispatch shims as root or atelierd.
+OTOOL=/Library/Developer/CommandLineTools/usr/bin/llvm-otool
+check_tools() {
+  local tool
+  for tool in "$GIT" "$OTOOL"; do
+    [ -x "$tool" ] || fail "missing $tool; PAVI can install Command Line Tools with: xcode-select --install"
+    trusted_source "$tool" || fail "unsafe tool $tool; repair its ownership/permissions before continuing"
+  done
+}
+
+[ -n "$TEST" ] || { check_tools; trusted_source "$NODE" || fail "unsafe node at $NODE"; }
+
 # One lock for both environments: their service home is shared. shlock
 # atomically acquires a PID file and reclaims it only if that PID is dead.
-LOCK=/private/var/run/atelier-install.lock
+LOCK=/Library/Atelier/lock/install.lock
 if [ -n "$TEST" ]; then LOCK=$HOME_DIR/install.lock
 else
-  for d in / /private /private/var /private/var/run; do
+  for d in / /Library /Library/Atelier /Library/Atelier/lock; do
     safe_dir "$d"
     [ "$("$STAT" -f %Su "$d")" = root ] || fail "$d is not root-owned"
   done
@@ -330,7 +368,6 @@ if [ -e "$S.swap" ] || { [ ! -e "$S" ] && [ -e "$S.prev" ]; }; then
   stop_daemon || fail "cannot stop $LABEL to settle an interrupted run"
 fi
 settle || fail "the releases left by an earlier run could not be settled"
-ensure_running || fail "the installed release could not be started before installation"
 
 if [ -n "$ROLLBACK" ]; then
   [ -d "$S.prev" ] || fail "there is no previous release to roll back to ($S.prev)"

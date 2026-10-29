@@ -1,10 +1,23 @@
-#!/bin/bash
+#!/bin/bash -p
+# Privileged bash ignores BASH_ENV, imported functions and shell options.
+# Only SUDO_USER is retained by setup to write the developer's token copy.
+if builtin test "$EUID" = 0; then
+  for inherited in $(builtin compgen -e); do
+    case "$inherited" in SUDO_USER) continue ;; esac
+    builtin export -n "$inherited"
+    builtin unset "$inherited" 2>/dev/null || :
+  done
+  export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
+fi
+unset DEVELOPER_DIR
+umask 077
+cd /
 # Atelier 2.0 on the Studio: the one-time setup of the atelierd user and one
 # server, staging or production (design-branches-2026-10-28.md, sections 4.1
 # and 4.11; plan task 9). Run as root on the Studio, by the developer, who
 # types the administrator password at sudo's prompt:
 #
-#   sudo bash setup-server.sh --env staging|production RELEASE.tar NODE OWNER_TOKEN_COPY
+#   sudo /bin/bash -p setup-server.sh --env staging|production RELEASE.tar NODE OWNER_TOKEN_COPY
 #
 # RELEASE.tar       the server: `git archive` of the 2.0 branch plus node_modules/jose
 # NODE              the node binary to install for the daemon
@@ -92,7 +105,7 @@ write_plist() {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>$HOME_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>$HOME_DIR/bin:/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME_DIR</string>
     <key>PUBLIC_ORIGIN</key><string>http://$BIND:$PORT</string>
   </dict>
@@ -120,7 +133,7 @@ stop_all() {
   local job
   for job in $JOBS; do
     launchctl print "system/$job" >/dev/null 2>&1 || continue
-    launchctl bootout "system/$job" 2>/dev/null
+    launchctl bootout "system/$job" 2>/dev/null || return 1
     for _ in $(seq 1 20); do launchctl print "system/$job" >/dev/null 2>&1 || break; sleep 0.5; done
     if launchctl print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop" >&2; return 1; fi
   done
@@ -140,20 +153,31 @@ start_others() {
 # After a failure once the jobs were stopped: the code and plist this run
 # replaced go back, and every job that ran starts again. It decides by its
 # own checks, not by set -e.
+CURL=/usr/bin/curl
+health() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if lsof -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
+      && "$CURL" -q -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" > "$WORK/version.json" 2>/dev/null \
+      && plutil -convert xml1 -o /dev/null "$WORK/version.json" >/dev/null 2>&1; then
+      if [ ! -f "$HOME_DIR/$SERVER/COMMIT" ] || [ "$(plutil -extract commit raw -o - "$WORK/version.json" 2>/dev/null)" = "$(cat "$HOME_DIR/$SERVER/COMMIT")" ]; then return 0; fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 recover() {
   [ -n "$stopped" ] || return 0
   set +e
   echo "setup: putting back what ran before" >&2
-  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
-    launchctl bootout "system/$LABEL" 2>/dev/null
-    for _ in $(seq 1 20); do launchctl print "system/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
-  fi
+  if ! stop_all; then echo "setup: recovery bootout failed; code left in place" >&2; return 1; fi
   if [ -n "$swapped" ]; then
-    if [ -d "$HOME_DIR/$SERVER.old" ]; then rm -rf "$HOME_DIR/$SERVER" && mv "$HOME_DIR/$SERVER.old" "$HOME_DIR/$SERVER" || echo "setup: could not put $SERVER.old back" >&2; fi
-    if [ -f "$HOME_DIR/bin/node.old" ]; then mv -f "$HOME_DIR/bin/node.old" "$HOME_DIR/bin/node" || echo "setup: could not put bin/node.old back" >&2; fi
+    if [ -d "$HOME_DIR/$SERVER.old" ]; then rm -rf "$HOME_DIR/$SERVER" && mv "$HOME_DIR/$SERVER.old" "$HOME_DIR/$SERVER" || { echo "setup: could not put $SERVER.old back" >&2; return 1; }; fi
+    if [ -f "$HOME_DIR/bin/node.old" ]; then mv -f "$HOME_DIR/bin/node.old" "$HOME_DIR/bin/node" || { echo "setup: could not put bin/node.old back" >&2; return 1; }; fi
   fi
-  if [ -n "${WORK:-}" ] && [ -f "$WORK/old.plist" ]; then install -o root -g wheel -m 644 "$WORK/old.plist" "$PLIST" || echo "setup: could not put $PLIST back" >&2; fi
-  case " $loaded " in *" $LABEL "*) launchctl bootstrap system "$PLIST" || echo "setup: $LABEL did not start; sudo launchctl bootstrap system $PLIST" >&2 ;; esac
+  if [ -n "${WORK:-}" ] && [ -f "$WORK/old.plist" ]; then install -o root -g wheel -m 644 "$WORK/old.plist" "$PLIST" || { echo "setup: could not put $PLIST back" >&2; return 1; }; fi
+  case " $loaded " in *" $LABEL "*) launchctl bootstrap system "$PLIST" && health || { echo "setup: recovered $LABEL did not start or answer /api/version" >&2; return 1; } ;; esac
   start_others
 }
 
@@ -182,15 +206,70 @@ trusted_entry() {
   listing=$(ls -lde "$path") || return 1
   [ -z "$(printf '%s\n' "$listing" | sed -n '2,$p')" ] || { echo "setup: $path carries an ACL" >&2; return 1; }
 }
+# Never use Apple's xcode-select dispatch shims as root or atelierd.
+GIT=/Library/Developer/CommandLineTools/usr/bin/git
+OTOOL=/Library/Developer/CommandLineTools/usr/bin/llvm-otool
+check_tools() {
+  local tool
+  for tool in "$GIT" "$OTOOL"; do
+    [ -x "$tool" ] || fail "missing $tool; PAVI can install Command Line Tools with: xcode-select --install"
+    trusted_source "$tool" || fail "unsafe tool $tool; repair its ownership/permissions before continuing"
+  done
+}
+
+check_node() {
+  local binary=$1 description lib count=0 line
+  description=$(/usr/bin/file -b "$binary") || fail "cannot identify node"
+  [[ "$description" = *Mach-O*executable* ]] || fail "node must be a Mach-O executable"
+  "$OTOOL" -L "$binary" > "$WORK/node-libs" 2> "$WORK/node-errors" || fail "cannot read node libraries"
+  [ ! -s "$WORK/node-errors" ] || fail "otool reported an error reading node libraries"
+  while IFS= read -r line; do
+    case "$line" in "$binary:"|"$binary (architecture "*"):") continue ;; esac
+    [[ "$line" =~ ^[[:space:]]+(/[^[:space:]]+)[[:space:]]+\(compatibility\ version ]] || fail "otool reported an invalid node library: $line"
+    lib=${BASH_REMATCH[1]}
+    case "$lib" in /System/Library/*|/usr/lib/*) ;; *) fail "node links $lib, outside the system libraries" ;; esac
+    case "$lib" in */../*|*/./*) fail "node library path is not canonical: $lib" ;; esac
+    count=$((count+1))
+  done < "$WORK/node-libs"
+  [ "$count" -gt 0 ] || fail "node has an empty library list"
+}
+
+LOCK_DIR=/Library/Atelier/lock
+acquire_lock() {
+  local d lock_pid
+  for d in / /Library /Library/Atelier "$LOCK_DIR"; do trusted_entry "$d" || fail "unsafe lock directory $d"; done
+  [ -d "$LOCK_DIR" ] || fail "lock directory is not a directory: $LOCK_DIR"
+  LOCK=$LOCK_DIR/install.lock
+  [ ! -L "$LOCK" ] || fail "$LOCK is a link"
+  if [ -e "$LOCK" ]; then
+    [ -f "$LOCK" ] && [ "$(stat -f %Su "$LOCK")" = root ] || fail "unsafe lock $LOCK"
+  fi
+  if ! /usr/bin/shlock -p "$$" -f "$LOCK"; then
+    lock_pid=$(cat "$LOCK" 2>/dev/null) || lock_pid=
+    if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+      sleep 1
+      /usr/bin/shlock -p "$$" -f "$LOCK" || fail "another installer is running (lock: $LOCK)"
+    else fail "another installer is running (lock: $LOCK)"
+    fi
+  fi
+}
+
 source_help() {
   echo "setup: review both scripts, then copy them into root's directory with:" >&2
   echo 'sudo /usr/bin/install -o root -g wheel -m 700 scripts/studio/setup-server.sh scripts/studio/install-server.sh /private/var/root/' >&2
-  echo "setup: then run sudo /bin/bash /private/var/root/setup-server.sh --env $ENV RELEASE.tar NODE OWNER_TOKEN_COPY" >&2
+  echo "setup: then run sudo /bin/bash -p /private/var/root/setup-server.sh --env $ENV RELEASE.tar NODE OWNER_TOKEN_COPY" >&2
 }
 SOURCE=${BASH_SOURCE[0]}
 case "$SOURCE" in /*) ;; *) SOURCE="$PWD/$SOURCE" ;; esac
 SOURCE_DIR=${SOURCE%/*}
 INSTALLER_SOURCE=$SOURCE_DIR/install-server.sh
+
+backup_code() {
+  [ ! -e "$HOME_DIR/bin/node.old" ] && [ ! -L "$HOME_DIR/bin/node.old" ] && [ ! -e "$HOME_DIR/$SERVER.old" ] && [ ! -L "$HOME_DIR/$SERVER.old" ] || fail "saved code remains; repair the previous setup before retrying"
+  dry || swapped=1
+  [ ! -e "$HOME_DIR/bin/node" ] || run mv "$HOME_DIR/bin/node" "$HOME_DIR/bin/node.old"
+  [ ! -e "$HOME_DIR/$SERVER" ] || run mv "$HOME_DIR/$SERVER" "$HOME_DIR/$SERVER.old"
+}
 
 # A test reads these functions alone (SETUP_SERVER_LIB=1), with no other effect.
 if [ "${SETUP_SERVER_LIB:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
@@ -204,6 +283,7 @@ valid_bind() {
   [ "$b" -ge 64 ] && [ "$b" -le 127 ] && [ "$c" -le 255 ] && [ "$d" -le 255 ]
 }
 if ! dry; then
+  check_tools
   if ! trusted_source "$SOURCE" || ! trusted_source "$INSTALLER_SOURCE"; then source_help; exit 1; fi
 fi
 valid_bind "$BIND" || fail "ATELIER_BIND must be a tailnet (100.64.0.0/10) or loopback address, not $BIND"
@@ -225,17 +305,25 @@ safe_dir() {
 safe_dir /Users
 safe_dir /Library/LaunchDaemons
 
+LOCK=
+if ! dry; then
+  trusted_entry / && trusted_entry /Library || fail "unsafe /Library"
+  for d in /Library/Atelier "$LOCK_DIR"; do
+    if [ ! -e "$d" ] && [ ! -L "$d" ]; then mkdir -m 755 "$d"; fi
+    trusted_entry "$d" || fail "unsafe lock directory $d"
+  done
+  acquire_lock
+fi
+trap '[ -z "$LOCK" ] || rm -f "$LOCK"' EXIT
 WORK=$(mktemp -d /var/tmp/atelier-setup.XXXXXX)
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"; [ -z "$LOCK" ] || rm -f "$LOCK"' EXIT
 
 # 1. Copy the inputs into root-owned storage before looking at them.
 cp "$RELEASE" "$WORK/server.tar"
 cp -L "$NODE_SRC" "$WORK/node"
 chmod 755 "$WORK/node"
 # Node may load system libraries alone: anything else could be replaced later.
-otool -L "$WORK/node" | sed 1d | awk '{print $1}' | while read -r lib; do
-  case "$lib" in /System/Library/*|/usr/lib/*) ;; *) fail "node links $lib, outside the system libraries" ;; esac
-done
+check_node "$WORK/node"
 # The release holds plain files and directories: no links, no devices.
 # Listed to files first: a grep -q in a pipe can end the pipe early and,
 # under pipefail, read as no match.
@@ -288,6 +376,8 @@ if ! dry; then
   [ "$out" = "user is not a member of the group" ] || fail "$DEV is a member of the $SVC group ($out)"
 fi
 
+[ ! -e "$HOME_DIR/bin/node.old" ] && [ ! -L "$HOME_DIR/bin/node.old" ] && [ ! -e "$HOME_DIR/$SERVER.old" ] && [ ! -L "$HOME_DIR/$SERVER.old" ] || fail "saved code remains; repair the previous setup before retrying"
+
 # 3. Every atelierd job stops (the other environment's server, the tunnel,
 #    the backups) and nothing of the service user's may run, whether or not
 #    launchd knows of it. What was loaded is recorded first, with this
@@ -304,7 +394,19 @@ else
     fi
   done
 fi
-trap 'status=$?; [ $status = 0 ] || recover; rm -rf "$WORK"; exit $status' EXIT
+finish_setup() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [ "$status" != 0 ] && ! recover; then
+    echo "setup: recovery failed; saved inputs and plist kept at $WORK" >&2
+  else rm -rf "$WORK"
+  fi
+  [ -z "$LOCK" ] || rm -f "$LOCK"
+  exit "$status"
+}
+trap finish_setup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if ! dry; then
   stopped=1
   stop_all || fail "the $SVC jobs could not all be stopped"
@@ -344,18 +446,12 @@ run chmod -R u=rwX,g=rX,o= "$HOME_DIR/$SERVER.new"
 run chmod 750 "$HOME_DIR/$SERVER.new/hooks/pre-receive"
 # The staged node is checked, as the service user, before anything moves.
 if ! dry; then
-  sudo -u "$SVC" "$HOME_DIR/bin/node.new" -e 'const [a]=process.versions.node.split(".").map(Number); if (a<26) process.exit(1)' || fail "node 26 or later is needed; nothing was replaced"
+  sudo -u "$SVC" /usr/bin/env -i HOME="$HOME_DIR" PATH=/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C "$HOME_DIR/bin/node.new" -e 'const [a]=process.versions.node.split(".").map(Number); if (a<26) process.exit(1)' || fail "node 26 or later is needed; nothing was replaced"
 fi
-# bin/node.old and server.old (server-production.old) are the last code
-# that answered. Left by an attempt whose recovery failed, they are kept,
-# and the failed code is dropped; otherwise the current code becomes them.
-if [ -e "$HOME_DIR/bin/node.old" ] || [ -e "$HOME_DIR/$SERVER.old" ]; then
-  run rm -rf "$HOME_DIR/$SERVER"
-else
-  [ ! -e "$HOME_DIR/bin/node" ] || run mv "$HOME_DIR/bin/node" "$HOME_DIR/bin/node.old"
-  [ ! -e "$HOME_DIR/$SERVER" ] || run mv "$HOME_DIR/$SERVER" "$HOME_DIR/$SERVER.old"
-fi
-dry || swapped=1
+# Refuse unresolved recovery before replacing any current code. node.old is
+# shared; it cannot establish which environment's server needs restoring.
+
+backup_code
 run mv -f "$HOME_DIR/bin/node.new" "$HOME_DIR/bin/node"
 run mv "$HOME_DIR/$SERVER.new" "$HOME_DIR/$SERVER"
 
@@ -396,7 +492,7 @@ else
     && [ "$(LC_ALL=C grep -cxE 'atl_[0-9a-f]{64}' "$SECRET")" = 1 ] || fail "$SECRET does not hold exactly one token"
   # The developer's copy is written by the developer's own user, through a
   # fresh temporary file of mode 600 renamed into place.
-  sudo -u "$DEV" sh -c 'umask 077; d=$(dirname "$1"); mkdir -p "$d" && t=$(mktemp "$d/.$2-token.XXXXXX") && chmod 600 "$t" && cat > "$t" && mv -f "$t" "$1"' sh "$TOKEN_COPY" "$ENV" < "$SECRET" || fail "the token copy could not be written"
+  sudo -u "$DEV" /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c 'umask 077; d=$(dirname "$1"); mkdir -p "$d" && t=$(mktemp "$d/.$2-token.XXXXXX") && chmod 600 "$t" && cat > "$t" && mv -f "$t" "$1"' sh "$TOKEN_COPY" "$ENV" < "$SECRET" || fail "the token copy could not be written"
 fi
 
 # 7. The LaunchDaemon.
@@ -408,16 +504,12 @@ run launchctl bootstrap system "$PLIST"
 
 # 8. It answers.
 if ! dry; then
-  for _ in $(seq 1 30); do
-    if lsof -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
-      && /usr/bin/curl -q -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" >/dev/null 2>&1; then
-      stopped=
-      rm -rf "$HOME_DIR/bin/node.old" "$HOME_DIR/$SERVER.old"
-      start_others || echo "setup: start the jobs named above by hand" >&2
-      echo "$ENV answers at http://$BIND:$PORT, running as $SVC; the owner token is at $TOKEN_COPY"
-      exit 0
-    fi
-    sleep 1
-  done
+  if health; then
+    stopped=
+    rm -rf "$HOME_DIR/bin/node.old" "$HOME_DIR/$SERVER.old"
+    start_others || fail "start the jobs named above by hand"
+    echo "$ENV answers at http://$BIND:$PORT, running as $SVC; the owner token is at $TOKEN_COPY"
+    exit 0
+  fi
   fail "$ENV did not answer in 30 s; see $HOME_DIR/log/$ENV.log (sudo tail)"
 fi
