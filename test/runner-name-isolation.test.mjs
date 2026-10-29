@@ -3,7 +3,7 @@
 // process on the machine, so a real home:studio, or one another test file
 // had started, refused the runners of tests that ran beside it. Under npm
 // test each test file's process names itself (test/guard.mjs) and the CLIs it
-// starts read only its tree (withinTree, cli/procs.mjs); a second runner of
+// starts read only its tree for that guard (withinTree, cli/procs.mjs); a second runner of
 // the name inside that tree is still refused.
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";

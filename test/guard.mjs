@@ -60,8 +60,9 @@ process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-te
 
 // Nor a runner live on this Mac: a runner's start refuses when another of
 // its name runs (t581), and a real home:studio, or one another test file
-// started, refused tests' runners. The CLIs a test starts read only this
-// process's tree (withinTree in cli/procs.mjs).
+// started, refused tests' runners. The start guard of a runner a test starts
+// reads only this process's tree (withinTree in cli/procs.mjs); status and
+// stuck still read the whole table, which their tests stand in.
 process.env.ATELIER_TEST_PROCESS = String(process.pid);
 
 // test/node-pool.mjs runs every Node test file, so it is not one file: it has
