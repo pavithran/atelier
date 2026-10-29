@@ -110,7 +110,9 @@ test("runIntegrate logs why an integration failed before it posts integration-fa
     };
     await runIntegrate(assignment, config, name, io);
     const reason = calls.find((c) => c.argv?.[0] === "integration-failed").argv.at(-1);
-    assert.ok(loggedBeforePost?.some((line) => line.includes(reason)), `the reason is logged before the post: ${reason}`);
+    // Round 12: the posted reason is facts alone; the reason's text is logged on the runner first.
+    assert.ok(loggedBeforePost?.some((line) => /integration of part .* failed/.test(line)), "the reason is logged before the post");
+    assert.match(reason, /^step [a-z-]+/);
   }
 });
 
@@ -127,7 +129,8 @@ test("runIntegrate rolls the branch back and posts integration-failed when the c
   const failed = calls.find((c) => c.argv?.[0] === "integration-failed");
   assert.ok(at((c) => c.argv?.includes("--rollback")) < at((c) => c.argv?.[0] === "integration-failed"), "the branch is rolled back before the failure is posted");
   assert.equal(failed.argv[failed.argv.indexOf("--kind") + 1], "checks");
-  assert.match(failed.argv[failed.argv.indexOf("--reason") + 1], /FAIL npm test @ 11111111/, "the reason names what failed");
+  assert.match(failed.argv[failed.argv.indexOf("--reason") + 1], /^step [a-z-]+/, "facts alone (round 12)");
+  assert.ok(!failed.argv[failed.argv.indexOf("--reason") + 1].includes("FAIL npm test"), "the check's output stays in the runner's log");
   assert.ok(calls.some((c) => c.argv?.[0] === "release"));
 });
 
@@ -291,8 +294,8 @@ test("runRefresh rolls the branch back with atelier push --rollback and posts re
   assert.equal(argv[argv.indexOf("--kind") + 1], "checks");
   assert.equal(argv[argv.indexOf("--main-head") + 1], MAIN);
   const reason = argv[argv.indexOf("--reason") + 1];
-  assert.match(reason, /FAIL npm test @ 11111111/);
-  assert.ok(logs.some((line) => line.includes(reason)), "the reason is logged");
+  assert.match(reason, /^step [a-z-]+/, "facts alone (round 12)");
+  assert.ok(logs.some((line) => line.includes("FAIL npm test @ 11111111")), "the reason's text is logged on the runner");
   assert.ok(!calls.some((c) => c.argv?.[0] === "refreshed" || c.argv?.[0] === "integration-failed"), "no part is charged");
   assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1);
 });
@@ -304,7 +307,7 @@ test("runRefresh aborts a conflicting merge and posts refresh-failed with kind c
   assert.ok(calls.some((c) => c.abortMerge));
   const argv = calls.find((c) => c.argv?.[0] === "refresh-failed").argv;
   assert.equal(argv[argv.indexOf("--kind") + 1], "conflict");
-  assert.match(argv[argv.indexOf("--reason") + 1], /docs\/using-atelier\.md/);
+  assert.match(argv[argv.indexOf("--reason") + 1], /^step [a-z-]+/, "facts alone (round 12)");
   assert.ok(!calls.some((c) => c.argv?.[0] === "push"));
 });
 

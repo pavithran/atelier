@@ -2384,9 +2384,8 @@ export async function giveUpClaim({ io, project, item, actor, workspace, reason,
   const prefix = validationBlocked ? BLOCKED_NOTE : GAVE_UP;
   // A give-up's note carries facts alone (automaticNote); a validation_blocked
   // one is the builder's report, the block's reason.
-  const note = validationBlocked ? `${prefix}${String(reason ?? "").slice(-(NOTE_MAX - prefix.length - pushed.length))}${pushed}` : automaticNote(`${GAVE_UP}${String(reason ?? "")}${pushed}`);
   try {
-    await io.cli(["release", item.id, ...at, "--note", note], workspace);
+    await io.cli(["release", item.id, ...at, "--note", validationBlocked ? blockNote(`${String(reason ?? "").slice(-(NOTE_MAX - prefix.length - pushed.length))}${pushed}`) : automaticNote(`${GAVE_UP}${String(reason ?? "")}${pushed}`)], workspace);
     if (validationBlocked) {
       await markBlocked(io, workspace);
       io.log(`blocked ${project}/${item.id} for the developer: its build ended validation_blocked${pushed}`);
@@ -2543,7 +2542,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
   const generation = () => request === undefined ? [] : ["--request", String(request)];
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason, ...generation()]); }
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", automaticNote(reason), ...generation()]); }
     catch (error) { io.log(`review release failed: ${error.message}`); }
   };
   try {
@@ -2927,7 +2926,7 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
   let brief, diffFile, workspace, verdictFile, claimed = null, settled = false, io = runnerIO;
   const fail = async (reason) => {
     settled = true;
-    try { await io.cli(["criteria-review-failed", item.id, "--project", project, "--as", actor, "--request", String(claimed.request), "--note", releaseNote(reason)]); }
+    try { await io.cli(["criteria-review-failed", item.id, "--project", project, "--as", actor, "--request", String(claimed.request), "--note", automaticNote(reason)]); }
     catch (error) { io.log(`could not record the criteria review's failure: ${error.message}`); }
   };
   try {
@@ -3040,7 +3039,9 @@ export async function runPrereview(assignment, config, name, runnerIO) {
   let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, ended = false, io = runnerIO;
   const end = async (note) => {
     ended = true;
-    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", outcomeNote(note), "--request", String(request)]); }
+    // The outcome is a fixed word; its detail is facts alone (automaticNote,
+    // round 12), except a malformed verdict's, which says what the reviewer wrote.
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", outcomeNote({ ...note, detail: note.outcome === "malformed" ? note.detail : automaticNote(note.detail) }), "--request", String(request)]); }
     catch (error) { io.log(`pre-review release failed: ${error.message}`); }
   };
   const failed = (reason, extra = {}) => ({ phase: "failed", reason, ...extra });
@@ -3475,7 +3476,7 @@ export async function runIntegrate(assignment, config, name, io) {
   // Awaited where it is returned, so an error in it reaches the catch below.
   const fail = async (kind, reason) => {
     io.log(`integration of part ${partKey} failed (${kind}): ${reason}`);
-    const posted = JSON.parse(await io.cli(["integration-failed", item.id, ...at, "--part", partKey, "--kind", kind, "--reason", reason]) || "{}");
+    const posted = JSON.parse(await io.cli(["integration-failed", item.id, ...at, "--part", partKey, "--kind", kind, "--reason", automaticNote(reason)]) || "{}");
     io.log(`integration-failed recorded on ${posted.id ?? item.id}; part ${partKey} goes back to its builder`);
     await release(reason);
     return { phase: "failed", reason, taskFailure: true };
@@ -3600,7 +3601,7 @@ export async function runRefresh(assignment, config, name, io) {
   };
   const fail = async (kind, reason) => {
     io.log(`refresh from main at ${mainHead.slice(0, 8)} failed (${kind}): ${reason}`);
-    await io.cli(["refresh-failed", item.id, ...at, "--main-head", mainHead, "--kind", kind, "--reason", reason]);
+    await io.cli(["refresh-failed", item.id, ...at, "--main-head", mainHead, "--kind", kind, "--reason", automaticNote(reason)]);
     io.log(`refresh-failed recorded on ${item.id}; no part is charged, and the plan's parts are dispatched without it`);
     await release(reason);
     // The failure is recorded (refresh-failed), so the server handles it:
@@ -4154,9 +4155,8 @@ export async function runPlanTask(assignment, config, name, io) {
     // claim is given back. A claim whose fate is unknown (the claim step
     // failed without a refusal) is released too, as runTask releases it.
     if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped && state.notReady == null))) {
-      const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace, { providerLimit: !!state.providerLimit });
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.phase === "failed" ? automaticNote(state.reason) : "plan job done"], workspace, { providerLimit: !!state.providerLimit });
         io.log(state.phase === "failed" ? "released: the plan job is back in the queue" : "released: the plan job is done");
       } catch (releaseError) { io.log(`claim not released: release failed: ${releaseError.message}`); }
     }

@@ -281,7 +281,8 @@ for (const job of ["task-refresh", "task-resolve"]) {
     assert.deepEqual(h.verbs(), ["refresh-lease", "refresh-failed"]);
     const failed = h.calls.find((c) => c[0] === "refresh-failed");
     assert.equal(failed[failed.indexOf("--outcome") + 1], "returned");
-    assert.match(failed[failed.indexOf("--reason") + 1], /^1 edit in code main moved to another file: cli\/atelier\.mjs .* moved to cli\/commands\/report\.mjs/);
+    // Round 12: facts alone; the finding itself goes in the report file.
+    assert.match(failed[failed.indexOf("--reason") + 1], /^step [a-z-]+/);
     const [report] = h.reports;
     assert.deepEqual([report.base, report.head, report.main, report.kind], [f.base, f.task, f.main, "behavioural"]);
     assert.deepEqual(report.files.map((x) => x.path), ["cli/atelier.mjs"]);
@@ -315,7 +316,7 @@ test("a push the server refuses to announce (busy, landing, moved) pushes nothin
   await h.run();
   assert.equal(forkHead(f), f.task);
   const failed = h.calls.find((c) => c[0] === "refresh-failed");
-  assert.match(failed[failed.indexOf("--reason") + 1], /landing now/);
+  assert.equal(failed[failed.indexOf("--reason") + 1], "step push", "facts alone, never the refusal's text (round 12)");
 });
 
 test("checks that fail at the refreshed head are reported, and the task goes back to its builder", async (t) => {
@@ -325,7 +326,7 @@ test("checks that fail at the refreshed head are reported, and the task goes bac
   assert.equal(state.phase, "failed");
   const checked = h.calls.find((c) => c[0] === "refresh-checked");
   assert.ok(checked.includes("--failed"));
-  assert.match(checked[checked.indexOf("--reason") + 1], /FAIL npm test/);
+  assert.match(checked[checked.indexOf("--reason") + 1], /^step check/, "facts alone (round 12)");
 });
 
 test("a pushed head whose report is refused remains fenced for recovery", async (t) => {
@@ -411,7 +412,7 @@ test("a provider's usage limit on the resolver's harness gives the lease back at
   const [release] = released(h);
   assert.equal(release[release.indexOf("--release") + 1], "L1");
   assert.ok(release.includes("--provider-limit"));
-  assert.match(release[release.indexOf("--reason") + 1], /usage limit reached/);
+  assert.match(release[release.indexOf("--reason") + 1], /^step [a-z-]+/, "facts alone (round 12)");
   assert.ok(!h.verbs().some((v) => ["refresh-failed", "refresh-pushing", "refreshed"].includes(v)));
   assert.equal(forkHead(f), f.task);
   assert.ok(h.logs.some((l) => /released t7's refresh lease; the same work resumes when the provider's limit resets/.test(l)));
@@ -426,7 +427,7 @@ test("an exception from the moved-code detector is reported as the lease's relea
   const [release] = released(h);
   assert.ok(release, "the lease is given back");
   assert.ok(!release.includes("--provider-limit"));
-  assert.match(release[release.indexOf("--reason") + 1], /^comparing the task's edits with code main moved failed: git .* failed: fatal: bad object/);
+  assert.match(release[release.indexOf("--reason") + 1], /^step [a-z-]+/, "facts alone, never git's error (round 12)");
   assert.ok(!h.verbs().some((v) => ["refresh-failed", "refresh-pushing", "refreshed"].includes(v)));
   assert.equal(forkHead(f), f.task);
 });

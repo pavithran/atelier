@@ -1625,7 +1625,8 @@ test("a post-merge review whose baseline is unknown at first is a fetch failure,
   assert.equal(calls.filter((c) => c.fetch?.[0] === TARGET && c.fetch[1] === "plan").length, 2);
   const releases = calls.filter((c) => c.argv?.[0] === "review-release");
   assert.equal(releases.length, 2);
-  for (const r of releases) assert.match(r.argv[r.argv.indexOf("--note") + 1], /could not read the baseline/);
+  // Round 12: facts alone, the merge commit among them.
+  for (const r of releases) assert.match(r.argv[r.argv.indexOf("--note") + 1], new RegExp(`merge commit ${"e".repeat(40)}`));
   const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
   assert.ok(verdict, "the review records its verdict once the baseline is read");
   assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
@@ -2365,7 +2366,7 @@ test("a review request is passed by at the server's same-exit count, never at a 
   // Each release says the exit alone, which the server's stop counts
   // whatever the stderr says; that stops the request for every runner of the model.
   const notes = calls.filter((c) => c.argv?.[0] === "review-release").map((c) => c.argv[c.argv.indexOf("--note") + 1]);
-  assert.match(notes[0], /^harness exited 1; exit-signature: [0-9a-f]{32}$/);
+  assert.match(notes[0], /^step harness; exit 1; exit-signature: [0-9a-f]{32}$/);
   assert.equal(notes[1], notes[0], "the same exit has the same signature, which the server counts");
 });
 

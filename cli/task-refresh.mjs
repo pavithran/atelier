@@ -51,6 +51,7 @@ import { TRANSFORMATIONS, classifyConflicts, conflictReport, verifyResolution } 
 import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/moved-code.ts";
 import { guardedPush } from "./private-guard.mjs";
 import { proseStandardLine } from "../src/prose-standard.ts";
+import { automaticNote } from "../src/run-facts.ts";
 
 const HASH = /^[a-f0-9]{40,64}$/;
 const CHECKS_FAILED = 2;
@@ -146,7 +147,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
         if (error.code !== CHECKS_FAILED) throw error;
         failing = String(error.output ?? "").split("\n").filter((l) => l.startsWith("FAIL")).map((l) => l.replace(/\s+/g, " ").trim()).join("; ") || error.message;
       }
-      await report(["refresh-checked", ...leaseArgs(), ...(failing === null ? ["--passed"] : ["--failed", "--reason", `the required checks failed with main merged: ${failing}`.slice(0, 400)])]);
+      await report(["refresh-checked", ...leaseArgs(), ...(failing === null ? ["--passed"] : ["--failed", "--reason", automaticNote(`the required checks failed with main merged: ${failing}`)])]);
       if (failing !== null) io.log(`${item.id}'s checks failed at the refreshed head ${short(head)}; it goes back to its builder`);
       return failing === null ? { phase: "refreshed", head } : { phase: "failed", reason: "checks failed at the refreshed head", recorded: true };
     };
@@ -206,7 +207,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
       const file = join(await io.tempDir(`refresh-report-${item.id}-`), "report.json");
       writeFileSync(file, JSON.stringify(conflict));
       const n = moved.findings.length;
-      await report(["refresh-failed", ...leaseArgs(), "--outcome", "returned", "--report", file, "--reason", `${n} edit${n === 1 ? "" : "s"} in code main moved to another file: ${describeFinding(moved.findings[0])}`.slice(0, 400)]);
+      await report(["refresh-failed", ...leaseArgs(), "--outcome", "returned", "--report", file, "--reason", automaticNote(`${n} edit${n === 1 ? "" : "s"} in code main moved to another file: ${describeFinding(moved.findings[0])}`)]);
       recorded = true;
       io.log(`${item.id}'s edits lie in code main at ${short(mainHead)} moved to another file (${n} finding${n === 1 ? "" : "s"}); returned to its builder, nothing pushed`);
       return { phase: "failed", reason: "edits in moved code", recorded: true, returned: true };
@@ -228,13 +229,13 @@ export async function runTaskRefresh(assignment, config, name, io) {
         const conflict = conflictReport({ base: mergeBase, head: expectedHead, main: mainHead }, classified.files);
         const file = join(await io.tempDir(`refresh-report-${item.id}-`), "report.json");
         writeFileSync(file, JSON.stringify(conflict));
-        await report(["refresh-failed", ...leaseArgs(), "--outcome", "returned", "--report", file, "--reason", `${conflict.kind} conflict in ${classified.files.filter((f) => f.kind !== "mechanical").map((f) => f.path).join(", ")}`]);
+        await report(["refresh-failed", ...leaseArgs(), "--outcome", "returned", "--report", file, "--reason", automaticNote(`${conflict.kind} conflict in ${classified.files.filter((f) => f.kind !== "mechanical").map((f) => f.path).join(", ")}`)]);
         recorded = true;
         io.log(`${item.id}'s refresh from main at ${short(mainHead)} conflicts beyond the mechanical transformations (${conflict.kind}); returned to its builder`);
         return { phase: "failed", reason: `${conflict.kind} conflict`, recorded: true, returned: true };
       }
       if (job === "refresh") {
-        await report(["refresh-failed", ...leaseArgs(), "--outcome", "mechanical", "--reason", `mechanical conflicts in ${conflicted.join(", ")}`]);
+        await report(["refresh-failed", ...leaseArgs(), "--outcome", "mechanical", "--reason", automaticNote(`mechanical conflicts in ${conflicted.join(", ")}`)]);
         recorded = true;
         io.log(`${item.id}'s refresh from main at ${short(mainHead)} left only mechanical conflicts; it goes to a resolver`);
         return { phase: "failed", reason: "mechanical conflicts, for a resolver", recorded: true };
@@ -267,7 +268,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
         const conflict = conflictReport({ base: mergeBase, head: expectedHead, main: mainHead }, classified.files.map((f) => ({ ...f, kind: "uncertain", why: `the resolution was not mechanical: ${faults.join("; ").slice(0, 300)}` })));
         const file = join(await io.tempDir(`refresh-report-${item.id}-`), "report.json");
         writeFileSync(file, JSON.stringify({ ...conflict, kind: "uncertain" }));
-        await report(["refresh-failed", ...leaseArgs(), "--outcome", "returned", "--report", file, "--reason", `the resolution was not mechanical: ${faults[0]}`.slice(0, 400)]);
+        await report(["refresh-failed", ...leaseArgs(), "--outcome", "returned", "--report", file, "--reason", automaticNote(`the resolution was not mechanical: ${faults[0]}`)]);
         recorded = true;
         io.log(`${actor}'s resolution of ${item.id} failed verification: ${faults.join("; ")}; returned to its builder`);
         return { phase: "failed", reason: "unverified resolution", recorded: true, returned: true };
@@ -285,7 +286,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
     const pushStarted = Date.now();
     try { await report(["refresh-pushing", ...leaseArgs(), "--head", head]); announced = true; }
     catch (error) {
-      await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", `not pushed: ${error.message}`.slice(0, 400)]).catch(() => {});
+      await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", automaticNote(`step push; ${error.message}`)]).catch(() => {});
       recorded = true;
       return { phase: "failed", reason: `not pushed: ${error.message}`, recorded: true };
     }
@@ -310,7 +311,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
     if (push.status !== 0 && !pushedDespiteError) {
       // No force: a push in between (the builder's) keeps the fork, and the
       // refresh is tried again from wherever the task is now.
-      await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", `the fork moved under the refresh; the push was refused: ${(push.stderr || "").trim().slice(0, 200)}`]);
+      await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", automaticNote("step push; push refused")]);
       recorded = true;
       io.log(`${item.id}'s fork moved under the refresh; nothing was pushed over it`);
       return { phase: "failed", reason: "the fork moved", recorded: true };
@@ -348,7 +349,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
     if (lease?.id && !recorded && !announced) {
       clearInterval(renewal);
       try {
-        const answer = await report(["refresh-lease", "--release", lease.id, "--reason", error.message.slice(0, 400), ...(error.providerLimit ? ["--provider-limit"] : [])]);
+        const answer = await report(["refresh-lease", "--release", lease.id, "--reason", automaticNote(error.message), ...(error.providerLimit ? ["--provider-limit"] : [])]);
         if (answer.released !== false) io.log(`released ${item.id}'s refresh lease${error.providerLimit ? "; the same work resumes when the provider's limit resets" : ""}`);
       } catch (releaseError) { io.log(`releasing ${item.id}'s refresh lease failed: ${releaseError.message}`); }
     }

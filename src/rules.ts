@@ -3651,7 +3651,7 @@ export const DUMP_PAGE_BYTES = 2_000_000;
 
 // The meta rows a Ledger writes for itself when it starts or restarts. A
 // Ledger holding these and nothing else is empty: an import may fill it.
-export const LEDGER_STARTUP_META: readonly string[] = ["item-briefs", "review-provenance", "part-acceptance", "deployed-main", "ledger-restart"];
+export const LEDGER_STARTUP_META: readonly string[] = ["item-briefs", "review-provenance", "part-acceptance", "deployed-main", "ledger-restart", "runner-text-cutover"];
 
 // The meta row an import in progress keeps (Ledger.importBegin), never
 // dumped and never imported.

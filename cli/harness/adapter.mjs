@@ -381,7 +381,8 @@ export async function harnessReady(harness, { env = process.env, command, home =
       const result = await run(executableFor(harness, process.env), ["login", "status"], { env: { ...env }, timeout: timeoutMs });
       return result.code === 0 ? { ready: true } : { ready: false, why: `Codex is not signed in; ${fix}` };
     } catch (error) {
-      return { ready: false, why: `could not check whether Codex is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fix}` };
+      // No error text: the reason goes to the server with the runner's offer (round 12).
+      return { ready: false, why: `could not check whether Codex is signed in; ${fix}` };
     }
   }
   // Antigravity (t195) has no status command; `agy models` asks the service for
@@ -397,7 +398,7 @@ export async function harnessReady(harness, { env = process.env, command, home =
       if (result.code !== 0 && /sign(ed)?[ -]?in|log(ged)?[ -]?in|unauthenticated|unauthori[sz]ed|credential|authenticat/i.test(text) && !NETWORK_ERROR.test(text)) return { ready: false, state: "signed-out", why: `Antigravity is signed out; ${fixed}` };
       return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (agy models ${result.code === 0 ? "printed no model list" : `exited ${result.code}`}); ${fixed}` };
     } catch (error) {
-      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fixed}` };
+      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in; ${fixed}` };
     }
   }
   if (harness !== "claude-code") return { ready: true, state: "unknown" };
@@ -407,7 +408,9 @@ export async function harnessReady(harness, { env = process.env, command, home =
     try { signedIn = result.code === 0 && JSON.parse(result.stdout)?.loggedIn === true; } catch { /* not JSON: not signed in */ }
     return signedIn ? { ready: true } : { ready: false, why: `the Claude CLI is not signed in; ${fix}` };
   } catch (error) {
-    return { ready: false, why: `could not check whether the Claude CLI is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fix}` };
+    // The token file's own fixed words (missing, unreadable, empty), never another error's text.
+    const said = /^Claude token file is (?:missing|unreadable|empty)/.exec(String(error?.message ?? ""))?.[0];
+    return { ready: false, why: `${said ?? "could not check whether the Claude CLI is signed in"}; ${fix}` };
   }
 }
 

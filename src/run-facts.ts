@@ -73,6 +73,8 @@ const OUTCOMES: readonly [RegExp, string][] = [
   [/\b(?:secret scan|key-shaped line)\b/, "secret scan refused"],
   [/\bcommit identity refused\b/, "commit identity refused"],
   [/\bnothing to submit\b/, "nothing to submit"],
+  [/\bstates no verdict\b|\bno readable verdict\b|\bwithout a verdict\b/, "the reply states no verdict"],
+  [/\bnot mechanical\b/, "not mechanical"],
 ];
 
 export function automaticNote(note: unknown): string {
@@ -80,8 +82,9 @@ export function automaticNote(note: unknown): string {
   if (s.startsWith(VALIDATION_BLOCKED_NOTE)) return redactKeys(s);
   const prefix = s.startsWith(GAVE_UP_NOTE) ? GAVE_UP_NOTE : "";
   const named = /\bstep ([a-z-]+)\b/.exec(s)?.[1] ?? /\bgit ([a-z-]+)\b/.exec(s)?.[1] ?? (/\bharness\b/.test(s) ? "harness" : null)
-    ?? STEPS.find((step) => step !== "run" && new RegExp(`\\b${step}\\b`).test(s)) ?? null;
-  const parts = [`step ${named && (STEPS as readonly string[]).includes(named) ? named : "run"}`];
+    ?? STEPS.find((step) => step !== "run" && new RegExp(`\\b${step}(?:es|s)?\\b`).test(s)) ?? null;
+  // An interrupt leads, as the server reads it there (src/review/stopped.ts).
+  const parts = [...(/^interrupted\b/.test(s) ? ["interrupted"] : []), `step ${named && (STEPS as readonly string[]).includes(named) ? named : "run"}`];
   const exit = /\bexit(?:ed| code)? (-?\d{1,3})\b/.exec(s)?.[1];
   if (exit) parts.push(`exit ${exit}`);
   const signal = /\b(SIG[A-Z0-9]{1,10})\b/.exec(s)?.[1];
@@ -94,6 +97,12 @@ export function automaticNote(note: unknown): string {
   const limit = /\b([a-z][a-z0-9-]{0,30}) usage limit until (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z)/.exec(s);
   if (limit) parts.push(`${limit[1]} usage limit until ${limit[2]}`);
   if (/\bits commits are not pushed\b/.test(s)) parts.push("its commits are not pushed");
+  const merge = /\bmerge commit ([0-9a-f]{7,64})\b/.exec(s)?.[1];
+  if (merge) parts.push(`merge commit ${merge}`);
+  const signature = /\bexit-signature: ([0-9a-f]{32})\b/.exec(s)?.[1];
+  if (signature) parts.push(`exit-signature: ${signature}`);
+  const size = /\brefused the review input for its size \((limit \d{1,12}|a limit it did not state); (actual \d{1,12}|about \d{1,12} characters sent)\)/.exec(s);
+  if (size) parts.push(`refused the review input for its size (${size[1]}; ${size[2]})`);
   const log = /\blog ([A-Za-z0-9][A-Za-z0-9._-]{0,62}):(\/[A-Za-z0-9._/-]{1,300})(?=[;\s]|$)/.exec(s);
   if (log && !log[2].includes("..")) parts.push(`log ${log[1]}:${log[2]}`);
   return `${prefix}${parts.join("; ")}`;

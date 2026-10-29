@@ -478,7 +478,7 @@ test("a task-resolve job whose resolver hits a limit gives its lease back, pause
   for (const r of releases) {
     assert.equal(r[r.indexOf("--release") + 1], "L1");
     assert.ok(r.includes("--provider-limit"));
-    assert.match(r[r.indexOf("--reason") + 1], /^opencode usage limit: usage limit reached/);
+    assert.match(r[r.indexOf("--reason") + 1], /^step [a-z-]+/, "facts alone (round 12)");
   }
   assert.ok(logs.some((l) => l.startsWith("infrastructure event: provider limit on opencode during task-resolve of atelier/t7; opencode paused until")));
   assert.ok(!logs.some((l) => /needs the developer's attention/.test(l)), "neither failure cap moves");
