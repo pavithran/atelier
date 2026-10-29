@@ -119,10 +119,8 @@ recover; echo "recover status $?"`);
   assert.doesNotMatch(r.stdout, /STARTED/);
   assert.match(r.stdout, /recover status 1/);
   assert.match(r.stderr, /could not be undone completely; every .* job is left stopped/);
-  assert.match(r.stderr, new RegExp(`${h}/data/staging: a directory`));
-  assert.match(r.stderr, new RegExp(`${h}/data/staging\\.before-restore-T: absent`));
-  assert.match(r.stderr, new RegExp(`${h}/repos/staging: absent`));
-  assert.match(r.stderr, new RegExp(`${h}/repos/staging\\.before-restore-T: a directory`));
+  assert.match(r.stderr, new RegExp(`now: ${h}/data/staging is a directory; ${h}/data/staging\\.before-restore-T is absent\\.\\n    put back by the recovery`));
+  assert.match(r.stderr, new RegExp(`now: ${h}/repos/staging is absent; ${h}/repos/staging\\.before-restore-T is a directory`));
   assert.match(r.stderr, new RegExp(`sudo mv '${h}/repos/staging\\.before-restore-T' '${h}/repos/staging'`));
   assert.doesNotMatch(r.stderr, /sudo mv '[^']*data\/staging\.before-restore-T'/);
   assert.match(r.stderr, /sudo launchctl bootstrap system \/Library\/LaunchDaemons\/zone\.atelier\.server\.staging\.plist/);
@@ -139,4 +137,45 @@ check_paths
 move_aside
 recover; echo "recover status $?"`);
   assert.match(r.stdout, /STARTED\nrecover status 0/);
+});
+
+test("with no original and a placed copy that cannot be removed, its removal is a step before any job starts", { skip: darwin }, () => {
+  const h = home();
+  rmSync(join(h, "data/staging"), { recursive: true });
+  const r = bash(h, `
+JOBS="zone.atelier.server.staging"
+loaded=" zone.atelier.server.staging"
+start_loaded() { echo "STARTED"; }
+check_paths
+move_aside
+placing_d=1; mkdir "$D"; echo partial > "$D/ledger"
+# The mocked failure: the partial copy cannot be removed.
+rm() { if [ "$2" = "$D" ]; then echo "mock: rm fails" >&2; return 1; fi; command rm "$@"; }
+recover; echo "recover status $?"`);
+  assert.doesNotMatch(r.stdout, /STARTED/);
+  assert.match(r.stdout, /recover status 1/);
+  assert.match(r.stderr, /data: this run found no original to move, and began placing the restored copy at /);
+  assert.match(r.stderr, new RegExp(`now: ${h}/data/staging is a directory; ${h}/data/staging\\.before-restore-T is absent`));
+  assert.match(r.stderr, /repos: .*\n.*\n    put back by the recovery; nothing to do\./);
+  const rmAt = r.stderr.indexOf(`sudo rm -rf '${h}/data/staging'`);
+  const bootAt = r.stderr.indexOf("sudo launchctl bootstrap");
+  assert.ok(rmAt >= 0, "the partial copy's removal is a step");
+  assert.ok(bootAt > rmAt, "the removal comes before any bootstrap");
+  assert.doesNotMatch(r.stderr, /sudo mv '[^']*data\/staging/);
+});
+
+test("an original that is no longer where it was moved stops the instructions short of starting anything", { skip: darwin }, () => {
+  const h = home();
+  const r = bash(h, `
+JOBS="zone.atelier.server.staging"
+loaded=" zone.atelier.server.staging"
+start_loaded() { echo "STARTED"; }
+check_paths
+move_aside
+command rm -rf "$D_OLD"
+recover; echo "recover status $?"`);
+  assert.doesNotMatch(r.stdout, /STARTED/);
+  assert.match(r.stderr, /the original is not at .*data\/staging\.before-restore-T as a directory: find it before anything else/);
+  assert.match(r.stderr, /do not start the .* jobs until each path above is resolved by hand/);
+  assert.doesNotMatch(r.stderr, /sudo launchctl bootstrap/);
 });
