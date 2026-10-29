@@ -277,7 +277,14 @@ test("show prints the owner brief and preserves JSON output", async (t) => {
   assert.equal(json.status, 0, json.output);
   // show's JSON carries the reviews and any unparsable replies kept on the
   // task (t407); this fixture records none.
-  assert.deepEqual(JSON.parse(json.stdout), { ...brief, stage: { stage: "built", detail: { head: f.head, source: "push" } }, checkLimit: { ...checkLimits(null), checkSilence: [] }, reviews: [], unparsable: [], failedChecks: [] });
+  // It leads with the task's own fields under ls --json's names (G4).
+  const shown = JSON.parse(json.stdout);
+  const TASK_KEYS = ["id", "title", "state", "owner", "head", "createdAt", "updatedAt", "lastPushAt", "scope", "dispatch", "runner", "holds", "lastFailure"];
+  assert.equal(shown.id, "t1");
+  assert.equal(shown.head, f.head);
+  assert.deepEqual([shown.holds, shown.lastFailure], [[], null]);
+  const rest = Object.fromEntries(Object.entries(shown).filter(([k]) => !TASK_KEYS.includes(k) || k in brief));
+  assert.deepEqual(rest, { ...brief, stage: { stage: "built", detail: { head: f.head, source: "push" } }, checkLimit: { ...checkLimits(null), checkSilence: [] }, reviews: [], unparsable: [], failedChecks: [] });
 });
 
 

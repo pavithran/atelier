@@ -4975,8 +4975,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         let tasks;
         await checkReady();
         if (controller.signal.aborted) break;
-        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()) };
-        try { tasks = await queue(pollOffer, controller.signal); }
+        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() };
+        try { tasks = await queue(pollOffer, controller.signal); if (pollOffer.progress) progress.sent(); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
           misses++;
