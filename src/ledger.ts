@@ -37,7 +37,7 @@ import {
   forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
 } from "./rules";
 import { cleanSummary } from "./brief";
-import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
+import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria, sha256Hex } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
@@ -851,6 +851,20 @@ function reviewFindings(r: Review): ReviewFindings | null {
   return { by: r.by, head: r.head, summary: r.note || null, findings };
 }
 
+// An import in progress (importBegin), kept in meta under the import mark
+// until it finishes or is aborted: the counters and record the dump
+// carried; the tables the import made and those it remade in the dump's
+// older shape; the meta rows the Ledger wrote at start, and how many of
+// them the dump's rows replaced; the rows of each table sent so far; each
+// table's count, columns and checksum as the manifest gave them; and the
+// shape of every table before begin, which the tables must have again
+// after the migrations at finish.
+type ImportMark = {
+  id: string; sequences: { name: string; seq: number }[]; record: ProjectRecord | null; created: string[]; reshaped: string[];
+  startup: { key: string; value: string }[]; replaced: number; loaded: Record<string, number>;
+  expected: Record<string, { count: number; columns: string[]; checksum?: string }>; shape: Record<string, string[]>;
+};
+
 // Each Ledger's restart gate (src/restart-gate.ts, t586): every method on
 // the class's prototype runs through it (gateMethods, after the class), so
 // a restart asked for after a deploy waits until no call is in flight.
@@ -936,6 +950,20 @@ export class Ledger extends DurableObject<Env> {
     super(ctx, env);
     GATES.set(this, new RestartGate((reason) => ctx.abort(reason)));
     this.sql = ctx.storage.sql;
+    this.#schema();
+    // A deploy can change the tick's logic, and a plan waiting on nothing
+    // the new logic would read sits idle until something else changes; the
+    // ledger ticks its open plans once per deploy (retickDeployed).
+    this.retickDeployed((this.env as unknown as { DEPLOYED_MAIN?: string }).DEPLOYED_MAIN ?? null);
+  }
+
+  // The Ledger's tables as this code has them: each made when missing, each
+  // column added since a table was first made added once, with the backfill
+  // that fills it, and the guards and indexes made again. The constructor
+  // runs it on every start; an import runs it again over the rows of a dump
+  // from an older schema (importFinish), as a start of this code over that
+  // Ledger would.
+  #schema(): void {
     // Reviewers' replies no verdict could be read from (t407) are kept in
     // their own table, below beside the reviews, one row each in the order
     // they were kept. A reply lives there and not in its event: the
@@ -1181,10 +1209,6 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS same_exits (job TEXT NOT NULL, item TEXT NOT NULL, subject TEXT NOT NULL, sig TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (job, item))`);
     this.backfillReviewProvenance();
     this.backfillPartAcceptance();
-    // A deploy can change the tick's logic, and a plan waiting on nothing
-    // the new logic would read sits idle until something else changes; the
-    // ledger ticks its open plans once per deploy (retickDeployed).
-    this.retickDeployed((this.env as unknown as { DEPLOYED_MAIN?: string }).DEPLOYED_MAIN ?? null);
   }
 
   // Items made while the title was the task's whole text keep that text as
@@ -1451,6 +1475,62 @@ export class Ledger extends DurableObject<Env> {
       changed++;
     }
     return changed;
+  }
+
+  // ── a project's tokens on a move between servers (G14) ─────────────────
+  //
+  // The agent and runner tokens live in the index, not the project's Ledger,
+  // so a dump carries the ones that reach the project beside its tables:
+  // those limited to any name the project has had, and those limited to no
+  // project. Only their records, the hash and never the token, so a token
+  // moves intact and works on the server that imports it.
+
+  projectTokens(key: string): { names: string[]; tokens: { id: string; hash: string; json: string }[] } {
+    const names = this.namesOf(key);
+    const tokens = this.sql.exec(`SELECT id, hash, json FROM agent_tokens ORDER BY id`).toArray().filter((r) => {
+      const t = JSON.parse(r.json as string) as AgentToken;
+      return !t.projects?.length || t.projects.some((n) => names.includes(n));
+    }).map((r) => ({ id: r.id as string, hash: r.hash as string, json: r.json as string }));
+    return { names, tokens };
+  }
+
+  // The carried tokens that would clash with this index's: an id held under
+  // another hash, or a hash held under another id. Each named once.
+  tokenConflicts(tokens: { id: string; hash: string }[]): string[] {
+    const clash: string[] = [];
+    for (const t of tokens) {
+      const byId = this.sql.exec(`SELECT hash FROM agent_tokens WHERE id = ?`, t.id).toArray()[0];
+      const byHash = this.sql.exec(`SELECT id FROM agent_tokens WHERE hash = ?`, t.hash).toArray()[0];
+      if ((byId && byId.hash !== t.hash) || (byHash && byHash.id !== t.id)) clash.push(t.id);
+    }
+    return clash;
+  }
+
+  // Puts the carried tokens this index lacks, revoked ones as revoked. A
+  // token limited to any of the project's former names (`from`) is limited
+  // to its name here (`to`), where only that name is registered. A token
+  // already held under the same id and hash is left as it is.
+  importTokens(tokens: { id: string; hash: string; json: string }[], to: string, from: string[], actor: string): { added: number; held: number } {
+    let added = 0, held = 0;
+    const at = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      for (const t of tokens) {
+        if (this.sql.exec(`SELECT 1 FROM agent_tokens WHERE id = ? AND hash = ?`, t.id, t.hash).toArray().length) { held++; continue; }
+        // A clash that arose after the route's last check (the index takes
+        // one call at a time, so only between the two) refuses here, before
+        // any row: no token moves, and nothing is half written.
+        if (this.tokenConflicts([t]).length) {
+          throw new RuleError("token_conflict", `this server holds token ${t.id} under another hash or id, so the project's tokens did not move; its Ledger is imported and registered`, 409, `only the developer can: revoke token ${t.id} here with atelier token revoke ${t.id}, then reissue the tokens the project needs with atelier token issue`);
+        }
+        const record = JSON.parse(t.json) as AgentToken;
+        if (record.id !== t.id || record.hash !== t.hash) throw new RuleError("bad_dump", `the dump's token ${String(t.id).slice(0, 20)} names another id or hash in its record`, 400);
+        if (record.projects?.length) record.projects = [...new Set(record.projects.map((n) => from.includes(n) ? to : n))];
+        this.sql.exec(`INSERT INTO agent_tokens (id, hash, json) VALUES (?, ?, ?)`, t.id, t.hash, JSON.stringify(record));
+        this.log(null, actor, "token.carried", { id: record.id, actor: record.actor, projects: record.projects ?? null, ...(record.runner ? { runner: record.runner } : {}), expiresAt: record.expiresAt, project: to }, at);
+        added++;
+      }
+    });
+    return { added, held };
   }
 
   // The model pool, on the index instance like the project list: shared by
@@ -4061,6 +4141,84 @@ export class Ledger extends DurableObject<Env> {
     return out;
   }
 
+  // atelier migrate (Atelier 2.0, task 11; design section 5, step 4): the
+  // task's work moves from its fork on Artifacts to its branch in the
+  // project's repository on this server, which the caller has made at the
+  // head this Ledger records. Only the record of where the work lives
+  // changes: the holder, its claim, the base, the head and any acceptance
+  // stand. The write token, an Artifacts token, writes nothing here; the
+  // holder's next claim mints a Git grant in its place. Refused for a closed
+  // task, a task with no fork, or one whose head moved since the caller read
+  // it. A task already on `fork` is answered as it stands.
+  migrateFork(id: string, fork: string, actor: string, carried: { from: string; head: string; tip: string | null; remote: string }): Item {
+    const item = this.item(id);
+    if (item.fork === fork) return item;
+    if (item.state === "merged" || item.state === "abandoned" || item.state === "integrated") {
+      throw new RuleError("task_closed", `${id} is ${item.state}; a closed task's work is in its project's history, so nothing moves`, 409, `run atelier show ${id}`);
+    }
+    if (!item.fork || item.fork !== carried.from) throw new RuleError("fork_changed", `${id}'s workspace is ${item.fork ?? "not made yet"}, not ${carried.from}, so nothing was moved`, 409, `run atelier migrate ${id} again`);
+    if ((item.head ?? item.base) !== carried.head) throw new RuleError("head_moved", `${id}'s head moved to ${String(item.head ?? item.base).slice(0, 12)} while ${carried.head.slice(0, 12)} was carried, so nothing was moved`, 409, `run atelier migrate ${id} again`);
+    const at = new Date().toISOString();
+    this.update(id, { fork }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
+    this.log(id, actor, "item.migrated", { from: carried.from, fork, head: carried.head, ...(carried.tip && carried.tip !== carried.head ? { tip: carried.tip } : {}), remote: carried.remote }, at);
+    return this.item(id);
+  }
+
+  // A project's repository moved to this server, or its way back changed
+  // (task 11): one event of the project, with what the server did, and the
+  // project branch's head as main's head when the move set it.
+  hostMoved(actor: string, kind: "project.host_moved" | "project.way_back", data: Record<string, unknown>, head: string | null = null): void {
+    const at = new Date().toISOString();
+    if (head) this.setMainHead(head, at);
+    this.log(null, actor, kind, data, at);
+  }
+
+  // Where the project's move stands (task 11, review): whether the bake has
+  // ended (move-host --end-bake), and whether a merge has been recorded here
+  // since the project's repository first moved, which only a landing makes.
+  // move-host is the migration's alone: after either, with no way back open,
+  // only a landing moves the project's branch.
+  hostMoveState(): { moved: boolean; ended: boolean; landedSince: boolean } {
+    const first = this.sql.exec(`SELECT MIN(seq) AS seq FROM events WHERE kind = 'project.host_moved'`).one().seq as number | null;
+    if (first === null) return { moved: false, ended: false, landedSince: false };
+    const ended = this.sql.exec(`SELECT data FROM events WHERE kind = 'project.way_back' AND seq > ? ORDER BY seq`, first).toArray()
+      .some((r) => (JSON.parse(r.data as string) as { state?: string }).state === "ended");
+    const landedSince = this.sql.exec(`SELECT 1 FROM events WHERE kind IN ('item.merged', 'item.landed_fast') AND seq > ? LIMIT 1`, first).toArray().length > 0;
+    return { moved: true, ended, landedSince };
+  }
+
+  // The secret scan of moved history (task 11, review): a move whose
+  // history holds a key-shaped line is refused and its findings kept here;
+  // the developer clears them, with the reason and their words, and the next
+  // move's scan lets those lines (same file, same fingerprint) through, as
+  // a task's clearances let a push through.
+  hostMoveScan(): { hits: SecretHit[]; clearances: { file: string; fingerprint: string }[] } {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'host-move-scan'`).toArray()[0];
+    const kept = row ? JSON.parse(row.value as string) as { hits?: SecretHit[]; clearances?: { file: string; fingerprint: string }[] } : {};
+    return { hits: kept.hits ?? [], clearances: kept.clearances ?? [] };
+  }
+
+  hostMoveRefused(actor: string, remote: string, head: string, hits: SecretHit[]): void {
+    const kept = this.hostMoveScan();
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('host-move-scan', ?)`, JSON.stringify({ ...kept, hits, head }));
+    this.log(null, actor, "project.host_move_refused", { remote, head, flags: hits.map((h) => ({ file: h.file, line: h.line, commit: h.commit })) }, new Date().toISOString());
+  }
+
+  clearHostMove(actor: string, reason: unknown, direction: OwnerDirection | null): { cleared: number } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer clears a moved history's secret flag", 403, "only the developer can: atelier projects move-host P --from REMOTE --clear-secret REASON --quote WORDS");
+    if (!direction) throw new RuleError("direction_required", "clearing a key-shaped line in moved history needs the developer's words", 400, "run the same command with --quote \"the developer's words\" --as H/M");
+    const text = secretClearReason(reason);
+    const kept = this.hostMoveScan();
+    const at = new Date().toISOString();
+    const fresh = kept.hits.filter((h) => h.fingerprint && !kept.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint));
+    if (!fresh.length) throw new RuleError("no_secret", "no refused move's key-shaped line is left to clear", 409, "run atelier projects move-host P --from REMOTE, which scans the history first");
+    const clearances = [...kept.clearances, ...fresh.map((h) => ({ file: h.file, fingerprint: h.fingerprint as string, reason: text, by: actor, at, quote: direction.quote, acting: direction.acting }))];
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('host-move-scan', ?)`, JSON.stringify({ hits: [], clearances }));
+    this.log(null, actor, "project.host_move_cleared", { reason: text, flags: fresh.map((h) => ({ file: h.file, line: h.line })), quote: direction.quote, acting: direction.acting }, at);
+    return { cleared: fresh.length };
+  }
+
   // A part's fork forked again from its plan's branch at `base`, or a
   // task's from main's (t462), as the claim route does for a fork that
   // holds nothing beyond the commit it forked from (docs/orchestrator.md,
@@ -6595,6 +6753,39 @@ export class Ledger extends DurableObject<Env> {
   decisions(): DecisionView[] {
     this.project();
     return listDecisions(this.decisionStore);
+  }
+
+  // atelier import-tasks (G14): a project's own task and decision files
+  // (docs/TASKS.md, docs/DECISIONS.md, as a project kept off Atelier writes
+  // them; cli/commands/import-tasks.mjs reads them) filed as open tasks and
+  // recorded as standing decisions, in one transaction, so a refusal of any
+  // entry files nothing. Each entry is remembered by the hash of its kind and
+  // text, so importing the same file again changes nothing: an entry filed
+  // before is answered with the id it was given. A refused entry names its
+  // line in the file.
+  importTasks(source: string, entries: { line: number; kind: "task" | "decision"; title?: string; brief?: string | null; text?: string }[], actor: string, acting: string | null = null): { filed: { line: number; id: string }[]; decided: { line: number; id: string }[]; kept: { line: number; id: string }[] } {
+    const project = this.project();
+    const out = { filed: [] as { line: number; id: string }[], decided: [] as { line: number; id: string }[], kept: [] as { line: number; id: string }[] };
+    this.ctx.storage.transactionSync(() => {
+      for (const e of entries) {
+        const key = `imported:${sha256Hex(JSON.stringify(e.kind === "task" ? ["task", e.title, e.brief ?? null] : ["decision", e.text]))}`;
+        const before = this.runnerMeta<{ id: string }>(key);
+        if (before) { out.kept.push({ line: e.line, id: before.id }); continue; }
+        let id: string;
+        try {
+          id = e.kind === "task"
+            ? this.newItem(String(e.title), [], actor, e.brief ? { brief: e.brief } : {}).id
+            : this.recordDecision({ text: e.text, quote: e.text }, actor, acting).id;
+        } catch (error) {
+          const rule = error instanceof RuleError ? error : null;
+          throw new RuleError("import_refused", `${source} line ${e.line}: ${rule ? `${rule.code}: ${rule.detail}` : String((error as Error)?.message ?? error)}; nothing was imported`, 409, `fix line ${e.line} of ${source}, then run atelier import-tasks ${source} --project ${project.name} again`);
+        }
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, key, JSON.stringify({ id, source, line: e.line, at: new Date().toISOString() }));
+        (e.kind === "task" ? out.filed : out.decided).push({ line: e.line, id });
+      }
+      if (out.filed.length || out.decided.length) this.log(null, actor, "project.imported", { source, filed: out.filed.map((f) => f.id), decided: out.decided.map((d) => d.id), kept: out.kept.length }, new Date().toISOString());
+    });
+    return out;
   }
 
   standingDecisions(): Decision[] {
@@ -11003,11 +11194,11 @@ export class Ledger extends DurableObject<Env> {
     return [...held, ...(meta.length ? [`meta (${meta.slice(0, 5).join(", ")}${meta.length > 5 ? ", …" : ""})`] : [])];
   }
 
-  private importMark(id: unknown): { id: string; sequences: { name: string; seq: number }[]; record: ProjectRecord | null; created: string[]; startup: { key: string; value: string }[]; loaded: Record<string, number> } {
+  private importMark(id: unknown): ImportMark {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray()[0];
     const mark = row ? JSON.parse(row.value as string) : null;
-    if (!mark || mark.id !== id) throw new RuleError("no_import", "no import with that id is in progress on this Ledger; start again with atelier ledger import", 409);
-    return { created: [], startup: [], loaded: {}, ...mark };
+    if (!mark || mark.id !== id) throw new RuleError("no_import", "no import with that id is in progress on this Ledger; start again with atelier ledger import", 409, "run atelier ledger import --file F --project P");
+    return { created: [], reshaped: [], startup: [], loaded: {}, expected: {}, shape: {}, replaced: 0, ...mark };
   }
 
   private writeImportMark(mark: object): void {
@@ -11020,16 +11211,22 @@ export class Ledger extends DurableObject<Env> {
     return { import: id, loaded: this.importMark(id).loaded };
   }
 
-  // Takes an import in progress back: the rows it wrote are deleted, the
-  // tables it made are dropped, the counters and meta rows the Ledger had at
-  // begin are set again, and the mark is cleared, so the Ledger is empty as
-  // it was and a new import may begin.
+  // Every table's columns, by name in order, as this Ledger has them now.
+  private tableShapes(): Record<string, string[]> {
+    return Object.fromEntries(this.dumpTables().map((t) => [t.name, this.tableColumns(t.name).map((c) => c.name).sort()]));
+  }
+
+  // Takes an import in progress back, so the Ledger is as it was before
+  // begin and a new import may begin: the rows it wrote are deleted, the
+  // tables it made are dropped, a table it remade in a dump's older shape is
+  // dropped and made again in this code's shape (#schema), the counters and
+  // meta rows the Ledger had at begin are set again, and the mark is cleared.
   importAbort(id: string): { import: string; removed: Record<string, number> } {
     const mark = this.importMark(id);
     const removed: Record<string, number> = {};
     this.ctx.storage.transactionSync(() => {
       for (const t of this.dumpTables()) {
-        if (mark.created.includes(t.name)) continue;
+        if (mark.created.includes(t.name) || mark.reshaped.includes(t.name)) continue;
         const triggers = this.sql.exec(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, t.name).toArray();
         for (const g of triggers) this.sql.exec(`DROP TRIGGER "${g.name}"`);
         const n = Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n);
@@ -11037,46 +11234,67 @@ export class Ledger extends DurableObject<Env> {
         if (n && t.name !== "meta") removed[t.name] = n;
         for (const g of triggers) this.sql.exec(g.sql as string);
       }
-      for (const name of mark.created) {
+      for (const name of [...mark.created, ...mark.reshaped]) {
+        const n = this.dumpTables().some((t) => t.name === name) ? Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${name}"`).one().n) : 0;
         this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-        removed[name] = mark.loaded[name] ?? 0;
+        if (n) removed[name] = n;
       }
       this.sql.exec(`DELETE FROM sqlite_sequence`);
       for (const r of mark.startup) this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, r.key, r.value);
+      // The tables remade in an older shape come back as this code makes them.
+      if (mark.reshaped.length) this.#schema();
     });
     return { import: id, removed };
   }
 
   // The first step of an import (cli/ledger-dump.mjs importDump): refuses a
-  // Ledger that holds anything, and a dump whose tables have columns other
-  // than this Ledger's; makes the tables (and their indexes) this Ledger has
-  // not made yet, since some are made on first use; and marks the import in
-  // progress under `id`, which every later step names.
-  importBegin(manifest: { format?: unknown; tables?: unknown; objects?: unknown; sequences?: unknown; record?: unknown }, id: string): { import: string; created: string[] } {
+  // Ledger that holds anything; makes the tables (and their indexes) this
+  // Ledger has not made yet, since some are made on first use; and marks the
+  // import in progress under `id`, which every later step names.
+  //
+  // A dump from an older schema (production's 1.0, say) is taken as it is
+  // (task 10, t405): a table whose dump lacks columns this Ledger has is
+  // remade here in the dump's own shape, from its definition, so its rows
+  // load as they were written; importFinish then runs the migrations this
+  // code's constructor runs (#schema), which add those columns and fill
+  // them as they would on a start of this code over that Ledger. A dump with
+  // a column or table shape this code does not know, a newer one, is refused.
+  // Every table must name its row count (and may name its checksum), which
+  // importFinish checks the loaded rows against.
+  importBegin(manifest: { format?: unknown; tables?: unknown; objects?: unknown; sequences?: unknown; record?: unknown }, id: string): { import: string; created: string[]; reshaped: string[] } {
     if (manifest?.format !== LEDGER_DUMP_FORMAT || !Array.isArray(manifest.tables)) throw new RuleError("bad_dump", `the file is not a Ledger dump (${LEDGER_DUMP_FORMAT})`, 400);
     const begun = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray()[0];
     if (begun) {
       const open = JSON.parse(begun.value as string).id;
-      throw new RuleError("import_in_progress", `import ${open} into this Ledger has begun and not finished; it already holds some of that dump's rows. Resume it with step resume, or abort it with step abort, naming ${open}`, 409);
+      throw new RuleError("import_in_progress", `import ${open} into this Ledger has begun and not finished; it already holds some of that dump's rows. Resume it with step resume, or abort it with step abort, naming ${open}`, 409, `run atelier ledger import --file F --resume ${open}, or atelier ledger import --abort ${open}`);
     }
     const held = this.heldRows();
-    if (held.length) throw new RuleError("ledger_not_empty", `this Ledger is not empty: ${held.join(", ")} hold rows. An import loads a dump into an empty Ledger only, so nothing was imported`, 409);
-    const existing = new Map(this.dumpTables().map((t) => [t.name, new Set(this.tableColumns(t.name).map((c) => c.name))]));
-    const tables = manifest.tables as { name?: unknown; sql?: unknown; columns?: unknown }[];
+    if (held.length) throw new RuleError("ledger_not_empty", `this Ledger is not empty: ${held.join(", ")} hold rows. An import loads a dump into an empty Ledger only, so nothing was imported`, 409, "import into a server where the project holds nothing, or under another project name");
+    const shape = this.tableShapes();
+    const existing = new Map(Object.entries(shape).map(([name, columns]) => [name, new Set(columns)]));
+    const tables = manifest.tables as { name?: unknown; sql?: unknown; columns?: unknown; count?: unknown; checksum?: unknown }[];
     const create: { name: string; sql: string }[] = [];
+    const reshape: { name: string; sql: string }[] = [];
+    const expected: ImportMark["expected"] = {};
+    const definition = (t: { name?: unknown; sql?: unknown }) => {
+      if (typeof t.sql !== "string" || t.sql.includes(";") || !new RegExp(`^CREATE TABLE "?${t.name}"?\\s*\\(`, "i").test(t.sql)) throw new RuleError("bad_dump", `the dump's definition of ${t.name} is not a single CREATE TABLE of it`, 400);
+      return { name: t.name as string, sql: t.sql };
+    };
     for (const t of tables) {
       if (!dumpableTable(t?.name) || !Array.isArray(t.columns)) throw new RuleError("bad_dump", "a dumped table needs a plain name and its columns", 400);
+      if (!Number.isSafeInteger(t.count) || (t.count as number) < 0) throw new RuleError("bad_dump", `the dump's manifest gives no row count for ${t.name}, which the import is checked against`, 400);
+      if (t.checksum !== undefined && typeof t.checksum !== "string") throw new RuleError("bad_dump", `the dump's checksum of ${t.name} is not text`, 400);
+      if (expected[t.name]) throw new RuleError("bad_dump", `the dump names ${t.name} twice`, 400);
       const columns = (t.columns as { name?: unknown }[]).map((c) => String(c?.name));
+      expected[t.name] = { count: t.count as number, columns, ...(typeof t.checksum === "string" ? { checksum: t.checksum } : {}) };
       const have = existing.get(t.name);
       if (have) {
-        const missing = columns.filter((c) => !have.has(c)), extra = [...have].filter((c) => !columns.includes(c));
-        if (missing.length || extra.length) {
-          throw new RuleError("schema_mismatch", `table ${t.name} differs between the dump and this Ledger (${[missing.length ? `only the dump has ${missing.join(", ")}` : "", extra.length ? `only this Ledger has ${extra.join(", ")}` : ""].filter(Boolean).join("; ")}): import a dump into a server running the code that wrote it, then deploy the new code there`, 409);
+        const unknown = columns.filter((c) => !have.has(c)), older = [...have].filter((c) => !columns.includes(c));
+        if (unknown.length) {
+          throw new RuleError("schema_mismatch", `table ${t.name} of the dump has ${unknown.join(", ")}, which this server's code does not know, so the dump was written by newer code; nothing was imported`, 409, "import the dump into a server running the code that wrote it, or newer");
         }
-      } else {
-        if (typeof t.sql !== "string" || t.sql.includes(";") || !new RegExp(`^CREATE TABLE "?${t.name}"?\\s*\\(`, "i").test(t.sql)) throw new RuleError("bad_dump", `the dump's definition of ${t.name} is not a single CREATE TABLE of it`, 400);
-        create.push({ name: t.name, sql: t.sql });
-      }
+        if (older.length) reshape.push(definition(t));
+      } else create.push(definition(t));
     }
     const made = new Set(create.map((t) => t.name));
     const indexes = (Array.isArray(manifest.objects) ? manifest.objects as { type?: unknown; name?: unknown; table?: unknown; sql?: unknown }[] : [])
@@ -11084,13 +11302,21 @@ export class Ledger extends DurableObject<Env> {
     const sequences = (Array.isArray(manifest.sequences) ? manifest.sequences as { name?: unknown; seq?: unknown }[] : [])
       .filter((s) => dumpableTable(s?.name) && Number.isInteger(s.seq)).map((s) => ({ name: s.name as string, seq: s.seq as number }));
     this.ctx.storage.transactionSync(() => {
+      // Each remade table is empty (heldRows above); its guards and indexes
+      // go with it, and #schema makes this code's again at finish.
+      for (const t of reshape) {
+        this.sql.exec(`DROP TABLE "${t.name}"`);
+        this.sql.exec(t.sql);
+      }
       for (const t of create) this.sql.exec(t.sql);
       for (const o of indexes) this.sql.exec(o.sql as string);
-      const record = manifest.record && typeof manifest.record === "object" ? manifest.record : null;
+      const record = manifest.record && typeof manifest.record === "object" ? manifest.record as ProjectRecord : null;
       const startup = this.sql.exec(`SELECT key, value FROM meta`).toArray().map((r) => ({ key: r.key as string, value: r.value as string }));
-      this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, LEDGER_IMPORT_MARK, JSON.stringify({ id, at: new Date().toISOString(), sequences, record, created: [...made], startup, loaded: {} }));
+      this.sql.exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, LEDGER_IMPORT_MARK, JSON.stringify({
+        id, at: new Date().toISOString(), sequences, record, created: [...made], reshaped: reshape.map((t) => t.name), startup, loaded: {}, expected, shape, replaced: 0,
+      } satisfies ImportMark & { at: string }));
     });
-    return { import: id, created: [...made] };
+    return { import: id, created: [...made], reshaped: reshape.map((t) => t.name) };
   }
 
   // Rows of one table, as dumpRows wrote them, into an import in progress.
@@ -11107,40 +11333,91 @@ export class Ledger extends DurableObject<Env> {
     const insert = `INSERT ${table === "meta" ? "OR REPLACE " : ""}INTO "${table}" (${(columns as string[]).map((c) => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
     let inserted = 0;
     const mark = this.importMark(id);
+    const startupKeys = new Set(mark.startup.map((r) => r.key));
+    let replaced = 0;
     this.ctx.storage.transactionSync(() => {
       const triggers = this.sql.exec(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, table).toArray();
       for (const t of triggers) this.sql.exec(`DROP TRIGGER "${t.name}"`);
       for (const row of rows as unknown[][]) {
         if (table === "meta" && row[keyAt] === LEDGER_IMPORT_MARK) continue;
+        // A meta row of the dump that replaces one this Ledger wrote at
+        // start, which the count at finish allows for.
+        if (table === "meta" && startupKeys.has(row[keyAt] as string)) replaced++;
         this.sql.exec(insert, ...row.map(importValue));
         inserted++;
       }
       for (const t of triggers) this.sql.exec(t.sql as string);
       // Progress counts the rows sent, in the transaction that wrote them.
-      this.writeImportMark({ ...mark, loaded: { ...mark.loaded, [table]: (mark.loaded[table] ?? 0) + (rows as unknown[]).length } });
+      this.writeImportMark({ ...mark, replaced: mark.replaced + replaced, loaded: { ...mark.loaded, [table]: (mark.loaded[table] ?? 0) + (rows as unknown[]).length } });
     });
     return { table, inserted };
   }
 
-  // The last step: sets the AUTOINCREMENT counters as the dump had them, so
-  // a row added after the import never takes a number the source had used,
-  // clears the mark, and sets the alarm, which a dump does not carry, so an
-  // approved plan's deadline and a claimed review's lapse are kept (alarm()
-  // sets it again for the next). Answers each table's row count and the
-  // project's record the dump carried.
-  async importFinish(id: string): Promise<{ counts: Record<string, number>; record: ProjectRecord | null }> {
+  // What an import in progress holds against what its manifest said: each
+  // table's rows sent and stored against its count, and, where the manifest
+  // gave one, its rows' checksum (dumpChecksum, over the dump's columns in
+  // storage order, read as a dump reads them). meta is counted, not summed:
+  // its rows replace those the Ledger wrote at start. Each line names what
+  // differs; none when everything matches.
+  private importShortfall(mark: ImportMark): string[] {
+    const problems: string[] = [];
+    const tables = new Set(this.dumpTables().map((t) => t.name));
+    for (const [name, want] of Object.entries(mark.expected)) {
+      const sent = mark.loaded[name] ?? 0;
+      if (!tables.has(name)) { problems.push(`${name} is missing`); continue; }
+      let stored = Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${name}"`).one().n);
+      if (name === "meta") stored -= 1 + mark.startup.length - mark.replaced;
+      if (sent !== want.count || stored !== want.count) {
+        problems.push(`${name}: the manifest says ${want.count} row${want.count === 1 ? "" : "s"}, ${sent} ${sent === 1 ? "was" : "were"} sent and ${stored} ${stored === 1 ? "is" : "are"} stored`);
+        continue;
+      }
+      if (want.checksum === undefined || name === "meta") continue;
+      const sum = dumpChecksum();
+      for (const [, row] of this.dumpCursor(name, want.columns, 0, { redacted: 0 })) sum.add(row);
+      if (sum.value() !== want.checksum) problems.push(`${name}: the rows stored do not match the manifest's checksum`);
+    }
+    return problems;
+  }
+
+  // The last step. The rows loaded are checked against the manifest's
+  // counts and checksums (importShortfall) first: a shortfall refuses, the
+  // import stays in progress, and nothing else changes, so it can be resumed
+  // or aborted. Then, in one transaction: the AUTOINCREMENT counters are set
+  // as the dump had them, so a row added after the import never takes a
+  // number the source had used; the migrations this code's constructor runs
+  // are run over the loaded rows (#schema), which brings a dump of an older
+  // schema to this one; every table must then have the shape it had before
+  // begin, or the transaction is rolled back and the import stays open; and
+  // the mark is cleared. The alarm, which a dump does not carry, is set, so
+  // an approved plan's deadline and a claimed review's lapse are kept
+  // (alarm() sets it again for the next). Answers each table's row count,
+  // the tables migrated, and the project's record the dump carried.
+  async importFinish(id: string): Promise<{ counts: Record<string, number>; migrated: string[]; record: ProjectRecord | null }> {
     const mark = this.importMark(id);
+    const project = mark.record && typeof (mark.record as { name?: unknown }).name === "string" ? (mark.record as { name: string }).name : "P";
+    const short = this.importShortfall(mark);
+    if (short.length) {
+      throw new RuleError("import_incomplete", `import ${id} does not hold what its dump's manifest says (${short.join("; ")}), so it was not finished and nothing was registered`, 409,
+        `resume it with atelier ledger import --file F --resume ${id} --project ${project}, or drop what it loaded with atelier ledger import --abort ${id} --project ${project}`);
+    }
     this.ctx.storage.transactionSync(() => {
       for (const s of mark.sequences) {
         if (!this.dumpTables().some((t) => t.name === s.name)) continue;
         this.sql.exec(`DELETE FROM sqlite_sequence WHERE name = ?`, s.name);
         this.sql.exec(`INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)`, s.name, s.seq);
       }
+      this.#schema();
+      const now = this.tableShapes();
+      const differ = Object.entries(mark.shape).filter(([name, columns]) => (now[name] ?? []).join(",") !== columns.join(",")).map(([name]) => name);
+      if (differ.length) {
+        throw new RuleError("schema_mismatch", `after its migrations, ${differ.join(", ")} still differ${differ.length === 1 ? "s" : ""} from this server's shape, so import ${id} was not finished and nothing was registered`, 409,
+          `drop what it loaded with atelier ledger import --abort ${id} --project ${project}`);
+      }
       this.sql.exec(`DELETE FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK);
     });
     const counts = Object.fromEntries(this.dumpTables().map((t) => [t.name, Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n)]));
     await this.ctx.storage.setAlarm(Date.now() + 1000);
-    return { counts, record: mark.record };
+    return { counts, migrated: mark.reshaped, record: mark.record };
   }
 
   // The stage the stage tick would show for the task now: stageOf with the

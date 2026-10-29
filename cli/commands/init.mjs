@@ -189,7 +189,16 @@ export default async function initCommand() {
   }, OWNER);
   // The Node server mints no token for the developer's push of the project's
   // branch: the developer pushes with the server token (docs/branches.md).
-  if (r.baseline && !r.baseline.token) r.baseline.token = apiToken();
+  const onServer = !!r.baseline && !r.baseline.token;
+  if (onServer) r.baseline.token = apiToken();
+  // On the Node server the repository is the baseline, and once its branch
+  // exists only a landing moves it (task 6): a later init records the policy
+  // and pushes nothing (Atelier 2.0, task 11). What the checkout holds that
+  // the server's branch lacks is said, with the way it gets there.
+  const serverHead = onServer ? serverBranchHead(r.baseline.remote, branch, top, r.baseline.token) : null;
+  if (onServer && typeof args["history-since"] === "string") {
+    die(`${name} is on a server whose repository is the baseline, which takes the whole history: --history-since does nothing there.\nnext: atelier init${serverHead ? "" : " (the first push sends the whole history)"} --project ${name}, without --history-since`);
+  }
   // A project too large for Artifacts joins with its recent history only
   // (cli/fresh.mjs). Once set up that way it stays that way: a later init
   // changes the policy and pushes nothing; atelier sync carries new commits.
@@ -208,7 +217,9 @@ export default async function initCommand() {
   const pending = cfg.projects?.[name] ? null : {};
   if (pending) discoverPrivate(name, pending);
   const baselineBases = () => remoteBases({ git, cwd: top, remote: r.baseline.remote, ref: `refs/heads/${branch}`, opts: { token: r.baseline.token, ownerRemote: false } });
-  if (fresh) {
+  if (serverHead) {
+    // Nothing is pushed.
+  } else if (fresh) {
     if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
   } else if (since) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) die("--history-since takes a day, YYYY-MM-DD");
@@ -250,9 +261,11 @@ export default async function initCommand() {
   const pol = r.project.policy;
   if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
   if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; developer approval recorded`);
-  console.log(fresh
-    ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
-    : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
+  const titled = r.project.title ? `${r.project.title} (${name})` : name;
+  console.log(serverHead ? serverInitText(titled, name, branch, serverHead, top, r.baseline)
+    : fresh ? `${titled}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
+    : onServer ? `${titled}: ${name}'s repository on this server now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`
+    : `${titled}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
   console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
   for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
@@ -313,4 +326,28 @@ function proseStandardText(top, path) {
   if (!text) return null;
   if (text.length > PROSE_TEXT_MAX) { console.log(`Warning: the prose standard ${source} is ${text.length} characters, over the ${PROSE_TEXT_MAX} the server keeps; its path is recorded without its text.`); return null; }
   return text;
+}
+
+// The tip of `branch` in the project's repository on the Node server, or
+// null while it has none (the first init pushes it).
+function serverBranchHead(remote, branch, cwd, token) {
+  const listed = git(["ls-remote", remote, `refs/heads/${branch}`], { cwd, token, allowFail: true });
+  if (listed.status !== 0) die(`could not read ${remote}: ${(listed.stderr ?? "").trim().slice(0, 300)}; nothing was pushed`);
+  return /^([0-9a-f]{40,64})\s/.exec(listed.stdout ?? "")?.[1] ?? null;
+}
+
+// What a later init on the Node server says: the policy is recorded, and how
+// the checkout's branch stands against the server's, which only a landing
+// moves. The server's tip is fetched so the two can be compared.
+function serverInitText(titled, name, branch, serverHead, cwd, baseline) {
+  const head = git(["rev-parse", "HEAD"], { cwd });
+  const lines = [`${titled}: policy recorded; nothing was pushed. On this server the repository is the baseline, and ${branch} there is at ${short(serverHead)}.`];
+  if (head === serverHead) return [...lines, `This checkout's ${branch} is at the same commit.`].join("\n");
+  git(["fetch", "--quiet", "--no-tags", baseline.remote, `refs/heads/${branch}`], { cwd, token: baseline.token, allowFail: true });
+  if (holds(head, serverHead, cwd)) return [...lines, `This checkout's ${branch} is behind it, at ${short(head)}.`, `next: atelier pull --project ${name}`].join("\n");
+  const ahead = git(["rev-list", "--count", head, "--not", serverHead], { cwd, allowFail: true }).stdout?.trim() || "some";
+  return [...lines,
+    `This checkout holds ${ahead} commit${ahead === "1" ? "" : "s"} the server's ${branch} lacks; only a landing moves ${branch} there, so they were not sent.`,
+    `next: carry them as a task: atelier new "TITLE" --project ${name}, claim it, push the commits to its branch, then atelier land tN --project ${name}`,
+  ].join("\n");
 }

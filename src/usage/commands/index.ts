@@ -38,6 +38,7 @@ import command_guide from "./guide.ts";
 import command_handoff from "./handoff.ts";
 import command_help from "./help.ts";
 import command_identity from "./identity.ts";
+import command_import_tasks from "./import-tasks.ts";
 import command_inbox from "./inbox.ts";
 import command_init from "./init.ts";
 import command_integrated from "./integrated.ts";
@@ -47,6 +48,7 @@ import command_ledger from "./ledger.ts";
 import command_login from "./login.ts";
 import command_ls from "./ls.ts";
 import command_merge from "./merge.ts";
+import command_migrate from "./migrate.ts";
 import command_mode from "./mode.ts";
 import command_models from "./models.ts";
 import command_new from "./new.ts";
@@ -136,6 +138,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/handoff.ts", spec: command_handoff },
   { path: "src/usage/commands/help.ts", spec: command_help },
   { path: "src/usage/commands/identity.ts", spec: command_identity },
+  { path: "src/usage/commands/import-tasks.ts", spec: command_import_tasks },
   { path: "src/usage/commands/inbox.ts", spec: command_inbox },
   { path: "src/usage/commands/init.ts", spec: command_init },
   { path: "src/usage/commands/integrated.ts", spec: command_integrated },
@@ -145,6 +148,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/login.ts", spec: command_login },
   { path: "src/usage/commands/ls.ts", spec: command_ls },
   { path: "src/usage/commands/merge.ts", spec: command_merge },
+  { path: "src/usage/commands/migrate.ts", spec: command_migrate },
   { path: "src/usage/commands/mode.ts", spec: command_mode },
   { path: "src/usage/commands/models.ts", spec: command_models },
   { path: "src/usage/commands/new.ts", spec: command_new },

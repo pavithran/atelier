@@ -37,6 +37,7 @@ import command_guide from "./guide.mjs";
 import command_handoff from "./handoff.mjs";
 import command_help from "./help.mjs";
 import command_identity from "./identity.mjs";
+import command_import_tasks from "./import-tasks.mjs";
 import command_inbox from "./inbox.mjs";
 import command_init from "./init.mjs";
 import command_integrated from "./integrated.mjs";
@@ -46,6 +47,7 @@ import command_ledger from "./ledger.mjs";
 import command_login from "./login.mjs";
 import command_ls from "./ls.mjs";
 import command_merge from "./merge.mjs";
+import command_migrate from "./migrate.mjs";
 import command_mode from "./mode.mjs";
 import command_models from "./models.mjs";
 import command_new from "./new.mjs";
@@ -135,6 +137,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/handoff.mjs", run: command_handoff },
   { path: "cli/commands/help.mjs", run: command_help },
   { path: "cli/commands/identity.mjs", run: command_identity },
+  { path: "cli/commands/import-tasks.mjs", run: command_import_tasks },
   { path: "cli/commands/inbox.mjs", run: command_inbox },
   { path: "cli/commands/init.mjs", run: command_init },
   { path: "cli/commands/integrated.mjs", run: command_integrated },
@@ -144,6 +147,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/login.mjs", run: command_login },
   { path: "cli/commands/ls.mjs", run: command_ls },
   { path: "cli/commands/merge.mjs", run: command_merge },
+  { path: "cli/commands/migrate.mjs", run: command_migrate },
   { path: "cli/commands/mode.mjs", run: command_mode },
   { path: "cli/commands/models.mjs", run: command_models },
   { path: "cli/commands/new.mjs", run: command_new },

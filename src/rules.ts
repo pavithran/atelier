@@ -3744,3 +3744,19 @@ export function importValue(value: unknown): string | number | null | ArrayBuffe
   }
   throw new RuleError("bad_dump", "a dumped value is text, a number, null or a $blob", 400);
 }
+
+// A remote the Node server may fetch a project's repository or a task's
+// work from when it moves to the Studio (Atelier 2.0, task 11): https, http
+// (a tailnet address, or a local test server), or an absolute path to a
+// repository on that machine. No ssh (the server holds no key), no ext:: or
+// other transport helper, and no credentials in the URL, which would be
+// recorded with it: a token goes in a header. Answers why not, or null.
+export function checkRemote(remote: string): string | null {
+  if (typeof remote !== "string" || !remote || remote.length > 500 || /[\s\0]/.test(remote)) return "a remote is one URL or path";
+  if (remote.startsWith("/")) return remote.split("/").includes("..") ? "a local path names no .. step" : null;
+  let url: URL;
+  try { url = new URL(remote); } catch { return "a remote is an https:// URL or an absolute path"; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return `a remote is https:// (or http:// on the tailnet), not ${url.protocol}`;
+  if (url.username || url.password) return "a remote carries no credentials; give a token with --token-env";
+  return null;
+}
