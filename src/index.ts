@@ -275,12 +275,13 @@ function ownerName(env: Env): string | null {
 // The Git host the Node server gives as env.GIT (src/git/host.mjs); absent
 // on the Workers deploy.
 type GitHost = {
-  mint(grant: { project: string; kind: "task" | "read" | "plan"; task?: string; actor: string; generation?: number }): { id: string; token: string; hash: string; expiresAt: string };
+  mint(grant: { project: string; kind: "task" | "read" | "plan" | "landing"; task?: string; actor: string; generation?: number; accepted?: string }): { id: string; token: string; hash: string; expiresAt: string };
   revoke(id: string): boolean;
   createRepo(args: { key: string; branch: string }): Promise<{ created: boolean }>;
   claimBranch(args: { key: string; projectBranch: string; branch: string; from: string }): Promise<{ base: string | null; head: string | null; created: boolean }>;
   moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
   revokeAfterPushes(id: string): Promise<boolean>;
+  revokeLanding(args: { key: string; task: string }): Promise<number>;
 };
 
 function gitHost(env: Env): GitHost | null {
@@ -1988,9 +1989,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const g = await gitRead(c, git, ref.key, project, actor, branch);
       return json({ kind: "read", ...g });
     }
-    if (body.kind !== "task") throw new RuleError("bad_kind", "kind is read or task", 400);
+    if (body.kind !== "task" && body.kind !== "landing") throw new RuleError("bad_kind", "kind is read, task or landing", 400);
     const id = String(body.item ?? "");
     if (!/^t[0-9]+$/.test(id)) throw new RuleError("bad_item", "name the task as tN", 400);
+    // A landing grant (task 6; design section 4.7): it writes the project's
+    // branch with a merge of the accepted head H (the hook's rule 4) and the
+    // provenance notes, with the task's clearances applied by the hook's
+    // scan. Minted only to the holder of the project's live landing lease,
+    // for a task accepted at H; bound to { project, task, accepted: H }; five
+    // minutes; revoked once the landing's merge is recorded (merged).
+    if (body.kind === "landing") {
+      requireOwner(env, actor);
+      const head = String(body.head ?? "");
+      if (!/^[0-9a-f]{40}$/.test(head)) throw new RuleError("bad_head", "name the accepted head as a 40-character commit id", 400);
+      const lease = await L.liveProjectLanding();
+      if (!lease || lease.item !== id || lease.holder !== actor) {
+        throw new RuleError("no_lease", lease ? `the landing lease is held for ${lease.item} by ${lease.holder}, not for ${id} by ${actor}; a landing grant goes only to the holder of the project's landing lease, so none was issued` : `no live landing lease is held, so no landing grant for ${id} was issued; a landing grant goes only to its holder`, 409, `run atelier land ${id}`);
+      }
+      const item = await L.item(id);
+      if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}, not accepted, so no landing grant was issued`, 409, `run atelier land ${id}`);
+      if (item.acceptedHead !== head) throw new RuleError("acceptance_changed", `${id} is accepted at ${String(item.acceptedHead).slice(0, 12)}, not ${head.slice(0, 12)}, so no landing grant was issued for that head`, 409, `run atelier merge ${id} again, which lands the accepted head`);
+      const g = git.mint({ project: ref.key, kind: "landing", task: id, actor, accepted: head });
+      await keepGitGrant(c, git, ref.key, g);
+      return json({ kind: "landing", remote, token: g.token, expiresAt: g.expiresAt, branch, accepted: head });
+    }
     // The actor a runner token names is only its header's word: the runner
     // must hold this task's job itself (assertRunnerJob), as on the item's
     // own routes. An agent token speaks for its own actor alone.
@@ -3552,11 +3574,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const p = await L.project();
       const merge = String(body.mergeCommit ?? "");
       const item = await L.item(id);
-      using baseline = await env.ARTIFACTS.get(p.repo);
-      const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
-      const history = await baseline.log({limit:1000});
-      const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
+      // The landing's own record (task 6): it records what the hook
+      // confirmed. The merge commit is the project branch's tip or in its
+      // history, read over the whole history (holdsCommit), with the accepted
+      // head among its parents; otherwise it is refused. A record made once
+      // stands when made again (L.merged).
+      if (item.state !== "merged") {
+        const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await artifactsStep(`read ${merge.slice(0, 12)}`, async () => { using r = await env.ARTIFACTS.get(p.repo); return await r.readCommit(merge); }) : null;
+        const top = commit ? await headOf(env, p.repo) : null;
+        const held = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
+        if (held === null) throw new RuleError("merge_unconfirmed", `the project's branch could not be read far enough to find ${merge.slice(0, 12)}, so the merge is not recorded`, 409, `run atelier merge ${id} again`);
+        if (!held) throw new RuleError("merge_not_on_main", `the project's branch does not hold ${merge.slice(0, 12) || "the merge commit"}${commit ? "" : ", which its repository does not have"}, so the merge is not recorded`, 409, `run atelier merge ${id} again, which pushes the merge before it records it`);
+        if (!commit!.parents.includes(item.acceptedHead ?? "")) throw new RuleError("not_a_merge", `${merge.slice(0, 12)}'s parents do not include ${id}'s accepted head ${String(item.acceptedHead).slice(0, 12)}, so it is not ${id}'s merge and is not recorded`, 409, `run atelier merge ${id} again, which merges the accepted head`);
+      }
+      const merged = await L.merged(id, actor, merge, true, item.acceptedHead);
+      // One use: the task's landing grant goes once its push is recorded.
+      await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
       const postMerge = await L.postMergeRun(id);
       return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
     }
@@ -3598,7 +3631,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
       const workspace = await L.workspaceOf(id);
       await revoke(env, workspace.fork, workspace.token);
-      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace));
+      const recorded = await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace);
+      // A landing grant still live for the task ends with its merge recorded.
+      await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
+      return json(recorded);
     }
     case "landing": {
       requireOwner(env, actor);

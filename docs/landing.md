@@ -171,8 +171,8 @@ so the task's branch and its approvals stay as they were reviewed.
    the task stays accepted with its approvals, and is not rejected.
 7. **`push`**: the merge commit, and nothing else, goes to the project's
    branch (`pushMergeToProjectBranch` in `cli/landing.mjs`, the one function
-   that pushes it; task 6 gives it a landing grant minted to the lease
-   holder in place of the developer's credential). If main moved between
+   that pushes it, with a landing grant minted to the lease holder for the
+   task at its accepted head: docs/branches.md). If main moved between
    the checks and the push, Git and the hook refuse it, since it is not a
    fast-forward: the merge is undone and steps 4 to 6 run again on the new
    main, at most twice, and each merge is pushed at most once. A third
@@ -182,11 +182,14 @@ so the task's branch and its approvals stay as they were reviewed.
    owner and landing grants write by fast-forward, and never decide the
    landing: a refused notes push leaves them in the checkout for the next
    landing.
-8. **`merged`**: the merge is recorded, and the lease released.
+8. **`merged`**: the merge is recorded, once the server has found it on the
+   project's branch with the accepted head among its parents; the landing
+   grant is revoked, and the lease released.
 
 The developer's own `atelier merge t9` (without `--landing`) still merges
 and publishes an accepted head by hand, pushing only the merge to the
-project's branch, without the merged-tree checks.
+project's branch, without the merged-tree checks. On the Node server it
+takes the landing lease for its landing grant, and lets it go at the end.
 
 ### The landing record (G1)
 

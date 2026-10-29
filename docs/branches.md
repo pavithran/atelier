@@ -12,12 +12,14 @@ A builder could write to any branch of a shared repository if nothing stopped it
 |---|---|---|
 | `task` | `refs/heads/t/N` of its task | while the task's Ledger records it |
 | `read` | nothing; reads every branch | 8 hours |
-| `landing` | the project's branch, once, with a merge of the accepted head; and `refs/notes/atelier` | 5 minutes |
+| `landing` | the project's branch, with a merge of its task's accepted head; and `refs/notes/atelier` | 5 minutes, while its landing stands, until the merge is recorded |
 | owner | the project's branch, `refs/heads/dev/*` and `refs/notes/atelier` | the server token itself |
 
 A task grant counts only while the task's Ledger records it as the item's write token (`git:HASH` in `items.token_id`). The Ledger already changes that record on every change of holder: release, handoff, abandon, merge and a new claim. So each of those revokes the grant with no extra step, and asking for a new grant replaces the old one. A task has one live write credential at a time.
 
 `POST /api/projects/P/git-token` with `{"kind": "read"}` or `{"kind": "task", "item": "tN"}` gives one. A task grant goes only to the task's holder.
+
+`{"kind": "landing", "item": "tN", "head": H}` gives a landing grant (task 6, design section 4.7). It goes only to the holder of the project's live landing lease, for that task, while the task is accepted at H; otherwise the route refuses with `no_lease`, `not_accepted` or `acceptance_changed`, each naming the next command. The grant is bound to the project, the task and H. It counts only while the task is still accepted at H and its holder still holds the lease for it, so a lease released or taken over, or an acceptance withdrawn, ends it. It lives five minutes and is revoked once the landing's merge is recorded, so a used grant gets 401. Since the grant names its task, the hook's scan of the landing push applies the clearances the owner recorded on that task.
 
 **The pre-receive hook refuses every ref update the grant does not cover** (`hooks/pre-receive`). The server runs `git receive-pack` with the grant's id and binding in the environment, never its token, and the hook applies four rules to the ref update:
 
@@ -49,8 +51,8 @@ The server sweeps leftover policy and report directories from `data/ENV/hook-sca
 
 For later:
 
-- A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task (task 6).
-- Until then the landing's push carries the developer's credential. Since G2 it is one function, `pushMergeToProjectBranch` in `cli/landing.mjs`, which pushes the merge commit alone to the project's branch (rule 4's shape: first parent the branch's tip, the accepted head among the parents); task 6 swaps that credential for a landing grant minted to the holder of the landing lease. The provenance notes go on a push of their own to `refs/notes/atelier`, which the owner and landing grants may write (rule 1); a refused notes push never undoes the merge, and the next landing pushes the notes merged with the baseline's.
+- The landing pushes with a landing grant (task 6). `pushMergeToProjectBranch` in `cli/landing.mjs` pushes the merge commit alone to the project's branch, and the hook holds it to rule 4: first parent the branch's tip, the accepted head among the parents. The provenance notes go on a push of their own to `refs/notes/atelier` with the same grant (rule 1); a refused notes push never undoes the merge, and the next landing pushes the notes merged with the baseline's. The merge reads the project's branch with a read grant, so the developer's server token is never a Git credential in a landing. A merge by hand (`atelier merge tN` without `--landing`) takes the landing lease itself for its grant and lets it go when it ends.
+- The landing's record of its merge (`POST .../merged`) records what the hook confirmed: the merge commit must be the project branch's tip or in its history, read over the whole history, with the accepted head among its parents. `record-merge`, for a merge made outside a landing, refuses a merge the branch does not hold or whose second parent is not the head it names, and applies the gate's independence (G16).
 - Allowed lines (`docs/atelier/privacy-allow.json`) are dropped before the report. The owner sees them only in the allowance file's diff.
 
 7. The grant is still live. Last, the hook asks the server whether the grant it was let in with still counts and its actor still holds the task (`POST /internal/grant-live` on a loopback listener of its own, with a random per-process secret the server puts in the hook's environment). A grant the server does not confirm, or a server that does not answer, refuses the push.

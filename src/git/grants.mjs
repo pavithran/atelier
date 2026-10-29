@@ -8,8 +8,12 @@
 //            handoff, abandon, merge, a new claim) revoke it, and minting a
 //            new one for the task rotates it: one live write token per task.
 //   read     reads every branch of one project.
-//   landing  writes the project's branch once, with a merge of `accepted`
-//            (rule 4); five minutes.
+//   landing  writes the project's branch with a merge of `accepted` (rule 4),
+//            and refs/notes/atelier, for its task (whose clearances the
+//            hook's scan applies); minted only to the holder of the
+//            project's landing lease for a task accepted at `accepted`, live
+//            only while that stays so, for five minutes, and revoked once
+//            the landing's merge is recorded (task 6).
 // The plaintext leaves this module once, in mint's answer, and is never
 // stored, logged or put in a hook's environment (the hook gets the grant id).
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -37,6 +41,7 @@ export class GrantStore {
     if (!KINDS.includes(kind)) throw new Error(`a Git grant is one of ${KINDS.join(", ")}, not ${kind}`);
     if ((kind === "task" || kind === "plan") && !/^t\d+$/.test(task ?? "")) throw new Error(`a ${kind} grant names its task as tN`);
     if (kind === "landing" && !/^[0-9a-f]{40}$/.test(accepted ?? "")) throw new Error("a landing grant names the accepted head");
+    if (kind === "landing" && !/^t\d+$/.test(task ?? "")) throw new Error("a landing grant names its task as tN");
     const token = `atl_${randomBytes(32).toString("hex")}`;
     const hash = hashToken(token);
     const id = randomUUID().replaceAll("-", "").slice(0, 16);
@@ -59,6 +64,11 @@ export class GrantStore {
     const row = this.db.prepare(`SELECT * FROM grants WHERE id = ?`).get(id);
     if (!row || row.revoked_at !== null || row.expires_at <= now) return null;
     return { ...row };
+  }
+  // The ids of the live grants of one kind for one task of a project.
+  liveIds({ project, kind, task }, now = Date.now()) {
+    return this.db.prepare(`SELECT id FROM grants WHERE project = ? AND kind = ? AND task = ? AND revoked_at IS NULL AND expires_at > ?`)
+      .all(project, kind, task, now).map((row) => row.id);
   }
   revoke(id, now = Date.now()) {
     return this.db.prepare(`UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(now, id).changes > 0;

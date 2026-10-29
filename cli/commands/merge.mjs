@@ -211,7 +211,7 @@ export default async function mergeCommand() {
   // The checkout lease (G9): the merge never uses the checkout beside atelier
   // ship. A held or lost checkout ends the merge as a fact with its next,
   // and the landing records that failure for its attempt.
-  let checkoutLease;
+  let checkoutLease, tookLease=false;
   try {
     checkoutLease=await holdCheckout({project:name,kind:'landing',item:id,cwd});
     try { adoptOldLanding(gitDir,landing); } catch (error) { await fail(error.message); }
@@ -259,11 +259,14 @@ export default async function mergeCommand() {
     if (warning) console.error(warning);
     if (git(["status","--porcelain"],{cwd})) await fail("the registered checkout has uncommitted changes; preserve them before retrying");
     if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) await fail(`check out ${p.branch} in ${cwd} first`);
-    const base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
-    // The Node server mints no token for the developer's write of the
-    // project's branch: the developer's own server token is the credential
-    // (docs/branches.md), which task 6 replaces with a landing grant.
-    if(!base.token)base.token=apiToken();
+    let base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
+    // The Node server mints no write token for the project's branch (task 6):
+    // the merge reads it with a read grant, and pushes with a landing grant
+    // minted to the holder of the landing lease just before the push
+    // (landingCredential). The developer's server token is never a Git
+    // credential here.
+    const nodeGit=!base.token;
+    if(nodeGit)base=await call("POST",`${P(name)}/baseline-token`,{scope:'read'},OWNER);
     git(['fetch','--quiet',base.remote,p.branch],{cwd,token:base.token});
     const baselineHead=git(['rev-parse','FETCH_HEAD'],{cwd});
     const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
@@ -432,8 +435,28 @@ export default async function mergeCommand() {
     // A refusal ends the command here with the server's reason; the local
     // merge commit is kept for reconciliation.
     await stayHeld(checkoutLease); // G9: and so does the publishing
+    // A merge by hand on the Node server takes the project's landing lease
+    // itself, since a landing grant goes only to its holder; atelier land
+    // holds it already for its merge child. One taken here is let go when
+    // the merge ends (the finally below).
+    if(nodeGit&&!lander&&!tookLease){
+      const held=(await request('GET',`${P(name)}/landing-lease`,undefined,OWNER).catch(()=>null))?.lease;
+      try { await request('POST',`${P(name)}/landing-lease`,{item:id},OWNER); }
+      catch (error) { await fail(error.message,{},error.code); }
+      tookLease=held?.item!==id;
+    }
     try { await request('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER); }
     catch (error) { await fail(error.message,{},error.code); }
+    // The credential the merge and the notes are pushed with: on the Node
+    // server a landing grant for this task at its accepted head (task 6),
+    // which the hook holds to rule 4 and scans with the task's clearances;
+    // elsewhere the baseline's write token.
+    let pushToken=base.token;
+    if(nodeGit){
+      try { pushToken=(await request('POST',`${P(name)}/git-token`,{kind:'landing',item:id,head:item.acceptedHead},OWNER)).token; }
+      catch (error) { await fail(error.message,{},error.code); }
+    }
+    const hide=(text)=>[base.token,pushToken].filter(Boolean).reduce((t,secret)=>t.split(secret).join('[redacted]'),String(text??''));
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
     const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily,checkedTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead,mergeCommit)});
     // The notes commits refs/notes/atelier holds that FROM (a remote's notes
@@ -486,11 +509,11 @@ export default async function mergeCommand() {
     let pushed=null, refusedPush=null;
     try {
       pushed=alreadyPublished?{status:0}:guardedPush({project:name,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>{throw new GuardStop(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);}},
-        (sha)=>pushMergeToProjectBranch({git,cwd,remote:base.remote,token:base.token,commit:sha,branch:p.branch}));
+        (sha)=>pushMergeToProjectBranch({git,cwd,remote:base.remote,token:pushToken,commit:sha,branch:p.branch}));
     } catch (error) { if (error instanceof GuardStop) refusedPush=error.message; else throw error; }
     if (refusedPush) await fail(refusedPush);
     if (pushed.status!==0) {
-      const said=String(pushed.stderr||pushed.stdout||'').split(base.token||'\0').join('[redacted]').trim();
+      const said=hide(pushed.stderr||pushed.stdout||'').trim();
       // Main moved since the merge was made: the push was not a fast-forward
       // (Git refuses it, and the hook would). Read main again to tell that
       // from any other refusal.
@@ -516,8 +539,8 @@ export default async function mergeCommand() {
     // may write refs/notes/atelier, fast-forward only). A refusal never
     // undoes the merge: the notes stay in this checkout and the next landing
     // pushes them, merged with the baseline's.
-    const notesPushed=git(['push','--quiet',base.remote,'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token,allowFail:true});
-    if(notesPushed.status!==0){const lines=String(notesPushed.stderr||'').split('\n').filter(Boolean);console.log(`Provenance notes were not published to the baseline (${(lines.find((l)=>/atelier:/.test(l))??lines.at(-1)??'refused').replace(/^remote:\s*/,'').split(base.token||'\0').join('[redacted]')}); they stay in this checkout under refs/notes/atelier.`);}
+    const notesPushed=git(['push','--quiet',base.remote,'refs/notes/atelier:refs/notes/atelier'],{cwd,token:pushToken,allowFail:true});
+    if(notesPushed.status!==0){const lines=hide(notesPushed.stderr||'').split('\n').filter(Boolean);console.log(`Provenance notes were not published to the baseline (${(lines.find((l)=>/atelier:/.test(l))??lines.at(-1)??'refused').replace(/^remote:\s*/,'')}); they stay in this checkout under refs/notes/atelier.`);}
     journal.save({phase:'published'});
     await record('push',Date.now()-stepAt,{mergeCommit:published,mainHead:baselineHead,...(round?{rounds:round}:{})});
     await stayHeld(checkoutLease); // G9: the record of the merge, and what follows in the checkout
@@ -547,7 +570,11 @@ export default async function mergeCommand() {
     else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
     break;
     }
-  } finally { await checkoutLease?.release(); unlock?.(); }
+  } finally {
+    // The landing lease a merge by hand took for its landing grant is let go.
+    if(tookLease)await request('POST',`${P(name)}/landing-lease`,{cancel:true,item:id},OWNER).catch((error)=>console.error(`Warning: the landing lease ${id}'s merge took could not be released: ${error.message}; free it with atelier land ${id} --release-lease`));
+    await checkoutLease?.release(); unlock?.();
+  }
 }
 
 // How many times the lander's merge is made and checked again after main

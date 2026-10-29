@@ -80,6 +80,20 @@ before(async () => {
 });
 after(async () => { await server?.close(); });
 
+
+// A landing grant minted straight from the store, for the tests of the
+// hook's rules alone. Such a grant counts only while its task is accepted at
+// its head and its actor holds the landing lease (GitHost.stillLanding);
+// these fixtures have neither, so that check stands aside for the test.
+// The route that mints landing grants, and the check itself, are tested
+// against a real landing in test/land-grant.test.mjs.
+function landingGrant(t, grant) {
+  const { stillLanding } = server.git;
+  server.git.stillLanding = async () => true;
+  t.after(() => { server.git.stillLanding = stillLanding; });
+  return server.git.grants.mint({ project: "demo", kind: "landing", ...grant });
+}
+
 test("a task credential writes its own branch and nothing else", async () => {
   const t5 = await taskToken("t5");
   assert.equal(t5.branch, "t/5");
@@ -96,13 +110,13 @@ test("a task credential writes its own branch and nothing else", async () => {
   assert.equal(await lsRemote(remote(OWNER), "refs/heads/t/5"), rewritten);
 });
 
-test("a landing grant moves the project's branch only by a merge of the accepted head onto its tip", async () => {
+test("a landing grant moves the project's branch only by a merge of the accepted head onto its tip", async (t) => {
   const main = git(work, "rev-parse", "main");
   const accepted = commit("accepted t5", main);
   const t5 = await taskToken("t5");
   assert.equal((await push(t5.token, `+${accepted}:refs/heads/t/5`)).status, 0);
   const other = commit("not reviewed", main);
-  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted });
+  const landing = landingGrant(t, { task: "t5", actor: AGENT, accepted });
   refused(await push(landing.token, `${commit("merge other", main, other)}:refs/heads/main`), /merges the accepted head/);
   refused(await push(landing.token, `+${commit("accepted first", accepted, main)}:refs/heads/main`), /first parent is main's tip/);
   refused(await push(landing.token, `${commit("merge", main, accepted)}:refs/heads/t/5`), /this credential writes main and refs\/notes\/atelier only/);
@@ -118,13 +132,13 @@ test("a landing grant moves the project's branch only by a merge of the accepted
 // G2: the landing's provenance notes go on a push of their own to
 // refs/notes/atelier, which the landing and owner grants may write by
 // fast-forward, one ref per push; a task grant never writes them.
-test("a landing grant and the owner push Atelier's notes ref by fast-forward, one ref at a time; a task grant cannot", async () => {
+test("a landing grant and the owner push Atelier's notes ref by fast-forward, one ref at a time; a task grant cannot", async (t) => {
   const main = git(work, "rev-parse", "main");
   git(work, "notes", "--ref=atelier", "add", "-f", "-m", "Atelier: demo/t5 merged", main);
   const notes = git(work, "rev-parse", "refs/notes/atelier");
   const t5 = await taskToken("t5");
   refused(await push(t5.token, "refs/notes/atelier:refs/notes/atelier"), /this credential writes t\/5 only, not refs\/notes\/atelier/);
-  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted: main });
+  const landing = landingGrant(t, { task: "t5", actor: AGENT, accepted: main });
   refused(await push(OWNER, `${commit("dev work", main)}:refs/heads/dev/notes-test`, "refs/notes/atelier:refs/notes/atelier"), /one ref per push/);
   const ok = await push(landing.token, "refs/notes/atelier:refs/notes/atelier");
   assert.equal(ok.status, 0, ok.stderr);

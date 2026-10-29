@@ -95,6 +95,20 @@ after(async () => { console.error = consoleError; await server?.close(); });
 
 const main = () => git("rev-parse", "main");
 
+
+// A landing grant minted straight from the store, for the tests of the
+// hook's rules alone. Such a grant counts only while its task is accepted at
+// its head and its actor holds the landing lease (GitHost.stillLanding);
+// these fixtures have neither, so that check stands aside for the test.
+// The route that mints landing grants, and the check itself, are tested
+// against a real landing in test/land-grant.test.mjs.
+function landingGrant(t, grant) {
+  const { stillLanding } = server.git;
+  server.git.stillLanding = async () => true;
+  t.after(() => { server.git.stillLanding = stillLanding; });
+  return server.git.grants.mint({ project: "demo", kind: "landing", ...grant });
+}
+
 test("a push carrying a key-shaped line is refused before the ref moves, naming file and line; the owner's clearance lets it through and it becomes the scan record", async () => {
   const c = commit("add config", main(), { "config.env": `MODE=test\nOPENAI_API_KEY=${KEY}\n` });
   refused(await push(t5, `${c}:refs/heads/t/5`), /secret scan found a key-shaped line: config\.env:2 in [0-9a-f]{12}.*atelier clear-secret t5/s);
@@ -165,7 +179,7 @@ test("no key, token or found value reaches the data directory, the hook's files 
 const meta = { holdsRecorded: true, rebasedFrom: null };
 const unreadable = { "blob.bin": "PK\0\u0001\0binary\0", "big.txt": "a".repeat(8 * 1024 * 1024 + 1), "sub": null };
 
-test("a file the scan cannot read is recorded on a task's push, and refuses the owner's push", async () => {
+test("a file the scan cannot read is recorded on a task's push, and refuses the owner's push", async (t) => {
   // On a task: recorded, not refused, with the reason (a blob over SCAN_BYTES included).
   const c = commit("unreadable", main(), unreadable);
   const ok = await push(t5, `+${c}:refs/heads/t/5`);
@@ -186,7 +200,7 @@ test("a file the scan cannot read is recorded on a task's push, and refuses the 
   // content, the same files pass.
   await L().clearSecret("t5", "owner", "the files the test made");
   const accepted = c;
-  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted });
+  const landing = landingGrant(t, { task: "t5", actor: AGENT, accepted });
   const merge = commit("merge t5", main(), {}, accepted);
   const landed = await push(landing.token, `${merge}:refs/heads/main`);
   assert.equal(landed.status, 0, landed.stderr);
