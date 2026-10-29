@@ -35,14 +35,14 @@ export default async function ledgerCommand() {
     try { writeFileSync(file, JSON.stringify(dump), { flag: "wx", mode: 0o600 }); } catch (error) {
       die(error.code === "EEXIST" ? `${file} exists; name another with --file. Nothing was written` : `could not write ${file}: ${error.message}`);
     }
-    console.log(formatDump(dump, file));
+    console.log(formatDump(dump, file, new URL(server()).host));
     return;
   }
   if (typeof args.file !== "string" || !args.file) die(`name the dump to load: atelier ledger import --file F --project ${name}`);
   let dump;
   try { dump = parseDump(readFileSync(args.file, "utf8"), LEDGER_DUMP_FORMAT); } catch (error) { die(`${args.file}: ${error.message}`); }
   const done = await importDump(dump, (body) => call("POST", `${path}/import`, body, OWNER));
-  console.log(formatImport(dump, done, name));
+  console.log(formatImport(dump, done, name, new URL(server()).host));
 }
 
 // Names the server and waits for its name to be typed back. The index is
@@ -85,19 +85,20 @@ export function formatRestore(r) {
   ].join("\n");
 }
 
-export function formatDump(dump, file) {
+// Each names the server it acted on, as bookmark and restore do.
+export function formatDump(dump, file, host) {
   const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
   return [
-    `${dump.project}: wrote ${dump.tables.length} tables, ${rows} rows, to ${file}.`,
+    `${dump.project}${host ? ` on ${host}` : ""}: wrote ${dump.tables.length} tables, ${rows} rows, to ${file}.`,
     `Schema version ${dump.schemaVersion}, written by ${dump.deployed ? dump.deployed.slice(0, 12) : "an unnamed build"}.`,
     ...(dump.redacted ? [`${dump.redacted} token${dump.redacted === 1 ? "" : "s"} pasted into text ${dump.redacted === 1 ? "was" : "were"} replaced with [redacted].`] : []),
   ].join("\n");
 }
 
-export function formatImport(dump, done, name) {
+export function formatImport(dump, done, name, host) {
   const want = dump.tables.reduce((n, t) => n + t.rows.length, 0);
   return [
-    `${name}: imported ${want} rows of ${dump.tables.length} tables from the dump of ${dump.project} (schema version ${dump.schemaVersion}); the Ledger now holds ${rowsOf(done.counts)} rows.`,
+    `${name}${host ? ` on ${host}` : ""}: imported ${want} rows of ${dump.tables.length} tables from the dump of ${dump.project} (schema version ${dump.schemaVersion}); the Ledger now holds ${rowsOf(done.counts)} rows.`,
     ...(done.registered ? [`${name} was not registered on this server and is now.`] : []),
   ].join("\n");
 }

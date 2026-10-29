@@ -116,6 +116,9 @@ test('dump and import report the rows, the schema version and any token replaced
   const dump = { project: 'demo', schemaVersion: 'abc', deployed: 'f'.repeat(40), redacted: 1, tables: [{ name: 'items', rows: [[1], [2]] }] };
   assert.match(formatDump(dump, 'x.json'), /wrote 1 tables, 2 rows, to x\.json\.\nSchema version abc, written by ffffffffffff\.\n1 token pasted into text was replaced/);
   assert.match(formatImport(dump, { counts: { items: 2, meta: 3 }, registered: true }, 'demo'), /imported 2 rows of 1 tables .* now holds 5 rows[\s\S]*demo was not registered on this server and is now/);
+  // Each names the server it acted on (the audit's amendment to task 12).
+  assert.match(formatDump(dump, 'x.json', 'atelier.zone'), /^demo on atelier\.zone: wrote 1 tables/);
+  assert.match(formatImport(dump, { counts: { items: 2 } }, 'demo', 'next.atelier.zone'), /^demo on next\.atelier\.zone: imported 2 rows/);
 });
 
 test('a stored value dumps as JSON and imports back as it was, a pasted token apart', async () => {
