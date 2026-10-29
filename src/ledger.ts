@@ -10,6 +10,7 @@ import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finis
 import type { BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
+import { checkoutHeld, checkoutLeaseLapsed, checkoutMoved, deployInput, describeCheckoutLease, headInput, leaseId, takeInput, type CheckoutFact, type CheckoutHead, type CheckoutLease, type DeployRecord } from "./checkout-lease.ts";
 import { inScope, runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { actorStanding, dispatchActor, modelState, redactKeys, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
@@ -5444,6 +5445,112 @@ export class Ledger extends DurableObject<Env> {
     return { held: !!held, lease: held };
   }
 
+  // ── the checkout lease (G9, src/checkout-lease.ts) ───────────────────────
+  // One lease on the registered checkout, taken by atelier merge (a
+  // landing's merge step) and by atelier ship, so a deploy never runs beside
+  // the lander. A take by another holder is refused, naming who holds the
+  // checkout, while that holder's lease is live; the CLI waits on the
+  // refusal. A lease not renewed for the liveness limit is taken over and its
+  // holder named. A take by the same lease id is the same take, so a retried
+  // request changes nothing. The head a take sends is compared with the head
+  // the last holder released the checkout at: a different one is a change
+  // made outside the lease, reported as a fact and recorded as an event.
+  private checkoutLeaseRow(): CheckoutLease | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'checkout-lease'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  private checkoutHeadRow(): CheckoutHead | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'checkout-head'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  // The live lease (a lapsed one is held by nobody), the head the last
+  // holder left, and the newest deploy ship recorded.
+  readCheckoutLease(): { lease: CheckoutLease | null; head: CheckoutHead | null; lastDeploy: DeployRecord | null } {
+    const held = this.checkoutLeaseRow();
+    return { lease: held && !checkoutLeaseLapsed(held, Date.now()) ? held : null, head: this.checkoutHeadRow(), lastDeploy: this.lastDeploy() };
+  }
+
+  takeCheckoutLease(actor: string, body: Record<string, unknown>): { lease: CheckoutLease; replaced?: CheckoutLease; fact?: CheckoutFact } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges and ships", 403, "only the developer can: atelier merge ID, or atelier ship");
+    const input = takeInput(body);
+    const now = new Date(), at = now.toISOString();
+    const held = this.checkoutLeaseRow();
+    // The same take again (a retried request) keeps the lease, renewed:
+    // another holder that took it since would have a lease of its own.
+    if (held && held.id === input.id) {
+      const renewed = { ...held, renewedAt: at };
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('checkout-lease', ?)`, JSON.stringify(renewed));
+      return { lease: renewed };
+    }
+    if (held && !checkoutLeaseLapsed(held, now.getTime())) throw checkoutHeld(held, this.project().name);
+    const lease: CheckoutLease = { id: input.id, kind: input.kind, holder: actor, since: at, renewedAt: at, ...(input.item ? { item: input.item } : {}), ...(input.host ? { host: input.host } : {}), ...(input.pid ? { pid: input.pid } : {}) };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('checkout-lease', ?)`, JSON.stringify(lease));
+    const item = input.item && this.sql.exec(`SELECT 1 FROM items WHERE id = ?`, input.item).toArray().length ? input.item : null;
+    this.log(item, actor, "checkout.leased", { kind: input.kind, ...(input.host ? { host: input.host } : {}), ...(input.pid ? { pid: input.pid } : {}), ...(held ? { replaced: held.kind, replacedHolder: held.holder, replacedSince: held.since, ...(held.item ? { replacedItem: held.item } : {}) } : {}) }, at);
+    const last = this.checkoutHeadRow();
+    const fact = input.head && last && last.head !== input.head ? checkoutMoved(last, input.head, this.project().name) : undefined;
+    if (fact) this.log(item, actor, "checkout.moved", { kind: input.kind, was: fact.was, now: fact.now, since: fact.since }, at);
+    return { lease, ...(held ? { replaced: held } : {}), ...(fact ? { fact } : {}) };
+  }
+
+  // The holder's heartbeat. Refused once the lease is another's, which tells
+  // the holder it lost the checkout; a lapsed lease nobody took is renewed.
+  renewCheckoutLease(actor: string, body: Record<string, unknown>): { lease: CheckoutLease } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges and ships", 403, "only the developer can: atelier merge ID, or atelier ship");
+    const id = leaseId(body);
+    const held = this.checkoutLeaseRow();
+    if (!held || held.id !== id) {
+      throw new RuleError("no_checkout_lease", held ? `the registered checkout is now held by ${describeCheckoutLease(held)}, not by this lease, which lapsed` : "no checkout lease is held, so this one cannot be renewed", 409,
+        "stop using the checkout, then run the same command again: it waits for the checkout");
+    }
+    const renewed = { ...held, renewedAt: new Date().toISOString() };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('checkout-lease', ?)`, JSON.stringify(renewed));
+    return { lease: renewed };
+  }
+
+  // The holder frees the checkout, saying the head it leaves it at, which the
+  // next take compares with. A lease another holder took is left alone and
+  // the head not recorded; a release already made answers released: false.
+  releaseCheckoutLease(actor: string, body: Record<string, unknown>): { released: boolean; lease: CheckoutLease | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges and ships", 403, "only the developer can: atelier merge ID, or atelier ship");
+    const id = leaseId(body), head = headInput(body);
+    const held = this.checkoutLeaseRow();
+    if (held && held.id !== id) return { released: false, lease: held };
+    const at = new Date().toISOString();
+    if (held) {
+      this.sql.exec(`DELETE FROM meta WHERE key = 'checkout-lease'`);
+      if (head) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('checkout-head', ?)`, JSON.stringify({ head, at, kind: held.kind, holder: held.holder, ...(held.item ? { item: held.item } : {}) } satisfies CheckoutHead));
+      const item = held.item && this.sql.exec(`SELECT 1 FROM items WHERE id = ?`, held.item).toArray().length ? held.item : null;
+      this.log(item, actor, "checkout.released", { kind: held.kind, since: held.since, ms: Date.parse(at) - Date.parse(held.since), ...(head ? { head } : {}) }, at);
+    }
+    return { released: !!held, lease: held };
+  }
+
+  // A run of atelier ship records itself once it has begun, shipped or
+  // failed: the head, who and the result, as a project event (ship.recorded)
+  // that the events read and the newest of which show prints. The same run
+  // recorded again (a retried request) is recorded once.
+  recordDeploy(actor: string, body: Record<string, unknown>): DeployRecord {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ships", 403, "only the developer can: atelier ship");
+    const record = deployInput(body, actor, new Date().toISOString());
+    const had = this.deploys(50).find((d) => d.ship === record.ship);
+    if (had) return had;
+    this.log(null, actor, "ship.recorded", { ...record }, record.at);
+    return record;
+  }
+
+  lastDeploy(): DeployRecord | null {
+    return this.deploys(1)[0] ?? null;
+  }
+
+  // The newest deploys first.
+  deploys(limit = 50): DeployRecord[] {
+    return this.sql.exec(`SELECT data FROM events WHERE kind = 'ship.recorded' ORDER BY seq DESC LIMIT ?`, Math.max(1, Math.min(200, limit))).toArray()
+      .map((r) => JSON.parse(r.data as string) as DeployRecord);
+  }
+
   // ── pre-review (t524, src/dispatch/prereview.ts) ─────────────────────────
   // While a landing holds the lease, the next PREREVIEW_DEPTH landings
   // queued behind it are reviewed against the tree their own landing would
@@ -6991,7 +7098,8 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
-    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id) };
+    const lastDeploy = this.lastDeploy();
+    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {

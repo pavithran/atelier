@@ -203,7 +203,9 @@ test("merge --cancel t1 in the checkout cancels t1 instead of asking which item"
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /which item\?/);
   assert.match(r.stdout, /t1: the merge is cancelled/);
-  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/landing", { cancel: true }]]);
+  // Besides the checkout lease it takes and releases (G9), the cancel posts only the landing's.
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST" && !q.path.endsWith("/checkout-lease")).map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/landing", { cancel: true }]]);
+  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/checkout-lease")).map((q) => q.body.action), ["take", "release"]);
 });
 
 

@@ -63,6 +63,8 @@ test("a conflict stops the landing before any push: the failure is merge-main wi
   assert.equal(d.landing.failedStep, "merge-main");
   assert.deepEqual(d.landing.files, ["shared.txt"]);
   assert.match(d.landing.tail, /shared\.txt/);
+  // show prints the landing record in words too.
+  assert.match((await w.cli(["show", id])).stdout, /Landing: attempt 1, failed at merge-main \(shared\.txt\), /);
   // The approval at H stands; whoever resolves the conflict is not the lander's to decide.
   assert.ok(d.reviews.some((rv) => rv.head === head && rv.approve));
   assert.equal(d.item.head, head);
@@ -230,6 +232,10 @@ test("a merge journal an interrupted plain atelier merge left on a checkout ahea
   plain.child.kill("SIGKILL");
   await plain.done;
   assert.equal(await w.tip(), main);
+  // A process killed outright leaves its checkout lease (G9) to lapse; the
+  // developer frees it here rather than wait out the limit.
+  const held = (await w.api("GET", "/projects/demo/checkout-lease")).json.lease;
+  if (held) assert.equal((await w.api("POST", "/projects/demo/checkout-lease", { action: "release", id: held.id })).status, 200);
   const r = await w.cli(["land", id]);
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /the unfinished merge of t\d+ in .* began at [0-9a-f]{8}, not at the project's main \([0-9a-f]{8}\)/);

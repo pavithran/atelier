@@ -6,6 +6,7 @@ import { checkLimits, limitText } from "../../src/check-limit.ts";
 import { stageOf } from "../../src/rules.ts";
 import { preparingLine, queueReasons } from "../status.mjs";
 import { fenceText, PREREVIEW_JOB, prereviewLines } from "../../src/dispatch/prereview.ts";
+import { deployText } from "../../src/checkout-lease.ts";
 
 export default async function showCommand() {
   const name = project(), id = itemArg(), as = await actor(OWNER);
@@ -63,7 +64,10 @@ export default async function showCommand() {
   // The project's check limit (G7), as the server's policy sets it: every
   // check of the task, by `atelier check`, a landing or a runner, goes by it.
   const limit = d.policy ? checkLimits(d.policy) : null;
-  if (args.json) return console.log(JSON.stringify({ ...brief, ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
+  // The project's newest deploy, as atelier ship recorded it, shipped or
+  // failed (G9); every one is a ship.recorded event (atelier events).
+  const deploy = d.lastDeploy ?? null;
+  if (args.json) return console.log(JSON.stringify({ ...brief, ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
@@ -72,6 +76,10 @@ export default async function showCommand() {
   if (d.preparing) blocks.push(`Fork: ${preparingLine(d.preparing)}`);
   if (prereview || fence) blocks.push([...(prereview ? prereviewLines(prereview) : []), ...(fence ? [`Fenced: ${fenceText(id, fence)}`] : [])].join("\n"));
   if (failures.length) blocks.push(failureSummary(id, d.item.head, failures));
+  // The landing record (G1): the step its latest attempt reached, and where
+  // it failed, with the last lines of the failing step's own output.
+  if (d.landing) blocks.push(`Landing: attempt ${d.landing.attempt}, ${d.landing.failedStep ? `failed at ${d.landing.failedStep}${d.landing.files?.length ? ` (${d.landing.files.map(flat).join(", ")})` : ""}` : `at ${d.landing.step}`}, ${String(d.landing.at).slice(0, 16).replace("T", " ")} UTC${d.landing.failedStep && d.landing.tail ? `\n  ${String(d.landing.tail).split("\n").map(flat).join("\n  ")}` : ""}`);
+  if (deploy) blocks.push(`Last deploy: ${deployText(deploy)}`);
   if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [], d?.reviewClaims ?? []));
   if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));
   console.log(blocks.join("\n\n"));

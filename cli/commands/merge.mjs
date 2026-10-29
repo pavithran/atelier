@@ -19,6 +19,7 @@ import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
 import { CACHE, I, OWNER, P, actingHeaders, actor, apiToken, args, at, call, cfg, cleanClone, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, redact, removeClone, request, runCheck, saveConfig, server, short } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
+import { holdCheckout, stayHeld } from "../checkout-hold.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
@@ -95,7 +96,10 @@ export default async function mergeCommand() {
     const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
     let unlock;
     try { unlock = landingLock(landing); } catch (error) { die(error.message); }
+    // The cancel may reset or abort in the checkout, so it takes the checkout lease too (G9).
+    let checkoutLease;
     try {
+      checkoutLease = await holdCheckout({ project: name, kind: "landing", item: id, what: `${id}'s merge --cancel`, cwd });
       let journal;
       try { adoptOldLanding(gitDir, landing); journal = landingJournal(landing, { project: name, item: id }); } catch (error) { die(error.message); }
       const item = (await call("GET", I(name, id), undefined, OWNER)).item;
@@ -162,7 +166,7 @@ export default async function mergeCommand() {
       if (landed) return console.log(`${id}: the landing in this checkout is cancelled. ${id} at ${short(head)} is already on the baseline through another merge commit, so its landing lease is left for that merge to be recorded.`);
       if (ours) return console.log(`${id}: the merge is cancelled; its holder can push a new revision.`);
       return console.log(`${id}: the landing in this checkout is cancelled. ${id} is ${now}, and nothing changed on the server${item.state === "accepted" ? `; merge its accepted revision with: atelier merge ${id}` : ""}.`);
-    } finally { unlock(); }
+    } finally { await checkoutLease?.release(); unlock(); }
   }
   if (args.head !== undefined) {
     if (!/^[a-f0-9]{40,64}$/.test(args.head)) die(COMMAND_USAGE.merge);
@@ -204,7 +208,12 @@ export default async function mergeCommand() {
   };
   let unlock;
   try { unlock=landingLock(landing); } catch (error) { await fail(error.message); }
+  // The checkout lease (G9): the merge never uses the checkout beside atelier
+  // ship. A held or lost checkout ends the merge as a fact with its next,
+  // and the landing records that failure for its attempt.
+  let checkoutLease;
   try {
+    checkoutLease=await holdCheckout({project:name,kind:'landing',item:id,cwd});
     try { adoptOldLanding(gitDir,landing); } catch (error) { await fail(error.message); }
     for (let round=0; ; round++) {
     begin('merge-main');
@@ -282,6 +291,7 @@ export default async function mergeCommand() {
     const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
     const decision = mergePolicyDecision(acceptedPolicy, nowPolicy, paths, args['policy-changed-ok'] === true, context);
     if (decision.refusal) await fail(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
+    await stayHeld(checkoutLease); // G9: the local merge starts only under the checkout lease
     const fresh=p.fresh===true, pairs=fresh?loadPairs(gitDir,name):null;
     // The lander brings a checkout that only lags the baseline up to it
     // before merging (G2): a clean checkout whose branch the baseline holds,
@@ -407,6 +417,7 @@ export default async function mergeCommand() {
     // published: a failure puts the checkout back where the merge began and
     // pushes nothing, and the task stays accepted with its approvals.
     if (lander && journal.state.checked!==journal.state.mergeCommit) {
+      await stayHeld(checkoutLease); // G9: the checks fold a regeneration into the checkout
       const undo=()=>{git(['reset','--quiet','--hard',journal.state.start],{cwd});journal.clear();};
       const checked=await checkMergedTree({name,id,cwd,policy:d.policy,identity,commit:journal.state.mergeCommit,secrets:[apiToken(),base.token,ws.token],begin,
         stop:async(message,data)=>{undo();await fail(message,data);},record});
@@ -420,6 +431,7 @@ export default async function mergeCommand() {
     // stops a push over this revision until the merge is recorded.
     // A refusal ends the command here with the server's reason; the local
     // merge commit is kept for reconciliation.
+    await stayHeld(checkoutLease); // G9: and so does the publishing
     try { await request('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER); }
     catch (error) { await fail(error.message,{},error.code); }
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
@@ -508,6 +520,7 @@ export default async function mergeCommand() {
     if(notesPushed.status!==0){const lines=String(notesPushed.stderr||'').split('\n').filter(Boolean);console.log(`Provenance notes were not published to the baseline (${(lines.find((l)=>/atelier:/.test(l))??lines.at(-1)??'refused').replace(/^remote:\s*/,'').split(base.token||'\0').join('[redacted]')}); they stay in this checkout under refs/notes/atelier.`);}
     journal.save({phase:'published'});
     await record('push',Date.now()-stepAt,{mergeCommit:published,mainHead:baselineHead,...(round?{rounds:round}:{})});
+    await stayHeld(checkoutLease); // G9: the record of the merge, and what follows in the checkout
     begin('merged');
     let recorded;
     try { recorded = await request('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER); }
@@ -530,11 +543,11 @@ export default async function mergeCommand() {
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
     else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
     await cleanWorkspace(name, id, p.branch, cwd);
-    if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
+    if (recorded.postMerge || d.policy.postMerge || d.postMerge) { await stayHeld(checkoutLease); await postMerge(name, id); }
     else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
     break;
     }
-  } finally { unlock?.(); }
+  } finally { await checkoutLease?.release(); unlock?.(); }
 }
 
 // How many times the lander's merge is made and checked again after main
