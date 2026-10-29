@@ -6935,10 +6935,6 @@ export class Ledger extends DurableObject<Env> {
       items, events: this.events(undefined, Number.MAX_SAFE_INTEGER),
       coreFiles: this.project().policy.coreFiles,
       lease: this.readProjectLanding(),
-      workflows: items.flatMap((item) => {
-        const record = this.landingWorkflowOf(item.id);
-        return record ? [{ item: item.id, record }] : [];
-      }),
       openReviewItems: this.sql.exec(`SELECT DISTINCT r.item FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND r.head = i.head`).toArray().map((r) => String(r.item)),
       // The open requests with the reviewer each asks and when it was made,
       // for the report's check that some live runner offers the reviewer (t220).

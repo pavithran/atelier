@@ -153,15 +153,8 @@ test("re-running land on the task holding the lease reaches the release from eve
   const f = await landFixture(t);
   const lease = { item: "t1", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
   const offer = /The landing lease of proj is still held for t1 since 2026-10-06 09:30 UTC, from an earlier landing; atelier land t1 --release-lease frees it\./;
-  // Accepted: the next step is the merge, and the lease is still offered.
-  f.box.lease = { ...lease }; f.box.states.t1 = "accepted";
-  // (The plain landing merges an accepted task itself, t188; the Workflow
-  // without a live instance still hands the merge back.)
-  const accepted = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(accepted.status, 1, accepted.output);
-  assert.match(accepted.output, /t1 is accepted at [0-9a-f]{8}; merge it with: atelier merge t1\./);
   // Merged: nothing to land, the lease still offered.
-  f.box.states.t1 = "merged";
+  f.box.lease = { ...lease }; f.box.states.t1 = "merged";
   const merged = await f.run(f.checkout, "land", "t1");
   assert.equal(merged.status, 1, merged.output); assert.match(merged.output, /t1 is merged; there is nothing to land\./); assert.match(merged.output, offer);
   // A claimed task is checked and submitted in its workspace (G2), so its
@@ -178,8 +171,8 @@ test("re-running land on the task holding the lease reaches the release from eve
   rmSync(join(f.workspace("t1"), "draft.txt"));
   assert.equal(f.box.lease?.item, "t1");
   // Without a held lease the refusals carry no offer.
-  f.box.lease = null; f.box.states.t1 = "accepted";
-  const plain = await f.run(f.checkout, "land", "t1", "--workflow");
+  f.box.lease = null; f.box.states.t1 = "merged";
+  const plain = await f.run(f.checkout, "land", "t1");
   assert.equal(plain.status, 1); assert.doesNotMatch(plain.output, /--release-lease/);
   f.box.states.t1 = "submitted";
   // And the offered command frees it.

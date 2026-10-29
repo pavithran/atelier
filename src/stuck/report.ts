@@ -1,7 +1,7 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
 import type { Dispatch } from "../dispatch/rules.ts";
-import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
+import type { LedgerEvent } from "../ledger.ts";
 import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, reportedSkips, RUNNER_GONE_MS, shellWord, type RunSkip, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
@@ -10,7 +10,7 @@ import { inScope } from "../tokens.ts";
 import { stalledForks } from "./forks.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
-export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
+export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
 const IDLE_RUNNER_MAX_MS = 48 * 3_600_000;
 export type ReportLimits = typeof REPORT_DEFAULTS;
 export function reportLimits(values: Record<string, unknown> = {}): ReportLimits {
@@ -30,7 +30,6 @@ export interface RequestObservation { id: number; item: string; head: string; di
 export const REVIEW_OFFER_MINUTES = 15;
 export interface Snapshot {
   items: Item[]; events: LedgerEvent[]; coreFiles?: string[]; lease: LandingLease | null;
-  workflows: { item: string; record: LandingWorkflowRecord; status?: string }[];
   reviews: ReviewObservation[]; openReviewItems?: string[]; runSkips?: (RunSkip & { item: string })[]; openRequests?: RequestObservation[];
 }
 export interface Entry { kind: string; subject: string; reason: string; since: string; ageMs: number; evidence: string; recovery: string }
@@ -68,7 +67,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   // still holds, or the reverse.
   const runners: RunnerPolls | null = offers ? { polls: offers } : null;
   if (snapshot) {
-    const { items, events, lease, workflows, reviews } = snapshot;
+    const { items, events, lease, reviews } = snapshot;
     const live = items.filter((i) => i.state !== "blocked");
     const requeue = (id: string) => {
       const item = live.find((i) => i.id === id);
@@ -88,22 +87,10 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     for (const f of stalledForks(live, events, now))
       add("fork-stalled", f.item, `no fork became ready after the tick replaced it: ${f.forks.map((k) => `${k.name} (${Math.floor(k.ageMs / 60_000)} min)`).join(", ")}`, f.since,
         `request a fresh fork: ${command(`release ${f.item} --note "Fresh fork after the replacements stalled"`)}, then claim it again with ${command(`start ${f.item} --as H/M`)}; the release starts the count of replacement forks again, the task keeps its history, and Atelier deletes no repository`);
-    for (const w of workflows) {
-      if (!live.some((i) => i.id === w.item && i.state !== "merged" && i.state !== "abandoned")) continue;
-      if (w.record.stage === "conflict" && !["complete", "errored", "terminated", "absent"].includes(w.status ?? "") && age(w.record.stageAt) > limits.conflictWaitMinutes * 60_000)
-        add("workflow-conflict", w.item, `Workflow ${w.record.instance} paused at conflict; status ${w.status ?? "indeterminate"}${w.record.files?.length ? `; files: ${w.record.files.join(", ")}` : ""}`, w.record.stageAt, `Resolve and commit the conflicts in the task workspace, then ${command(`land ${w.item} --workflow`)}`);
-      if (w.record.stage === "lease" && !["complete", "errored", "terminated", "absent"].includes(w.status ?? "") && age(w.record.stageAt) > limits.leaseWaitMinutes * 60_000)
-        add("lease-wait", w.item, `Workflow ${w.record.instance} waiting for lease; status ${w.status ?? "indeterminate"}`, w.record.stageAt, command(`land ${w.item} --workflow`));
-    }
     if (lease && !landingLeaseLapsed(lease, time)) {
       const item = items.find((i) => i.id === lease.item);
-      const workflow = workflows.find((w) => w.item === lease.item);
-      // No remembered Workflow means a CLI landing, not an absent holder.
       const closed = !item || ["merged", "abandoned"].includes(item.state);
-      // A terminal old Workflow does not establish who holds a newer CLI lease.
-      const terminal = workflow && Date.parse(workflow.record.stageAt) >= Date.parse(lease.at)
-        && ["complete", "errored", "terminated", "absent"].includes(workflow.status ?? "");
-      if (item?.state !== "blocked" && (closed || terminal))
+      if (item?.state !== "blocked" && closed)
         add("orphan-lease", lease.item, "unexpired lease with positively absent or terminal holder", lease.renewedAt ?? lease.at, command(`land ${lease.item} --release-lease`));
     }
     // A claim ages from when it began. Renewals rewrite claimedAt every 30 s,

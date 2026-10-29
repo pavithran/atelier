@@ -3,8 +3,8 @@
 // it, and the output that said which test broke stayed on the task page or
 // in the ledger. This module reads the failure the way the gate reads it and
 // says, for each failed check, which run it is, which tests failed, and the
-// end of its log, so `atelier show`, the plain landing (cli/land.mjs) and the
-// landing Workflow (src/landing-workflow.ts) print one and the same summary.
+// end of its log, so `atelier show` and the landing (cli/land.mjs) print one
+// and the same summary.
 //
 // Pure functions, run with `node --test` (test/check-failure.test.ts). The
 // reporter formats are fixed by fixtures under test/fixtures/check-logs.
@@ -76,9 +76,8 @@
 // length, rather than calling the log whole. `atelier check-log ID` prints
 // the retained logs whole, for every attempt at the head.
 //
-// Where the summary itself must fit a size (the landing Workflow's record of
-// why it failed holds LANDING_DETAIL_MAX characters, src/ledger.ts), it is
-// fitted rather than cut at the size: the log tails give way first, then
+// Where the summary itself must fit a size, it is fitted rather than cut at
+// the size: the log tails give way first, then
 // the number of test names listed, then the later checks are counted and
 // named in one line; the heading, each check kept, and the check-log line
 // that points at the whole logs always remain, so a reader of the record
@@ -122,13 +121,6 @@ export const SUMMARY_TAIL_LINES = 20;
 export const SUMMARY_TAIL_CHARS = 2000;
 // How many failing test names the summary lists before it counts the rest.
 export const SUMMARY_TEST_NAMES = 20;
-// What the landing Workflow keeps of a workspace report's reason (its
-// waitForWorkspace, src/landing-workflow.ts), the Ledger's LANDING_DETAIL_MAX
-// (src/ledger.ts): the local checks mode of `atelier land --workflow` fits
-// its failure summary to this with failureDetail before reporting it, so the
-// record keeps every failed check and the check-log line (cli/land.mjs).
-export const WORKSPACE_REASON_MAX = 2000;
-
 export type Where = "sandbox" | "runner";
 
 // One failed check as the gate reads it: the run that is the check's result
@@ -651,19 +643,8 @@ export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[]
 // The line every summary ends with: the command that prints the whole logs.
 export const checkLogPointer = (id: string): string => `  Whole logs of every attempt at this head: atelier check-log ${id}`;
 
-// The summary as the landing Workflow records it: `why`, the line naming the
-// failed checks, then the summary fitted to what remains of `max`. A `why`
-// so long that the summary would have less room than its check-log line
-// (the bare `…` and the line) is cut first, so the record, held at `max`,
-// still ends with the command that prints the whole logs.
-export function failureDetail(why: string, id: string, head: string, failures: ResolvedFailure[], max: number): string {
-  const floor = checkLogPointer(id).length + 2;
-  const line = why.length + 1 + floor > max ? `${why.slice(0, Math.max(0, max - floor - 2))}…` : why;
-  return `${line}\n${failureSummary(id, head, failures, max - line.length - 1)}`;
-}
-
-// The failure summary of a task at a head, as `atelier show`, the plain
-// landing and the landing Workflow all print it: the gate's reading, one
+// The failure summary of a task at a head, as `atelier show` and the
+// landing print it: the gate's reading, one
 // block per failed check, and the command that prints the whole logs.
 // Given `maxChars`, the summary is fitted to it (see the head of this file):
 // the tails give way first, then the names, then the later checks, which

@@ -15,7 +15,6 @@
 // pushed head, its merge base with the target and the criteria's hash
 // (src/criteria.ts), so a result is used only while all three are the same.
 
-import { criteriaOf, validBinding } from "../criteria.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { paidPerToken } from "../plans/route.ts";
 import { TEXT_CONTROLS } from "../text.ts";
@@ -334,23 +333,4 @@ export function recordedTriage(events: readonly TriageEvent[], binding: TriageBi
     && sameBinding({ head: String(e.data?.head ?? ""), base: String(e.data?.base ?? ""), criteria: String(e.data?.criteria ?? "") }, binding)
     && (triager === undefined || String(e.data?.triager ?? "").toLowerCase() === triager.toLowerCase()));
   return at.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)).at(-1) ?? null;
-}
-
-// The outcomes that let a landing go on to the submission and the review:
-// every criterion met, or the owner's recorded bypass or override.
-const GOES_ON: readonly TriageOutcome[] = ["passed", "bypassed", "overridden"];
-
-// Whether a triage still stands for a landing about to submit or to ask for
-// the review, as the landing Workflow asks it from the Ledger (t475): the
-// task's head is the triaged head, its criteria are the triaged criteria,
-// and a land.triage record at that whole binding (head, merge base and
-// criteria) let the landing go on. Answers why it does not stand, or null.
-export function triageStandsRefusal(item: { head?: string | null; accept?: readonly string[] | null; partAccept?: readonly string[] | null }, events: readonly TriageEvent[], binding: Partial<TriageBinding> | null | undefined): string | null {
-  if (!binding || typeof binding.head !== "string" || typeof binding.base !== "string" || !validBinding(binding.criteria)) return "the workspace reported no triage binding (head, merge base and criteria) for this landing";
-  const bound = binding as TriageBinding;
-  if (item.head !== bound.head) return `the head moved from the triaged ${bound.head.slice(0, 8)} to ${String(item.head ?? "none").slice(0, 8)}`;
-  const now = criteriaOf(item);
-  if (now !== bound.criteria) return `the acceptance criteria changed since the triage (binding ${bound.criteria.slice(0, 8)}, now ${now.slice(0, 8)})`;
-  if (!GOES_ON.some((outcome) => recordedTriage(events, bound, outcome))) return `no triage that lets the landing go on (passed, bypassed or overridden) is recorded at ${bound.head.slice(0, 8)} with merge base ${bound.base.slice(0, 8)} and criteria ${bound.criteria.slice(0, 8)}`;
-  return null;
 }

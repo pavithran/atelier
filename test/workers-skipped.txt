@@ -41,8 +41,6 @@ test/land-request.spec.ts
 test/land-reviewer-suggestion.spec.ts
 test/land-routes.spec.ts
 test/landing-cancel.spec.ts
-test/landing-replace.spec.ts
-test/landing-workflow.spec.ts
 test/large.spec.ts
 test/ledger-reads.spec.ts
 test/ledger-way-back.spec.ts

@@ -2,12 +2,10 @@
 # on a busy Mac (t771, 2026-10-18); test/run.mjs starts the files longest first
 # from this list and the ones it does not name before them. Only files of 5 s or
 # more are listed, and nothing updates it: a new or quick file needs no line.
-test/land-lease-workflow-6.test.mjs 135
 test/land-5.test.mjs 131
 test/runner.test.mjs 121
 test/command-modules.test.mjs 5
 test/git-credentials-4.test.mjs 109
-test/land-lease-workflow-5.test.mjs 98
 test/land-wait-merge-3.test.mjs 96
 test/land-4.test.mjs 96
 test/land-wait-merge-4.test.mjs 95
@@ -67,7 +65,6 @@ test/rules.test.ts 19
 test/land-recorded-head.test.mjs 17
 test/model-cards-cli.test.mjs 17
 test/status.test.mjs 16
-test/landing-lease-wait.test.ts 16
 test/plan-cli.test.mjs 15
 test/runner-merge-main.test.mjs 13
 test/check-cleanup.test.mjs 13

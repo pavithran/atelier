@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  attemptHeader, attemptNumbers, boundedTail, checkAttemptsAt, checkLogPointer, collectFailureLines, effectiveFailures, FAILURE_LINES_CHARS, FAILURE_LINES_MAX, failingTests, failingTestsLine, failureDetail, failureJson, failureSummary,
+  attemptHeader, attemptNumbers, boundedTail, checkAttemptsAt, checkLogPointer, collectFailureLines, effectiveFailures, FAILURE_LINES_CHARS, FAILURE_LINES_MAX, failingTests, failingTestsLine, failureJson, failureSummary,
   headsWithChecks, LOCAL_OUTPUT_TAIL, readCheckLog, resolveFailures, SANDBOX_OUTPUT_TAIL, SUMMARY_TAIL_CHARS, SUMMARY_TAIL_LINES, SUMMARY_TEST_NAMES,
 } from "../src/check-failure.ts";
 import { LARGE_MAX, type LargeRef } from "../src/large.ts";
@@ -483,19 +483,6 @@ test("a container run recorded before t768 is numbered after the machine run bef
   assert.equal(logAttempt(attempts, container.id), "2 of 2");
   assert.equal(attemptHeader(attempts[0]), `── \`npm test\` · attempt 1 of 2 · failed · on a runner, in a clean clone · ${machine.at.slice(0, 16).replace("T", " ")} UTC · evidence #${machine.id}`);
   assert.match(attemptHeader(attempts[1]), /in a Cloudflare container/);
-});
-
-test("a why line longer than the landing record leaves the summary its check-log line", async () => {
-  const [f] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail: "not ok 1 - the cap" }), ev({ claim: "npm run typecheck", passed: true })], H1), none);
-  const why = `the required checks failed: ${"npm test; ".repeat(400)}`;
-  const detail = failureDetail(why, "t1", H1, [f], 2000);
-  assert.ok(detail.length <= 2000, String(detail.length));
-  assert.ok(detail.endsWith(`…\n${checkLogPointer("t1")}`), detail.slice(-200));
-  assert.ok(detail.startsWith("the required checks failed: npm test; "));
-  // A why that leaves room is kept whole, and the summary fitted after it.
-  const short = failureDetail("the required checks failed: npm test.", "t1", H1, [f], 2000);
-  assert.ok(short.startsWith("the required checks failed: npm test.\nFailed checks at aaaaaaaa"), short);
-  assert.equal(short, `the required checks failed: npm test.\n${failureSummary("t1", H1, [f], 2000 - 38)}`);
 });
 
 // t567 at 881860ea, evidence #2957 (2026-10-13 01:59 UTC): a failed `npm

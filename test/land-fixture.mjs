@@ -51,7 +51,6 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     // The evidence each check posts, as the server records it (t436): the
     // landing's failure summary reads the failed checks from it.
     evidence: { t1: [], t2: [] }, evidenceId: 0,
-    wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
   };
   // The tasks fork from the baseline before main moves, so a landing has
   // main's commits to merge; each has a workspace in the cache's layout.
@@ -128,24 +127,6 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     // test that sets another route level (or none) stands in for a server
     // from before them, answering the legacy route level alone.
     if (url === "/api/version") answer = { commit: box.version ?? repoHead, ...(box.capabilities && box.routeLevel === ROUTE_LEVEL ? { capabilities: box.capabilities } : box.routeLevel === null ? {} : { routeLevel: box.routeLevel }) };
-    else if (url.endsWith("/landing-workflow")) {
-      // A stand-in for the landing Workflow (t280): the instance the route
-      // remembers, its stage and round, and its status. A test moves it on
-      // through `wf.tick` (after each read) and `wf.onEvent` (each event).
-      const wf = box.wf;
-      const view = () => ({ ...(wf.detail ? { detail: wf.detail } : {}), ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
-      // `wf.dropReads` reads of a started instance are cut off unanswered, as a network failure is (t368).
-      if (req.method === "GET" && wf.instance && wf.dropReads > 0) { wf.dropReads--; res.destroy(); return; }
-      if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
-      else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
-      else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status) && !wf.replace) answer = { ...view(), created: false, ...(wf.attach ?? {}) };
-      // A live instance the server replaces (t430): `wf.replace` names why.
-      else if (wf.instance && wf.replace) { const from = wf.instance; Object.assign(wf, { instance: `land-${item}-r1`, stage: wf.firstStage ?? "lease", round: 0, checks: body.checks ?? null, status: "running" }); wf.started.push(body); answer = { ...view(), created: true, replaced: { from, to: wf.instance, ...wf.replace } }; wf.replace = null; }
-      else { Object.assign(wf, { instance: `land-${item}-${wf.started.length + 1}`, stage: wf.firstStage ?? "lease", round: 0, checks: body.checks ?? null, status: "running", files: null, error: null }); wf.started.push(body); answer = { ...view(), created: true }; }
-      res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
-      if (req.method === "GET") wf.tick?.(box);
-      return;
-    }
     else if (url === "/api/projects/proj/landing-lease") {
       // The lease and the queue of waiting landings as the server keeps
       // them (t249): a renewal moves renewedAt on, a lease not renewed for
@@ -220,7 +201,7 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     } else if (url === "/api/projects/proj/items") answer = box.items;
     else if (url === "/api/queue") answer = box.queue;
     else if (url === "/api/runners") answer = box.runners;
-    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") (box.wf.baseTokenAt.push(box.wf.stage), answer = { remote: baseline, token: "fixture", defaultBranch: "main" });
+    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") answer = { remote: baseline, token: "fixture", defaultBranch: "main" };
     else if (url.endsWith("/claim")) answer = { item: detail(item).item, workspace: { remote: join(p, `fork-${item}.git`), token: "fixture", defaultBranch: "main", expiresAt: "2999-01-01T00:00:00.000Z" } };
     else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
     else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
@@ -273,7 +254,16 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
   };
-  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
+  // A runner's merge of main into the task's workspace, pushed, run on its
+  // own (test/fixtures/workspace-merge.mjs).
+  const workspaceMerge = async (id = "t1") => {
+    const child = spawn(process.execPath, [resolve("test/fixtures/workspace-merge.mjs"), id], { cwd: checkout, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ...fx.env } });
+    t.after(() => child.kill("SIGKILL"));
+    let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
+    const status = await new Promise((ok) => child.on("close", ok));
+    return { status, output };
+  };
+  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, workspaceMerge, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
   return fx;
 }
 
@@ -400,41 +390,12 @@ export function spawnLanding(f, env = {}) {
   return { child, done, output: () => output };
 }
 
-// The stand-in landing Workflow as the real one moves (src/landing-workflow.ts)
-// since t550: it asks for the workspace at once, holding no lease; a report
-// of the round's pushed head stands for its checks, submission and review,
-// after which it queues for the lease, takes it on its second read (so the
-// executor sees the queueing first), accepts and asks for the merge; a
-// report of conflicts pauses it, holding no lease; a resume starts the next
-// round; the recorded merge completes it.
-export function scriptWorkflow(f) {
-  const wf = f.box.wf;
-  wf.firstStage = "workspace";
-  let leaseReads = 0;
-  wf.tick = (box) => {
-    if (wf.stage === "lease" && ++leaseReads >= 2) {
-      const now = new Date().toISOString();
-      box.lease = { item: "t1", holder: "owner", at: now, renewedAt: now };
-      wf.stage = "merge"; box.states.t1 = "accepted";
-    }
-    if (wf.stage === "merge" && box.states.t1 === "merged") { wf.stage = "done"; wf.status = "complete"; wf.output = { landed: true }; box.lease = null; }
-  };
-  wf.onEvent = (event, box) => {
-    if (event.type === "workspace" && event.payload.round !== wf.round) return;
-    if (event.type === "workspace" && event.payload.conflict) { wf.stage = "conflict"; wf.files = event.payload.files; }
-    else if (event.type === "workspace" && event.payload.failed) { wf.stage = "failed"; wf.status = "errored"; wf.error = event.payload.reason; }
-    else if (event.type === "workspace") { wf.stage = "lease"; wf.detail = `${event.payload.head.slice(0, 8)} is checked and approved; waiting for the landing lease for the merge`; leaseReads = 0; }
-    else if (event.type === "resume" && event.payload.round === wf.round) { wf.stage = "workspace"; wf.round++; }
-  };
-  return wf;
-}
-
 // The workspace's write token (t275), against runLand with injected fakes:
 // the server's answers, Git's (a real repository only where the preflight
 // reads one from disk, under the system temp folder) and the CLI's own steps. The task is
 // held by codex/test, the owner is "owner", and the workspace records
 // `expiresAt` as its token's expiry (none when null).
-export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, dispatch = null, actor = "codex/test", committed = true, workflow = false, push = [] } = {}) {
+export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, dispatch = null, actor = "codex/test", committed = true, push = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-land-token-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
   const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": actor, ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
@@ -455,9 +416,6 @@ export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test"
       return { item: { id: "t1" }, workspace: { remote: "https://fork.invalid/t1.git", token: "fresh-token", expiresAt: fresh, defaultBranch: "main" } };
     }
     if (path === `${itemPath}/base-token`) return { remote: "https://base.invalid/main.git", token: "read", defaultBranch: "main" };
-    if (path === `${itemPath}/landing-workflow`) return method === "GET" && calls.some((c) => c.method === "POST" && c.path === path)
-      ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
-      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, stage: "lease" };
     return {};
   };
   // Git as a landing asks it: main already merged, nothing to compare or
@@ -476,7 +434,7 @@ export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test"
     return next === true ? { passed: true, status: 0, output: "ok\n", durationMs: 1 } : { passed: false, status: 1, output: `${next}\n`, durationMs: 1 };
   };
   const io = {
-    args: { _: ["land", "t1"], ...(workflow ? { workflow: true } : { "no-review": true }) }, name: "proj", id: "t1", p: { path: dir, branch: "main" },
+    args: { _: ["land", "t1"], "no-review": true }, name: "proj", id: "t1", p: { path: dir, branch: "main" },
     request, git: fakeGit, print: (line) => lines.push(line), die: (message) => { throw new Error(message); },
     workspacePath: () => dir, atelier: "atelier.mjs", env: {}, redact: (text) => text, secrets: () => [], runCommand,
     adoptWorkspaceToken: (where, w) => { adopted.push({ where, ...w }); config["atelier.write-token-expires-at"] = w.expiresAt; },

@@ -4,9 +4,8 @@
 // rejection decides, whatever came after it, and otherwise the newest
 // verdict is the answer. A tier review's approval (src/review/tier.ts) is a
 // second opinion that never satisfies the gate, so it is reported apart and
-// never counts; its rejection is a rejection like any other. The CLI's own
-// landing (cli/land.mjs) and the landing Workflow (src/landing-workflow.ts)
-// share this judgment, so both count the same verdicts the same way.
+// never counts; its rejection is a rejection like any other. The landing
+// (cli/land.mjs) and the brief read this judgment.
 
 import { offering, type SeenOffer } from "./dispatch/rules.ts";
 import { approvalsNeeded, changeClass, DEFAULT_OWNER, evidenceAt, gateApprovals, sameActor, type Evidence, type Finding, type Item, type ProjectPolicy, type Review } from "./rules.ts";

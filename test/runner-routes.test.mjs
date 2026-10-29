@@ -72,10 +72,10 @@ const API_ROUTES = [
   ...["PUT /projects/p", "DELETE /projects/p", "GET /projects/p", "POST /projects/p/rename", "GET /projects/p/sessions", "POST /projects/p/sessions", "GET /projects/p/baseline-head",
     "GET /projects/p/owners", "GET /projects/p/standing", "GET /projects/p/landing-lease", "POST /projects/p/baseline-token", "POST /projects/p/baseline-token (write)", "POST /projects/p/served",
     "GET /projects/p/decisions", "POST /projects/p/decisions", "POST /projects/p/decisions/d1/withdraw", "GET /projects/p/actions", "GET /projects/p/items", "POST /projects/p/items"],
-  ...["GET", "GET brief", "GET job-brief", "GET diff", `GET logs/${"a".repeat(64)}`, `GET diffs/${"a".repeat(64)}`, "GET plan", "GET landing-workflow",
+  ...["GET", "GET brief", "GET job-brief", "GET diff", `GET logs/${"a".repeat(64)}`, `GET diffs/${"a".repeat(64)}`, "GET plan",
     ...["claim", "read-token", "read-token (write)", "base-token", "base-token (write)", "push", "evidence", "dispatch", "undispatch", "edit", "block", "unblock", "clear-secret",
       "review", "review-claim", "review-renew", "review-release", "review-skip", "review-unparsable", "run-skip", "review-request", "fast-take", "fast-ready", "owner-port-token",
-      "criteria-review-claim", "criteria-review", "criteria-review-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
+      "criteria-review-claim", "criteria-review", "criteria-review-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "land", "submit", "handoff", "release", "abandon", "accept",
       "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed", "plan", "plan/approve"].map((v) => `POST ${v}`),
   ].map((entry) => { const [method, rest = ""] = entry.split(" ", 2); const write = entry.endsWith(" (write)"); const verb = rest.replace(" (write)", ""); return `${method} /projects/p/items/t1${verb ? `/${verb}` : ""}${write ? " (write)" : ""}`; }),
 ];
@@ -1112,10 +1112,10 @@ test("owner-only operations and write-token requests are refused by runnerRoute 
     ["GET", "/models"], ["POST", "/models/x/status", { status: "ok" }], ["POST", "/usage/codex", {}], ["GET", "/usage"], ["GET", "/reliability"],
     ["PUT", P, {}], ["DELETE", P, {}], ["POST", `${P}/rename`, { to: "x" }], ["GET", `${P}/owners`], ["GET", `${P}/standing`], ["GET", `${P}/items`], ["POST", `${P}/items`, { title: "x" }],
     ["POST", `${P}/decisions`, { text: "x" }], ["GET", `${P}/landing-lease`], ["POST", `${P}/served`, {}],
-    ...["dispatch", "undispatch", "edit", "block", "unblock", "clear-secret", "review", "review-claim", "review-release", "review-unparsable", "review-request", "land", "landing-workflow",
+    ...["dispatch", "undispatch", "edit", "block", "unblock", "clear-secret", "review", "review-claim", "review-release", "review-unparsable", "review-request", "land",
       "handoff", "abandon", "accept", "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed",
       "criteria-review-request", "criteria-finding", "refresh-lease", "refresh-pushing", "refresh-checked", "criteria-review-claim", "criteria-review", "criteria-review-failed", "owner-port-token"].map((verb) => ["POST", `${base}/${verb}`, { head: H0, to: "owner" }]),
-    ["GET", `${base}/plan`], ["GET", `${base}/landing-workflow`], ["POST", `${base}/plan/approve`, {}],
+    ["GET", `${base}/plan`], ["POST", `${base}/plan/approve`, {}],
   ];
   for (const [method, path, body] of ownerOnly) {
     assert.equal(runnerRoute(method, path.split("/").filter(Boolean), body ?? {}), false, `${method} ${path} is allowed by runnerRoute`);

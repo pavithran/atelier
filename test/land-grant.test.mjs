@@ -235,3 +235,16 @@ test("the landing's record and record-merge refuse a merge the project's branch 
   assert.equal(ok.status, 200, ok.text);
   assert.equal((await w.detail(id)).item.state, "merged");
 });
+
+test("the landing Workflow is gone: atelier land --workflow is refused before anything is asked, and the server has no landing-workflow route", async (t) => {
+  const w = await landingWorld(t);
+  const { id } = await w.task({ files: { "task.txt": "task\n" } });
+  const before = await w.detail(id);
+  const r = await w.cli(["land", id, "--workflow"]);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /land does not take --workflow/);
+  const after = await w.detail(id);
+  assert.equal(after.events.length, before.events.length, "nothing was recorded");
+  assert.equal((await w.api("GET", "/projects/demo/landing-lease")).json.lease, null);
+  for (const method of ["GET", "POST"]) assert.equal((await w.api(method, `/projects/demo/items/${id}/landing-workflow`, method === "POST" ? {} : undefined)).status, 404);
+});

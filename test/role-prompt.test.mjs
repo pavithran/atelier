@@ -215,7 +215,7 @@ test("the guide and the handbook teach landing a wave, not 'Never land two toget
   assert.match(outside, /The wave suite/);
   assert.match(outside, /The deploy and the push to the public mirror/);
   const help = run(["land", "--help"]).stdout;
-  for (const flag of ["--parallel", "--workflow", "--release-lease", "--post-merge", "--reviewer", "--triage", "--no-review"]) {
+  for (const flag of ["--parallel", "--release-lease", "--post-merge", "--reviewer", "--triage", "--no-review"]) {
     assert.ok(help.includes(flag), `${flag} is in the land help`);
     assert.ok(wave.includes(flag) || flag === "--no-review" || flag === "--triage" || flag === "--reviewer", `${flag} is in the wave text`);
   }

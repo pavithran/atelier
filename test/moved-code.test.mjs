@@ -336,44 +336,21 @@ function landWorld(t, { base, task, main, moves = [] }) {
 // A stand-in landing Workflow: holding no lease (t550), it asks for the workspace
 // at once, pauses on a conflict, starts a new round on a resume, and ends
 // on a reported head unless `onHead` says otherwise.
-function fakeWorkflow({ onHead } = {}) {
-  const wf = { instance: null, stage: null, round: 0, status: null, files: null, events: [] };
-  const view = () => ({ instance: wf.instance, stage: wf.stage, round: wf.round, files: wf.files, checks: "container", status: { status: wf.status } });
-  wf.handle = (method, body) => {
-    if (method === "GET") return wf.instance ? view() : { instance: null, status: null };
-    if (body.event) {
-      const e = body.event;
-      wf.events.push(e);
-      if (e.type === "workspace" && e.payload.conflict) { wf.stage = "conflict"; wf.files = e.payload.files; }
-      else if (e.type === "workspace" && e.payload.failed) { wf.stage = "failed"; wf.status = "errored"; }
-      else if (e.type === "workspace") (onHead ?? (() => { wf.stage = "done"; wf.status = "complete"; }))(e, wf);
-      else if (e.type === "resume" && e.payload.round === wf.round) { wf.stage = "workspace"; wf.round++; }
-      return { sent: true };
-    }
-    if (wf.instance && wf.status === "running") return { ...view(), created: false };
-    Object.assign(wf, { instance: "w1", stage: "workspace", round: 0, status: "running", files: null });
-    return { ...view(), created: true };
-  };
-  return wf;
-}
-
 // runLand with the server's answers, real Git in the workspace and the CLI's
 // own steps passing. `refuseApproval` has the ledger refuse the --moved-ok
 // record as it refuses anyone but the project owner; `failGit` fails the Git
 // commands it names.
-function landIo(world, { args = {}, wf = null, refuseApproval = false, failGit = null } = {}) {
+function landIo(world, { args = {}, refuseApproval = false, failGit = null } = {}) {
   const calls = [], lines = [], commands = [];
   const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease";
   const request = async (method, path, body) => {
     calls.push({ method, path, body });
     if (path === "/version") return { capabilities: SERVER_CAPABILITIES, commit: "c0ffee" };
     if (path === leasePath) return method === "GET" ? { lease: null, waiting: [] } : body.cancel || body.renew ? {} : { item: { id: "t1", state: "submitted" } };
-    // The plain landing compares a claimed task's recorded head in its
-    // workspace (G2); the Workflow landing merges main there itself.
-    if (path === itemPath) return { item: args.workflow ? { id: "t1", state: "submitted", owner: "codex/test" } : { id: "t1", state: "claimed", owner: "codex/test", head: world.head() }, policy: { checks: [] } };
+    // The landing compares a claimed task's recorded head in its workspace (G2).
+    if (path === itemPath) return { item: { id: "t1", state: "claimed", owner: "codex/test", head: world.head() }, policy: { checks: [] } };
     if (path === `${itemPath}/base-token`) return { remote: world.baseline, token: "read", defaultBranch: "main" };
     if (path === `${itemPath}/land` && refuseApproval && body.resolvedBy) throw Object.assign(new Error("not_project_owner: only the project owner records a landing's steps"), { status: 403 });
-    if (path === `${itemPath}/landing-workflow`) return wf.handle(method, body ?? {});
     return {};
   };
   const realGit = (a, o = {}) => {
@@ -385,7 +362,7 @@ function landIo(world, { args = {}, wf = null, refuseApproval = false, failGit =
   };
   const runCommand = async (argv) => { commands.push(argv[2]); return { passed: true, status: 0, output: "ok\n", durationMs: 1 }; };
   const io = {
-    args: { _: ["land", "t1"], ...(args.workflow ? {} : { "no-review": true }), ...args }, name: "proj", id: "t1", p: { path: world.p, branch: "main" }, owner: "owner",
+    args: { _: ["land", "t1"], "no-review": true, ...args }, name: "proj", id: "t1", p: { path: world.p, branch: "main" }, owner: "owner",
     request, git: realGit, print: (line) => lines.push(line), die: (message) => { throw new Error(message); },
     workspacePath: () => world.ws, atelier: "atelier.mjs", env: {}, redact: (s) => s, secrets: () => [], runCommand, adoptWorkspaceToken: () => {},
   };
@@ -500,59 +477,16 @@ test("--moved-ok whose approval the ledger refuses (anyone but the project owner
   assert.deepEqual(w.log(), []);
 });
 
-test("an approval is not carried to other revisions: a run without --moved-ok stops again, and a later round at another main needs a fresh approval", async (t) => {
+test("an approval is not carried to another run: a run without --moved-ok stops again", async (t) => {
   const w = landWorld(t, regression);
-  // A run of its own never inherits an approval recorded by an earlier one.
-  const approved = landIo(w, { args: { "moved-ok": true, workflow: true }, wf: fakeWorkflow({
-    // Round 0's head is reported; the Workflow asks for the workspace again
-    // after main moved and the workspace returned to the task's head.
-    onHead: (e, wf) => {
-      if (e.payload.round !== 0) { wf.stage = "done"; wf.status = "complete"; return; }
-      git(w.ws, "reset", "-q", "--hard", "HEAD^1");
-      w.pushMain({ "NOTES.md": "main moved\n" });
-      wf.stage = "workspace"; wf.round = 1;
-    },
-  }) });
-  const error = await approved.land();
-  assert.ok(error);
-  assert.match(error.message, /^--moved-ok approved the findings at task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}; this comparison is at other revisions or found other edits, so it needs a fresh approval\. t1's edits lie in code main moved/);
-  assert.match(error.message, /paused at its conflict stage/);
-  assert.equal(approved.records().filter((r) => r.resolvedBy).length, 1, "one approval, at the first revisions");
-  assert.deepEqual(w.log().map((e) => e.kind), ["moved-ok", "stopped"]);
-  assert.notEqual(w.log()[0].main, w.log()[1].main);
-  // A fresh plain run without the flag stops on the findings again.
+  // A run with --moved-ok records the approval of exactly what it found.
+  const approved = landIo(w, { args: { "moved-ok": true } });
+  await approved.land();
+  assert.equal(approved.records().filter((r) => r.resolvedBy).length, 1, "one approval, at the revisions compared");
+  assert.deepEqual(w.log().map((e) => e.kind), ["moved-ok"]);
+  // A run of its own never inherits it.
   const plain = landIo(w);
   assert.match((await plain.land()).message, /t1's edits lie in code main moved to another file/);
-});
-
-test("Workflow land: an edit in moved code pauses the Workflow at its conflict stage with no merge to resolve, and the rerun resumes and compares afresh", async (t) => {
-  const w = landWorld(t, regression);
-  const head = w.head();
-  const wf = fakeWorkflow();
-  const first = landIo(w, { args: { workflow: true }, wf });
-  const error = await first.land();
-  assert.match(error.message, /t1's edits lie in code main moved to another file/);
-  assert.match(error.message, /The landing Workflow is paused at its conflict stage, holding no lease; no merge was made, so nothing is left to resolve in the index\. Once the edits are ported, committed and pushed with atelier push, run atelier land t1 --workflow again/);
-  assert.match(error.message, /run atelier land t1 --workflow again, which compares afresh/);
-  assert.deepEqual(wf.events.map((e) => [e.type, e.payload.round, e.payload.conflict, e.payload.files]), [["workspace", 0, true, ["cli/atelier.mjs", "cli/commands/report.mjs"]]]);
-  assert.equal(wf.stage, "conflict");
-  unchanged(w, head);
-  assert.deepEqual(first.posts("/push"), []);
-  // The rerun resumes; nothing was ported, so the comparison stops it again.
-  const second = landIo(w, { args: { workflow: true }, wf });
-  assert.match((await second.land()).message, /t1's edits lie in code main moved/);
-  assert.deepEqual(wf.events.slice(1).map((e) => [e.type, e.payload.round, e.payload.conflict ?? false]), [["resume", 0, false], ["workspace", 1, true]]);
-  unchanged(w, head);
-  // With --moved-ok the next round records the approval and goes on.
-  const third = landIo(w, { args: { workflow: true, "moved-ok": true }, wf });
-  assert.equal(await third.land(), null, third.output());
-  const reported = wf.events.at(-1);
-  assert.equal(reported.type, "workspace");
-  assert.equal(reported.payload.round, 2);
-  assert.equal(reported.payload.head, w.head());
-  assert.ok(third.records().some((r) => r.resolvedBy === "owner with --moved-ok"));
-  // Checks run locally since t768 removed the container mode, so the round runs them after the push.
-  assert.deepEqual(third.commands, ["push", "check"]);
 });
 
 test("a comparison that fails, or finds no merge base, stops the landing with the reason, Git unchanged and the lease never taken", async (t) => {

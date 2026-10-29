@@ -303,10 +303,10 @@ test("spawnLanding reports a command that cannot start as a failed landing", asy
 });
 
 // The command around the pool, against the stand-in server.
-test("atelier land with several tasks refuses --workflow, --release-lease and --post-merge, and a --parallel that is not a positive integer, before any request", async (t) => {
+test("atelier land with several tasks refuses --release-lease and --post-merge, and a --parallel that is not a positive integer, before any request", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
-  for (const flag of ["--workflow", "--release-lease", "--post-merge=status"]) {
+  for (const flag of ["--release-lease", "--post-merge=status"]) {
     const r = await f.run(f.checkout, "land", "t1", "t2", flag);
     assert.notEqual(r.status, 0, r.output);
     assert.match(r.output, new RegExp(`several tasks cannot be landed with --${flag.slice(2).split("=")[0]}`));
