@@ -34,5 +34,5 @@ Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private ate
 Docs       guide [--role build|review|plan|orchestrate] [--full] [--project P]   (paste into a project's AGENTS.md)
 
 Tokens     token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID
-Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --refuse-overlap is on when named alone. It takes the word true or false after it and never any other word: --refuse-overlap false or --refuse-overlap=false turns it off.
+Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). Every write with the developer token names the model acting: --as, or ATELIER_ACTING for the session. A switch such as --approve, --json or --refuse-overlap is on when named alone. It takes the word true or false after it and never any other word: --refuse-overlap false or --refuse-overlap=false turns it off.
 Undo: revert ID

@@ -60,7 +60,9 @@ test("the declared acting model must name a model in the pool, and is recorded a
   assert.equal(registeredActing(GPT, pool), GPT);
   // Well formed but not registered: another model, or a registered model in another harness.
   for (const bad of [GLM, "codex/opus-5.5", "claude-code/opus-9"]) refusal(() => registeredActing(bad, pool), "unregistered_acting", 400, /not a model in the pool/);
-  refusal(() => registeredActing(OPUS, []), "unregistered_acting", 400);
+  // An empty pool converts nothing and keeps the declared name (G18): a fresh
+  // server's first model is registered by a model naming itself.
+  assert.equal(registeredActing("claude-code/Opus-5.5", []), "claude-code/Opus-5.5");
 });
 
 test("an event's acting model is read only from a valid field; legacy and malformed ones stay unknown", () => {

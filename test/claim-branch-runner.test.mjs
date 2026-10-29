@@ -33,12 +33,15 @@ let server, base, checkout;
 const cache = join(root, "cache");
 const config = join(root, "config");
 const L = () => server.namespace.get(server.namespace.idFromName("project:demo"));
+// The model acting on the developer token's writes (G18): any name while the
+// pool is empty, then one the pool holds.
+let acting = "claude-code/opus-5.5";
 const api = async (method, path, body, token = OWNER, actor = "owner") => {
-  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": acting } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, body: await res.json() };
 };
 const cli = (argv, { token = OWNER, cwd = root, env = {} } = {}) => run(process.execPath, [join(process.cwd(), "cli/atelier.mjs"), ...argv], {
-  cwd, env: { ...baseEnv, ...identity, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ...env },
+  cwd, env: { ...baseEnv, ...identity, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: acting, ...env },
 });
 const tip = async (ref) => (await run("git", ["-c", `http.extraHeader=Authorization: Bearer ${OWNER}`, "ls-remote", `${base}/git/demo.git`, ref], { cwd: root })).stdout.split("\t")[0];
 
@@ -100,8 +103,10 @@ test("a review runner clones t/N alone with a read grant, fetches the project's 
   const head = (await L().item(id)).head;
   const REVIEWER = "opencode/gpt-6";
   for (const argv of [["models", "add", "gpt-6", "--harness", "opencode", "--where", "home"], ["models", "admit", REVIEWER, "--project", "demo", "--reason", "the test's reviewer"]]) {
+    // The pool now holds a model, so the acting model must be one in it (G18).
     const m = await cli(argv);
     assert.equal(m.code, 0, `${m.stdout}\n${m.stderr}`);
+    acting = REVIEWER;
   }
   const runnerToken = (await api("POST", "/tokens", { runner: "home:review", projects: ["demo"] })).body.token;
   mkdirSync(join(config, "tokens"), { recursive: true });

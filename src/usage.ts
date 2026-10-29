@@ -69,7 +69,7 @@ export function helpGroups(view: View = "web"): HelpGroup[] {
 
 export const HELP_GROUPS: HelpGroup[] = helpGroups("web");
 
-export const HELP_FOOTER = "Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --refuse-overlap is on when named alone. It takes the word true or false after it and never any other word: --refuse-overlap false or --refuse-overlap=false turns it off.";
+export const HELP_FOOTER = "Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). Every write with the developer token names the model acting: --as, or ATELIER_ACTING for the session. A switch such as --approve, --json or --refuse-overlap is on when named alone. It takes the word true or false after it and never any other word: --refuse-overlap false or --refuse-overlap=false turns it off.";
 
 // What `atelier help` prints, without the final newline.
 export function helpText(view: View = "web"): string {
@@ -306,6 +306,10 @@ Standing rules:
   verdict with \`atelier finding ... --as H/M\`, naming yourself, as you name
   yourself on \`atelier decide\` and on an override: the Models page measures
   your verdicts as it measures a reviewer's.
+- Name yourself on every write you make with the developer token:
+  \`--as H/M\`, or \`ATELIER_ACTING=H/M\` once for the session. The server
+  refuses a write that names no model, and records the model on every event
+  it writes; criteria you write count as yours, so you never review them.
 - File every task with its acceptance criteria, written before the build:
   \`atelier new "title" --accept "TEXT" --scope GLOB\`, one \`--accept\` per
   observable criterion. A task filed without any draws a warning, and a

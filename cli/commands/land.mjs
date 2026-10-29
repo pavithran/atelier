@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { redactGitArgs } from "../runner.mjs";
 import { runOneShotReview } from "../review-oneshot.mjs";
 import { NOT_LANDED, NOT_LANDED_EXIT, runLand } from "../land.mjs";
-import { I, OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { I, OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, ownerActing, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
 import { serverFetch } from "../server-fetch.mjs";
 import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../land-queue.mjs";
 
@@ -60,7 +60,7 @@ export default async function landCommand() {
     try {
       res = await serverFetch(server() + "/api" + path, {
         method,
-        headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
+        headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, ...ownerActing(method), "content-type": "application/json", ...extra },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       text = await res.text();

@@ -24,7 +24,10 @@ const PASS = new Set(["then", "fetch", "connect", "dup", "id", "name"]);
 type Stub = object;
 type Call = (...args: unknown[]) => unknown;
 
-export function guardLedger<T extends Stub>(stub: T, name: string, deployed: string | null | undefined, now: () => number = Date.now): T {
+// `acting` is the harness/model a developer-token request names (G18):
+// with it, every call goes through the Ledger's actingCall, which records
+// the model on each event the call logs.
+export function guardLedger<T extends Stub>(stub: T, name: string, deployed: string | null | undefined, now: () => number = Date.now, acting: string | null = null): T {
   const main = deployed?.trim() || null;
   const call = (method: string, ...args: unknown[]): Promise<unknown> => {
     try { return Promise.resolve((stub as Record<string, Call>)[method](...args)); } catch (err) { return Promise.reject(err); }
@@ -69,7 +72,11 @@ export function guardLedger<T extends Stub>(stub: T, name: string, deployed: str
       // again could find another (a stub may answer each read afresh).
       return (...args: unknown[]) => {
         let result: Promise<unknown>;
-        try { result = Promise.resolve(Reflect.apply(value as Call, target, args)); } catch (err) { result = Promise.reject(err); }
+        try {
+          result = Promise.resolve(acting
+            ? Reflect.apply((target as Record<string, Call>).actingCall, target, [acting, prop, args])
+            : Reflect.apply(value as Call, target, args));
+        } catch (err) { result = Promise.reject(err); }
         return result.then((v) => { tell(); return v; }, (err: unknown) => { tell(); throw updating(err); });
       };
     },

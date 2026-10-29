@@ -55,7 +55,7 @@ async function serve(t, root = scratch(t, "atelier-checkout-server-")) {
   const close = async () => { if (!closed) { closed = true; await server.close(); } };
   t.after(close);
   const api = async (method, path, body) => {
-    const r = await fetch(`${server.url}/api${path}`, { method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const r = await fetch(`${server.url}/api${path}`, { method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: r.status, body: await r.json() };
   };
   return { root, server, api, close };
@@ -90,7 +90,7 @@ async function newProject(real) {
 // credential, answering what it answers.
 async function forward(req, res, url, raw) {
   try {
-    const r = await fetch(url, { method: req.method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": req.headers["x-atelier-actor"] ?? "owner" }, body: raw || undefined });
+    const r = await fetch(url, { method: req.method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": req.headers["x-atelier-actor"] ?? "owner", "x-atelier-acting": "claude-code/opus-5.5" }, body: raw || undefined });
     res.writeHead(r.status, { "content-type": "application/json" });
     res.end(await r.text());
   } catch { res.destroy(); }
@@ -349,7 +349,7 @@ test("ship records a failed deploy with its head and who, which the events and s
   assert.equal((await real.api("GET", "/projects/demo/deploys")).body.deploys.length, 1);
   // atelier events and atelier show read it from the real server.
   const config = scratch(t, "atelier-checkout-cli-");
-  const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: real.server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1" };
+  const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: real.server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5" };
   delete env.ATELIER_PROJECT;
   // Run asynchronously: the server answers from this process.
   const atelier = async (...argv) => (await run(process.execPath, [cli, ...argv, "--project", "demo"], { env, encoding: "utf8", timeout: 60_000 })).stdout;

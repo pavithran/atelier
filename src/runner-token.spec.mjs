@@ -36,7 +36,9 @@ async function setup(policy = {}) {
   }) };
   const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts };
   const request = (method, path, token = OWNER, actor = "owner", body, runner) => worker.fetch(new Request(`https://atelier.test${path.startsWith("/git/") || path === "/home" ? "" : "/api"}${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(runner ? { "x-atelier-runner": runner } : {}) },
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(runner ? { "x-atelier-runner": runner } : {}),
+      // A write on the developer token names the model acting (G18).
+      ...(token === OWNER && method !== "GET" ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }), bindings);
   const issued = await request("POST", "/tokens", OWNER, "owner", { runner: "HOME:Studio", projects: [name] });

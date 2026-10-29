@@ -122,7 +122,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
   }) };
   const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
   const call = (method, path, body, bearer = OWNER) => fetch(`${server.url}/api${path}`, {
-    method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "x-atelier-actor": "owner" },
+    method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "x-atelier-actor": "owner", ...(bearer === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   try {
@@ -170,7 +170,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
     // The command exits 0 either way.
     const config = join(root, "config");
     mkdirSync(config, { recursive: true });
-    const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1" };
+    const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5" };
     delete env.ATELIER_PROJECT;
     const cli = (...argv) => promisify(execFile)(process.execPath, ["cli/atelier.mjs", ...argv], { env, cwd: process.cwd(), timeout: 60_000 });
     await cli("login", "--server", server.url);
@@ -207,7 +207,7 @@ test("two runners claiming one dispatch at once through the real server: exactly
   writeFileSync(join(secrets, "OVERRIDE_SECRET"), "override-secret-4f1c9e", { mode: 0o600 });
   const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets });
   const call = (method, path, body, bearer = OWNER, actor = "owner") => fetch(`${server.url}/api${path}`, {
-    method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "x-atelier-actor": actor },
+    method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "x-atelier-actor": actor, ...(bearer === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   try {

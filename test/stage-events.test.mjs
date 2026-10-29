@@ -39,7 +39,7 @@ const sha = (c) => c.repeat(40);
 function api(method, path, body) {
   return fetch(`${server.url}/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner" },
+    headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
@@ -167,7 +167,7 @@ test("atelier events --json prints one array of {seq, at, item, actor, kind, sta
   await L().claim(id, AGENT);
   const config = join(root, "config");
   mkdirSync(config, { recursive: true });
-  const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1" };
+  const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5" };
   delete env.ATELIER_PROJECT;
   const { stdout } = await run(process.execPath, ["cli/atelier.mjs", "events", "--json", "--project", "demo", "--kind", "item.claimed"], { env, cwd: process.cwd(), timeout: 60_000 });
   const events = JSON.parse(stdout);

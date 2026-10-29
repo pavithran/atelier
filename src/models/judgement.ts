@@ -23,7 +23,9 @@
 // so the pages and receipts call it the declared acting model. An event
 // recorded before
 // t440, or without a name, has no acting model: it stays unknown, and is
-// never guessed from the session, the token or the time.
+// never guessed from the session, the token or the time. Since G18 every
+// write on the developer token names one (ownerWriteRefusal), and every
+// event it records carries it, not only the events listed above.
 //
 // A verdict's outcome is read from what the ledger says explicitly, never
 // from silence. It is contradicted when a later verdict on the same finding
@@ -56,7 +58,7 @@ export const JUDGEMENT_WINDOW_DAYS = 90;
 export const ACTING_EVENTS = ["review.finding", "decision.recorded", "decision.withdrawn", "review.overridden", "assignment.recorded", "assignment.withdrawn"] as const;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
-const isModel = (a: string, owner: string) => a !== owner && a.includes("/") && !a.startsWith("atelier/") && validActor(a);
+export const isModel = (a: string, owner: string) => a !== owner && a.includes("/") && !a.startsWith("atelier/") && validActor(a);
 
 // The acting harness/model a request names, or null when it names none. Only
 // the owner's own token may name one: an agent token already proves its
@@ -71,6 +73,22 @@ export function cleanActing(header: string | null, owner: string, agentToken: bo
   return acting;
 }
 
+// G18: who acts on a write made with the developer token. The developer's
+// own interactive use is the signed-in pages, which never reach /api; every
+// /api request on the developer token comes from the CLI, a runner or a
+// script, which a model may be driving. So reads are free, and a write must
+// name the harness/model acting: the acting header (atelier --as H/M,
+// ATELIER_ACTOR or ATELIER_ACTING), or an actor that is itself a
+// harness/model (the developer token naming a model's actor, whose events
+// already record it). No other header stands in for it: a runner's report
+// passes without a model only on the runner's own token. Leaving the name out
+// never records the write as the developer's: it is refused, naming the flag.
+export function ownerWriteRefusal(method: string, actor: string, owner: string, declaredActing: string | null): RuleError | null {
+  if (method === "GET" || method === "HEAD" || declaredActing) return null;
+  if (isModel(actor, owner)) return null;
+  return new RuleError("acting_required", "a write with the developer token names the harness/model acting: the developer's own use is the signed-in pages, so every command on the developer token says which model runs it", 400, "add --as H/M (or set ATELIER_ACTING) naming the harness/model you are, such as claude-code/opus-5.5, and run the command again");
+}
+
 // The declared acting model (--as) is a name a person types, so it is
 // converted here, where it enters, to the exact pool entry it names: by its
 // id, or the one entry listing it as an alias (entryNamed), or the one entry
@@ -79,7 +97,13 @@ export function cleanActing(header: string | null, owner: string, agentToken: bo
 // assignment choice is (gpt-6-astra's sixth review of t622, finding 1); a
 // name no entry answers to is refused. What is recorded is the entry's
 // exact harness/id (the eighth review's rule, src/models/pool.ts).
+//
+// An empty pool has no entry to convert a name to, so the name is kept as
+// declared (cleanActing has checked its form): every write on the developer
+// token names its acting model (G18), and the first model a fresh server
+// registers is registered by a model.
 export function registeredActing(acting: string, pool: PoolNames): string {
+  if (!pool.length) return acting;
   let named;
   try { named = entryNamed(pool, acting); } catch (err) {
     if (err instanceof RuleError) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}: ${err.detail}`, 400);

@@ -51,7 +51,7 @@ async function serve(extra = {}) {
 function api(server, method, path, body, token = OWNER, actor = "owner") {
   return fetch(`${server.url}/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
@@ -59,7 +59,7 @@ function api(server, method, path, body, token = OWNER, actor = "owner") {
 async function cli(root, server, ...argv) {
   const config = join(root, "config");
   mkdirSync(config, { recursive: true });
-  const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1" };
+  const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5" };
   delete env.ATELIER_PROJECT;
   const { stdout } = await run(process.execPath, ["cli/atelier.mjs", ...argv], { env, cwd: process.cwd(), timeout: 60_000 });
   return stdout;

@@ -40,7 +40,7 @@ const L = () => server.namespace.get(server.namespace.idFromName("project:demo")
 const remote = (token, project = "demo") => `${base.replace("http://", `http://x:${token}@`)}/git/${project}.git`;
 
 function api(method, path, body, token = OWNER, actor = "owner") {
-  return fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+  return fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 async function taskToken(item) {
   const r = await api("POST", "/projects/demo/git-token", { kind: "task", item }, agentToken, AGENT);
@@ -194,7 +194,7 @@ test("no plaintext token is kept in the grant store or put in the hook's environ
   chmodSync(join(hooks, "pre-receive"), 0o755);
   const recorder = await startServer({ env: "test", dataDir: join(root, "data2"), host: "127.0.0.1", hooksDir: hooks, vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
   try {
-    await fetch(`${recorder.url}/api/projects/rec`, { method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: "{}" });
+    await fetch(`${recorder.url}/api/projects/rec`, { method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: "{}" });
     const r = await tryGit(work, "push", recorder.url.replace("http://", `http://x:${OWNER}@`) + "/git/rec.git", "HEAD:refs/heads/main");
     assert.equal(r.status, 0, r.stderr);
     const seen = readFileSync(dump, "utf8");

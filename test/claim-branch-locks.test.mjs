@@ -55,7 +55,7 @@ chmodSync(join(hooks, "pre-receive"), 0o755);
 let server, base, seed, agentToken;
 const remote = () => `${base}/git/demo.git`;
 const api = async (method, path, body, token = OWNER, actor = "owner") => {
-  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, body: await res.json() };
 };
 const newTask = async (title) => (await api("POST", "/projects/demo/items", { title, scope: ["src/**"] })).body.id;
@@ -211,7 +211,7 @@ test("a server bound to a non-loopback local address takes a valid push: the hoo
     const reachable = await fetch(`${at}/api/version`, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
     if (!reachable) { t.skip(`${outward} is not reachable from this process`); return; }
     assert.match(bound.git.callback, /^http:\/\/127\.0\.0\.1:\d+\//);
-    const res = await fetch(`${at}/api/projects/demo`, { method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: "{}" });
+    const res = await fetch(`${at}/api/projects/demo`, { method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" }, body: "{}" });
     assert.equal(res.status, 200);
     const pushed = await tryGit(seed, ...bearer(OWNER), "push", `${at}/git/demo.git`, "HEAD:refs/heads/main");
     assert.equal(pushed.code, 0, pushed.stderr);
