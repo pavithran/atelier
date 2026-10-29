@@ -173,6 +173,10 @@ export interface ItemFields {
   accept?: string[];
   brief?: string | null;
   title?: string;
+  // Edit only (G12): criteria appended after the stored ones, and text
+  // appended to the stored brief; neither replaces what is there.
+  addAccept?: string[];
+  addBrief?: string;
 }
 
 // Whether two items belong to one plan: two parts of it, or a part and the
@@ -1430,7 +1434,7 @@ export function cleanBrief(v: unknown): string | null {
   if (v === null) return null;
   if (typeof v !== "string") throw new RuleError("bad_field", "brief must be text or null", 400);
   const brief = v.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ").trim();
-  if (brief.length > BRIEF_MAX) throw new RuleError("bad_field", `a brief is at most ${BRIEF_MAX} characters`, 400);
+  if (brief.length > BRIEF_MAX) throw new RuleError("bad_field", `a brief is at most ${BRIEF_MAX} characters; this one is ${brief.length}`, 400);
   return brief || null;
 }
 
@@ -1451,7 +1455,7 @@ export function itemText(title: unknown, brief: unknown): { title: string; brief
   const t = titleLine(title ?? "");
   const b = brief === undefined ? null : cleanBrief(brief);
   if (!t && !b) throw new RuleError("bad_title", "an item needs a title", 400);
-  if (t.length > TITLE_MAX && b) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
+  if (t.length > TITLE_MAX && b) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters and this one is ${t.length}; put the rest in the brief`, 400);
   if (t.length > TITLE_MAX || !t) {
     const whole = b ?? cleanBrief(String(title))!;
     return { title: shortTitle(whole), brief: whole, derived: true };
@@ -1539,9 +1543,10 @@ export function secretClearReason(value: unknown): string {
 export function itemFields(input: Record<string, unknown>): ItemFields {
   const list = (v: unknown, field: string): string[] => {
     if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !line(s))) throw new RuleError("bad_field", `${field} must be a list of strings with something in each`, 400);
-    if (v.length > FIELD_LIST_MAX) throw new RuleError("bad_field", `${field} holds at most ${FIELD_LIST_MAX} entries`, 400);
+    if (v.length > FIELD_LIST_MAX) throw new RuleError("bad_field", `${field} holds at most ${FIELD_LIST_MAX} entries; ${v.length} were given`, 400);
     const entries = v.map(line);
-    if (entries.some((s) => s.length > FIELD_MAX)) throw new RuleError("bad_field", `each ${field} entry is at most ${FIELD_MAX} characters`, 400);
+    const long = entries.findIndex((s) => s.length > FIELD_MAX);
+    if (long !== -1) throw new RuleError("bad_field", `each ${field} entry is at most ${FIELD_MAX} characters; entry ${long + 1} is ${entries[long].length}`, 400);
     return entries;
   };
   const out: ItemFields = {};
@@ -1556,13 +1561,25 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
   if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
   if (input.accept !== undefined) {
     out.accept = list(input.accept, "accept");
-    if (out.accept.length > ACCEPT_COUNT) throw new RuleError("bad_field", `accept holds at most ${ACCEPT_COUNT} criteria`, 400);
+    if (out.accept.length > ACCEPT_COUNT) throw new RuleError("bad_field", `accept holds at most ${ACCEPT_COUNT} criteria; ${out.accept.length} were given`, 400);
   }
   if (input.brief !== undefined) out.brief = cleanBrief(input.brief);
+  // Appending (G12) and replacing the same field in one edit cannot both hold.
+  if (input.addAccept !== undefined) {
+    if (input.accept !== undefined) throw new RuleError("bad_field", "give accept to replace the criteria or addAccept to append to them, not both", 400);
+    out.addAccept = list(input.addAccept, "addAccept");
+    if (!out.addAccept.length) throw new RuleError("bad_field", "addAccept needs at least one criterion", 400);
+  }
+  if (input.addBrief !== undefined) {
+    if (input.brief !== undefined) throw new RuleError("bad_field", "give brief to replace the brief or addBrief to append to it, not both", 400);
+    const added = cleanBrief(input.addBrief);
+    if (!added) throw new RuleError("bad_field", "addBrief needs text", 400);
+    out.addBrief = added;
+  }
   if (input.nextGate !== undefined) {
     if (input.nextGate !== null && typeof input.nextGate !== "string") throw new RuleError("bad_field", "nextGate must be text or null", 400);
     const gate = line(input.nextGate);
-    if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters`, 400);
+    if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters; this one is ${gate.length}`, 400);
     out.nextGate = gate || null;
   }
   return out;

@@ -3187,7 +3187,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const fields = { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) };
       if (fields.accept !== undefined) assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
       if (body.context !== undefined && typeof body.context !== "string") throw new RuleError("bad_field", "context must be text; an empty text clears it", 400);
-      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined, body.context));
+      // G12: the number of an edit event whose replaced values go back.
+      if (body.restore !== undefined && !(Number.isSafeInteger(body.restore) && (body.restore as number) > 0)) throw new RuleError("bad_field", "restore must be the number of an edit event", 400);
+      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined, body.context, body.restore as number | undefined));
     }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":

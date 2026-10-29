@@ -859,6 +859,20 @@ export function fieldsArg(cmd) {
     if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS[cmd][flag]);
     out[key] = values.map((v) => v.trim());
   }
+  // G12: append to the criteria or the brief instead of replacing them.
+  if (cmd === "edit" && args.multi["add-accept"] !== undefined) {
+    const values = args.multi["add-accept"];
+    if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS.edit["add-accept"]);
+    out.addAccept = values.map((v) => v.trim());
+  }
+  if (cmd === "edit" && args["add-brief"] !== undefined) {
+    if (typeof args["add-brief"] !== "string" || !args["add-brief"].trim()) die(FLAGS.edit["add-brief"]);
+    out.addBrief = args["add-brief"].trim();
+  }
+  if (cmd === "edit" && args.restore !== undefined) {
+    if (typeof args.restore !== "string" || !/^[1-9]\d*$/.test(args.restore)) die(FLAGS.edit.restore);
+    out.restore = Number(args.restore);
+  }
   if (cmd === "edit" && args.context !== undefined) {
     if (typeof args.context !== "string") die(FLAGS.edit.context);
     out.context = args.context.trim();
@@ -1734,12 +1748,31 @@ export function criteriaNotice(id, change) {
   ].filter(Boolean);
   return [
     `The acceptance criteria of ${id} changed (binding ${String(change.to).slice(0, 12)}, was ${String(change.from).slice(0, 12)}).`,
+    ...(change.added?.length ? [`Added: ${change.added.map((c, i) => `${change.addedFrom + i}. ${flat(c)}`).join(" ")} The criteria before them are unchanged.`] : []),
     withdrawn.length
       ? `Withdrawn: ${withdrawn.join(", ")}. They stay in the record and never count again, even if the criteria change back; ${id} needs a fresh review of the new criteria.`
       : `No review or review request stood, so nothing was withdrawn; any review of ${id} from now on judges the new criteria.`,
+    ...criteriaReviewLines(id, change),
     ...(change.acceptance ? [`${id} is claimed again: its holder submits it, and it is reviewed and accepted again before it can merge.`] : []),
     ...(change.asked?.length ? [`Asked again at the same head: ${change.asked.join(", ")}.`] : []),
   ].join("\n");
+}
+
+// What a change of criteria did to the criteria review (G12): the reviews of
+// the old revision it withdrew or the approval it took back, and, where the
+// project requires one, the command that asks for a review of the new
+// revision, of the added criteria alone when the change only added some.
+// A project that does not require one is asked for nothing.
+function criteriaReviewLines(id, change) {
+  const lines = [];
+  if (change.criteriaReviews) lines.push(`Criteria review withdrawn: ${change.criteriaReviews === 1 ? "the open review" : `${change.criteriaReviews} open reviews`} of the old criteria.`);
+  if (change.criteriaApprovalLost) lines.push("The criteria review that approved the old criteria approves nothing now.");
+  if (change.criteriaReviewRequired) {
+    lines.push(change.added?.length
+      ? `This project requires a criteria review before a build: ask for one of the added criteria with atelier criteria-review ${id}.`
+      : `This project requires a criteria review before a build: ask for one with atelier criteria-review ${id}.`);
+  }
+  return lines;
 }
 
 // The task an agent starts: its short title, then its whole brief, and the

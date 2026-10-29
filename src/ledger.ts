@@ -25,7 +25,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX, ACCEPT_COUNT, BRIEF_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead, countingReviews, independentApproval,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -265,6 +265,23 @@ export interface CriteriaChange {
   acceptance: boolean;
   override: boolean;
   asked: string[];
+  // Open or claimed criteria reviews of the old revision, withdrawn (G12).
+  criteriaReviews: number;
+  // A criteria review approved the old revision, and approves nothing now.
+  criteriaApprovalLost: boolean;
+  // Whether the project requires a criteria review before a build.
+  criteriaReviewRequired: boolean;
+  // The criteria an --add-accept appended, numbered from `addedFrom` (G12).
+  added?: string[];
+  addedFrom?: number;
+}
+
+// What an edit that replaced a list took out of it (G12), and the event
+// that holds the old values: atelier edit ID --restore EVENT puts them back.
+export interface EditDropped {
+  accept?: string[];
+  scope?: string[];
+  brief?: boolean;
 }
 
 export interface ProjectRecord {
@@ -2942,16 +2959,38 @@ export class Ledger extends DurableObject<Env> {
   // decided under the old ones (criteriaChanged), and the answer says what
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
-  editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string): Item & { criteriaChange?: CriteriaChange } {
+  //
+  // Nothing is lost (G12): --add-accept and --add-brief append to what is
+  // stored, read here in the same call so no other edit is clobbered; a
+  // replacement records the old values on its item.edited event (acceptWas,
+  // briefWas, scopeWas) and answers with what it dropped and that event's
+  // number, which `restore` reads back to put them in place again.
+  editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string, restore?: number): Item & { criteriaChange?: CriteriaChange; dropped?: EditDropped; restore?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403, `only the developer can: atelier edit ${id}`);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`, 409, "run atelier ls to pick another task");
+    if (restore !== undefined) {
+      if (Object.keys(fields).length || scope !== undefined || context !== undefined) throw new RuleError("bad_field", "restore puts back what one edit replaced; give it alone", 400);
+      ({ fields, scope } = this.restoredFields(id, restore));
+    }
+    const { addAccept, addBrief, ...given } = fields;
+    fields = given;
+    if (addAccept) {
+      const accept = [...(item.accept ?? []), ...addAccept];
+      if (accept.length > ACCEPT_COUNT) throw new RuleError("bad_field", `accept holds at most ${ACCEPT_COUNT} criteria; ${item.accept?.length ?? 0} are stored and ${addAccept.length} were given`, 400);
+      fields = { ...fields, accept };
+    }
+    if (addBrief) {
+      const brief = item.brief ? `${item.brief}\n\n${addBrief}` : addBrief;
+      if (brief.length > BRIEF_MAX) throw new RuleError("bad_field", `a brief is at most ${BRIEF_MAX} characters; the stored one is ${item.brief?.length ?? 0} and the added text makes it ${brief.length}`, 400);
+      fields = { ...fields, brief };
+    }
     const set = fieldColumns(fields);
     if (fields.title !== undefined) {
       const title = titleLine(fields.title);
       if (!title) throw new RuleError("bad_title", "a title cannot be empty", 400);
-      if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
+      if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters and this one is ${title.length}; put the rest in the brief`, 400);
       set.title = title;
     }
     const rescoping = scope !== undefined && JSON.stringify(scope) !== JSON.stringify(item.scope);
@@ -2969,13 +3008,45 @@ export class Ledger extends DurableObject<Env> {
     if (context !== undefined && context.trim() !== (this.taskContext(id) ?? "")) this.setContext(id, actor, context);
     if (!Object.keys(set).length) return this.item(id);
     this.update(id, set, at);
-    this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
+    const rebriefing = fields.brief !== undefined && (fields.brief ?? null) !== (item.brief ?? null);
+    const appended = addAccept && changing ? { addAccept, addedFrom: (item.accept?.length ?? 0) + 1 } : {};
+    const seq = this.log(id, actor, "item.edited", {
+      ...fields,
+      ...(changing ? { acceptWas: item.accept ?? [] } : {}),
+      ...(rebriefing ? { briefWas: item.brief ?? null } : {}),
+      ...(addBrief ? { addBrief } : {}),
+      ...appended,
+      ...(rescoping ? { scope, scopeWas: item.scope } : {}),
+      ...(restore !== undefined ? { restoredFrom: restore } : {}),
+    }, at);
     // Every change of the stored lists is a new revision, the editor its
     // author, and a criteria review approves one revision alone (t438): an
     // edit and its revert are two revisions, so the approval never returns.
-    if (changing) this.recordCriteriaRevision(id, actor, at);
-    const change = changing ? this.criteriaChanged(item, actor, at) : null;
-    return { ...this.item(id), ...(change ? { criteriaChange: change } : {}) };
+    if (changing) this.recordCriteriaRevision(id, actor, at, addAccept ? addAccept.length : undefined);
+    const change = changing ? this.criteriaChanged(item, actor, at, addAccept) : null;
+    const gone = (was: readonly string[] | null | undefined, now: readonly string[] | null | undefined) => (was ?? []).filter((x) => !(now ?? []).includes(x));
+    const dropped: EditDropped = {
+      ...(changing && !addAccept && gone(item.accept, fields.accept).length ? { accept: gone(item.accept, fields.accept) } : {}),
+      ...(rescoping && gone(item.scope, scope).length ? { scope: gone(item.scope, scope) } : {}),
+      ...(rebriefing && !addBrief && item.brief ? { brief: true } : {}),
+    };
+    const anyDropped = Object.keys(dropped).length > 0;
+    return { ...this.item(id), ...(change ? { criteriaChange: change } : {}), ...(anyDropped ? { dropped } : {}), ...(changing || rescoping || rebriefing ? { restore: seq } : {}) };
+  }
+
+  // The fields an earlier edit replaced, from its item.edited event (G12):
+  // the old criteria, brief and scope it recorded, to put back in place.
+  private restoredFields(id: string, seq: number): { fields: ItemFields; scope?: string[] } {
+    const row = this.sql.exec(`SELECT data FROM events WHERE seq = ? AND item_id = ? AND kind = 'item.edited'`, seq, id).toArray()[0];
+    const next = `run atelier show ${id} --json and read acted or events for an item.edited event with acceptWas, briefWas or scopeWas`;
+    if (!row) throw new RuleError("no_event", `event ${seq} is not an edit of ${id}`, 404, next);
+    const d = JSON.parse(row.data as string) as { acceptWas?: string[]; briefWas?: string | null; scopeWas?: string[] };
+    const fields: ItemFields = {
+      ...(d.acceptWas !== undefined ? { accept: d.acceptWas } : {}),
+      ...(d.briefWas !== undefined ? { brief: d.briefWas } : {}),
+    };
+    if (!Object.keys(fields).length && d.scopeWas === undefined) throw new RuleError("no_event", `edit ${seq} of ${id} replaced no criteria, brief or scope, so there is nothing to restore`, 404, next);
+    return { fields, ...(d.scopeWas !== undefined ? { scope: d.scopeWas } : {}) };
   }
 
   // Where the acceptance criteria may not change: a part integrated into its
@@ -3004,8 +3075,13 @@ export class Ledger extends DurableObject<Env> {
   // stay as they are. A submitted task outside a plan asks each reviewer
   // whose request was withdrawn again, at the same head, for the new
   // criteria; a part's plan tick asks its own.
-  private criteriaChanged(before: Item, actor: string, at: string): CriteriaChange {
+  private criteriaChanged(before: Item, actor: string, at: string, added?: string[]): CriteriaChange {
     const id = before.id;
+    // Read before the revision moved on: whether a criteria review approved
+    // the criteria as they were (a review approves one revision alone).
+    const required = !!this.project().policy.requireCriteriaReview;
+    const lastRev = this.criteriaRevision(id) - 1;
+    const approvalLost = lastRev >= 1 && criteriaStatus(lastRev, this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), new Date(at)).approved;
     const from = criteriaOf(before);
     const to = criteriaOf(this.item(id));
     const reason = "the acceptance criteria changed";
@@ -3027,7 +3103,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE review_requests SET superseded = 1 WHERE item = ?`, id);
     // A criteria review open or claimed on the old revision answers nothing
     // now (t438): it is withdrawn, and a verdict on it is refused as stale.
-    this.withdrawCriteriaReviews(id, actor, "the acceptance criteria changed", at);
+    const criteriaReviews = this.withdrawCriteriaReviews(id, actor, "the acceptance criteria changed", at);
     // Under require-criteria-review a queued build whose criteria changed
     // waits for a review of the new revision (t438): its dispatch is withdrawn,
     // as the tick withdraws a queued part's, so the queue offers no build the
@@ -3049,7 +3125,11 @@ export class Ledger extends DurableObject<Env> {
     }, at);
     const asked = this.reaskForCriteria(id, live.filter((r) => r.tier !== 1), at);
     this.afterPlanChange(id);
-    return { from, to, reviews, requests: live.length, acceptance: accepted, override: overridden, asked };
+    return {
+      from, to, reviews, requests: live.length, acceptance: accepted, override: overridden, asked,
+      criteriaReviews, criteriaApprovalLost: approvalLost, criteriaReviewRequired: required,
+      ...(added ? { added, addedFrom: (before.accept?.length ?? 0) + 1 } : {}),
+    };
   }
 
   // Asks again, for a submitted task outside a plan, each reviewer whose
@@ -9491,7 +9571,7 @@ export class Ledger extends DurableObject<Env> {
   // Records the criteria an item has now as its next revision, by `by`. Called
   // when a task is filed with criteria, when the owner changes them, and when
   // a part is made from an approved plan or added by the Ledger.
-  private recordCriteriaRevision(id: string, by: string, at: string): number {
+  private recordCriteriaRevision(id: string, by: string, at: string, appended?: number): number {
     // Criteria the developer token stores on a model's word are that
     // model's (G18, t16): the criteria review then refuses the same model.
     if (by === this.owner && this.#acting) by = this.#acting;
@@ -9499,7 +9579,9 @@ export class Ledger extends DurableObject<Env> {
     const rev = this.criteriaRevision(id) + 1;
     const criteria = criteriaOf(item);
     this.sql.exec(`INSERT INTO criteria_revisions (item, rev, criteria, by, at) VALUES (?, ?, ?, ?, ?)`, id, rev, criteria, by, at);
-    this.log(id, by, "criteria.revised", { rev, criteria }, at);
+    // A revision that only appended criteria says how many (G12), so the
+    // criteria brief asks for a review of the added ones.
+    this.log(id, by, "criteria.revised", { rev, criteria, ...(appended ? { appended } : {}) }, at);
     return rev;
   }
 
@@ -9584,13 +9666,16 @@ export class Ledger extends DurableObject<Env> {
 
   // Open and claimed criteria reviews of an item are withdrawn when its
   // criteria change: they asked about a revision the item has left.
-  private withdrawCriteriaReviews(id: string, actor: string, reason: string, at: string): void {
+  private withdrawCriteriaReviews(id: string, actor: string, reason: string, at: string): number {
+    let withdrawn = 0;
     for (const r of this.criteriaReviewsFor(id)) {
       if (r.state !== "open" && r.state !== "claimed") continue;
       this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, reason, at, r.id);
       this.log(id, actor, "criteria_review.withdrawn", { review: r.id, rev: r.rev, reviewer: r.reviewer, reason }, at);
+      withdrawn++;
     }
     this.unblockForCriteria(id, at);
+    return withdrawn;
   }
 
   // The project owner asks for a review of a task's acceptance criteria,
@@ -9810,7 +9895,20 @@ export class Ledger extends DurableObject<Env> {
   // owner's resolutions.
   private criteriaBrief(item: Item, rev: number, authors: readonly string[], round: number): string {
     const plan = this.planAccountOf(item);
-    return criteriaReviewBrief({ item, rev, authors, plan, previous: this.criteriaReviewsFor(item.id), resolutions: this.criteriaResolutionsFor(item.id), round, owner: this.owner, proseStandard: this.project().policy.proseStandard ?? null });
+    const previous = this.criteriaReviewsFor(item.id), resolutions = this.criteriaResolutionsFor(item.id);
+    return criteriaReviewBrief({ item, rev, authors, plan, previous, resolutions, round, owner: this.owner, proseStandard: this.project().policy.proseStandard ?? null, appended: this.appendedRevision(item, rev, previous, resolutions) });
+  }
+
+  // Whether revision `rev` of the criteria only appended to the revision
+  // before it, and a criteria review approved that one (G12): the brief then
+  // asks for a review of the added criteria.
+  private appendedRevision(item: Item, rev: number, previous: readonly CriteriaReview[], resolutions: readonly CriteriaResolution[]): { approvedRev: number; first: number } | null {
+    if (rev < 2) return null;
+    const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'criteria.revised' ORDER BY seq DESC LIMIT 1`, item.id).toArray()[0];
+    const d = row ? JSON.parse(row.data as string) as { rev?: number; appended?: number } : null;
+    if (!d || d.rev !== rev || !d.appended) return null;
+    if (!criteriaStatus(rev - 1, previous, resolutions, new Date()).approved) return null;
+    return { approvedRev: rev - 1, first: (item.accept?.length ?? 0) - d.appended + 1 };
   }
 
   // The approved plan's account of a part: its goal and the part, or null
@@ -11438,7 +11536,7 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
-  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
+  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): number {
     // An acting model recorded since names are converted where typed is an
     // exact pool id, marked so: the judgement record reads it as it is and
     // only an unmarked one, from before, through the aliases (canonicalModel;
@@ -11464,6 +11562,7 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     if (kind.startsWith("item.") || kind.startsWith("plan.") || kind === "project.set") this.dispatchWaiting();
+    return seq;
   }
 }
 

@@ -53,7 +53,7 @@ test("itemText: a title that fits is kept, one long text becomes the brief with 
   assert.deepEqual(itemText("Same", "Same"), { title: "Same", brief: null, derived: false });
   // Line breaks stay in a brief; the title is one line.
   assert.deepEqual(itemText("Two\nlines", "One\r\nTwo\u0007"), { title: "Two lines", brief: "One\nTwo", derived: false });
-  assert.throws(() => itemText("x".repeat(TITLE_MAX + 1), "rest"), /a title is at most 80 characters; put the rest in the brief/);
+  assert.throws(() => itemText("x".repeat(TITLE_MAX + 1), "rest"), /a title is at most 80 characters and this one is 81; put the rest in the brief/);
   assert.throws(() => itemText(" ", undefined), /an item needs a title/);
   assert.throws(() => itemText("t", "x".repeat(BRIEF_MAX + 1)), /a brief is at most 4000 characters/);
 });
