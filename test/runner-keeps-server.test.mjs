@@ -312,11 +312,18 @@ async function prereviewWorld(name) {
   const t1 = await submitted(head(1)), t2 = await submitted(head(2));
   await L.beginProjectLanding(t1, "owner");
   await L.queueProjectLanding(t2, "owner");
-  // The pre-review of t2 the queue offers now, as a runner sees it.
+  // The pre-review of t2 the queue offers now, as a runner sees it. Since
+  // G17 nothing asks one by itself: when none is live, the model asks it
+  // (atelier prereview t2 --reviewer codex/gpt-6-astra).
   const offered = async () => {
     await L.queueProjectLanding(t2, "owner");
-    const { reviews } = await L.queued();
-    const item = reviews.find((r) => r.id === t2 && r.dispatch.job === "prereview");
+    let { reviews } = await L.queued();
+    let item = reviews.find((r) => r.id === t2 && r.dispatch.job === "prereview");
+    if (!item) {
+      await L.requestPrereview(t2, "owner", "codex/gpt-6-astra", POOL, await index.runnerOffers());
+      ({ reviews } = await L.queued());
+      item = reviews.find((r) => r.id === t2 && r.dispatch.job === "prereview");
+    }
     assert.ok(item, "a pre-review is offered");
     return item;
   };

@@ -27,7 +27,7 @@ import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { cleanCard, cleanCardModel, cleanWithdrawal } from "./models/cards.ts";
 import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.ts";
-import { suggestBuilder } from "./models/suggest.ts";
+import { builderCandidates, candidatesText } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, isModel, ownerWriteRefusal, registeredActing } from "./models/judgement.ts";
@@ -2906,23 +2906,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A live claim is not ended by a dispatch unless --release says so; refused
       // first, before a builder is suggested for a task nobody may take (t391).
       await L.refuseLiveHolder(id, body);
-      let suggestion;
-      // atelier dispatch with no --agent asks for the suggestion; a dispatch
-      // that names no agent without asking stays open to any runner's agent.
-      // An overlap override of an existing dispatch keeps its builder
-      // restrictions unless named, so it asks for no suggestion.
+      // atelier dispatch with no --agent names no builder (G17): the server
+      // picks none. It prints the candidates, each with its reliability line
+      // and any gate filter that refuses it, and refuses; the model names one.
+      // An overlap override of an existing dispatch keeps its builder, so it
+      // asks for nothing.
       if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && waitingDispatch(await L.item(id)))) {
         requireOwner(env, actor);
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
-        // The suggestion is checked against runners' offers for the job this
-        // dispatch will carry, a plain build unless it names another.
-        // Read for this project (offersFor, t652): a model only a runner
-        // scoped to another project offers is not suggested here.
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
-        const slash = suggestion.actor.indexOf("/");
-        body.agent = suggestion.actor.slice(0, slash);
-        body.model = suggestion.actor.slice(slash + 1);
-        body.to = suggestion.where;
+        const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
+        const first = candidates.find((c) => !c.refusal);
+        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
       }
       // A merge-main dispatch names the main head its job merges. The owner
       // names none after a landing conflicted, so the head is main's as the
@@ -2944,11 +2938,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reasons, or, for a builder the developer named, each build
       // assignment bearing on the task skipped for it (gpt-6-astra's seventh
       // review of t622, finding 2).
-      const why = suggestion ? suggestion.reasons.join(" ") : await namedBuilderReasons(env, ref.key, body, actor);
-      return json({ ...await L.dispatch(id, actor, body, oldToken, why), ...(suggestion ? { suggestion } : {}) });
+      const why = await namedBuilderReasons(env, ref.key, body, actor);
+      return json(await L.dispatch(id, actor, body, oldToken, why));
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // The queued-landing pre-review, on the model's request (G17): once per
+    // call, of the reviewer it names; without one, the candidates and a refusal.
+    case "prereview": {
+      requireOwner(env, actor);
+      const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      const records = { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key };
+      return json(await L.requestPrereview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), records), 201);
+    }
     // A task filed from one of the goal's notes (G6): the server files none
     // by itself; the model files one with atelier file-fix ID --from-note N.
     case "file-fix": {

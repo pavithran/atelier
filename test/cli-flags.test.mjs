@@ -241,14 +241,17 @@ test("dispatch --job merge-main sends the conflicted task back to its builder, a
 });
 
 
-// With no --agent the server suggests the builder (t370): the CLI asks for
-// the suggestion and prints which builder it chose and why.
-test("dispatch with no --agent asks the server to suggest a builder and prints the choice and its reason", (t) => {
+// With no --agent the CLI asks the server, which names no builder since G17:
+// the real server refuses with the candidates (test/picks-facts.test.mjs).
+// Against a server that answers with a dispatch, the CLI prints no choice of
+// its own.
+test("dispatch with no --agent sends the ask and prints no builder choice", (t) => {
   const f = fixture(t);
   const r = f.run(f.checkout, ["dispatch", "t3", "--to", "home", "--project", "demo"]);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(f.requests().at(-1).body, { to: "home", suggest: true });
-  assert.equal(r.stdout, "Builder: claude-code/opus-5.5. Eligible pool models ranked by recorded successful and failed outcomes. Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since.\nt3 is waiting for a home runner, claude-code with opus-5.5.\n");
+  assert.doesNotMatch(r.stdout, /Builder:/);
+  assert.match(r.stdout, /t3 is waiting for a home runner/);
 });
 
 

@@ -46,13 +46,9 @@ export const prereviewRequest = (id: number): number => PREREVIEW_REQUEST_BASE +
 export const isPrereviewRequest = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > PREREVIEW_REQUEST_BASE;
 export const prereviewId = (n: number): number => n - PREREVIEW_REQUEST_BASE;
 
-// Retries are bounded: a binding is asked at most this many times. An
-// unavailable result that may clear (retryable) is asked again while the task
-// waits: one with no reviewer yet no sooner than PREREVIEW_RETRY_MS after it,
-// and a runner failure, a timeout or a malformed reply at the next sweep,
-// of another reviewer where one qualifies (askPrereview in src/ledger.ts).
-export const PREREVIEW_ATTEMPTS = 3;
-export const PREREVIEW_RETRY_MS = 5 * 60_000;
+// Nothing asks a pre-review again by itself (G17): `atelier prereview ID
+// --reviewer H/M` asks one, once per call, and `attempts` counts the calls
+// made for the binding (Ledger.requestPrereview).
 
 // The live states (open, claimed), and the settled ones a request ends in.
 export type PrereviewState = "open" | "claimed" | "passed" | "blocked" | "conflict" | "preparation" | "unavailable" | "stale" | "withdrawn";
@@ -245,10 +241,10 @@ export function prereviewRecovery(v: Omit<PrereviewView, "recovery">): string {
       : `rework: the builder addresses the blocking findings; then atelier unblock ${v.item} and atelier land ${v.item} again`;
     case "conflict": return `the landing will meet the same conflict merging main${v.files.length ? ` in ${v.files.join(", ")}` : ""}: resolve it in the workspace, or send it to the builder with atelier dispatch ${v.item} --job merge-main; the queue position stands`;
     case "preparation": return `the merged tree's preparation failed (${v.detail ?? "no detail"}); the landing prepares it again and will stop there if it still fails; the queue position stands`;
-    case "unavailable": return v.attempts < PREREVIEW_ATTEMPTS && v.outcome && retryable(v.outcome)
-      ? `none: no result (${v.outcome}); asked again while the task waits, at most ${PREREVIEW_ATTEMPTS} times, and the landing goes on as normal`
+    case "unavailable": return v.outcome && retryable(v.outcome)
+      ? `none: no result (${v.outcome}); the landing goes on as normal, and atelier prereview ${v.item} --reviewer H/M asks again`
       : `none: no result (${v.outcome ?? "unknown"}); the landing goes on with its normal checks and review`;
-    case "stale": return `none: ${v.detail ?? "its inputs changed"}; it changes nothing, and a new pre-review is asked while the task waits`;
+    case "stale": return `none: ${v.detail ?? "its inputs changed"}; it changes nothing, and atelier prereview ${v.item} --reviewer H/M asks one at the new binding`;
     case "withdrawn": return `none: ${v.detail ?? "the task is no longer an eligible waiter"}`;
   }
 }
@@ -260,7 +256,7 @@ export function prereviewLines(v: PrereviewView): string[] {
   const b = v.binding;
   const short = (sha: string | null, none: string) => sha ? sha.slice(0, 8) : none;
   const lines = [
-    `Pre-review ${v.request}: ${v.state}${v.outcome ? ` (${v.outcome})` : ""}${v.detached ? ", detached from the queue" : ""}; reviewer ${v.reviewer ?? "none yet"}${v.runner ? ` on ${v.runner}` : ""}; attempt ${v.attempts} of ${PREREVIEW_ATTEMPTS}`,
+    `Pre-review ${v.request}: ${v.state}${v.outcome ? ` (${v.outcome})` : ""}${v.detached ? ", detached from the queue" : ""}; reviewer ${v.reviewer ?? "none yet"}${v.runner ? ` on ${v.runner}` : ""}; asked ${v.attempts} time${v.attempts === 1 ? "" : "s"} at this binding`,
     `Binding: head ${short(b.head, "unknown")} merged with main ${short(b.main, "not captured yet")}, tree ${short(b.tree, "not prepared yet")}, criteria ${b.criteria.slice(0, 12)}, contributors ${b.contributors.join(", ") || "none"}`,
   ];
   if (v.verdict) lines.push(`Verdict: ${v.verdict}${v.note ? `: ${v.note}` : ""}`);

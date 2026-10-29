@@ -123,7 +123,8 @@ test("CLI names only an actual released core hold", async () => {
   assert.equal(r.lines[0], "t2: released core-file hold waiting on t1; both scopes reach core pattern src/**.");
   const fresh = await cli({}, { dispatch: prior, suggestion: { actor: "codex/shared", reasons: ["Available."] } });
   assert.equal(fresh.body.suggest, true);
-  assert.equal(fresh.lines[0], "Builder: codex/shared. Available.");
+  // G17: the CLI prints no builder choice; the server names none.
+  assert.ok(!fresh.lines.some((l) => l.startsWith("Builder:")), fresh.lines.join("\n"));
 });
 
 test("CLI reports no released hold when refuseOverlap rejects the dispatch", async () => {

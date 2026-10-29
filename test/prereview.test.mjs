@@ -90,8 +90,9 @@ test("each state says the recovery it calls for", () => {
   assert.match(prereviewRecovery({ ...base, state: "blocked" }), /atelier unblock t2/);
   assert.match(prereviewRecovery({ ...base, state: "blocked", ownerAction: "no runner" }), /^developer action needed: no runner/);
   assert.match(prereviewRecovery({ ...base, state: "conflict", files: ["src/a.ts"] }), /merge-main/);
-  assert.match(prereviewRecovery({ ...base, state: "unavailable", outcome: "timeout" }), /asked again/);
-  assert.match(prereviewRecovery({ ...base, state: "unavailable", outcome: "timeout", attempts: 3 }), /normal checks and review/);
+  // G17: nothing asks again by itself; the recovery names the command.
+  assert.match(prereviewRecovery({ ...base, state: "unavailable", outcome: "timeout" }), /atelier prereview t2 --reviewer H\/M asks again/);
+  assert.match(prereviewRecovery({ ...base, state: "unavailable", outcome: "skipped" }), /normal checks and review/);
   assert.match(prereviewRecovery({ ...base, state: "blocked", detached: true }), /evidence only/);
 });
 

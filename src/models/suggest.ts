@@ -58,6 +58,60 @@ export function ranked(input: { pool: readonly ModelEntry[]; owner?: string; sum
   }).sort((a, b) => b.score - a.score || actorOf(a.entry).localeCompare(actorOf(b.entry)));
 }
 
+// The builders a dispatch could name (G17): every pool model, in the order
+// of its recorded outcomes, with its reliability line and, for one a gate
+// filter refuses, why. Atelier picks none: `atelier dispatch` without a
+// named model prints these and refuses, and the model names one.
+// `constraints.job` is the job the dispatch will carry ("build", the
+// default): the offer check asks runners for that job, as assign() will
+// (claimants). `constraints.to` and `.model` narrow the list as typed.
+export interface Candidate { actor: string; where: string; line: string; refusal: string | null }
+export function builderCandidates(input: SuggestionInput, constraints: { to?: unknown; model?: unknown; job?: unknown } = {}): Candidate[] {
+  const job = typeof constraints.job === "string" && constraints.job !== "build" ? constraints.job as Dispatch["job"] : undefined;
+  const jobText = job ? `the ${job} job` : "a build";
+  // Under single-family mode (t394) only the company's models build. No
+  // keyword of the task's words and no run of stalled builds refuses a model
+  // (G6): those were judgments, and the model names the builder.
+  const single = singleFamily(input.policy);
+  const offeredFor = (entry: ModelEntry) => (input.offers ? offering({ to: entry.where, job }, input.offers) : null);
+  const refusalOf = (entry: ModelEntry): string | null => {
+    const actor = actorOf(entry);
+    const held = standingRefusal(entry, "build");
+    if (held) return held;
+    const offered = offeredFor(entry);
+    if (offered && !claimants({ to: entry.where, job, agent: entry.harness, model: entry.id }, input.offers ?? [])?.length) return `no live runner offers ${actor} for ${jobText} ${entry.where === "home" ? "at home" : "in the cloud"}`;
+    if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
+    if (entry.status?.state === "refused") return "provider refused";
+    if (paidPerToken(entry)) return "per-token spending is not authorized";
+    try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; return e.message; }
+    return null;
+  };
+  const chosen = constraints.model ? String(constraints.model) : null;
+  return ranked(input)
+    .filter(({ entry }) => chosen === null || entry.id === chosen)
+    .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
+    .map(({ entry, reason }) => {
+      const note = latestNote(entry, input.project, input.item.id);
+      return { actor: actorOf(entry), where: entry.where, line: [reason, ...(note ? [noteLine(note)] : [])].join(" "), refusal: refusalOf(entry) };
+    });
+}
+
+// What a refusal for want of a named model says: the eligible candidates,
+// each with its figures, then the ones a gate filter refuses, each with why.
+// One eligible candidate is listed like many: it is a fact, not a choice.
+export function candidatesText(what: string, candidates: readonly Candidate[]): string {
+  const eligible = candidates.filter((c) => !c.refusal), refused = candidates.filter((c) => c.refusal);
+  return [
+    `${what}, and Atelier picks none.`,
+    eligible.length ? `Eligible (${eligible.length}):` : "No model in the pool is eligible.",
+    ...eligible.map((c) => `  ${c.actor} (${c.where}): ${c.line}`),
+    ...(refused.length ? ["Refused:", ...refused.map((c) => `  ${c.actor}: ${c.refusal}`)] : []),
+  ].join("\n");
+}
+
+// suggestBuilder is called by no route since G17: the server picks no
+// builder (builderCandidates above lists them). It stays for the model tests
+// and the skipped Workers specs, which task 7 rewrites or removes with it.
 // `constraints.job` is the job the dispatch will carry ("build", the
 // default, for a plain build): the offer check asks runners for that job,
 // as assign() will (claimants), so a suggestion is never a model no runner

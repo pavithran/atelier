@@ -53,7 +53,7 @@ import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesPro
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
-  PREREVIEW_ATTEMPTS, PREREVIEW_DEPTH, PREREVIEW_JOB, PREREVIEW_RETRY_MS,
+  PREREVIEW_DEPTH, PREREVIEW_JOB,
   type OutcomeNote, type PrereviewBinding, type PrereviewClaim, type PrereviewFence, type PrereviewOutcome, type PrereviewState, type PrereviewView,
 } from "./dispatch/prereview.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -87,11 +87,10 @@ import { modeLineWithOwed } from "./review/owed.ts";
 import { dropTasks, type ProviderPause } from "./runners/memory.ts";
 import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
-import type { ReviewerRecords, SuggestionRecords } from "./models/suggest.ts";
+import { candidatesText, ranked, summarize, type Candidate, type ReviewerRecords, type SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
-import { suggestReviewer } from "./review/suggest.ts";
 import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
-import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
+import { buildPrecision, precisionLine, precisionOf, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import {
   attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, CRITERIA_SKIPPED_FAST, familyDeadlock, lapsedClaim,
@@ -5440,77 +5439,65 @@ export class Ledger extends DurableObject<Env> {
       const drift = this.prereviewDrift(row);
       if (drift) this.settlePrereview(row, "stale", { outcome: "stale", detail: drift }, ORCHESTRATOR, at);
     }
-    const candidates = prereviewCandidates(lease, leaseLive, queue, now.getTime());
-    if (!candidates.length || !pool || !live) return;
-    // Pre-review needs a runner that advertises it and serves this project
-    // (servesProject, t652). Where no live runner does, it is off: nothing
-    // is asked and nothing is recorded.
-    if (!live.some((o) => servesProject(o) && (o.jobs ?? []).includes(PREREVIEW_JOB))) return;
-    for (const w of candidates) this.askPrereview(w.item, pool, live, at);
+    // Nothing is asked here (G17): a pre-review runs when the model asks it,
+    // atelier prereview ID --reviewer H/M (requestPrereview).
+    void pool;
   }
 
-  // Asks one waiter's pre-review, once per binding. A binding already asked
-  // is asked again only when its last request was withdrawn, went stale, or
-  // ended unavailable for a reason that may clear, once its retryAt has
-  // passed (PREREVIEW_RETRY_MS after a no-reviewer result, at once after a
-  // timeout, a malformed reply or a runner failure), and never more than
-  // PREREVIEW_ATTEMPTS times in all.
-  private askPrereview(id: string, pool: readonly ModelEntry[], live: readonly SeenOffer[], at: string): void {
-    if (this.prereviewFence(id)) return;
-    const item = this.item(id);
-    if (!item.head || item.state === "merged" || item.state === "abandoned") return;
-    // A gate review asked of the task is never displaced: its reviewer goes
-    // first, and no pre-review is asked beside it.
-    if (this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND tier IS NULL LIMIT 1`, id).toArray().length) return;
-    const binding = this.prereviewBinding(item);
-    const key = bindingKey(id, binding);
-    // Derive keys through the same helper for historical rows too: older
-    // stored keys did not include main, though their bindings captured it.
-    const earlier = this.sql.exec(`SELECT * FROM prereviews WHERE item = ? ORDER BY id`, id).toArray()
-      .filter((r) => bindingKey(id, JSON.parse(r.binding as string) as PrereviewBinding) === key);
-    const last = earlier.at(-1);
-    if (last) {
-      const outcome = (last.result ? (JSON.parse(last.result as string) as { outcome?: PrereviewOutcome }).outcome : undefined) ?? null;
-      const again = last.state === "withdrawn" || last.state === "stale" || (last.state === "unavailable" && !!outcome && retryable(outcome));
-      if (!again || (last.attempts as number) >= PREREVIEW_ATTEMPTS) return;
-      if (last.retryAt && Date.parse(last.retryAt as string) > Date.parse(at)) return;
-    }
-    const attempts = last ? (last.attempts as number) + 1 : 1;
-    const avoid = earlier.filter((r) => r.claimedBy && r.state === "unavailable").map((r) => ({ actor: r.claimedBy as string, reason: "it failed an earlier pre-review of this binding" }));
-    // A reviewer that failed this binding before is passed over while another
-    // qualifies, and asked again when none does.
-    const preferred = this.pickPrereviewer(item, pool, live, at, avoid);
-    const pick = preferred.entry || !avoid.length ? preferred : this.pickPrereviewer(item, pool, live, at, []);
-    if (!pick.entry) {
-      const made = this.sql.exec(`INSERT INTO prereviews (item, bindingKey, binding, dispatch, state, attempts, retryAt, result, at, settledAt) VALUES (?, ?, ?, NULL, 'unavailable', ?, ?, ?, ?, ?) RETURNING id`,
-        id, key, JSON.stringify(binding), attempts, new Date(Date.parse(at) + PREREVIEW_RETRY_MS).toISOString(), JSON.stringify({ outcome: "no-reviewer", detail: pick.why }), at, at).one();
-      this.log(id, ORCHESTRATOR, "prereview.unavailable", { request: prereviewRequest(made.id as number), head: binding.head, outcome: "no-reviewer", detail: pick.why, attempts }, at);
-      return;
-    }
-    const e = pick.entry;
-    const dispatch: Dispatch = { ...this.standingDispatch({ to: e.where, agent: e.harness, model: e.id }, "review", ORCHESTRATOR, at, pool), job: "prereview" };
-    const made = this.sql.exec(`INSERT INTO prereviews (item, bindingKey, binding, dispatch, state, attempts, at) VALUES (?, ?, ?, ?, 'open', ?, ?) RETURNING id`,
-      id, key, JSON.stringify(binding), JSON.stringify(dispatch), attempts, at).one();
-    this.log(id, ORCHESTRATOR, "prereview.requested", { request: prereviewRequest(made.id as number), head: binding.head, reviewer: `${e.harness}/${e.id}`, criteria: binding.criteria, contributors: binding.contributors, generation: binding.generation, attempts, reason: pick.reasons.join(" ") }, at);
-  }
-
-  // The reviewer, chosen as a gate reviewer is (pickReviewer: contributors,
-  // family, single-family mode, the pool's admitted models), from the models
-  // a live runner offers the pre-review job for.
-  private pickPrereviewer(item: Item, pool: readonly ModelEntry[], live: readonly SeenOffer[], at: string, avoid: { actor: string; reason: string }[]): { entry: ModelEntry | null; why: string; reasons: string[] } {
-    const offered = pool.filter((m) => {
-      try {
-        const d: Dispatch = { ...this.standingDispatch({ to: m.where, agent: m.harness, model: m.id }, "review", ORCHESTRATOR, at, pool), job: "prereview" };
-        return live.some((o) => assign(d, o));
-      } catch { return false; }
+  // `atelier prereview ID --reviewer H/M` (G17): the queued-landing
+  // pre-review, asked once per call, of the reviewer the model names; the
+  // server asks none by itself. The task waits in the landing queue and does
+  // not hold the lease; no fence of a blocking pre-review stands; no gate
+  // review is asked of it (that goes first); no pre-review of the same
+  // binding is live. The reviewer passes the gate filters a review's does
+  // (reviewerCandidates: a contributor, a family match, standing, policy) and
+  // a live runner offers it the prereview job. Without a reviewer, or with a
+  // refused one, it refuses naming the candidates. A blocking verdict fences
+  // the landing as before (prereviewVerdict, the binding-drift gate).
+  async requestPrereview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], offers: SeenOffer[], records?: ReviewerRecords & { project: string }): Promise<{ request: number; reviewer: string; head: string; attempts: number }> {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks a pre-review", 403, `only the developer can: atelier prereview ${id} --reviewer H/M`);
+    offers = this.ownOffers(offers);
+    this.keepOffers(offers);
+    // Main as the baseline holds it now, which the request is bound to.
+    try {
+      using repo = await this.env.ARTIFACTS.get(this.project().repo);
+      const [top] = await repo.log({ limit: 1 });
+      if (top && /^[a-f0-9]{40,64}$/.test(top.hash)) this.setMainHead(top.hash, new Date().toISOString());
+    } catch { /* claims and verdicts revalidate main */ }
+    return this.ctx.storage.transactionSync(() => {
+      const at = new Date().toISOString();
+      const item = this.item(id);
+      if (!item.head || item.state === "merged" || item.state === "abandoned") throw new RuleError("not_queued", `${id} has no head to pre-review, or is closed`, 409, `run atelier show ${id}`);
+      const lease = this.projectLanding();
+      if (lease && lease.item === id && this.landingLive(lease, at)) throw new RuleError("not_queued", `${id} holds the landing lease: its landing reviews it now, so there is nothing to pre-review`, 409, `run atelier land ${id} --queue --status`);
+      if (!this.projectLandingQueue().some((w) => w.item === id)) throw new RuleError("not_queued", `${id} is not waiting in the landing queue; a pre-review reviews a queued landing`, 409, `run atelier land ${id} --queue, then atelier prereview ${id} --reviewer H/M`);
+      const fence = this.prereviewFence(id);
+      if (fence) throw new RuleError("prereview_fenced", fenceText(id, fence), 409, `address the findings, then run atelier unblock ${id}`);
+      if (this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND tier IS NULL LIMIT 1`, id).toArray().length) {
+        throw new RuleError("review_requested", `a gate review of ${id} is asked, and it goes first; no pre-review is asked beside it`, 409, `wait for its verdict: atelier show ${id}`);
+      }
+      const binding = this.prereviewBinding(item);
+      const key = bindingKey(id, binding);
+      const earlier = this.sql.exec(`SELECT * FROM prereviews WHERE item = ? ORDER BY id`, id).toArray()
+        .filter((r) => bindingKey(id, JSON.parse(r.binding as string) as PrereviewBinding) === key);
+      const pending = earlier.find((r) => r.state === "open" || r.state === "claimed");
+      if (pending) throw new RuleError("prereview_pending", `pre-review ${prereviewRequest(pending.id as number)} of ${id} at this head is ${pending.state as string}; one at a time`, 409, `wait for its verdict: atelier show ${id}`);
+      const candidates = this.reviewerCandidates(item, pool, offers, records, PREREVIEW_JOB, false, (e) => e.where, [], [], at);
+      const first = candidates.find((c) => !c.refusal);
+      const candidatesNext = first ? `name one: atelier prereview ${id} --reviewer ${first.actor}, or another of the eligible` : `start a runner that offers the prereview job, then atelier prereview ${id} --reviewer H/M`;
+      if (reviewer === null) throw new RuleError("reviewer_needed", candidatesText(`${id}'s pre-review names no reviewer`, candidates), 409, candidatesNext);
+      const named = candidates.find((c) => c.actor === reviewer) ?? candidates.find((c) => sameActor(c.actor, reviewer));
+      if (!named) throw new RuleError("ineligible", `${reviewer} is not a model in the pool`, 409, candidatesNext);
+      if (named.refusal) throw new RuleError("prereview_refused", `${named.actor} cannot pre-review ${id}: ${named.refusal}\n${candidatesText(`Its other candidates`, candidates)}`, 409, candidatesNext);
+      const e = exactEntry(pool, named.actor)!;
+      const attempts = earlier.length + 1;
+      const dispatch: Dispatch = { ...this.standingDispatch({ to: e.where, agent: e.harness, model: e.id }, "review", ORCHESTRATOR, at, pool), job: "prereview" };
+      const made = this.sql.exec(`INSERT INTO prereviews (item, bindingKey, binding, dispatch, state, attempts, at) VALUES (?, ?, ?, ?, 'open', ?, ?) RETURNING id`,
+        id, key, JSON.stringify(binding), JSON.stringify(dispatch), attempts, at).one();
+      const request = prereviewRequest(made.id as number);
+      this.log(id, actor, "prereview.requested", { request, head: binding.head, reviewer: named.actor, criteria: binding.criteria, contributors: binding.contributors, generation: binding.generation, attempts, reason: "Named by the developer" }, at);
+      return { request, reviewer: named.actor, head: binding.head, attempts };
     });
-    // The selector runs whether or not any model is offered, so a failure
-    // says what became of the review assignments too (gpt-6-astra's
-    // nineteenth review of t622, finding 3).
-    const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item, null, null) });
-    if (!offered.length) return { entry: null, why: [`no model in the pool is offered for the ${PREREVIEW_JOB} job by a live runner`, ...(pick.assignment?.lines ?? [])].join(" "), reasons: [] };
-    const entry = pick.reviewer ? exactEntry(offered, pick.reviewer.actor) ?? null : null;
-    return entry ? { entry, why: "", reasons: pick.reviewer!.reasons } : { entry: null, why: pick.unpicked ?? "no model qualifies", reasons: [] };
   }
 
   private prereviewBinding(item: Item): PrereviewBinding {
@@ -8726,37 +8713,14 @@ export class Ledger extends DurableObject<Env> {
       // bearing on the change is named as skipped for it (gpt-6-astra's
       // seventh review of t622, finding 2).
       choiceReason = ["Named by the developer", ...aheadOfAssignments(this.reviewAssigned(item, null, need.changedPaths), "the developer's named reviewer").lines].join(" ");
-    } else if (records) {
-      // The suggestion asks the previous round's reviewer and, for a
-      // protected change, the review tier first, as the pool pick below does.
-      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, sameFamilyOk: item.state === "merged" && this.mergedFast(id), pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, counted: need.counted, tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined, assigned: this.reviewAssigned(item, null, need.changedPaths), offers, destination },
-        need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
-      chosen = pick.actor;
-      choiceReason = pick.reasons.join(" ");
     } else {
-      const pick = pickReviewer({
-        item, pool, policy, allowPaid: false,
-        sameFamilyOk: item.state === "merged" && this.mergedFast(id),
-        previous: need.previousReviewer,
-        // A protected change's review goes to the tier first, so one review
-        // serves the gate and the tier (src/review/tier.ts).
-        tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
-        avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
-        counted: need.counted,
-        owner: this.owner,
-        precision: this.reviewPrecision(at),
-        assigned: this.reviewAssigned(item, null, need.changedPaths),
-        offers, destination,
-      });
-      if (!pick.reviewer) {
-        const single = singleFamily(policy);
-        throw new RuleError("no_reviewer", `${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} is in the pool: ${pick.unpicked}. Name one with atelier land ID --reviewer H/M, or add a model with atelier models add`, 409);
-      }
-      chosen = pick.reviewer.actor;
-      // The selector's reasons, its assignment's included, as the
-      // suggestion's are kept (gpt-6-astra's second review, follow-up).
-      choiceReason = pick.reviewer.reasons.join(" ");
+      // No reviewer named (G17): the server picks none. It lists every pool
+      // model with its reliability and precision figures, and each a gate
+      // filter refuses (a contributor, a family match, a lapsed claim, the
+      // developer's standing, no live offer) with why, and refuses.
+      const candidates = this.reviewerCandidates(item, pool, offers, records, "review", hand, destination, need.lapsed, need.counted, at);
+      const first = candidates.find((c) => !c.refusal);
+      throw new RuleError("reviewer_needed", candidatesText(`${id}'s review at ${need.head.slice(0, 8)} names no reviewer`, candidates), 409, first ? `name one: atelier review-request ${id} --reviewer ${first.actor}, or another of the eligible` : `add a model with atelier models add, then atelier review-request ${id} --reviewer H/M`);
     }
     const slash = chosen.indexOf("/");
     // The entry chosen, as the one check finds it (reviewTarget), so its
@@ -8777,6 +8741,43 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved, pool, offers);
     return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number, ...(withdrew.length ? { withdrew } : {}) };
+  }
+
+  // The reviewers a review or a pre-review could name (G17), every pool model
+  // in the order of its recorded outcomes, with its figures (reliability
+  // from `records`, the summary the route read, and review precision) and,
+  // for one a gate filter refuses, why: a contributor, a family match (or
+  // the same model under single-family mode), the developer's standing, the
+  // project's policy, a lapsed claim on this head, an approval that already
+  // counts, or no live runner offering the job (waived by `hand`).
+  private reviewerCandidates(item: Item, pool: readonly ModelEntry[], offers: readonly SeenOffer[] | undefined, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, job: "review" | "prereview", hand: boolean, destination: (e: ModelEntry) => "home" | "cloud", lapsed: readonly string[] = [], counted: readonly string[] = [], at = new Date().toISOString()): Candidate[] {
+    const policy = this.project().policy, single = singleFamily(policy), contributors = contributorsOf(item);
+    const summary = records ? ("summary" in records ? records.summary : summarize(records, this.owner)) : null;
+    const order = summary ? ranked({ pool, summary }) : pool.map((entry) => ({ entry, score: 0, reason: "no reliability figures were read" }));
+    const precision = this.reviewPrecision(at);
+    const live = liveOffers(offers ?? []);
+    return order.map(({ entry, reason }) => {
+      const actor = `${entry.harness}/${entry.id}`;
+      const names = [entry.id, ...entry.aliases].map((n) => `${entry.harness}/${n}`);
+      const refusal = ((): string | null => {
+        if (contributed(actor, contributors)) return `it contributed to ${item.id}`;
+        const family = item.state === "merged" ? postMergeIndependence(actor, contributors, single, this.mergedFast(item.id)).refusal : independenceRefusal(actor, contributors, single);
+        if (family) return family;
+        const standing = actorStanding(pool, actor, "review");
+        if (standing) return standing;
+        if (!mayAssess(actor, policy, this.owner)) return "it may not review under the project's policy";
+        if (lapsed.some((a) => sameActor(a, actor))) return "its claim on a review of this head lapsed";
+        if (counted.some((a) => sameActor(a, actor))) return "its approval of this head already counts";
+        if (!hand) {
+          try {
+            const d: Dispatch = { ...this.standingDispatch({ to: destination(entry), agent: entry.harness, model: entry.id }, "review", ORCHESTRATOR, at, pool), job };
+            if (!live.some((o) => assign(d, o))) return `no live runner offers the ${job} job for ${actor}`;
+          } catch (err) { return err instanceof RuleError ? err.detail : String(err); }
+        }
+        return null;
+      })();
+      return { actor, where: destination(entry), line: `${reason} ${precisionLine(precisionOf(precision, names), precision.window)}`, refusal };
+    });
   }
 
   // When the newest review.requested event for a head was recorded, so a

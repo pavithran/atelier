@@ -107,10 +107,9 @@ test("a review request is bound to its reviewer only by bindReview, which judges
   passes("claimReview", "this.bindReview(");
   // Every place a request is made, open for a claim; a new one is listed
   // here once it is shown to ask only a reviewer the mode allows, or to
-  // leave the company to the bind. repointReview asks the reviewer that
-  // pickReviewer (repointPick) chose under the mode.
+  // leave the company to the bind. (The tick's repointReview went with G6.)
   assert.deepEqual([...new Set(sites(/INSERT INTO review_requests/))].sort(), [
-    "askReview", "askTierReview", "reaskForCriteria", "reaskReview", "replaceReviewClaim", "repointReview", "reviewTick",
+    "askReview", "askTierReview", "reaskForCriteria", "reaskReview", "replaceReviewClaim", "reviewTick",
   ], "a new path makes a review request; list it here once its reviewer is checked for the mode");
   passes("reaskForCriteria", "companyRefusal(");
   passes("reaskReview", "companyRefusal(");

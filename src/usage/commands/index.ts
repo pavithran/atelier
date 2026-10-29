@@ -56,6 +56,7 @@ import command_open from "./open.ts";
 import command_ops from "./ops.ts";
 import command_owners from "./owners.ts";
 import command_plan from "./plan.ts";
+import command_prereview from "./prereview.ts";
 import command_projects from "./projects.ts";
 import command_pull from "./pull.ts";
 import command_push from "./push.ts";
@@ -155,6 +156,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/ops.ts", spec: command_ops },
   { path: "src/usage/commands/owners.ts", spec: command_owners },
   { path: "src/usage/commands/plan.ts", spec: command_plan },
+  { path: "src/usage/commands/prereview.ts", spec: command_prereview },
   { path: "src/usage/commands/projects.ts", spec: command_projects },
   { path: "src/usage/commands/pull.ts", spec: command_pull },
   { path: "src/usage/commands/push.ts", spec: command_push },

@@ -1,5 +1,6 @@
-// The ledger calls reviewer suggestion here so model ranking does not depend
-// on review execution or independence rules.
+// Reviewer suggestion, called by no route since G17: a review request without
+// a named reviewer lists the candidates and refuses (Ledger.reviewerCandidates).
+// It stays for the model tests until task 7 rewrites them.
 import { RuleError } from "../rules.ts";
 import { latestNote, noteLine } from "../models/pool.ts";
 import { frontier, precisionOfSummary, ranked, summarize, type RecordSummary, type SuggestionInput } from "../models/suggest.ts";
