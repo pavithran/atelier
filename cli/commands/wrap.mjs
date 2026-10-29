@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { checkLimits, stopLine, stopOf } from "../../src/check-limit.ts";
-import { OWNER, P, actor, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
+import { OWNER, P, actor, apiToken, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 import { pushCheckoutRemote } from "../checkout-push.mjs";
 import { guardedPush, privateChanges, privateGuardFor, remoteBases } from "../private-guard.mjs";
@@ -164,12 +164,7 @@ export default async function wrapCommand() {
   data.head = git(["rev-parse", "HEAD"], { cwd });
   const note = await call("POST", `${P(name)}/sessions`, cleanSession(data), as);
   console.log(sessionNoteText(note));
-  // On the Node server the project's repository is the baseline, which only
-  // a landing moves (Atelier 2.0, tasks 6 and 11): wrap publishes nothing
-  // there and says how the checkout stands against it.
-  const { head: serverHead, repository } = await call("GET", `${P(name)}/baseline-head`, undefined, OWNER);
-  if (repository === "server") console.log(serverBaselineText(name, cfg.projects[name].branch, serverHead, cwd));
-  else if (cfg.projects[name].fresh === true) await syncCommand();
+  if (cfg.projects[name].fresh === true) await syncCommand();
   else await publishBaseline();
   console.log("Nothing deployed or published as a release.");
   console.log(FILING_RELAY);
@@ -200,6 +195,13 @@ async function publishBaseline() {
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
   if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
   const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+  // On the Node server the project's repository is the baseline, which only
+  // a landing moves (Atelier 2.0, tasks 6 and 11): wrap publishes nothing
+  // there and says how the checkout stands against it.
+  if (t.repository === "server") {
+    const listed = git(["ls-remote", t.remote, `refs/heads/${p.branch}`], { cwd: p.path, token: apiToken(), hooks: false, allowFail: true });
+    return console.log(serverBaselineText(name, p.branch, /^([0-9a-f]{40,64})\s/.exec(listed.stdout ?? "")?.[1] ?? null, p.path));
+  }
   // Another checkout may have moved the baseline on (t644): the push would be
   // refused as a non-fast-forward, so wrap refuses first and names pull.
   // A baseline without the branch yet takes the first push as it is.

@@ -2473,8 +2473,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
   }
   // `repository: "server"` on the Node server, where the project's
-  // repository is the baseline and only a landing moves its branch: sync,
-  // wrap and ship read it (Atelier 2.0, task 11).
+  // repository is the baseline and only a landing moves its branch: ship
+  // reads it (Atelier 2.0, task 11).
   if (parts[2] === "baseline-head" && parts.length === 3 && m === "GET") {
     return json({ head: await headOf(env, (await L.project()).repo), ...(gitHost(env) ? { repository: "server" } : {}) });
   }
@@ -2595,8 +2595,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // On the Node server a read is a read grant; the developer writes the
     // project's branch with the server token itself (docs/branches.md).
     const git = gitHost(env);
-    if (git && scope === "read") return json(await gitRead(c, git, ref.key, project, actor, await projectBranch(env, p)));
-    if (git) return json({ remote: gitRemote(c, project), token: null, defaultBranch: await projectBranch(env, p) });
+    // `repository: "server"` says the repository is the baseline, which only
+    // a landing moves: sync and wrap read it (Atelier 2.0, task 11).
+    if (git && scope === "read") return json({ ...(await gitRead(c, git, ref.key, project, actor, await projectBranch(env, p))), repository: "server" });
+    if (git) return json({ remote: gitRemote(c, project), token: null, defaultBranch: await projectBranch(env, p), repository: "server" });
     return json(await mintFor(c, p.repo, scope, await projectBranch(env, p)));
   }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
