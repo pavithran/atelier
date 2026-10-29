@@ -87,7 +87,7 @@ test("criterion 1: a dispatch no live runner offers stays queued on its model an
   assert.deepEqual(await events(id, "stage.told"), []);
 
   // Edge: a runner that offers the model comes up later and takes the dispatch.
-  const runnerToken = (await api("POST", "/tokens", { runner: "home:studio", projects: ["demo"] })).body.token;
+  const runnerToken = (await api("POST", "/tokens", { runner: "home:ticks-a", projects: ["demo"] })).body.token;
   const stub = join(root, "stub-harness.mjs");
   writeFileSync(stub, `import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -100,7 +100,7 @@ execFileSync("git", ["commit", "-q", "-m", "build: the stub's change"], { cwd: w
 `);
   const runnerConfig = join(root, "runner.json");
   writeFileSync(runnerConfig, JSON.stringify({ agents: [{ agent: "opencode", models: ["glm-5.3"], command: [process.execPath, stub, "{workspace}", "{model}", "{brief_file}"] }] }));
-  const ran = await cli(["runner", "--name", "home:studio", "--config", runnerConfig, "--once"], { token: runnerToken });
+  const ran = await cli(["runner", "--name", "home:ticks-a", "--config", runnerConfig, "--once"], { token: runnerToken });
   assert.equal(ran.code, 0, said(ran));
   const taken = await L().item(id);
   assert.equal(taken.state, "submitted", said(ran));

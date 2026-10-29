@@ -771,10 +771,8 @@ starts several of them at once and keeps the order.
   not ended after 30 seconds, or a second signal, is killed. A lease nobody
   renews is treated as free by the server after 15 minutes; `atelier land ID
   --release-lease` frees one at once, and only the developer should.
-- **What a wave refuses.** `--workflow`, `--release-lease` and `--post-merge`
-  act on one task, so with several the command refuses them before any
-  request. A landing that runs as a Cloudflare Workflow (`--workflow`) is
-  not pooled, because stopping its client does not stop it.
+- **What a wave refuses.** `--release-lease` and `--post-merge` act on one
+  task, so with several the command refuses them before any request.
 
 Wait for a landing started elsewhere with `atelier wait tN --project atelier
 --for merged`. For a runner's build use `--for submitted`, for an agent's
@@ -847,7 +845,7 @@ two landings queued behind it (t524; `src/dispatch/prereview.ts`), so a
 defect is found before a task's turn rather than after it spends the lease.
 This replaces the orchestrator's hand-run `prereview.brief`. Every ask of the
 landing queue, by an `atelier land` (every landing queues, `--wait` or
-not) or a landing Workflow, and every
+not), and every
 renewal of the lease asks what is missing: one request per waiter and
 binding (its recorded head, the criteria binding, its contributors, main's
 actual SHA and how many merges main has had), never a second for the same
@@ -893,7 +891,7 @@ approval that names one, is a malformed reply, however it was posted.
 | Result | What it does | Next step |
 | --- | --- | --- |
 | pass | Nothing: the task keeps its place | None |
-| blocking findings | The task leaves the queue and its landing is fenced (`prereview_blocked`, for the CLI and the Workflow alike). The builder and head stay; a runner's builder gets the claim back with the findings in its rework brief | Once they are fixed, `atelier unblock tN`, then `atelier land tN` again |
+| blocking findings | The task leaves the queue and its landing is fenced (`prereview_blocked`). The builder and head stay; a runner's builder gets the claim back with the findings in its rework brief | Once they are fixed, `atelier unblock tN`, then `atelier land tN` again |
 | blocking, builder unavailable | As above, but the inbox says developer action is needed | Hand the task over (`atelier handoff`) or dispatch it, then unblock |
 | conflict, preparation failed | Recorded apart from a result; the task keeps its place | The landing will meet the same conflict or failure: resolve it ahead |
 | unavailable (no reviewer, skipped, timed out, malformed reply, runner failure) | Nothing: the task keeps its place and lands normally | None; it is tried at most three times in all, and after no reviewer qualified, not again for five minutes |
@@ -915,7 +913,6 @@ waiting row's newest `prereview`.
 | `main moved under the lease N times` | Other landings kept merging first; the task stays submitted | Run the same command once main settles |
 | `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then land the task again |
 | `Starting no more landings: …` | A failed landing left post-merge work open, so a wave starts nothing more | `atelier land tN --post-merge status`, resolve it, then run the same command |
-| `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Land the task again: the next landing starts a fresh run |
 | `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head | Run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
 | `STOP … npm test @ SHA` | The check was stopped at the project's check limit, counted from its held test slot: silent for N minutes, or timed out at the hard ceiling. Not a failed test | Read the limit with `atelier show ID`; raise it with `atelier init --check-limit MINUTES --silence-limit MINUTES` (or `--check-silence CMD=MINUTES` for a check silent by design) if the run was progressing, and land it again. A build blocked by it is a timeout fact: lift it with `atelier unblock ID`, no developer's words needed |
 

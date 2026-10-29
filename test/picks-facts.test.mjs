@@ -108,7 +108,7 @@ test("criteria 2 and 3: review-request with no reviewer says why no review is ne
   assert.notEqual(early.code, 0);
   assert.match(said(early), new RegExp(`${id} needs no review now: .+\\. To ask one all the same, name the reviewer`));
   // The runner builds it, as opencode/glm-5.3.
-  const runnerToken = (await api("POST", "/tokens", { runner: "home:studio", projects: ["demo"] })).body.token;
+  const runnerToken = (await api("POST", "/tokens", { runner: "home:picks-a", projects: ["demo"] })).body.token;
   const stub = join(root, "stub-harness.mjs");
   writeFileSync(stub, `import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -121,7 +121,7 @@ execFileSync("git", ["commit", "-q", "-m", "build: the stub's change"], { cwd: w
 `);
   const runnerConfig = join(root, "runner.json");
   writeFileSync(runnerConfig, JSON.stringify({ agents: [{ agent: "opencode", models: ["glm-5.3"], command: [process.execPath, stub, "{workspace}", "{model}", "{brief_file}"] }] }));
-  const ran = await cli(["runner", "--name", "home:studio", "--config", runnerConfig, "--once"], { token: runnerToken });
+  const ran = await cli(["runner", "--name", "home:picks-a", "--config", runnerConfig, "--once"], { token: runnerToken });
   assert.equal(ran.code, 0, said(ran));
   assert.equal((await L().item(id)).state, "submitted", said(ran));
   // A live runner offers codex/gpt-6 the review job.
@@ -152,8 +152,8 @@ test("criterion 4: prereview runs once per call, of the reviewer named; nothing 
   const waiting = await newTask("Waits behind it");
   // The waiting task needs a head: the developer's own commit on its branch.
   assert.equal((await api("POST", `/projects/demo/items/${waiting}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3" })).status, 200);
-  const runnerToken = (await api("POST", "/tokens", { runner: "home:studio2", projects: ["demo"] })).body.token;
-  const ran = await cli(["runner", "--name", "home:studio2", "--config", join(root, "runner.json"), "--once"], { token: runnerToken });
+  const runnerToken = (await api("POST", "/tokens", { runner: "home:picks-b", projects: ["demo"] })).body.token;
+  const ran = await cli(["runner", "--name", "home:picks-b", "--config", join(root, "runner.json"), "--once"], { token: runnerToken });
   assert.equal(ran.code, 0, said(ran));
   assert.ok((await L().item(waiting)).head, said(ran));
   // One landing holds the lease; the other waits in the queue. A live runner

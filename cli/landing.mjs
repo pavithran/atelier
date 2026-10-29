@@ -13,9 +13,9 @@ export const LAND_UNPUSHED = 'atelier.land-unpushed';
 // The landing's push (G2, design section 4.7): the merge commit to the
 // project's branch, one ref and nothing else, which the hook's rule 4 checks
 // (a merge whose first parent is the branch's tip and whose parents include
-// the accepted head). It carries the credential the merge fetched with, the
-// developer's today; task 6 swaps in a landing grant minted to the holder of
-// the landing lease, here and nowhere else. Answers Git's result: a refusal
+// the accepted head). On the Node server `token` is a landing grant minted to
+// the holder of the landing lease for the task at its accepted head (task 6);
+// elsewhere, the baseline's write token. Answers Git's result: a refusal
 // (main moved, so it is not a fast-forward) is the caller's to read.
 export function pushMergeToProjectBranch({ git, cwd, remote, token, commit, branch }) {
   return git(['push', '--quiet', remote, `${commit}:refs/heads/${branch}`], { cwd, token, allowFail: true });

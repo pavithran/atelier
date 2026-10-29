@@ -3,9 +3,9 @@
 // Ledger Durable Objects as SQLite files under the environment's data
 // directory (src/runtime/namespace.mjs). Artifacts reads the bare
 // repositories and `large` is files (src/git/artifacts.mjs, large.mjs); the
-// Artifacts writes and the landing Workflow refuse with `not_supported`
-// until the tasks that replace them land. The Worker's crons are timers here
-// and its push queue the post-receive hook's POST (task 8).
+// Artifacts writes refuse with `not_supported` until the tasks that replace
+// them land. The landing Workflow is gone (task 6). The Worker's crons are
+// timers here and its push queue the post-receive hook's POST (task 8).
 //
 // Settings come from three places, later ones winning: defaults for the
 // environment, the process environment (only the names in SETTINGS), and a
@@ -17,7 +17,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
-import { Namespace, notSupported } from "./namespace.mjs";
+import { Namespace } from "./namespace.mjs";
 import { GitHost, INTERNAL_ROUTES } from "../git/host.mjs";
 import { Timers, realClock } from "./timers.mjs";
 import { ledgerLocks } from "./ledger-locks.mjs";
@@ -31,16 +31,6 @@ export const SETTINGS = [
   "USAGE_WINDOW_PERCENT", "USAGE_WEEKLY_PERCENT", "USAGE_DAILY_SPEND", "USAGE_BALANCE_FLOOR",
 ];
 const NAME = /^[A-Z][A-Z0-9_]*$/;
-
-// A binding the Node server does not provide yet: every method refuses.
-function unsupported(binding) {
-  return new Proxy({}, {
-    get(_, prop) {
-      if (typeof prop !== "string" || prop === "then") return undefined;
-      return async () => { throw notSupported(`${binding}.${prop}`); };
-    },
-  });
-}
 
 export function readSecrets(dir) {
   const out = {};
@@ -113,7 +103,7 @@ async function send(res, response, head) {
 // Starts a server for one environment. dataDir: where its Ledgers live
 // (created mode 700). Resolves once it listens, to { url, port, env,
 // namespace, close }.
-// `bindings` replaces the refusing ARTIFACTS, LARGE or LANDING_WORKFLOW with a
+// `bindings` replaces ARTIFACTS or LARGE with a
 // test's own until the tasks that replace them land.
 // reposDir holds the bare repositories (default DATA/repos), hooksDir the
 // hooks they name (default the checkout's hooks/).
@@ -131,7 +121,7 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   globalThis.caches ??= { default: { match: async () => undefined, put: async () => undefined, delete: async () => false } };
   const repos = resolve(reposDir ?? join(dir, "repos"));
   const artifacts = new LocalArtifacts({ reposDir: repos });
-  const bindings = { ARTIFACTS: artifacts, LARGE: new LocalLarge(join(dir, "large")), LANDING_WORKFLOW: unsupported("LANDING_WORKFLOW"), ...given };
+  const bindings = { ARTIFACTS: artifacts, LARGE: new LocalLarge(join(dir, "large")), ...given };
   const workerEnv = {};
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
   const git = new GitHost({ dataDir: dir, reposDir: repos, hooksDir, namespace, settings: workerEnv });

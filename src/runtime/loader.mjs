@@ -1,7 +1,7 @@
 // The module hooks that let Node load the server's sources as written for
 // the Workers runtime (Atelier 2.0, task 1; design-branches-2026-10-28.md,
-// section 4.2): `cloudflare:workers` and `cloudflare:workflows` resolve to
-// the Node shims beside this file, a relative import without an extension
+// section 4.2): `cloudflare:workers` resolves to the Node shim beside this
+// file, a relative import without an extension
 // finds its `.ts` file as the Workers bundler found it, and a `.css` file
 // loads as its text, as wrangler's Text rule loaded it. Registered once per
 // process by `register()`; registering again does nothing.
@@ -11,7 +11,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SHIMS = {
   "cloudflare:workers": new URL("./workers.mjs", import.meta.url).href,
-  "cloudflare:workflows": new URL("./workers.mjs", import.meta.url).href,
 };
 
 let registered = false;

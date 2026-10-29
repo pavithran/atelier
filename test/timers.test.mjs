@@ -178,6 +178,44 @@ test("across a server restart the index Ledger keeps each job's last moment, so 
   } finally { await b.close(); }
 });
 
+// Task 12 beside task 8: a backup taken while the timers write. Each Ledger
+// call commits as one transaction and each copy is SQLite's own VACUUM INTO,
+// one read transaction per file, so no copy holds half a tick; across files
+// the index (with each job's last moment) is copied first, and a tick a
+// later-copied Ledger lacks is recorded again by the next tick, which
+// recomputes its facts.
+test("a backup taken while the timers tick restores whole: every database passes its integrity check, and the restored server ticks on", async () => {
+  const { makeSnapshot, restoreSnapshot } = await import("../src/backup/snapshot.mjs");
+  const dir = join(root, "backup");
+  const clock = fakeClock(Date.now());
+  const server = await startServer({ env: "test", dataDir: join(dir, "data"), reposDir: join(dir, "repos"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, timers: { clock } });
+  let snapshot;
+  try {
+    const api = (method, path, body) => fetch(`${server.url}/api${path}`, { method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
+    for (let i = 0; i < 5; i++) assert.equal((await api("POST", "/projects/demo/items", { title: `Filed ${i}`, scope: ["src/**"] })).status, 201);
+    const settle = async () => { await new Promise((ok) => setImmediate(ok)); };
+    // The clock runs a day of ticks while the snapshot is taken.
+    const ticking = clock.advance(25 * HOUR, { settle });
+    snapshot = join(dir, "snap");
+    await makeSnapshot({ dataDir: join(dir, "data"), reposDir: join(dir, "repos"), out: snapshot, env: "test" });
+    await ticking;
+    while (server.timers.state.some((j) => j.busy)) await new Promise((ok) => setTimeout(ok, 5));
+  } finally { await server.close(); }
+  await restoreSnapshot({ from: snapshot, dataDir: join(dir, "restored"), reposDir: join(dir, "restored-repos") });
+  const clock2 = fakeClock(clock.now());
+  const restored = await startServer({ env: "test", dataDir: join(dir, "restored"), reposDir: join(dir, "restored-repos"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, timers: { clock: clock2 } });
+  try {
+    const L = restored.namespace.get(restored.namespace.idFromName("project:demo"));
+    assert.equal((await L.items()).length, 5);
+    const settle2 = async () => { await new Promise((ok) => setImmediate(ok)); while (restored.timers.state.some((j) => j.busy)) await new Promise((ok) => setTimeout(ok, 5)); };
+    await clock2.advance(10 * MIN, { settle: settle2 });
+    assert.ok(restored.timers.state.find((j) => j.name === "stage tick").runs >= 1, "the restored server ticks");
+    const stuck = (await L.events(undefined, 1000)).filter((e) => e.kind === "stage.stuck");
+    assert.equal(stuck.length, 5, "each filed task is recorded stuck once, whether its tick was in the snapshot or ran again");
+  } finally { await restored.close(); }
+});
+
 test("a test server has no timers unless asked, and false turns them off anywhere", async () => {
   const server = await startServer({ env: "test", dataDir: join(root, "plain"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
   try { assert.equal(server.timers, null); } finally { await server.close(); }

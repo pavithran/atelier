@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import {
-  decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageFormat, triageModelRefusal, triageRecord, triageSettingRefusal, triageStandsRefusal,
+  decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageFormat, triageModelRefusal, triageRecord, triageSettingRefusal,
 } from "../src/review/triage.ts";
 
 // Triage before the review (t475), against runLand with injected fakes and a
@@ -25,8 +25,8 @@ import {
 // through a review route, and once it passes or is bypassed the review rules
 // run as they did: no review needed, an existing approval, --no-review.
 
-// The Workflow executor polls its stage every ATELIER_LAND_POLL_MS, read when
-// cli/land.mjs loads; node --test runs this file in a process of its own. A
+// The landing polls every ATELIER_LAND_POLL_MS, read when cli/land.mjs
+// loads; node --test runs this file in a process of its own. A
 // landing that fails ends by throwing here, where the command would exit,
 // so its signal handlers stay behind; they are many, and harmless.
 process.env.ATELIER_LAND_POLL_MS = "5";
@@ -55,11 +55,11 @@ const POOL = [
 // request open there: the push withdraws it, and the checks' passing
 // evidence at the pushed head asks for it again while the task is submitted
 // (Ledger.reaskReview), which `reasked` counts.
-function landing(t, { submitted = false, args = {}, answers = [allMet()], criteria = CRITERIA, events = [], review = { needed: false, reason: "a direct change needs no review" }, landFails = () => false, pool = POOL, policy = { checks: [] }, project = {}, workflow = false } = {}) {
+function landing(t, { submitted = false, args = {}, answers = [allMet()], criteria = CRITERIA, events = [], review = { needed: false, reason: "a direct change needs no review" }, landFails = () => false, pool = POOL, policy = { checks: [] }, project = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-triage-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
   const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": "claude-code/opus-5.5", "atelier.write-token-expires-at": new Date(Date.now() + 6 * 3600_000).toISOString() };
-  const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease", wfPath = `${itemPath}/landing-workflow`;
+  const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease";
   const log = [], lines = [], asked = [], recorded = [...events];
   let reads = 0, state = submitted ? "submitted" : "claimed", requestedAt = null;
   const reasked = [];
@@ -86,12 +86,6 @@ function landing(t, { submitted = false, args = {}, answers = [allMet()], criter
     if (path === `${itemPath}/review-request`) {
       requestedAt = new Date().toISOString();
       return review.needed ? { needed: true, requested: true, head: HEAD, at: requestedAt, reviewer: review.approveBy, reason: "a protected change needs an independent review" } : { needed: false, reason: review.reason };
-    }
-    if (path === wfPath) {
-      if (method === "GET") return log.some((c) => c.method === "POST" && c.path === wfPath && c.body?.event?.type === "workspace" && c.body.event.payload.head)
-        ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
-        : log.some((c) => c.method === "POST" && c.path === wfPath && !c.body?.event) ? { instance: "w1", stage: "workspace", round: 0, status: { status: "waiting" } } : { instance: null, status: null };
-      return body?.event ? {} : { instance: "w1", created: true, checks: "local", stage: "lease" };
     }
     return {};
   };
@@ -123,7 +117,7 @@ function landing(t, { submitted = false, args = {}, answers = [allMet()], criter
     return { reply: next };
   };
   const io = {
-    args: { _: ["land", "t1"], ...(workflow ? { workflow: true } : {}), ...args }, name: "proj", id: "t1", p: { path: dir, branch: "main", ...project },
+    args: { _: ["land", "t1"], ...args }, name: "proj", id: "t1", p: { path: dir, branch: "main", ...project },
     request, git: fakeGit, print: (line) => lines.push(line), die: (message) => { throw new Error(message); },
     workspacePath: () => dir, atelier: "atelier.mjs", env: {}, redact: (text) => text, secrets: () => [], runCommand,
     adoptWorkspaceToken: () => {}, triage, triageTimeoutMs: 200,
@@ -296,18 +290,16 @@ test("a task submitted before the landing has no review asked again before its t
   // evidence asked it again at the pushed head, before any triage, while
   // the stop said nothing was submitted for review.
   const stopNotMet = [reply([met(1), { criterion: 2, status: "not-met", evidence: "the route answers 500", file: "src/route.ts", line: 4 }])];
-  for (const workflow of [false, true]) {
-    const l = landing(t, { submitted: true, workflow, args: { triage: "codex/gpt-6-astra" }, answers: stopNotMet });
-    await assert.rejects(runLand(l.io), (error) => {
-      assert.match(error.message, /criterion 2 not met/);
-      assert.match(error.message, /this landing submitted nothing and asked for no review(; the merged head stays pushed to t1's fork)?; t1 was submitted before it and stays submitted with its holder \(a review request open at an earlier head was withdrawn when the push moved its head; one already open at aaaaaaaa stays open\)/);
-      assert.doesNotMatch(error.message, /nothing was submitted for review/);
-      return true;
-    });
-    assert.deepEqual(l.reasked, [], `${workflow ? "Workflow" : "plain"} landing: no review asked again before the triage`);
-    assert.deepEqual(l.commands(), workflow ? ["push"] : []);
-    assert.equal(l.reviewAsked(), false);
-  }
+  const l = landing(t, { submitted: true, args: { triage: "codex/gpt-6-astra" }, answers: stopNotMet });
+  await assert.rejects(runLand(l.io), (error) => {
+    assert.match(error.message, /criterion 2 not met/);
+    assert.match(error.message, /this landing submitted nothing and asked for no review; t1 was submitted before it and stays submitted with its holder \(a review request open at an earlier head was withdrawn when the push moved its head; one already open at aaaaaaaa stays open\)/);
+    assert.doesNotMatch(error.message, /nothing was submitted for review/);
+    return true;
+  });
+  assert.deepEqual(l.reasked, [], "no review asked again before the triage");
+  assert.deepEqual(l.commands(), []);
+  assert.equal(l.reviewAsked(), false);
   // A triage that passes goes on to the review: a submitted task's checks
   // are its holder's at that head, so the landing runs none (G2).
   const passed = landing(t, { submitted: true, args: { triage: "codex/gpt-6-astra", "no-review": true } });
@@ -544,56 +536,6 @@ test("--dry-run reports the triage choice and its source without calling a model
   }
 });
 
-// ── the Workflow landing ────────────────────────────────────────────────────
-
-test("a Workflow landing triages before the local checks and reports the head only once every criterion is met, with the binding the Workflow checks (t475)", async (t) => {
-  const l = landing(t, { workflow: true, args: { triage: "codex/gpt-6-astra" } });
-  await runLand(l.io);
-  const triagedAt = l.at((c) => c.triage);
-  const reportedAt = l.at((c) => c.body?.event?.type === "workspace");
-  assert.ok(l.at((c) => c.command === "push") < triagedAt && triagedAt < l.at((c) => c.command === "check") && l.at((c) => c.command === "check") < reportedAt, "push, triage, checks, then the head is reported");
-  // The Workflow is started as one that triages, and the head goes with
-  // the merge base and the criteria the triage read, which the Workflow
-  // checks against the Ledger before it submits and before the review.
-  assert.equal(l.log.find((c) => c.method === "POST" && c.path?.endsWith("/landing-workflow") && !c.body?.event)?.body.triage, true);
-  assert.deepEqual(l.log[reportedAt].body.event.payload, { round: 0, head: HEAD, mainHead: HEAD, mergedIn: false, triage: { base: BASE, criteria: criteriaOf({ accept: CRITERIA }) } });
-  assert.deepEqual(l.triages().map((d) => d.outcome), ["passed"]);
-
-  // Without a triage the Workflow is started as before, and the report carries no binding.
-  const off = landing(t, { workflow: true });
-  await runLand(off.io);
-  assert.equal(off.log.find((c) => c.method === "POST" && c.path?.endsWith("/landing-workflow") && !c.body?.event)?.body.triage, undefined);
-  assert.equal(off.log.find((c) => c.body?.event?.type === "workspace")?.body.event.payload.triage, undefined);
-});
-
-test("a Workflow landing whose triage stops reports a failed workspace, so the Workflow submits nothing, asks for no review and never takes the lease (t475)", async (t) => {
-  for (const answers of [[reply([met(1), met(2, { status: "unsure" })])], [new Error("codex is down")], ["hang"]]) {
-    const l = landing(t, { workflow: true, args: { triage: "codex/gpt-6-astra" }, answers });
-    await assert.rejects(runLand(l.io), (error) => {
-      assert.match(error.message, /The landing stops before the review request/);
-      assert.match(error.message, /atelier land t1 --workflow --triage codex\/gpt-6-astra again/);
-      return true;
-    });
-    const reports = l.log.filter((c) => c.body?.event?.type === "workspace").map((c) => c.body.event.payload);
-    assert.equal(reports.length, 1);
-    assert.equal(reports[0].failed, true);
-    assert.equal(reports[0].head, undefined, "no head is reported, so the Workflow submits nothing");
-    assert.match(reports[0].reason, /triage of t1 by codex\/gpt-6-astra stopped/);
-    assert.deepEqual(l.commands(), ["push"]);
-    assert.equal(l.reviewAsked(), false);
-  }
-});
-
-test("a Workflow landing with --no-triage records the bypass before reporting the head, and a refused record fails the workspace (t475)", async (t) => {
-  const l = landing(t, { workflow: true, args: { "no-triage": "hotfix" }, project: { triage: "codex/gpt-6-astra" } });
-  await runLand(l.io);
-  assert.ok(l.at((c) => c.path?.endsWith("/land") && c.body.step === "triage") < l.at((c) => c.body?.event?.type === "workspace"));
-  assert.deepEqual(l.triages().map((d) => d.outcome), ["bypassed"]);
-  const refused = landing(t, { workflow: true, args: { "no-triage": "hotfix" }, project: { triage: "codex/gpt-6-astra" }, landFails: (b) => b.step === "triage" });
-  await assert.rejects(runLand(refused.io), /could not be recorded on the ledger/);
-  assert.equal(refused.log.find((c) => c.body?.event?.type === "workspace")?.body.event.payload.failed, true);
-});
-
 // ── review findings on f1f371c ──────────────────────────────────────────────
 
 test("a status Object.prototype has, such as constructor, is malformed, and only every status met proceeds (t475)", async (t) => {
@@ -619,22 +561,21 @@ function advertised(message) {
     const args = {};
     const words = rest.trim().split(/\s+/).filter(Boolean);
     for (let i = 0; i < words.length; i++) {
-      if (words[i] === "--workflow") args.workflow = true;
-      else if (words[i] === "--triage") args.triage = words[++i];
+      if (words[i] === "--triage") args.triage = words[++i];
       else throw new Error(`unexpected ${words[i]} in ${rest}`);
     }
     return { flag, args: { ...args, [flag]: "checked by hand" } };
   });
 }
 
-for (const workflow of [false, true]) {
-  test(`every way past a stopped triage the ${workflow ? "Workflow" : "plain"} landing advertises runs as given and is recorded, with --triage H/M or the project's setting (t475)`, async (t) => {
+{
+  test("every way past a stopped triage the landing advertises runs as given and is recorded, with --triage H/M or the project's setting (t475)", async (t) => {
     const notMet = reply([met(1), met(2, { status: "not-met" })]);
     for (const [setup, flags] of [
       [{ args: { triage: "codex/gpt-6-astra" } }, ["override-triage"]],
       [{ project: { triage: "codex/gpt-6-astra" } }, ["override-triage", "no-triage"]],
     ]) {
-      const first = landing(t, { ...setup, workflow, answers: [notMet] });
+      const first = landing(t, { ...setup, answers: [notMet] });
       let message = "";
       await assert.rejects(runLand(first.io), (error) => { message = error.message; return true; });
       assert.match(message, /triage of t1 by codex\/gpt-6-astra stopped/);
@@ -642,37 +583,20 @@ for (const workflow of [false, true]) {
       assert.deepEqual(ways.map((w) => w.flag), flags, message);
       for (const way of ways) {
         assert.deepEqual(resolveTriage({ triage: way.args.triage, noTriage: way.args["no-triage"], override: way.args["override-triage"], project: setup.project?.triage }).error, undefined, JSON.stringify(way.args));
-        const { workflow: wf, ...args } = way.args;
-        assert.equal(wf === true, workflow, "the retry keeps --workflow");
-        const again = landing(t, { ...setup, workflow, args: { ...args, "no-review": true }, events: first.recorded, answers: [notMet] });
+        const again = landing(t, { ...setup, args: { ...way.args, "no-review": true }, events: first.recorded, answers: [notMet] });
         await runLand(again.io);
         assert.equal(again.asked.length, 0, `${way.flag}: the model is not asked again`);
         const outcome = way.flag === "no-triage" ? "bypassed" : "overridden";
         const record = again.triages().find((d) => d.outcome === outcome && d.reason === "checked by hand");
         assert.ok(record, `${way.flag} is recorded`);
         assert.deepEqual([record.head, record.base, record.criteria], [HEAD, BASE, criteriaOf({ accept: CRITERIA })]);
-        if (workflow) assert.ok(again.at((c) => c.path?.endsWith("/land") && c.body.outcome === outcome) < again.at((c) => c.body?.event?.type === "workspace" && c.body.event.payload.head));
-        else assert.deepEqual(again.commands(), ["check", "submit"]);
+        assert.deepEqual(again.commands(), ["check", "submit"]);
       }
     }
   });
 }
 
-// ── the binding the Workflow checks, and the project's setting ──────────────
-
-test("a triage stands for a landing only while the head and criteria are the bound ones and a pass, bypass or override is recorded at that binding (t475)", () => {
-  const binding = { head: HEAD, base: BASE, criteria: criteriaOf({ accept: CRITERIA }) };
-  const item = { head: HEAD, accept: CRITERIA };
-  const at = (outcome, b = binding) => [{ kind: "land.triage", seq: 1, data: triageRecord(b, outcome, { triager: "codex/gpt-6-astra" }) }];
-  for (const outcome of ["passed", "bypassed", "overridden"]) assert.equal(triageStandsRefusal(item, at(outcome), binding), null, outcome);
-  assert.match(triageStandsRefusal(item, at("stopped"), binding), /no triage that lets the landing go on/);
-  assert.match(triageStandsRefusal(item, [], binding), /no triage that lets the landing go on/);
-  assert.match(triageStandsRefusal(item, at("passed", { ...binding, base: "c".repeat(40) }), binding), /no triage that lets the landing go on/);
-  assert.match(triageStandsRefusal({ ...item, head: "c".repeat(40) }, at("passed"), binding), /the head moved from the triaged aaaaaaaa to cccccccc/);
-  assert.match(triageStandsRefusal({ ...item, accept: [...CRITERIA, "A third"] }, at("passed"), binding), /the acceptance criteria changed since the triage/);
-  assert.match(triageStandsRefusal(item, at("passed"), null), /reported no triage binding/);
-  assert.match(triageStandsRefusal(item, at("passed"), { head: HEAD, base: BASE, criteria: "short" }), /reported no triage binding/);
-});
+// ── the project's setting ───────────────────────────────────────────────────
 
 test("the project's triage setting is harness/model under a harness Atelier ships an adapter for (t475)", () => {
   assert.equal(triageSettingRefusal("codex/gpt-6-astra"), null);

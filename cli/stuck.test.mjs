@@ -9,7 +9,7 @@ import { commandUsage, helpText } from '../src/usage.ts';
 
 test('stuck registers its extracted handler, flags and help', () => {
   assert.equal(HANDLERS.get('stuck'), stuckCommand);
-  const flags = ['no-push-hours', 'unanswered-hours', 'lease-wait-minutes', 'conflict-wait-minutes', 'core-hold-minutes', 'runner-poll-minutes', 'review-answer-hours'];
+  const flags = ['no-push-hours', 'unanswered-hours', 'core-hold-minutes', 'runner-poll-minutes', 'review-answer-hours'];
   for (const flag of flags) {
     assert.equal(FLAGS.stuck[flag], false);
     assert.equal(parseArgs(['stuck', `--${flag}`, '3'])[flag], '3');
@@ -22,7 +22,7 @@ test('stuck registers its extracted handler, flags and help', () => {
 const now = new Date('2026-10-10T12:00:00Z');
 const at = ms => new Date(+now - ms).toISOString();
 const item = (over = {}) => ({ id: 't1', title: 'Task', scope: ['src/**'], state: 'claimed', owner: 'codex/model', head: 'a'.repeat(40), base: null, fork: null, acceptedHead: null, createdAt: at(0), updatedAt: at(0), lastPushAt: null, ...over });
-const snapshot = (over = {}) => ({ items: [item()], events: [], lease: null, workflows: [], reviews: [], coreFiles: ['src/**'], ...over });
+const snapshot = (over = {}) => ({ items: [item()], events: [], lease: null, reviews: [], coreFiles: ['src/**'], ...over });
 const event = (seq, kind, ms, data = {}, itemId = 't1') => ({ seq, kind, at: at(ms), data, itemId, actor: 'codex/model' });
 const report = (s = snapshot(), offers = [], runs = [], active = [], unavailable = []) => stuckReport('demo', 'https://example.org', now, reportLimits(), s, offers, runs, active, unavailable);
 const kinds = r => r.entries.map(e => e.kind);
@@ -32,20 +32,14 @@ test('limits reject zero, negative, nonfinite; age equals a limit is not stuck',
   assert.deepEqual(kinds(report(snapshot({ events: [event(1, 'item.claimed', 6*3600000)] }))), []);
   assert.deepEqual(kinds(report(snapshot({ events: [event(1, 'item.claimed', 6*3600000+1)] }))), ['task']);
 });
-test('lease waits use stage time; unknown is not an orphan; CLI holder and expiry are recognised', () => {
-  const record = { instance: 'wf', at: at(7200000), stage: 'lease', stageAt: at(1800000), round: 0 };
+test('a live lease held for an open task is no orphan; one whose task is closed or gone is, until it lapses', () => {
   const lease = { item: 't1', holder: 'owner', at: at(1000) };
   assert.deepEqual(kinds(report(snapshot({ lease }))), []);
-  const s = snapshot({ lease, workflows: [{ item: 't1', record, status: 'unknown' }] });
-  assert.deepEqual(kinds(report(s)), []);
-  record.stageAt = at(1800001);
-  assert.deepEqual(kinds(report(s)), ['lease-wait']);
-  s.workflows[0].status = 'errored';
-  record.stageAt = at(500);
-  assert.deepEqual(kinds(report(s)), ['orphan-lease']);
-  assert.match(report(s).entries[0].recovery, /land t1 --release-lease/);
+  const closed = snapshot({ lease, items: [item({ state: 'merged' })] });
+  assert.deepEqual(kinds(report(closed)), ['orphan-lease']);
+  assert.match(report(closed).entries[0].recovery, /land t1 --release-lease/);
   lease.at = at(900000);
-  assert.deepEqual(kinds(report(s)), []);
+  assert.deepEqual(kinds(report(closed)), []);
   assert.deepEqual(kinds(report(snapshot({ items: [], lease: { ...lease, at: at(1) } }))), ['orphan-lease']);
 });
 test('idle runner includes timestamp coarsening and active jobs; unavailable jobs do not prove idle', () => {
@@ -139,11 +133,9 @@ test('unavailable evidence remains explicit with a fixed observation time', () =
   assert.deepEqual(r.entries, []);
 });
 
-test('old terminal Workflow does not prove a newer CLI lease orphaned; owner token required', async () => {
+test('the stuck report needs the owner token', async () => {
   const { agentRoute } = await import('../src/tokens.ts');
   assert.equal(agentRoute('GET', ['projects', 'demo', 'stuck']), false);
-  const s = snapshot({ lease: { item: 't1', holder: 'owner', at: at(1000) }, workflows: [{ item: 't1', record: { instance: 'old', at: at(90000), stage: 'done', stageAt: at(60000), round: 0 }, status: 'complete' }] });
-  assert.deepEqual(kinds(report(s)), []);
 });
 
 test('existing consecutive-failure and unanswered-rejection rules survive, with strict boundaries', () => {
@@ -241,37 +233,8 @@ test('idle runner recovery names the observed runner', () => {
   const r = report(snapshot(), [{ runner: 'home:studio', kind: 'home', agents: [], at: at(360001) }]);
   assert.equal(r.entries[0].recovery, 'atelier runner --name "home:studio" --once');
 });
-test('conflict pauses use a strict independent stage-age limit and documented resume recovery', () => {
-  const record = { instance: 'conflicted', at: at(99999999), stage: 'conflict', stageAt: at(1800000), round: 1, files: ['src/index.ts'] };
-  const s = snapshot({ workflows: [{ item: 't1', record, status: 'waiting' }] });
-  assert.deepEqual(kinds(report(s)), []);
-  record.stageAt = at(1800001);
-  const entry = report(s).entries[0];
-  assert.equal(entry.kind, 'workflow-conflict');
-  assert.equal(entry.ageMs, 1800001);
-  assert.match(entry.reason, /conflicted.*src\/index.ts/);
-  assert.equal(entry.recovery, 'Resolve and commit the conflicts in the task workspace, then atelier land t1 --workflow --project demo');
-  assert.deepEqual(stuckReport('demo', 'https://example.org', now, reportLimits({ conflictWaitMinutes: 31 }), s, [], [], []).entries, []);
-  for (const status of ['complete', 'errored', 'terminated', 'absent']) {
-    s.workflows[0].status = status;
-    assert.deepEqual(kinds(report(s)), []);
-  }
-  delete s.workflows[0].status;
-  const unavailable = report(s, [], [], [], ['Workflow conflicted: unavailable']);
-  assert.equal(unavailable.complete, false);
-  assert.match(unavailable.entries[0].reason, /indeterminate/);
-  s.workflows.push({ ...s.workflows[0] });
-  assert.equal(report(s).entries.length, 1);
-  for (const state of ['blocked', 'merged', 'abandoned']) {
-    s.items[0].state = state;
-    assert.deepEqual(kinds(report(s)), []);
-  }
-  s.items[0].state = 'claimed';
-  record.stage = 'workspace';
-  assert.deepEqual(kinds(report(s)), []);
-});
 test('new limits default to thirty minutes and reject invalid values', () => {
-  for (const key of ['coreHoldMinutes', 'conflictWaitMinutes']) {
+  for (const key of ['coreHoldMinutes']) {
     assert.equal(reportLimits()[key], 30);
     for (const value of [0, -1, NaN, Infinity, '', 'invalid']) assert.throws(() => reportLimits({ [key]: value }));
     assert.equal(reportLimits({ [key]: '2.5' })[key], 2.5);

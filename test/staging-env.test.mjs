@@ -43,9 +43,9 @@ test("staging names its own Worker, Artifacts namespace, R2 bucket and workflow,
   assert.deepEqual(staging.r2_buckets, [{ binding: "LARGE", bucket_name: "atelier-large-staging" }]);
   assert.notEqual(staging.r2_buckets[0].bucket_name, config.r2_buckets[0].bucket_name);
 
-  assert.equal(config.workflows[0].name, "landing");
-  assert.deepEqual(staging.workflows, [{ name: "landing-staging", binding: "LANDING_WORKFLOW", class_name: "LandingWorkflow" }]);
-  assert.notEqual(staging.workflows[0].name, config.workflows[0].name);
+  // The landing Workflow is gone (Atelier 2.0, task 6), from both.
+  assert.equal(config.workflows, undefined);
+  assert.equal(staging.workflows, undefined);
 });
 
 test("neither production nor staging has crons: the Node server runs the three jobs on timers (task 8)", () => {
@@ -83,6 +83,5 @@ test("production's own settings are as they were", () => {
   assert.deepEqual(config.routes, [{ pattern: "atelier.zone", custom_domain: true }]);
   assert.equal(config.workers_dev, false);
   assert.deepEqual(config.durable_objects, { bindings: [{ name: "LEDGER", class_name: "Ledger" }] });
-  assert.deepEqual(config.workflows, [{ name: "landing", binding: "LANDING_WORKFLOW", class_name: "LandingWorkflow" }]);
   assert.equal(config.vars.AI_GATEWAY_ID, "atelier");
 });

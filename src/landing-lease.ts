@@ -3,7 +3,10 @@
 // CLI share this module, so both read the same expiry: a lease not renewed
 // for LANDING_LEASE_EXPIRY_MS is treated as free, which is how a landing
 // killed without releasing it stops blocking the project (t214).
-export interface LandingLease { item: string; holder: string; at: string; renewedAt?: string }
+// `id` names one holding of the lease (task 6): a fresh take or takeover
+// draws a new one, a renewal or a resume by the same task keeps it, so a
+// landing grant bound to it ends with any release or takeover for good.
+export interface LandingLease { item: string; holder: string; at: string; renewedAt?: string; id?: string }
 export const LANDING_LEASE_EXPIRY_MS = 15 * 60_000;
 
 // Whether the lease has lapsed at `now` (milliseconds since the epoch).
@@ -27,9 +30,3 @@ export function waitingLandingGone(waiting: WaitingLanding, now: number): boolea
   return now - Date.parse(waiting.renewedAt ?? waiting.at) >= LANDING_LEASE_EXPIRY_MS;
 }
 
-// A Workflow may wait for the lease for hours. Keep the usual queue to a
-// few hundred durable polls, with a heartbeat no slower than five minutes
-// even when its requested poll is longer than the queue's expiry.
-export function landingLeasePollMs(waitMs: number, requestedMs: number): number {
-  return Math.min(5 * 60_000, Math.max(requestedMs, Math.ceil(waitMs / 256)));
-}

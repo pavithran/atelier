@@ -61,7 +61,7 @@ test("malformed and unavailable answers get their own errors", () => {
 test("legacy route levels map to the documented guarantees only", () => {
   assert.deepEqual(capabilitiesForLevel(5), []);
   assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1", "plans.refresh.v1"]);
-  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1", "land.workflow.v1"]);
+  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1"]);
   const legacy = CAPABILITIES.filter((c) => c.level !== undefined && c.level <= ROUTE_LEVEL).map((c) => c.name);
   assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL), legacy);
   assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL + 100), legacy);
@@ -153,7 +153,7 @@ test("each command that relies on a named capability declares it in its module",
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
   // land counts the runners that skipped its review request by the request number the answer carries (t353).
-  assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
   // new and edit no longer assign a function area (t769); board reads the snapshot.
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "items.context.v1"]);
@@ -253,7 +253,7 @@ test("the integration routes are guaranteed from legacy level 6, as the commits 
   // Level 6 was one raise for two routes' sides (933d198): the integrator's and the owner's plan refresh.
   assert.deepEqual(capabilitiesForLevel(6), ["plans.integration.v1", "plans.refresh.v1"]);
   assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1", "plans.refresh.v1"]);
-  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1", "land.workflow.v1"]);
+  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1"]);
 });
 
 test("the legacy route level is frozen; additions need no numeric allocation", () => {

@@ -14,7 +14,7 @@ const VALIDATION = [
     "acting_owner_only", "ambiguous_acting", "bad_acting", "bad_action", "bad_actor", "bad_agent", "bad_allow_paid",
     "bad_bookmark", "bad_branch", "bad_card", "bad_check_limit", "bad_check_paths", "bad_check_silence", "bad_checks", "bad_choices", "bad_claim",
     "bad_commit", "bad_contradicts", "bad_decision", "bad_declaration", "bad_delivered_by", "bad_dispatch",
-    "bad_dump", "bad_event", "bad_evidence", "bad_expiry", "bad_failures", "bad_field", "bad_finding",
+    "bad_dump", "bad_evidence", "bad_expiry", "bad_failures", "bad_field", "bad_finding",
     "bad_findings", "bad_goal", "bad_hash", "bad_head", "bad_host", "bad_identity", "bad_item", "bad_kind",
     "bad_label", "bad_lease", "bad_limit", "bad_task", "bad_list", "bad_main", "bad_mode", "bad_model", "bad_ms", "bad_name", "bad_note",
     "bad_outcome", "bad_post_merge", "bad_prepare", "bad_private", "bad_projects", "bad_prose_standard", "bad_standing",
@@ -60,9 +60,6 @@ const GUARDED_ROUTE = {
   undeclared_check: "init --check: the detail lists the commands",
   unknown_bookmark: "ledger restore: the detail names how to record a bookmark",
   unknown_family: "models admit: family not recognised from the name",
-  workflow_not_listening: "landing Workflow event route",
-  workflow_not_terminated: "landing Workflow replacement route",
-  workflow_unreadable: "landing Workflow read route",
   wrong_server: "ledger restore: bookmark is of another server",
 };
 const EXEMPT = {
@@ -83,7 +80,7 @@ const STRICT = [
   "owned", "not_owner", "not_holder", "held", "dispatched", "not_dispatched", "post_merge_blocked", "post_merge_uncertain",
   "stale_head", "closed", "claim_in_flight", "claim_superseded", "claim_failed", "model_held", "ineligible", "single_family",
   "wrong_agent", "wrong_model", "wrong_runner", "not_submitted", "not_accepted", "accepted", "not_landable", "not_integrable",
-  "integrated", "landing", "landing_lease", "landing_replaced", "landing_starting", "stale_landing", "lease_lost", "no_lease",
+  "integrated", "landing", "landing_lease", "stale_landing", "lease_lost", "no_lease",
   "main_moved", "main_unread", "merge_open", "merge_not_on_main", "merge_unconfirmed", "not_a_merge", "no_merge_commit",
   "not_merged", "unverified_merge", "conflicts_with_main", "history_rewritten", "nothing_pushed", "no_head", "no_fork",
   "fork_changed", "workspace_changed", "branch_not_pushed", "branch_busy", "not_ready", "blocked", "stale_default_branch",

@@ -83,9 +83,13 @@ export async function landingWorld(t) {
   const repo = (await L().project()).repo;
   const agentToken = (await api("POST", "/tokens", { actor: BUILDER, projects: ["demo"] })).json.token;
 
-  // A commit of main's line, made in a scratch clone and pushed by the
-  // developer, as another landing or a direct push moves main.
+  // A commit of main's line, made in a scratch clone, as another landing
+  // moves main. Since task 6 only a landing grant moves the project's branch
+  // over Git, so the fixture moves it in the bare repository itself
+  // (setMain), standing in for that other landing.
   const mover = join(root, "mover");
+  const bare = join(reposDir, "demo.git");
+  const setMain = (from, rev = "HEAD") => git(bare, "fetch", "-q", from, `${rev}:refs/heads/main`);
   const moveMain = async (files, message = "main moves") => {
     rmSync(mover, { recursive: true, force: true });
     const c = await netGit(root, "clone", "-q", remote(OWNER), mover);
@@ -93,8 +97,7 @@ export async function landingWorld(t) {
     for (const [path, text] of Object.entries(files)) writeFileSync(join(mover, path), text);
     git(mover, "add", ".");
     git(mover, "commit", "-q", "-m", message);
-    const p = await netGit(mover, "push", "origin", "HEAD:refs/heads/main");
-    assert.equal(p.status, 0, p.stderr);
+    setMain(mover);
     return git(mover, "rev-parse", "HEAD");
   };
   const tip = async (ref = "refs/heads/main") => (await netGit(root, "ls-remote", remote(OWNER), ref)).stdout.split("\t")[0] || null;
@@ -128,7 +131,7 @@ export async function landingWorld(t) {
   };
   const detail = async (id) => (await api("GET", `/projects/demo/items/${id}`)).json;
 
-  return { root, base, server, api, L, git, netGit, remote, checkout, moveMain, tip, parents, log, task, setPolicy, cli, spawnCli, detail, repo };
+  return { root, base, server, api, L, git, netGit, remote, checkout, moveMain, setMain, bare, reposDir, tip, parents, log, task, setPolicy, cli, spawnCli, detail, repo };
 }
 
 // The events of `kind` a task's detail lists, oldest first.

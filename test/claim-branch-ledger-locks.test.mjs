@@ -68,12 +68,20 @@ function ledgerMethods(source) {
 // generation, or close it, directly or through any method they call, private
 // or public (a call through `this` never passes the stub's wrapper), and that
 // the lock table does not list.
-function uncovered(source, table = GRANT_LOCKS) {
+// The primitives that write: SQL setting token_id, claim_gen or owner, and
+// the helpers through which every other write goes.
+const GRANT_WRITES = /SET[^`]*\b(token_id|claim_gen|owner)\s*=|dropToken\(|assignOwner\(|update\([^;]*\b(owner:|state: "(?:merged|abandoned|integrated)")/s;
+// Task 6: a landing grant counts only while its task is accepted at its head
+// and its holder holds the project's landing lease, so the writers of an
+// item's head or acceptance and of the landing lease lock too, never as
+// "planned" (which takes no lock on an ordinary task).
+const LANDING_WRITES = /SET[^`]*\b(head|accepted_head)\s*=|update\([^;]*\b(head:|accepted_head:|state: "accepted")|VALUES \('landing-lease'|DELETE FROM meta WHERE key = 'landing-lease'/s;
+
+// "push" (task 8) is the post-receive record, under the task's lock its push
+// holds, or the task's lock when none does: a task scope.
+function uncovered(source, table = GRANT_LOCKS, WRITES = GRANT_WRITES, allowed = ["task", "planned", "project", "lease", "push"]) {
   const methods = ledgerMethods(source);
-  // The primitives that write: SQL setting token_id, claim_gen or owner, and
-  // the helpers through which every other write goes.
   const PRIMITIVES = new Set(["dropToken", "assignOwner", "update"]);
-  const WRITES = /SET[^`]*\b(token_id|claim_gen|owner)\s*=|dropToken\(|assignOwner\(|update\([^;]*\b(owner:|state: "(?:merged|abandoned|integrated)")/s;
   const writers = new Set([...methods.values()].filter((m) => !PRIMITIVES.has(m.name) && m.name !== "constructor" && WRITES.test(m.body)).map((m) => m.name));
   for (let grew = true; grew;) {
     grew = false;
@@ -83,7 +91,7 @@ function uncovered(source, table = GRANT_LOCKS) {
     }
   }
   const reachable = [...writers].filter((n) => !methods.get(n).private).sort();
-  return { reachable, missing: reachable.filter((n) => !(n in table)), methods };
+  return { reachable, missing: reachable.filter((n) => !allowed.includes(table[n])), methods };
 }
 
 const LEDGER = readFileSync(new URL("../src/ledger.ts", import.meta.url), "utf8");
@@ -94,8 +102,14 @@ test("every Ledger method that writes an item's owner, write token or claim gene
   assert.deepEqual(missing, [], `these Ledger methods write an owner, token or claim generation, or close an item, and take no lock: ${missing.join(", ")}; add them to GRANT_LOCKS in src/runtime/ledger-locks.mjs`);
   for (const [name, scope] of Object.entries(GRANT_LOCKS)) {
     assert.ok(methods.has(name) && !methods.get(name).private, `${name} is a public Ledger method`);
-    assert.ok(["task", "planned", "project"].includes(scope), `${name}: ${scope}`);
+    assert.ok(["task", "planned", "project", "lease", "push"].includes(scope), `${name}: ${scope}`);
   }
+});
+
+test("every Ledger method that writes an item's head or acceptance, or the landing lease, takes a lock (task 6)", () => {
+  const { reachable, missing } = uncovered(LEDGER, GRANT_LOCKS, LANDING_WRITES, ["task", "project", "lease", "push"]);
+  assert.ok(reachable.includes("accept") && reachable.includes("recordPush") && reachable.includes("beginProjectLanding"), `the scan found ${reachable.join(", ")}`);
+  assert.deepEqual(missing, [], `these Ledger methods write a head, an acceptance or the landing lease, and take no lock: ${missing.join(", ")}; give them a task, lease or project scope in GRANT_LOCKS`);
 });
 
 test("the scan catches a public method that reaches a writer through another public method", () => {

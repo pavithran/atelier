@@ -140,7 +140,7 @@ it("denies every owner, review and integration operation with identity and no se
     ["POST", "/tokens"], ["DELETE", `/tokens/${t.token.id}`], ["GET", "/tokens"],
     ["PUT", `/projects/${t.name}`], ["DELETE", `/projects/${t.name}`],
     ["POST", `/projects/${t.name}/decisions`], ["POST", `/projects/${t.name}/baseline-token`, { scope: "write" }],
-    ...["accept", "merge", "override", "criteria", "decide", "dispatch", "handoff", "review", "review-claim", "integrated", "refreshed", "landing", "landing-workflow", "block", "unblock"].map((verb) => ["POST", `${t.base}/${verb}`]),
+    ...["accept", "merge", "override", "criteria", "decide", "dispatch", "handoff", "review", "review-claim", "integrated", "refreshed", "landing", "block", "unblock"].map((verb) => ["POST", `${t.base}/${verb}`]),
     ["PATCH", t.base], ["POST", `${t.base}/plan/approve`], ["GET", "/home"], ["GET", "/queue"], ["GET", "/projects"], ["GET", `/projects/${t.name}/standing`],
     ["POST", "/models/x/status"], ["POST", "/usage/codex"],
   ];

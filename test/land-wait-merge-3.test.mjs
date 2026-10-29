@@ -1,15 +1,16 @@
 // Part 3 of 4 of the tests that were in land-wait-merge.test.mjs, split so no file runs for more than about a minute (t771).
-// Since G2 the plain landing merges no main into the task's workspace, so the
+// Since G2 the landing merges no main into the task's workspace, so the
 // workspace merge these tests drive (the legacy settlement, declared
 // generators, the route-level raise; mergeMainAndRegenerate, which runners
-// still run for a builder's merge of main) is reached through the Workflow
-// landing's workspace step (scriptWorkflow).
+// run for a builder's merge of main) runs on its own, then pushes
+// (workspaceMerge, test/fixtures/workspace-merge.mjs). Until task 6 of
+// Atelier 2.0 removed it, the 1.x landing Workflow's workspace step ran it.
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { git, landFixture, scriptWorkflow, raiseRouteLevel, declareGenerated, sameMergeStep } from "./land-fixture.mjs";
+import { git, landFixture, raiseRouteLevel, declareGenerated, sameMergeStep } from "./land-fixture.mjs";
 
 // Finding (t344 round 2): the legacy settlement staged only the conflicts, so
 // a file the command also wrote stayed dirty and tripped the regenerate step's
@@ -17,11 +18,10 @@ import { git, landFixture, scriptWorkflow, raiseRouteLevel, declareGenerated, sa
 test("the legacy settlement commits every file the regenerate command wrote, not only the conflicts (t344)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
-  scriptWorkflow(f);
   f.box.regen = "echo generated > gen-fixtures.txt; echo extra > extra-gen.txt";
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
   git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "");
   assert.equal(git(f.workspace("t1"), "ls-files", "extra-gen.txt"), "extra-gen.txt");
@@ -34,13 +34,12 @@ test("the legacy settlement commits every file the regenerate command wrote, not
 test("the legacy settlement refuses a file that became dirty before the command ran, naming it, and commits nothing of it (t344)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
-  scriptWorkflow(f);
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
   git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
-  // The second token request comes after the preflight's clean-tree check and before the merge.
+  // The merge's token request comes after the workspace was found clean and before the merge.
   let tokens = 0;
-  f.box.holdOn = (url) => { if (url.endsWith("/base-token") && ++tokens === 2) { writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished\n"); } return false; };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  f.box.holdOn = (url) => { if (url.endsWith("/base-token") && ++tokens === 1) { writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished\n"); } return false; };
+  const r = await f.workspaceMerge();
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /since the landing began \(video\.md\)/);
   assert.equal(git(f.workspace("t1"), "log", "--all", "--format=", "--name-only", "-S", "half-finished"), "");
@@ -50,14 +49,13 @@ test("the legacy settlement refuses a file that became dirty before the command 
 
 test("a conflict that also touches a file the regenerate command does not rewrite still stops, naming what regeneration left", async (t) => {
   const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
-  scriptWorkflow(f);
   // Both sides also regenerate the fixture, so one conflict is generated and one is not.
   writeFileSync(join(f.checkout, "gen-fixtures.txt"), "from main\n");
   git(f.checkout, "add", "."); git(f.checkout, "commit", "-m", "Main regenerates the fixture"); git(f.checkout, "push", "-q", "origin", "main");
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
   git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
   const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  gen-fixtures\.txt\n  work\.txt\nTaking either side and regenerating did not settle them: /);
   assert.match(r.output, /the regenerate command left work\.txt as either side had it/);
@@ -78,12 +76,11 @@ test("a conflict that also touches a file the regenerate command does not rewrit
 
 test("a regenerate command that fails while settling conflicts stops the landing with the failure named", async (t) => {
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
-  scriptWorkflow(f);
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
   git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
   f.box.regen = "echo boom >&2; exit 3";
   const before = f.forkHead("t1");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command `echo boom >&2; exit 3` failed \(exit 3\)/);
   assert.match(r.output, /boom/);
@@ -100,13 +97,11 @@ test("a regenerate command that fails while settling conflicts stops the landing
 
 test("a conflict only in a declared generated output is regenerated by its generator once the sources merge, and the landing goes on", async (t) => {
   const f = await landFixture(t);
-  scriptWorkflow(f);
   declareGenerated(f.checkout, "main");
   declareGenerated(f.workspace("t1"), "task");
   // The policy's own regenerate command would overwrite the output; it is off here.
   f.box.regen = null;
-  const before = { checkout: git(f.checkout, "rev-parse", "HEAD") };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Regenerating gen-fixtures\.txt with sh -c cat in\/\*\.txt > gen-fixtures\.txt \(fixtures\)…/);
   assert.match(r.output, /Regenerated gen-fixtures\.txt \(matches neither side\) with sh -c .*; its log is .*merge-logs/);
@@ -116,10 +111,8 @@ test("a conflict only in a declared generated output is regenerated by its gener
   assert.match(git(ws, "log", "-1", "--format=%B"), /^Merge main into t1\n\nAtelier land: main at [0-9a-f]+\n\nAtelier-Regenerated: fixtures \(sh -c cat in\/\*\.txt > gen-fixtures\.txt\): gen-fixtures\.txt matches neither side; log sha256 [0-9a-f]{64}$/m);
   // The pushed head carries it, so the checks and the review are of the regenerated output.
   assert.equal(f.forkHead("t1"), git(ws, "rev-parse", "HEAD"));
-  assert.equal(git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ")[1], before.checkout);
-  assert.equal(f.box.states.t1, "merged");
   const events = f.posts("/land");
-  assert.deepEqual(events.map((x) => x.body.step).slice(0, 3), ["merge", "push", "check"]);
+  assert.deepEqual(events.map((x) => x.body.step), ["merge", "push"]);
   const merge = events.find((x) => x.body.step === "merge");
   assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
   assert.equal(merge.body.resolvedBy, "atelier land, through the merge pipeline");
@@ -132,11 +125,10 @@ test("a conflict only in a declared generated output is regenerated by its gener
 
 test("a source conflict beside a generated one stops the landing before anything is generated, telling the two apart", async (t) => {
   const f = await landFixture(t);
-  scriptWorkflow(f);
   declareGenerated(f.checkout, "main", { also: { "work.txt": "from main\n" } });
   declareGenerated(f.workspace("t1"), "task");
   const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\nRegenerable outputs, not to be edited by hand \(regenerate them once the sources merge\):\n  gen-fixtures\.txt \(sh -c cat in\/\*\.txt > gen-fixtures\.txt\)\n/);
   // The merge is left in the workspace: the source with its markers, the
@@ -182,12 +174,11 @@ test("--dry-run previews the landing's merge of the head into main, telling sour
 
 test("a declared generator that fails stops the landing with the merge aborted and the failure named", async (t) => {
   const f = await landFixture(t);
-  scriptWorkflow(f);
   const command = ["sh", "-c", "echo boom >&2; exit 3"];
   declareGenerated(f.checkout, "main", { command });
   declareGenerated(f.workspace("t1"), "task", { command });
   const before = { fork: f.forkHead("t1"), head: git(f.workspace("t1"), "rev-parse", "HEAD") };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /stopped: the generator fixtures \(sh -c echo boom >&2; exit 3\) failed on run 1 \(exit 3\); its log is (\S+merge-logs\S+\.log)\nNothing was merged; the merge was aborted/);
   const log = /its log is (\S+\.log)/.exec(r.output)[1];
@@ -205,19 +196,16 @@ test("a declared generator that fails stops the landing with the merge aborted a
 test("where main and the task each raised the route level from one base, the landing raises the merged level past both", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
-  scriptWorkflow(f);
   // Both sides raise 6 to 7, so the merge is clean at the number they share.
   raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
   raiseRouteLevel(f.checkout, 7, "Main raises the route level");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 7, t1 to 7\), and the merge left it at 7: the merged CLI calls both sides' routes, so the level is raised to 8\. Deploy the server from a checkout at route level 8 or newer/);
   // The raise is its own commit in the workspace, and it is what lands.
   assert.match(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging main into t1/);
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
-  assert.match(readFileSync(join(f.checkout, "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 8;/);
-  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.forkHead("t1"), git(f.workspace("t1"), "rev-parse", "HEAD"));
   // The merge step records the levels it compared and the one it set.
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
@@ -240,9 +228,8 @@ const named = (f, levels) => {
 test("named legacy mappings with a level a side added stop automatic renumbering until the builder resolves them", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
-  scriptWorkflow(f);
   named(f, true);
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /named capability legacy mappings need manual resolution/);
   assert.match(r.output, /Move the task's new capability declaration levels above main's 7, set ROUTE_LEVEL to 8/);
@@ -255,29 +242,27 @@ test("named legacy mappings with a level a side added stop automatic renumbering
 test("named capabilities declared without levels are no failure where both sides raised the route level (t584)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
-  scriptWorkflow(f);
   named(f, false);
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.doesNotMatch(r.output, /manual resolution/);
   assert.match(r.output, /neither added a capability declaration with a level, so the merged level 7 stands/);
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
   assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging/);
-  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.forkHead("t1"), git(f.workspace("t1"), "rev-parse", "HEAD"));
 });
 
 
 test("where only main raised the route level, the merge takes main's number and nothing is raised past it", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
-  scriptWorkflow(f);
   raiseRouteLevel(f.checkout, 7, "Main raises the route level");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.doesNotMatch(r.output, /raised the route level/);
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
   assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 7;/);
   assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level/);
   assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
-  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.forkHead("t1"), git(f.workspace("t1"), "rev-parse", "HEAD"));
 });

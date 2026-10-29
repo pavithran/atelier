@@ -4,32 +4,29 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { git, landFixture, scriptWorkflow, raiseRouteLevel } from "./land-fixture.mjs";
+import { git, landFixture, raiseRouteLevel } from "./land-fixture.mjs";
 
 test("where only the task raised the route level, the merge keeps the task's number", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6, mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  scriptWorkflow(f);
   raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.doesNotMatch(r.output, /raised the route level/);
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 7;/);
   assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
-  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.forkHead("t1"), git(f.workspace("t1"), "rev-parse", "HEAD"));
 });
 
 
 test("a rerun of a conflicted merge resolved by hand still compares and raises the route level", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
-  scriptWorkflow(f);
   // Both sides raise, to different numbers, so the merge stops on the
   // conflict and is left for the owner to resolve.
   raiseRouteLevel(f.workspace("t1"), 8, "Task raises the route level");
   raiseRouteLevel(f.checkout, 9, "Main raises the route level");
-  const stopped = await f.run(f.checkout, "land", "t1", "--workflow");
+  const stopped = await f.workspaceMerge();
   assert.equal(stopped.status, 1, stopped.output);
   assert.match(stopped.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  src\/route-level\.ts\n/);
   assert.match(stopped.output, /The merge is left in the workspace for you to resolve/);
@@ -41,7 +38,7 @@ test("a rerun of a conflicted merge resolved by hand still compares and raises t
   git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
   git(f.workspace("t1"), "push", "-q", "origin", "main");
   f.box.requests.length = 0;
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
   assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 9, t1 to 8\), and the merge left it at 9: the merged CLI calls both sides' routes, so the level is raised to 11\. Deploy the server from a checkout at route level 11 or newer/);
@@ -49,8 +46,7 @@ test("a rerun of a conflicted merge resolved by hand still compares and raises t
   // from the task's head before that merge, and it is what lands.
   assert.match(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging main into t1/);
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 11;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 11;/);
-  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.forkHead("t1"), git(f.workspace("t1"), "rev-parse", "HEAD"));
   // The merge step records the skipped merge beside the levels it compared and set.
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.equal(merge.body.skipped, true);
@@ -61,7 +57,6 @@ test("a rerun of a conflicted merge resolved by hand still compares and raises t
 test("a merge that brought main in through a side branch still compares and raises the route level", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
-  scriptWorkflow(f);
   // Both sides raise 6 to 7, so every merge below is clean at 7.
   raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
   raiseRouteLevel(f.checkout, 7, "Main raises the route level");
@@ -81,7 +76,7 @@ test("a merge that brought main in through a side branch still compares and rais
   // rev-list empty, so the merge that brought main in must be found another way.
   const mainHead = git(f.checkout, "rev-parse", "HEAD");
   assert.equal(git(w, "rev-list", "--first-parent", "--ancestry-path", `${mainHead}..HEAD`), "");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
   assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 7, t1 to 7\), and the merge left it at 7: the merged CLI calls both sides' routes, so the level is raised to 8\. Deploy the server from a checkout at route level 8 or newer/);
@@ -91,8 +86,7 @@ test("a merge that brought main in through a side branch still compares and rais
   assert.ok(subjects.includes("Merge the side branch into the task"));
   assert.equal(subjects.filter((s) => /^Raise the route level/.test(s)).length, 1);
   assert.match(readFileSync(join(w, "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 8;/);
-  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.forkHead("t1"), git(w, "rev-parse", "HEAD"));
   // The merge step records the skipped merge beside the levels it compared and set.
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.equal(merge.body.skipped, true);
@@ -100,16 +94,15 @@ test("a merge that brought main in through a side branch still compares and rais
 });
 
 
-test("a repo with no route-level file skips the comparison and the landing goes on", async (t) => {
+test("a repo with no route-level file skips the comparison and the merge goes on", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  scriptWorkflow(f);
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.doesNotMatch(r.output, /route level/);
   assert.ok(!existsSync(join(f.workspace("t1"), "src", "route-level.ts")));
   assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
-  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.forkHead("t1"), git(f.workspace("t1"), "rev-parse", "HEAD"));
 });
 
 
@@ -160,13 +153,12 @@ test("a server at the CLI's route level passes whatever commit it runs", async (
 
 test("a server a route level lower than the CLI's refuses, naming both levels and saying to deploy", async (t) => {
   const f = await landFixture(t);
-  scriptWorkflow(f);
   f.box.routeLevel = 13;
   const before = git(f.workspace("t1"), "rev-parse", "HEAD");
   f.box.requests.length = 0;
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
+  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, items\.brief-criteria\.v1/);
   assert.match(r.output, /route level 13/);
   assert.match(r.output, /Deploy the server/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
@@ -182,14 +174,13 @@ test("a server a route level lower than the CLI's refuses, naming both levels an
 // above must reach --wait too, before any queued ask is made of it.
 test("a server a route level lower than the CLI's refuses --wait at start, saying to deploy, before any queued ask", async (t) => {
   const f = await landFixture(t);
-  scriptWorkflow(f);
   f.box.routeLevel = 13;
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
   f.box.waiting = [{ item: "t3", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1", "--wait");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
+  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, items\.brief-criteria\.v1/);
   assert.match(r.output, /Deploy the server/);
   // Nothing was asked of the lease — no queued ask, no take — and the lease
   // and the queue stand exactly as they were.
@@ -201,9 +192,8 @@ test("a server a route level lower than the CLI's refuses --wait at start, sayin
 
 test("a server that reports no route level refuses, saying to deploy", async (t) => {
   const f = await landFixture(t);
-  scriptWorkflow(f);
   f.box.routeLevel = null;
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /neither capabilities nor a route level/);
   assert.match(r.output, /Deploy the server/);

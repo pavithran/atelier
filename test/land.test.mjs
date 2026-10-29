@@ -108,7 +108,7 @@ test("a server that records the landing's timing gets the time before the lease 
 });
 
 
-test("a server from before t550 lands the same way, the timing said rather than recorded, and refuses --workflow saying to deploy", async (t) => {
+test("a server from before t550 lands the same way, the timing said rather than recorded", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.capabilities = null;
@@ -118,10 +118,6 @@ test("a server from before t550 lands the same way, the timing said rather than 
   assert.deepEqual(Object.keys(f.posts("/land").find((x) => x.body.step === "lease").body).sort(), ["head", "ms", "step"]);
   assert.match(r.output, /t1 spent \d+ (s|min) landing without the lease and held it \d+ s\./);
   assert.doesNotMatch(r.output, /could not be recorded/);
-  const wf = await f.run(f.checkout, "land", "t2", "--workflow");
-  assert.equal(wf.status, 1, wf.output);
-  assert.match(wf.output, /lacks capabilities land\.review-first\.v1.*then run atelier land t2 --workflow again \(or land without --workflow, which needs no deploy\)/s);
-  assert.deepEqual(f.posts("/landing-workflow"), []);
 });
 
 

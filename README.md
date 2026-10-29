@@ -141,7 +141,6 @@ the merge, not before it.
 | Queues | A consumer for Artifacts push notices (`cf.artifacts.repo.pushed`) is written in `src/index.ts`, but `wrangler.jsonc` declares no consumer, so no notice is delivered; the CLI reports each push to the Worker instead. | Written, not configured |
 | Cloudflare Access | In front of the developer's pages: the Worker verifies the Access assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). | Live: Access applications on atelier.zone, with the Worker's own check on |
 | R2 | Large check logs and review diffs (`src/large.ts`), kept in the bucket `atelier-large` (binding `LARGE`) and named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. | Live: the bucket `atelier-large` exists and is bound |
-| Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` waits for the observed results of the checks the developer's machine ran, the submission and the review without the landing lease, then takes the lease for the acceptance and the merge alone, as durable steps with retries, and waits for the developer's machine to merge main, push, run the checks and merge. | Live behind `atelier land --workflow` |
 
 ## Quickstart
 

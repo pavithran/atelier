@@ -16,10 +16,7 @@ import { recordTokenExpiry, storeWorkspaceToken } from "../cli/atelier.mjs";
 // in the workspace's credentials file, as a runner's claim leaves it. Since
 // G2 the plain landing pushes nothing to the task's branch, so it needs no
 // credential of the workspace's and leaves it as it is: nothing is
-// re-claimed or moved. The Workflow landing, which still pushes the
-// workspace's merge of main, re-claims the task for its holder before it
-// starts and moves the workspace to its fork; an accepted task refreshes
-// nothing either way.
+// re-claimed or moved, and an accepted task refreshes nothing either.
 
 // Each runLand leaves its signal handlers on the process, as the landing does.
 process.setMaxListeners(0);
@@ -58,7 +55,7 @@ const configAll = (dir, key) => { const r = realGit(["config", "--local", "--get
 // is an ordinary fork workspace. `claim` says how the server answers the
 // re-claim: ok, a refusal, no-token, no-remote, route (another runner route)
 // or bad-remote (a fork path that does not exist, so the fetch fails).
-function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = false, pushUrls = null, urls = null, onFork = false, holder = "codex/gpt-6-astra", runner = "home:mbp", actor = holder, claim = "ok", state = "submitted", workflow = false, dryRun = false, push = [], directHeader = false } = {}) {
+function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = false, pushUrls = null, urls = null, onFork = false, holder = "codex/gpt-6-astra", runner = "home:mbp", actor = holder, claim = "ok", state = "submitted", dryRun = false, push = [], directHeader = false } = {}) {
   const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), fork = join(p, "fork.git"), dir = join(p, "work", "proj", "t1");
   mkdirSync(seed);
   sh(seed, "init", "-q", "-b", "main"); sh(seed, "config", "user.name", "Fixture"); sh(seed, "config", "user.email", "fixture@example.invalid");
@@ -98,9 +95,6 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
     }
     if (path === `${itemPath}/base-token`) return { remote: baseline, token: "read", defaultBranch: "main" };
     if (path === `${itemPath}/read-token`) return { remote: fork, token: "read", defaultBranch: "main" };
-    if (path === `${itemPath}/landing-workflow`) return method === "GET" && calls.some((c) => c.method === "POST" && c.path === path)
-      ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
-      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, stage: "lease" };
     return {};
   };
   // Each `atelier push` answers the next of `push` (true passes, a string
@@ -113,7 +107,7 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
   };
   const git = realGit;
   const io = {
-    args: { _: ["land", "t1"], ...(workflow ? { workflow: true } : { "no-review": true }), ...(dryRun ? { "dry-run": true } : {}) }, name: "proj", id: "t1", p: { path: seed, branch: "main" },
+    args: { _: ["land", "t1"], "no-review": true, ...(dryRun ? { "dry-run": true } : {}) }, name: "proj", id: "t1", p: { path: seed, branch: "main" },
     request, git, print: (line) => lines.push(line), die: (message) => { throw new Error(message); },
     workspacePath: () => dir, atelier: "atelier.mjs", env: {}, redact: (text) => text, secrets: () => [], runCommand,
     // As cli/commands/land.mjs adopts a token: the header replaced, the
@@ -126,21 +120,8 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
   };
   const leaseTaken = () => calls.some((c) => c.method === "POST" && c.path === leasePath && !c.body.cancel);
   const claims = () => calls.filter((c) => c.path === `${itemPath}/claim`);
-  const workflowStarted = () => calls.some((c) => c.method === "POST" && c.path === `${itemPath}/landing-workflow`);
   const indexOf = (match) => calls.findIndex(match);
-  return { io, dir, fork, baseline, head, calls, lines, commands, adoption, fresh, leaseTaken, claims, workflowStarted, indexOf };
-}
-
-// What a landing on the fork looks like afterwards: origin fetches from and
-// pushes to the fork, the only header is the fork's write token, the route's
-// credential is gone from every setting and the fresh expiry is recorded.
-function assertOnFork(l) {
-  assert.deepEqual(configAll(l.dir, "remote.origin.url"), [l.fork], "origin fetches from the fork alone");
-  assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), [], "no push URL is set apart");
-  assert.deepEqual(headers(l.dir), [`http.${l.fork}.extraheader Authorization: Bearer ${FORK_TOKEN}`]);
-  assert.ok(!readFileSync(join(l.dir, ".git", "config"), "utf8").includes(RUNNER_SECRET));
-  assert.equal(config(l.dir, "atelier.write-token-expires-at"), l.fresh);
-  assert.equal(sh(l.dir, "rev-parse", "HEAD"), l.head, "the commits are untouched");
+  return { io, dir, fork, baseline, head, calls, lines, commands, adoption, fresh, leaseTaken, claims, indexOf };
 }
 
 // Nothing of the runner's workspace changed: origin, its credential, the
@@ -170,35 +151,10 @@ test("a submitted task whose workspace is on the runner route lands without touc
   }
 });
 
-test("land --workflow moves a runner-route workspace to its fork before starting the Workflow, and starts none when the move fails (t488)", async (t) => {
-  const ok = landing(t, { workflow: true });
-  await runLand(ok.io);
-  assert.equal(ok.claims().length, 1);
-  assert.equal(ok.claims()[0].as, "codex/gpt-6-astra");
-  assert.deepEqual(ok.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
-  assert.ok(ok.workflowStarted());
-  assert.ok(ok.indexOf((c) => c.method === "POST" && c.path.endsWith("/landing-workflow")) > ok.indexOf((c) => c.path.endsWith("/claim")));
-  assertOnFork(ok);
-  for (const claim of ["not_owner: refused", "no-token", "bad-remote"]) {
-    const l = landing(t, { workflow: true, claim });
-    await assert.rejects(runLand(l.io), /stops before taking the lease/);
-    assert.equal(l.workflowStarted(), false, claim);
-    assert.equal(l.leaseTaken(), false, claim);
-    assert.equal(sh(l.dir, "rev-parse", "HEAD"), l.head);
-  }
-});
-
 test("an accepted task on the runner route refreshes nothing: it is merged, not landed (t488, t188)", async (t) => {
   const plain = landing(t, { state: "accepted" });
   await runLand(plain.io);
   assert.equal(plain.claims().length, 0);
   assert.ok(!plain.commands.includes("push"));
   assertUntouched(plain);
-  // Through the Workflow an accepted task resumes at its merge: nothing is
-  // pushed, so nothing is claimed or moved.
-  const wf = landing(t, { state: "accepted", workflow: true });
-  await assert.rejects(runLand(wf.io), /t1 is accepted at [0-9a-f]{8}; merge it with: atelier merge t1/);
-  assert.equal(wf.claims().length, 0);
-  assert.equal(wf.workflowStarted(), false);
-  assertUntouched(wf);
 });
