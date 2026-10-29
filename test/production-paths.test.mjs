@@ -197,3 +197,31 @@ test("a plan names its planner and every part's route; the plan tick asks only a
     assert.deepEqual((await L.events(pid, 1000)).filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer), [ARGON]);
   } finally { await ns.close(); }
 });
+
+test("a lapsed review claim is a fact: polling the queue asks no successor, and review-request reopens it", async () => {
+  const { ns, L, submitted, offers } = await world("lapse");
+  try {
+    const id = await submitted(head(1));
+    const asked = await L.requestReview(id, "owner", GPT, POOL, true, false, undefined, await offers());
+    const claim = await L.claimReview(id, GPT, RUNNER, true);
+    assert.equal(claim.request, asked.request);
+    // The lease runs out: the claim was last renewed ten minutes ago.
+    ns.object("project:lapse").live.sql.exec(`UPDATE review_requests SET claimedAt = ? WHERE id = ?`, iso(Date.now() - 10 * 60_000), claim.request);
+    for (let i = 0; i < 3; i++) { await L.queued(); await L.reviewWaiting(); }
+    const rows = await L.reviewRequests(id);
+    assert.deepEqual(rows.map((r) => r.state), ["lapsed"], "nothing was withdrawn and no successor asked");
+    const expired = (await L.events(id, 1000)).filter((e) => e.kind === "review.expired");
+    assert.equal(expired.length, 1);
+    assert.equal(expired[0].data.claimedBy, GPT);
+    assert.match(expired[0].data.next, new RegExp(`atelier review-request ${id} --reviewer ${GPT}`));
+    const lapsed = (await L.detail(id)).lapsedRequests;
+    assert.deepEqual(lapsed.map((r) => [r.request, r.claimedBy]), [[claim.request, GPT]]);
+    // A late verdict from the lapsed claim answers nothing.
+    await assert.rejects(L.renewReview(id, GPT, claim.request), /stale_request/);
+    // The model reopens it by command.
+    const again = await L.requestReview(id, "owner", GPT, POOL, true, false, undefined, await offers());
+    assert.equal(again.requested, true);
+    assert.notEqual(again.request, claim.request);
+    assert.deepEqual((await L.reviewRequests(id)).map((r) => r.state), ["lapsed", "open"]);
+  } finally { await ns.close(); }
+});

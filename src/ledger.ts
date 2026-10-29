@@ -21,7 +21,7 @@ import { gateMethods, RestartGate } from "./restart-gate.ts";
 import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, eventStage, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, type LedgerBookmark, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
-  REVIEW_RENEW_MS, reviewLeaseExpired,
+  REVIEW_RENEW_MS, REVIEW_LEASE_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, effectiveAdmissions, familyRefusal, modelKey, sharesName, splitHarness, standardAdmissions, STANDARD_REVIEWER_PROJECT, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
@@ -6977,7 +6977,7 @@ export class Ledger extends DurableObject<Env> {
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
     const lastDeploy = this.lastDeploy();
-    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), tierReview: this.tierReviewNow(id) };
+    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -9056,13 +9056,27 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  // A claim whose lease lapsed ends: the request becomes `lapsed`, which no
+  // runner is offered and no verdict answers, and review.expired records who
+  // held it and when the lease ran out. Nothing is withdrawn and no successor
+  // is asked by itself (G6): `show` says "claim by X lapsed at T", and the
+  // model asks again with atelier review-request ID --reviewer X (or another).
   private expireReviewClaims(): void {
     const now = Date.now();
-    for (const row of this.sql.exec(`SELECT id, item, claimedAt FROM review_requests WHERE state = 'claimed'`).toArray()) {
+    for (const row of this.sql.exec(`SELECT id, item, head, claimedBy, claimedAt, tier FROM review_requests WHERE state = 'claimed'`).toArray()) {
       if (!reviewLeaseExpired(row.claimedAt as string | null, now)) continue;
-      this.replaceReviewClaim(row.id as number);
-      this.log(row.item as string, ORCHESTRATOR, "review.expired", { request: row.id }, new Date(now).toISOString());
+      const lapsedAt = new Date(Date.parse(row.claimedAt as string) + REVIEW_LEASE_MS).toISOString();
+      this.sql.exec(`UPDATE review_requests SET state = 'lapsed' WHERE id = ? AND state = 'claimed'`, row.id);
+      this.log(row.item as string, ORCHESTRATOR, "review.expired", { request: row.id, head: row.head, claimedBy: row.claimedBy, lapsedAt, ...(row.tier === 1 ? { tier: true } : {}), next: `atelier review-request ${row.item as string} --reviewer ${row.claimedBy as string}` }, new Date(now).toISOString());
     }
+  }
+
+  // The requests at the task's head whose claim lapsed, newest first, for show.
+  lapsedRequests(id: string): { request: number; head: string; claimedBy: string; lapsedAt: string; tier: boolean }[] {
+    const item = this.item(id);
+    if (!item.head) return [];
+    return this.sql.exec(`SELECT id, head, claimedBy, claimedAt, tier FROM review_requests WHERE item = ? AND head = ? AND state = 'lapsed' ORDER BY id DESC`, id, item.head).toArray()
+      .map((r) => ({ request: r.id as number, head: r.head as string, claimedBy: r.claimedBy as string, lapsedAt: new Date(Date.parse(r.claimedAt as string) + REVIEW_LEASE_MS).toISOString(), tier: r.tier === 1 }));
   }
 
   private currentReviewClaim(item: string, actor: string, request?: number): Row {
