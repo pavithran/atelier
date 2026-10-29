@@ -12,7 +12,10 @@
 //   2. No deletes; the server deletes task branches itself.
 //   3. Fast-forward only on the project's branch, plan/* and the notes ref.
 //   4. A landing push is a merge whose first parent is the branch's tip and
-//      whose parents include the accepted head.
+//      whose parents include the accepted head; a landing grant updates the
+//      branch once (the server takes that update at step 7). The owner's
+//      credential only creates the project's branch in an empty repository:
+//      after that only a landing moves it (task 6).
 // Then, for a push those four allow, the two rules that read the pushed
 // files (src/git/scan.mjs), with the policy the server wrote for this push
 // (ATELIER_POLICY, src/git/policy.mjs):
@@ -52,6 +55,9 @@ const guarded = ref === `refs/heads/${branch}` || ref.startsWith("refs/heads/pla
 if (guarded && !ZERO.test(old)) {
   try { git("merge-base", "--is-ancestor", old, sha); } catch { refuse(`${ref.replace(/^refs\/heads\//, "")} moves by fast-forward only`); }
 }
+if (kind === "owner" && ref === `refs/heads/${branch}` && !ZERO.test(old)) {
+  refuse(`${branch} moves only by a landing, which carries the reviewed head; this credential creates ${branch} in an empty repository and writes dev/* and ${NOTES}, nothing was pushed. next: atelier land tN, for the task that holds the change`);
+}
 if (kind === "landing" && ref === `refs/heads/${branch}`) {
   if (ZERO.test(old)) refuse(`a landing merges onto ${branch}, which has no tip yet`);
   const parents = git("rev-list", "--parents", "-n", "1", sha).split(" ").slice(1);
@@ -73,7 +79,9 @@ const { ATELIER_GRANT: grant = "", ATELIER_GRANT_CHECK: check = "", ATELIER_HOOK
 if (!check || !secret) refuse("this push has no way to check its credential with the server; nothing was pushed");
 let live = false;
 try {
-  const res = await fetch(check, { method: "POST", headers: { "content-type": "application/json", "x-atelier-hook-secret": secret }, body: JSON.stringify({ grant }), signal: AbortSignal.timeout(10_000) });
+  const res = await fetch(check, { method: "POST", headers: { "content-type": "application/json", "x-atelier-hook-secret": secret }, body: JSON.stringify({ grant, branch: ref === `refs/heads/${branch}`, sha }), signal: AbortSignal.timeout(10_000) });
   live = res.ok && (await res.json()).live === true;
 } catch { /* unanswered: not live */ }
-if (!live) refuse("this credential is no longer live: the task was handed over, released, closed or its token revoked while the push arrived; nothing was pushed");
+if (!live) refuse(kind === "landing"
+  ? "this landing credential is no longer live, or has already updated the project's branch once: the landing lease was released or taken over, the acceptance moved, or the merge is recorded; nothing was pushed. next: atelier merge TASK again, which asks for a new one"
+  : "this credential is no longer live: the task was handed over, released, closed or its token revoked while the push arrived; nothing was pushed");

@@ -95,6 +95,20 @@ after(async () => { console.error = consoleError; await server?.close(); });
 
 const main = () => git("rev-parse", "main");
 
+
+// A landing grant minted straight from the store, for the tests of the
+// hook's rules alone. Such a grant counts only while its task is accepted at
+// its head and its actor holds the landing lease (GitHost.stillLanding);
+// these fixtures have neither, so that check stands aside for the test.
+// The route that mints landing grants, and the check itself, are tested
+// against a real landing in test/land-grant.test.mjs.
+function landingGrant(t, grant) {
+  const { stillLanding } = server.git;
+  server.git.stillLanding = async () => true;
+  t.after(() => { server.git.stillLanding = stillLanding; });
+  return server.git.grants.mint({ project: "demo", kind: "landing", lease: "test-lease", ...grant });
+}
+
 test("a push carrying a key-shaped line is refused before the ref moves, naming file and line; the owner's clearance lets it through and it becomes the scan record", async () => {
   const c = commit("add config", main(), { "config.env": `MODE=test\nOPENAI_API_KEY=${KEY}\n` });
   refused(await push(t5, `${c}:refs/heads/t/5`), /secret scan found a key-shaped line: config\.env:2 in [0-9a-f]{12}.*atelier clear-secret t5/s);
@@ -142,8 +156,9 @@ test("a push carrying a private file is refused before the ref moves", async () 
   const before = await tip("refs/heads/t/5");
   refused(await push(t5, `${commit("plan", before, { "PROJECT.md": "the plan\n" })}:refs/heads/t/5`), /would carry private files: PROJECT\.md in [0-9a-f]{12}/);
   refused(await push(t5, `${commit("notes", before, { "Notes/today.md": "x\n" })}:refs/heads/t/5`), /would carry private files: Notes\/today\.md/);
-  // The owner's own push of the project's branch is guarded too.
-  refused(await push(OWNER, `${commit("plan on main", main(), { "PROJECT.md": "the plan\n" })}:refs/heads/main`), /would carry private files/);
+  // The owner's own pushes are guarded too (since task 6 the owner writes
+  // dev/*, not the project's branch past its creation).
+  refused(await push(OWNER, `${commit("plan on main", main(), { "PROJECT.md": "the plan\n" })}:refs/heads/dev/plan`), /would carry private files/);
   assert.equal(await tip("refs/heads/t/5"), before);
   const ok = await push(t5, `${commit("public", before, { "README.md": "hello\n" })}:refs/heads/t/5`);
   assert.equal(ok.status, 0, ok.stderr);
@@ -165,7 +180,7 @@ test("no key, token or found value reaches the data directory, the hook's files 
 const meta = { holdsRecorded: true, rebasedFrom: null };
 const unreadable = { "blob.bin": "PK\0\u0001\0binary\0", "big.txt": "a".repeat(8 * 1024 * 1024 + 1), "sub": null };
 
-test("a file the scan cannot read is recorded on a task's push, and refuses the owner's push", async () => {
+test("a file the scan cannot read is recorded on a task's push, and refuses the owner's push", async (t) => {
   // On a task: recorded, not refused, with the reason (a blob over SCAN_BYTES included).
   const c = commit("unreadable", main(), unreadable);
   const ok = await push(t5, `+${c}:refs/heads/t/5`);
@@ -176,17 +191,18 @@ test("a file the scan cannot read is recorded on a task's push, and refuses the 
     ["blob.bin", true, "binary content"],
     ["sub", true, "a submodule, whose content is in another repository"],
   ]);
-  // On the project's branch and dev/*: refused, naming each file.
-  for (const ref of ["refs/heads/main", "refs/heads/dev/x"]) {
+  // On dev/* (and on the project's branch, which only a landing moves since
+  // task 6): refused, naming each file.
+  for (const ref of ["refs/heads/dev/x"]) {
     refused(await push(OWNER, `${c}:${ref}`), /could not read (?=.*big\.txt in [0-9a-f]{12} \(8388609 bytes, over the 8388608 the scan reads\))(?=.*blob\.bin in [0-9a-f]{12} \(binary content\))(?=.*sub in [0-9a-f]{12} \(a submodule).*no task to record/s);
   }
-  for (const file of Object.keys(unreadable)) refused(await push(OWNER, `${commit(file, main(), { [file]: unreadable[file] })}:refs/heads/main`), new RegExp(`could not read ${file} in`));
+  for (const file of Object.keys(unreadable)) refused(await push(OWNER, `${commit(file, main(), { [file]: unreadable[file] })}:refs/heads/dev/${file}`), new RegExp(`could not read ${file} in`));
   assert.equal(await tip("refs/heads/main"), main());
   // A landing grant carrying the task applies its clearances: cleared by
   // content, the same files pass.
   await L().clearSecret("t5", "owner", "the files the test made");
   const accepted = c;
-  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted });
+  const landing = landingGrant(t, { task: "t5", actor: AGENT, accepted });
   const merge = commit("merge t5", main(), {}, accepted);
   const landed = await push(landing.token, `${merge}:refs/heads/main`);
   assert.equal(landed.status, 0, landed.stderr);

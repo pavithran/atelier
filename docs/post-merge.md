@@ -57,8 +57,7 @@ no recorded before SHA cannot reserve new steps using a guessed baseline.
 
 ## Execution and recovery
 
-CLI land and Workflow land both use the merge executor and the same Ledger
-run. Workflow waits for the run to complete after the task becomes merged.
+A landing uses the merge executor and the Ledger run.
 The developer machine supplies the executor, Git, Node/npm and credentials. Each
 attempt starts in a fresh clone checked out detached at the recorded merged
 SHA, never a moving branch. Node projects require a committed package-lock.json
@@ -162,14 +161,14 @@ still checked; the cache is never reused across attempts or policies.
 
 ## Required developer rollout smoke
 
-Local tests cover Git history and SQLite/Workflow state transitions. They do
+Local tests cover Git history and SQLite state transitions. They do
 not reproduce production Artifacts history availability, Cloudflare deployment
-propagation, credential access, Workflow retention or remote Git lease behavior.
+propagation, credential access or remote Git lease behavior.
 Before and after deployment, run this smoke in a developer-controlled project:
 
 1. Configure a harmless always check, a path-conditioned check and an approved
    deployment with its real version URL. Confirm init preserves/clears policy.
-2. Land through CLI and then Workflow; queue a second landing and confirm it
+2. Land through the CLI; queue a second landing and confirm it
    cannot merge until the first run's deployment commit and route level match.
 3. Kill the executor during an external step, release/expire its lease, and
    confirm the next merge remains blocked. Stop children, reconcile, retry or

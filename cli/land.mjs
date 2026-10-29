@@ -17,9 +17,9 @@ import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { approvalsMissing, landingVerdict, recordedApproval, rejectionText } from "../src/landing-verdict.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
-import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
+import { effectiveFailures, failureSummary, resolveFailures } from "../src/check-failure.ts";
 import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync, findingKey } from "../src/moved-code.ts";
-import { LAND_UNPUSHED, appendMovedCodeRecord, prepareRecordedWorkspace, tailOf } from "./landing.mjs";
+import { appendMovedCodeRecord, prepareRecordedWorkspace, tailOf } from "./landing.mjs";
 import { workspaceNotice } from "./review-notice.mjs";
 import { reviewerOffered } from "./review-oneshot.mjs";
 
@@ -38,8 +38,8 @@ import { reviewerOffered } from "./review-oneshot.mjs";
 // push. Every step goes on the task's landing record, a failure with the
 // failing step and the last lines of its own output; a refusal before any
 // step is the start step failing. The workspace merge of main described
-// below (mergeMainAndRegenerate) is the Workflow landing's and a runner's
-// merge-main, no longer the plain landing's; where the paragraphs below say
+// below (mergeMainAndRegenerate) is a runner's merge-main, no longer the
+// landing's; where the paragraphs below say
 // the plain landing merges main, pushes, confirms main under the lease or
 // goes round again when main moved, read them as the 1.x order.
 //
@@ -141,19 +141,10 @@ import { reviewerOffered } from "./review-oneshot.mjs";
 // lapses.
 //
 // Post-merge work has a durable Ledger reservation, created before publish
-// and checked by every merge entry point. CLI and Workflow resolve the same
+// and checked by every merge entry point. Every landing resolves the same
 // run, with a snapshotted policy and before/after SHAs. Lease release, expiry
 // and merged task state never release it. Future batching reuses its member
 // list and landing identity; it does not change per-merge completion today.
-//
-// The push uses the workspace's write token, which lapses 8 hours after the
-// claim that minted it (t275), and a push refused for it would end a landing
-// that has already merged main. So before the merge of main (the Workflow's
-// too, whose push runs here, and again on each round) a token
-// that has lapsed or lapses within TOKEN_WINDOW_MS is refreshed, and a push
-// still refused as expired is refreshed and tried once more. A refresh re-claims
-// the task as its current holder, never changing claim ownership; an
-// unclaimed task cannot be reclaimed just to obtain credentials.
 //
 // Before the review is asked for, a landing with a triage model (t475:
 // --triage H/M, else the project's triage setting; neither is none) has
@@ -162,8 +153,7 @@ import { reviewerOffered } from "./review-oneshot.mjs";
 // it calls every criterion met. Anything else — a criterion not met or
 // unsure, no criteria, a reply that cannot be read, a timeout, a model the
 // pool refuses or that cannot be run — stops the landing before the task is
-// submitted (in a Workflow landing, before the head is reported, so the
-// Workflow submits nothing): the findings are shown with the commands to
+// submitted: the findings are shown with the commands to
 // run it again, the lease never taken and the task its holder's, its
 // work pushed. The owner may bypass the triage (--no-triage REASON) or go
 // past a stop (--override-triage REASON); either is recorded on the ledger,
@@ -177,44 +167,18 @@ import { reviewerOffered } from "./review-oneshot.mjs";
 // main are compared with their merge base (src/moved-code.ts), and a task
 // edit lying in a block main moved to another file stops the landing with
 // Git and the workspace unchanged, naming each source and destination with
-// the matching lines and how to port the edits. The plain landing ends, the
-// lease never taken; the Workflow landing pauses at its conflict stage,
-// holding no lease, with no merge left in the workspace. The
-// revisions compared and the merge base are recorded with the merge step,
+// the matching lines and how to port the edits. The landing ends, the
+// lease never taken. The revisions compared and the merge base are recorded with the merge step,
 // and every comparison and approval in the workspace's moved-code log
 // (cli/landing.mjs). `--moved-ok` lets the owner go on past exactly the
 // findings this run detected, recorded first on the ledger and in that log
 // with the owner, the findings and the revisions; findings at other
-// revisions (a later round of the Workflow) need a fresh approval, and Git's
+// revisions need a fresh approval, and Git's
 // own conflicts still stop the landing. A retry compares afresh, so ported
 // edits clear their findings; where main is already merged there is nothing
 // to compare, which the landing says rather than implying no move was missed.
 //
-// A workspace a runner claimed with its runner token pushes through the
-// runner route (t488): its origin is ORIGIN/git/runner/PROJECT/ITEM.git, and
-// the header it carries is the runner's own Git credential, which the server
-// honours for the runner's token and claim alone. The owner's landing cannot
-// push there as itself, and the runner's credential lapses with the runner
-// token, not with the task's write token. So before the lease, and before a
-// Workflow starts — for a task not yet accepted, whatever expiry the
-// workspace records — a runner route found as origin's fetch or push URL is
-// re-claimed for the task's holder with its runner identity, under the
-// owner's credential, which the server answers with the fork remote and a
-// write token of its own; the fork replaces the route as origin's one
-// destination, the route's header goes with it, the expiry is recorded and
-// the fork is fetched, all before anything is leased, pushed or started. The
-// next landing finds the fork and refreshes nothing it need not. A holder the
-// workspace was not claimed by, a re-claim the server refuses, a claim that
-// answers no remote or token, or a remote that cannot be adopted stops the
-// landing there, with the commits untouched; a dry run reads the remotes and
-// writes nothing.
-
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
-// How long a wait on a landing Workflow keeps reading it again after reads
-// fail, backing off between tries, before it gives up (t368: one failed read
-// of a live instance ended a wait that a minute later attached to it).
-const READ_WINDOW_MS = Number(process.env.ATELIER_LAND_READ_WINDOW_MS ?? 5 * 60_000);
-const READ_BACKOFF_MAX_MS = 30_000;
 // How long a machine with no registered checkout follows the land job before
 // it stops following; the request stays recorded.
 const FOLLOW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_FOLLOW_TIMEOUT ?? 3 * 60 * 60_000);
@@ -222,19 +186,11 @@ const LEASE_RENEW_MS = Number(process.env.ATELIER_LAND_RENEW_MS ?? 60_000);
 // How long --wait queues for the landing lease before it gives up, so a
 // landing left holding the lease does not keep a queued one waiting for ever.
 const WAIT_TIMEOUT_MS = Number(process.env.ATELIER_LAND_WAIT_TIMEOUT ?? 3 * 60 * 60_000);
-// A write token lapsing within this span is refreshed before the lease, so
-// it outlasts the merge, the regeneration and the push that follow.
-const TOKEN_WINDOW_MS = Number(process.env.ATELIER_LAND_TOKEN_WINDOW_MS ?? 30 * 60_000);
 // How long the triage model may take before the landing stops for it.
 const TRIAGE_TIMEOUT_MS = Number(process.env.ATELIER_LAND_TRIAGE_TIMEOUT ?? 30 * 60_000);
-// How the push step says the fork refused the workspace token: Artifacts's
-// own refusal of a token that lapsed or was revoked, or atelier push's when
-// its own renewal of the token failed (t317).
-const EXPIRED_TOKEN = /Invalid or expired token|refused this workspace's token|this workspace's token expired at/i;
 
-// The capability of a server that reviews before the lease (t550): its
-// landing Workflow takes the lease for the merge alone, and its land step
-// route records the release step and the time before the lease.
+// The capability of a server that reviews before the lease (t550): its land
+// step route records the release step and the time before the lease.
 const REVIEW_FIRST = "land.review-first.v1";
 
 const short = (sha) => (sha ? sha.slice(0, 8) : "—");
@@ -256,7 +212,7 @@ export async function runLand(io) {
   const { args, name, id, p, request, git, die, print } = io;
   if (args["post-merge"] === undefined && (args.reason !== undefined || args.resolution !== undefined)) die("--reason and --resolution require --post-merge");
   if (args["post-merge"] !== undefined) {
-    if (["dry-run", "release-lease", "no-review", "wait", "no-wait", "quote", "reviewer", "workflow", "checks"].some(k => args[k] !== undefined)) die("--post-merge recovery is a separate action; omit the landing flags");
+    if (["dry-run", "release-lease", "no-review", "wait", "no-wait", "quote", "reviewer"].some(k => args[k] !== undefined)) die("--post-merge recovery is a separate action; omit the landing flags");
     const action = args["post-merge"];
     if (!["status", "resume", "retry", "skip", "reconcile"].includes(action)) die("--post-merge takes status, resume, retry, skip or reconcile");
     // The recovery calls the post-merge routes alone, so it asks for their
@@ -284,23 +240,15 @@ export async function runLand(io) {
   const wait = args.wait === true;
   const noWait = args["no-wait"] === true;
   const releaseLease = args["release-lease"] === true;
-  const workflow = args.workflow === true;
   const reviewer = args.reviewer;
   const movedOk = args["moved-ok"] === true;
-  // A Workflow landing runs the required checks here in a clean clone, as the
-  // plain landing does, and the Workflow waits for their observed results.
-  // t768 removed the other mode, the Workflow running them in a container;
-  // --checks local is still accepted, since it names what now always happens.
-  if (args.checks !== undefined && !workflow) die("--checks local is the only mode, and it applies to a Workflow landing; give it with --workflow, or leave it out (the plain landing always runs the checks here, in a clean clone)");
-  if (args.checks !== undefined && args.checks !== "local") die(`--checks container is gone: the required checks always run on this machine, in a clean clone (t768). Leave --checks out: atelier land ${id} --workflow`);
   const triageFlags = { triage: args.triage, noTriage: args["no-triage"], override: args["override-triage"] };
-  if (releaseLease && (dryRun || noReview || wait || noWait || args.quote !== undefined || reviewer !== undefined || workflow || movedOk || Object.values(triageFlags).some((v) => v !== undefined))) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
-  if (workflow && dryRun) die("--dry-run and --workflow together say two things: --dry-run prints what a landing would do and changes nothing, and --workflow starts the landing as a Cloudflare Workflow that does it; give one or the other");
+  if (releaseLease && (dryRun || noReview || wait || noWait || args.quote !== undefined || reviewer !== undefined || movedOk || Object.values(triageFlags).some((v) => v !== undefined))) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
   if (reviewer !== undefined && (typeof reviewer !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(reviewer))) {
     die(`--reviewer needs harness/model, such as codex/gpt-6-astra: atelier land ${id} --reviewer H/M`);
   }
   if (noReview && !hasCheckoutHere(io)) die(`--no-review records no land request and a machine with no registered checkout can only record one; run it where ${name}'s checkout is registered`);
-  if (noWait && (dryRun || noReview || wait || workflow)) die("--no-wait records the land request and returns; it cannot be given with --dry-run, --no-review, --wait or --workflow");
+  if (noWait && (dryRun || noReview || wait)) die("--no-wait records the land request and returns; it cannot be given with --dry-run, --no-review or --wait");
   if (args.quote !== undefined && (typeof args.quote !== "string" || !args.quote.trim())) die(`--quote needs the words that asked for the landing: atelier land ${id} --quote "TEXT"`);
   if (noReview && reviewer !== undefined) die("--reviewer and --no-review together say two things; name the reviewer, or give --no-review to leave the task submitted");
 
@@ -364,7 +312,7 @@ export async function runLand(io) {
   // no registered checkout does the same and then follows the job.
   const hasCheckout = hasCheckoutHere(io);
   if (noWait || !hasCheckout) {
-    if (!hasCheckout && (dryRun || workflow || wait)) die(io.noCheckout ?? `land needs ${name}'s registered checkout`);
+    if (!hasCheckout && (dryRun || wait)) die(io.noCheckout ?? `land needs ${name}'s registered checkout`);
     if (["merged", "abandoned"].includes(detail.item.state)) die(`${id} is ${detail.item.state}; there is nothing to land.`);
     if (detail.item.kind === "plan") die(`${id} is a plan, which atelier land does not land: a plan lands with atelier merge ${id} --head INTEGRATION_HEAD`);
     return followLand(io, { detail, itemPath, noWait });
@@ -431,21 +379,18 @@ export async function runLand(io) {
     // refreshes; the merge of main a landing makes would put a commit beside
     // them, and planGate refuses a plan whose head is not its integration head.
     if (d.item.kind === "plan") no(`${id} is a plan, which atelier land does not land: a plan lands with atelier merge ${id} --head INTEGRATION_HEAD, the integration head atelier plan show ${id} prints, and a plan branch that is behind main takes main through atelier plan refresh ${id}.`);
-    // Through the Workflow an accepted task is not a refusal but a resume:
-    // its workspace work is behind it, and the landing goes on from the
-    // acceptance (the merge the Workflow waits for).
-    // The plain landing finishes it: the accept is held, so the merge is all
+    // An accepted task is finished: the accept is held, so the merge is all
     // that is left, and it needs no workspace (t188).
     // A blocked task is never landed (G1), whoever asks: the block is the
     // server's record, lifted with atelier unblock.
     if (d.item.state === "blocked" || d.item.blocked) no(`${id} is blocked${d.item.blocked?.reason ? ` (${d.item.blocked.reason})` : ""}, and a blocked task is never landed. Lift the block with atelier unblock ${id}, then run atelier land ${id} again.`);
-    if (d.item.state === "accepted" && !workflow) return d;
+    if (d.item.state === "accepted") return d;
     // A submitted task lands the head it was checked and reviewed at (G2):
     // the merge is made in the registered checkout, so its workspace is not
     // needed and nothing is pushed to its branch.
-    if (d.item.state === "submitted" && !workflow) return d;
-    if (!workflow && d.item.state !== "claimed") no(`${id} is ${d.item.state}, so there is nothing to land: a landing takes a task its holder has pushed (claimed), submitted or accepted.`);
-    if (!workflow && !d.item.head) no(`${id} has nothing pushed yet, so there is nothing to land; its holder pushes with atelier push first.`);
+    if (d.item.state === "submitted") return d;
+    if (d.item.state !== "claimed") no(`${id} is ${d.item.state}, so there is nothing to land: a landing takes a task its holder has pushed (claimed), submitted or accepted.`);
+    if (!d.item.head) no(`${id} has nothing pushed yet, so there is nothing to land; its holder pushes with atelier push first.`);
     // Inspect before queuing, but replace a workspace only while holding the lease.
     needsPreparation = await prepareRecordedWorkspace(prepare || dryRun ? io : { ...io, print: () => {} }, { dir, itemPath, detail: d, dryRun: !prepare });
     if (!prepare && needsPreparation) return d;
@@ -502,7 +447,7 @@ export async function runLand(io) {
   // The moved-code comparison's state across this run's merges of main: the
   // owner's --moved-ok, the approval it recorded (revisions and findings),
   // and the command a stopped landing is run again with.
-  const moved = { ok: movedOk, approved: null, again: `atelier land ${id}${workflow ? " --workflow" : ""}` };
+  const moved = { ok: movedOk, approved: null, again: `atelier land ${id}` };
 
   if (dryRun) {
     // Where the dry run would wait: behind the holder of the lease, and
@@ -538,24 +483,9 @@ export async function runLand(io) {
     return;
   }
 
-  // The Workflow landing (t280): everything below is the CLI's own
-  // pipeline, unchanged; --workflow hands the same pipeline to a
-  // Cloudflare Workflow and stays as its executor instead. --wait needs
-  // no separate handling there: the Workflow queues for the lease by
-  // itself, in the order the landings asked.
-  if (workflow) {
-    // A Workflow from before t550 takes the lease first and expects this
-    // executor to renew it through the workspace steps, which this one no
-    // longer does; such a server is told to deploy rather than lapse.
-    const reviewFirst = checkCapabilities(version, [REVIEW_FIRST]);
-    if (!reviewFirst.ok) die(`${reviewFirst.message}, then run atelier land ${id} --workflow again (or land without --workflow, which needs no deploy)`);
-    if (wait) print("--wait is the Workflow's own behaviour: it queues for the lease in the order the landings asked, and takes it when its turn comes.");
-    if (!needsPreparation) await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
-    return runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, moved });
-  }
   // From here every failure throws rather than dying, so a lease taken is
   // released and the step recorded before the command ends. The recorder
-  // is the module's own (below), shared with the Workflow executor (t280).
+  // is the module's own (below).
   // Whether the server records the time a landing held the lease (the
   // release step) and the time before it (t550); an older server refuses
   // both, so they are printed here alone rather than warned of.
@@ -1289,7 +1219,7 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
       return binding;
     }
     throw new StepError([...findings,
-      `The landing stops before the review request: ${leftAs(io.args?.workflow === true ? `the merged head stays pushed to ${id}'s fork` : "")}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the developer, ${triageBypass(retry, triage)}.`].join("\n"), { recorded: stopRecorded });
+      `The landing stops before the review request: ${leftAs("")}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the developer, ${triageBypass(retry, triage)}.`].join("\n"), { recorded: stopRecorded });
   }
 }
 
@@ -1305,7 +1235,7 @@ function triageBypass(retry, triage) {
 }
 
 // The command that runs the landing again, triaging as this one did.
-const triageRetry = (io, triage, id) => `atelier land ${id}${io.args?.workflow === true ? " --workflow" : ""}${triage.mode === "model" && triage.source === "--triage" ? ` --triage ${triage.actor}` : ""}`;
+const triageRetry = (io, triage, id) => `atelier land ${id}${triage.mode === "model" && triage.source === "--triage" ? ` --triage ${triage.actor}` : ""}`;
 
 // After the submission, before the review request: the binding the triage
 // stood for must still be the task's. Nothing is triaged here, since the
@@ -1383,173 +1313,6 @@ async function runTriageModel(io, { harness, model, brief, diff, dir, timeoutMs 
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 
-// The workspace's write token, refreshed by re-claiming the task as the
-// holder the server records (t275), whose name the claim must carry exactly:
-// the server refreshes a claim only for `item.owner === actor`, and to any
-// other name a claim is a takeover. The workspace's own atelier.actor must
-// be that holder too, so a workspace left by an earlier holder is never
-// given the current one's token. An unclaimed task stops without changing
-// ownership or dispatch. The holder's runner rides along, as the server
-// refuses a re-claim from any runner but the one holding the task. The new token replaces the old one
-// in the workspace (the old one is revoked by the claim) and its expiry is
-// recorded. Answers the new expiry.
-async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
-  const recorded = io.git(["config", "--local", "atelier.actor"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
-  const { item } = await io.request("GET", itemPath);
-  const holder = item?.owner ?? recorded;
-  if (!recorded || (item?.owner && !sameActor(item.owner, recorded))) {
-    throw new StepError(`${id} is held by ${holder ?? "nobody"} and its workspace was claimed by ${recorded ?? "no recorded actor"}, so the landing cannot refresh the token for its holder`);
-  }
-  if (!item.owner) throw new StepError(`${id} is unclaimed; landing cannot claim it or withdraw its dispatch to obtain write credentials`);
-  const r = await io.request("POST", `${itemPath}/claim`, {}, holder, item.owner && item.runner ? { "x-atelier-runner": item.runner } : {});
-  if (typeof r?.workspace?.token !== "string" || !r.workspace.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
-  // The remote the claim answered is origin's one destination before the
-  // header, the expiry and the fetch are taken (t488): a fork workspace
-  // keeps the remote it has, and one on a runner route moves to the fork.
-  const moved = adoptWorkspaceRemote(io, { dir, id, holder }, r.workspace.remote);
-  io.adoptWorkspaceToken(dir, r.workspace);
-  return { holder, expiresAt: r.workspace.expiresAt ?? null, remote: r.workspace.remote, moved };
-}
-
-// The runner route a workspace claimed under a runner token fetches from and
-// pushes to (t488): ORIGIN/git/runner/PROJECT/ITEM.git, which the server
-// forwards to the fork for the runner's own Git credential alone.
-const RUNNER_ROUTE = /\/git\/runner\/[^/?#]+\/[^/?#]+$/i;
-const isRunnerRoute = (url) => typeof url === "string" && RUNNER_ROUTE.test(url.trim().replace(/\/+$/, ""));
-// A remote as a message shows it: any userinfo cut, since a URL can carry a
-// credential, and no message of a landing prints one.
-const shownRemote = (url) => String(url).replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
-
-// Where origin fetches from and pushes to, as the workspace's Git config
-// records them, every value of each key: Git fetches from the first URL
-// and pushes to every URL, or to every push URL where any is set apart, so
-// a route that is one of several is read where `--get` would answer only
-// the last. Each URL is trimmed; blank values are left out.
-function originUrls(io, dir) {
-  const readAll = (key) => {
-    const r = io.git(["config", "--local", "--get-all", key], { cwd: dir, allowFail: true });
-    return r && r.status === 0 ? String(r.stdout ?? "").split("\n").map((u) => u.trim()).filter(Boolean) : [];
-  };
-  const urls = readAll("remote.origin.url"), pushUrls = readAll("remote.origin.pushurl");
-  return { urls, pushUrls, url: urls[0] ?? null, destinations: [...urls, ...pushUrls] };
-}
-
-// The runner route origin still fetches from or pushes to, among every URL
-// it is configured with, or null for a workspace on its fork.
-function runnerRouteOf(io, dir) {
-  return originUrls(io, dir).destinations.find(isRunnerRoute) ?? null;
-}
-
-// How the workspace uses the route, for a message: as its fetch and push
-// URL, as a fetch URL alone where push URLs set apart name no route, or as
-// a push URL (one of several, or set apart from a fetch URL that is not
-// the route).
-function routeUse(io, dir, route) {
-  const { url, pushUrls } = originUrls(io, dir);
-  return isRunnerRoute(url) ? (pushUrls.length && !pushUrls.some(isRunnerRoute) ? "fetches from" : "fetches from and pushes to") : "pushes to";
-}
-
-// The remote a re-claim answered, taken as origin's one destination (t488).
-// A fork workspace whose origin is that remote alone, with no push URL
-// apart, is left as it is. Otherwise every fetch URL of origin is replaced
-// by the remote, every push URL set apart is dropped (the fork serves
-// both), and any header .git/config holds for a URL origin no longer uses
-// is removed, so no request carries the runner's credential to the fork or
-// the fork's to the route (the credentials file is rewritten whole by the
-// token's adoption that follows). A claim that answers no remote, or
-// another runner route — the landing's own credential is a runner's, which
-// cannot land — stops here. Answers whether origin moved.
-function adoptWorkspaceRemote(io, { dir, id, holder }, remote) {
-  if (typeof remote !== "string" || !remote.trim()) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace remote`);
-  if (isRunnerRoute(remote)) throw new StepError(`the re-claim of ${id} as ${holder} answered another runner route (${shownRemote(remote)}) rather than ${id}'s fork, so this landing's own credential is a runner token's; land with the developer's credential`);
-  const { urls, pushUrls, destinations } = originUrls(io, dir);
-  if (urls.length === 1 && urls[0] === remote && !pushUrls.length) return false;
-  const stale = [...new Set(destinations.filter((u) => u !== remote))];
-  // --replace-all leaves origin one fetch URL where it held several.
-  io.git(urls.length ? ["config", "--local", "--replace-all", "remote.origin.url", remote] : ["remote", "add", "origin", remote], { cwd: dir });
-  if (pushUrls.length) {
-    const dropped = io.git(["config", "--local", "--unset-all", "remote.origin.pushurl"], { cwd: dir, allowFail: true });
-    if (dropped.status !== 0 && dropped.status !== 5) throw new StepError(`origin's push URLs could not be dropped from ${id}'s workspace:\n${String(dropped.stderr ?? "").trim()}`);
-  }
-  for (const old of stale) {
-    // Exit status 5 means .git/config held no such header.
-    const unset = io.git(["config", "--local", "--unset-all", `http.${old}.extraHeader`], { cwd: dir, allowFail: true });
-    if (unset.status !== 0 && unset.status !== 5) throw new StepError(`the header for ${shownRemote(old)} could not be removed from ${id}'s workspace:\n${String(unset.stderr ?? "").trim()}`);
-  }
-  return true;
-}
-
-// Before the landing takes the lease: a write token that has lapsed or
-// lapses within TOKEN_WINDOW_MS is refreshed, and one that cannot be stops
-// the landing here before the lease. Release revokes tokens, so unclaimed
-// tasks stop without being re-claimed. The expiry is recorded at each
-// claim (recordTokenExpiry in cli/atelier.mjs); the server keeps none it
-// could answer later, so a workspace claimed before that was recorded has
-// an unknown expiry, which is refreshed once — the refresh records it, and
-// later landings read it. An accepted task has nothing left to push.
-// A workspace on a runner route (t488) is re-claimed whatever expiry it
-// records, since the route and its credential are the runner's, not the
-// landing's: the claim answers the fork and a write token of its own, which
-// replace the route before the lease.
-async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
-  if (item?.state === "accepted") return;
-  const route = runnerRouteOf(io, dir);
-  const recorded = io.git(["config", "--local", "atelier.write-token-expires-at"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
-  const at = recorded ? Date.parse(recorded) : NaN;
-  if (!route && item?.owner && Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
-  const when = Number.isFinite(at) ? `${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC` : null;
-  io.print(route
-    ? `${id}'s workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)}, with the runner's Git credential${when ? ` (recorded as one that ${when})` : " (its expiry is not recorded)"}, which the developer's landing cannot push through; re-claiming ${id} for its holder to land through its fork, before the landing takes the lease…`
-    : when
-      ? `${id}'s workspace write token ${when}; refreshing it for its holder before the landing takes the lease…`
-      : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
-  let fresh;
-  try { fresh = await refreshWorkspaceToken(io, { dir, id, itemPath }); }
-  catch (error) {
-    throw new StepError(route
-      ? `${id}'s workspace could not be moved from the runner route to its fork, so the landing stops before taking the lease: ${error.message}. Its commits are untouched; settle what that names (the task's holder, its claim, or the workspace's remote), then run atelier land ${id} again`
-      : `${Number.isFinite(at) && at <= Date.now() ? `${id}'s workspace token expired ${recorded.slice(0, 16).replace("T", " ")} UTC, and it` : `${id}'s workspace write token`} could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier push in ${dir}, which renews the token, or atelier claim ${id} in the workspace, then run atelier land ${id} again`);
-  }
-  const expiry = fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : "";
-  io.print(route || fresh.moved
-    ? `Moved ${id}'s workspace to its fork ${shownRemote(fresh.remote)} with a write token for ${fresh.holder}${expiry}; the landing pushes there.`
-    : `Refreshed ${id}'s workspace write token for ${fresh.holder}${expiry}.`);
-}
-
-// The landing's push, refreshed and tried once more when the server refuses
-// the token as expired (it lapsed, or was revoked, after the check before
-// the lease). Any other failure ends the landing as before. A refresh that
-// fails, or a second refusal, ends it saying the workspace token expired and
-// how to recover (t317), and records the head it could not push in the
-// workspace (LAND_UNPUSHED), so the next landing goes on from that merge
-// rather than stopping on commits the recorded head lacks. A push that
-// passes clears the record.
-async function pushRefreshing(io, ctx, push) {
-  const { dir, id } = ctx;
-  const pushed = async () => {
-    const r = await push();
-    io.git(["config", "--local", "--unset", LAND_UNPUSHED], { cwd: dir, allowFail: true });
-    return r;
-  };
-  const stop = (error, why) => {
-    const head = io.git(["rev-parse", "HEAD"], { cwd: dir, allowFail: true }).stdout?.trim();
-    if (head) io.git(["config", "--local", LAND_UNPUSHED, head], { cwd: dir, allowFail: true });
-    return new StepError(`${error.message}\n${id}'s workspace token expired, and ${why}. Run atelier push in ${dir}, which renews the token for the task's holder and pushes the merge this landing left there (or have the holder run atelier claim ${id} there), then run atelier land ${id} again`, error.data);
-  };
-  try { return await pushed(); }
-  catch (error) {
-    if (!EXPIRED_TOKEN.test(error.message)) throw error;
-    io.print(`The push was refused for an expired write token; refreshing ${id}'s token for its holder and pushing once more…`);
-    try { await refreshWorkspaceToken(io, ctx); }
-    catch (refresh) { throw stop(error, `renewing it for its holder failed: ${refresh.message}`); }
-    try { return await pushed(); }
-    catch (again) {
-      if (!EXPIRED_TOKEN.test(again.message)) throw again;
-      throw stop(again, "the fork refused the renewed token too");
-    }
-  }
-}
-
 // The tail of the log of a generator that stopped the merge, so the stop
 // carries its output and not only the log's path.
 function generatorOutput(regenerated) {
@@ -1585,14 +1348,7 @@ export async function runRegenerateIn(dir, regenerate, io, policy = null) {
 // output stands, as before, when the server records no failure at that head
 // (the check died before it posted, or the server is older than the
 // summary), and the step is recorded by `step` as any other. The error's
-// message holds the summary whole, for the terminal; its data's
-// `workflowReason` is the same failure fitted to WORKSPACE_REASON_MAX by
-// failureDetail (the tails give way first, then the names, then later
-// checks are counted in one line), which the Workflow landing reports as
-// why its workspace failed, so the record keeps every failed check and the
-// check-log line however long the first check's output ran. (Its own key:
-// a merge stop's data carries a `reason` of its own, the note the ledger's
-// merge step records, which is not what the Workflow is told.)
+// message holds the summary whole, for the terminal.
 export async function checkStep(io, itemPath, id, step, dir) {
   try { await step("check", ["check"], dir); }
   catch (error) {
@@ -1604,11 +1360,11 @@ export async function checkStep(io, itemPath, id, step, dir) {
       const failures = d?.item?.head && Array.isArray(d.policy?.checks) ? effectiveFailures(d.policy, d.evidence ?? [], d.item.head) : [];
       if (failures.length) {
         const resolved = await resolveFailures(failures, io.readLog ?? (async () => null));
-        summary = { whole: failureSummary(id, d.item.head, resolved), reason: failureDetail(why, id, d.item.head, resolved, WORKSPACE_REASON_MAX) };
+        summary = failureSummary(id, d.item.head, resolved);
       }
     } catch (read) { io.print(`Warning: the failed checks could not be read from the server (${read.message}); the check's own output follows.`); }
     if (!summary) throw error;
-    throw new StepError(`${why}\n${summary.whole}`, { ...error.data, workflowReason: summary.reason });
+    throw new StepError(`${why}\n${summary}`, error.data);
   }
 }
 
@@ -1700,8 +1456,7 @@ async function fetchLanding(io, { at, id, name, head }) {
 // owner gave --moved-ok, whose approval of exactly these findings at these
 // revisions is recorded on the ledger and in that log before the landing
 // goes on. An approval covers no other revisions or findings, so a later
-// round of the Workflow that finds edits in moved code again stops for a
-// fresh one. Answers the line the merge step records: the revisions compared
+// run that finds edits in moved code again stops for a fresh one. Answers the line the merge step records: the revisions compared
 // and the merge base, with what was found.
 //
 // A build's runner runs the same comparison before it submits (t435):
@@ -1791,9 +1546,8 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead, he
 // through the merge pipeline, which regenerates declared outputs once the
 // sources merge and unites declared record files by key, raise the
 // merged route level where main and the task each raised it (t248),
-// regenerate the fixtures and commit what changes. The CLI's own landing
-// and the Workflow executor (below) run the same code, so a landing
-// behaves the same whichever engine drives it. `guard` is the calling
+// regenerate the fixtures and commit what changes: a runner's merge-main.
+// `guard` is the calling
 // pipeline's lease guard, which throws once the lease is no longer this
 // landing's; every failure throws a StepError carrying the failed
 // step's data. Answers the head the workspace reached, main's head and
@@ -2052,272 +1806,4 @@ export function dirtyPaths(listing, { unstaged = false } = {}) {
     if (r[0] === "R" || r[0] === "C" || r[1] === "R" || r[1] === "C") i++;
   }
   return paths;
-}
-
-// ── the landing as a Cloudflare Workflow (t280) ────────────────────────────
-
-// `atelier land ID --workflow` lands the task through a Cloudflare Workflow
-// (src/landing-workflow.ts), which runs the server's half of the pipeline as
-// durable steps with retries: the required checks (in the checks mode
-// `container`) or the reading of their observed results (in the mode
-// `local`, the default), the submission, the review wait, then — only once
-// the head is checked and approved (t550) — the landing lease, the check
-// that main has not moved, the acceptance and the watch for the merge.
-// This command starts the instance, or attaches to
-// the task's live one, and is both its progress view and its executor for
-// the steps that need Git with a working tree: it polls the stage the
-// Workflow writes to the Ledger, says each new stage once, and
-//   - at `workspace` (the Workflow waits for this machine, holding no
-//     lease) merges main into the workspace, regenerates and pushes — the
-//     same code as the plain landing — and in the local checks mode runs
-//     the required checks in a clean clone (`atelier check`, as the plain
-//     landing does), and reports the pushed head, or the conflicts it
-//     stopped on, as a `workspace` event naming the round; a new round
-//     comes when main moved before the Workflow took the lease, and is
-//     worked the same way;
-//   - at `conflict` (a pause from an earlier run, whose conflicts the owner
-//     has since resolved and committed: the preflight refuses a workspace
-//     with a merge in progress or uncommitted changes) sends `resume`;
-//   - at `merge` (the Workflow holds the lease and has accepted) runs
-//     `atelier merge` in the registered checkout.
-// It ends when the instance completes or fails. Closing the laptop stops
-// only this view: the Workflow keeps its place, and the same command run
-// again attaches and goes on from the stage it reached.
-// The retry of a failed read: every failure asks for the next wait, doubling
-// from baseMs up to maxMs and never past the window, and says when the
-// window has run out; one good read starts the window afresh. The clock is
-// injected so a test needs no real time.
-export function readRetry({ now = Date.now, windowMs = READ_WINDOW_MS, baseMs = POLL_MS, maxMs = READ_BACKOFF_MAX_MS } = {}) {
-  let since = null, attempt = 0;
-  return {
-    ok() { since = null; attempt = 0; },
-    next() {
-      const t = now();
-      since ??= t;
-      const tried = t - since;
-      if (tried >= windowMs) return { giveUp: true, tried };
-      return { giveUp: false, tried, wait: Math.min(baseMs * 2 ** attempt++, maxMs, windowMs - tried) };
-    },
-  };
-}
-
-// Whether the server has answered that the landing Workflow is gone: the
-// ledger remembers none, it names another instance, the read error says the
-// instance does not exist, or the last status it saw was an end. Any other
-// failed read (a network or 5xx error, an unknown status) says nothing about
-// the instance and is read again.
-export function workflowIsGone(read, startedInstance) {
-  if (!read?.instance) return true;
-  if (read.instance !== startedInstance) return true;
-  if (/not found|not_found|does not exist|no such/i.test(read.readError ?? "")) return true;
-  return !read.status && ["complete", "errored", "terminated"].includes(read.lastStatus?.status);
-}
-
-const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused", "rollingBack"];
-
-async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, moved }) {
-  const { args, name, id, p, request, git, die, print } = io;
-  const reviewer = args.reviewer, noReview = args["no-review"] === true;
-  const wfPath = `${itemPath}/landing-workflow`;
-  const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
-  const record = landRecorder(io, itemPath);
-  const sleep = (ms = POLL_MS) => new Promise((ok) => setTimeout(ok, ms));
-  const reads = readRetry({ now: io.now });
-  const unreadable = async (why) => {
-    const step = reads.next();
-    if (step.giveUp) return step;
-    print(`Warning: the landing Workflow could not be read (${why}); trying again in ${Math.round(step.wait / 1000)}s, for up to ${Math.round(READ_WINDOW_MS / 1000)}s in all.`);
-    await sleep(step.wait);
-    return null;
-  };
-  // Each event and lease call names the instance this command attached to,
-  // so once the server replaces it (t430) they are refused rather than
-  // advance the replacement or touch its lease.
-  let started;
-  const send = (type, payload) => request("POST", wfPath, { event: { type, payload }, instance: started.instance });
-
-  // Start, or attach to the task's live instance. An accepted task has
-  // nothing left but its merge: it is landed through a live instance at
-  // its merge stage, and otherwise merged by hand, as the plain landing says.
-  let current = null;
-  try { current = await request("GET", wfPath); } catch (error) { die(error.message); }
-  const live = !!current?.instance && LIVE.includes(current.status?.status);
-  if (d0.item.state === "accepted" && !live) die(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
-  // A landing that triages says so, and the Workflow then submits and asks
-  // for the review only while the triage it is told of stands (t475).
-  try { started = await request("POST", wfPath, { checks: "local", ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(triage.mode !== "off" ? { triage: true } : {}) }); }
-  catch (error) { die(error.message); }
-  // A live instance the server replaced rather than attach to (t430): it
-  // waited for the lease past the limit, or the reviewer it was started
-  // with is no longer eligible and this run named one who is.
-  if (started.replaced) print(`Replaced ${id}'s landing Workflow ${started.replaced.from} with ${started.replaced.to} (${started.replaced.reason}): ${started.replaced.detail}.`);
-  if (started.reviewerRefused) print(`Warning: ${started.reviewerRefused}; the live instance keeps its reviewer.`);
-  print(started.created || started.replaced
-    ? `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow runs the submission and the review on Cloudflare as durable steps without the landing lease, then takes ${name}'s lease for the acceptance and the merge alone; this machine merges main, pushes, runs the required checks in a clean clone and merges when the Workflow asks, and the Workflow goes on only once the server has recorded every check passing at the pushed head. If this command stops, run atelier land ${id} --workflow again to attach.`
-    : `Attached to ${id}'s landing Workflow (instance ${started.instance}, at ${started.stage ?? "its start"}).`);
-  if (!started.created && !started.replaced && !started.reviewerRefused && ((reviewer && reviewer !== started.reviewer) || (noReview && started.noReview !== true))) print(`The live instance keeps the review options it was started with (${started.noReview ? "--no-review" : started.reviewer ? `reviewer ${started.reviewer}` : "the reviewer the gate picks"}); --reviewer and --no-review apply to a new landing.`);
-
-  // The pause on a conflict, ended: the owner resolved and committed the
-  // conflicts (the preflight saw the workspace clean), so the Workflow is
-  // told to ask for the workspace steps again.
-  if (!started.created && started.stage === "conflict") {
-    await send("resume", { round: started.round });
-    print(`Resumed the landing after the conflicts of round ${started.round + 1}; the Workflow asks for the merge of main again.`);
-  }
-
-  // The workspace steps hold no lease (t550): the Workflow takes it only
-  // once the head they report is checked and approved, so nothing here
-  // renews it, and nothing can be lost while they run.
-  const guard = () => {};
-
-  let lastStatus = started.status, lastInstance = started.instance;
-  const queueState = async (read) => {
-    if (typeof read?.queued === "boolean") return read.queued ? `${id} is still queued` : `${id} is not queued`;
-    try {
-      const lease = await request("GET", leasePath);
-      return Array.isArray(lease.waiting) ? (lease.waiting.some((row) => row.item === id) ? `${id} is still queued` : `${id} is not queued`) : `whether ${id} is still queued is unknown`;
-    } catch { return `whether ${id} is still queued is unknown`; }
-  };
-  let said = null, workedRound = null, mergedHere = false, saidWait = false;
-  for (;;) {
-    let read;
-    try { read = await request("GET", wfPath); }
-    catch (error) {
-      const over = await unreadable(error.message);
-      if (over) die(`the landing Workflow of ${id} could not be read for ${Math.round(over.tried / 1000)}s (last error: ${error.message}); instance ${lastInstance ?? "none"} is not known to have ended. Its lease lapses on its own. To attach again, run: atelier land ${id} --workflow.`, 1);
-      continue;
-    }
-    const { instance, status, stage, round = 0, detail, files } = read ?? {};
-    // A merged task reports no landing instance any more; when this CLI did
-    // the merge itself, the landing is over, not lost (t308): say so and free
-    // the lease now rather than leaving it to lapse.
-    if ((!instance || !status) && mergedHere) {
-      try { await request("POST", leasePath, { cancel: true, item: id }); } catch { /* a merged task's lease is already free on the server */ }
-      print(`${id} landed through the landing Workflow; the lease is released.`);
-      return;
-    }
-    let tried = "";
-    if (!workflowIsGone(read, started.instance) && (!status || status.status === "unknown") && !mergedHere) {
-      const over = await unreadable(read?.readError ?? "no status returned");
-      if (!over) continue;
-      tried = `the read failed for ${Math.round(over.tried / 1000)}s; `;
-    } else if (status && status.status !== "unknown") reads.ok();
-    if (!instance || !status || status.status === "unknown" || instance !== started.instance) {
-      const last = instance === started.instance ? read?.lastStatus ?? lastStatus : lastStatus;
-      die(`${tried}the landing Workflow of ${id} can no longer be read (instance ${lastInstance ?? "none"}); last status: ${last?.status ?? "unknown"}; last error: ${last?.error?.message ?? detail ?? "none recorded"}; read error: ${read?.readError ?? (instance && instance !== started.instance ? `replaced by ${instance}` : "no status returned")}; ${await queueState(read)}. Its lease lapses on its own. Inspect it with: npx wrangler workflows instances describe landing ${lastInstance}. To start or attach again, run: atelier land ${id} --workflow (a missing instance is cleared automatically; a live instance is reattached).`, 1);
-    }
-    lastStatus = status;
-    lastInstance = instance;
-    if (status.status === "complete") {
-      if (noReview || status.output?.review === "skipped") print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id}.`);
-      else print(`${id} landed through the landing Workflow (instance ${instance}); the lease is released.`);
-      return;
-    }
-    if (status.status === "errored" || status.status === "terminated") {
-      die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}; last status: ${status.status}; ${await queueState(read)}`, 1);
-    }
-    // A new instance's record begins at `lease` with no detail, before its
-    // first step writes `workspace` (t550): said as starting, not as the
-    // wait for the lease a checked and approved head makes, which names it.
-    const shown = stage === "lease" && !detail ? "starting" : stage;
-    const key = `${shown}:${round}:${stage === "review" ? detail ?? "" : ""}`;
-    if (key !== said) {
-      said = key;
-      const what = {
-        starting: "is starting",
-        lease: "has the head checked and approved, and queues for the landing lease for the merge alone",
-        workspace: `waits for this machine to merge main and push, holding no lease${detail ? ` (${detail})` : ""}`,
-        conflict: `is paused on conflicts in ${(files ?? []).join(", ") || "the merge of main"}`,
-        checks: "reads the observed results of the checks this machine ran",
-        review: `waits for the review verdict${detail ? `. ${detail}` : ""}`,
-        merge: "has accepted the reviewed head and waits for the merge",
-        done: "is done",
-        failed: `failed: ${detail ?? ""}`,
-      }[shown] ?? `is at ${stage}`;
-      print(`The landing Workflow ${what}${round ? ` (round ${round + 1})` : ""}.`);
-    }
-
-    if (stage === "workspace" && workedRound !== round) {
-      workedRound = round;
-      try {
-        const current = await io.request("GET", itemPath);
-        await prepareRecordedWorkspace(io, { dir, itemPath, detail: current });
-        await ensureWorkspaceToken(io, { dir, id, itemPath, item: current.item });
-        const merged = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0, moved });
-        guard();
-        await recordedHeadStillStands(io, itemPath, current.item.head);
-        await pushRefreshing(io, { dir, id, itemPath }, () => { guard(); return landStep(io, record, "push", ["push"], dir, () => ({ head: merged.head })); });
-        // The triage, before the checks and before the head is reported:
-        // the Workflow submits and asks for the review only once it has the
-        // head, and the checks' passing evidence asks again for a review
-        // request the push withdrew from a task already submitted at an
-        // older head (Ledger.reaskReview), so a triage that stops ends the
-        // landing (the failed report below) with nothing submitted and no
-        // review asked for. The binding goes with the head, and the
-        // Workflow checks it against the Ledger before the submission and
-        // again before the review request (t475).
-        const triaged = await triageGate(io, { triage, dir, id, itemPath, head: merged.head, mainHead: merged.mainHead, target: merged.target, record, guard });
-        guard();
-        // The required checks run here, in a clean clone of the pushed head,
-        // through the same `atelier check` step as the plain landing, before
-        // the head is reported, so the server has recorded their observed
-        // results when the Workflow reads them. A failure ends the landing
-        // below, reported as a failed workspace.
-        print(`Pushed ${short(merged.head)} to ${id}'s fork; running the required checks in a clean clone.`);
-        await checkStep(io, itemPath, id, (kind, argv, cwd) => landStep(io, record, kind, argv, cwd), dir);
-        guard();
-        print(`The required checks pass at ${short(merged.head)}; reporting the head to the landing Workflow.`);
-        await send("workspace", { round, head: merged.head, mainHead: merged.mainHead, mergedIn: merged.mergedIn, ...(triaged ? { triage: { base: triaged.base, criteria: triaged.criteria } } : {}) });
-      } catch (error) {
-        const conflicts = Array.isArray(error.data?.conflicts) && error.data.conflicts.length ? error.data.conflicts : null;
-        // A conflict pauses the Workflow (it releases the lease and waits
-        // for the owner); any other failure ends it with this message, which
-        // the Workflow keeps to WORKSPACE_REASON_MAX: a failed check reports
-        // the summary checkStep fitted to that size (its data's
-        // workflowReason), so it is never cut here; any other message,
-        // conflicts included, is cut at it. Edits in code main moved
-        // pause it the same way (t471), naming the moved code's files,
-        // though no merge was made: the resume asks for the workspace steps
-        // again, which compare afresh.
-        const reason = String(typeof error.data?.workflowReason === "string" ? error.data.workflowReason : error.message).slice(0, WORKSPACE_REASON_MAX);
-        try { await send("workspace", conflicts ? { round, conflict: true, files: conflicts, reason } : { round, failed: true, reason }); }
-        catch { /* the Workflow times out on its own and releases the lease */ }
-        die(conflicts && error.data.moved
-          ? `${error.message}\nThe landing Workflow is paused at its conflict stage, holding no lease; no merge was made, so nothing is left to resolve in the index. Once the edits are ported, committed and pushed with atelier push, run atelier land ${id} --workflow again: it resumes this landing and compares afresh (with --moved-ok, it records your approval of the findings it detects and goes on).`
-          : conflicts
-          ? `${error.message}\nThe landing Workflow is paused at its conflict stage, holding no lease. Once the conflicts are resolved, committed and pushed with atelier push, run atelier land ${id} --workflow again: it resumes this landing.`
-          : error.message);
-      }
-    }
-
-    if (stage === "merge" && !mergedHere) {
-      mergedHere = true;
-      print(`${id} is accepted; merging in ${p.path}…`);
-      for (let tried = 0; ; tried++) {
-        const r = await runCommand([process.execPath, io.atelier, "merge", id, "--project", name], { cwd: p.path, env: io.env });
-        if (r.passed) {
-          await record("merged", r.durationMs, { mergeCommit: git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path }) });
-          print(`${id} merged: ${r.output.split("\n").filter(Boolean).at(-1) ?? "merged"}`);
-          break;
-        }
-        // The server refuses to merge the head into a main other than the
-        // one the Workflow confirmed under the lease (t550): it goes back
-        // for a merge of the new main, new checks and a review.
-        if (/main_moved|since .*'s landing confirmed it under the lease/.test(r.output)) {
-          die(`${r.output.split("\n").filter(Boolean).slice(-6).join("\n")}\nNothing was merged: ${id} was checked and reviewed against an older main.`);
-        }
-        // The Workflow renews the lease while it waits for the merge (t550);
-        // a landing_lease refusal means it was freed by hand and another
-        // landing took it, which finishes first. The merge is tried after
-        // it, and the server refuses it if that landing moved main.
-        if (/landing_lease|one landing runs at a time/.test(r.output) && tried < 720) {
-          if (!saidWait) { print(`The merge waits: another task's landing holds ${name}'s landing lease. Trying again every ${Math.round(POLL_MS / 1000)}s…`); saidWait = true; }
-          await sleep();
-          continue;
-        }
-        die(`atelier merge failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}\nThe landing Workflow keeps waiting for the merge; fix what failed and run atelier land ${id} --workflow again.`);
-      }
-    }
-    await sleep();
-  }
 }

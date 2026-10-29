@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { landFixture, CEILING_MS, until, waitingLanding, holdingLanding, underLease, spawnLanding } from "./land-fixture.mjs";
 import { cancelHeld, stillRunning } from "./land-lease-workflow-shared.mjs";
 
-// The atelier land tests of signals, the lease's heartbeat and takeovers, the
-// landing Workflow and the write token, split out of test/land.test.mjs
+// The atelier land tests of signals, the lease's heartbeat and takeovers
+// and the write token, split out of test/land.test.mjs
 // (t550), which describes the suite; the fixture is in test/land-fixture.mjs.
 
 test("SIGINT and SIGTERM release the lease before the landing ends, with the signal's status", async (t) => {

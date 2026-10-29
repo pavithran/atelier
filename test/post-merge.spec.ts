@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject, introspectWorkflowInstance } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { parsePostMerge } from "../src/post-merge.ts";
@@ -175,29 +175,6 @@ it("legacy landings with an unknown original baseline cannot substitute the publ
   expect(await L.postMergeRun("t1")).toBeNull();
   expect((await call("POST", "/items/t1/merged", { mergeCommit: M })).status).toBe(409);
 });
-
-it("Workflow's real merge wait does not complete while the same Ledger reservation remains unresolved", async () => {
-  const name = "post-workflow", { L, call, action, publish } = await setup(name, false, false);
-  await L.setLandingWorkflow("t1", name, "owner");
-  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, name);
-  await wf.modify(async m => {
-    await m.mockStepResult({ name: "confirm the fork's head" }, { head: B });
-    await m.mockStepResult({ name: "confirm main has not moved" }, { main: A });
-  });
-  const instance = await env.LANDING_WORKFLOW.create({ id: name, params: { project: name, key: name, item: "t1", actor: "owner", pollMs: 10, mergePollMs: 10 } });
-  await instance.sendEvent({ type: "workspace", payload: { round: 0, head: B, mainHead: A, mergedIn: false } });
-  const until = async (predicate: () => Promise<boolean>) => { for (let i = 0; i < 400; i++) { if (await predicate()) return; await new Promise(r => setTimeout(r, 25)); } throw new Error("condition not reached"); };
-  await until(async () => (await L.landingWorkflowOf("t1"))?.stage === "merge");
-  await L.initProject({ name, repo: name, reset: false, postMerge: policy }, "owner");
-  await call("POST", "/items/t1/landing", { head: B }); publish(); await call("POST", "/items/t1/merged", { mergeCommit: M });
-  await action("prepare");
-  await new Promise(r => setTimeout(r, 100));
-  expect((await L.landingWorkflowOf("t1"))?.stage).toBe("merge");
-  await action("skip", { reason: "owner waiver" }); await action("skip", { reason: "owner waiver" });
-  await wf.waitForStatus("complete");
-  expect((await L.postMergeRun("t1"))?.state).toBe("complete");
-});
-
 
 it("deploy records command outcome separately and the real route verifies commit and route level before unblocking", async () => {
   const { L, call, action, publish } = await setup("post-deploy", false);

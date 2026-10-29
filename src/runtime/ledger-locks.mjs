@@ -17,10 +17,21 @@
 //            lock as a writer.
 //   project  a change that may reach any task of the project: the project's
 //            lock as a writer, which waits for every push in it.
+//   lease    a change to the project's landing lease (task 6): the project's
+//            lock as a reader and, as a writer, the lock of the task its first
+//            argument names and of the task that holds the lease now, so a
+//            take, takeover, renewal or release waits for the landing push in
+//            flight on either, and a landing push that starts meanwhile waits
+//            for it and is then refused.
+// Since task 6 every method that writes an item's head or acceptance takes
+// the task's lock too (never "planned"): a landing grant counts only while
+// its task is accepted at its head.
 export const GRANT_LOCKS = {
   claim: "task", unclaim: "task", recordToken: "task", recordRunnerGit: "task", recordOwnerPortToken: "task",
   release: "task", handoff: "task", abandon: "task", dispatch: "task", merged: "task", recordMerge: "task", landedFast: "task",
-  submit: "planned", recordPush: "planned", editItem: "planned", addEvidence: "planned", addReview: "planned",
+  accept: "task", recordPush: "task", observePush: "task", editItem: "task", addReview: "task", setFork: "task", moveFork: "task", taskRefreshed: "task",
+  beginProjectLanding: "lease", renewProjectLanding: "lease", cancelProjectLanding: "lease",
+  submit: "planned", addEvidence: "planned",
   claimReview: "planned", withdrawReviewRequest: "planned", claimCriteriaReview: "planned", addCriteriaReview: "planned",
   failCriteriaReview: "planned", requestCriteriaReview: "planned", resolveCriteriaFinding: "planned",
   integratePart: "project", integrationFailed: "project", stopPlan: "project", approvePlan: "project",
@@ -40,6 +51,20 @@ export function ledgerLocks(git, stub) {
     RuleError ??= (await import("../rules.ts")).RuleError;
     return new RuleError("push_running", `a push to ${task ? `${task}'s branch` : "this project"} is still running, and it ends within 15 minutes; nothing was changed`, 503, "wait for the push to end, then run the same command again");
   };
+  // The lease's locks: the named task's and the holder's, taken in order;
+  // a holder that changed while they were taken is locked again.
+  const leaseLocked = async (key, id, call) => {
+    const holderOf = async () => (await stub(`project:${key}`).readProjectLanding().catch(() => null))?.item ?? null;
+    for (;;) {
+      const holder = await holderOf();
+      const tasks = [...new Set([id, holder].filter((t) => typeof t === "string" && TASK.test(t)))];
+      let release;
+      try { release = await git.lock(key, tasks); }
+      catch { throw await refused(tasks[0] ?? null); }
+      if (await holderOf() !== holder) { release(); continue; }
+      try { return await call(); } finally { release(); }
+    }
+  };
   return async (name, method, args, call) => {
     // A call made on a model's word (G18) reaches the Ledger as actingCall
     // (acting, method, args): its locks are the method's own.
@@ -56,6 +81,7 @@ export function ledgerLocks(git, stub) {
       if (!planned && scope === "planned") return call();
       task = planned ? null : id;
     }
+    if (scope === "lease") return leaseLocked(key, id, call);
     let release;
     try { release = await git.lock(key, task); }
     catch { throw await refused(task); }

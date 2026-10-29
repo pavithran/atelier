@@ -171,8 +171,8 @@ so the task's branch and its approvals stay as they were reviewed.
    the task stays accepted with its approvals, and is not rejected.
 7. **`push`**: the merge commit, and nothing else, goes to the project's
    branch (`pushMergeToProjectBranch` in `cli/landing.mjs`, the one function
-   that pushes it; task 6 gives it a landing grant minted to the lease
-   holder in place of the developer's credential). If main moved between
+   that pushes it, with a landing grant minted to the lease holder for the
+   task at its accepted head: docs/branches.md). If main moved between
    the checks and the push, Git and the hook refuse it, since it is not a
    fast-forward: the merge is undone and steps 4 to 6 run again on the new
    main, at most twice, and each merge is pushed at most once. A third
@@ -182,11 +182,14 @@ so the task's branch and its approvals stay as they were reviewed.
    owner and landing grants write by fast-forward, and never decide the
    landing: a refused notes push leaves them in the checkout for the next
    landing.
-8. **`merged`**: the merge is recorded, and the lease released.
+8. **`merged`**: the merge is recorded, once the server has found it on the
+   project's branch with the accepted head among its parents; the landing
+   grant is revoked, and the lease released.
 
 The developer's own `atelier merge t9` (without `--landing`) still merges
 and publishes an accepted head by hand, pushing only the merge to the
-project's branch, without the merged-tree checks.
+project's branch, without the merged-tree checks. On the Node server it
+takes the landing lease for its landing grant, and lets it go at the end.
 
 ### The landing record (G1)
 
@@ -272,7 +275,7 @@ Details of the steps:
 
    The landing now checks named capabilities rather than that number (t458):
    `GET /api/version` also lists `capabilities`, names like
-   `land.workflow.v1` that each stand for one behaviour of the API, and
+   `land.triage.v1` that each stand for one behaviour of the API, and
    `atelier land` refuses, before the lease or any workspace changes, when
    the list lacks one of the capabilities its module declares
    (`src/usage/commands/land.ts`, read back as `COMMAND_CAPABILITIES.land`),
@@ -441,17 +444,9 @@ submitted. Criteria changed after the submission stop the landing before the
 review request, saying the task is submitted and no review was asked for;
 running the landing again triages the new criteria.
 
-Through the Workflow, the landing is started as one that triages and the
-machine holding the workspace reports the triage's merge base and criteria
-binding with the head. The Workflow submits, and later asks for the review,
-only while the Ledger holds a pass, bypass or override recorded at that whole
-binding and the task's head and criteria are still those; otherwise it ends,
-saying what moved, with the lease never taken.
-
 Only every criterion met goes on. A criterion not met or unsure, a task with
 no criteria, a reply that cannot be read, a timeout, or a model that is
-unavailable stops the landing before the task is submitted (through the
-Workflow, before the head is reported, so the Workflow submits nothing): the
+unavailable stops the landing before the task is submitted: the
 findings are printed with the command to run again, the lease is never
 taken, and the task stays with its holder, its merged head pushed. The project
 developer can skip the triage with `--no-triage "REASON"`, or go past a stop with
@@ -466,239 +461,6 @@ and the developer's reason), never as a review: it adds no approval, rejection
 or round, and the gate decides as it did. After a pass or a bypass the
 landing goes on under the review rules as they are, whether no review is
 needed, an approval already covers the change, or `--no-review` was given.
-
-## Landing through a Cloudflare Workflow
-
-The Workflow landing keeps the 1.x order, merging main into the task's
-workspace and pushing it before the checks and the review; G2's order above
-is the plain landing's. The Node server does not run Workflows, so on it
-`--workflow` fails with `not_supported`.
-
-`atelier land t9 --workflow` lands the task through a Cloudflare Workflow
-(`src/landing-workflow.ts`, the `LANDING_WORKFLOW` binding in
-`wrangler.jsonc`) instead of running every step on the developer's machine.
-Without `--workflow`, `atelier land` runs exactly as the section above
-describes; the Workflow is an opt-in per landing, and `--dry-run` with
-`--workflow` is refused.
-
-The Workflow runs the steps a Worker can do alone as durable steps
-(`step.do`) with retries: five tries, 2 to 16 seconds apart, each step
-bounded at five minutes. Each step reads and writes the Ledger Durable
-Object directly, so it needs no write token, and a transient failure (a 503
-from Artifacts, a Durable Object reset) is retried rather than ending the
-landing. In order:
-
-1. Read the task: a merged, abandoned or accepted task, or a plan, ends the
-   Workflow at once with the plain landing's words, as does a landing a
-   blocking pre-review fenced (t524).
-2. Wait for the workspace (stage `workspace`, below), holding no lease
-   (t550), then see the pushed head in the Ledger. A report must name the
-   main head the push was merged with; one that names none ends the landing.
-3. Settle the required checks (below): read their observed results at the
-   pushed head from the Ledger, where the command recorded them.
-4. Submit the task in its holder's name, as `atelier submit` in the
-   workspace does.
-5. Request the review and wait for the verdict, polling the Ledger; the
-   verdict is judged by `src/landing-verdict.ts`, which the plain landing
-   uses too. `--no-review` ends here, leaving the task submitted and the
-   lease never taken. A failed check or a rejection ends the landing before
-   the lease, too.
-6. Ask the gate, as the acceptance will, whether the head is ready: checks
-   passing and the approval counted (or none needed).
-   Steps 3 to 6 hold no lease to renew, so each asks the landing's record
-   whether this instance is still the task's landing; one the server
-   replaced (t430) stops there without checking, submitting or reviewing.
-7. Take the project's landing lease (stage `lease`), queueing for it in the
-   order the landings asked, for up to three hours, and record the time
-   spent before it and in the queue.
-8. Confirm main, read from Artifacts, is still the main head the executor
-   reported. If it moved, release the lease (recording the time held),
-   write the stage `workspace` of a new round saying main moved, and go
-   back to step 2: the executor merges main again, and the new head is
-   checked, submitted and reviewed as before, where the server carries the
-   approval over a clean merge of main as far as its rules let it (t459)
-   or asks for a new review. Each round's steps are named
-   for it, so none answers from an earlier round's cached result. After
-   five rounds of main moving, the landing ends unmerged.
-   Where main has not moved, record it with the head on the Ledger, so the
-   merge of the head into any other main is refused (`main_moved`).
-9. Read the fork's head from Artifacts, which must be the reviewed head,
-   then renew the lease (a lease another landing took over stops this one)
-   and accept it.
-10. Wait for the merge to be recorded (stage `merge`, below), renewing the
-    lease on every poll so it cannot lapse to another landing meanwhile,
-    then release the lease, recording the time held.
-
-Two kinds of step need Git with a working tree, which a Worker does not
-have, and stay on the machine that holds the task's workspace: merging main
-into the workspace (with the regenerate command and the route-level raise)
-and pushing it, and the final `atelier merge` in the registered checkout,
-which publishes to the baseline. The Workflow writes its stage to the
-Ledger (`lease`, `workspace`, `conflict`, `checks`, `review`, `merge`,
-`done` or `failed`), and `atelier land t9 --workflow` reads it through
-`GET .../items/t9/landing-workflow`, says each new stage once, and acts on
-two of them:
-
-- At `workspace` the Workflow holds no lease, and the command merges main,
-  regenerates and pushes with the same code as the plain landing, triages
-  when the landing triages, then runs the
-  required checks in a clean clone (the plain landing's `atelier check`
-  step), and reports the pushed head and the main it merged as a
-  `workspace` event. A new round (main moved before the lease, or a
-  conflict resolved) is worked the same way. A check that fails is
-  reported as a failed workspace step instead, which ends the Workflow with
-  the check's output.
-  Every report names its round, so a report the Workflow buffered from an
-  earlier round is passed over.
-- At `merge` the Workflow holds the lease, renewing it until the merge is
-  recorded, and has accepted, and the command runs `atelier merge t9` in the
-  registered checkout. A merge the server refuses because main moved from
-  the commit confirmed under the lease (`main_moved`) ends the command,
-  nothing merged.
-
-### Where the checks run
-
-The required checks of a Workflow landing run on the developer's machine,
-never on the server. After the push (and the triage, when the landing
-triages), the command runs them in a clean clone of the pushed head, exactly
-as the plain landing does, and the server records each result as observed
-evidence at the head it reads from Artifacts (only the task's holder can
-record a check, and only at that head). Only then does the command report the
-head. The Workflow starts no container: it reads the task's evidence from
-the Ledger and judges it with `evidenceAt` (`src/rules.ts`), the gate's own
-reading, so only an observed result at exactly the pushed head counts (never
-a report, a merged run, or a run at another head). Every required check that
-applies must pass. A failing one ends the landing, recorded as a failed
-`land.check`, with the lease never taken and nothing submitted. Checks with
-no result are waited for, polling, for up to 30 minutes (`checksTimeoutMs`
-on the route), and then end the landing, naming them. The command records
-the `land.check` step it ran, as the plain landing does.
-
-Until t768 the landing could choose a second place with `--checks container`,
-where the Workflow ran the checks in a Cloudflare container. That mode is
-gone. `--checks local` is still accepted and changes nothing; `--checks
-container` is refused with a message saying so. A start that names no mode
-(a command older than t768 sends `local`, one older than t305 sent none) is
-treated as the one mode there is, and the record of a landing started
-before t768 may still carry a `checks` field, which nothing reads.
-
-### Conflicts and what the Workflow protects against
-
-A merge of main that stops on conflicts is reported as such. The Workflow,
-holding no lease, pauses at stage `conflict`, naming the files, for up to a
-week. The developer (or the builder, through `atelier dispatch t9 --job
-merge-main`) resolves and commits them, then runs `atelier land t9
---workflow` again: the command attaches to the live instance and sends a
-`resume` event, and the Workflow asks for the workspace steps in a new round, since main may have moved while it waited.
-
-What this protects against, and what it does not:
-
-- A closed laptop or a killed command stops only the view. The Workflow
-  keeps its place, and the same command run again attaches to the live
-  instance and goes on from its stage. The submission, the review wait and
-  the wait for the checks proceed with no machine attached; the
-  workspace steps (with the checks) and the final merge wait for one. The Workflow holds no lease while it waits for the workspace
-  (t550). While it waits for the merge it holds the lease and renews it, so
-  no other landing can merge and move main under its accepted head; a
-  machine that is gone therefore holds the project until the merge wait
-  times out, or until `atelier land t9 --release-lease` frees the lease,
-  which ends the Workflow at its next poll with the task still accepted.
-  As a second guard the server refuses the merge of a head into any main
-  other than the one the landing confirmed under the lease (`main_moved`):
-  merge main into the workspace and push it, which withdraws the
-  acceptance, then land again.
-- A transient failure of the server's own steps is retried. A failure that
-  outlasts the retries ends the Workflow with the stage `failed`, the
-  reason, and the lease released; run the command again to start a new
-  landing.
-- The push uses the workspace's write token, as in the plain landing; an
-  expired token there fails the workspace step, which ends the Workflow with
-  the CLI's own message.
-- Timeouts: a workspace that never reports ends the Workflow after 24 hours,
-  a review after one hour (both before the lease is taken), a merge after
-  24 hours (with the lease released), each naming the by-hand command.
-- The lease wait has a limit, `LANDING_LEASE_WAIT_LIMIT_MS` in
-  `src/landing/lease-wait.ts`: three hours, measured from the time the
-  server recorded the instance entering the stage `lease` (`stageAt` of its
-  landing-workflow record; the same stage written again in a round keeps
-  it), never from the instance's own clock. The Workflow's own wait
-  (`waitTimeoutMs`) is capped at it. Its timeout names the holder the final
-  ask found, read on the server at that ask, or says that no landing held
-  the lease (the queue ahead stood in the way), with the server's refusal.
-- An instance the server records at `lease` for the limit or longer (the
-  boundary included) is not attached to: `atelier land t9 --workflow`
-  terminates it, reads its status back until it has ended, and only then
-  starts a replacement, which keeps the task's place in the queue (t430).
-  What counts is the status read after the terminate, not the terminate's
-  own answer: a terminate that throws still allows the replacement when
-  the status read back afterwards confirms the instance ended (terminated,
-  errored or complete), and the failed terminate is ignored. A status that
-  cannot be read, or one still live after the reads, is refused with a 503
-  and nothing is started, whether the terminate succeeded or failed.
-- Who starts the next instance is decided in the Ledger before anything
-  is created (`claimLandingWorkflow`). The instance that follows a
-  remembered one, whether that one was replaced or found already ended,
-  has an id derived from it, and the claim is made only while the record
-  still names the old instance. So of runs at once (two replacing it, or
-  one replacing it and one that finds it already terminated) exactly one
-  records the successor with its review options and creates it with those
-  options; the others answer that record (`created: false`), so the
-  options recorded are always those of the instance created. A missing
-  instance never clears a pending claim: replacement after a missing read
-  requires a previously recorded ended status or a recorded terminal stage
-  (`done` or `failed`). This lets purged instances recover even when no
-  status was observed, including older records. Only `instance.not_found`
-  from `get()` permits this recovery; an unreadable `status()` still fails
-  closed. Without that evidence the request leaves the claim intact. If
-  the record has no observed status, remains at `lease`, and is at least
-  60 seconds old (from its server-recorded `at`), a confirmed
-  `instance.not_found` from `get()` allows reconciliation: create the same
-  claimed ID using its recorded checks and review options. Concurrent
-  retries and a delayed original creator use that same ID; an existing-ID
-  error requires a readable status before attaching. Recovery uses default
-  Workflow timeouts, since custom timeouts are not recorded. Other missing
-  or unreadable instances return 503. A failed create keeps the claim for
-  retry, including when creation may have succeeded before the error. The
-  answer and the command name the reason and the old and new instances (`replaced`), and the record keeps them.
-- The record keeps the review options an instance was started with
-  (`reviewer`, `noReview`), and a replacement that names none keeps them.
-  Before acceptance, a run naming an eligible reviewer (another family than
-  every contributor) while the remembered one is no longer eligible
-  replaces the instance the same safe way; a named reviewer who is not
-  eligible replaces nothing and is reported. A record with no remembered
-  reviewer is not ineligible, so naming one alone does not restart it.
-  Successors of already-ended instances inherit unnamed review options and
-  do not inherit a historical replacement reason. A fresh start reports a
-  replacement only when that request's predecessor qualifies for one.
-- A replaced instance, and the command attached to it, are fenced: the
-  Workflow's lease calls and the command's lease renewals name their
-  instance, and the Ledger refuses them (`stale_landing`) once the record
-  names another, so neither can release, renew or take the replacement's
-  lease; events must name the instance they answer, and one naming a
-  replaced instance is refused, so a stale report cannot advance the
-  replacement. The Workflow renews (and so checks the fence) before it
-  submits, requests the review and accepts.
-
-The routes the command calls (`landing-workflow`, GET and POST) raised the
-route level to 14. The Workflow is tested in workerd with the Workflows test
-helpers (`test/landing-workflow.spec.ts`: the step sequence, a retry after a
-transient failure, a failure that outlasts the retries, the pause on a
-conflict and its resume, the checks with evidence present,
-arriving late, missing or untrusted, and failing, and the routes), and the
-command against a stand-in server (`test/land.test.mjs`, including the
-the checks run after the push and before the report, and
-`test/land-lease-workflow.test.mjs`: `land --workflow` against a scripted
-Workflow on that server, from the start without the lease to the merge under
-it). No test drives the command against a Workflow running in workerd. On
-Cloudflare itself the Workflow is live: `LandingWorkflow` has landed most of
-the orchestrator's tasks since 2026-10-10, run as `atelier land tN --workflow`.
-Claim reconciliation relies on Cloudflare rejecting duplicate Workflow IDs.
-The remote smoke check before and after deploy must also leave a recorded
-claim without creating its instance, wait 60 seconds, then retry concurrently
-with different review options: verify one instance with the claimed ID and
-recorded options, and that a delayed original create cannot clear its record.
-Local tests cover these races with a binding double; they do not establish
-production create visibility or duplicate-ID behavior.
 
 ## Integration basis
 

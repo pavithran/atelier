@@ -11,7 +11,7 @@ import { scanCommit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone, timeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
@@ -67,9 +67,6 @@ import { errorLine, RETRY_AFTER, FORK_WAIT_ATTEMPTS, forkWait, retryableByRuntim
 import { renderActions } from "./actions-page.ts";
 
 export { Ledger };
-export { LandingWorkflow } from "./landing-workflow.ts";
-import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
-import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
 import { triageSettingRefusal } from "./review/triage.ts";
 import { guardLedger } from "./ledger-stub.ts";
@@ -275,12 +272,13 @@ function ownerName(env: Env): string | null {
 // The Git host the Node server gives as env.GIT (src/git/host.mjs); absent
 // on the Workers deploy.
 type GitHost = {
-  mint(grant: { project: string; kind: "task" | "read" | "plan"; task?: string; actor: string; generation?: number }): { id: string; token: string; hash: string; expiresAt: string };
+  mint(grant: { project: string; kind: "task" | "read" | "plan" | "landing"; task?: string; actor: string; generation?: number; accepted?: string; lease?: string }): { id: string; token: string; hash: string; expiresAt: string };
   revoke(id: string): boolean;
   createRepo(args: { key: string; branch: string }): Promise<{ created: boolean }>;
   claimBranch(args: { key: string; projectBranch: string; branch: string; from: string }): Promise<{ base: string | null; head: string | null; created: boolean }>;
   moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
   revokeAfterPushes(id: string): Promise<boolean>;
+  revokeLanding(args: { key: string; task: string }): Promise<number>;
 };
 
 function gitHost(env: Env): GitHost | null {
@@ -1999,9 +1997,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const g = await gitRead(c, git, ref.key, project, actor, branch);
       return json({ kind: "read", ...g });
     }
-    if (body.kind !== "task") throw new RuleError("bad_kind", "kind is read or task", 400);
+    if (body.kind !== "task" && body.kind !== "landing") throw new RuleError("bad_kind", "kind is read, task or landing", 400);
     const id = String(body.item ?? "");
     if (!/^t[0-9]+$/.test(id)) throw new RuleError("bad_item", "name the task as tN", 400);
+    // A landing grant (task 6; design section 4.7): it writes the project's
+    // branch with a merge of the accepted head H (the hook's rule 4) and the
+    // provenance notes, with the task's clearances applied by the hook's
+    // scan. Minted only to the holder of the project's live landing lease,
+    // for a task accepted at H; bound to { project, task, accepted: H }; five
+    // minutes; revoked once the landing's merge is recorded (merged).
+    if (body.kind === "landing") {
+      requireOwner(env, actor);
+      const head = String(body.head ?? "");
+      if (!/^[0-9a-f]{40}$/.test(head)) throw new RuleError("bad_head", "name the accepted head as a 40-character commit id", 400);
+      const lease = await L.liveProjectLanding();
+      if (!lease || !lease.id || lease.item !== id || lease.holder !== actor) {
+        throw new RuleError("no_lease", lease ? `the landing lease is held for ${lease.item} by ${lease.holder}, not for ${id} by ${actor}; a landing grant goes only to the holder of the project's landing lease, so none was issued` : `no live landing lease is held, so no landing grant for ${id} was issued; a landing grant goes only to its holder`, 409, `run atelier land ${id}`);
+      }
+      const item = await L.item(id);
+      if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}, not accepted, so no landing grant was issued`, 409, `run atelier land ${id}`);
+      if (item.acceptedHead !== head) throw new RuleError("acceptance_changed", `${id} is accepted at ${String(item.acceptedHead).slice(0, 12)}, not ${head.slice(0, 12)}, so no landing grant was issued for that head`, 409, `run atelier merge ${id} again, which lands the accepted head`);
+      const g = git.mint({ project: ref.key, kind: "landing", task: id, actor, accepted: head, lease: lease.id });
+      await keepGitGrant(c, git, ref.key, g);
+      return json({ kind: "landing", remote, token: g.token, expiresAt: g.expiresAt, branch, accepted: head });
+    }
     // The actor a runner token names is only its header's word: the runner
     // must hold this task's job itself (assertRunnerJob), as on the item's
     // own routes. An agent token speaks for its own actor alone.
@@ -2296,8 +2315,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // sees them (with leave: true it gives up its place instead), and {
   // cancel: true, item } releases that task's lease, answering which task
   // held it since when, and leaves another task's lease alone. A call that
-  // names the landing Workflow `instance` it acts for (the Workflow
-  // executor's) is refused once another instance replaced it (t430).
+  // names a landing Workflow `instance` is refused once another instance
+  // replaced it (t430); the Workflow is gone (Atelier 2.0, task 6), and the
+  // fence stays for the records a Ledger carried over from 1.x.
   if (parts[2] === "landing-lease" && parts.length === 3) {
     if (m === "GET") {
       const postMerge = await L.activePostMerge();
@@ -2584,28 +2604,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "plan" && parts.length === 5 && m === "GET") {
     requireOwner(env, actor);
     return json(await L.planView(id, await index(env).models(), await mainHeadOf(env, L), await index(env).runnerOffers()));
-  }
-  // The landing Workflow of one task (t280): GET answers the instance the
-  // ledger remembers, the stage the Workflow last wrote (lease, workspace,
-  // conflict, checks, review, merge, done or failed, with its round and,
-  // for a conflict, the files) and the instance's own status (complete or
-  // errored among them) — nulls when none is remembered — so the CLI shows
-  // the landing's progress, does the workspace steps when they are its to
-  // do, and re-attaches to a live instance.
-  if (verb === "landing-workflow" && parts.length === 5 && m === "GET") {
-    requireOwner(env, actor);
-    const remembered = await L.landingWorkflowOf(id);
-    if (!remembered) return json({ instance: null, status: null, stage: null });
-    let status: InstanceStatus | null = null;
-    let readError: string | undefined;
-    try {
-      status = await (await env.LANDING_WORKFLOW.get(remembered.instance)).status();
-      await L.observeLandingWorkflowStatus(id, remembered.instance, status);
-    } catch (error) {
-      readError = String((error as Error)?.message ?? error);
-    }
-    const queued = (await L.readLandingQueue()).some((row) => row.item === id);
-    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, LANDING_DETAIL_MAX) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -3160,174 +3158,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       delete data.ms;
       return json({ item: await L.landEvent(id, actor, String(body.step ?? ""), body.ms, data, !!c.token) });
     }
-    // The landing Workflow behind atelier land --workflow (t280). With
-    // { event: { type, payload } } the executor sends the instance the ledger
-    // remembers its workspace report or the owner's resume after a conflict,
-    // each naming its round; an event sent before the Workflow reaches its
-    // wait is buffered, so the report never races it. Otherwise the owner starts a
-    // landing: a live instance for the task is returned as it stands (the
-    // executor re-attaches to it, however it was started), and with none live
-    // a fresh instance is created and remembered, taking the same options the
-    // command was given.
-    case "landing-workflow": {
-      requireOwner(env, actor);
-      const remembered = await L.landingWorkflowOf(id);
-      const replacementReport = (record: Pick<NonNullable<typeof remembered>, "instance" | "replaced">) => record.replaced ? { replaced: { ...record.replaced, to: record.instance } } : {};
-      if (body.event !== undefined) {
-        const event = body.event as { type?: unknown; payload?: unknown };
-        if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404, `run atelier land ${id} --workflow`);
-        // The two events the Workflow waits for: the executor's report of
-        // the workspace steps, and the owner's resume after a conflict.
-        if (event.type !== "workspace" && event.type !== "resume") throw new RuleError("bad_event", "a landing Workflow takes a workspace or a resume event", 400);
-        if (typeof event.payload !== "object" || event.payload === null || !Number.isInteger((event.payload as { round?: unknown }).round)) throw new RuleError("bad_event", "an event's payload names the round it answers", 400);
-        // The executor names the instance it attached to (t430): one attached
-        // to an instance since replaced cannot advance the replacement with a
-        // report or a resume meant for the old one.
-        if (typeof body.instance !== "string" || !body.instance) throw new RuleError("bad_event", `an event names the instance it answers ({ event, instance }); update the atelier command and run atelier land ${id} --workflow again`, 400);
-        if (body.instance !== remembered.instance) throw new RuleError("stale_landing", `${body.instance} is no longer ${id}'s landing Workflow: ${remembered.instance} replaced it${remembered.replaced ? ` (${remembered.replaced.reason}: ${remembered.replaced.detail})` : ""}, so the ${event.type} event is not sent. Run atelier land ${id} --workflow again to attach to it`, 409, `run atelier land ${id} --workflow to attach to the current landing`);
-        const type: string = event.type;
-        try {
-          await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.sendEvent({ type, payload: event.payload ?? {} }));
-        } catch (error) {
-          throw new RuleError("workflow_not_listening", `the landing Workflow ${remembered.instance} could not take the ${type} event (${(error as Error).message}); it may have finished or failed. Read it with GET again, or run atelier land ${id} --workflow to start or attach the landing`, 409);
-        }
-        return json({ sent: true, instance: remembered.instance });
-      }
-      const named = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
-      let standing: InstanceStatus | null = null;
-      let handle: WorkflowInstance | undefined;
-      // The instance the record names when this request decides to start
-      // one: the remembered one, or none for the first start.
-      const expected = remembered?.instance ?? null;
-      if (remembered) {
-        try {
-          // Only a confirmed missing instance from get() permits replacement.
-          // A status() failure still leaves an executor that might be running.
-          try {
-            handle = await env.LANDING_WORKFLOW.get(remembered.instance);
-          } catch (error) {
-            if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
-            // A claimed successor may not have reached create yet. Missing
-            // alone cannot distinguish that from an expired instance. Keep
-            // ownership intact unless an ended status or terminal stage was
-            // recorded. The Workflow writes done/failed itself, including for
-            // older records with no observed status, before retention purges it.
-            if (remembered.lastStatus && ENDED.includes(remembered.lastStatus.status)) {
-              standing = remembered.lastStatus;
-            } else if (remembered.stage === "done" || remembered.stage === "failed") {
-              standing = { status: remembered.stage === "done" ? "complete" : "errored" };
-            } else if (!remembered.lastStatus && remembered.stage === "lease" && Date.now() - Date.parse(remembered.at) >= LANDING_CREATE_RECONCILE_MS) {
-              // Recover a claimant that died before create, using its SAME ID
-              // and recorded options. Concurrent retries (or a delayed owner)
-              // cannot create a second instance with this ID. Never turn an
-              // unreadable status into permission to create another executor.
-              try {
-                handle = await env.LANDING_WORKFLOW.create({
-                  id: remembered.instance,
-                  params: { project, key: ref.key, item: id, actor, origin: c.url.origin,
-                    ...(remembered.reviewer ? { reviewer: remembered.reviewer } : {}),
-                    ...(remembered.noReview ? { noReview: true } : {}),
-                    ...(remembered.triage ? { triage: true } : {}),
-                  },
-                });
-              } catch {
-                // A competing create may have won; only a readable instance
-                // confirms that. Keep the claim on any ambiguous failure.
-                handle = await env.LANDING_WORKFLOW.get(remembered.instance);
-              }
-            } else {
-              throw new Error("instance is missing but its end is not confirmed; its create may still be in progress");
-            }
-          }
-          if (handle) {
-            standing = await handle.status();
-            await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
-          }
-        } catch (error) {
-          // A failed read does not prove the instance ended. Never start a
-          // second executor beside a landing whose state we cannot establish.
-          throw new RuleError("workflow_unreadable", `the landing Workflow ${remembered.instance} cannot be read: ${String((error as Error)?.message ?? error)}; last status: ${remembered.lastStatus?.status ?? "unknown"}; last error: ${remembered.lastStatus?.error?.message ?? remembered.detail ?? "none recorded"}; ${id} ${(await L.readLandingQueue()).some((row) => row.item === id) ? "is still queued" : "is not queued"}`, 503);
-        }
-      }
-      // A live instance is attached to, unless it has waited for the lease
-      // past the limit or the owner names an eligible reviewer in place of
-      // an ineligible remembered one (t430, src/landing/replace.ts): then it
-      // is terminated, its end confirmed, and replaced below.
-      let replacing: (Replacement & { from: string }) | null = null;
-      if (remembered && standing && ENDED.includes(standing.status)) {
-        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
-        if (decision.replace) replacing = { ...decision.replace, from: remembered.instance };
-      }
-      if (standing && handle && remembered && !ENDED.includes(standing.status)) {
-        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
-        if (!decision.replace) {
-          return json({ ...remembered, created: false, status: standing, ...replacementReport(remembered), ...(decision.refused ? { reviewerRefused: decision.refused } : {}) });
-        }
-        const end = await terminateConfirmed(handle);
-        if ("unconfirmed" in end) {
-          throw new RuleError("workflow_not_terminated", `${id}'s landing Workflow ${remembered.instance} is to be replaced (${decision.replace.detail}), but its end could not be confirmed: ${end.unconfirmed}. No replacement was started, so two never run at once; run atelier land ${id} --workflow again to retry`, 503);
-        }
-        await L.observeLandingWorkflowStatus(id, remembered.instance, end.ended);
-        replacing = { ...decision.replace, from: remembered.instance };
-      }
-      // The timeouts the landing waits with, each a positive number of
-      // milliseconds; anything else keeps the Workflow's default.
-      const ms = (name: string) => Number.isInteger(body[name]) && (body[name] as number) > 0 ? { [name]: body[name] as number } : {};
-      // A new instance for a closed or accepted task would only fail its
-      // first step; it is refused here with the same words, before one is made.
-      const item = await L.item(id);
-      if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409, "run atelier ls to pick another task");
-      if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409, `run atelier merge ${id}`);
-      // The review options: the ones this run names, and for a replacement
-      // that names none, the ones the replaced instance was started with.
-      const reviewer = named ?? (remembered && body.noReview !== true ? remembered?.reviewer ?? null : null);
-      const noReview = body.noReview === true || (!!remembered && named === null && remembered?.noReview === true);
-      // A landing that triages (t475): the Workflow submits and asks for
-      // the review only while a triage recorded at the reported head,
-      // merge base and criteria lets it go on. The record keeps it, so an
-      // instance reconciled from its claim triages too.
-      const options = { ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(body.triage === true ? { triage: true } : {}) };
-      // Who starts the next instance is decided in the Ledger before anything
-      // is created (t430). The instance that follows a remembered one has an
-      // id derived from it, so every request that follows it (two replacing
-      // it, or one replacing it and one that found it already ended) claims
-      // the same successor: the one whose claim is recorded creates it, with
-      // the options it recorded, and every other answers that record and the
-      // instance it names. A failed create keeps its claim for reconciliation.
-      const instanceId = remembered ? replacementInstanceId(id, remembered.instance) : `land-${id}-${Date.now()}`;
-      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? undefined);
-      if (!claim.owner) {
-        const record = claim.record;
-        if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409, `run atelier land ${id} --workflow`);
-        // The owner may not have created it yet: it is waited for briefly.
-        let status: InstanceStatus | null = null;
-        for (let i = 0; i < 25 && !status; i++) {
-          try { status = await (await env.LANDING_WORKFLOW.get(record.instance)).status(); }
-          catch { await new Promise((ok) => setTimeout(ok, 200)); }
-        }
-        if (!status) throw new RuleError("landing_starting", `${id}'s landing Workflow ${record.instance} is being started by another request; run atelier land ${id} --workflow again to attach to it`, 409, `run atelier land ${id} --workflow`);
-        await L.observeLandingWorkflowStatus(id, record.instance, status);
-        return json({ ...record, created: false, status, ...replacementReport(record) });
-      }
-      let instance: WorkflowInstance;
-      try {
-        instance = await env.LANDING_WORKFLOW.create({
-          id: instanceId,
-          params: {
-            project, key: ref.key, item: id, actor, ...options, origin: c.url.origin,
-            ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
-          },
-        });
-      } catch (error) {
-        // Creation may have succeeded despite an error, or reconciliation
-        // may have won while this request was delayed. Never erase its claim.
-        try { instance = await env.LANDING_WORKFLOW.get(instanceId); }
-        catch { throw error; }
-      }
-      const status = await instance.status();
-      await L.observeLandingWorkflowStatus(id, instanceId, status);
-      return json({ ...claim.record, created: true, status, ...replacementReport(claim.record!) }, 201);
-    }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
       // commit against the plan branch's log, as the merged route verifies a
@@ -3563,11 +3393,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const p = await L.project();
       const merge = String(body.mergeCommit ?? "");
       const item = await L.item(id);
-      using baseline = await env.ARTIFACTS.get(p.repo);
-      const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
-      const history = await baseline.log({limit:1000});
-      const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
+      // The landing's own record (task 6): it records what the hook
+      // confirmed. The merge commit is the project branch's tip or in its
+      // history, read over the whole history (holdsCommit), with the accepted
+      // head among its parents; otherwise it is refused. A record made once
+      // stands when made again (L.merged).
+      if (item.state !== "merged") {
+        const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await artifactsStep(`read ${merge.slice(0, 12)}`, async () => { using r = await env.ARTIFACTS.get(p.repo); return await r.readCommit(merge); }) : null;
+        const top = commit ? await headOf(env, p.repo) : null;
+        const held = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
+        if (held === null) throw new RuleError("merge_unconfirmed", `the project's branch could not be read far enough to find ${merge.slice(0, 12)}, so the merge is not recorded`, 409, `run atelier merge ${id} again`);
+        if (!held) throw new RuleError("merge_not_on_main", `the project's branch does not hold ${merge.slice(0, 12) || "the merge commit"}${commit ? "" : ", which its repository does not have"}, so the merge is not recorded`, 409, `run atelier merge ${id} again, which pushes the merge before it records it`);
+        if (!commit!.parents.includes(item.acceptedHead ?? "")) throw new RuleError("not_a_merge", `${merge.slice(0, 12)}'s parents do not include ${id}'s accepted head ${String(item.acceptedHead).slice(0, 12)}, so it is not ${id}'s merge and is not recorded`, 409, `run atelier merge ${id} again, which merges the accepted head`);
+      }
+      const merged = await L.merged(id, actor, merge, true, item.acceptedHead);
+      // One use: the task's landing grant goes once its push is recorded.
+      await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
       const postMerge = await L.postMergeRun(id);
       return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
     }
@@ -3609,7 +3450,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
       const workspace = await L.workspaceOf(id);
       await revoke(env, workspace.fork, workspace.token);
-      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace));
+      const recorded = await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace);
+      // A landing grant still live for the task ends with its merge recorded.
+      await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
+      return json(recorded);
     }
     case "landing": {
       requireOwner(env, actor);
@@ -3934,8 +3778,7 @@ async function readRunsThrough(I: ReturnType<typeof index>, through: number | nu
   }
 }
 
-// The stuck report for one project, read from the ledger, the index and the
-// Workflows now: what GET /api/projects/NAME/stuck answers and what the
+// The stuck report for one project, read from the ledger and the index now: what GET /api/projects/NAME/stuck answers and what the
 // scheduled tick records episodes from.
 async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits: ReportLimits, at = new Date()) {
   const project = ref.name, L = ledger(env, ref.key);
@@ -3953,11 +3796,6 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
       read("project index", () => index(env).projects()),
     ]);
     const snapshot = await read<Snapshot>("project ledger", () => L.stuckSnapshot(offers?.map(({ runner, at }) => ({ runner, at }))));
-    if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
-      const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
-      w.status = status ?? "unknown";
-      if (status === "unknown") unavailable.push(`Workflow ${w.record.instance}: indeterminate status`);
-    }));
     const active: string[] = [];
     let jobsAvailable = projects !== null;
     if (projects) await Promise.all(projects.map(async (p) => {

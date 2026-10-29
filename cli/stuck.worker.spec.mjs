@@ -15,14 +15,13 @@ function read(name, actor = 'owner', extra = {}, query = '') {
     headers: { authorization: `Bearer ${TOKEN}`, 'x-atelier-actor': actor },
   }), { ...testEnv, ...extra });
 }
-it('the owner GET reads a real ledger snapshot without events, lease renewals or Workflow observations', async () => {
+it('the owner GET reads a real ledger snapshot without events or lease renewals', async () => {
   const L = await project('stuck-read-only');
   const item = await L.newItem('A current claim', ['src/**'], 'owner');
   await L.claim(item.id, 'codex/model');
-  await L.setLandingWorkflow(item.id, 'stuck-read-only-wf', 'owner');
   await L.beginProjectLanding(item.id, 'owner');
   const before = await L.stuckSnapshot();
-  const response = await read('stuck-read-only', 'owner', { LANDING_WORKFLOW: { get: async () => ({ status: async () => ({ status: 'running' }) }) } });
+  const response = await read('stuck-read-only', 'owner');
   expect(response.status).toBe(200);
   const body = await response.json();
   expect(body.project).toBe('stuck-read-only');
@@ -37,17 +36,6 @@ it('non-owner reads and nonpositive limits are refused', async () => {
   const response = await read('stuck-owner', 'owner', {}, '?runnerPollMinutes=0');
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({ error: 'bad_limit' });
-});
-it('a failed Workflow read is explicitly unavailable and never proof of an orphan', async () => {
-  const L = await project('stuck-unavailable-workflow');
-  const item = await L.newItem('A landing', ['src/**'], 'owner');
-  await L.claim(item.id, 'codex/model');
-  await L.setLandingWorkflow(item.id, 'unreadable-wf', 'owner');
-  await L.beginProjectLanding(item.id, 'owner');
-  const body = await (await read('stuck-unavailable-workflow', 'owner', { LANDING_WORKFLOW: { get: async () => { throw new Error('provider unavailable'); } } })).json();
-  expect(body.unavailable).toContain('Workflow unreadable-wf: provider unavailable');
-  expect(body.entries).toEqual([]);
-  expect((await L.landingWorkflowOf(item.id)).lastStatus).toBeUndefined();
 });
 it('a failed ledger read returns incomplete observations, never a successful empty source', async () => {
   await project('stuck-unavailable-ledger');

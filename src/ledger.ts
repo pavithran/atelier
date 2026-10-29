@@ -5384,7 +5384,11 @@ export class Ledger extends DurableObject<Env> {
     // The taker leaves the queue (its row, had it one, is spent), and the
     // lease is written as before.
     this.setProjectLandingQueue(rows.filter((w) => w.item !== id));
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
+    // A resume by the task whose holding is still live keeps the holding's
+    // id; any other take, a retake after the holding lapsed included, draws
+    // a new one, so a landing grant minted under the old holding stays dead (task 6).
+    const leaseId = held?.item === id && held.id && !landingLeaseLapsed(held, Date.parse(at)) ? held.id : crypto.randomUUID();
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at, id: leaseId } satisfies LandingLease));
     // A take is an event; a landing resuming its own lease is not a new one.
     if (held?.item !== id) this.log(id, actor, "landing.leased", { ...(expired ? { replaced: expired.item, replacedHolder: expired.holder } : {}) }, at);
     // The task's own pre-review, if one is still pending, no longer controls
@@ -5414,6 +5418,9 @@ export class Ledger extends DurableObject<Env> {
         : "";
       throw new RuleError("no_lease", (held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`) + older, 409, `run atelier land ${id} to take the landing lease again`);
     }
+    // A holding that lapsed is over (task 6): it is taken again, with a new
+    // id, never renewed back to life.
+    if (landingLeaseLapsed(held, Date.parse(at))) throw new RuleError("no_lease", `${id}'s landing lease lapsed at ${new Date(Date.parse(held.renewedAt ?? held.at) + LANDING_LEASE_EXPIRY_MS).toISOString().slice(0, 16).replace("T", " ")} UTC without a renewal, so it is not renewed; take it again`, 409, `run atelier land ${id} to take the landing lease again`);
     this.dispatchWaiting();
     const renewed = { ...held, renewedAt: at };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify(renewed));
@@ -6961,10 +6968,6 @@ export class Ledger extends DurableObject<Env> {
       items, events: this.events(undefined, Number.MAX_SAFE_INTEGER),
       coreFiles: this.project().policy.coreFiles,
       lease: this.readProjectLanding(),
-      workflows: items.flatMap((item) => {
-        const record = this.landingWorkflowOf(item.id);
-        return record ? [{ item: item.id, record }] : [];
-      }),
       openReviewItems: this.sql.exec(`SELECT DISTINCT r.item FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND r.head = i.head`).toArray().map((r) => String(r.item)),
       // The open requests with the reviewer each asks and when it was made,
       // for the report's check that some live runner offers the reviewer (t220).

@@ -62,10 +62,11 @@ export class GitHost {
   // (`project`, a change that may reach several tasks), held by the caller
   // until it calls the release (src/git/locks.mjs). `options` may name
   // waitMs and an abort signal.
+  // `task` may be several tasks (the landing lease's), taken in order.
   lock(project, task, options) {
-    return task === null
-      ? this.locks.acquireAll([[`project:${project}`, "w"]], options)
-      : this.locks.acquireAll([[`project:${project}`, "r"], [`task:${project}/${task}`, "w"]], options);
+    if (task === null) return this.locks.acquireAll([[`project:${project}`, "w"]], options);
+    const tasks = [...new Set([task].flat())].sort();
+    return this.locks.acquireAll([[`project:${project}`, "r"], ...tasks.map((t) => [`task:${project}/${t}`, "w"])], options);
   }
   // Revokes a grant once the pushes made with it have ended.
   async revokeAfterPushes(id, options) {
@@ -81,7 +82,9 @@ export class GitHost {
     // The server token is no minted grant: nothing revokes it one by one.
     if (grant.id !== "owner") wants.push([`grant:${grant.id}`, "w"]);
     wants.push([`project:${grant.key}`, "r"]);
-    if (grant.task && (grant.kind === "task" || grant.kind === "plan")) wants.push([`task:${grant.key}/${grant.task}`, "w"]);
+    // A landing push holds its task's lock too (task 6), so a change to the
+    // landing lease or to the task's acceptance waits for it.
+    if (grant.task && (grant.kind === "task" || grant.kind === "plan" || grant.kind === "landing")) wants.push([`task:${grant.key}/${grant.task}`, "w"]);
     let release;
     try { release = await this.locks.acquireAll(wants, { signal }); }
     catch { return null; }
@@ -107,14 +110,35 @@ export class GitHost {
     const item = await L.item(g.task).catch(() => null);
     return !!item && !["merged", "abandoned", "integrated"].includes(item.state) && item.owner === g.actor;
   }
+  // Whether a landing grant still writes (task 6): its task is still
+  // accepted at the head the grant names, and the holding of the project's
+  // live landing lease the grant was minted under still stands, for that
+  // task and actor. A lease released, taken over or retaken, an acceptance
+  // withdrawn or moved, or a recorded merge ends it for good.
+  async stillLanding(key, g) {
+    const L = this.ledger(key);
+    const item = await L.item(g.task).catch(() => null);
+    if (!item || item.state !== "accepted" || item.acceptedHead !== g.accepted) return false;
+    const lease = await L.liveProjectLanding().catch(() => null);
+    return !!lease?.id && lease.id === g.lease && lease.item === g.task && lease.holder === g.actor;
+  }
   // The grant under `id` is live now: the owner's (the server token) always;
-  // any other while the store holds it, and a task or plan grant while its
-  // task is still held (stillHeld).
-  async live(id) {
+  // any other while the store holds it, a task or plan grant while its task
+  // is still held (stillHeld), and a landing grant while its landing still
+  // stands (stillLanding).
+  // `update`, from the hook, is the ref update it is about to let through:
+  // a landing grant's update of the project's branch is taken here, once
+  // (consumeBranch); a second is refused, while its notes stay writable.
+  async live(id, update = null) {
     if (id === "owner") return true;
     const g = this.grants.findById(id);
     if (!g) return false;
-    return g.kind === "task" || g.kind === "plan" ? this.stillHeld(g.project, g) : true;
+    if (g.kind === "task" || g.kind === "plan") return this.stillHeld(g.project, g);
+    if (g.kind === "landing") {
+      if (!await this.stillLanding(g.project, g)) return false;
+      return update?.branch === true ? this.grants.consumeBranch(g.id, String(update.sha ?? "")) : true;
+    }
+    return true;
   }
   // POST /internal/grant-live, the hook's question. Answered only to a
   // loopback caller that sends the hook's secret; anything else is 404, as
@@ -127,9 +151,9 @@ export class GitHost {
     if (req.method !== "POST" || !loopback || typeof secret !== "string" || !same(secret, this.hookSecret)) { req.resume(); return answer(404, { error: "not_found" }); }
     let text = "";
     for await (const chunk of req) { text += chunk; if (text.length > 1024) return answer(400, { error: "too_long" }); }
-    let id;
-    try { id = JSON.parse(text).grant; } catch { return answer(400, { error: "bad_body" }); }
-    return answer(200, { live: await this.live(id) });
+    let body;
+    try { body = JSON.parse(text); } catch { return answer(400, { error: "bad_body" }); }
+    return answer(200, { live: await this.live(body.grant, { branch: body.branch === true, sha: body.sha }) });
   }
   binding() {
     return {
@@ -137,9 +161,18 @@ export class GitHost {
       revoke: (id) => this.grants.revoke(id),
       createRepo: (args) => this.createRepo(args),
       revokeAfterPushes: (id) => this.revokeAfterPushes(id),
+      revokeLanding: (args) => this.revokeLanding(args),
       claimBranch: (args) => this.claimBranch(args),
       moveEmptyBranch: (args) => this.moveEmptyBranch(args),
     };
+  }
+  // Ends a task's landing grants (task 6): each is revoked once the pushes
+  // made with it have ended. A grant is one landing's, so the record of that
+  // landing's merge revokes it. Answers how many were revoked.
+  async revokeLanding({ key, task }) {
+    let n = 0;
+    for (const id of this.grants.liveIds({ project: key, kind: "landing", task })) if (await this.revokeAfterPushes(id)) n++;
+    return n;
   }
   // The project's bare repository, made when missing and set up once per
   // process (core.hooksPath and the receive settings).
@@ -205,6 +238,7 @@ export class GitHost {
     // Beside the record, the task itself: a grant writes only for a task
     // still open to work and still held by the actor it was minted to.
     if ((g.kind === "task" || g.kind === "plan") && !await this.stillHeld(key, g)) return null;
+    if (g.kind === "landing" && !await this.stillLanding(key, g)) return null;
     return { id: g.id, project: key, key, kind: g.kind, task: g.task, actor: g.actor, branch, accepted: g.accepted };
   }
   ledger(key) { return this.namespace.get(this.namespace.idFromName(`project:${key}`)); }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { redactGitArgs } from "../runner.mjs";
 import { runOneShotReview } from "../review-oneshot.mjs";
 import { NOT_LANDED, NOT_LANDED_EXIT, runLand } from "../land.mjs";
-import { I, OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, ownerActing, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { I, OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, ownerActing, project, redact, request, server, workspacePath, workspaceTokens } from "../atelier.mjs";
 import { serverFetch } from "../server-fetch.mjs";
 import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../land-queue.mjs";
 
@@ -19,7 +19,7 @@ export default async function landCommand() {
   const { parallel, error: parallelError } = parseParallel(args.parallel);
   if (parallelError) die(parallelError);
   if (ids.length > 1) {
-    const flag = ["workflow", "release-lease", "post-merge"].find((k) => args[k] !== undefined);
+    const flag = ["release-lease", "post-merge"].find((k) => args[k] !== undefined);
     if (flag) die(`several tasks cannot be landed with --${flag}: it acts on one task; give one task, or leave --${flag} out`);
   }
   if (args.queue !== undefined && args["dry-run"] !== undefined) die("--queue and --dry-run say two things: --queue records a landing for a runner to run, and --dry-run changes nothing; give one or the other");
@@ -53,8 +53,7 @@ export default async function landCommand() {
   const workspace = workspacePath(name, id);
   // A request that throws rather than dies, so a landing that already holds
   // the lease can release it before the command ends. Requests are made as
-  // the owner, except the re-claim that refreshes the workspace's write
-  // token, which names the task's holder (and its runner) instead (t275).
+  // the owner unless they name another actor.
   const request = async (method, path, body, as = OWNER, extra = {}) => {
     let res, text;
     try {
@@ -106,13 +105,6 @@ export default async function landCommand() {
       },
       workspacePath, atelier: fileURLToPath(new URL("../atelier.mjs", import.meta.url)), env: { ...process.env, ATELIER_TEST_PRIORITY: "release" },
       redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
-      // The token a landing's re-claim minted, kept as claimWorkspace keeps
-      // one: the old header replaced before the fetch, the expiry recorded.
-      adoptWorkspaceToken: (dir, w) => {
-        storeWorkspaceToken(dir, w.remote, w.token);
-        recordTokenExpiry(dir, w.expiresAt);
-        gitOrThrow(["fetch", "--quiet", "origin"], { cwd: dir });
-      },
     });
     // Under the multi-task pool, a landing that ended without landing says so
     // by its exit status; run alone it exits 0 as it always did.
