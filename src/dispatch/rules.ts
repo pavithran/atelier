@@ -563,7 +563,8 @@ export interface RunSkip {
   actor: string;
   kind: RunSkipKind;
   failures: number;
-  note: string;         // the last failure's reason, as the runner said it
+  note: string;         // the facts' line (src/run-facts.ts), never the run's output
+  facts?: import("../run-facts.ts").RunFacts | null;
   dispatchAt: string;
   head?: string | null;
   updatedAt?: string;

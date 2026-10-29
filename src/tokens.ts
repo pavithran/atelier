@@ -249,14 +249,14 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The baseline's head, for a post-merge review the runner keeps waiting on
   // a merge commit no source held (t591).
   { name: "baseline-head", method: "GET", path: "/projects/{project}/baseline-head", credential: "runner", body: [], via: "runner", jobs: REVIEW },
-  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
-  { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "note"], via: "runner", jobs: REVIEW },
+  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "facts"], via: "runner", jobs: ["build", "plan", "review"] },
+  { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "facts"], via: "runner", jobs: REVIEW },
   // The runner's word that it gives up a build or plan job under its
   // dispatch (t420), after failed runs or infrastructure failures in a row:
   // taken as a run report for the job is, under the job's actor. The actor
   // in the body is read under the owner's token alone; a runner token's
   // report is the header's actor, checked at the gateway.
-  { name: "run-skip", method: "POST", path: `${ITEM}/run-skip`, credential: "runner", body: ["actor", "role", "kind", "failures", "note"], via: "runner", jobs: ["build", "plan"] },
+  { name: "run-skip", method: "POST", path: `${ITEM}/run-skip`, credential: "runner", body: ["actor", "role", "kind", "failures", "facts"], via: "runner", jobs: ["build", "plan"] },
   // The project's record, read for its preparation policy (t378) before a
   // build whose last run left a validation marker.
   { name: "project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "runner", jobs: ["build"] },

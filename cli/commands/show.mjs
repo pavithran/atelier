@@ -8,7 +8,7 @@ import { preparingLine, queueReasons } from "../status.mjs";
 import { fenceText, PREREVIEW_JOB, prereviewLines } from "../../src/dispatch/prereview.ts";
 import { deployText } from "../../src/checkout-lease.ts";
 import { progressView } from "../../src/situation.ts";
-import { progressText } from "../situation.mjs";
+import { lastRunText, progressText } from "../situation.mjs";
 
 export default async function showCommand() {
   const name = project(), id = itemArg(), as = await actor(OWNER);
@@ -82,7 +82,7 @@ export default async function showCommand() {
   // requests nobody has claimed, with when each was asked (G6): facts the
   // model acts on by command, since the server files and re-points nothing.
   const notes = d.notes ?? [], unclaimed = d.openRequests ?? [], tier = d.tierReview ?? null, lapsed = d.lapsedRequests ?? [];
-  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(tier ? { tierReview: tier } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}) }, null, 2));
+  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(tier ? { tierReview: tier } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   // The tasks it waits on (G3), each with its state: it is not offered,
@@ -97,6 +97,7 @@ export default async function showCommand() {
   // The landing record (G1): the step its latest attempt reached, and where
   // it failed, with the last lines of the failing step's own output.
   if (d.landing) blocks.push(`Landing: attempt ${d.landing.attempt}, ${d.landing.failedStep ? `failed at ${d.landing.failedStep}${d.landing.files?.length ? ` (${d.landing.files.map(flat).join(", ")})` : ""}` : `at ${d.landing.step}`}, ${String(d.landing.at).slice(0, 16).replace("T", " ")} UTC${d.landing.failedStep && d.landing.tail ? `\n  ${String(d.landing.tail).split("\n").map(flat).join("\n  ")}` : ""}`);
+  if (d.lastRun) blocks.push(`Last run: ${lastRunText(d.lastRun)}`);
   if (progress) blocks.push(`Progress: ${progressText(progress, lastCheck)}${progress.stall ? `\n  STALL: ${progress.stall}` : ""}`);
   if (deploy) blocks.push(`Last deploy: ${deployText(deploy)}`);
   if (tier) blocks.push(tierLine(id, tier));

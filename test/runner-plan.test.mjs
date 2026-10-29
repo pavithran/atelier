@@ -144,16 +144,17 @@ test("a harness that fails or writes no plan document fails the job, which is re
   assert.ok(logs.some((l) => l.includes("wrote no plan document")), logs.join("\n"));
 });
 
-test("a harness that fails is released as the harness failing, with its last error line, and reported as harness_failed", async (t) => {
+test("a harness that fails is released as the harness failing, in the runner's own words (never the harness's: round 10), and reported as harness_failed", async (t) => {
   const { io, calls } = fixture(t, { code: 1, stderr: "noise\nthe CLI is too old\n" });
   const state = await runPlanTask(planJob, planConfig, "home:studio", io);
   assert.equal(state.phase, "failed");
   assert.equal(state.taskFailure, true);
-  assert.equal(state.reason, "the harness failed: the CLI is too old");
-  assert.equal(state.detail, "the CLI is too old");
+  assert.equal(state.reason, "the harness failed: exited 1");
+  assert.equal(state.detail, "exited 1");
   assert.equal(runOutcome(state), "harness_failed");
   const release = calls.find((c) => c.argv?.[0] === "release");
-  assert.ok(release.argv.some((a) => String(a).includes("the harness failed: the CLI is too old")), "the release note names the harness failure");
+  assert.ok(release.argv.some((a) => String(a).includes("the harness failed: exited 1")), "the release note names the harness failure");
+  assert.ok(!release.argv.some((a) => String(a).includes("the CLI is too old")), "the harness's own words stay off the server");
   // A timeout and a missing document fail the same way, without an error line.
   for (const options of [{ timedOut: true }, { noDocument: true }]) {
     const f = fixture(t, options);
@@ -297,7 +298,7 @@ test("a refused plan job is retried once before the runner retires it", async (t
   assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
 });
 
-test("a plan job whose harness exits with an error is reported as harness_failed with its last error line", async (t) => {
+test("a plan job whose harness exits with an error is reported as harness_failed, its stderr kept in the runner's own log", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-plan-harness-fail-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const workspace = join(dir, "t7");
@@ -325,7 +326,8 @@ test("a plan job whose harness exits with an error is reported as harness_failed
     },
     reportRun: async (body) => { reports.push(body); },
   });
-  assert.deepEqual(reports.map((r) => [r.role, r.outcome, r.detail]), [["plan", "harness_failed", "the CLI is too old"]]);
+  assert.deepEqual(reports.map((r) => [r.role, r.outcome, r.detail]), [["plan", "harness_failed", undefined]]);
+  assert.match(readFileSync(reports[0].facts.log, "utf8"), /exited 1[\s\S]*the CLI is too old/);
 });
 
 test("a stale plan document is cleaned from the workspace before the harness runs", async (t) => {

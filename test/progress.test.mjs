@@ -9,7 +9,7 @@
 // real Node server and its hook. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, openSync, writeSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, openSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -183,6 +183,13 @@ if (mode !== "ok") {
   out({ type: "assistant", message: { content: [{ type: "tool_use", id: "m1", name: "Bash", input: { command: "npm test" } }], usage: { input_tokens: 10, output_tokens: 5 } } });
   out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "m1", content: "ok" }] } });
   if (mode === "wip") { require("node:fs").mkdirSync("src", { recursive: true }); require("node:fs").writeFileSync("src/wip.txt", "half done\\n"); }
+  if (mode === "leak") {
+    const secrets = require("node:fs").readFileSync(${JSON.stringify(join(root, "secrets.txt"))}, "utf8");
+    out({ type: "assistant", message: { content: [{ type: "tool_use", id: "m2", name: "Bash", input: { command: secrets } }] } });
+    process.stderr.write(secrets + "\\n");
+    setTimeout(() => process.exit(1), 50);
+    return;
+  }
   const cost = { fail: 0.11, wip: 0.22, limit: 0.33 }[mode];
   out(mode === "limit"
     ? { type: "result", subtype: "error", is_error: true, result: "Claude AI usage limit reached|" + Math.floor(Date.now() / 1000 + 3600), total_cost_usd: cost }
@@ -388,4 +395,65 @@ test("round 8: a step's tool is kept by name only from the known list, else as t
   foldStream(s, toolUse("x", "password:hunter2", { command: "npm test" }), at);
   assert.deepEqual([...s.pending.values()].map((c) => c.name), ["tool"]);
   assert.ok(!JSON.stringify([p, [...s.pending.values()]]).includes("hunter2"));
+});
+
+// Every form a secret took in rounds 1 to 10 of the review, each with the part that must never be stored.
+const LEAKS = [
+  ["atl_0123456789abcdef0123456789abcdef", "0123456789abcdef0123"],
+  ["curl -H 'Authorization: Bearer abcdef12-ghijk345-lmnop678' https://x.test", "ghijk345"],
+  ['Authorization: Digest username="u", response="6629fae49393a05397450978507c4ef1"', "6629fae49393"],
+  ['{"x-api-key": "hunter2xapi"}', "hunter2xapi"], ['{"pwd":98765432123}', "98765432123"],
+  ['API_KEY="prefix secretvalue1" npm test', "secretvalue1"], ["PASSWORD=prefix\u00a0secretvalue2 printenv", "secretvalue2"],
+  ["PASSWORD = hunter2dotenv", "hunter2dotenv"], ["password: hunter2yaml", "hunter2yaml"],
+  ["postgres://alice:hunter2url@localhost/app", "hunter2url"], ["GET https://x.test/a?token=hunter2query&p=1", "hunter2query"],
+  ["curl --user alice:hunter2curl https://x.test", "hunter2curl"], ["redis-cli --pass hunter2redis", "hunter2redis"],
+  ["password: |\n  hunter2multiline", "hunter2multiline"], ["basic dTpwYmFzaWM=", "dTpwYmFzaWM"], ["bearer {env:TOKEN}hunter2env", "hunter2env"],
+];
+const files = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]);
+
+test("round 10: a run whose output holds every secret form so far stores none of it; the facts and the local log's host and path reach show and situation", async () => {
+  const text = LEAKS.map(([l]) => l).join("\n");
+  writeFileSync(join(root, "secrets.txt"), text);
+  writeFileSync(join(root, "mode"), "leak");
+  const id = (await api("POST", "/projects/demo/items", { title: "Leaks its output", scope: ["src/**"] })).body.id;
+  assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status, 200);
+  await cli(["runner", "--name", "home:studio", "--config", runnerConfig, "--once"], { token: runnerToken, env: { PATH: `${binDir}:${process.env.PATH}`, ATELIER_HEARTBEAT_MS: "200" } });
+  rmSync(join(root, "mode"), { force: true });
+  // The run's facts and its log's host and path reach show and situation.
+  const first = JSON.parse((await cli(["show", id, "--project", "demo", "--json"])).stdout);
+  assert.ok(first.lastRun?.log && first.lastRun.host, JSON.stringify(first.lastRun));
+  assert.equal(first.lastRun.program, "claude");
+  assert.match((await cli(["show", id, "--project", "demo"])).stdout, /Last run: .* on home:studio .*log on .* at \//);
+  assert.match((await cli(["situation", "--project", "demo"])).stdout, /last run: [a-z_]+ \(build\) by claude-code\/sonnet-5\.5 on home:studio at .*log on .* at \//);
+  // A runner that sends text anyway, and rows kept before the facts rule.
+  const now = new Date().toISOString();
+  const posted = await fetch(`${base}/api/runs`, { method: "POST", headers: { authorization: `Bearer ${runnerToken}`, "content-type": "application/json", "x-atelier-runner": "home:studio", "x-atelier-actor": BUILDER }, body: JSON.stringify({ actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: text }) });
+  assert.equal(posted.status, 201, await posted.text());
+  const index = server.namespace.get(server.namespace.idFromName("__index"));
+  await index.putRun({ actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: text, runner: "home:old", at: now });
+  const answers = [
+    JSON.stringify((await api("GET", "/runs")).body), JSON.stringify((await api("GET", `/projects/demo/items/${id}`)).body),
+    JSON.stringify((await api("GET", "/projects/demo/situation")).body), JSON.stringify((await api("GET", "/projects/demo/events")).body), JSON.stringify((await api("GET", "/queue")).body),
+    (await cli(["show", id, "--project", "demo"])).stdout, (await cli(["show", id, "--project", "demo", "--json"])).stdout, (await cli(["situation", "--project", "demo"])).stdout,
+  ].join("\n");
+  for (const [form, secret] of LEAKS) assert.ok(!answers.includes(secret), `an API answer holds ${secret} (from ${form})`);
+  // The stored rows: every file the server keeps, outside the old row put there on purpose above.
+  const runs = (await api("GET", "/runs")).body.filter((r) => r.item === id && r.runner === "home:studio");
+  const kept = runs.find((r) => r.facts?.log);
+  assert.ok(kept, JSON.stringify(runs));
+  assert.equal(kept.facts.program, "claude");
+  assert.equal(kept.facts.exitCode, 1);
+  assert.ok(readFileSync(kept.facts.log, "utf8").includes("hunter2redis"), "the output stays in the runner's own log");
+});
+
+test("round 10: nothing a run's output held is in any file the server stores, apart from the old row the test put there", async () => {
+  // The old row above was written raw on purpose; it is read back without its text, and is the only place it may be.
+  const index = server.namespace.get(server.namespace.idFromName("__index"));
+  const raw = (await index.runs(1000)).filter((r) => r.runner === "home:old");
+  for (const r of raw) for (const [, secret] of LEAKS) assert.ok(!r.detail.includes(secret), "an old row reads back without its text");
+  const projectFiles = files(join(root, "data", "ledgers")).filter((f) => !/__index/.test(f));
+  for (const f of projectFiles) {
+    const bytes = readFileSync(f).toString("latin1");
+    for (const [form, secret] of LEAKS) assert.ok(!bytes.includes(secret), `${f} holds ${secret} (from ${form})`);
+  }
 });

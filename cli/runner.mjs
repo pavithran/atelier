@@ -5,7 +5,7 @@ import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, lstatSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -2327,13 +2327,41 @@ export async function runTask(assignment, config, name, io) {
 // no core files (endedRun in src/dispatch/rules.ts). Null for a run that
 // released its claim, a task given up (its own report goes), a task the
 // server closed, and any job but a build or a task's merge of main.
-export function unfinishedReport(task, state, gaveUp = null) {
+export function unfinishedReport(task, state, gaveUp = null, facts = null) {
   const job = task.item.dispatch?.job;
   if (!state.claimHeldAt || gaveUp || state.terminalState || state.providerLimit) return null;
   if (job && job !== "merge-main") return null;
-  const outcome = runOutcome(state);
-  const why = state.reason ?? "";
-  return { project: task.project, item: task.item.id, actor: task.actor, role: "build", kind: "unfinished", failures: 1, note: outcome && !why.startsWith(outcome) ? `${outcome}: ${why}` : why };
+  return { project: task.project, item: task.item.id, actor: task.actor, role: "build", kind: "unfinished", failures: 1, ...(facts ? { facts } : {}) };
+}
+
+// What a run's report says of it (the round-10 review of G3/G4/G21): its
+// facts alone, never text of its output. The text (the reason, the detail,
+// the harness's stderr) goes to a log on this machine, mode 600, which the
+// facts name by host and path, for the orchestrator to read here.
+let runLogs = 0;
+export const HARNESS_PROGRAMS = { "claude-code": "claude", codex: "codex", opencode: "opencode", antigravity: "agy" };
+export function runFacts(task, state, { dir = null, now = Date.now, host = hostname() } = {}) {
+  const text = [state.reason ?? "", state.detail ?? "", state.harnessExit?.stderr ?? "", state.output ?? ""].filter(Boolean).join("\n");
+  // Beside the task workspaces, or, where that folder cannot be made, in this
+  // machine's temporary folder; mode 700 and 600 either way.
+  let log = null;
+  for (const at of [dir, join(tmpdir(), "atelier-run-logs")].filter(Boolean)) {
+    try {
+      mkdirSync(at, { recursive: true, mode: 0o700 });
+      // Unique per run however the clock reads: a counter and the process beside the time.
+      log = join(at, `${task.project}-${task.item.id}-${now()}-${process.pid}-${++runLogs}.log`.replace(/[^A-Za-z0-9._-]/g, "-"));
+      writeFileSync(log, `${text}\n`, { mode: 0o600 });
+      break;
+    } catch { log = null; }
+  }
+  const exit = state.harnessExit;
+  return {
+    exitCode: exit?.kind === "exited" && Number.isInteger(exit.code) ? exit.code : null,
+    signal: exit?.kind === "signalled" && typeof exit.signal === "string" ? exit.signal : null,
+    program: HARNESS_PROGRAMS[task.agent] ?? "sh",
+    lines: text ? text.split("\n").length : 0, bytes: Buffer.byteLength(text),
+    log, host: String(host).replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 63) || null,
+  };
 }
 
 // A runner that gives a task up (t584) lets go of the claim, so the core-file
@@ -4010,9 +4038,13 @@ export function lastErrorLine(result) {
 // error line, or the fallback when it wrote none, and its detail is that line
 // alone for the run report.
 export function planHarnessFailure(result, fallback) {
-  const detail = lastErrorLine(result) || fallback;
+  // The runner's own words for the failure (timed out, exited N, wrote no
+  // plan document), never the harness's: its text stays in the run's local log.
+  const detail = fallback;
   const error = new Error(`the harness failed: ${detail}`);
   error.detail = detail;
+  // The harness's own output goes to the run's local log alone (runFacts).
+  error.output = String(result?.stderr ?? "") || String(result?.output ?? "");
   return error;
 }
 
@@ -4097,6 +4129,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
     if (error.detail) state.detail = error.detail;
+    if (error.output) state.output = error.output;
     if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
     else if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
     else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
@@ -4373,6 +4406,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // The running build's progress line (G21, cli/progress.mjs) goes with every
   // poll and heartbeat while a build runs, and once more when it has ended.
   const progress = progressTracker({ now });
+  // Each run's text goes to a log beside the task workspaces, never to the server.
+  const factsOf = (task, state) => {
+    let dir = null;
+    try { dir = workspacePath ? join(dirname(workspacePath(task.project, task.item.id)), "run-logs") : null; } catch { dir = null; }
+    return runFacts(task, state, { dir, now });
+  };
   const progressReport = () => { const p = progress.report(); return p.length ? { progress: p } : {}; };
   const missing = new Map();
   // Post-merge reviews whose baseline could not be fetched (t591), by
@@ -5088,7 +5127,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : (task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) ? "review" : "build";
               const exit = SAME_EXIT_JOBS.has(task.item.dispatch?.job) && state.harnessExit?.kind !== "timed-out" ? state.harnessExit : null;
               const detail = exit && outcome === "refused" ? exitDetail(exit) : state.detail ?? state.reason;
-              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail }, offer.runner, controller.signal);
+              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, facts: factsOf(task, exit && outcome === "refused" ? { ...state, detail } : state) }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }
@@ -5122,7 +5161,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           let missReported = false;
           if (state.missingCommit && reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) {
             missReported = true;
-            await reportSkip(`miss:${missingKey(task)}:${task.item.request}`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: state.reason }, 0, "miss");
+            await reportSkip(`miss:${missingKey(task)}:${task.item.request}`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, facts: factsOf(task, state) }, 0, "miss");
           }
           // A baseline that could not be fetched (t591) is served again after
           // fetchRetryPolls, counted by task and head; at FETCH_TRIES it is
@@ -5142,12 +5181,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               missing.set(fkey, { commit: state.fetchFailed.commit, baseline: head, checked: now(), fetchFailed: true });
               io.log(`${task.project}/${task.item.id}'s post-merge review is passed by after ${FETCH_TRIES} failures before a verdict: ${state.reason}`);
               const note = `gave up the post-merge review of the merge commit ${state.fetchFailed.commit} after ${FETCH_TRIES} failures before a verdict: ${state.reason}`;
-              if (reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) await reportSkip(`miss:${fkey}:fetch`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: note }, 0, "miss");
-              else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
+              if (reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) await reportSkip(`miss:${fkey}:fetch`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, facts: factsOf(task, { ...state, reason: note }) }, 0, "miss");
+              else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, facts: factsOf(task, { ...state, reason: note }) });
             }
           } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
           if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
-            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
+            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, facts: factsOf(task, state) });
           }
           // A build or plan job given up under this dispatch, after its
           // failed runs or infrastructure failures in a row, is reported as
@@ -5173,13 +5212,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           }
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
-            await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, note: state.reason ?? "" }, 0, "run");
+            await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, facts: factsOf(task, state) }, 0, "run");
           }
           // A build that ended without a result and kept its claim says so
           // (t325), so the claim stops holding other dispatches off its core
           // files until this runner claims it again for the next run. Sent
           // once, never retried: a late report would land after that claim.
-          const unfinished = unfinishedReport(task, state, gaveUp);
+          const unfinished = unfinishedReport(task, state, gaveUp, factsOf(task, state));
           if (unfinished && reportRunSkip) {
             try {
               await reportRunSkip(unfinished, offer.runner, controller.signal);

@@ -436,7 +436,7 @@ it("a runner's skip under the owner's token, before any claim, records the unava
     body: JSON.stringify({ head: head(2), request: s.request, note: "capped" }),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(res.status, await res.clone().text()).toBe(200);
-  expect((await views(L, t2))[0]).toMatchObject({ state: "unavailable", outcome: "skipped", detail: expect.stringMatching(/home:studio skipped it: capped/) });
+  expect((await views(L, t2))[0]).toMatchObject({ state: "unavailable", outcome: "skipped", detail: expect.stringMatching(/^home:studio skipped it$/) });
   // The waiter keeps its place, and a second report changes nothing.
   expect((await queueIds(L))[0]).toBe(t2);
   await L.recordReviewSkip(t2, s.request, head(2), RUNNER.runner, "owner", "capped", true);

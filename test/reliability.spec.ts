@@ -62,7 +62,8 @@ it("a runner reports a run under its name; the owner token reads the reports; an
   expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge, validation_blocked, infrastructure_miss" });
   const sent = await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" });
   expect(sent.status).toBe(201);
-  expect(await sent.json()).toMatchObject({ ...body, runner: "home:studio" });
+  // Round 10: a runner's report keeps no text of the run; the detail sent is dropped.
+  expect(await sent.json()).toMatchObject({ ...body, detail: "", runner: "home:studio" });
   await call("POST", "/runs", "owner", { ...body, outcome: "stalled", role: "build" }, { "x-atelier-runner": "home:studio" });
   const read = (await (await call("GET", "/runs", "codex/gpt-6-astra")).json()) as RunReport[];
   expect(read.slice(0, 2).map((r) => [r.outcome, r.role])).toEqual([["stalled", "build"], ["refused", "review"]]);
@@ -153,7 +154,6 @@ it("each model's reliability across projects: the JSON route, the Models page an
   const usage = await (await worker.fetch(new Request("https://atelier.test/usage", { headers: { cookie } }), testEnv)).text();
   expect(usage).toContain("Reliability by model");
   expect(usage).toContain("<code>glm-5.3</code>");
-  expect(usage).toContain("review run refused: no model");
 });
 
 it("the owner records a verdict on one review finding; anyone else, a bad verdict and a missing finding are refused", async () => {
@@ -219,9 +219,9 @@ it("persists blocked validation and retrieves only the task's reports", async ()
   expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" })).status).toBe(201);
   await call("POST", "/runs", "owner", { ...body, item: "t2" }, { "x-atelier-runner": "home:studio" });
   await call("POST", "/runs", "owner", { ...body, project: "another-validation" }, { "x-atelier-runner": "home:studio" });
-  expect(await index.runsForItem("blocked-validation", id)).toEqual([expect.objectContaining({ ...body, runner: "home:studio" })]);
+  expect(await index.runsForItem("blocked-validation", id)).toEqual([expect.objectContaining({ ...body, detail: "", runner: "home:studio" })]);
   const cookie = await signIn(TOKEN, testEnv);
   const page = await worker.fetch(new Request(`https://atelier.test/p/blocked-validation/${id}`, { headers: { cookie } }), testEnv);
   expect(page.status).toBe(200);
-  expect(await page.text()).toContain("npm test could not run: listen EPERM");
+  expect(await page.text()).not.toContain("npm test could not run: listen EPERM");
 });

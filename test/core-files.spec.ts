@@ -152,7 +152,8 @@ it("a give-up reported for a task the runner already released reaches the inbox 
   expect(await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit")).toBe(true);
   await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit");
   const entries = (await L.inbox(new Date().toISOString())).filter((e) => e.kind === "gave-up");
-  expect(entries.map((e) => e.reason)).toEqual([`harness made no new commit; run \`atelier dispatch ${item.id}\` to send it out again`]);
+  // Round 10: the runner's words are not kept; the give-up is said from its facts, here none.
+  expect(entries.map((e) => e.reason)).toEqual([`the runner gave it up; run \`atelier dispatch ${item.id}\` to send it out again`]);
   const events = (await L.events(item.id)) as unknown as { kind: string }[];
   expect(events.filter((e) => e.kind === "item.gave_up")).toHaveLength(1);
 });

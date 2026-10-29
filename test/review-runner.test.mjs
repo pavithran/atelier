@@ -9,6 +9,8 @@ import { runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, 
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { REVIEW_RENEW_MS } from "../src/rules.ts";
+// What a run report's facts point to: the run's text, kept in a log on the runner's own machine (round 10).
+const logged = (f) => (f?.log ? readFileSync(f.log, "utf8") : "");
 
 // Pin the load under the runner's limit so these tests are not held back by
 // this machine's real load; the gate is tested with an injected load.
@@ -510,7 +512,7 @@ test("a review skip report that fails is tried again each poll until the server 
   // report that landed is not sent again on the polls after it.
   assert.equal(attempts.length, 2, JSON.stringify(attempts));
   assert.equal(persisted.length, 1, JSON.stringify(persisted));
-  assert.deepEqual(persisted[0], { project: "atelier", item: "t21", head: "a".repeat(40), request: 1, actor: assignment.actor, note: attempts[0].note });
+  assert.deepEqual(persisted[0], { project: "atelier", item: "t21", head: "a".repeat(40), request: 1, actor: assignment.actor, facts: attempts[0].facts });
   assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21.*503.*again next poll/.test(l)), logs.join("\n"));
   assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
 });
@@ -1144,7 +1146,7 @@ test("a post-merge review whose merge commit no source holds is released once an
   assert.ok(calls.some((c) => c.fetch?.[0] === "https://artifacts.example/baseline" && c.fetch[1] === merge));
   // One skip report per failure, under the request claimed, naming the commit.
   assert.deepEqual(reports.map((r) => r.request), [50, 51]);
-  for (const r of reports) assert.match(r.note, new RegExp(merge));
+  for (const r of reports) assert.match(logged(r.facts), new RegExp(merge));
   // The baseline's head is read at most every five minutes, not each poll;
   // each miss is kept against the head its Git fetch saw.
   assert.deepEqual(heads.map(([poll]) => poll), [6, 11, 16]);
@@ -1247,12 +1249,12 @@ test("a missing merge is reported as an infrastructure_miss run where the server
     assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
     if (capable) {
       assert.deepEqual(runs.map((r) => [r.role, r.outcome, r.item, r.actor]), [["review", "infrastructure_miss", "t21", assignment.actor]]);
-      assert.match(runs[0].detail, new RegExp(`merge commit ${merge}`));
+      assert.match(logged(runs[0].facts), new RegExp(`merge commit ${merge}`));
       assert.equal(skips.length, 0);
     } else {
       assert.equal(runs.length, 0);
       assert.equal(skips.length, 1);
-      assert.match(skips[0].note, new RegExp(merge));
+      assert.match(logged(skips[0].facts), new RegExp(merge));
     }
   }
 });
@@ -1401,8 +1403,8 @@ test("a baseline that cannot be fetched is served with backoff, given up after t
   // One report, the infrastructure_miss run report, naming the commit and the error.
   assert.equal(runs.length, 1, JSON.stringify(runs));
   assert.equal(runs[0].outcome, "infrastructure_miss");
-  assert.match(runs[0].detail, new RegExp(merge));
-  assert.match(runs[0].detail, /Could not resolve host/);
+  assert.match(logged(runs[0].facts), new RegExp(merge));
+  assert.match(logged(runs[0].facts), /Could not resolve host/);
   assert.equal(skips.length, 0);
   const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
   assert.ok(verdict, "the review records its verdict once the baseline answers");
@@ -1449,8 +1451,8 @@ test("a post-merge review whose clone fails is served with backoff, given up aft
   assert.ok(claimPolls[3] > 30, JSON.stringify(claimPolls));
   assert.equal(runs.length, 1, JSON.stringify(runs));
   assert.equal(runs[0].outcome, "infrastructure_miss");
-  assert.match(runs[0].detail, new RegExp(merge));
-  assert.match(runs[0].detail, /returned error: 503/);
+  assert.match(logged(runs[0].facts), new RegExp(merge));
+  assert.match(logged(runs[0].facts), /returned error: 503/);
   assert.equal(skips.length, 0);
   const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
   assert.ok(verdict, "the review records its verdict once the clone works");
@@ -1678,8 +1680,8 @@ test("a post-merge review whose baseline is never read is given up as a fetch fa
   // One report, of a baseline that could not be read, naming the commit.
   assert.equal(runs.length, 1, JSON.stringify(runs));
   assert.equal(runs[0].outcome, "infrastructure_miss");
-  assert.match(runs[0].detail, new RegExp(`could not read the baseline for the merge commit ${merge}`));
-  assert.doesNotMatch(runs[0].detail, /publish main/);
+  assert.match(logged(runs[0].facts), new RegExp(`could not read the baseline for the merge commit ${merge}`));
+  assert.doesNotMatch(logged(runs[0].facts), /publish main/);
   assert.equal(skips.length, 0);
   const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
   assert.ok(verdict, "the review records its verdict once the baseline moves and is read");
@@ -1710,7 +1712,7 @@ test("an infrastructure_miss report that fails on every attempt is given up afte
     async reportRun(body) {
       attempts.push(polls);
       assert.equal(body.outcome, "infrastructure_miss");
-      assert.match(body.detail, new RegExp(merge));
+      assert.match(logged(body.facts), new RegExp(merge));
       throw new Error("503 Service Unavailable");
     },
     async reportReviewSkip(body) { skips.push(body); },
@@ -1781,7 +1783,7 @@ test("an infrastructure_miss report that meets a transient failure is sent again
   assert.deepEqual(attempts, [1, 2]);
   assert.equal(landed.length, 1);
   assert.equal(landed[0].outcome, "infrastructure_miss");
-  assert.match(landed[0].detail, new RegExp(merge));
+  assert.match(logged(landed[0].facts), new RegExp(merge));
   assert.equal(skips.length, 0, "the run report is not traded for a review skip");
   assert.ok(logs.some((l) => /infrastructure_miss.*503.*again next poll/.test(l)), logs.join("\n"));
 });
@@ -2358,8 +2360,8 @@ test("a review request is passed by at the server's same-exit count, never at a 
   assert.equal(claims.length, 2, "claimed at polls 1 and 3");
   assert.ok(said.some((l) => /exited the same way 2 times in a row, as the server counts them across runners/.test(l)), said.join("\n"));
   assert.deepEqual(runs.map((r) => [r.role, r.outcome]), [["review", "refused"], ["review", "refused"]], "each run is reported as one without a result");
-  for (const r of runs) assert.match(r.detail, /^harness exit code 1; stderr: .*provider returned 500 at 2026-10-22T01:0#?\d:00Z \/ exiting$/);
-  assert.ok(runs.every((r) => r.detail.length <= 300), "within what the server keeps");
+  // Round 10: the report carries the exit as facts; the stderr stays in the runner's own log.
+  for (const r of runs) { assert.equal(r.facts.exitCode, 1); assert.ok(!("detail" in r)); assert.match(logged(r.facts), /provider returned 500 at 2026-10-22T01:0#?\d:00Z/); }
   // Each release says the exit alone, which the server's stop counts
   // whatever the stderr says; that stops the request for every runner of the model.
   const notes = calls.filter((c) => c.argv?.[0] === "review-release").map((c) => c.argv[c.argv.indexOf("--note") + 1]);
@@ -2387,8 +2389,9 @@ test("two different harness exits on one review request do not stop it as the sa
     },
   });
   assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
-  assert.ok(runs.every((r) => !/same harness exit/.test(r.detail)), JSON.stringify(runs));
-  assert.match(runs[1].detail, /exit code 2; stderr: another failure/);
+  assert.ok(runs.every((r) => !/same harness exit/.test(logged(r.facts))), JSON.stringify(runs));
+  assert.equal(runs[1].facts.exitCode, 2);
+  assert.match(logged(runs[1].facts), /another failure/);
 });
 
 // t323: a harness's refusal of the review input for its size is recorded as

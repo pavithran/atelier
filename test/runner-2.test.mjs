@@ -473,7 +473,8 @@ test("real runner caps reset, claim and finish failures while serving the next t
     assert.deepEqual(skips.map(([runner, b]) => [runner, b.item, b.role, b.kind, b.failures]), [["home:studio", "t13", "build", "infrastructure", 3]]);
     // The two finishes before the give-up kept the claim with nothing submitted.
     assert.deepEqual(unfinished.map(([runner, b]) => [runner, b.item]), failure === "finish" ? [["home:studio", "t13"], ["home:studio", "t13"]] : []);
-    assert.ok(skips[0][1].note.includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
+    // Round 10: the reason stays in the runner's own log; the report carries its facts.
+    assert.ok(readFileSync(skips[0][1].facts.log, "utf8").includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
     assert.ok(logs.some((s) => /could not report the run skip for atelier\/t13: 503 busy; trying again next poll/.test(s)));
     assert.ok(logs.includes("reported the run skip for atelier/t13"));
   }
@@ -758,8 +759,9 @@ test("a run that timed out, stalled or was refused is reported under the runner'
       workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
       async reportRun(body, runner, signal) { reports.push({ body, runner, signalled: signal instanceof AbortSignal }); },
     });
-    const expected = outcome ? [{ body: { actor: assignment.actor, role: "build", outcome, project: "atelier", item: "t13", detail }, runner: "home:studio", signalled: true }] : [];
-    assert.deepEqual(reports, expected, JSON.stringify(options));
+    // Round 10: the report carries facts, its text (the reason) kept in the runner's own log.
+    assert.deepEqual(reports.map(({ body, runner, signalled }) => ({ body: { ...body, facts: undefined }, runner, signalled })), outcome ? [{ body: { actor: assignment.actor, role: "build", outcome, project: "atelier", item: "t13", facts: undefined }, runner: "home:studio", signalled: true }] : [], JSON.stringify(options));
+    if (outcome) assert.ok(readFileSync(reports[0].body.facts.log, "utf8").includes(detail), JSON.stringify(options));
     assert.equal(logs.includes(`reported atelier/t13 as ${outcome}`), !!outcome, JSON.stringify(options));
   }
   // A report the server refuses is logged, and the runner goes on.

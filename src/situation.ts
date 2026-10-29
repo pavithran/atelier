@@ -10,6 +10,8 @@ import { checkLimits, type CheckLimits } from "./check-limit.ts";
 import { OFFER_REFRESH_MS, servesProject, type CoreHold, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
 import type { Decision } from "./decisions.ts";
 import { redactKeys } from "./models/pool.ts";
+import type { RunReport } from "./models/reliability.ts";
+import { cleanRunFacts } from "./run-facts.ts";
 import { toolName } from "./tool-names.ts";
 import type { LandingLease } from "./landing-lease.ts";
 import type { LandingRecord, ProjectRecord } from "./ledger";
@@ -151,6 +153,9 @@ export interface SituationInput {
   commit: string | null;                  // the commit this server runs (DEPLOYED_MAIN)
   disk: DiskFacts | null;                 // null where it cannot be read (a Worker)
   now: Date;
+  // Each listed task's newest run report (the index's), whose output stays
+  // in a log on the runner's host: its facts and where that log is.
+  runs?: Record<string, RunReport | undefined>;
 }
 
 const ageMs = (at: string | null | undefined, now: Date): number | null => {
@@ -182,6 +187,7 @@ export function situationOf(input: SituationInput) {
       blockedBy: (facts.blockers?.[i.id] ?? []).map((b) => ({ id: b.id, state: b.state })),
       lastCheck: facts.lastChecks[i.id] ?? null,
       progress: facts.progress?.[i.id] ? progressView(facts.progress[i.id], now) : null,
+      lastRun: lastRunOf(input.runs?.[i.id]),
     };
   });
   const holds = [
@@ -243,6 +249,14 @@ export function situationOf(input: SituationInput) {
 }
 
 export type Situation = ReturnType<typeof situationOf>;
+
+// A run report as situation and show give it: what ended, when, on which
+// runner, and its facts, with the log's host and path; never its output.
+export function lastRunOf(r: RunReport | null | undefined) {
+  if (!r) return null;
+  const f = cleanRunFacts(r.facts);
+  return { outcome: r.outcome, role: r.role, actor: r.actor, runner: r.runner, at: r.at, exitCode: f?.exitCode ?? null, signal: f?.signal ?? null, program: f?.program ?? null, lines: f?.lines ?? null, bytes: f?.bytes ?? null, log: f?.log ?? null, host: f?.host ?? null };
+}
 
 function spendOf(facts: SituationFacts) {
   const out: { task: string; model: string; runs: number; costUsd: number | null; tokens: number | null }[] = [];

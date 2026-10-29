@@ -49,7 +49,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } f
 import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
 import { parseReadiness } from "./runners/readiness";
-import { diskOf, situationOf } from "./situation.ts";
+import { diskOf, lastRunOf, situationOf } from "./situation.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -2189,7 +2189,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const tasks = (c.url.searchParams.get("tasks") ?? "").split(",").filter((t) => /^t[1-9][0-9]*$/.test(t));
     const [facts, offers, tokens, record] = await Promise.all([L.situationFacts(tasks), index(env).runnerOffers().catch(() => null), index(env).agentTokens().catch(() => null), L.project()]);
-    return json(situationOf({ facts, offers, tokens, names: namesOf(record), commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, disk: diskOf(env), now: new Date() }));
+    const runs = Object.fromEntries(await Promise.all(facts.items.map(async (i) => [i.id, (await index(env).runsForItem(project, i.id).catch(() => []))[0]] as const)));
+    return json(situationOf({ facts, offers, tokens, names: namesOf(record), commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, disk: diskOf(env), now: new Date(), runs }));
   }
 
   // The recorded transitions of the project's stuck episodes (t198).
@@ -2814,7 +2815,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   const id = parts[3];
   const verb = parts[4];
-  if (!verb && m === "GET") return json(await L.detail(id));
+  // The task's newest run report rides with it (its facts and the log's host
+  // and path on the runner; never its output).
+  if (!verb && m === "GET") return json({ ...await L.detail(id), lastRun: lastRunOf((await index(env).runsForItem(project, id).catch(() => []))[0]) });
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);
@@ -3352,7 +3355,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // against that request alone, never against a later one at the same head.
       const request = body.request;
       if (typeof request !== "number" || !Number.isInteger(request) || request < 1) throw new RuleError("bad_request", "a review skip names the review request it refused, by number", 400);
-      await L.recordReviewSkip(id, request, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
+      await L.recordReviewSkip(id, request, head, runner.runner, actor, body.facts, !!c.token);
       return json({ skipped: true });
     }
     // A runner's word that it gives up a dispatched build or plan job under
@@ -3373,7 +3376,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Under a runner token the job's actor is the caller, checked at the gateway.
       const by = c.token?.runner ? actor : String(body.actor ?? "");
       if (!validActor(by)) throw new RuleError("bad_actor", "a run skip names the harness/model the job ran under", 400);
-      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, String(body.note ?? "")) });
+      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, body.facts) });
     }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
     // task, its last VERDICT_LIMITS.reply characters with the reviewer and

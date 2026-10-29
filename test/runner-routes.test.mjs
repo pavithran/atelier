@@ -168,7 +168,7 @@ test("the transport sends a declared call as declared, and refuses an undeclared
   await t.send("queue-why", {}, { body: { ...offer, started: "2026-10-12T00:00:00.000Z", why: true }, actor: "owner" });
   assert.deepEqual([sent[5].url, sent[5].init.method, sent[5].init.body], ["https://atelier.test/api/queue", "POST", JSON.stringify({ ...offer, started: "2026-10-12T00:00:00.000Z", why: true })]);
   await assert.rejects(t.send("queue", {}, { body: { ...offer, why: true }, actor: "owner" }), /queue does not send why/);
-  const skip = { actor: ACTOR, role: "build", kind: "failures", failures: 2, note: "the harness failed twice" };
+  const skip = { actor: ACTOR, role: "build", kind: "failures", failures: 2, facts: { exitCode: 1 } };
   await t.send("run-skip", { project: "p", item: "t3" }, { actor: ACTOR, body: skip });
   assert.deepEqual([sent[6].url, sent[6].init.method, sent[6].init.headers["x-atelier-actor"], sent[6].init.body], ["https://atelier.test/api/projects/p/items/t3/run-skip", "POST", ACTOR, JSON.stringify(skip)]);
   await assert.rejects(t.send("run-skip", { project: "p", item: "t3" }, { actor: ACTOR, body: { ...skip, project: "p", item: "t3" } }), /run-skip does not send project, item/);
@@ -865,12 +865,13 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   const offered = await expect(api("POST", "/queue", { body: OFFER }), 200, "review poll");
   const review = offered.find((j) => j.item.id === job.id);
   assert.deepEqual([review.actor, review.item.request, review.item.head, review.item.dispatch.job], [REVIEWER, job.request, H1, "review"]);
-  const skipBody = { head: job.head, request: job.request, note: "no agent token for the reviewer" };
+  // Round 10: a skip carries facts, never the run's text.
+  const skipBody = { head: job.head, request: job.request, facts: { program: "opencode", exitCode: 1 }, note: "no agent token for the reviewer" };
   await denied(api("POST", `${p.base(job.id)}/review-skip`, { actor: ACTOR, body: skipBody }), token, "skip as the builder");
   await denied(api("POST", `${p.base(id)}/review-skip`, { actor: REVIEWER, body: skipBody }), token, "skip of a build job");
   assert.equal((await expect(api("POST", `${p.base(job.id)}/review-skip`, { actor: REVIEWER, body: { ...skipBody, head: H0 } }), 409, "skip at another head")).error, "bad_head");
   assert.deepEqual(await expect(api("POST", `${p.base(job.id)}/review-skip`, { actor: REVIEWER, body: skipBody }), 200, "review-skip"), { skipped: true });
-  assert.deepEqual((await p.L.reviewSkips(job.id, job.request)).map((s) => [s.runner, s.note]), [[RUNNER, "no agent token for the reviewer"]]);
+  assert.deepEqual((await p.L.reviewSkips(job.id, job.request)).map((s) => [s.runner, s.note]), [[RUNNER, "opencode; exit 1"]], "the note sent is dropped; the facts' line stands");
   const reported = await expect(api("POST", "/runs", { body: { actor: REVIEWER, role: "review", outcome: "refused", project: p.name, item: job.id, detail: "" } }), 201, "review run report");
   assert.equal(reported.role, "review");
   // The run skip (t420): the runner's word that it gives up the build job
@@ -878,7 +879,7 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   // where the owner's listing reads it (waiting). Another actor, the owner,
   // the job under another role, and a review job are refused at the gateway
   // as a run report is; a kind the server does not know is refused after.
-  const runSkip = { actor: ACTOR, role: "build", kind: "failures", failures: 2, note: "the harness failed twice" };
+  const runSkip = { actor: ACTOR, role: "build", kind: "failures", failures: 2, facts: { exitCode: 1 } };
   assert.equal(runnerRoute("POST", ["projects", p.name, "items", id, "run-skip"], runSkip), true);
   await denied(api("POST", `${p.base(id)}/run-skip`, { actor: "codex/other", body: { ...runSkip, actor: "codex/other" } }), token, "run skip as another actor");
   await denied(api("POST", `${p.base(id)}/run-skip`, { actor: "owner", body: runSkip }), token, "run skip as the owner");
@@ -887,7 +888,7 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   assert.equal((await expect(api("POST", `${p.base(id)}/run-skip`, { body: { ...runSkip, kind: "gave-up" } }), 400, "bad kind")).error, "bad_kind");
   assert.deepEqual(await expect(api("POST", `${p.base(id)}/run-skip`, { body: runSkip }), 200, "run-skip"), { kept: true });
   const waiting = await p.L.waiting();
-  assert.deepEqual(waiting.find((w) => w.id === id)?.skips?.map((s) => [s.runner, s.actor, s.kind, s.failures, s.note]), [[RUNNER, ACTOR, "failures", 2, "the harness failed twice"]], JSON.stringify(waiting));
+  assert.deepEqual(waiting.find((w) => w.id === id)?.skips?.map((s) => [s.runner, s.actor, s.kind, s.failures, s.note]), [[RUNNER, ACTOR, "failures", 2, "exit 1"]], JSON.stringify(waiting));
   cover("runs", "review-skip", "run-skip");
 });
 

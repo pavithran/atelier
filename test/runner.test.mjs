@@ -1536,7 +1536,7 @@ test("runner stops retrying after two failures even when the task revision chang
     // report is what tells the server the runner gave up.
     const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
     assert.equal(argvs.filter((x) => x[0] === "release" && x[1] === "t13").length, argvs.filter((x) => x[0] === "claim" && x[1] === "t13").length);
-    assert.ok(skips[0][1].note);
+    assert.ok(skips[0][1].facts && !("note" in skips[0][1]), "facts, never the run's text (round 10)");
   }
 });
 
@@ -1590,15 +1590,17 @@ test("a run that keeps its claim without a result reports it as unfinished, once
   const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
   assert.equal(argvs.filter((a) => a[0] === "release").length, 0, "the committed work keeps its claim");
   assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "unfinished", 1]]);
-  assert.ok(skips[0][1].note);
+  // Round 10: facts, never the run's text; the text stays in the runner's own log.
+  assert.ok(skips[0][1].facts && !("note" in skips[0][1]));
   assert.ok(logs.some((l) => l.includes("ended without a result; its claim holds no core files until it runs again")), logs.join("\n"));
 });
 
 test("only a build that kept its claim without a result is reported unfinished (t325)", () => {
   const task = { project: "atelier", actor: "codex/gpt-6", item: { id: "t13", dispatch: { at: "x" } } };
   const kept = { phase: "failed", claimHeldAt: "/w", reason: "harness made no new commit", taskFailure: true };
-  assert.deepEqual(unfinishedReport(task, kept), { project: "atelier", item: "t13", actor: "codex/gpt-6", role: "build", kind: "unfinished", failures: 1, note: "stalled: harness made no new commit" });
-  assert.equal(unfinishedReport(task, { ...kept, validationBlocked: true, reason: "tests failed" }).note, "validation_blocked: tests failed");
+  // Round 10: no note of the run's text, only the facts it is given.
+  assert.deepEqual(unfinishedReport(task, kept), { project: "atelier", item: "t13", actor: "codex/gpt-6", role: "build", kind: "unfinished", failures: 1 });
+  assert.deepEqual(unfinishedReport(task, kept, null, { exitCode: 1 }).facts, { exitCode: 1 });
   // A released claim, a give-up (its own report goes), a closed task, a
   // provider's limit, and jobs that are not builds send nothing.
   assert.equal(unfinishedReport(task, { ...kept, claimHeldAt: undefined }), null);

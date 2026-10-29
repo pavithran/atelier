@@ -159,7 +159,8 @@ test("runs the runners reported: stalled, timed out and refused per model, and r
 test("an infrastructure miss is a run report that changes no model's record", async () => {
   const miss = cleanRun({ actor: "codex/gpt-6-astra", role: "review", outcome: "infrastructure_miss", project: "a", item: "t9", detail: `the merge commit ${H1} is not in the baseline` }, "2026-10-13T12:00:00.000Z", "home:studio");
   assert.equal(miss.outcome, "infrastructure_miss");
-  assert.match(miss.detail, new RegExp(H1));
+  // Round 10: a runner's report keeps no text of the run; its detail sent is dropped.
+  assert.equal(miss.detail, "");
   const base = [run({ outcome: "refused", role: "review", actor: "codex/gpt-6-astra" })];
   const without = one(buildReliability([], base, OWNER), "gpt-6-astra");
   const withMiss = one(buildReliability([], [...base, miss, miss], OWNER), "gpt-6-astra");
@@ -240,12 +241,16 @@ test("the tie-breaker is the share of outcomes in a model's favour, one half wit
 
 test("a run report is validated: an agent, a known role and outcome, a task id, and no key", () => {
   const at = "2026-10-05T12:00:00.000Z";
-  assert.deepEqual(cleanRun({ actor: OPUS, outcome: "refused", project: "atelier", item: "t3", detail: "harness exited 1\u0007" }, at, "home:studio"),
-    { actor: OPUS, role: "build", outcome: "refused", project: "atelier", item: "t3", detail: "harness exited 1", runner: "home:studio", at });
+  // Round 10: a runner's report keeps its facts and the line built from them, never the text it sent.
+  assert.deepEqual(cleanRun({ actor: OPUS, outcome: "refused", project: "atelier", item: "t3", detail: "harness exited 1\u0007", facts: { exitCode: 1, program: "codex", log: "/w/run-logs/a.log", host: "studio", extra: "x" } }, at, "home:studio"),
+    { actor: OPUS, role: "build", outcome: "refused", project: "atelier", item: "t3", detail: "codex; exit 1; log studio:/w/run-logs/a.log", facts: { exitCode: 1, signal: null, program: "codex", lines: null, bytes: null, log: "/w/run-logs/a.log", host: "studio" }, runner: "home:studio", at });
+  // The developer's own record of a run keeps the developer's words, redacted.
+  assert.equal(cleanRun({ actor: OPUS, outcome: "refused", detail: "harness exited 1\u0007" }, at, "owner").detail, "harness exited 1");
   assert.equal(cleanRun({ actor: OPUS, role: "review", outcome: "stalled" }, at, "home:studio").role, "review");
   // The runner reports a plan job's run as a plan run (t213).
   assert.equal(cleanRun({ actor: OPUS, role: "plan", outcome: "stalled" }, at, "home:studio").role, "plan");
-  assert.match(cleanRun({ actor: OPUS, outcome: "stalled", detail: "key sk-abcdefghijklmnopqrstuvwxyz0123" }, at, "home:x").detail, /\[key removed\]/);
+  assert.match(cleanRun({ actor: OPUS, outcome: "stalled", detail: "key sk-abcdefghijklmnopqrstuvwxyz0123" }, at, "owner").detail, /\[key removed\]/);
+  assert.equal(cleanRun({ actor: OPUS, outcome: "stalled", detail: "key sk-abcdefghijklmnopqrstuvwxyz0123" }, at, "home:x").detail, "");
   for (const [body, why] of [
     [{ actor: "owner", outcome: "stalled" }, /harness\/model/],
     [{ actor: "atelier/sandbox", outcome: "stalled" }, /harness\/model/],

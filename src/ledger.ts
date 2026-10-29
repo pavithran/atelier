@@ -51,6 +51,7 @@ import { ago } from "./floor.ts";
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, unoffered, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
+import { cleanRunFacts, runFactsText, withoutRunText, type RunFacts } from "./run-facts.ts";
 import { nextProgress, parseProgress, type Blocker, type ProgressRecord, type SituationFacts } from "./situation.ts";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -1960,7 +1961,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The most recent reports, newest first.
   runs(limit = RUN_REPORTS): RunReport[] {
-    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
+    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => runRow(r.json));
   }
 
   // The build runs of each waiting dispatch since it was dispatched (t420),
@@ -1970,11 +1971,11 @@ export class Ledger extends DurableObject<Env> {
     return asks.flatMap(({ project, item, since }) => this.sql.exec(
       `SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? AND json_extract(json, '$.role') = 'build' AND json_extract(json, '$.at') >= ? ORDER BY id DESC LIMIT ?`,
       project, item, since, RUN_REPORTS,
-    ).toArray().map((r) => JSON.parse(r.json as string) as RunReport));
+    ).toArray().map((r) => runRow(r.json)));
   }
 
   runsForItem(project: string, item: string): RunReport[] {
-    return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
+    return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => runRow(r.json));
   }
 
   // One page of the run reports a model snapshot reads (t623): those kept at
@@ -1991,7 +1992,7 @@ export class Ledger extends DurableObject<Env> {
     const cut = through ?? ((this.sql.exec(`SELECT MAX(id) AS id FROM runs`).one().id as number | null) ?? 0);
     const rows = this.sql.exec(`SELECT id, json FROM runs WHERE id <= ? AND id < ? AND id >= ? AND json_extract(json, '$.at') < ? ORDER BY id DESC LIMIT ?`, cut, after ?? Number.MAX_SAFE_INTEGER, from, before, limit + 1).toArray();
     const page = rows.slice(0, limit);
-    return { through: cut, runs: page.map((r) => JSON.parse(r.json as string) as RunReport), next: rows.length > limit ? (page[page.length - 1].id as number) : null };
+    return { through: cut, runs: page.map((r) => runRow(r.json)), next: rows.length > limit ? (page[page.length - 1].id as number) : null };
   }
 
   // ── model snapshots (src/models/snapshot.ts, t623) ─────────────────────
@@ -3771,7 +3772,9 @@ export class Ledger extends DurableObject<Env> {
     const out = new Map<string, T[]>();
     for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:%`).toArray()) {
       const id = (row.key as string).split(":")[1];
-      out.set(id, [...out.get(id) ?? [], JSON.parse(row.value as string) as T]);
+      // A run skip kept before the facts rule shows its facts' line, never its note.
+      const value = JSON.parse(row.value as string) as T & { note?: string; facts?: RunFacts | null };
+      out.set(id, [...out.get(id) ?? [], (prefix === "run-skip" ? withoutRunText(value, "note") : value) as T]);
     }
     return out;
   }
@@ -3803,7 +3806,7 @@ export class Ledger extends DurableObject<Env> {
   // A task the reporting runner holds is kept too, for any kind it reports
   // (RUN_SKIP_KINDS in src/dispatch/rules.ts says why each may follow a run
   // that kept its claim); a kind it never reports is refused.
-  recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, note: string): boolean {
+  recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, rawFacts: unknown): boolean {
     if (!isRunSkipKind(kind)) throw new RuleError("bad_kind", `a run skip's kind is ${RUN_SKIP_KINDS.join(", ")}, not ${String(kind).slice(0, 40)}`, 400);
     const item = this.item(id);
     const d = item.dispatch;
@@ -3815,7 +3818,9 @@ export class Ledger extends DurableObject<Env> {
     // an X-Atelier-Runner header names any actor, so the report is refused
     // unless it comes from the actor that holds the task.
     if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403, `the holder reports the skip, or run atelier show ${id}`);
-    const skip: RunSkip = { runner, actor, kind, failures, note: redactKeys(note.replace(TEXT_CONTROLS, " ")).slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
+    // No text of the run's output is kept: the note is the facts' line.
+    const facts = cleanRunFacts(rawFacts);
+    const skip: RunSkip = { runner, actor, kind, failures, note: runFactsText(facts), ...(facts ? { facts } : {}), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("run-skip", id, runner, d.at, skip);
     // A task the runner released before it decided to give up (an ordinary
     // stall, twice) carries no word of it (t584): the give-up is recorded here,
@@ -3823,7 +3828,7 @@ export class Ledger extends DurableObject<Env> {
     if (!heldByRunner && kind !== "skipped") {
       const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched', 'item.gave_up') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const said = last?.kind === "item.released" && String((JSON.parse(last.data as string) as { note?: unknown }).note ?? "").startsWith(GAVE_UP);
-      if (last?.kind !== "item.gave_up" && !said) this.log(id, actor, "item.gave_up", { runner, kind, note: skip.note }, skip.at);
+      if (last?.kind !== "item.gave_up" && !said) this.log(id, actor, "item.gave_up", { runner, kind, note: skip.note, ...(facts ? { facts } : {}) }, skip.at);
     }
     return true;
   }
@@ -7438,9 +7443,12 @@ export class Ledger extends DurableObject<Env> {
     return listed.filter((i) => i.state === "open" && i.dispatch).flatMap((i) => {
       const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched', 'item.gave_up') ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
       if (last?.kind !== "item.released" && last?.kind !== "item.gave_up") return [];
-      const note = (JSON.parse(last.data as string) as { note?: unknown }).note;
+      const data = JSON.parse(last.data as string) as { note?: unknown; facts?: RunFacts | null };
+      const note = data.note;
+      // A give-up's note is its run's facts alone (round 10), however old the row.
+      const why = last.kind === "item.gave_up" ? runFactsText(cleanRunFacts(data.facts)) : typeof note === "string" ? note.slice(GAVE_UP.length) : "";
       return typeof note === "string" && (last.kind === "item.gave_up" || note.startsWith(GAVE_UP))
-        ? [{ project, itemId: i.id, title: i.title, kind: "gave-up" as const, reason: `${last.kind === "item.gave_up" ? note : note.slice(GAVE_UP.length)}; run \`atelier dispatch ${i.id}\` to send it out again`, weight: 72 }] : [];
+        ? [{ project, itemId: i.id, title: i.title, kind: "gave-up" as const, reason: `${why || "the runner gave it up"}; run \`atelier dispatch ${i.id}\` to send it out again`, weight: 72 }] : [];
     });
   }
 
@@ -8601,15 +8609,17 @@ export class Ledger extends DurableObject<Env> {
   // skipped, instead of waiting out the hour. The request must be the item's
   // and at `head`, so a report never lands against nothing; a request no
   // longer open is still recorded, since a report may arrive late.
-  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, note: string, proved = false): void {
-    note = redactKeys(note);
+  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, rawFacts: unknown, proved = false): void {
+    // No text of the run's output is kept: the note is the facts' line.
+    const facts = cleanRunFacts(rawFacts);
+    const note = runFactsText(facts);
     if (isPrereviewRequest(request)) { this.prereviewOutcome(itemId, actor, request, { outcome: "skipped", detail: `${runner} skipped it${note ? `: ${note.slice(0, REASON_MAX)}` : ""}` }, proved, head); return; }
     this.item(itemId);
     const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
     if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404, "run atelier show ID");
     if (row.head !== head) throw new RuleError("bad_head", `review request ${request} of ${itemId} is at ${(row.head as string).slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
     const at = new Date().toISOString();
-    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
+    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note } : {}), ...(facts ? { facts } : {}) }, at, proved);
   }
 
   // The live request the task's detail reads: at its head, or for a merged
@@ -8649,9 +8659,11 @@ export class Ledger extends DurableObject<Env> {
     if (!this.sql.exec(`SELECT id FROM review_requests WHERE id = ? AND item = ? AND state = 'open'`, request, itemId).toArray().length) return [];
     const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
     return rows.flatMap((r) => {
-      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; note?: unknown };
+      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; facts?: RunFacts | null };
       if (data.request !== request) return [];
-      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(typeof data.note === "string" && data.note ? { note: data.note } : {}) }];
+      // The note is the skip's facts alone (round 10), however old the row.
+      const note = runFactsText(cleanRunFacts(data.facts));
+      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(note ? { note } : {}) }];
     });
   }
 
@@ -11586,12 +11598,23 @@ function toEvent(r: Row): LedgerEvent {
 
 // An events row as the Ledger returns it.
 function eventOf(r: Row): LedgerEvent {
+  const data = JSON.parse(r.data as string);
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
     ...(typeof r.stage === "string" ? { stage: r.stage } : {}),
-    actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
+    // A runner's note of a run (a skip, a give-up), written before the facts
+    // rule, is read back as its facts' line alone, never its raw text.
+    actor: r.actor as string, kind: r.kind as string, data: RUN_NOTE_EVENTS.has(r.kind as string) && data && typeof data.note === "string" ? withoutRunText(data, "note") : data,
   };
+}
+const RUN_NOTE_EVENTS = new Set(["review.skipped", "item.gave_up"]);
+
+// A run report read back: its detail is the facts' line, so a report kept
+// before the facts rule shows nothing raw.
+function runRow(json: unknown): RunReport {
+  const run = JSON.parse(json as string) as RunReport;
+  return run.runner === "owner" ? run : withoutRunText(run, "detail");
 }
 
 // A criteria_reviews row as the Ledger returns it (t438).
