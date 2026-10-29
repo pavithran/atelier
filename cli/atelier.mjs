@@ -37,7 +37,7 @@ import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
 import { absolute, expiredBlocksLine, overrideTail, preparingLine, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
-import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
+import { formatProcesses, liveProcesses, parseLsof, parsePs, withinTree } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { runnerCredential, readSecret } from "./credentials.mjs";
@@ -1970,7 +1970,10 @@ export function liveHere(project = null) {
   const ps = spawnSync("ps", ["-axo", "pid=,ppid=,etime=,args="], { encoding: "utf8", maxBuffer: 64 << 20 });
   const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpcn"], { encoding: "utf8", maxBuffer: 64 << 20 });
   if (ps.error || ps.status !== 0 || !lsof.stdout) return null;
-  return liveProcesses({ ps: parsePs(ps.stdout), lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
+  // Under npm test, only the test file's own process tree (withinTree).
+  const testRoot = Number(process.env.ATELIER_TEST_PROCESS) || 0;
+  const rows = parsePs(ps.stdout);
+  return liveProcesses({ ps: testRoot ? withinTree(rows, testRoot) : rows, lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
 }
 export const liveText = (live) => (live ? formatProcesses(live) : "Live on this Mac:\n  the process table could not be read");
 

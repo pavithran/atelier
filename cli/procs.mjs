@@ -17,6 +17,22 @@ export function parsePs(text) {
   return rows;
 }
 
+// The rows of `ps` in the process tree under `root` (root included). A test
+// file's process names itself in ATELIER_TEST_PROCESS (test/guard.mjs), so
+// the CLIs it starts read only its own tree: a real runner on this Mac, or
+// one another test file started, never stops a test's runner from starting.
+export function withinTree(rows, root) {
+  const byPid = new Map(rows.map((r) => [r.pid, r]));
+  return rows.filter((r) => {
+    const seen = new Set();
+    for (let at = r; at && !seen.has(at.pid); at = byPid.get(at.ppid)) {
+      if (at.pid === root) return true;
+      seen.add(at.pid);
+    }
+    return false;
+  });
+}
+
 // `lsof -a -d cwd -Fpcn` -> Map pid -> { comm, cwd }.
 export function parseLsof(text) {
   const out = new Map();
