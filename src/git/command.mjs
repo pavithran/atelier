@@ -1,5 +1,5 @@
 import { userInfo } from "node:os";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 // The daemon is identified by its effective uid or account name, never HOME
 // or another caller-controlled environment value.
@@ -12,4 +12,8 @@ export function gitCommand({ env = process.env, uid = process.geteuid?.(), usern
   return "git";
 }
 
-export const HOOK_PATH = "/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+// The hooks' PATH: the folder of the node this server runs on (the hooks start
+// with `env node`; in the daemon that is the verified, root-owned copy), then
+// root's own folders. Never /opt/homebrew/bin or /usr/local/bin.
+export const SYSTEM_PATH = "/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+export const HOOK_PATH = `${dirname(process.execPath)}:${SYSTEM_PATH}`;

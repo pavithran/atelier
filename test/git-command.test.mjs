@@ -1,10 +1,11 @@
+import { dirname } from "node:path";
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { gitCommand, HOOK_PATH } from "../src/git/command.mjs";
+import { gitCommand, HOOK_PATH, SYSTEM_PATH } from "../src/git/command.mjs";
 import { backendEnv } from "../src/git/http.mjs";
 import { ensureRepo } from "../src/git/repos.mjs";
 
@@ -17,7 +18,8 @@ test("Git configuration is absolute and mandatory for effective root or atelierd
   assert.throws(() => gitCommand({ env: { ATELIER_GIT: "git" }, uid: 501 }), /absolute/);
   const env = backendEnv({ grant: {}, scan: {}, hook: {} });
   assert.equal(env.PATH, HOOK_PATH);
-  assert.doesNotMatch(env.PATH, /homebrew|\/usr\/local/);
+  assert.equal(env.PATH, `${dirname(process.execPath)}:${SYSTEM_PATH}`);
+  assert.doesNotMatch(SYSTEM_PATH, /homebrew|\/usr\/local/);
   const previous = process.env.ATELIER_GIT;
   try {
     process.env.ATELIER_GIT = "/trusted/git";
