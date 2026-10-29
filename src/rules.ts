@@ -21,6 +21,10 @@ export interface Item {
   // agents; null when the title says it all. Read with briefText.
   brief?: string | null;
   scope: string[];          // globs the item intends to touch
+  // The files the task changed at its head, from its merge base with main
+  // (G13), set by the Ledger only for the overlap rule and only while the
+  // head they were read at is the item's; absent or empty, the scope counts.
+  changedFiles?: string[];
   state: ItemState;
   owner: string | null;     // actor, e.g. "claude-code/opus-5.5"; null when unowned
   fork: string | null;      // Artifacts repo name of the item's workspace
@@ -1649,8 +1653,23 @@ export function holdsScope(item: { state: string }): boolean {
 // one plan are not counted against each other (samePlan).
 export function overlappingLive(item: Item, items: readonly Item[], actor: string): Item[] {
   return items.filter(
-    (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
+    (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && footprintsOverlap(item, o),
   );
+}
+
+// Whether two tasks touch the same files (G13): the files each changed at
+// its head where they are known, else its scope's globs. Two changed lists
+// overlap on a shared path, a changed list and a scope where a changed path
+// matches the scope (an unscoped task matches everything), and two scopes as
+// scopesOverlap says. A task with no commits yet has no changed files, so its
+// scope counts.
+export function footprintsOverlap(a: Pick<Item, "scope" | "changedFiles">, b: Pick<Item, "scope" | "changedFiles">): boolean {
+  const pa = a.changedFiles?.length ? a.changedFiles : null;
+  const pb = b.changedFiles?.length ? b.changedFiles : null;
+  if (pa && pb) return pa.some((p) => pb.includes(p));
+  if (pa) return !b.scope.length || pa.some((p) => matchesAny(p, b.scope));
+  if (pb) return !a.scope.length || pb.some((p) => matchesAny(p, a.scope));
+  return scopesOverlap(a.scope, b.scope);
 }
 
 // Under single-family mode only the company's models build, plan or review
@@ -1673,7 +1692,8 @@ export function overlappingRefusal(item: Item, items: readonly Item[], actor: st
   const clash = overlappingLive(item, items, actor);
   if (!clash.length) return null;
   const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The developer can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
+  const what = item.changedFiles?.length ? "changed files overlap" : "scope overlaps";
+  return `${item.id}'s ${what} live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The developer can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
 }
 
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {

@@ -1015,6 +1015,9 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS unparsable (
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS changed_files (
+        item TEXT PRIMARY KEY, head TEXT NOT NULL, paths TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS notifications (
         item_id TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY (item_id, head)
       );
@@ -3286,7 +3289,7 @@ export class Ledger extends DurableObject<Env> {
     // separately from the grants that authorize build/plan operations.
     const queue = this.queued(undefined, idleRunner), { waiting, reviews } = queue;
     for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
-      if (!item.dispatch || "held" in item && item.held) continue;
+      if (!item.dispatch || "held" in item && item.held || "overlap" in item && item.overlap) continue;
       const assignment = assign(item.dispatch, offer);
       if (!assignment || ["integrate", "refresh"].includes(item.dispatch.job ?? "")) continue;
       // A pre-review (t524) is a review job: it grants what a review does.
@@ -3420,7 +3423,7 @@ export class Ledger extends DurableObject<Env> {
       if (!proved) throw new RuleError("integrator_token", `${INTEGRATOR} claims only through a token bound to it`, 403, "claim through the integrator token");
     } else {
       // A plan's planner claims its item to write the plan, under the planner role.
-      assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+      assertClaimAllowed(item, this.withChangedFiles(this.items()), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
       // A build or plan job dispatched before the owner paused, reserved or
       // kept this model from the job is not claimable: a dispatch naming it
       // is withdrawn, and the claim refused with the reason.
@@ -3591,7 +3594,13 @@ export class Ledger extends DurableObject<Env> {
   // answer names the core-file hold the override released, if one held it.
   // `why`: what chose the builder, the role assignments applied or skipped
   // included, set by the dispatch route and kept on item.dispatched.
-  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold; releasedClaim?: { from: string } } {
+  //
+  // A dispatch whose claim the overlap rule would refuse is not refused
+  // (G13): it is recorded and stays queued, held, its blocker named in the
+  // answer (overlapHeld) and on item.dispatched (heldBy). The queue offers it
+  // to no runner while the blocker is live, and again once it merges or is
+  // abandoned, as waiting() computes the overlap afresh on every read.
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold; releasedClaim?: { from: string }; overlapHeld?: OverlapRefusal } {
     this.refuseLiveHolder(id, input);
     const item = this.checkDispatch(id, actor);
     // Only a dispatch still waiting in the queue is an offer to keep. One a
@@ -3609,8 +3618,9 @@ export class Ledger extends DurableObject<Env> {
     if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, this.project().policy, d.model);
     this.assertMergeMainWorkspace(item, d);
     const items = this.items();
-    assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
+    assertDispatchClaimable(item, items, this.project().policy, d, this.owner, false);
     this.assertCriteriaReviewed(item, d, "dispatched");
+    const overlapHeld = this.project().policy.refuseOverlap ? overlapRefusal({ ...item, state: "open", owner: null, dispatch: d }, this.withChangedFiles(items)) : null;
     const retained = input.overlapOk === true && !!waiting;
     const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
@@ -3621,8 +3631,30 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "item.released", { from: item.owner, by: actor, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
-    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}), ...(held && item.state === "claimed" && item.owner ? { releasedClaim: { from: item.owner } } : {}) };
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}), ...(overlapHeld ? { heldBy: overlapHeld.id } : {}) }, d.at);
+    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}), ...(held && item.state === "claimed" && item.owner ? { releasedClaim: { from: item.owner } } : {}), ...(overlapHeld ? { overlapHeld } : {}) };
+  }
+
+  // The files a task changed at `head`, from its merge base with main (G13),
+  // read by the push route from the repository and kept for the overlap
+  // rule. A head the item has moved past is ignored, so a stale list never
+  // counts; null or an empty list leaves the task judged on its scope.
+  recordChangedFiles(id: string, head: string, paths: string[] | null): void {
+    const item = this.item(id);
+    if (item.head !== head) return;
+    if (paths === null) { this.sql.exec(`DELETE FROM changed_files WHERE item = ?`, id); return; }
+    this.sql.exec(`INSERT OR REPLACE INTO changed_files (item, head, paths) VALUES (?, ?, ?)`, id, head, JSON.stringify(paths.slice(0, 5000)));
+  }
+
+  // Each item with the files it changed at its current head, where known.
+  private withChangedFiles(items: Item[]): Item[] {
+    const rows = this.sql.exec(`SELECT item, head, paths FROM changed_files`).toArray();
+    if (!rows.length) return items;
+    const known = new Map(rows.map((r) => [r.item as string, { head: r.head as string, paths: JSON.parse(r.paths as string) as string[] }]));
+    return items.map((i) => {
+      const k = known.get(i.id);
+      return k && k.head === i.head && k.paths.length ? { ...i, changedFiles: k.paths } : i;
+    });
   }
 
   // A dispatch never ends a live claim by itself (t391: it did, silently, on
@@ -3693,7 +3725,7 @@ export class Ledger extends DurableObject<Env> {
     if (input) {
       const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
       this.assertMergeMainWorkspace(item, d);
-      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
+      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner, false);
       this.assertCriteriaReviewed(item, d, "dispatched");
     }
     return item;
@@ -3775,7 +3807,7 @@ export class Ledger extends DurableObject<Env> {
     const refused = this.runnerNotes<ClaimRefusal>("claim-refused");
     const skipped = this.runnerNotes<RunSkip>("run-skip");
     const live = this.project().policy.refuseOverlap === true
-      ? this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)
+      ? this.withChangedFiles(this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))
       : null;
     return held.map((i) => {
       const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
@@ -3798,7 +3830,7 @@ export class Ledger extends DurableObject<Env> {
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
-    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
+    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
     const previous: Record<string, { since: string; expires?: number }> = saved ? JSON.parse(saved.value as string) : {};

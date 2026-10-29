@@ -6,7 +6,7 @@ import { readRetention } from "./retention.ts";
 import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, type OwnerDirection } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
-import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { changedPaths, itemDiff, landingOf, measureWorkspace, mergeBase, mergedDiff, pairReader, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit, type SecretHit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
@@ -971,6 +971,28 @@ async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: s
   } catch (err) {
     console.error(errorLine(`retention read of ${item.id}`, err));
     return { unread: "the repositories could not be read" };
+  }
+}
+
+// The files a task changed at `head` (G13): the paths that differ between
+// its merge base with the repository it is measured against and the head,
+// as git diff --name-only $(git merge-base main t/N) t/N lists them. The
+// merge base is the newest commit of that repository's first-parent line the
+// task's history holds, so main merged into the task is not counted as its
+// own. Null when the history or the trees cannot be read within one page of
+// each line: the overlap rule then judges the task on its scope.
+async function changedSinceBase(env: Env, fork: string, head: string, againstRepo: string): Promise<string[] | null> {
+  try {
+    using r = await env.ARTIFACTS.get(fork);
+    using against = await env.ARTIFACTS.get(againstRepo);
+    const [work, main]: ArtifactsCommitMetadata[][] = await Promise.all([r.log({ ref: head, limit: HISTORY_PAGE }), against.log({ limit: HISTORY_PAGE })]);
+    const base = mergeBase(work, main.map((c) => c.hash));
+    const tip = work.find((c) => c.hash === head), from = main.find((c) => c.hash === base);
+    if (!tip || !from) return null;
+    return await changedPaths(pairReader(r, against), from.treeHash, tip.treeHash);
+  } catch (err) {
+    console.error(errorLine(`changed files of ${fork}`, err));
+    return null;
   }
 }
 
@@ -2099,7 +2121,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
-          if ("held" in item && item.held) return [];
+          // A core-file hold, or an overlap the project refuses (G13), keeps
+          // the dispatch queued but offered to no runner until it ends.
+          if ("held" in item && item.held || "overlap" in item && item.overlap) return [];
           const a = item.dispatch?.job === "land" ? { agent: "atelier", model: "lander", actor: "atelier/lander" } : item.dispatch ? assign(item.dispatch, offer) : null;
           // A queued landing is not the task's claim: a claimed task lands
           // as ordinary land does, so its holder is not the lander's to match.
@@ -3019,6 +3043,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
       const retention = refused ? null : await retentionOf(env, L, item, observed);
       const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true, retention);
+      // The files the task changed at the recorded head, for the overlap rule (G13).
+      if (recorded.head === observed && !refused) await L.recordChangedFiles(id, observed, await changedSinceBase(env, item.fork, observed, await baseRepo(env, L, item, (await L.project()).repo)));
       // The push scan (t332): the added lines at the recorded head are read
       // for key patterns, and the flag records only file and line, never the
       // value. The head was recorded with its scan pending, so a scan that

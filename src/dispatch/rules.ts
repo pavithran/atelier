@@ -740,7 +740,9 @@ export function assertDispatchable(item: Item): void {
 // with the claim's own reason, naming the live item: no runner that does not
 // already hold the overlapping item could claim it, and the named actor is
 // used where one is named so a runner that does hold it is not refused.
-export function assertDispatchClaimable(item: Item, items: readonly Item[], policy: ProjectPolicy, d: Dispatch, owner = DEFAULT_OWNER): void {
+// A dispatch the owner makes passes `overlap` false (G13): its overlap holds
+// it in the queue instead of refusing it.
+export function assertDispatchClaimable(item: Item, items: readonly Item[], policy: ProjectPolicy, d: Dispatch, owner = DEFAULT_OWNER, overlap = true): void {
   // Said first, in the mode's own words, as the claim would refuse it (t394).
   if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, policy, d.model);
   if (d.agent && d.model) {
@@ -750,7 +752,7 @@ export function assertDispatchClaimable(item: Item, items: readonly Item[], poli
     const refusal = harnessRefusal(d.agent, policy, "executor", owner);
     if (refusal) throw new RuleError("ineligible", refusal, 403, "only the developer can: atelier models set ID --state available");
   }
-  if (policy.refuseOverlap) {
+  if (policy.refuseOverlap && overlap) {
     const refusal = overlappingRefusal(item, items, dispatchClaimant(d));
     if (refusal) throw new RuleError("overlap", refusal, 409, `run atelier dispatch ${item.id} --overlap-ok`);
   }
