@@ -1,7 +1,6 @@
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -51,14 +50,14 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(p.source, "docs/atelier/ship.json");
   assert.equal(p.class, "web");
   assert.deepEqual(outline(p), [
-    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-studio.mjs deploy --env staging --host ai-studio [deploy]"],
+    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-studio.mjs deploy --env staging --version-url https://next.atelier.zone/api/version --host ai-studio [deploy]"],
     ["verify-delivery", "node scripts/ship-studio.mjs verify --version-url https://next.atelier.zone/api/version"], ["wrap"],
     ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
   ]);
   const by = Object.fromEntries(p.steps.map((s) => [s.step, s]));
   assert.equal(by["verify-delivery"].runs[0].timeoutMs, 90_000);
   assert.deepEqual(by.push.push, { remote: "github", branch: "main" });
-  assert.equal(by.deploy.runs[0].timeoutMs, 900_000);
+  assert.equal(by.deploy.runs[0].timeoutMs, 1200_000);
   assert.equal(by.deploy.runs[0].terminal, true, "the deploy hands sudo the terminal");
   assert.equal(by.deploy.runs[0].retries, undefined, "a deploy under sudo is not retried");
   assert.equal(by.deploy.runs[0].ifChanged.since, "https://next.atelier.zone/api/version");
@@ -577,44 +576,34 @@ test("no step gets CLOUDFLARE_ENV, Atelier's own steps included (t344)", () => {
 });
 
 // The deploy to the Studio end to end, through main's own ship file: the
-// release is built from the captured commit and copied with ssh, then root's
-// install script is run under sudo with ssh -t, the terminal handed over.
-// The stand-in ssh keeps the copy in a scratch directory and records each
-// command; the stand-in sudo exits as FAKE_INSTALL_EXIT says.
-for (const matches of [true, false]) test(`the Studio deploy ${matches ? "installs the captured commit and passes" : "stops wrap and push when the live commit is another"} (t182)`, async (t) => {
-  // The deploy and verify wiring alone: the fixture has no live version, so the added steps and the deploy's condition are left out.
+// commit is checked against the branch head the live server reports, then
+// root's installer is run under sudo with ssh -t, the terminal handed over,
+// with the environment and the commit alone. The stand-in ssh records its
+// arguments and exits as FAKE_INSTALL_EXIT says.
+const STUDIO_SSH = `#!/bin/sh
+printf '%s\\n' "$*" >> "$SSH_LOG"
+exit \${FAKE_INSTALL_EXIT:-0}
+`;
+const studioFixture = async (t) => {
   const { typecheck, scan, ...canonical } = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
   const plan = { ...canonical, deploy: { ...canonical.deploy, if_changed: undefined } };
-  const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: {
-    "scripts/ship-studio.mjs": readFileSync(resolve("scripts/ship-studio.mjs"), "utf8"),
-    "package.json": { name: "demo", dependencies: {} }, "package-lock.json": { lockfileVersion: 3, packages: {} },
-  } });
+  const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: { "scripts/ship-studio.mjs": readFileSync(resolve("scripts/ship-studio.mjs"), "utf8") } });
   const bin = join(f.dir, "tools"); mkdirSync(bin);
-  const sshLog = join(f.dir, "ssh.txt"), studio = join(f.dir, "studio");
-  writeFileSync(join(bin, "ssh"), `#!/bin/sh
-printf '%s\\n' "$*" >> "$SSH_LOG"
-if [ "$1" = "-t" ]; then [ -t 0 ] && echo "stdin is a terminal" >> "$SSH_LOG"; exit 0; fi
-case "$4" in
-  *"cat > "*) mkdir -p "$FAKE_STUDIO"; name=$(printf '%s' "$4" | sed -n "s/.*cat > '\\([^']*\\)'.*/\\1/p"); cat > "$FAKE_STUDIO/$name"; cp "$FAKE_STUDIO/$name" "$FAKE_STUDIO/kept.tar"; echo "$FAKE_STUDIO" ;;
-esac
-`);
+  writeFileSync(join(bin, "ssh"), STUDIO_SSH);
   chmodSync(join(bin, "ssh"), 0o755);
   const preload = join(f.dir, "version-response.mjs");
-  writeFileSync(preload, `const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT})) : original(url, options);`);
-  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, SSH_LOG: sshLog, FAKE_STUDIO: studio, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_VERIFY_WINDOW_MS: "0", ATELIER_SHIP_HEAD: "spoofed" });
-  const calls = readFileSync(sshLog, "utf8").trim().split("\n");
-  // The copy, the install under sudo with the terminal, and the copy removed.
-  assert.equal(calls.length, 3, calls.join("\n") + r.stderr + r.stdout);
-  assert.match(calls[0], /^-o BatchMode=yes ai-studio umask 077 && mkdir -p 'Library\/Caches\/atelier\/releases' && cd 'Library\/Caches\/atelier\/releases' && cat > 'staging-[0-9a-f]{40}\.tar' && pwd -P$/);
-  const sha = createHash("sha256").update(readFileSync(join(studio, "kept.tar"))).digest("hex");
-  const placed = `${studio}/staging-${f.head}.tar`;
-  assert.equal(calls[1], `-t ai-studio 'sudo' '/bin/bash' '/Users/atelierd/server/scripts/studio/install-server.sh' '--env' 'staging' '--release' '${placed}' '--sha256' '${sha}' '--commit' '${f.head}'`);
-  assert.equal(calls[2], `-o BatchMode=yes ai-studio rm -f '${placed}'`);
-  // The release is the captured commit's tree.
-  const listed = execFileSync("tar", ["-tf", join(studio, "kept.tar")], { encoding: "utf8" }).split("\n");
-  for (const path of ["README.md", "scripts/ship-studio.mjs", "docs/atelier/ship.json"]) assert.ok(listed.includes(path), path);
-  assert.match(r.stdout, /\d\. deploy +node scripts\/ship-studio\.mjs deploy --env staging --host ai-studio .*\[has the terminal: it may ask for a password, such as sudo's\]/);
-  assert.match(r.stdout, /deploy: running node scripts\/ship-studio\.mjs deploy --env staging --host ai-studio\n/);
+  writeFileSync(preload, `const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
+  const sshLog = join(f.dir, "ssh.txt");
+  const run = (extra) => f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, SSH_LOG: sshLog, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_MAIN: f.head, SHIP_VERIFY_WINDOW_MS: "0", ATELIER_SHIP_HEAD: "spoofed", ...extra });
+  const calls = () => (existsSync(sshLog) ? readFileSync(sshLog, "utf8").trim().split("\n") : []);
+  return { f, run, calls };
+};
+
+for (const matches of [true, false]) test(`the Studio deploy ${matches ? "installs the captured commit and passes" : "stops wrap and push when the live commit is another"} (t182)`, async (t) => {
+  const { f, run, calls } = await studioFixture(t);
+  const r = await run({ SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40) });
+  assert.deepEqual(calls(), [`-t ai-studio sudo /Library/Atelier/install-server.sh --env staging ${f.head}`], r.stderr + r.stdout);
+  assert.match(r.stdout, /\d\. deploy +node scripts\/ship-studio\.mjs deploy --env staging --version-url https:\/\/next\.atelier\.zone\/api\/version --host ai-studio .*\[has the terminal: it may ask for a password, such as sudo's\]/);
   const deployRun = f.state.runs.find((run) => run.step === "deploy");
   assert.equal(deployRun.passed, true);
   assert.match(deployRun.outputTail, /the command had the terminal; its output was shown there and not kept/);
@@ -633,24 +622,21 @@ esac
 });
 
 test("a failed install under sudo stops the ship at the deploy, before wrap and push", async (t) => {
-  const { typecheck, scan, ...canonical } = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
-  const plan = { ...canonical, deploy: { ...canonical.deploy, if_changed: undefined } };
-  const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: {
-    "scripts/ship-studio.mjs": readFileSync(resolve("scripts/ship-studio.mjs"), "utf8"),
-    "package.json": { name: "demo", dependencies: {} }, "package-lock.json": { lockfileVersion: 3, packages: {} },
-  } });
-  const bin = join(f.dir, "tools"); mkdirSync(bin);
-  writeFileSync(join(bin, "ssh"), `#!/bin/sh
-if [ "$1" = "-t" ]; then echo "install: putting the previous release back" >&2; exit 1; fi
-case "$4" in *"cat > "*) cat > /dev/null; echo /fake/studio ;; esac
-`);
-  chmodSync(join(bin, "ssh"), 0o755);
-  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH });
+  const { f, run } = await studioFixture(t);
+  const r = await run({ SHIP_TEST_COMMIT: "a".repeat(40), FAKE_INSTALL_EXIT: "1" });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr + r.stdout, /The install on the Studio failed \(exit 1\)/);
   assert.match(r.stderr + r.stdout, /ship stopped at deploy/);
   assert.equal(f.state.runs.find((run) => run.step === "deploy").passed, false);
   assert.ok(!f.state.runs.some((run) => ["verify-delivery", "wrap", "push"].includes(run.step)));
+});
+
+test("a commit the Studio's branch does not hold is never installed", async (t) => {
+  const { f, run, calls } = await studioFixture(t);
+  const r = await run({ SHIP_TEST_COMMIT: "a".repeat(40), SHIP_TEST_MAIN: git(f.checkout, "rev-parse", "HEAD~1") });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr + r.stdout, /is not on the project's branch on the Studio/);
+  assert.deepEqual(calls(), []);
 });
 
 // ── the steps beyond deploy and push: typecheck, scan, baseline, studio ──────

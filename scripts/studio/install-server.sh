@@ -1,49 +1,57 @@
 #!/bin/bash
-# Atelier 2.0 on the Studio: install a release of the server, or roll back to
-# the one before (design-branches-2026-10-28.md, section 4.1; plan task 9).
-# `atelier ship` runs it under sudo, from the release already installed:
+# Atelier 2.0 on the Studio: install the server at a commit of the project's
+# branch, or roll back to the release before (design-branches-2026-10-28.md,
+# section 4.1; plan task 9). setup-server.sh installs this script, root's, at
+# /Library/Atelier/install-server.sh, outside every release; nothing else
+# changes it. `atelier ship` runs it under sudo with two arguments:
 #
-#   sudo /bin/bash /Users/atelierd/SERVER/scripts/studio/install-server.sh \
-#     --env staging|production --release RELEASE.tar --sha256 HEX --commit SHA
-#   sudo /bin/bash /Users/atelierd/SERVER/scripts/studio/install-server.sh \
-#     --env staging|production --rollback
+#   sudo /Library/Atelier/install-server.sh --env staging|production COMMIT
+#   sudo /Library/Atelier/install-server.sh --env staging|production --rollback
 #
-# SERVER is server for staging and server-production for production. The
-# developer types the administrator password at sudo's own prompt; nothing
-# here reads or passes one.
+# The developer types the administrator password at sudo's own prompt;
+# nothing here reads or passes one.
 #
-# RELEASE.tar  the release atelier ship built from the commit it verified
-#              (scripts/ship-studio.mjs): `git archive` of that commit plus
-#              the runtime packages, in a directory the developer can write
-# HEX          the release's SHA-256, as ship computed it before handing the
-#              file over: the bytes installed are the bytes ship built
-# SHA          that commit, written into the release as COMMIT, which the
-#              server reports at /api/version
+# Trust. Agents run as the developer's user, so nothing that user can write is
+# ever run as root or as atelierd. The release is built here, by root, from
+# the Studio's own repository of the project, which only reviewed, landed
+# commits reach (the hook). Nothing comes from the caller but the commit id:
+# 1. As atelierd, with no configuration but the repository's own and no
+#    hooks, git checks that COMMIT is on the project's branch (the
+#    repository's HEAD) and writes `git archive COMMIT`.
+# 2. Root checks the archive holds only plain files and directories inside
+#    itself, and extracts it into a fresh root-owned directory.
+# 3. The runtime packages: each package the archived lock file installs
+#    (dev packages aside) is fetched as atelierd, from the npm registry,
+#    into an atelierd-owned scratch directory, and kept only if its SHA-512
+#    is the lock file's `integrity`. No install script runs. Root copies the
+#    result in. This is `npm ci --ignore-scripts` for a lock file whose
+#    packages come from the registry; the Studio has no npm of root's own,
+#    and Homebrew's belongs to the developer's user, so none is run.
+# 4. Root writes COMMIT, which /api/version reports: true by construction.
 #
-# Trust. This script is root's: it runs from the release already installed,
-# which only root can write. The new release is data to it: copied into
-# root-owned storage first, checked there, and never run as root. The
-# daemon reads it, root-owned and read-only, as setup-server.sh made it.
+# The swap, which recovers from a failure at any point:
+#   stop the daemon; SERVER -> SERVER.prev; SERVER.new -> SERVER; start it;
+#   wait at most 60 s for /api/version to report COMMIT.
+# On a failure the daemon is stopped, a new release in place moves to
+# SERVER.failed, SERVER.prev moves back if SERVER is missing, and what is
+# there starts again. Every run first settles what an interrupted run left:
+# SERVER missing with SERVER.prev present puts SERVER.prev back.
+# --rollback swaps SERVER and SERVER.prev the same way.
 #
-# What it does:
-# 1. Copies the release in, checks its hash and that it holds only files and
-#    directories inside itself, and writes COMMIT into it.
-# 2. Stages it as SERVER.new, root's, group atelierd, read-only to the group.
-# 3. Stops the environment's LaunchDaemon, moves the current release to
-#    SERVER.prev (the last one is kept for rollback), and the new one in.
-# 4. Starts the daemon and waits, at most 60 s, for /api/version to report SHA.
-# 5. If it does not, puts SERVER.prev back, starts it, and says so; the release
-#    that failed is kept as SERVER.failed until the next install.
-# --rollback swaps SERVER and SERVER.prev the same way, so a rollback can
-# itself be rolled back.
+# SERVER is /Users/atelierd/server for staging, server-production for
+# production.
 #
 # Run as root only. A test, not root, may point it at a scratch home with
-# ATELIER_INSTALL_TEST_HOME, where it runs the launchctl, lsof and curl it
-# finds on PATH, changes no owners, and waits ATELIER_INSTALL_TEST_WAIT
-# seconds where it would wait 60; as root neither variable is read.
+# ATELIER_INSTALL_TEST_HOME, where it runs git, node and the launchctl, lsof
+# and curl it finds on PATH, as itself, changes no owners, waits
+# ATELIER_INSTALL_TEST_WAIT seconds where it would wait 60, and fetches
+# packages from ATELIER_INSTALL_TEST_REGISTRY; as root none of these is read.
 set -euo pipefail
 umask 077
+# Nothing here reads the caller's directory, which atelierd may not enter.
+cd /
 
+fail() { echo "install: $*" >&2; exit 1; }
 SVC=atelierd
 if [ "$(id -u)" = 0 ]; then
   export PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -52,6 +60,9 @@ if [ "$(id -u)" = 0 ]; then
   OWNER=root
   TEST=
   WAIT=60
+  REGISTRY=https://registry.npmjs.org/
+  NODE=$HOME_DIR/bin/node
+  as_svc() { sudo -u "$SVC" /usr/bin/env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C "$@"; }
 elif [ -n "${ATELIER_INSTALL_TEST_HOME:-}" ]; then
   HOME_DIR=$ATELIER_INSTALL_TEST_HOME
   DAEMONS=$HOME_DIR/LaunchDaemons
@@ -59,41 +70,33 @@ elif [ -n "${ATELIER_INSTALL_TEST_HOME:-}" ]; then
   OWNER=$SVC
   TEST=1
   WAIT=${ATELIER_INSTALL_TEST_WAIT:-60}
-  [[ "$WAIT" =~ ^[0-9]{1,3}$ ]] || { echo "install: ATELIER_INSTALL_TEST_WAIT is a number of seconds" >&2; exit 1; }
+  [[ "$WAIT" =~ ^[0-9]{1,3}$ ]] || fail "ATELIER_INSTALL_TEST_WAIT is a number of seconds"
+  REGISTRY=${ATELIER_INSTALL_TEST_REGISTRY:-https://registry.npmjs.org/}
+  NODE=$(command -v node)
+  as_svc() { /usr/bin/env -i HOME="$HOME_DIR" PATH="$PATH" LC_ALL=C "$@"; }
 else
-  echo "install: run as root (sudo)" >&2
-  exit 1
+  fail "run as root (sudo)"
 fi
 
-USAGE="usage: install-server.sh --env staging|production --release RELEASE.tar --sha256 HEX --commit SHA
+USAGE="usage: install-server.sh --env staging|production COMMIT
        install-server.sh --env staging|production --rollback"
-fail() { echo "install: $*" >&2; exit 1; }
-
-ENV= RELEASE= SHA256= COMMIT= ROLLBACK=
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --rollback) ROLLBACK=1; shift ;;
-    --env|--release|--sha256|--commit)
-      [ $# -ge 2 ] || fail "$USAGE"
-      case "$1" in --env) ENV=$2 ;; --release) RELEASE=$2 ;; --sha256) SHA256=$2 ;; --commit) COMMIT=$2 ;; esac
-      shift 2 ;;
-    *) fail "$USAGE" ;;
-  esac
-done
+[ $# = 3 ] && [ "$1" = --env ] || fail "$USAGE"
+ENV=$2
+COMMIT= ROLLBACK=
+if [ "$3" = --rollback ]; then ROLLBACK=1
+else COMMIT=$3; [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "the commit must be 40 hexadecimal digits"
+fi
 case "$ENV" in
   staging) LABEL=zone.atelier.server.staging; SERVER=server ;;
   production) LABEL=zone.atelier.server; SERVER=server-production ;;
   *) fail "$USAGE" ;;
 esac
-if [ -n "$ROLLBACK" ]; then
-  [ -z "$RELEASE$SHA256$COMMIT" ] || fail "$USAGE"
-else
-  [[ "$COMMIT" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || fail "--commit must be a full commit id"
-  [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "--sha256 must be 64 hexadecimal digits"
-  [ -f "$RELEASE" ] && [ ! -L "$RELEASE" ] || fail "no release file at $RELEASE"
-fi
 PLIST=$DAEMONS/$LABEL.plist
 S=$HOME_DIR/$SERVER
+REPO=$HOME_DIR/repos/$ENV/atelier.git
+
+# git as atelierd: no system or global configuration, no hooks, no prompt.
+git_svc() { as_svc GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -C "$REPO" "$@"; }
 
 # A directory is safe to hold the daemon's files when it is a real
 # directory, owned by root or the service user, writable by no group or
@@ -112,8 +115,7 @@ safe_dir "$HOME_DIR"
 [ -f "$PLIST" ] && [ ! -L "$PLIST" ] || fail "no $LABEL LaunchDaemon at $PLIST; run setup-server.sh --env $ENV first"
 [ "$(stat -f %Su "$PLIST")" = "$OWNER" ] || fail "$PLIST is not $OWNER's"
 for d in "$S" "$S.prev" "$S.new" "$S.failed" "$S.swap"; do [ ! -L "$d" ] || fail "$d is a link"; done
-[ ! -e "$S" ] || safe_dir "$S"
-[ ! -e "$S.prev" ] || safe_dir "$S.prev"
+for d in "$S" "$S.prev" "$S.swap"; do [ ! -e "$d" ] || safe_dir "$d"; done
 
 # The address, port and code the daemon runs, read from its own plist: it
 # must run this environment's serve.mjs from $S.
@@ -139,11 +141,11 @@ valid_bind "$BIND" || fail "$PLIST binds $BIND, not a tailnet or loopback addres
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || fail "$PLIST names port $PORT"
 
 WORK=$(mktemp -d /var/tmp/atelier-install.XXXXXX)
-stopped=
-swapped=
-trap 'rm -rf "$WORK"' EXIT
+DEPS=
+phase=
+trap 'rm -rf "$WORK" ${DEPS:+"$DEPS"}' EXIT
 
-commit_of() { local c; c=$(cat "$1/COMMIT" 2>/dev/null) && [[ "$c" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && printf '%s\n' "$c"; }
+commit_of() { local c; c=$(cat "$1/COMMIT" 2>/dev/null) && [[ "$c" =~ ^[0-9a-f]{40}$ ]] && printf '%s\n' "$c"; }
 loaded() { launchctl print "system/$LABEL" >/dev/null 2>&1; }
 listening() { lsof -nP -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1; }
 
@@ -172,81 +174,154 @@ answers() {
   return 1
 }
 
-# Puts back what was answering before, after a failure past the swap.
-# Recovery decides by its own checks, not by set -e.
-restore() {
+# What an interrupted run left, settled before anything else: a rollback's
+# SERVER.swap goes back where it is missing from, and SERVER.prev goes back
+# when SERVER is missing.
+settle() {
+  if [ -e "$S.swap" ]; then
+    if [ ! -e "$S" ]; then mv "$S.swap" "$S" || return 1
+    elif [ ! -e "$S.prev" ]; then mv "$S.swap" "$S.prev" || return 1
+    else echo "install: $S, $S.prev and $S.swap all exist; sort them by hand" >&2; return 1
+    fi
+  fi
+  if [ ! -e "$S" ] && [ -d "$S.prev" ]; then
+    echo "install: $S was missing; putting $S.prev back" >&2
+    mv "$S.prev" "$S" || return 1
+  fi
+}
+
+# Recovery, after a failure once the daemon was stopped, whatever the phase:
+# stopped (nothing moved), prev (SERVER moved to SERVER.prev), placed or
+# started (the new release in SERVER). For a rollback: swap1, swap2, swap3
+# after each of its moves. It decides by its own checks, not by set -e.
+recover() {
   set +e
-  if [ -n "$stopped" ] && [ -z "$swapped" ]; then
-    # Stopped, and nothing moved: start what was there.
-    echo "install: starting $ENV again on the release it ran" >&2
-    launchctl bootstrap system "$PLIST" || echo "install: $LABEL did not start; sudo launchctl bootstrap system $PLIST" >&2
-    return 1
-  fi
-  [ -n "$swapped" ] || return 0
+  echo "install: putting back what ran before" >&2
   if ! stop_daemon; then echo "install: $LABEL would not stop; nothing was put back; see $HOME_DIR/log/$ENV.log (sudo tail)" >&2; return 1; fi
-  if [ -n "$ROLLBACK" ]; then
-    echo "install: the rollback failed; putting back the release it replaced" >&2
-    if [ -d "$S.swap" ] && [ ! -e "$S" ]; then mv "$S.swap" "$S"
-    elif [ -d "$S.swap" ]; then mv "$S" "$S.prev" && mv "$S.swap" "$S"
-    else mv "$S" "$S.swap" && mv "$S.prev" "$S" && mv "$S.swap" "$S.prev"
-    fi || { echo "install: the releases could not be swapped back; $ENV is stopped; see $HOME_DIR" >&2; return 1; }
-  elif [ -d "$S.prev" ]; then
-    echo "install: putting the previous release back" >&2
-    rm -rf "$S.failed"
-    mv "$S" "$S.failed" && mv "$S.prev" "$S" || { echo "install: the previous release could not be moved back; $ENV is stopped; see $HOME_DIR" >&2; return 1; }
-  else
-    echo "install: there is no previous release to put back; starting what is in $S" >&2
-  fi
+  case "$phase" in
+    placed|started)
+      if [ -d "$S.prev" ]; then
+        rm -rf "$S.failed"
+        mv "$S" "$S.failed" || { echo "install: the new release could not be moved aside; $ENV is stopped" >&2; return 1; }
+      fi ;;
+    swap3)
+      mv "$S" "$S.swap" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
+  esac
+  case "$phase" in
+    swap2) mv "$S" "$S.prev" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
+    swap3) mv "$S.prev" "$S" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
+  esac
+  settle || { echo "install: the releases could not be put back; $ENV is stopped; see $HOME_DIR" >&2; return 1; }
+  [ -d "$S" ] || { echo "install: there is no release to start; $ENV is stopped" >&2; return 1; }
   launchctl bootstrap system "$PLIST" || { echo "install: $LABEL did not start; sudo launchctl bootstrap system $PLIST" >&2; return 1; }
   local back
   back=$(commit_of "$S") || back=
   if answers "$back" "$WAIT"; then
-    if [ -n "$ROLLBACK" ]; then echo "install: $ENV answers again at commit ${back:-unknown}, the release that ran before the rollback" >&2
-    else echo "install: $ENV answers again at commit ${back:-unknown}, the release that ran before; the release that failed is kept as $S.failed" >&2; fi
+    echo "install: $ENV answers again at commit ${back:-unknown}, the release that ran before${phase:+ (failed at: $phase)}" >&2
+    [ ! -d "$S.failed" ] || echo "install: the release that failed is kept as $S.failed" >&2
   else
-    echo "install: the release that ran before is back in place but does not answer; see $HOME_DIR/log/$ENV.log (sudo tail)" >&2
+    echo "install: the release that ran before is in place but does not answer; see $HOME_DIR/log/$ENV.log (sudo tail)" >&2
     return 1
   fi
 }
-trap 'status=$?; [ $status = 0 ] || [ -z "$stopped" ] || restore; rm -rf "$WORK"; exit $status' EXIT
+trap 'status=$?; if [ $status != 0 ] && [ -n "$phase" ]; then recover; fi; rm -rf "$WORK" ${DEPS:+"$DEPS"}; exit $status' EXIT
+
+settle || fail "the releases left by an earlier run could not be settled"
 
 if [ -n "$ROLLBACK" ]; then
   [ -d "$S.prev" ] || fail "there is no previous release to roll back to ($S.prev)"
   [ -d "$S" ] || fail "there is no current release ($S)"
   want=$(commit_of "$S.prev") || want=
   from=$(commit_of "$S") || from=
-  stopped=1
-  stop_daemon || fail "$LABEL would not stop, or something still listens on $BIND:$PORT; nothing was changed"
-  swapped=1
-  mv "$S" "$S.swap"
-  mv "$S.prev" "$S"
-  mv "$S.swap" "$S.prev"
+  phase=stopped
+  stop_daemon || fail "$LABEL would not stop, or something still listens on $BIND:$PORT"
+  mv "$S" "$S.swap"; phase=swap1
+  mv "$S.prev" "$S"; phase=swap2
+  mv "$S.swap" "$S.prev"; phase=swap3
   launchctl bootstrap system "$PLIST" || fail "$LABEL did not start"
   answers "$want" "$WAIT" || fail "the previous release did not answer${want:+ with commit $want} in $WAIT s"
-  swapped=
+  phase=
   echo "rolled $ENV back to commit ${want:-unknown}; the release it replaced (${from:-unknown}) is kept as $S.prev"
   exit 0
 fi
 
-# 1. The release into root-owned storage, then checked there.
-cp "$RELEASE" "$WORK/server.tar"
-got=$(shasum -a 256 "$WORK/server.tar" | awk '{print $1}')
-[ "$got" = "$SHA256" ] || fail "the release's SHA-256 is $got, not $SHA256 as ship built it; nothing was changed"
+# 1. The commit, on the project's branch, archived by atelierd.
+[ -d "$REPO" ] && [ ! -L "$REPO" ] || fail "no repository at $REPO"
+git_svc cat-file -e "$COMMIT^{commit}" 2>/dev/null || fail "$COMMIT is not a commit in $REPO"
+BRANCH=$(git_svc symbolic-ref -q HEAD) || fail "$REPO's HEAD names no branch"
+[[ "$BRANCH" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]] || fail "$REPO's HEAD is $BRANCH"
+git_svc merge-base --is-ancestor "$COMMIT" "$BRANCH" || fail "$COMMIT is not on ${BRANCH#refs/heads/}, the project's branch; only landed commits are installed"
+git_svc archive --format=tar "$COMMIT" > "$WORK/server.tar" || fail "git archive $COMMIT failed"
+
+# 2. Plain files and directories inside the release, extracted by root.
 # Listed to files first: a grep -q in a pipe can end the pipe early and,
 # under pipefail, read as no match.
-tar -tvf "$WORK/server.tar" > "$WORK/list-long" || fail "the release cannot be listed"
-tar -tf "$WORK/server.tar" > "$WORK/list" || fail "the release cannot be listed"
-[ -s "$WORK/list" ] || fail "the release is empty"
-if awk '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1} END {exit bad?0:1}' "$WORK/list-long"; then fail "the release holds something other than files and directories"; fi
-if grep -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the release names a path outside itself"; fi
+tar -tvf "$WORK/server.tar" > "$WORK/list-long" || fail "the archive cannot be listed"
+tar -tf "$WORK/server.tar" > "$WORK/list" || fail "the archive cannot be listed"
+[ -s "$WORK/list" ] || fail "the archive is empty"
+if awk '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1} END {exit bad?0:1}' "$WORK/list-long" || grep -q ' link to ' "$WORK/list-long"; then
+  fail "the archive holds a link or something else that is not a plain file or directory"
+fi
+if grep -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the archive names a path outside itself"; fi
 mkdir "$WORK/server"
 tar -xof "$WORK/server.tar" -C "$WORK/server"
-for f in cli/serve.mjs hooks/pre-receive scripts/studio/install-server.sh; do [ -f "$WORK/server/$f" ] || fail "the release lacks $f"; done
-[ -d "$WORK/server/node_modules/jose" ] || fail "the release lacks node_modules/jose"
-rm -rf "$WORK/server/COMMIT"
+for f in cli/serve.mjs hooks/pre-receive package.json package-lock.json; do [ -f "$WORK/server/$f" ] && [ ! -L "$WORK/server/$f" ] || fail "the release lacks $f"; done
+[ ! -e "$WORK/server/node_modules" ] || fail "the release holds node_modules"
+
+# 3. The runtime packages, as atelierd, checked against the lock file.
+DEPS=$(mktemp -d /var/tmp/atelier-deps.XXXXXX)
+cp "$WORK/server/package.json" "$WORK/server/package-lock.json" "$DEPS/"
+[ -n "$TEST" ] || chown -R "$SVC:$SVC" "$DEPS"
+FETCH=$(cat <<'JS'
+const [dir, registry] = process.argv.slice(1);
+const { readFileSync, writeFileSync, mkdirSync, rmSync } = await import("node:fs");
+const { createHash } = await import("node:crypto");
+const { execFileSync } = await import("node:child_process");
+const { join } = await import("node:path");
+const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+const lock = JSON.parse(readFileSync(join(dir, "package-lock.json"), "utf8"));
+const no = (why) => { console.error(`install: ${why}`); process.exit(1); };
+if (lock.lockfileVersion < 2 || typeof lock.packages !== "object") no("the lock file has no packages list (lockfileVersion 2 or later)");
+const PATH = /^(?:node_modules\/(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)(?:\/node_modules\/(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)*$/;
+for (const name of Object.keys(pkg.dependencies ?? {})) {
+  const p = lock.packages[`node_modules/${name}`];
+  if (!p || p.dev) no(`the lock file does not install ${name}, which package.json needs; it is out of step`);
+}
+let n = 0;
+for (const [path, p] of Object.entries(lock.packages)) {
+  if (path === "" || p.dev) continue;
+  if (!PATH.test(path)) no(`the lock file names a package at ${JSON.stringify(path)}`);
+  if (p.link) no(`${path} is a link in the lock file`);
+  if (typeof p.resolved !== "string" || !p.resolved.startsWith(registry)) no(`${path} does not come from ${registry}`);
+  if (typeof p.integrity !== "string" || !p.integrity.startsWith("sha512-")) no(`${path} has no sha512 integrity`);
+  const res = await fetch(p.resolved, { redirect: "error" });
+  if (res.status !== 200) no(`${p.resolved} answered ${res.status}`);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (`sha512-${createHash("sha512").update(bytes).digest("base64")}` !== p.integrity) no(`${path} does not match its integrity in the lock file`);
+  const tgz = join(dir, `package-${n++}.tgz`);
+  writeFileSync(tgz, bytes);
+  const listed = execFileSync("tar", ["-tvzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean);
+  for (const line of listed) if (!/^[-d]/.test(line) || / link to /.test(line)) no(`${path}'s package holds a link or a special file`);
+  for (const name of execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean)) {
+    if (!name.startsWith("package/") || /(^|\/)\.\.(\/|$)/.test(name)) no(`${path}'s package names ${name}, outside package/`);
+  }
+  mkdirSync(join(dir, path), { recursive: true });
+  execFileSync("tar", ["-xzf", tgz, "-C", join(dir, path), "--strip-components", "1"]);
+  rmSync(tgz);
+}
+console.log(`install: ${n} runtime package${n === 1 ? "" : "s"} fetched and checked against the lock file`);
+JS
+)
+as_svc "$NODE" --input-type=module -e "$FETCH" "$DEPS" "$REGISTRY" || fail "the runtime packages could not be installed; nothing was changed"
+if [ -d "$DEPS/node_modules" ]; then
+  [ -z "$(find "$DEPS/node_modules" ! -type f ! -type d)" ] || fail "the runtime packages hold a link or a special file"
+  cp -R "$DEPS/node_modules" "$WORK/server/node_modules"
+fi
+
+# 4. COMMIT, written by root.
 printf '%s\n' "$COMMIT" > "$WORK/server/COMMIT"
 
-# 2. Staged beside the current release, root's and read-only to the daemon.
+# Staged beside the current release, root's and read-only to the daemon.
 rm -rf "$S.new" "$S.failed"
 cp -R "$WORK/server" "$S.new"
 [ -n "$TEST" ] || chown -R root:"$SVC" "$S.new"
@@ -255,18 +330,18 @@ chmod 750 "$S.new/hooks/pre-receive"
 chmod -RN "$S.new"
 prev=$(commit_of "$S") || prev=
 
-# 3. The daemon stopped, the current release becomes the previous one.
-stopped=1
-stop_daemon || fail "$LABEL would not stop, or something still listens on $BIND:$PORT; the new release is staged as $S.new and nothing else changed"
-swapped=1
+# The swap. From here a failure runs recover() for the phase reached.
+phase=stopped
+stop_daemon || fail "$LABEL would not stop, or something still listens on $BIND:$PORT"
 if [ -e "$S" ]; then
   rm -rf "$S.prev"
   mv "$S" "$S.prev"
 fi
+phase=prev
 mv "$S.new" "$S"
-
-# 4. It answers with the commit shipped.
+phase=placed
 launchctl bootstrap system "$PLIST" || fail "$LABEL did not start"
+phase=started
 answers "$COMMIT" "$WAIT" || fail "$ENV did not report commit $COMMIT at http://$BIND:$PORT/api/version in $WAIT s"
-swapped=
+phase=
 echo "$ENV runs commit $COMMIT at http://$BIND:$PORT; the previous release (${prev:-none}) is kept as $S.prev for rollback"

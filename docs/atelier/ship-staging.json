@@ -2,22 +2,49 @@
   "schema_version": 1,
   "kind": "atelier.ship",
   "class": "web",
-  "description": "Atelier's staging delivery without the push: type-check; when the server's code changed since the commit next.atelier.zone reports, install a release of the captured commit on the Studio's staging server under sudo, then verify the live commit. No scan or push.",
+  "description": "Atelier's staging delivery without the push: type-check; when the server's code changed since the commit next.atelier.zone reports, install the captured commit on the Studio's staging server with root's installer under sudo, then verify the live commit. No scan or push.",
   "typecheck": {
-    "run": ["npm", "run", "typecheck"],
+    "run": [
+      "npm",
+      "run",
+      "typecheck"
+    ],
     "timeout_seconds": 600
   },
   "deploy": {
-    "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--host", "ai-studio"],
+    "run": [
+      "node",
+      "scripts/ship-studio.mjs",
+      "deploy",
+      "--env",
+      "staging",
+      "--version-url",
+      "https://next.atelier.zone/api/version",
+      "--host",
+      "ai-studio"
+    ],
     "terminal": true,
-    "timeout_seconds": 900,
+    "timeout_seconds": 1200,
     "if_changed": {
-      "paths": ["src/**", "cli/serve.mjs", "cli/private-guard.mjs", "hooks/**", "package.json", "package-lock.json", "scripts/studio/install-server.sh"],
+      "paths": [
+        "src/**",
+        "cli/serve.mjs",
+        "cli/private-guard.mjs",
+        "hooks/**",
+        "package.json",
+        "package-lock.json"
+      ],
       "since": "https://next.atelier.zone/api/version"
     }
   },
   "verify-deploy": {
-    "run": ["node", "scripts/ship-studio.mjs", "verify", "--version-url", "https://next.atelier.zone/api/version"],
+    "run": [
+      "node",
+      "scripts/ship-studio.mjs",
+      "verify",
+      "--version-url",
+      "https://next.atelier.zone/api/version"
+    ],
     "timeout_seconds": 90
   },
   "push": false

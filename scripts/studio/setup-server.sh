@@ -105,7 +105,57 @@ write_plist() {
 </plist>
 PLIST
 }
-# A test reads write_plist alone (SETUP_SERVER_LIB=1), with no other effect.
+
+# Every atelierd job. Nothing of the service user's runs while root writes
+# in its home: each loaded job is stopped first, and started again after,
+# or on a failure.
+JOBS="zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
+DAEMONS=/Library/LaunchDaemons
+loaded=
+stopped=
+swapped=
+stop_all() {
+  local job
+  for job in $JOBS; do
+    launchctl print "system/$job" >/dev/null 2>&1 || continue
+    launchctl bootout "system/$job" 2>/dev/null
+    for _ in $(seq 1 20); do launchctl print "system/$job" >/dev/null 2>&1 || break; sleep 0.5; done
+    if launchctl print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop" >&2; return 1; fi
+  done
+  for _ in $(seq 1 60); do pgrep -u "$SVC" >/dev/null 2>&1 || break; sleep 0.5; done
+  if pgrep -u "$SVC" >/dev/null 2>&1; then echo "setup: a process of $SVC is still running" >&2; return 1; fi
+}
+# Starts the jobs that were loaded, but this environment's server, which
+# the install starts itself.
+start_others() {
+  local job rc=0
+  for job in $JOBS; do
+    [ "$job" != "$LABEL" ] || continue
+    case " $loaded " in *" $job "*) launchctl bootstrap system "$DAEMONS/$job.plist" || { echo "setup: $job did not start; sudo launchctl bootstrap system $DAEMONS/$job.plist" >&2; rc=1; } ;; esac
+  done
+  return $rc
+}
+# After a failure once the jobs were stopped: the code and plist this run
+# replaced go back, and every job that ran starts again. It decides by its
+# own checks, not by set -e.
+recover() {
+  [ -n "$stopped" ] || return 0
+  set +e
+  echo "setup: putting back what ran before" >&2
+  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    launchctl bootout "system/$LABEL" 2>/dev/null
+    for _ in $(seq 1 20); do launchctl print "system/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
+  fi
+  if [ -n "$swapped" ]; then
+    if [ -d "$HOME_DIR/$SERVER.old" ]; then rm -rf "$HOME_DIR/$SERVER" && mv "$HOME_DIR/$SERVER.old" "$HOME_DIR/$SERVER" || echo "setup: could not put $SERVER.old back" >&2; fi
+    if [ -f "$HOME_DIR/bin/node.old" ]; then mv -f "$HOME_DIR/bin/node.old" "$HOME_DIR/bin/node" || echo "setup: could not put bin/node.old back" >&2; fi
+  fi
+  if [ -n "${WORK:-}" ] && [ -f "$WORK/old.plist" ]; then install -o root -g wheel -m 644 "$WORK/old.plist" "$PLIST" || echo "setup: could not put $PLIST back" >&2; fi
+  case " $loaded " in *" $LABEL "*) launchctl bootstrap system "$PLIST" || echo "setup: $LABEL did not start; sudo launchctl bootstrap system $PLIST" >&2 ;; esac
+  start_others
+}
+
+# A test reads these functions alone (SETUP_SERVER_LIB=1), with no other effect.
 if [ "${SETUP_SERVER_LIB:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
 
@@ -157,6 +207,7 @@ if grep -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the release
 mkdir "$WORK/server"
 tar -xf "$WORK/server.tar" -C "$WORK/server"
 [ -f "$WORK/server/cli/serve.mjs" ] && [ -f "$WORK/server/hooks/pre-receive" ] && [ -d "$WORK/server/node_modules/jose" ] || fail "the release lacks cli/serve.mjs, hooks/pre-receive or node_modules/jose"
+[ -f "$WORK/server/scripts/studio/install-server.sh" ] || fail "the release lacks scripts/studio/install-server.sh"
 
 # 2. The service user and its group, in the 400s like other daemons. An
 #    existing record is checked whole, never trusted.
@@ -198,19 +249,28 @@ if ! dry; then
   [ "$out" = "user is not a member of the group" ] || fail "$DEV is a member of the $SVC group ($out)"
 fi
 
-# 3. Stop the daemon before its code changes.
-if ! dry && launchctl print system/$LABEL >/dev/null 2>&1; then
-  launchctl bootout system/$LABEL || fail "the running daemon would not stop"
-  for _ in $(seq 1 20); do launchctl print system/$LABEL >/dev/null 2>&1 || break; sleep 0.5; done
-  ! launchctl print system/$LABEL >/dev/null 2>&1 || fail "the daemon is still loaded"
+# 3. Every atelierd job stops (the other environment's server, the tunnel,
+#    the backups) and nothing of the service user's may run, whether or not
+#    launchd knows of it. What was loaded is recorded first, with this
+#    environment's plist, so a failure from here on puts them back.
+for job in $JOBS; do [ ! -L "$DAEMONS/$job.plist" ] || fail "$DAEMONS/$job.plist is a link"; done
+if [ -f "$PLIST" ]; then cp "$PLIST" "$WORK/old.plist"; fi
+if dry; then
+  echo "+ (stop every loaded job of $JOBS; start them again afterwards, or on a failure)"
+else
+  for job in $JOBS; do
+    if launchctl print "system/$job" >/dev/null 2>&1; then
+      [ -f "$DAEMONS/$job.plist" ] || fail "$job is loaded but $DAEMONS/$job.plist is missing; it could not be started again"
+      loaded="$loaded $job"
+    fi
+  done
 fi
-# Nothing of the service user's may be running while its files change,
-# whether or not launchd knows of it.
-# Staging, set up first, checks for any process of the service user; once it
-# runs, production checks for its own server alone.
-if [ "$ENV" = staging ]; then running() { pgrep -u "$SVC" >/dev/null; }; else running() { pgrep -u "$SVC" -f "$SERVER/cli/serve.mjs --env $ENV" >/dev/null; }; fi
-if ! dry && dscl . -read /Users/$SVC >/dev/null 2>&1 && running; then fail "a process of $SVC is running; stop it first"; fi
-if ! dry && lsof -nP -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then fail "something already listens on $BIND:$PORT"; fi
+trap 'status=$?; [ $status = 0 ] || recover; rm -rf "$WORK"; exit $status' EXIT
+if ! dry; then
+  stopped=1
+  stop_all || fail "the $SVC jobs could not all be stopped"
+  if lsof -nP -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then fail "something already listens on $BIND:$PORT"; fi
+fi
 
 # 4. Directories. An existing home must be a plain directory, never a link.
 [ ! -L "$HOME_DIR" ] || fail "$HOME_DIR is a link"
@@ -230,29 +290,47 @@ done
 dry || chmod -RN "$HOME_DIR"
 
 # 5. Node and the server, root-owned, readable and runnable by the group.
-for d in bin "$SERVER"; do [ ! -L "$HOME_DIR/$d" ] || fail "$HOME_DIR/$d is a link"; done
-run rm -rf "$HOME_DIR/bin.new" "$HOME_DIR/$SERVER.new"
-run mkdir "$HOME_DIR/bin.new"
-run install -o root -g "$SVC" -m 750 "$WORK/node" "$HOME_DIR/bin.new/node"
+#    bin/ is shared: node goes in beside what is there (cloudflared), which
+#    stays as it is.
+for d in bin bin/node bin/node.new bin/node.old "$SERVER"; do [ ! -L "$HOME_DIR/$d" ] || fail "$HOME_DIR/$d is a link"; done
+run rm -rf "$HOME_DIR/$SERVER.new"
+run mkdir -p "$HOME_DIR/bin"
+run chown "root:$SVC" "$HOME_DIR/bin"
+run chmod 750 "$HOME_DIR/bin"
+dry || safe_dir "$HOME_DIR/bin"
+run install -o root -g "$SVC" -m 750 "$WORK/node" "$HOME_DIR/bin/node.new"
 run cp -R "$WORK/server" "$HOME_DIR/$SERVER.new"
-run chown -R root:"$SVC" "$HOME_DIR/bin.new" "$HOME_DIR/$SERVER.new"
+run chown -R root:"$SVC" "$HOME_DIR/$SERVER.new"
 run chmod -R u=rwX,g=rX,o= "$HOME_DIR/$SERVER.new"
-run chmod 750 "$HOME_DIR/bin.new" "$HOME_DIR/$SERVER.new/hooks/pre-receive"
+run chmod 750 "$HOME_DIR/$SERVER.new/hooks/pre-receive"
 # The staged node is checked, as the service user, before anything moves.
 if ! dry; then
-  sudo -u "$SVC" "$HOME_DIR/bin.new/node" -e 'const [a]=process.versions.node.split(".").map(Number); if (a<26) process.exit(1)' || fail "node 26 or later is needed; nothing was replaced"
+  sudo -u "$SVC" "$HOME_DIR/bin/node.new" -e 'const [a]=process.versions.node.split(".").map(Number); if (a<26) process.exit(1)' || fail "node 26 or later is needed; nothing was replaced"
 fi
-# bin.old and server.old (server-production.old) are the last code that
-# answered. Left by an attempt that failed, they are kept, and the failed
-# code is dropped; otherwise the current code becomes them.
-if [ -e "$HOME_DIR/bin.old" ] || [ -e "$HOME_DIR/$SERVER.old" ]; then
-  run rm -rf "$HOME_DIR/bin" "$HOME_DIR/$SERVER"
+# bin/node.old and server.old (server-production.old) are the last code
+# that answered. Left by an attempt whose recovery failed, they are kept,
+# and the failed code is dropped; otherwise the current code becomes them.
+if [ -e "$HOME_DIR/bin/node.old" ] || [ -e "$HOME_DIR/$SERVER.old" ]; then
+  run rm -rf "$HOME_DIR/$SERVER"
 else
-  [ ! -e "$HOME_DIR/bin" ] || run mv "$HOME_DIR/bin" "$HOME_DIR/bin.old"
+  [ ! -e "$HOME_DIR/bin/node" ] || run mv "$HOME_DIR/bin/node" "$HOME_DIR/bin/node.old"
   [ ! -e "$HOME_DIR/$SERVER" ] || run mv "$HOME_DIR/$SERVER" "$HOME_DIR/$SERVER.old"
 fi
-run mv "$HOME_DIR/bin.new" "$HOME_DIR/bin"
+dry || swapped=1
+run mv -f "$HOME_DIR/bin/node.new" "$HOME_DIR/bin/node"
 run mv "$HOME_DIR/$SERVER.new" "$HOME_DIR/$SERVER"
+
+# The installer atelier ship runs, root's, outside every release, at a path
+# only root can write. Only this script installs or replaces it.
+INSTALLER_DIR=/Library/Atelier
+safe_dir /Library
+[ ! -L "$INSTALLER_DIR" ] && [ ! -L "$INSTALLER_DIR/install-server.sh" ] && [ ! -L "$INSTALLER_DIR/install-server.sh.new" ] || fail "$INSTALLER_DIR or the installer in it is a link"
+run mkdir -p "$INSTALLER_DIR"
+run chown root:wheel "$INSTALLER_DIR"
+run chmod 755 "$INSTALLER_DIR"
+dry || safe_dir "$INSTALLER_DIR"
+run install -o root -g wheel -m 755 "$WORK/server/scripts/studio/install-server.sh" "$INSTALLER_DIR/install-server.sh.new"
+run mv -f "$INSTALLER_DIR/install-server.sh.new" "$INSTALLER_DIR/install-server.sh"
 
 # 6. The environment's owner token: made once, kept in secrets/, never
 #    printed, with one copy written by the developer's own user.
@@ -294,11 +372,13 @@ if ! dry; then
   for _ in $(seq 1 30); do
     if lsof -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
       && curl -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" >/dev/null 2>&1; then
-      rm -rf "$HOME_DIR/bin.old" "$HOME_DIR/$SERVER.old"
+      stopped=
+      rm -rf "$HOME_DIR/bin/node.old" "$HOME_DIR/$SERVER.old"
+      start_others || echo "setup: start the jobs named above by hand" >&2
       echo "$ENV answers at http://$BIND:$PORT, running as $SVC; the owner token is at $TOKEN_COPY"
       exit 0
     fi
     sleep 1
   done
-  fail "$ENV did not answer in 30 s; the previous code, if any, is kept as bin.old and $SERVER.old; see $HOME_DIR/log/$ENV.log (sudo tail)"
+  fail "$ENV did not answer in 30 s; see $HOME_DIR/log/$ENV.log (sudo tail)"
 fi

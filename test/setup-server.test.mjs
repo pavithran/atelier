@@ -26,12 +26,13 @@ const PROD_AUD = "ab".repeat(32);
 // libraries to stand for node and cloudflared (a dry run never runs it).
 function inputs() {
   const rel = join(root, "rel");
-  for (const d of ["cli", "hooks", "node_modules/jose"]) mkdirSync(join(rel, d), { recursive: true });
+  for (const d of ["cli", "hooks", "node_modules/jose", "scripts/studio"]) mkdirSync(join(rel, d), { recursive: true });
   writeFileSync(join(rel, "cli/serve.mjs"), "");
   writeFileSync(join(rel, "hooks/pre-receive"), "");
   writeFileSync(join(rel, "node_modules/jose/package.json"), "{}");
+  writeFileSync(join(rel, "scripts/studio/install-server.sh"), "#!/bin/bash\n");
   const tar = join(root, "rel.tar");
-  const made = spawnSync("tar", ["-cf", tar, "-C", rel, "cli", "hooks", "node_modules"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  const made = spawnSync("tar", ["-cf", tar, "-C", rel, "cli", "hooks", "node_modules", "scripts"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   assert.equal(made.status, 0);
   const creds = join(root, "creds.json");
   writeFileSync(creds, JSON.stringify({ AccountTag: "a", TunnelSecret: "s", TunnelID: "2293602a-6d93-433d-827d-f77084d2d9b2" }));
@@ -56,15 +57,19 @@ test("every Studio script parses", () => {
   }
 });
 
-test("setup-server.sh --env staging does exactly what setup-staging.sh did on 2026-10-28", { skip: darwin }, () => {
+test("setup-server.sh --env staging makes the user, directories, token and LaunchDaemon exactly as setup-staging.sh did on 2026-10-28", { skip: darwin }, () => {
   const i = inputs();
   const old = dry(OLD_SETUP, [i.tar, i.bin, i.token]);
   const now = dry(SETUP, ["--env", "staging", i.tar, i.bin, i.token]);
   assert.equal(old.status, 0, old.err);
   assert.equal(now.status, 0, now.err);
-  assert.equal(now.out, old.out);
-  assert.equal(now.err, old.err);
-  assert.match(now.out, /install -o root -g wheel -m 644 \S+ \/Library\/LaunchDaemons\/zone\.atelier\.server\.staging\.plist/);
+  const oldLines = old.out.split("\n"), nowLines = now.out.split("\n");
+  // The account and directories, up to the log directory, are the same.
+  const upTo = oldLines.indexOf("+ chmod 700 /Users/atelierd/log") + 1;
+  assert.ok(upTo > 10);
+  assert.deepEqual(nowLines.filter((l) => !l.startsWith("+ (stop every")).slice(0, upTo), oldLines.slice(0, upTo));
+  // So are the token and the LaunchDaemon at the end.
+  assert.deepEqual(nowLines.slice(-4), oldLines.slice(-4));
 });
 
 test("the staging LaunchDaemon's plist is the same bytes as the one setup-staging.sh wrote", { skip: darwin }, () => {
@@ -87,7 +92,8 @@ test("production is set up the same way with port 4100, zone.atelier.server, ser
   assert.match(now.out, /mv \/Users\/atelierd\/server-production\.new \/Users\/atelierd\/server-production\n/);
   assert.match(now.out, /make \/Users\/atelierd\/secrets\/production\/ATELIER_TOKEN if missing/);
   assert.match(now.out, /launchctl bootstrap system \/Library\/LaunchDaemons\/zone\.atelier\.server\.plist\n$/);
-  assert.doesNotMatch(now.out, /zone\.atelier\.server\.staging|\/Users\/atelierd\/server[ .\n]|secrets\/staging\/ATELIER_TOKEN/);
+  assert.match(now.out, /\+ \(stop every loaded job of zone\.atelier\.server\.staging zone\.atelier\.server zone\.atelier\.tunnel /);
+  assert.doesNotMatch(now.out.split("\n").filter((l) => !l.startsWith("+ (stop every")).join("\n"), /zone\.atelier\.server\.staging|\/Users\/atelierd\/server[ .\n]|secrets\/staging\/ATELIER_TOKEN/);
   const out = join(root, "production.plist");
   const r = spawnSync("/bin/bash", ["-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c && write_plist "$1"`, SETUP, out], { env: env(), encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
@@ -97,6 +103,40 @@ test("production is set up the same way with port 4100, zone.atelier.server, ser
     "<string>--port</string><string>4100</string>", "<string>/Users/atelierd/log/production.log</string>", "<string>http://100.99.0.102:4100</string>"]) assert.ok(plist.includes(piece), piece);
   assert.doesNotMatch(plist, /staging|4101/);
   assert.equal(spawnSync("plutil", ["-lint", out]).status, 0);
+});
+
+// Finding 1: the installer ship runs is root's, outside every release, and
+// only this script installs it, from the release PAVI's sudo trusted.
+test("setup-server.sh installs install-server.sh root's at /Library/Atelier, and refuses a release without it", { skip: darwin }, () => {
+  const i = inputs();
+  for (const envName of ["staging", "production"]) {
+    const now = dry(SETUP, ["--env", envName, i.tar, i.bin, i.token]);
+    assert.equal(now.status, 0, now.err);
+    assert.match(now.out, /\+ mkdir -p \/Library\/Atelier\n\+ chown root:wheel \/Library\/Atelier\n\+ chmod 755 \/Library\/Atelier\n\+ install -o root -g wheel -m 755 \/var\/tmp\/atelier-setup\.X\/server\/scripts\/studio\/install-server\.sh \/Library\/Atelier\/install-server\.sh\.new\n\+ mv -f \/Library\/Atelier\/install-server\.sh\.new \/Library\/Atelier\/install-server\.sh\n/);
+  }
+  const bare = join(root, "bare");
+  for (const d of ["cli", "hooks", "node_modules/jose"]) mkdirSync(join(bare, d), { recursive: true });
+  for (const f of ["cli/serve.mjs", "hooks/pre-receive", "node_modules/jose/package.json"]) writeFileSync(join(bare, f), "");
+  const tar = join(root, "bare.tar");
+  spawnSync("tar", ["-cf", tar, "-C", bare, "cli", "hooks", "node_modules"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  const r = dry(SETUP, ["--env", "staging", tar, i.bin, i.token]);
+  assert.equal(r.status, 1);
+  assert.match(r.err, /the release lacks scripts\/studio\/install-server\.sh/);
+});
+
+// Finding 5: bin/ is shared; node goes in beside cloudflared.
+test("setup-server.sh puts node into bin/ beside what is there, and never removes or replaces bin/ itself", { skip: darwin }, () => {
+  const i = inputs();
+  for (const envName of ["staging", "production"]) {
+    const now = dry(SETUP, ["--env", envName, i.tar, i.bin, i.token]);
+    assert.equal(now.status, 0, now.err);
+    assert.match(now.out, /\+ install -o root -g atelierd -m 750 \S+\/node \/Users\/atelierd\/bin\/node\.new\n/);
+    assert.match(now.out, /\+ mv -f \/Users\/atelierd\/bin\/node\.new \/Users\/atelierd\/bin\/node\n/);
+    for (const line of now.out.split("\n")) {
+      assert.doesNotMatch(line, /^\+ (rm -rf|mv|mv -f) (.* )?\/Users\/atelierd\/bin( |$)/, line);
+      assert.doesNotMatch(line, /cloudflared|bin\.new|bin\.old/, line);
+    }
+  }
 });
 
 test("setup-server.sh refuses without --env staging or production", { skip: darwin }, () => {
@@ -146,4 +186,91 @@ test("the production tunnel step refuses a missing or malformed audience, stagin
     assert.notEqual(r.status, 0, args.join(" "));
     assert.match(r.err, why, args.join(" "));
   }
+});
+
+// Finding 6: production's setup keeps "nothing of atelierd running": it
+// stops every atelierd job, staging's server and the tunnel included, and
+// starts again those that ran, on success and on a failure. Driven through
+// the script's own functions (SETUP_SERVER_LIB=1) with a stand-in launchctl
+// and pgrep, and the same for the tunnel script's.
+function jobsHarness(loadedJobs) {
+  const h = mkdtempSync(join(root, "jobs-"));
+  const bin = join(h, "bin");
+  mkdirSync(bin);
+  mkdirSync(join(h, "state"));
+  for (const job of loadedJobs) writeFileSync(join(h, "state", job), "");
+  writeFileSync(join(bin, "launchctl"), `#!/bin/sh
+s="${h}/state"; echo "$*" >> "${h}/launchctl.log"
+case "$1" in
+  print) [ -e "$s/\${2#system/}" ] ;;
+  bootout) rm -f "$s/\${2#system/}" ;;
+  bootstrap) j=$(basename "$3" .plist); : > "$s/$j" ;;
+esac
+`);
+  writeFileSync(join(bin, "pgrep"), `#!/bin/sh\n[ -n "$(ls "${h}/state")" ]\n`);
+  for (const f of ["launchctl", "pgrep"]) spawnSync("chmod", ["755", join(bin, f)]);
+  const log = () => readFileSync(join(h, "launchctl.log"), "utf8");
+  const state = () => readdirSync(join(h, "state")).sort();
+  return { h, bin, log, state };
+}
+
+test("production's setup stops every atelierd job, staging's server and the tunnel included, and starts again those that ran", { skip: darwin }, () => {
+  const j = jobsHarness(["zone.atelier.server.staging", "zone.atelier.tunnel", "zone.atelier.backup.staging"]);
+  const r = spawnSync("/bin/bash", ["-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+PATH="${j.bin}:$PATH"
+loaded=" zone.atelier.server.staging zone.atelier.tunnel zone.atelier.backup.staging"
+stop_all || exit 3
+ls "${j.h}/state" | wc -l | tr -d ' '
+start_others`, SETUP], { env: env(), encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), "0", "nothing ran while it worked");
+  assert.match(j.log(), /bootout system\/zone\.atelier\.server\.staging/);
+  assert.match(j.log(), /bootout system\/zone\.atelier\.tunnel/);
+  assert.deepEqual(j.state(), ["zone.atelier.backup.staging", "zone.atelier.server.staging", "zone.atelier.tunnel"]);
+});
+
+test("production's setup, failing midway, puts its code back and starts every job that ran", { skip: darwin }, () => {
+  const j = jobsHarness(["zone.atelier.server.staging", "zone.atelier.tunnel"]);
+  const home = join(j.h, "home");
+  mkdirSync(join(home, "server-production.old"), { recursive: true });
+  mkdirSync(join(home, "server-production"), { recursive: true });
+  mkdirSync(join(home, "bin"), { recursive: true });
+  writeFileSync(join(home, "server-production.old", "COMMIT"), "old\n");
+  writeFileSync(join(home, "server-production", "COMMIT"), "new\n");
+  writeFileSync(join(home, "bin", "node.old"), "old node");
+  writeFileSync(join(home, "bin", "node"), "new node");
+  writeFileSync(join(home, "bin", "cloudflared"), "staging's tunnel");
+  const r = spawnSync("/bin/bash", ["-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+PATH="${j.bin}:$PATH"
+HOME_DIR="${home}"
+loaded=" zone.atelier.server.staging zone.atelier.tunnel"
+stop_all || exit 3
+stopped=1 swapped=1
+recover`, SETUP], { env: env(), encoding: "utf8" });
+  assert.match(r.stderr, /putting back what ran before/);
+  assert.equal(readFileSync(join(home, "server-production", "COMMIT"), "utf8"), "old\n");
+  assert.equal(readFileSync(join(home, "bin", "node"), "utf8"), "old node");
+  assert.equal(readFileSync(join(home, "bin", "cloudflared"), "utf8"), "staging's tunnel", "the tunnel's binary is left as it was");
+  assert.deepEqual(j.state(), ["zone.atelier.server.staging", "zone.atelier.tunnel"]);
+});
+
+test("the tunnel's production step stops every atelierd job, staging's server included, and starts again those that ran", { skip: darwin }, () => {
+  const j = jobsHarness(["zone.atelier.server.staging", "zone.atelier.server", "zone.atelier.tunnel"]);
+  const text = readFileSync(TUNNEL, "utf8");
+  const fn = (name) => new RegExp(`\n(${name}\\(\\) \\{[\\s\\S]*?\\n\\})\n`).exec(text)[1];
+  const jobs = /\n(JOBS="[^"]*")\n/.exec(text)[1];
+  const r = spawnSync("/bin/bash", ["-c", `${jobs}\n${fn("stop_all")}\n${fn("start_loaded")}
+SVC=atelierd
+PATH="${j.bin}:$PATH"
+loaded=" zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel"
+stop_all || exit 3
+ls "${j.h}/state" | wc -l | tr -d ' '
+launchctl bootstrap system /Library/LaunchDaemons/zone.atelier.server.plist
+launchctl bootstrap system /Library/LaunchDaemons/zone.atelier.tunnel.plist
+start_loaded zone.atelier.server zone.atelier.tunnel`], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), "0");
+  assert.match(j.log(), /bootout system\/zone\.atelier\.server\.staging/);
+  assert.deepEqual(j.state(), ["zone.atelier.server", "zone.atelier.server.staging", "zone.atelier.tunnel"]);
+  assert.equal(j.log().split("\n").filter((l) => l.startsWith("bootstrap")).length, 3, "each started once");
 });

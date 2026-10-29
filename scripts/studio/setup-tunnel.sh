@@ -23,8 +23,9 @@
 #
 # The production step adds atelier.zone to the tunnel beside
 # next.atelier.zone, writes production's Access settings, and gives
-# production the PUBLIC_ORIGIN https://atelier.zone. Staging keeps running;
-# only the tunnel restarts. Run again later, the staging step keeps
+# production the PUBLIC_ORIGIN https://atelier.zone. Like the staging step,
+# it stops every atelierd job while it writes, staging's server included,
+# and starts again those that ran. Run again later, the staging step keeps
 # atelier.zone in the tunnel once production has it.
 #
 # DRYRUN=1 prints what would change and needs no root.
@@ -188,29 +189,44 @@ else
 fi
 [ ! -L "$PLIST" ] || fail "$PLIST is a link"
 
-# 3. Stop the tunnel and the server this run changes. For staging, confirm
-#    nothing of the service user's runs while root writes in its
-#    directories; for production, which runs beside staging, that neither
-#    the tunnel nor production does. A failure from here on puts the
-#    server's previous LaunchDaemon back and starts it, and the tunnel's.
+# 3. Stop every atelierd job (both servers, the tunnel, the backups) and
+#    confirm nothing of the service user's runs while root writes in its
+#    directories. The jobs that ran start again afterwards. A failure from
+#    here on puts back the server's previous LaunchDaemon, the Access
+#    settings and the tunnel's config and plist, and starts every job that ran.
+JOBS="zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
 stopped=
 snapshot=
+loaded=
+stop_all() {
+  local job
+  for job in $JOBS; do
+    launchctl print "system/$job" >/dev/null 2>&1 || continue
+    launchctl bootout "system/$job" 2>/dev/null
+    for _ in $(seq 1 20); do launchctl print "system/$job" >/dev/null 2>&1 || break; sleep 0.5; done
+    if launchctl print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop" >&2; return 1; fi
+  done
+  for _ in $(seq 1 60); do pgrep -u "$SVC" >/dev/null || break; sleep 0.5; done
+  if pgrep -u "$SVC" >/dev/null; then echo "setup: a process of $SVC is still running" >&2; return 1; fi
+}
+# Starts the jobs that were loaded, but those named, which were started already.
+start_loaded() {
+  local job skip=" $* " rc=0
+  for job in $JOBS; do
+    case "$skip" in *" $job "*) continue ;; esac
+    case " $loaded " in *" $job "*) launchctl bootstrap system "/Library/LaunchDaemons/$job.plist" || { echo "setup: $job did not start; sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist" >&2; rc=1; } ;; esac
+  done
+  return $rc
+}
 restore() {
   [ -n "$stopped" ] || return 0
   # Recovery decides by its own checks, not by set -e.
   set +e
-  echo "setup: putting the previous $MODE server back" >&2
-  # Recovery writes only under the same rules as the install: both jobs
+  echo "setup: putting the previous $MODE server and tunnel back" >&2
+  # Recovery writes only under the same rules as the install: every job
   # unloaded, nothing of the service user's running, its directories safe.
   # Short of that it changes nothing and says so.
-  local job
-  for job in "$LABEL" "$T_LABEL"; do
-    launchctl print "system/$job" >/dev/null 2>&1 && launchctl bootout "system/$job" 2>/dev/null
-    for _ in $(seq 1 20); do launchctl print "system/$job" >/dev/null 2>&1 || break; sleep 0.5; done
-    if launchctl print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop; nothing was restored" >&2; return 1; fi
-  done
-  for _ in $(seq 1 20); do ours_running || break; sleep 0.5; done
-  if ours_running; then echo "setup: a process of $SVC is running; nothing was restored" >&2; return 1; fi
+  if ! stop_all; then echo "setup: nothing was restored" >&2; return 1; fi
   if ! ( safe_dir "$HOME_DIR" && safe_dir "$HOME_DIR/secrets" && safe_dir "$S" ) 2>/dev/null; then
     echo "setup: $S is not safe to write; nothing was restored" >&2; return 1
   fi
@@ -224,41 +240,29 @@ restore() {
     done
   fi
   install -o root -g wheel -m 644 "$WORK/server.old.plist" "$T_PLIST" || echo "setup: could not restore $T_PLIST" >&2
+  [ ! -f "$WORK/config.old.yml" ] || install -o "$SVC" -g "$SVC" -m 600 "$WORK/config.old.yml" "$T/config.yml" || echo "setup: could not restore $T/config.yml" >&2
+  [ ! -f "$WORK/tunnel.old.plist" ] || install -o root -g wheel -m 644 "$WORK/tunnel.old.plist" "$PLIST" || echo "setup: could not restore $PLIST" >&2
+  # The server this run changes starts again, as staging's recovery always
+  # did; every other job only if it ran.
   launchctl bootstrap system "$T_PLIST" || echo "setup: the previous $MODE server did not start; sudo launchctl bootstrap system $T_PLIST" >&2
-  # The tunnel too, on its previous config, when it was running before.
-  if [ -n "$tunnel_was" ] && [ -f "$WORK/config.old.yml" ]; then
-    install -o "$SVC" -g "$SVC" -m 600 "$WORK/config.old.yml" "$T/config.yml" || echo "setup: could not restore $T/config.yml" >&2
-    [ ! -f "$WORK/tunnel.old.plist" ] || install -o root -g wheel -m 644 "$WORK/tunnel.old.plist" "$PLIST" || echo "setup: could not restore $PLIST" >&2
-    launchctl bootstrap system "$PLIST" || echo "setup: the tunnel did not start; sudo launchctl bootstrap system $PLIST" >&2
-  fi
+  start_loaded "$T_LABEL"
 }
-# What of the service user's must not run while root writes: for staging,
-# anything; for production, the tunnel and production's own server.
-if [ "$MODE" = staging ]; then ours_running() { pgrep -u "$SVC" >/dev/null; }
-else ours_running() { pgrep -u "$SVC" -f "$HOME_DIR/bin/cloudflared tunnel" >/dev/null || pgrep -u "$SVC" -f "cli/serve.mjs --env production" >/dev/null; }; fi
-tunnel_was=
 trap 'status=$?; [ $status = 0 ] || restore; rm -rf "$WORK"; exit $status' EXIT
-stop_job() {
-  launchctl print "system/$1" >/dev/null 2>&1 || return 0
-  launchctl bootout "system/$1" || fail "$1 would not stop"
-  for _ in $(seq 1 20); do launchctl print "system/$1" >/dev/null 2>&1 || return 0; sleep 0.5; done
-  fail "$1 is still loaded"
-}
+for job in $JOBS; do [ ! -L "/Library/LaunchDaemons/$job.plist" ] || fail "/Library/LaunchDaemons/$job.plist is a link"; done
 if ! dry; then
-  # The tunnel's current config and plist, so a production run that fails
-  # puts the tunnel back as it was; staging's recovery leaves it stopped, as
-  # it always has.
-  if [ "$MODE" = production ] && launchctl print "system/$LABEL" >/dev/null 2>&1; then
-    [ ! -L "$T/config.yml" ] || fail "$T/config.yml is a link"
-    [ ! -f "$T/config.yml" ] || cp "$T/config.yml" "$WORK/config.old.yml"
-    [ ! -f "$PLIST" ] || cp "$PLIST" "$WORK/tunnel.old.plist"
-    tunnel_was=1
-  fi
+  # What ran, and the tunnel's current config and plist, so a failure puts
+  # them back as they were.
+  for job in $JOBS; do
+    if launchctl print "system/$job" >/dev/null 2>&1; then
+      [ -f "/Library/LaunchDaemons/$job.plist" ] || fail "$job is loaded but its plist is missing; it could not be started again"
+      loaded="$loaded $job"
+    fi
+  done
+  [ ! -L "$T/config.yml" ] || fail "$T/config.yml is a link"
+  [ ! -f "$T/config.yml" ] || cp "$T/config.yml" "$WORK/config.old.yml"
+  [ ! -f "$PLIST" ] || cp "$PLIST" "$WORK/tunnel.old.plist"
   stopped=1
-  stop_job "$LABEL"
-  stop_job "$T_LABEL"
-  for _ in $(seq 1 20); do ours_running || break; sleep 0.5; done
-  ! ours_running || fail "a process of $SVC is still running"
+  stop_all || fail "the $SVC jobs could not all be stopped"
 fi
 
 # 4. Install, the service user stopped. Its directories are checked again
@@ -310,6 +314,7 @@ if ! dry; then
   done
   [ -n "$ok" ] || fail "$MODE or the tunnel did not come up in 30 s; see $HOME_DIR/log/$MODE.log and tunnel.log (sudo tail)"
   stopped=
+  start_loaded "$T_LABEL" "$LABEL" || echo "setup: start the jobs named above by hand" >&2
   echo "the tunnel is registered and $MODE answers at $T_ORIGIN with origin https://$T_HOST"
 fi
 

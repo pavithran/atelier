@@ -131,7 +131,7 @@ case "$ENV" in staging|production) ;; *) echo "setup: ENV is staging or producti
 
 SVC=atelierd
 HOME_DIR=/Users/$SVC
-JOBS="zone.atelier.server.staging zone.atelier.server.production zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
+JOBS="zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 D="$HOME_DIR/data/$ENV"
 R="$HOME_DIR/repos/$ENV"

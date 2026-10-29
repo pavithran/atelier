@@ -11,7 +11,7 @@ import { composeShip, ship } from "../cli/ship.mjs";
 
 const STAGING_FILE = "docs/atelier/ship-staging.json";
 const STAGING_URL = "https://next.atelier.zone/api/version";
-const DEPLOY = ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--host", "ai-studio"];
+const DEPLOY = ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--version-url", STAGING_URL, "--host", "ai-studio"];
 const VERIFY = ["node", "scripts/ship-studio.mjs", "verify", "--version-url", STAGING_URL];
 
 test("the staging ship file composes with ship's loader: typecheck, the Studio deploy of staging with the terminal, verify at next.atelier.zone, and no scan or push", () => {
@@ -44,7 +44,7 @@ test("ship reads docs/atelier/ship.json unless told otherwise, and main's order 
   assert.deepEqual(deploy.argv, DEPLOY);
   assert.equal(deploy.terminal, true);
   assert.equal(deploy.ifChanged.since, STAGING_URL);
-  for (const path of ["src/**", "hooks/**", "cli/serve.mjs", "package-lock.json", "scripts/studio/install-server.sh"]) assert.ok(deploy.ifChanged.paths.includes(path), path);
+  for (const path of ["src/**", "hooks/**", "cli/serve.mjs", "package-lock.json"]) assert.ok(deploy.ifChanged.paths.includes(path), path);
   assert.deepEqual(main.steps.find((s) => s.step === "verify-delivery").runs[0].argv, VERIFY);
   // No run of main's order reaches production.
   assert.doesNotMatch(JSON.stringify(main.steps), /https:\/\/atelier\.zone/);

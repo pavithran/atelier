@@ -62,7 +62,7 @@ LABEL=zone.atelier.backup.$ENV
 PLIST=/Library/LaunchDaemons/$LABEL.plist
 # Every job that runs as atelierd, in the order they start: the servers,
 # then the tunnel in front of them, then the backups.
-JOBS="zone.atelier.server.staging zone.atelier.server.production zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
+JOBS="zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
 TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/zone.atelier.backup.plist.template"
 B="$HOME_DIR/secrets/backup"
 W="$HOME_DIR/backup-work"

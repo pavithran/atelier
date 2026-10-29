@@ -143,10 +143,10 @@ server on the Studio (`docs/studio.md`).
   "description": "Atelier's own delivery.",
   "typecheck": { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 },
   "deploy": {
-    "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--host", "ai-studio"],
-    "terminal": true, "timeout_seconds": 900,
+    "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--version-url", "https://next.atelier.zone/api/version", "--host", "ai-studio"],
+    "terminal": true, "timeout_seconds": 1200,
     "if_changed": {
-      "paths": ["src/**", "cli/serve.mjs", "cli/private-guard.mjs", "hooks/**", "package.json", "package-lock.json", "scripts/studio/install-server.sh"],
+      "paths": ["src/**", "cli/serve.mjs", "cli/private-guard.mjs", "hooks/**", "package.json", "package-lock.json"],
       "since": "https://next.atelier.zone/api/version"
     }
   },
@@ -202,19 +202,19 @@ names another; a verify run needs none unless it names one. A field the
 schema does not list, a run field for a step the class has no place for, or
 a class outside the four is refused before anything runs.
 
-Atelier's own deploy, `scripts/ship-studio.mjs deploy --env ENV --host
-HOST`, checks that the checkout is still clean at `ATELIER_SHIP_HEAD` before
-and after. It builds a release of that commit (`git archive`, plus the
-runtime packages `package.json` names, at the versions the lock file gives),
-copies it over ssh to `~/Library/Caches/atelier/releases` on the Studio, and
-runs `install-server.sh` from the release already installed there, under
-`sudo`, with `ssh -t`. The developer types the administrator password at
-sudo's own prompt. The script installs the release with its commit, restarts
-the environment's LaunchDaemon, and waits for `/api/version` to report the
-commit; when it does not, the script puts the previous release back and says
-so, and the deploy fails. `verify --version-url URL` refuses redirects and
-requires HTTP 200 with `commit` equal to the captured HEAD. `docs/studio.md`
-says more. Failure stops the ship before wrap or push.
+Atelier's own deploy, `scripts/ship-studio.mjs deploy --env ENV --version-url
+URL --host HOST`, checks that the checkout is still clean at
+`ATELIER_SHIP_HEAD` before and after, and that the branch head the live
+server reports (`main` at the version URL) holds that commit. It then runs
+root's installer, `/Library/Atelier/install-server.sh --env ENV COMMIT`,
+under `sudo` with `ssh -t`, passing nothing else. The developer types the
+administrator password at sudo's own prompt. The installer builds the release
+itself from the Studio's repository, checks the commit is on the project's
+branch, installs it, restarts the environment's LaunchDaemon and waits for
+`/api/version` to report the commit; when it does not, it puts the previous
+release back and says so, and the deploy fails. `verify --version-url URL`
+refuses redirects and requires HTTP 200 with `commit` equal to the captured
+HEAD. `docs/studio.md` says more. Failure stops the ship before wrap or push.
 
 ## Production and staging
 
@@ -225,7 +225,8 @@ from `release/1.0` with that branch's own ship file. `docs/studio.md`
 describes both.
 
 - **Main ships to staging.** Main's `docs/atelier/ship.json` deploys with
-  `node scripts/ship-studio.mjs deploy --env staging --host ai-studio`, checks
+  `node scripts/ship-studio.mjs deploy --env staging --version-url
+  https://next.atelier.zone/api/version --host ai-studio`, checks
   for server changes against `https://next.atelier.zone/api/version` and
   verifies there; with `--push` it then scans and pushes main to GitHub. It
   never deploys production.
@@ -270,8 +271,8 @@ It then prints the steps and runs them:
   failing type-check stops the ship before an approval is spent.
 - **deploy** runs only when the server's code changed since the commit the
   `if_changed.since` URL reports as live (`src/**`, `cli/serve.mjs` and what
-  the server loads from `cli/`, the hooks, `package.json` and the lock file,
-  and the install script). The live server says what was last deployed.
+  the server loads from `cli/`, the hooks, `package.json` and the lock
+  file). The live server says what was last deployed.
   It is not retried: a second try would ask for the password again.
 - **scan** (`scripts/privacy-scan.mjs`), with `--push`, reads the commits the
   GitHub remote lacks and refuses on a hit: an author or committer that is
@@ -289,8 +290,7 @@ It then prints the steps and runs them:
   push, with `--push`. Atelier's own names neither: on the Node server the
   project's repository is the baseline, which only a landing moves, so ship
   skips a baseline step; and the Studio runs the release `deploy` installs,
-  not a checkout. `scripts/studio-ff.mjs` is kept for a ship file that
-  fast-forwards a checkout on another host.
+  not a checkout.
 
 The first step that fails stops the ship. The message names the step, what
 ran before it and what did not run, and, when the step had spent an
