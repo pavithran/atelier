@@ -426,6 +426,9 @@ export interface CriteriaBriefInput {
   // The project's prose standard (src/prose-standard.ts, t675); null or
   // absent when the project has none.
   proseStandard?: string | null;
+  // This revision only appended criteria to one a criteria review approved
+  // (G12): the approved revision and the first added criterion's number.
+  appended?: { approvedRev: number; first: number } | null;
 }
 
 const visible = (c: string) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`;
@@ -495,6 +498,7 @@ export function criteriaReviewBrief(input: CriteriaBriefInput): string {
     "",
     ...(accept.length ? ["The task's own criteria, numbered as a finding names them (criterion-1, criterion-2, ...):", block(numbered(accept))] : ["The task's own list is empty."]),
     ...(partAccept.length ? [`The plan's criteria for this part, numbered after the task's (criterion-${accept.length + 1} onward):`, block(numbered(partAccept, accept.length))] : []),
+    ...(input.appended && input.appended.first <= accept.length ? ["", `Revision ${input.rev} only added criterion-${input.appended.first}${input.appended.first < accept.length ? ` to criterion-${accept.length}` : ""} to revision ${input.appended.approvedRev}, which a criteria review approved with criterion-1 to criterion-${input.appended.first - 1} as they still stand. Review the added criteria; block on an earlier one only where an added one contradicts it.`] : []),
   );
   if (input.previous.length) section("## Earlier criteria reviews", "", ...earlierCriteriaReviews(input.previous, input.resolutions, input.rev));
   const prose = proseStandardLine(input.proseStandard);

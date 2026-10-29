@@ -26,7 +26,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX, ACCEPT_COUNT, BRIEF_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead, countingReviews, independentApproval,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -40,6 +40,7 @@ import {
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria, sha256Hex } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
+import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -267,6 +268,23 @@ export interface CriteriaChange {
   acceptance: boolean;
   override: boolean;
   asked: string[];
+  // Open or claimed criteria reviews of the old revision, withdrawn (G12).
+  criteriaReviews: number;
+  // A criteria review approved the old revision, and approves nothing now.
+  criteriaApprovalLost: boolean;
+  // Whether the project requires a criteria review before a build.
+  criteriaReviewRequired: boolean;
+  // The criteria an --add-accept appended, numbered from `addedFrom` (G12).
+  added?: string[];
+  addedFrom?: number;
+}
+
+// What an edit that replaced a list took out of it (G12), and the event
+// that holds the old values: atelier edit ID --restore EVENT puts them back.
+export interface EditDropped {
+  accept?: string[];
+  scope?: string[];
+  brief?: boolean;
 }
 
 export interface ProjectRecord {
@@ -322,6 +340,8 @@ export interface ProjectInit {
   checks?: string[];
   checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
   checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
+  // The affected-tests check (G20); null clears it (see settleAffectedTests).
+  affectedTests?: ProjectPolicy["affectedTests"] | null;
   // The ship order the checkout declares (cli/ship.mjs shipPolicy): the runs'
   // commands, whose files the gate guards like a check's, and the approval
   // kinds it needs, for the inbox's undelivered-merge reminder.
@@ -732,6 +752,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
     prepare = { command: normalized, inputs: preparationPaths(i.prepare.inputs), outputs: preparationPaths(i.prepare.outputs), declaration: declarations[0]! };
   }
   const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
+  const affectedTests = settleAffectedTests(checks, i.affectedTests, p?.affectedTests);
   const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
@@ -774,6 +795,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(prepare ? { prepare } : {}),
       ...(checkClasses.length ? { checkClasses } : {}),
       ...(checkPaths.length ? { checkPaths } : {}),
+      ...(affectedTests ? { affectedTests } : {}),
       ...(shipRuns.length ? { shipRuns } : {}),
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
@@ -999,6 +1021,9 @@ export class Ledger extends DurableObject<Env> {
       );
       CREATE TABLE IF NOT EXISTS unparsable (
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS changed_files (
+        item TEXT PRIMARY KEY, head TEXT NOT NULL, paths TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS notifications (
         item_id TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY (item_id, head)
@@ -2763,16 +2788,38 @@ export class Ledger extends DurableObject<Env> {
   // decided under the old ones (criteriaChanged), and the answer says what
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
-  editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string): Item & { criteriaChange?: CriteriaChange } {
+  //
+  // Nothing is lost (G12): --add-accept and --add-brief append to what is
+  // stored, read here in the same call so no other edit is clobbered; a
+  // replacement records the old values on its item.edited event (acceptWas,
+  // briefWas, scopeWas) and answers with what it dropped and that event's
+  // number, which `restore` reads back to put them in place again.
+  editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string, restore?: number): Item & { criteriaChange?: CriteriaChange; dropped?: EditDropped; restore?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403, `only the developer can: atelier edit ${id}`);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`, 409, "run atelier ls to pick another task");
+    if (restore !== undefined) {
+      if (Object.keys(fields).length || scope !== undefined || context !== undefined) throw new RuleError("bad_field", "restore puts back what one edit replaced; give it alone", 400);
+      ({ fields, scope } = this.restoredFields(id, restore));
+    }
+    const { addAccept, addBrief, ...given } = fields;
+    fields = given;
+    if (addAccept) {
+      const accept = [...(item.accept ?? []), ...addAccept];
+      if (accept.length > ACCEPT_COUNT) throw new RuleError("bad_field", `accept holds at most ${ACCEPT_COUNT} criteria; ${item.accept?.length ?? 0} are stored and ${addAccept.length} were given`, 400);
+      fields = { ...fields, accept };
+    }
+    if (addBrief) {
+      const brief = item.brief ? `${item.brief}\n\n${addBrief}` : addBrief;
+      if (brief.length > BRIEF_MAX) throw new RuleError("bad_field", `a brief is at most ${BRIEF_MAX} characters; the stored one is ${item.brief?.length ?? 0} and the added text makes it ${brief.length}`, 400);
+      fields = { ...fields, brief };
+    }
     const set = fieldColumns(fields);
     if (fields.title !== undefined) {
       const title = titleLine(fields.title);
       if (!title) throw new RuleError("bad_title", "a title cannot be empty", 400);
-      if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
+      if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters and this one is ${title.length}; put the rest in the brief`, 400);
       set.title = title;
     }
     const rescoping = scope !== undefined && JSON.stringify(scope) !== JSON.stringify(item.scope);
@@ -2790,13 +2837,45 @@ export class Ledger extends DurableObject<Env> {
     if (context !== undefined && context.trim() !== (this.taskContext(id) ?? "")) this.setContext(id, actor, context);
     if (!Object.keys(set).length) return this.item(id);
     this.update(id, set, at);
-    this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
+    const rebriefing = fields.brief !== undefined && (fields.brief ?? null) !== (item.brief ?? null);
+    const appended = addAccept && changing ? { addAccept, addedFrom: (item.accept?.length ?? 0) + 1 } : {};
+    const seq = this.log(id, actor, "item.edited", {
+      ...fields,
+      ...(changing ? { acceptWas: item.accept ?? [] } : {}),
+      ...(rebriefing ? { briefWas: item.brief ?? null } : {}),
+      ...(addBrief ? { addBrief } : {}),
+      ...appended,
+      ...(rescoping ? { scope, scopeWas: item.scope } : {}),
+      ...(restore !== undefined ? { restoredFrom: restore } : {}),
+    }, at);
     // Every change of the stored lists is a new revision, the editor its
     // author, and a criteria review approves one revision alone (t438): an
     // edit and its revert are two revisions, so the approval never returns.
-    if (changing) this.recordCriteriaRevision(id, actor, at);
-    const change = changing ? this.criteriaChanged(item, actor, at) : null;
-    return { ...this.item(id), ...(change ? { criteriaChange: change } : {}) };
+    if (changing) this.recordCriteriaRevision(id, actor, at, addAccept ? addAccept.length : undefined);
+    const change = changing ? this.criteriaChanged(item, actor, at, addAccept) : null;
+    const gone = (was: readonly string[] | null | undefined, now: readonly string[] | null | undefined) => (was ?? []).filter((x) => !(now ?? []).includes(x));
+    const dropped: EditDropped = {
+      ...(changing && !addAccept && gone(item.accept, fields.accept).length ? { accept: gone(item.accept, fields.accept) } : {}),
+      ...(rescoping && gone(item.scope, scope).length ? { scope: gone(item.scope, scope) } : {}),
+      ...(rebriefing && !addBrief && item.brief ? { brief: true } : {}),
+    };
+    const anyDropped = Object.keys(dropped).length > 0;
+    return { ...this.item(id), ...(change ? { criteriaChange: change } : {}), ...(anyDropped ? { dropped } : {}), ...(changing || rescoping || rebriefing ? { restore: seq } : {}) };
+  }
+
+  // The fields an earlier edit replaced, from its item.edited event (G12):
+  // the old criteria, brief and scope it recorded, to put back in place.
+  private restoredFields(id: string, seq: number): { fields: ItemFields; scope?: string[] } {
+    const row = this.sql.exec(`SELECT data FROM events WHERE seq = ? AND item_id = ? AND kind = 'item.edited'`, seq, id).toArray()[0];
+    const next = `run atelier show ${id} --json and read acted or events for an item.edited event with acceptWas, briefWas or scopeWas`;
+    if (!row) throw new RuleError("no_event", `event ${seq} is not an edit of ${id}`, 404, next);
+    const d = JSON.parse(row.data as string) as { acceptWas?: string[]; briefWas?: string | null; scopeWas?: string[] };
+    const fields: ItemFields = {
+      ...(d.acceptWas !== undefined ? { accept: d.acceptWas } : {}),
+      ...(d.briefWas !== undefined ? { brief: d.briefWas } : {}),
+    };
+    if (!Object.keys(fields).length && d.scopeWas === undefined) throw new RuleError("no_event", `edit ${seq} of ${id} replaced no criteria, brief or scope, so there is nothing to restore`, 404, next);
+    return { fields, ...(d.scopeWas !== undefined ? { scope: d.scopeWas } : {}) };
   }
 
   // Where the acceptance criteria may not change: a part integrated into its
@@ -2825,8 +2904,13 @@ export class Ledger extends DurableObject<Env> {
   // stay as they are. A submitted task outside a plan asks each reviewer
   // whose request was withdrawn again, at the same head, for the new
   // criteria; a part's plan tick asks its own.
-  private criteriaChanged(before: Item, actor: string, at: string): CriteriaChange {
+  private criteriaChanged(before: Item, actor: string, at: string, added?: string[]): CriteriaChange {
     const id = before.id;
+    // Read before the revision moved on: whether a criteria review approved
+    // the criteria as they were (a review approves one revision alone).
+    const required = !!this.project().policy.requireCriteriaReview;
+    const lastRev = this.criteriaRevision(id) - 1;
+    const approvalLost = lastRev >= 1 && criteriaStatus(lastRev, this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), new Date(at)).approved;
     const from = criteriaOf(before);
     const to = criteriaOf(this.item(id));
     const reason = "the acceptance criteria changed";
@@ -2848,7 +2932,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE review_requests SET superseded = 1 WHERE item = ?`, id);
     // A criteria review open or claimed on the old revision answers nothing
     // now (t438): it is withdrawn, and a verdict on it is refused as stale.
-    this.withdrawCriteriaReviews(id, actor, "the acceptance criteria changed", at);
+    const criteriaReviews = this.withdrawCriteriaReviews(id, actor, "the acceptance criteria changed", at);
     // Under require-criteria-review a queued build whose criteria changed
     // waits for a review of the new revision (t438): its dispatch is withdrawn,
     // as the tick withdraws a queued part's, so the queue offers no build the
@@ -2870,7 +2954,11 @@ export class Ledger extends DurableObject<Env> {
     }, at);
     const asked = this.reaskForCriteria(id, live.filter((r) => r.tier !== 1), at);
     this.afterPlanChange(id);
-    return { from, to, reviews, requests: live.length, acceptance: accepted, override: overridden, asked };
+    return {
+      from, to, reviews, requests: live.length, acceptance: accepted, override: overridden, asked,
+      criteriaReviews, criteriaApprovalLost: approvalLost, criteriaReviewRequired: required,
+      ...(added ? { added, addedFrom: (before.accept?.length ?? 0) + 1 } : {}),
+    };
   }
 
   // Asks again, for a submitted task outside a plan, each reviewer whose
@@ -3189,7 +3277,7 @@ export class Ledger extends DurableObject<Env> {
     // separately from the grants that authorize build/plan operations.
     const queue = this.queued(undefined, idleRunner), { waiting, reviews } = queue;
     for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
-      if (!item.dispatch || "held" in item && item.held || ((item as Waiting).waitingOn?.length ?? 0) > 0) continue;
+      if (!item.dispatch || "held" in item && item.held || "overlap" in item && item.overlap || ((item as Waiting).waitingOn?.length ?? 0) > 0) continue;
       const assignment = assign(item.dispatch, offer);
       if (!assignment || ["integrate", "refresh"].includes(item.dispatch.job ?? "")) continue;
       // A pre-review (t524) is a review job: it grants what a review does.
@@ -3325,7 +3413,9 @@ export class Ledger extends DurableObject<Env> {
       if (!proved) throw new RuleError("integrator_token", `${INTEGRATOR} claims only through a token bound to it`, 403, "claim through the integrator token");
     } else {
       // A plan's planner claims its item to write the plan, under the planner role.
-      assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+      // Both sides of the overlap are measured (G13): the claiming task by the
+      // files it changed too, where it has any, as a released task may.
+      assertClaimAllowed(this.withChangedFiles([item])[0], this.withChangedFiles(this.items()), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
       // A build or plan job dispatched before the owner paused, reserved or
       // kept this model from the job is not claimable: a dispatch naming it
       // is withdrawn, and the claim refused with the reason.
@@ -3496,7 +3586,13 @@ export class Ledger extends DurableObject<Env> {
   // answer names the core-file hold the override released, if one held it.
   // `why`: what chose the builder, the role assignments applied or skipped
   // included, set by the dispatch route and kept on item.dispatched.
-  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold; releasedClaim?: { from: string } } {
+  //
+  // A dispatch whose claim the overlap rule would refuse is not refused
+  // (G13): it is recorded and stays queued, held, its blocker named in the
+  // answer (overlapHeld) and on item.dispatched (heldBy). The queue offers it
+  // to no runner while the blocker is live, and again once it merges or is
+  // abandoned, as waiting() computes the overlap afresh on every read.
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold; releasedClaim?: { from: string }; overlapHeld?: OverlapRefusal } {
     this.refuseLiveHolder(id, input);
     const item = this.checkDispatch(id, actor);
     // Only a dispatch still waiting in the queue is an offer to keep. One a
@@ -3518,8 +3614,11 @@ export class Ledger extends DurableObject<Env> {
     if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, this.project().policy, d.model);
     this.assertMergeMainWorkspace(item, d);
     const items = this.items();
-    assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
+    // Only an open task's dispatch is held for an overlap (G13); one that
+    // would release a live holder is refused before anything is released.
+    assertDispatchClaimable(item, items, this.project().policy, d, this.owner, this.holds(item));
     this.assertCriteriaReviewed(item, d, "dispatched");
+    const overlapHeld = this.project().policy.refuseOverlap && !this.holds(item) ? overlapRefusal({ ...this.withChangedFiles([item])[0], state: "open", owner: null, dispatch: d }, this.withChangedFiles(items)) : null;
     const retained = input.overlapOk === true && !!waiting;
     const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
@@ -3530,8 +3629,32 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "item.released", { from: item.owner, by: actor, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
-    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}), ...(held && item.state === "claimed" && item.owner ? { releasedClaim: { from: item.owner } } : {}) };
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}), ...(overlapHeld ? { heldBy: overlapHeld.id } : {}) }, d.at);
+    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}), ...(held && item.state === "claimed" && item.owner ? { releasedClaim: { from: item.owner } } : {}), ...(overlapHeld ? { overlapHeld } : {}) };
+  }
+
+  // The files a task changed at `head`, from its merge base with main (G13),
+  // read by the push route from the repository and kept for the overlap
+  // rule. A head the item has moved past is ignored, so a stale list never
+  // counts; null or an empty list leaves the task judged on its scope.
+  // A list longer than CHANGED_FILES_MAX is not kept at all: a cut list would
+  // read as complete, so the task is judged on its scope instead.
+  recordChangedFiles(id: string, head: string, paths: string[] | null): void {
+    const item = this.item(id);
+    if (item.head !== head) return;
+    if (paths === null || paths.length > CHANGED_FILES_MAX) { this.sql.exec(`DELETE FROM changed_files WHERE item = ?`, id); return; }
+    this.sql.exec(`INSERT OR REPLACE INTO changed_files (item, head, paths) VALUES (?, ?, ?)`, id, head, JSON.stringify(paths));
+  }
+
+  // Each item with the files it changed at its current head, where known.
+  private withChangedFiles<T extends Item>(items: T[]): T[] {
+    const rows = this.sql.exec(`SELECT item, head, paths FROM changed_files`).toArray();
+    if (!rows.length) return items;
+    const known = new Map(rows.map((r) => [r.item as string, { head: r.head as string, paths: JSON.parse(r.paths as string) as string[] }]));
+    return items.map((i) => {
+      const k = known.get(i.id);
+      return k && k.head === i.head && k.paths.length ? { ...i, changedFiles: k.paths } : i;
+    });
   }
 
   // A dispatch never ends a live claim by itself (t391: it did, silently, on
@@ -3602,7 +3725,7 @@ export class Ledger extends DurableObject<Env> {
     if (input) {
       const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
       this.assertMergeMainWorkspace(item, d);
-      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
+      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner, this.holds(item));
       this.assertCriteriaReviewed(item, d, "dispatched");
     }
     return item;
@@ -3679,12 +3802,13 @@ export class Ledger extends DurableObject<Env> {
   // item), the claims runners were refused (`refusals`) and the tasks they
   // gave up after failures (`skips`), each of the task as it stands.
   waiting(): Waiting[] {
-    const held = this.dispatchWaiting(true);
+    // The waiting tasks are measured by their changed files too (G13).
+    const held = this.withChangedFiles(this.dispatchWaiting(true));
     if (!held.length) return held;
     const refused = this.runnerNotes<ClaimRefusal>("claim-refused");
     const skipped = this.runnerNotes<RunSkip>("run-skip");
     const live = this.project().policy.refuseOverlap === true
-      ? this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)
+      ? this.withChangedFiles(this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))
       : null;
     return held.map((i) => {
       const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
@@ -3707,7 +3831,7 @@ export class Ledger extends DurableObject<Env> {
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
-    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
+    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
     const previous: Record<string, { since: string; expires?: number }> = saved ? JSON.parse(saved.value as string) : {};
@@ -3715,7 +3839,8 @@ export class Ledger extends DurableObject<Env> {
     const result = open.map((i) => {
       const d = i.dispatch!;
       const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
-      const claimRefusal = policy.refuseOverlap ? overlappingRefusal(i, all, claimant) : null;
+      // The task as `all` holds it, measured by its changed files (G13).
+      const claimRefusal = policy.refuseOverlap ? overlappingRefusal(all.find((a) => a.id === i.id) ?? i, all, claimant) : null;
       const blockers = coreBlockers(i, live, policy.coreFiles, lease, now, runners);
       const orphaned = coreOrphans(i, live, policy.coreFiles, lease, now, runners).map((o) => ({ ...o, project: projectName }));
       const gone = orphaned.length ? { orphaned } : {};
@@ -4636,7 +4761,12 @@ export class Ledger extends DurableObject<Env> {
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
-    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, r.approve ? boundClaims.map((c) => c.id as number) : undefined, r.approve && !claimed ? r.by : undefined);
+    // A verdict answers only its own reviewer's request (G11): the claim it
+    // bound, or, unclaimed, the requests asked of its reviewer. Another
+    // reviewer's request, open or claimed, ends only with that reviewer's
+    // verdict or an explicit withdrawal, so reviews asked together each give
+    // theirs, and a rejection stands beside an approval.
+    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, boundClaims.map((c) => c.id as number), !claimed ? r.by : undefined);
     // A rejection sends the change back for rework, so a tier request at the
     // head no runner has claimed yet is no longer asked for; a claimed one is
     // left to finish, and its findings join the rework.
@@ -8990,7 +9120,34 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false): ReviewAsked {
+  // The reviews a gate needs, asked together at one head (G11): each named
+  // reviewer is asked as requestReview asks one, in one transaction, and no
+  // request of one of them redirects (withdraws) another's, so every request
+  // stands open at once and runners serve them side by side. A refusal for
+  // any reviewer asks none.
+  requestReviews(id: string, actor: string, reviewers: string[], pool: ModelEntry[], wanted = false, proved = false, offers?: readonly SeenOffer[], hand = false): { asked: ReviewAsked[] } {
+    offers = this.ownOffers(offers);
+    this.keepOffers(offers);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403, `only the developer can: atelier review-request ${id} --reviewer H/M --reviewer H/M`);
+    const distinct = reviewers.filter((r, i) => reviewers.findIndex((o) => sameActor(o, r)) === i);
+    if (distinct.length < 2) throw new RuleError("bad_request", "reviewers names two or more different reviewers to ask together; one is asked with reviewer", 400);
+    this.reviewItem(id);
+    this.keepPool(pool);
+    try {
+      return this.ctx.storage.transactionSync(() => {
+        const at = new Date().toISOString();
+        const asked = distinct.map((r) => this.askReview(id, actor, r, pool, wanted, proved, undefined, offers, hand, distinct));
+        this.log(id, actor, "review.asked_together", { head: asked.find((a) => a.head)?.head ?? null, reviewers: distinct, requests: asked.map((a) => a.request ?? null) }, at, proved);
+        return { asked };
+      });
+    } catch (err) {
+      // Rolled back, as requestReview rolls back a redirect that asks nobody.
+      if (!(err instanceof KeptRequests)) throw err;
+      throw new RuleError("review_blocked", `${id}: ${err.answer.reason}; no reviewer was asked`, 409, `run atelier show ${id}`);
+    }
+  }
+
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = []): ReviewAsked {
     const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
@@ -9071,6 +9228,8 @@ export class Ledger extends DurableObject<Env> {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         if (asked && sameActor(asked, reviewer)) continue;
+        // A reviewer asked in the same call stands beside this one (G11).
+        if (asked && together.some((t) => sameActor(t, asked))) continue;
         if (surplus <= 0) continue;
         surplus--;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
@@ -9092,16 +9251,20 @@ export class Ledger extends DurableObject<Env> {
     // fresh number the runners serve again. Judged only when the caller has
     // the live offers; a claimed request is being served and stays.
     const renewed = item.head && offers ? this.renewSkippedRequest(id, item.head, offers, actor, at, proved) : null;
+    // Reviewers asked together (G11) are judged each as if the others' live
+    // requests were not there, so one does not stand in for another.
+    const besideMe = (who: string | null | undefined) => !!who && together.some((t) => sameActor(t, who)) && !(reviewer !== null && sameActor(who, reviewer));
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
-      requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, postMerge: item.state === "merged", now: new Date(at), owner: this.owner,
+      requests: this.reviewRequests(id).filter((r) => !((r.state === "open" || r.state === "claimed") && besideMe(r.reviewer))), verdicts: this.findingVerdicts(id), wanted, postMerge: item.state === "merged", now: new Date(at), owner: this.owner,
       ...(reviewer !== null ? { reviewer } : {}),
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
     // The named reviewer's own request, when it has one, comes first (t374).
-    const liveRows = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC`, id, item.head).toArray();
+    const liveRows = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC`, id, item.head).toArray()
+      .filter((r) => { const d = JSON.parse(r.dispatch as string) as Dispatch; return !besideMe(d.agent && d.model ? `${d.agent}/${d.model}` : undefined); });
     const live = (reviewer === null ? undefined : liveRows.find((r) => { const d = JSON.parse(r.dispatch as string) as Dispatch; return !!d.agent && !!d.model && sameActor(`${d.agent}/${d.model}`, reviewer); })) ?? liveRows[0];
     if (!need.needed) {
       if (live) {
@@ -9609,7 +9772,7 @@ export class Ledger extends DurableObject<Env> {
   // Records the criteria an item has now as its next revision, by `by`. Called
   // when a task is filed with criteria, when the owner changes them, and when
   // a part is made from an approved plan or added by the Ledger.
-  private recordCriteriaRevision(id: string, by: string, at: string): number {
+  private recordCriteriaRevision(id: string, by: string, at: string, appended?: number): number {
     // Criteria the developer token stores on a model's word are that
     // model's (G18, t16): the criteria review then refuses the same model.
     if (by === this.owner && this.#acting) by = this.#acting;
@@ -9617,7 +9780,9 @@ export class Ledger extends DurableObject<Env> {
     const rev = this.criteriaRevision(id) + 1;
     const criteria = criteriaOf(item);
     this.sql.exec(`INSERT INTO criteria_revisions (item, rev, criteria, by, at) VALUES (?, ?, ?, ?, ?)`, id, rev, criteria, by, at);
-    this.log(id, by, "criteria.revised", { rev, criteria }, at);
+    // A revision that only appended criteria says how many (G12), so the
+    // criteria brief asks for a review of the added ones.
+    this.log(id, by, "criteria.revised", { rev, criteria, ...(appended ? { appended } : {}) }, at);
     return rev;
   }
 
@@ -9705,13 +9870,16 @@ export class Ledger extends DurableObject<Env> {
 
   // Open and claimed criteria reviews of an item are withdrawn when its
   // criteria change: they asked about a revision the item has left.
-  private withdrawCriteriaReviews(id: string, actor: string, reason: string, at: string): void {
+  private withdrawCriteriaReviews(id: string, actor: string, reason: string, at: string): number {
+    let withdrawn = 0;
     for (const r of this.criteriaReviewsFor(id)) {
       if (r.state !== "open" && r.state !== "claimed") continue;
       this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, reason, at, r.id);
       this.log(id, actor, "criteria_review.withdrawn", { review: r.id, rev: r.rev, reviewer: r.reviewer, reason }, at);
+      withdrawn++;
     }
     this.unblockForCriteria(id, at);
+    return withdrawn;
   }
 
   // The project owner asks for a review of a task's acceptance criteria,
@@ -9930,7 +10098,20 @@ export class Ledger extends DurableObject<Env> {
   // owner's resolutions.
   private criteriaBrief(item: Item, rev: number, authors: readonly string[], round: number): string {
     const plan = this.planAccountOf(item);
-    return criteriaReviewBrief({ item, rev, authors, plan, previous: this.criteriaReviewsFor(item.id), resolutions: this.criteriaResolutionsFor(item.id), round, owner: this.owner, proseStandard: this.project().policy.proseStandard ?? null });
+    const previous = this.criteriaReviewsFor(item.id), resolutions = this.criteriaResolutionsFor(item.id);
+    return criteriaReviewBrief({ item, rev, authors, plan, previous, resolutions, round, owner: this.owner, proseStandard: this.project().policy.proseStandard ?? null, appended: this.appendedRevision(item, rev, previous, resolutions) });
+  }
+
+  // Whether revision `rev` of the criteria only appended to the revision
+  // before it, and a criteria review approved that one (G12): the brief then
+  // asks for a review of the added criteria.
+  private appendedRevision(item: Item, rev: number, previous: readonly CriteriaReview[], resolutions: readonly CriteriaResolution[]): { approvedRev: number; first: number } | null {
+    if (rev < 2) return null;
+    const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'criteria.revised' ORDER BY seq DESC LIMIT 1`, item.id).toArray()[0];
+    const d = row ? JSON.parse(row.data as string) as { rev?: number; appended?: number } : null;
+    if (!d || d.rev !== rev || !d.appended) return null;
+    if (!criteriaStatus(rev - 1, previous, resolutions, new Date()).approved) return null;
+    return { approvedRev: rev - 1, first: (item.accept?.length ?? 0) - d.appended + 1 };
   }
 
   // The approved plan's account of a part: its goal and the part, or null
@@ -11581,7 +11762,7 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
-  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
+  private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): number {
     // An acting model recorded since names are converted where typed is an
     // exact pool id, marked so: the judgement record reads it as it is and
     // only an unmarked one, from before, through the aliases (canonicalModel;
@@ -11607,8 +11788,12 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     if (kind.startsWith("item.") || kind.startsWith("plan.") || kind === "project.set") this.dispatchWaiting();
+    return seq;
   }
 }
+
+// The most changed files kept for a task's overlap (G13); past it, its scope counts.
+export const CHANGED_FILES_MAX = 5000;
 
 // The events that change an item's holder or push actors (itemActors).
 const ACTOR_EVENT_KINDS: readonly string[] = ["item.claimed", "item.handoff", "item.released", "push.observed", "item.refreshed", "item.landed_fast"];

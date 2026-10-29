@@ -152,7 +152,7 @@ test("a title over 80 characters with --brief reports bad_title without a stack 
   for (const override of [[], ["--duplicate-ok"]]) {
     const r = f.run(["new", "x".repeat(81), "--brief", "The whole task.", "--project", "demo", ...override]);
     assert.equal(r.status, 1, r.stderr);
-    assert.equal(r.stderr, "atelier: bad_title: a title is at most 80 characters; put the rest in the brief\n");
+    assert.equal(r.stderr, "atelier: bad_title: a title is at most 80 characters and this one is 81; put the rest in the brief\n");
   }
   assert.deepEqual(f.requests(), []);
 });

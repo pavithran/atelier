@@ -190,7 +190,7 @@ function standIn(state) {
       a.withdrawn = { by: "owner", at: new Date().toISOString(), note: body.note };
       return send(200, view(a));
     }
-    if (path === "/api/projects/demo" && req.method === "GET") return send(200, { project: { policy: { checks: state.checks ?? [], ...(state.identity ? { commitIdentity: state.identity } : {}) } }, items: [] });
+    if (path === "/api/projects/demo" && req.method === "GET") return send(200, { project: { policy: { checks: state.checks ?? [], ...(state.identity ? { commitIdentity: state.identity } : {}), ...(state.affectedTests ? { affectedTests: state.affectedTests } : {}) } }, items: [] });
     if (path === "/api/projects/demo/sessions" && req.method === "GET") return send(200, []);
     if (path === "/api/projects/demo/sessions" && req.method === "POST") return send(201, { actor: "owner", at: new Date().toISOString(), data: body });
     if (path === "/api/projects/demo/baseline-token") return send(200, { remote: state.baseline, token: "t", defaultBranch: "main" });
@@ -382,6 +382,41 @@ test("a live site that does not answer as expected stops the ship after the depl
   assert.match(r.stderr, /^atelier: ship stopped at verify-delivery: GET .*\/live, expecting 200 failed\.\nRan before it: commit, deploy\. Not run: wrap\./);
   assert.deepEqual(f.state.runs.map((x) => [x.step, x.passed]), [["commit", true], ["deploy", true], ["verify-delivery", false]]);
   assert.match(f.state.runs[2].outputTail, /answered 503; expected 200/);
+});
+
+// G20: a project whose task checks run only the affected tests ships with
+// its full suite run first, at the revision shipped.
+const AFFECTED = (check) => ({ check, run: "node --test {tests}", map: [{ paths: ["**"], tests: [] }] });
+// The stand-in full suite: says the revision it ran at.
+const SUITE = { "suite.sh": 'echo "suite ran at $(git rev-parse HEAD)"\nexit ${SUITE_EXIT:-0}\n' };
+
+test("G20: a failing full suite stops the ship before anything is delivered, and is recorded", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], extra: SUITE });
+  f.state.checks = ["sh suite.sh"];
+  f.state.affectedTests = AFFECTED("sh suite.sh");
+  const dry = await f.run(["ship", "--dry-run"]);
+  assert.match(dry.stdout, /\n  1\. full-suite       \/bin\/sh -c 'sh suite\.sh'\n  2\. commit/, dry.stdout);
+  const r = await f.run(["ship"], { SUITE_EXIT: "1" });
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /^atelier: ship stopped at full-suite: \/bin\/sh -c 'sh suite\.sh' exited 1\.\nRan before it: nothing\. Not run: commit, deploy, verify-delivery, wrap\./);
+  assert.ok(!existsSync(f.marker), "nothing was deployed");
+  assert.deepEqual(f.state.runs.map((x) => [x.step, x.passed, x.exitStatus, x.commit]), [["full-suite", false, 1, f.head]]);
+  assert.deepEqual(f.state.deploys.map((d) => [d.head, d.result, d.step]), [[f.head, "failed", "full-suite"]]);
+});
+
+test("G20: a passing full suite runs first at the shipped head, then the ship delivers; a project without the affected-tests check has no such step", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], extra: SUITE });
+  f.state.checks = ["sh suite.sh"];
+  f.state.affectedTests = AFFECTED("sh suite.sh");
+  const r = await f.run(["ship"], { SUITE_EXIT: "0" });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.deepEqual(f.state.runs.map((x) => x.step), ["full-suite", "commit", "deploy", "verify-delivery", "wrap"]);
+  assert.equal(f.state.runs[0].commit, f.head);
+  assert.match(f.state.runs[0].outputTail, new RegExp(`suite ran at ${f.head}`));
+  assert.ok(existsSync(f.marker), "the deploy ran after the full suite passed");
+  const plain = await fixture(t, { approve: ["deploy"] });
+  const dry = await plain.run(["ship", "--dry-run"]);
+  assert.doesNotMatch(dry.stdout, /full-suite/);
 });
 
 test("ship never forces a push: a remote that moved on refuses it, and keeps its own commit", async (t) => {

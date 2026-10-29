@@ -1,5 +1,5 @@
 import type { PostMergePolicy } from "./post-merge.ts";
-import { familyOf, HARNESSES, type PoolFamily } from "./models/pool.ts";
+import { familyOf, HARNESSES, redactKeys, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
@@ -22,6 +22,10 @@ export interface Item {
   // agents; null when the title says it all. Read with briefText.
   brief?: string | null;
   scope: string[];          // globs the item intends to touch
+  // The files the task changed at its head, from its merge base with main
+  // (G13), set by the Ledger only for the overlap rule and only while the
+  // head they were read at is the item's; absent or empty, the scope counts.
+  changedFiles?: string[];
   state: ItemState;
   owner: string | null;     // actor, e.g. "claude-code/opus-5.5"; null when unowned
   fork: string | null;      // Artifacts repo name of the item's workspace
@@ -177,6 +181,10 @@ export interface ItemFields {
   accept?: string[];
   brief?: string | null;
   title?: string;
+  // Edit only (G12): criteria appended after the stored ones, and text
+  // appended to the stored brief; neither replaces what is there.
+  addAccept?: string[];
+  addBrief?: string;
 }
 
 // Whether two items belong to one plan: two parts of it, or a part and the
@@ -398,6 +406,33 @@ export interface PostDeployCheck {
 }
 export const CHECK_BY: readonly PostDeployCheck["by"][] = ["owner", "orchestrator"];
 
+// The second model's check of a review's blocking findings (t717, G11): who
+// checked, the end of what it answered, and the findings it did not confirm,
+// which the runner recorded as follow-ups (their position among the
+// review's findings, one based, the label and the text). The orchestrator
+// reads them and decides whether the demotion stands.
+export interface ReviewVerification {
+  by: string;
+  answer: string;
+  demoted: { index: number; label: string; text: string }[];
+}
+export const VERIFICATION_ANSWER_MAX = 2000;
+
+// A verification as a route body gives it, checked, or a RuleError.
+export function cleanVerification(v: unknown): ReviewVerification {
+  const bad = () => new RuleError("bad_findings", "verification must be {by: harness/model, answer: text, demoted: [{index, label, text}]}", 400);
+  if (!v || typeof v !== "object") throw bad();
+  const o = v as Record<string, unknown>;
+  if (typeof o.by !== "string" || !validActor(o.by) || typeof o.answer !== "string" || !Array.isArray(o.demoted)) throw bad();
+  const demoted = o.demoted.map((d) => {
+    const e = d as Record<string, unknown>;
+    if (!e || !Number.isInteger(e.index) || (e.index as number) < 1 || typeof e.label !== "string" || typeof e.text !== "string") throw bad();
+    return { index: e.index as number, label: e.label.slice(0, 40), text: e.text.slice(0, 1000) };
+  });
+  // The verifier's reply is a model's words, kept as a review note is, through the shared redactor.
+  return { by: o.by, answer: redactKeys(o.answer).slice(-VERIFICATION_ANSWER_MAX), demoted };
+}
+
 export interface Review {
   itemId: string;
   by: string;
@@ -406,6 +441,7 @@ export interface Review {
   note: string;
   at: string;
   findings?: Finding[];
+  verification?: ReviewVerification;
   // Who recorded the review and how (src/ledger.ts addReview). `recordedBy`
   // is the actor whose token made the request: the reviewer itself when its
   // own agent token proved it (`proved` true), the project owner when the
@@ -680,6 +716,10 @@ export interface ProjectPolicy {
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
+  // The affected-tests check (G20, src/affected-tests.ts): a task's check of
+  // the full-suite check it names runs only the tests the declared map or
+  // list command selects for the change, and ship runs that check whole.
+  affectedTests?: import("./affected-tests.ts").AffectedTests;
   // The check limit (G7, src/check-limit.ts): the hard ceiling and the
   // silence limit of a check's run, in minutes counted from its held test
   // slot, and the checks that declare a silence limit of their own. Absent,
@@ -1434,7 +1474,7 @@ export function cleanBrief(v: unknown): string | null {
   if (v === null) return null;
   if (typeof v !== "string") throw new RuleError("bad_field", "brief must be text or null", 400);
   const brief = v.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ").trim();
-  if (brief.length > BRIEF_MAX) throw new RuleError("bad_field", `a brief is at most ${BRIEF_MAX} characters`, 400);
+  if (brief.length > BRIEF_MAX) throw new RuleError("bad_field", `a brief is at most ${BRIEF_MAX} characters; this one is ${brief.length}`, 400);
   return brief || null;
 }
 
@@ -1455,7 +1495,7 @@ export function itemText(title: unknown, brief: unknown): { title: string; brief
   const t = titleLine(title ?? "");
   const b = brief === undefined ? null : cleanBrief(brief);
   if (!t && !b) throw new RuleError("bad_title", "an item needs a title", 400);
-  if (t.length > TITLE_MAX && b) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
+  if (t.length > TITLE_MAX && b) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters and this one is ${t.length}; put the rest in the brief`, 400);
   if (t.length > TITLE_MAX || !t) {
     const whole = b ?? cleanBrief(String(title))!;
     return { title: shortTitle(whole), brief: whole, derived: true };
@@ -1543,9 +1583,10 @@ export function secretClearReason(value: unknown): string {
 export function itemFields(input: Record<string, unknown>): ItemFields {
   const list = (v: unknown, field: string): string[] => {
     if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !line(s))) throw new RuleError("bad_field", `${field} must be a list of strings with something in each`, 400);
-    if (v.length > FIELD_LIST_MAX) throw new RuleError("bad_field", `${field} holds at most ${FIELD_LIST_MAX} entries`, 400);
+    if (v.length > FIELD_LIST_MAX) throw new RuleError("bad_field", `${field} holds at most ${FIELD_LIST_MAX} entries; ${v.length} were given`, 400);
     const entries = v.map(line);
-    if (entries.some((s) => s.length > FIELD_MAX)) throw new RuleError("bad_field", `each ${field} entry is at most ${FIELD_MAX} characters`, 400);
+    const long = entries.findIndex((s) => s.length > FIELD_MAX);
+    if (long !== -1) throw new RuleError("bad_field", `each ${field} entry is at most ${FIELD_MAX} characters; entry ${long + 1} is ${entries[long].length}`, 400);
     return entries;
   };
   const out: ItemFields = {};
@@ -1560,13 +1601,25 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
   if (input.stopWhen !== undefined) out.stopWhen = list(input.stopWhen, "stopWhen");
   if (input.accept !== undefined) {
     out.accept = list(input.accept, "accept");
-    if (out.accept.length > ACCEPT_COUNT) throw new RuleError("bad_field", `accept holds at most ${ACCEPT_COUNT} criteria`, 400);
+    if (out.accept.length > ACCEPT_COUNT) throw new RuleError("bad_field", `accept holds at most ${ACCEPT_COUNT} criteria; ${out.accept.length} were given`, 400);
   }
   if (input.brief !== undefined) out.brief = cleanBrief(input.brief);
+  // Appending (G12) and replacing the same field in one edit cannot both hold.
+  if (input.addAccept !== undefined) {
+    if (input.accept !== undefined) throw new RuleError("bad_field", "give accept to replace the criteria or addAccept to append to them, not both", 400);
+    out.addAccept = list(input.addAccept, "addAccept");
+    if (!out.addAccept.length) throw new RuleError("bad_field", "addAccept needs at least one criterion", 400);
+  }
+  if (input.addBrief !== undefined) {
+    if (input.brief !== undefined) throw new RuleError("bad_field", "give brief to replace the brief or addBrief to append to it, not both", 400);
+    const added = cleanBrief(input.addBrief);
+    if (!added) throw new RuleError("bad_field", "addBrief needs text", 400);
+    out.addBrief = added;
+  }
   if (input.nextGate !== undefined) {
     if (input.nextGate !== null && typeof input.nextGate !== "string") throw new RuleError("bad_field", "nextGate must be text or null", 400);
     const gate = line(input.nextGate);
-    if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters`, 400);
+    if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters; this one is ${gate.length}`, 400);
     out.nextGate = gate || null;
   }
   return out;
@@ -1636,8 +1689,23 @@ export function holdsScope(item: { state: string }): boolean {
 // one plan are not counted against each other (samePlan).
 export function overlappingLive(item: Item, items: readonly Item[], actor: string): Item[] {
   return items.filter(
-    (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
+    (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && footprintsOverlap(item, o),
   );
+}
+
+// Whether two tasks touch the same files (G13): the files each changed at
+// its head where they are known, else its scope's globs. Two changed lists
+// overlap on a shared path, a changed list and a scope where a changed path
+// matches the scope (an unscoped task matches everything), and two scopes as
+// scopesOverlap says. A task with no commits yet has no changed files, so its
+// scope counts.
+export function footprintsOverlap(a: Pick<Item, "scope" | "changedFiles">, b: Pick<Item, "scope" | "changedFiles">): boolean {
+  const pa = a.changedFiles?.length ? a.changedFiles : null;
+  const pb = b.changedFiles?.length ? b.changedFiles : null;
+  if (pa && pb) return pa.some((p) => pb.includes(p));
+  if (pa) return !b.scope.length || pa.some((p) => matchesAny(p, b.scope));
+  if (pb) return !a.scope.length || pb.some((p) => matchesAny(p, a.scope));
+  return scopesOverlap(a.scope, b.scope);
 }
 
 // Under single-family mode only the company's models build, plan or review
@@ -1660,7 +1728,8 @@ export function overlappingRefusal(item: Item, items: readonly Item[], actor: st
   const clash = overlappingLive(item, items, actor);
   if (!clash.length) return null;
   const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The developer can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
+  const what = item.changedFiles?.length ? "changed files overlap" : "scope overlaps";
+  return `${item.id}'s ${what} live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The developer can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
 }
 
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {

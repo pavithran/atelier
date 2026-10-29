@@ -428,6 +428,13 @@ export async function ship(ctx) {
   // carried the checkout to a separate baseline, has nothing to do, and ship
   // already runs only the revision the server's branch holds.
   if (ctx.repositoryIsBaseline) for (const s of plan.steps) if (s.step === "baseline") for (const run of s.runs) run.skip = "the server's repository is the baseline, which only a landing moves";
+  // G20: a project whose task checks run only the affected tests runs its
+  // full suite here, at the revision shipped, before any other step: a
+  // failure stops the ship, so nothing is delivered on it.
+  if (!plan.problems.length) {
+    const full = fullSuiteStep((await request("GET", P))?.project?.policy);
+    if (full) plan.steps.unshift(full);
+  }
   let target = null;
   const pushStep = plan.steps.find((s) => s.step === "push");
   if (pushStep) {
@@ -537,6 +544,16 @@ export async function ship(ctx) {
       ? `Not pushed (no --push). To push this revision, run atelier ship --push, or push by hand: git -C ${quote(cwd)} ${pushLabel(target, branch)}`
       : "Not pushed (no --push), and the branch has no push target ship can use.");
   }
+}
+
+// The full-suite step a project with an affected-tests check ships with
+// (G20): its declared full-suite check, run whole in the checkout, bounded by
+// the project's check limit; null for a project that declares none.
+export function fullSuiteStep(policy) {
+  const check = policy?.affectedTests?.check;
+  if (typeof check !== "string" || !check) return null;
+  const minutes = Number.isInteger(policy.checkLimitMinutes) && policy.checkLimitMinutes > 0 ? policy.checkLimitMinutes : 60;
+  return { step: "full-suite", runs: [{ label: check, argv: ["/bin/sh", "-c", check], timeoutMs: minutes * 60_000, kind: null, why: "the task checks ran only the affected tests" }] };
 }
 
 // Where push goes: the remote and branch the ship file names, or the

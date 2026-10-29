@@ -6,7 +6,7 @@ import { readRetention } from "./retention.ts";
 import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, VALIDATION_BLOCKED, type OwnerDirection } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
-import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { changedPaths, itemDiff, landingOf, measureWorkspace, mergeBase, mergedDiff, pairReader, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit, type SecretHit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
@@ -15,7 +15,8 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
-import { checkRemote, forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { parseAffectedTests } from "./affected-tests.ts";
+import { checkRemote, forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
@@ -971,6 +972,28 @@ async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: s
   } catch (err) {
     console.error(errorLine(`retention read of ${item.id}`, err));
     return { unread: "the repositories could not be read" };
+  }
+}
+
+// The files a task changed at `head` (G13): the paths that differ between
+// its merge base with the repository it is measured against and the head,
+// as git diff --name-only $(git merge-base main t/N) t/N lists them. The
+// merge base is the newest commit of that repository's first-parent line the
+// task's history holds, so main merged into the task is not counted as its
+// own. Null when the history or the trees cannot be read within one page of
+// each line: the overlap rule then judges the task on its scope.
+async function changedSinceBase(env: Env, fork: string, head: string, againstRepo: string): Promise<string[] | null> {
+  try {
+    using r = await env.ARTIFACTS.get(fork);
+    using against = await env.ARTIFACTS.get(againstRepo);
+    const [work, main]: ArtifactsCommitMetadata[][] = await Promise.all([r.log({ ref: head, limit: HISTORY_PAGE }), against.log({ limit: HISTORY_PAGE })]);
+    const base = mergeBase(work, main.map((c) => c.hash));
+    const tip = work.find((c) => c.hash === head), from = main.find((c) => c.hash === base);
+    if (!tip || !from) return null;
+    return await changedPaths(pairReader(r, against), from.treeHash, tip.treeHash);
+  } catch (err) {
+    console.error(errorLine(`changed files of ${fork}`, err));
+    return null;
   }
 }
 
@@ -2113,7 +2136,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
-          if ("held" in item && item.held) return [];
+          // A core-file hold, or an overlap the project refuses (G13), keeps
+          // the dispatch queued but offered to no runner until it ends.
+          if ("held" in item && item.held || "overlap" in item && item.overlap) return [];
           // A task waiting on tasks not yet merged is offered to none (G3).
           if ("waitingOn" in item && (item as { waitingOn?: unknown[] }).waitingOn?.length) return [];
           const a = item.dispatch?.job === "land" ? { agent: "atelier", model: "lander", actor: "atelier/lander" } : item.dispatch ? assign(item.dispatch, offer) : null;
@@ -2321,6 +2346,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
+      ...(has("affectedTests") ? { affectedTests: parseAffectedTests(body.affectedTests) } : {}),
       ...(has("shipRuns") ? { shipRuns: asStrings(body.shipRuns, "shipRuns") } : {}),
       ...(has("shipKinds") ? { shipKinds: asStrings(body.shipKinds, "shipKinds") } : {}),
       // The command that regenerates the project's fixtures after a task
@@ -3051,6 +3077,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
       const retention = refused ? null : await retentionOf(env, L, item, observed);
       const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true, retention);
+      // The files the task changed at the recorded head, for the overlap rule (G13).
+      if (recorded.head === observed && !refused) await L.recordChangedFiles(id, observed, await changedSinceBase(env, item.fork, observed, await baseRepo(env, L, item, (await L.project()).repo)));
       // The push scan (t332): the added lines at the recorded head are read
       // for key patterns, and the flag records only file and line, never the
       // value. The head was recorded with its scan pending, so a scan that
@@ -3240,7 +3268,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const fields = { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) };
       if (fields.accept !== undefined) assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
       if (body.context !== undefined && typeof body.context !== "string") throw new RuleError("bad_field", "context must be text; an empty text clears it", 400);
-      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined, body.context));
+      // G12: the number of an edit event whose replaced values go back.
+      if (body.restore !== undefined && !(Number.isSafeInteger(body.restore) && (body.restore as number) > 0)) throw new RuleError("bad_field", "restore must be the number of an edit event", 400);
+      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined, body.context, body.restore as number | undefined));
     }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
@@ -3272,6 +3302,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         ...(body.request !== undefined ? { request: Number(body.request) } : {}),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
+        ...(body.verification !== undefined ? { verification: cleanVerification(body.verification) } : {}),
         // A pre-review verdict is judged against main's head as the baseline
         // holds it now, which only the Worker can read (t524).
         ...(isPrereviewRequest(Number(body.request)) ? { mainNow: await mainHeadOf(env, L) } : {}),
@@ -3424,6 +3455,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "review-request": {
       requireOwner(env, actor);
+      // Two or more reviewers asked together at one head (G11).
+      if (body.reviewers !== undefined) {
+        if (!Array.isArray(body.reviewers) || (body.reviewers as unknown[]).some((r) => typeof r !== "string")) throw new RuleError("bad_request", "reviewers must be a list of harness/model names", 400);
+        return json(await L.requestReviews(id, actor, body.reviewers as string[], await index(env).models(), body.wanted === true, false, await index(env).runnerOffers(), body.hand === true));
+      }
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
       // The separate tier review, of the tier model named (G17): never asked
       // by the server itself.

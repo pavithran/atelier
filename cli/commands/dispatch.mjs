@@ -57,6 +57,9 @@ export default async function dispatchCommand() {
     return;
   }
   console.log(`${id} is waiting for ${d.to === "any" ? "any runner" : `a ${d.to} runner`}${d.agent ? `, ${d.agent}` : ""}${d.model ? ` with ${d.model}` : ""}.`);
+  // G13: an overlap the project refuses holds the dispatch instead of refusing it.
+  const o = item.overlapHeld;
+  if (o) console.log(`${id} is held: its claim would overlap ${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}), and this project refuses overlapping claims. It stays queued and is offered to a runner once ${o.id} merges or is abandoned, as atelier queue shows.`);
 }
 
 // --note-file PATH: the note is the file's text, read as UTF-8 relative to the
