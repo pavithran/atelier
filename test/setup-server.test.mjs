@@ -8,13 +8,13 @@
 // scripts/studio/ parses (bash -n).
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, realpathSync, symlinkSync, chmodSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 
 const darwin = process.platform === "darwin" ? false : "the setup scripts use BSD stat, otool and plutil; macOS only";
-const root = mkdtempSync(join(tmpdir(), "atelier-setup-server-"));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "atelier-setup-server-")));
 after(() => rmSync(root, { recursive: true, force: true }));
 const OLD_SETUP = resolve("test/fixtures/studio/setup-staging-2026-10-28.sh");
 const OLD_TUNNEL = resolve("test/fixtures/studio/setup-tunnel-2026-10-28.sh");
@@ -44,9 +44,13 @@ const env = () => {
   return { ...e, DRYRUN: "1" };
 };
 const dry = (script, args) => {
-  const r = spawnSync("/bin/bash", [script, ...args], { env: env(), encoding: "utf8" });
+  // Redirect only the dry-run scratch path, including immutable fixtures,
+  // so the tests work under a workspace sandbox that excludes /var/tmp.
+  const copy = join(root, script === SETUP ? "setup-server.sh" : script.split("/").at(-1));
+  writeFileSync(copy, readFileSync(script, "utf8").replaceAll("/var/tmp/atelier-", `${root}/atelier-`));
+  const r = spawnSync("/bin/bash", [copy, ...args], { env: env(), encoding: "utf8" });
   // Each run's scratch directory has its own random name.
-  const norm = (text) => text.replace(/\/var\/tmp\/atelier-(setup|tunnel)\.[A-Za-z0-9]+/g, "/var/tmp/atelier-$1.X");
+  const norm = (text) => text.replace(new RegExp(`${root}/atelier-(setup|tunnel)\\.[A-Za-z0-9]+`, "g"), "/var/tmp/atelier-$1.X");
   return { status: r.status, out: norm(r.stdout), err: norm(r.stderr) };
 };
 
@@ -105,23 +109,52 @@ test("production is set up the same way with port 4100, zone.atelier.server, ser
   assert.equal(spawnSync("plutil", ["-lint", out]).status, 0);
 });
 
-// Finding 1: the installer ship runs is root's, outside every release, and
-// only this script installs it, from the release PAVI's sudo trusted.
-test("setup-server.sh installs install-server.sh root's at /Library/Atelier, and refuses a release without it", { skip: darwin }, () => {
+test("setup installs the sibling installer, never the release's installer", { skip: darwin }, () => {
   const i = inputs();
+  writeFileSync(join(root, "rel/scripts/studio/install-server.sh"), "malicious archive installer");
+  assert.equal(spawnSync("tar", ["-cf", i.tar, "-C", join(root, "rel"), "cli", "hooks", "node_modules", "scripts"], { env: { ...process.env, COPYFILE_DISABLE: "1" } }).status, 0);
   for (const envName of ["staging", "production"]) {
     const now = dry(SETUP, ["--env", envName, i.tar, i.bin, i.token]);
     assert.equal(now.status, 0, now.err);
-    assert.match(now.out, /\+ mkdir -p \/Library\/Atelier\n\+ chown root:wheel \/Library\/Atelier\n\+ chmod 755 \/Library\/Atelier\n\+ install -o root -g wheel -m 755 \/var\/tmp\/atelier-setup\.X\/server\/scripts\/studio\/install-server\.sh \/Library\/Atelier\/install-server\.sh\.new\n\+ mv -f \/Library\/Atelier\/install-server\.sh\.new \/Library\/Atelier\/install-server\.sh\n/);
+    assert.ok(now.out.includes(`install -o root -g wheel -m 755 ${root}/install-server.sh /Library/Atelier/install-server.sh.new`));
+    assert.doesNotMatch(now.out, /install .*server\/scripts\/studio\/install-server/);
   }
-  const bare = join(root, "bare");
-  for (const d of ["cli", "hooks", "node_modules/jose"]) mkdirSync(join(bare, d), { recursive: true });
-  for (const f of ["cli/serve.mjs", "hooks/pre-receive", "node_modules/jose/package.json"]) writeFileSync(join(bare, f), "");
-  const tar = join(root, "bare.tar");
-  spawnSync("tar", ["-cf", tar, "-C", bare, "cli", "hooks", "node_modules"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
-  const r = dry(SETUP, ["--env", "staging", tar, i.bin, i.token]);
-  assert.equal(r.status, 1);
-  assert.match(r.err, /the release lacks scripts\/studio\/install-server\.sh/);
+  rmSync(join(root, "rel/scripts"), { recursive: true });
+  assert.equal(spawnSync("tar", ["-cf", i.tar, "-C", join(root, "rel"), "cli", "hooks", "node_modules"], { env: { ...process.env, COPYFILE_DISABLE: "1" } }).status, 0);
+  const absent = dry(SETUP, ["--env", "staging", i.tar, i.bin, i.token]);
+  assert.equal(absent.status, 0, absent.err);
+  const text = readFileSync(SETUP, "utf8");
+  assert.ok(text.indexOf('trusted_source "$SOURCE"') < text.indexOf('WORK=$(mktemp'));
+  assert.doesNotMatch(text, /release lacks scripts\/studio\/install-server/);
+});
+
+test("trusted setup source checks every parent, both files, symlinks and ACLs; refusal explains the copy", { skip: darwin }, () => {
+  const bin = join(root, "trust-bin"); mkdirSync(bin);
+  for (const [name, body] of Object.entries({
+    stat: `if [ "$3" = "$BAD_PATH" ]; then
+      case "$BAD_KIND:$2" in owner:%Su) echo pavi; exit ;; mode:%Lp) echo 777; exit ;; esac
+    fi
+    case "$2" in %Su) echo root ;; %Lp) echo 755 ;; esac`,
+    ls: `echo listing; [ "$2" != "$BAD_PATH" ] || [ "$BAD_KIND" != acl ] || echo ' 0: user:pavi allow write'`,
+  })) { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, name), 0o755); }
+  const source = join(root, "trusted"); mkdirSync(source);
+  for (const f of ["setup-server.sh", "install-server.sh"]) writeFileSync(join(source, f), "reviewed");
+  const run = (path, extra = {}) => spawnSync("/bin/bash", ["-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
+PATH="$1:$PATH"
+trusted_source "$2" || { source_help; exit 1; }`, SETUP, bin, path], { env: { ...env(), ...extra }, encoding: "utf8" });
+  assert.equal(run(join(source, "install-server.sh")).status, 0);
+  for (const path of ["/", "/private", root, source, join(source, "setup-server.sh"), join(source, "install-server.sh")]) {
+    for (const kind of ["owner", "mode", "acl"]) {
+      const target = path.endsWith("setup-server.sh") ? path : join(source, "install-server.sh");
+      const r = run(target, { BAD_PATH: path, BAD_KIND: kind });
+      assert.equal(r.status, 1, `${path} ${kind}: ${r.stderr}`);
+      assert.match(r.stderr, /sudo \/usr\/bin\/install -o root -g wheel -m 700 .*setup-server.sh .*install-server.sh \/private\/var\/root\//);
+    }
+  }
+  symlinkSync(source, join(root, "source-link"));
+  assert.equal(run(join(root, "source-link/install-server.sh")).status, 1);
+  symlinkSync(join(source, "install-server.sh"), join(source, "linked-installer"));
+  assert.equal(run(join(source, "linked-installer")).status, 1);
 });
 
 // Finding 5: bin/ is shared; node goes in beside cloudflared.

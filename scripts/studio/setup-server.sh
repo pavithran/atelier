@@ -25,10 +25,12 @@
 # DRYRUN=1 prints what would change and needs no root.
 #
 # Trust. The release and the node binary come from the developer's own files.
-# Running this script with sudo is the developer's decision to trust those
-# bytes once: they are copied into root-owned storage first, checked there,
+# Running this script with sudo is the developer's decision to trust the
+# server and node bytes once: copied into root-owned storage and checked there,
 # and never run as root. From then on nothing the developer's user (and so no
-# agent) can write is used by the daemon.
+# agent) can write is used by the daemon. The privileged installer is a
+# separate input: only the reviewed sibling in a root-owned source tree
+# is installed; the archive cannot supply privileged code.
 #
 # What it makes:
 # - atelierd: a hidden service user with no login, no password and no admin
@@ -155,17 +157,55 @@ recover() {
   start_others
 }
 
+# Privileged code comes only from the reviewed pair in root's custody.
+# Check the lexical path component by component, before resolving anything:
+# resolving first would hide a symlink in a parent.
+trusted_source() {
+  local path=$1 part current= rest
+  case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+  rest=${path#/}
+  trusted_entry / || return 1
+  while [ -n "$rest" ]; do
+    part=${rest%%/*}
+    if [ "$rest" = "$part" ]; then rest=; else rest=${rest#*/}; fi
+    case "$part" in ''|.) continue ;; ..) echo "setup: source path contains .." >&2; return 1 ;; esac
+    current="$current/$part"
+    trusted_entry "$current" || return 1
+  done
+  [ -f "$path" ] || { echo "setup: $path is not a source file" >&2; return 1; }
+}
+trusted_entry() {
+  local path=$1 listing
+  [ ! -L "$path" ] && { [ -d "$path" ] || [ -f "$path" ]; } || { echo "setup: $path is not a plain source" >&2; return 1; }
+  [ "$(stat -f %Su "$path")" = root ] || { echo "setup: $path is not root-owned" >&2; return 1; }
+  [ $(( 0$(stat -f %Lp "$path") & 022 )) = 0 ] || { echo "setup: $path is group/world-writable" >&2; return 1; }
+  listing=$(ls -lde "$path") || return 1
+  [ -z "$(printf '%s\n' "$listing" | sed -n '2,$p')" ] || { echo "setup: $path carries an ACL" >&2; return 1; }
+}
+source_help() {
+  echo "setup: review both scripts, then copy them into root's directory with:" >&2
+  echo 'sudo /usr/bin/install -o root -g wheel -m 700 scripts/studio/setup-server.sh scripts/studio/install-server.sh /private/var/root/' >&2
+  echo "setup: then run sudo /bin/bash /private/var/root/setup-server.sh --env $ENV RELEASE.tar NODE OWNER_TOKEN_COPY" >&2
+}
+SOURCE=${BASH_SOURCE[0]}
+case "$SOURCE" in /*) ;; *) SOURCE="$PWD/$SOURCE" ;; esac
+SOURCE_DIR=${SOURCE%/*}
+INSTALLER_SOURCE=$SOURCE_DIR/install-server.sh
+
 # A test reads these functions alone (SETUP_SERVER_LIB=1), with no other effect.
 if [ "${SETUP_SERVER_LIB:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
 
-dry || [ "$(id -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
+dry || [ "$EUID" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
 valid_bind() {
   [ "$1" = 127.0.0.1 ] && return 0
   [[ "$1" =~ ^100\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
   local b=${BASH_REMATCH[1]} c=${BASH_REMATCH[2]} d=${BASH_REMATCH[3]}
   [ "$b" -ge 64 ] && [ "$b" -le 127 ] && [ "$c" -le 255 ] && [ "$d" -le 255 ]
 }
+if ! dry; then
+  if ! trusted_source "$SOURCE" || ! trusted_source "$INSTALLER_SOURCE"; then source_help; exit 1; fi
+fi
 valid_bind "$BIND" || fail "ATELIER_BIND must be a tailnet (100.64.0.0/10) or loopback address, not $BIND"
 if ! dry && { [ -z "$DEV" ] || [ "$DEV" = root ]; }; then fail "run through sudo from the developer's account, so the token copy is written as that user"; fi
 [ -f "$RELEASE" ] && [ ! -L "$RELEASE" ] || fail "no release file at $RELEASE"
@@ -207,7 +247,6 @@ if grep -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the release
 mkdir "$WORK/server"
 tar -xf "$WORK/server.tar" -C "$WORK/server"
 [ -f "$WORK/server/cli/serve.mjs" ] && [ -f "$WORK/server/hooks/pre-receive" ] && [ -d "$WORK/server/node_modules/jose" ] || fail "the release lacks cli/serve.mjs, hooks/pre-receive or node_modules/jose"
-[ -f "$WORK/server/scripts/studio/install-server.sh" ] || fail "the release lacks scripts/studio/install-server.sh"
 
 # 2. The service user and its group, in the 400s like other daemons. An
 #    existing record is checked whole, never trusted.
@@ -329,7 +368,7 @@ run mkdir -p "$INSTALLER_DIR"
 run chown root:wheel "$INSTALLER_DIR"
 run chmod 755 "$INSTALLER_DIR"
 dry || safe_dir "$INSTALLER_DIR"
-run install -o root -g wheel -m 755 "$WORK/server/scripts/studio/install-server.sh" "$INSTALLER_DIR/install-server.sh.new"
+run install -o root -g wheel -m 755 "$INSTALLER_SOURCE" "$INSTALLER_DIR/install-server.sh.new"
 run mv -f "$INSTALLER_DIR/install-server.sh.new" "$INSTALLER_DIR/install-server.sh"
 
 # 6. The environment's owner token: made once, kept in secrets/, never
@@ -371,7 +410,7 @@ run launchctl bootstrap system "$PLIST"
 if ! dry; then
   for _ in $(seq 1 30); do
     if lsof -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
-      && curl -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" >/dev/null 2>&1; then
+      && /usr/bin/curl -q -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" >/dev/null 2>&1; then
       stopped=
       rm -rf "$HOME_DIR/bin/node.old" "$HOME_DIR/$SERVER.old"
       start_others || echo "setup: start the jobs named above by hand" >&2

@@ -72,12 +72,13 @@ function studio(c) {
   tool("launchctl", `echo "launchctl $*" >> "$h/launchctl.log"
 case "$1" in
   print) [ -e "$h/loaded" ] ;;
-  bootout) rm -f "$h/loaded" ;;
-  bootstrap) if [ -n "$FAIL_BOOTSTRAP_ONCE" ] && [ ! -e "$h/bootstrap-failed" ]; then : > "$h/bootstrap-failed"; exit 5; fi; : > "$h/loaded" ;;
+  bootout) rm -f "$h/loaded"; [ "$INTERRUPT_AFTER" != bootout ] || kill -KILL "$PPID" ;;
+  bootstrap) if [ -n "$FAIL_BOOTSTRAP_ONCE" ] && [ ! -e "$h/bootstrap-failed" ]; then : > "$h/bootstrap-failed"; exit 5; fi; : > "$h/loaded"; [ "$INTERRUPT_AFTER" != bootstrap ] || kill -KILL "$PPID" ;;
   *) exit 2 ;;
 esac`);
   tool("lsof", `[ -e "$h/loaded" ]`);
-  tool("curl", `[ -e "$h/loaded" ] || exit 7
+  tool("curl", `[ "$1" = -q ] || { echo "curl config was not disabled" >&2; exit 9; }
+[ -e "$h/loaded" ] || exit 7
 [ -e "$h/server/BROKEN" ] && exit 22
 printf '{"commit":"%s","main":null}' "$(cat "$h/server/COMMIT")"`);
   tool("sudo", `echo "sudo $*" >> "$h/sudo.log"
@@ -86,9 +87,19 @@ shift
 exec /bin/bash "$TEST_INSTALLER" "$@"`);
   tool("mv", `last=; for a in "$@"; do last=$a; done
 if [ -n "$FAIL_MV_TO" ] && [ "$last" = "$FAIL_MV_TO" ] && [ ! -e "$h/mv-failed" ]; then : > "$h/mv-failed"; echo "mv: stand-in failure to $last" >&2; exit 1; fi
-exec /bin/mv "$@"`);
+/bin/mv "$@" || exit $?
+[ "$INTERRUPT_AFTER" != "$last" ] || kill -KILL "$PPID"`);
+  tool("git", `h="${home}"
+case " $* " in *" archive "*)
+  if [ -e "$h/hold-archive" ]; then
+    : > "$h/holding"
+    while [ ! -e "$h/release" ]; do /bin/sleep 0.05; done
+  fi ;;
+esac
+exec /usr/bin/git "$@"`);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ATELIER_INSTALL_TEST_HOME: home, ATELIER_INSTALL_TEST_WAIT: "2", TEST_INSTALLER: SCRIPT };
   const install = (argv, extra = {}) => new Promise((done) => {
+    if (extra.HOLD_ARCHIVE) writeFileSync(join(home, "hold-archive"), "");
     const child = spawn("/bin/bash", [SCRIPT, ...argv], { env: { ...env, ...extra } });
     let stdout = "", stderr = "";
     child.stdout.on("data", (d) => { stdout += d; });
@@ -209,7 +220,7 @@ test("the installer refuses a commit that is not on the project's branch, or not
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /is not a commit in/);
   assert.equal(s.commitOf("server"), OLD);
-  assert.equal(s.launchctl(), "");
+  assert.doesNotMatch(s.launchctl(), /bootout|bootstrap/);
 });
 
 test("the installer refuses an archive that holds a link", { skip: darwin }, async () => {
@@ -221,7 +232,7 @@ test("the installer refuses an archive that holds a link", { skip: darwin }, asy
   assert.equal(r.status, 1);
   assert.match(r.stderr, /holds a link or something else/);
   assert.equal(s.commitOf("server"), OLD);
-  assert.equal(s.launchctl(), "");
+  assert.doesNotMatch(s.launchctl(), /bootout|bootstrap/);
 });
 
 // A stand-in npm registry serving one package, jose, as a tarball.
@@ -370,4 +381,72 @@ test("the install script runs only as root, unless a test names its scratch home
   const r = spawnSync("/bin/bash", [SCRIPT, "--env", "staging", "--rollback"], { env, encoding: "utf8" });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /run as root \(sudo\)/);
+});
+
+
+test("root discards inherited configuration before commands; health curl disables config first", { skip: darwin }, () => {
+  const text = readFileSync(SCRIPT, "utf8");
+  const prelude = text.slice(text.indexOf('if builtin test "$EUID"'), text.indexOf("set -euo pipefail")).replace('builtin test "$EUID" = 0', 'builtin true');
+  const h = scratch("hostile-env");
+  writeFileSync(join(h, "id"), `#!/bin/sh\necho hijacked > '${h}/ran'\n`); chmodSync(join(h, "id"), 0o755);
+  const r = spawnSync("/bin/bash", ["-c", `${prelude}\n/usr/bin/env`], {
+    env: { PATH: h, HOME: h, CURL_HOME: h, XDG_CONFIG_HOME: h, NODE_OPTIONS: "--import=evil", ATELIER_INSTALL_TEST_HOME: h, GIT_CONFIG_COUNT: "1" }, encoding: "utf8",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const vars = Object.fromEntries(r.stdout.trim().split("\n").map((l) => l.split(/=(.*)/s).slice(0, 2)));
+  assert.equal(vars.PATH, "/usr/bin:/bin:/usr/sbin:/sbin"); assert.equal(vars.HOME, "/var/root");
+  for (const k of ["CURL_HOME", "XDG_CONFIG_HOME", "NODE_OPTIONS", "ATELIER_INSTALL_TEST_HOME", "GIT_CONFIG_COUNT"]) assert.equal(vars[k], undefined);
+  assert.ok(!existsSync(join(h, "ran")));
+  assert.match(text, /"\$CURL" -q -fsS/);
+  assert.doesNotMatch(text, /\$\(id /);
+  assert.match(text, /SUDO=\/usr\/bin\/sudo/);
+});
+
+test("every interrupted install or rollback resumes service even when the next commit fails preflight", { skip: darwin }, async () => {
+  for (const rollback of [false, true]) {
+    for (const step of ["bootout", "first", "second", ...(rollback ? ["third"] : []), "bootstrap"]) {
+      const c = checkout(), s = studio(c);
+      if (rollback) await installed(s, c.head());
+      const dest = { first: rollback ? "server.swap" : "server.prev", second: "server", third: "server.prev" }[step];
+      const interrupted = await s.install(["--env", "staging", rollback ? "--rollback" : c.head()], { INTERRUPT_AFTER: dest ? join(s.home, dest) : step });
+      assert.equal(interrupted.status, null, `${rollback} ${step}: ${interrupted.stderr}`);
+      const r = await s.install(["--env", "staging", "f".repeat(40)]);
+      assert.equal(r.status, 1, r.stderr);
+      assert.match(r.stderr, /is not a commit/, `${rollback} ${step}: ${r.stderr}`);
+      assert.ok(s.loaded(), `${rollback} ${step}: ${r.stderr}`);
+      assert.ok(s.commitOf("server"), `${rollback} ${step}`);
+      assert.ok(!existsSync(join(s.home, "install.lock")));
+    }
+  }
+});
+
+test("recovery says loudly when the installed service cannot start", { skip: darwin }, async () => {
+  const c = checkout(), s = studio(c);
+  rmSync(join(s.home, "loaded"));
+  writeFileSync(join(s.home, "server/BROKEN"), "broken");
+  const r = await s.install(["--env", "staging", "f".repeat(40)]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /COULD NOT START staging/);
+  assert.ok(!existsSync(join(s.home, "install.lock")));
+});
+
+test("a second overlapping installer refuses without changing the first run's lock or service", { skip: darwin }, async () => {
+  const c = checkout(), s = studio(c);
+  const first = s.install(["--env", "staging", c.head()], { HOLD_ARCHIVE: "1" });
+  try {
+    for (let i = 0; !existsSync(join(s.home, "holding")); i++) {
+      assert.ok(i < 200, "first installer reached archive");
+      await new Promise((done) => setTimeout(done, 25));
+    }
+    const lock = readFileSync(join(s.home, "install.lock"), "utf8");
+    const second = await s.install(["--env", "staging", c.head()]);
+    assert.equal(second.status, 1, second.stderr);
+    assert.match(second.stderr, /another installer is running/);
+    assert.equal(readFileSync(join(s.home, "install.lock"), "utf8"), lock);
+    assert.equal(s.commitOf("server"), OLD);
+    assert.ok(s.loaded());
+  } finally { writeFileSync(join(s.home, "release"), ""); }
+  const r = await first;
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!existsSync(join(s.home, "install.lock")));
 });

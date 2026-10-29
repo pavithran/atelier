@@ -34,8 +34,10 @@
 #   wait at most 60 s for /api/version to report COMMIT.
 # On a failure the daemon is stopped, a new release in place moves to
 # SERVER.failed, SERVER.prev moves back if SERVER is missing, and what is
-# there starts again. Every run first settles what an interrupted run left:
-# SERVER missing with SERVER.prev present puts SERVER.prev back.
+# there starts again. Every run first settles what an interrupted run left,
+# then starts and checks SERVER before preparing another release. Failure
+# exits also check SERVER, or report COULD NOT START. A PID lock serializes
+# installs and rollbacks across both environments.
 # --rollback swaps SERVER and SERVER.prev the same way.
 #
 # SERVER is /Users/atelierd/server for staging, server-production for
@@ -46,6 +48,16 @@
 # and curl it finds on PATH, as itself, changes no owners, waits
 # ATELIER_INSTALL_TEST_WAIT seconds where it would wait 60, and fetches
 # packages from ATELIER_INSTALL_TEST_REGISTRY; as root none of these is read.
+# No external command runs before the privileged environment is discarded.
+# Test controls are available only to a non-root process.
+if builtin test "$EUID" = 0; then
+  for inherited in $(builtin compgen -A function); do builtin unset -f "$inherited"; done
+  for inherited in $(builtin compgen -e); do
+    builtin export -n "$inherited"
+    builtin unset "$inherited" 2>/dev/null || :
+  done
+  export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
+fi
 set -euo pipefail
 umask 077
 # Nothing here reads the caller's directory, which atelierd may not enter.
@@ -53,7 +65,7 @@ cd /
 
 fail() { echo "install: $*" >&2; exit 1; }
 SVC=atelierd
-if [ "$(id -u)" = 0 ]; then
+if [ "$EUID" = 0 ]; then
   export PATH=/usr/bin:/bin:/usr/sbin:/sbin
   HOME_DIR=/Users/$SVC
   DAEMONS=/Library/LaunchDaemons
@@ -62,11 +74,11 @@ if [ "$(id -u)" = 0 ]; then
   WAIT=60
   REGISTRY=https://registry.npmjs.org/
   NODE=$HOME_DIR/bin/node
-  as_svc() { sudo -u "$SVC" /usr/bin/env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C "$@"; }
+  as_svc() { "$SUDO" -u "$SVC" /usr/bin/env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C "$@"; }
 elif [ -n "${ATELIER_INSTALL_TEST_HOME:-}" ]; then
   HOME_DIR=$ATELIER_INSTALL_TEST_HOME
   DAEMONS=$HOME_DIR/LaunchDaemons
-  SVC=$(id -un)
+  SVC=$(/usr/bin/id -un)
   OWNER=$SVC
   TEST=1
   WAIT=${ATELIER_INSTALL_TEST_WAIT:-60}
@@ -76,6 +88,39 @@ elif [ -n "${ATELIER_INSTALL_TEST_HOME:-}" ]; then
   as_svc() { /usr/bin/env -i HOME="$HOME_DIR" PATH="$PATH" LC_ALL=C "$@"; }
 else
   fail "run as root (sudo)"
+fi
+
+SUDO=/usr/bin/sudo
+GIT=/usr/bin/git
+STAT=/usr/bin/stat
+LS=/bin/ls
+SED=/usr/bin/sed
+GREP=/usr/bin/grep
+PLUTIL=/usr/bin/plutil
+MKTEMP=/usr/bin/mktemp
+RM=/bin/rm
+CAT=/bin/cat
+LAUNCHCTL=/bin/launchctl
+LSOF=/usr/sbin/lsof
+SEQ=/usr/bin/seq
+SLEEP=/bin/sleep
+CURL=/usr/bin/curl
+MV=/bin/mv
+TAR=/usr/bin/tar
+AWK=/usr/bin/awk
+MKDIR=/bin/mkdir
+CP=/bin/cp
+CHOWN=/usr/sbin/chown
+FIND=/usr/bin/find
+CHMOD=/bin/chmod
+SHLOCK=/usr/bin/shlock
+# Only these tools need stand-ins in non-root tests.
+if [ -n "$TEST" ]; then
+  GIT=$(command -v git)
+  LAUNCHCTL=$(command -v launchctl)
+  LSOF=$(command -v lsof)
+  CURL=$(command -v curl)
+  MV=$(command -v mv)
 fi
 
 USAGE="usage: install-server.sh --env staging|production COMMIT
@@ -96,7 +141,7 @@ S=$HOME_DIR/$SERVER
 REPO=$HOME_DIR/repos/$ENV/atelier.git
 
 # git as atelierd: no system or global configuration, no hooks, no prompt.
-git_svc() { as_svc GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -C "$REPO" "$@"; }
+git_svc() { as_svc GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 "$GIT" -c core.hooksPath=/dev/null -C "$REPO" "$@"; }
 
 # A directory is safe to hold the daemon's files when it is a real
 # directory, owned by root or the service user, writable by no group or
@@ -104,16 +149,51 @@ git_svc() { as_svc GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINA
 safe_dir() {
   local d=$1 owner
   [ -d "$d" ] && [ ! -L "$d" ] || fail "$d is not a plain directory"
-  owner=$(stat -f %Su "$d")
+  owner=$("$STAT" -f %Su "$d")
   [ "$owner" = "$OWNER" ] || [ "$owner" = "$SVC" ] || fail "$d is owned by $owner"
-  [ $(( 0$(stat -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
-  ! ls -lde "$d" | sed -n '2,$p' | grep -q . || fail "$d carries an ACL"
+  [ $(( 0$("$STAT" -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
+  ! "$LS" -lde "$d" | "$SED" -n '2,$p' | "$GREP" -q . || fail "$d carries an ACL"
 }
+# One lock for both environments: their service home is shared. shlock
+# atomically acquires a PID file and reclaims it only if that PID is dead.
+LOCK=/private/var/run/atelier-install.lock
+if [ -n "$TEST" ]; then LOCK=$HOME_DIR/install.lock
+else
+  for d in / /private /private/var /private/var/run; do
+    safe_dir "$d"
+    [ "$("$STAT" -f %Su "$d")" = root ] || fail "$d is not root-owned"
+  done
+fi
+[ ! -L "$LOCK" ] || fail "$LOCK is a link"
+if [ -e "$LOCK" ]; then
+  [ -f "$LOCK" ] && [ "$("$STAT" -f %Su "$LOCK")" = "$OWNER" ] || fail "$LOCK is not a plain lock owned by $OWNER"
+fi
+if ! "$SHLOCK" -p "$$" -f "$LOCK"; then
+  # macOS shlock conservatively retains a dead lock modified this second.
+  # Retry after that second only for a dead PID; shlock arbitrates again.
+  lock_pid=$("$CAT" "$LOCK" 2>/dev/null) || lock_pid=
+  if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+    "$SLEEP" 1
+    "$SHLOCK" -p "$$" -f "$LOCK" || fail "another installer is running (lock: $LOCK); retry when it finishes"
+  else
+    fail "another installer is running (lock: $LOCK); retry when it finishes"
+  fi
+fi
+WORK= DEPS= phase=
+cleanup() {
+  [ -z "$WORK" ] || "$RM" -rf "$WORK"
+  [ -z "$DEPS" ] || "$RM" -rf "$DEPS"
+  "$RM" -f "$LOCK"
+}
+trap 'status=$?; if [ "$status" != 0 ]; then echo "install: COULD NOT START OR VERIFY $ENV at $S: preflight failed; see $HOME_DIR/log/$ENV.log" >&2; fi; cleanup; exit "$status"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 [ -n "$TEST" ] || safe_dir /Users
 safe_dir "$DAEMONS"
 safe_dir "$HOME_DIR"
 [ -f "$PLIST" ] && [ ! -L "$PLIST" ] || fail "no $LABEL LaunchDaemon at $PLIST; run setup-server.sh --env $ENV first"
-[ "$(stat -f %Su "$PLIST")" = "$OWNER" ] || fail "$PLIST is not $OWNER's"
+[ "$("$STAT" -f %Su "$PLIST")" = "$OWNER" ] || fail "$PLIST is not $OWNER's"
 for d in "$S" "$S.prev" "$S.new" "$S.failed" "$S.swap"; do [ ! -L "$d" ] || fail "$d is a link"; done
 for d in "$S" "$S.prev" "$S.swap"; do [ ! -e "$d" ] || safe_dir "$d"; done
 
@@ -121,13 +201,13 @@ for d in "$S" "$S.prev" "$S.swap"; do [ ! -e "$d" ] || safe_dir "$d"; done
 # must run this environment's serve.mjs from $S.
 arg_after() {
   local i=0 prev= v
-  while v=$(plutil -extract "ProgramArguments.$i" raw -o - "$PLIST" 2>/dev/null); do
+  while v=$("$PLUTIL" -extract "ProgramArguments.$i" raw -o - "$PLIST" 2>/dev/null); do
     if [ "$prev" = "$1" ]; then printf '%s\n' "$v"; return 0; fi
     prev=$v; i=$((i+1))
   done
   return 1
 }
-[ "$(plutil -extract ProgramArguments.1 raw -o - "$PLIST" 2>/dev/null)" = "$S/cli/serve.mjs" ] || fail "$PLIST does not run $S/cli/serve.mjs"
+[ "$("$PLUTIL" -extract ProgramArguments.1 raw -o - "$PLIST" 2>/dev/null)" = "$S/cli/serve.mjs" ] || fail "$PLIST does not run $S/cli/serve.mjs"
 [ "$(arg_after --env)" = "$ENV" ] || fail "$PLIST does not run --env $ENV"
 BIND=$(arg_after --host) || fail "$PLIST names no --host"
 PORT=$(arg_after --port) || fail "$PLIST names no --port"
@@ -140,21 +220,20 @@ valid_bind() {
 valid_bind "$BIND" || fail "$PLIST binds $BIND, not a tailnet or loopback address"
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || fail "$PLIST names port $PORT"
 
-WORK=$(mktemp -d /var/tmp/atelier-install.XXXXXX)
-DEPS=
-phase=
-trap 'rm -rf "$WORK" ${DEPS:+"$DEPS"}' EXIT
+SCRATCH=/var/tmp
+[ -z "$TEST" ] || SCRATCH=$HOME_DIR
+WORK=$("$MKTEMP" -d "$SCRATCH/atelier-install.XXXXXX")
 
-commit_of() { local c; c=$(cat "$1/COMMIT" 2>/dev/null) && [[ "$c" =~ ^[0-9a-f]{40}$ ]] && printf '%s\n' "$c"; }
-loaded() { launchctl print "system/$LABEL" >/dev/null 2>&1; }
-listening() { lsof -nP -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1; }
+commit_of() { local c; c=$("$CAT" "$1/COMMIT" 2>/dev/null) && [[ "$c" =~ ^[0-9a-f]{40}$ ]] && printf '%s\n' "$c"; }
+loaded() { "$LAUNCHCTL" print "system/$LABEL" >/dev/null 2>&1; }
+listening() { "$LSOF" -nP -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1; }
 
 # Stops the daemon, and waits until nothing listens on its port.
 stop_daemon() {
-  if loaded; then launchctl bootout "system/$LABEL" || return 1; fi
-  for _ in $(seq 1 20); do loaded || break; sleep 0.5; done
+  if loaded; then "$LAUNCHCTL" bootout "system/$LABEL" || return 1; fi
+  for _ in $("$SEQ" 1 20); do loaded || break; "$SLEEP" 0.5; done
   ! loaded || return 1
-  for _ in $(seq 1 20); do listening || return 0; sleep 0.5; done
+  for _ in $("$SEQ" 1 20); do listening || return 0; "$SLEEP" 0.5; done
   return 1
 }
 
@@ -162,14 +241,14 @@ stop_daemon() {
 # /api/version to report commit $1 (any answer, when $1 is empty).
 answers() {
   local want=$1 got
-  for _ in $(seq 1 "$2"); do
-    if lsof -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
-      && curl -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" > "$WORK/version.json" 2>/dev/null; then
+  for _ in $("$SEQ" 1 "$2"); do
+    if "$LSOF" -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
+      && "$CURL" -q -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" > "$WORK/version.json" 2>/dev/null; then
       [ -z "$want" ] && return 0
-      got=$(plutil -extract commit raw -o - "$WORK/version.json" 2>/dev/null) || got=
+      got=$("$PLUTIL" -extract commit raw -o - "$WORK/version.json" 2>/dev/null) || got=
       [ "$got" = "$want" ] && return 0
     fi
-    sleep 1
+    "$SLEEP" 1
   done
   return 1
 }
@@ -179,14 +258,14 @@ answers() {
 # when SERVER is missing.
 settle() {
   if [ -e "$S.swap" ]; then
-    if [ ! -e "$S" ]; then mv "$S.swap" "$S" || return 1
-    elif [ ! -e "$S.prev" ]; then mv "$S.swap" "$S.prev" || return 1
+    if [ ! -e "$S" ]; then "$MV" "$S.swap" "$S" || return 1
+    elif [ ! -e "$S.prev" ]; then "$MV" "$S.swap" "$S.prev" || return 1
     else echo "install: $S, $S.prev and $S.swap all exist; sort them by hand" >&2; return 1
     fi
   fi
   if [ ! -e "$S" ] && [ -d "$S.prev" ]; then
     echo "install: $S was missing; putting $S.prev back" >&2
-    mv "$S.prev" "$S" || return 1
+    "$MV" "$S.prev" "$S" || return 1
   fi
 }
 
@@ -201,19 +280,19 @@ recover() {
   case "$phase" in
     placed|started)
       if [ -d "$S.prev" ]; then
-        rm -rf "$S.failed"
-        mv "$S" "$S.failed" || { echo "install: the new release could not be moved aside; $ENV is stopped" >&2; return 1; }
+        "$RM" -rf "$S.failed"
+        "$MV" "$S" "$S.failed" || { echo "install: the new release could not be moved aside; $ENV is stopped" >&2; return 1; }
       fi ;;
     swap3)
-      mv "$S" "$S.swap" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
+      "$MV" "$S" "$S.swap" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
   esac
   case "$phase" in
-    swap2) mv "$S" "$S.prev" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
-    swap3) mv "$S.prev" "$S" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
+    swap2) "$MV" "$S" "$S.prev" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
+    swap3) "$MV" "$S.prev" "$S" || { echo "install: the rollback could not be undone; $ENV is stopped" >&2; return 1; } ;;
   esac
   settle || { echo "install: the releases could not be put back; $ENV is stopped; see $HOME_DIR" >&2; return 1; }
   [ -d "$S" ] || { echo "install: there is no release to start; $ENV is stopped" >&2; return 1; }
-  launchctl bootstrap system "$PLIST" || { echo "install: $LABEL did not start; sudo launchctl bootstrap system $PLIST" >&2; return 1; }
+  "$LAUNCHCTL" bootstrap system "$PLIST" || { echo "install: $LABEL did not start; sudo launchctl bootstrap system $PLIST" >&2; return 1; }
   local back
   back=$(commit_of "$S") || back=
   if answers "$back" "$WAIT"; then
@@ -224,9 +303,34 @@ recover() {
     return 1
   fi
 }
-trap 'status=$?; if [ $status != 0 ] && [ -n "$phase" ]; then recover; fi; rm -rf "$WORK" ${DEPS:+"$DEPS"}; exit $status' EXIT
+# Every failure after preflight leaves the release at SERVER answering,
+# including a failed recovery. Report failure loudly if it cannot be started.
+ensure_running() {
+  local current
+  [ -d "$S" ] || { echo "install: COULD NOT START $ENV: no release at $S" >&2; return 1; }
+  if ! loaded; then
+    "$LAUNCHCTL" bootstrap system "$PLIST" || { echo "install: COULD NOT START $ENV at $S; see $HOME_DIR/log/$ENV.log" >&2; return 1; }
+  fi
+  current=$(commit_of "$S") || current=
+  answers "$current" "$WAIT" || { echo "install: COULD NOT START $ENV: release at $S does not answer; see $HOME_DIR/log/$ENV.log" >&2; return 1; }
+}
+finish() {
+  local status=$?
+  trap - EXIT INT TERM
+  set +e
+  if [ "$status" != 0 ] && [ -n "$phase" ]; then recover; fi
+  ensure_running || status=1
+  cleanup
+  exit "$status"
+}
+trap finish EXIT
 
+# Stop before repairing names, even if launchd still has the old job loaded.
+if [ -e "$S.swap" ] || { [ ! -e "$S" ] && [ -e "$S.prev" ]; }; then
+  stop_daemon || fail "cannot stop $LABEL to settle an interrupted run"
+fi
 settle || fail "the releases left by an earlier run could not be settled"
+ensure_running || fail "the installed release could not be started before installation"
 
 if [ -n "$ROLLBACK" ]; then
   [ -d "$S.prev" ] || fail "there is no previous release to roll back to ($S.prev)"
@@ -235,10 +339,10 @@ if [ -n "$ROLLBACK" ]; then
   from=$(commit_of "$S") || from=
   phase=stopped
   stop_daemon || fail "$LABEL would not stop, or something still listens on $BIND:$PORT"
-  mv "$S" "$S.swap"; phase=swap1
-  mv "$S.prev" "$S"; phase=swap2
-  mv "$S.swap" "$S.prev"; phase=swap3
-  launchctl bootstrap system "$PLIST" || fail "$LABEL did not start"
+  "$MV" "$S" "$S.swap"; phase=swap1
+  "$MV" "$S.prev" "$S"; phase=swap2
+  "$MV" "$S.swap" "$S.prev"; phase=swap3
+  "$LAUNCHCTL" bootstrap system "$PLIST" || fail "$LABEL did not start"
   answers "$want" "$WAIT" || fail "the previous release did not answer${want:+ with commit $want} in $WAIT s"
   phase=
   echo "rolled $ENV back to commit ${want:-unknown}; the release it replaced (${from:-unknown}) is kept as $S.prev"
@@ -256,23 +360,23 @@ git_svc archive --format=tar "$COMMIT" > "$WORK/server.tar" || fail "git archive
 # 2. Plain files and directories inside the release, extracted by root.
 # Listed to files first: a grep -q in a pipe can end the pipe early and,
 # under pipefail, read as no match.
-tar -tvf "$WORK/server.tar" > "$WORK/list-long" || fail "the archive cannot be listed"
-tar -tf "$WORK/server.tar" > "$WORK/list" || fail "the archive cannot be listed"
+"$TAR" -tvf "$WORK/server.tar" > "$WORK/list-long" || fail "the archive cannot be listed"
+"$TAR" -tf "$WORK/server.tar" > "$WORK/list" || fail "the archive cannot be listed"
 [ -s "$WORK/list" ] || fail "the archive is empty"
-if awk '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1} END {exit bad?0:1}' "$WORK/list-long" || grep -q ' link to ' "$WORK/list-long"; then
+if "$AWK" '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1} END {exit bad?0:1}' "$WORK/list-long" || "$GREP" -q ' link to ' "$WORK/list-long"; then
   fail "the archive holds a link or something else that is not a plain file or directory"
 fi
-if grep -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the archive names a path outside itself"; fi
-mkdir "$WORK/server"
-tar -xof "$WORK/server.tar" -C "$WORK/server"
+if "$GREP" -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the archive names a path outside itself"; fi
+"$MKDIR" "$WORK/server"
+"$TAR" -xof "$WORK/server.tar" -C "$WORK/server"
 for f in cli/serve.mjs hooks/pre-receive package.json package-lock.json; do [ -f "$WORK/server/$f" ] && [ ! -L "$WORK/server/$f" ] || fail "the release lacks $f"; done
 [ ! -e "$WORK/server/node_modules" ] || fail "the release holds node_modules"
 
 # 3. The runtime packages, as atelierd, checked against the lock file.
-DEPS=$(mktemp -d /var/tmp/atelier-deps.XXXXXX)
-cp "$WORK/server/package.json" "$WORK/server/package-lock.json" "$DEPS/"
-[ -n "$TEST" ] || chown -R "$SVC:$SVC" "$DEPS"
-FETCH=$(cat <<'JS'
+DEPS=$("$MKTEMP" -d "$SCRATCH/atelier-deps.XXXXXX")
+"$CP" "$WORK/server/package.json" "$WORK/server/package-lock.json" "$DEPS/"
+[ -n "$TEST" ] || "$CHOWN" -R "$SVC:$SVC" "$DEPS"
+FETCH=$("$CAT" <<'JS'
 const [dir, registry] = process.argv.slice(1);
 const { readFileSync, writeFileSync, mkdirSync, rmSync } = await import("node:fs");
 const { createHash } = await import("node:crypto");
@@ -300,13 +404,13 @@ for (const [path, p] of Object.entries(lock.packages)) {
   if (`sha512-${createHash("sha512").update(bytes).digest("base64")}` !== p.integrity) no(`${path} does not match its integrity in the lock file`);
   const tgz = join(dir, `package-${n++}.tgz`);
   writeFileSync(tgz, bytes);
-  const listed = execFileSync("tar", ["-tvzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean);
+  const listed = execFileSync("/usr/bin/tar", ["-tvzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean);
   for (const line of listed) if (!/^[-d]/.test(line) || / link to /.test(line)) no(`${path}'s package holds a link or a special file`);
-  for (const name of execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean)) {
+  for (const name of execFileSync("/usr/bin/tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n").filter(Boolean)) {
     if (!name.startsWith("package/") || /(^|\/)\.\.(\/|$)/.test(name)) no(`${path}'s package names ${name}, outside package/`);
   }
   mkdirSync(join(dir, path), { recursive: true });
-  execFileSync("tar", ["-xzf", tgz, "-C", join(dir, path), "--strip-components", "1"]);
+  execFileSync("/usr/bin/tar", ["-xzf", tgz, "-C", join(dir, path), "--strip-components", "1"]);
   rmSync(tgz);
 }
 console.log(`install: ${n} runtime package${n === 1 ? "" : "s"} fetched and checked against the lock file`);
@@ -314,33 +418,33 @@ JS
 )
 as_svc "$NODE" --input-type=module -e "$FETCH" "$DEPS" "$REGISTRY" || fail "the runtime packages could not be installed; nothing was changed"
 if [ -d "$DEPS/node_modules" ]; then
-  [ -z "$(find "$DEPS/node_modules" ! -type f ! -type d)" ] || fail "the runtime packages hold a link or a special file"
-  cp -R "$DEPS/node_modules" "$WORK/server/node_modules"
+  [ -z "$("$FIND" "$DEPS/node_modules" ! -type f ! -type d)" ] || fail "the runtime packages hold a link or a special file"
+  "$CP" -R "$DEPS/node_modules" "$WORK/server/node_modules"
 fi
 
 # 4. COMMIT, written by root.
 printf '%s\n' "$COMMIT" > "$WORK/server/COMMIT"
 
 # Staged beside the current release, root's and read-only to the daemon.
-rm -rf "$S.new" "$S.failed"
-cp -R "$WORK/server" "$S.new"
-[ -n "$TEST" ] || chown -R root:"$SVC" "$S.new"
-chmod -R u=rwX,g=rX,o= "$S.new"
-chmod 750 "$S.new/hooks/pre-receive"
-chmod -RN "$S.new"
+"$RM" -rf "$S.new" "$S.failed"
+"$CP" -R "$WORK/server" "$S.new"
+[ -n "$TEST" ] || "$CHOWN" -R root:"$SVC" "$S.new"
+"$CHMOD" -R u=rwX,g=rX,o= "$S.new"
+"$CHMOD" 750 "$S.new/hooks/pre-receive"
+"$CHMOD" -RN "$S.new"
 prev=$(commit_of "$S") || prev=
 
 # The swap. From here a failure runs recover() for the phase reached.
 phase=stopped
 stop_daemon || fail "$LABEL would not stop, or something still listens on $BIND:$PORT"
 if [ -e "$S" ]; then
-  rm -rf "$S.prev"
-  mv "$S" "$S.prev"
+  "$RM" -rf "$S.prev"
+  "$MV" "$S" "$S.prev"
 fi
 phase=prev
-mv "$S.new" "$S"
+"$MV" "$S.new" "$S"
 phase=placed
-launchctl bootstrap system "$PLIST" || fail "$LABEL did not start"
+"$LAUNCHCTL" bootstrap system "$PLIST" || fail "$LABEL did not start"
 phase=started
 answers "$COMMIT" "$WAIT" || fail "$ENV did not report commit $COMMIT at http://$BIND:$PORT/api/version in $WAIT s"
 phase=
