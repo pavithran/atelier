@@ -373,7 +373,19 @@ test("round 7: parseProgress keeps no free text: the actor, tool names and progr
   const base = { task: "t1", actor: BUILDER, startedAt: at };
   assert.equal(parseProgress({ ...base, actor: "bearer ${TOKEN}hunter2" }), null, "a report with no strict actor is not kept");
   const p = parseProgress({ ...base, harness: "claude-code", current: { name: "bearer {env:TOKEN}hunter2", summary: "npm" }, last: { name: "Bash", summary: "basic [keyhunter2" } });
-  assert.equal(p.current, null, "a tool name that is not a bare name is dropped with its step");
+  assert.equal(p.current.name, "tool", "a tool name off the known list is kept as tool (round 8)");
   assert.deepEqual([p.last.name, p.last.summary, p.harness], ["Bash", null, "claude-code"]);
   assert.ok(!JSON.stringify(p).includes("hunter2"));
+});
+
+test("round 8: a step's tool is kept by name only from the known list, else as tool, on the runner and the server", async () => {
+  const { KNOWN_TOOLS } = await import("../src/tool-names.ts");
+  const at = "2026-10-28T12:00:00.000Z";
+  for (const name of ["Bash", "Edit", "TodoWrite", "shell", "apply_patch", "bash", "webfetch"]) assert.ok(KNOWN_TOOLS.has(name), name);
+  const p = parseProgress({ task: "t1", actor: BUILDER, startedAt: at, current: { name: "password:hunter2", summary: "npm" }, last: { name: "Read", summary: null } });
+  assert.deepEqual([p.current.name, p.last.name], ["tool", "Read"]);
+  const s = newStream();
+  foldStream(s, toolUse("x", "password:hunter2", { command: "npm test" }), at);
+  assert.deepEqual([...s.pending.values()].map((c) => c.name), ["tool"]);
+  assert.ok(!JSON.stringify([p, [...s.pending.values()]]).includes("hunter2"));
 });

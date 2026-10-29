@@ -15,6 +15,7 @@
 //   - when the run started and ended.
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { toolName } from "../src/tool-names.ts";
 
 const oneLine = (text) => String(text ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").replace(/\s+/g, " ").trim();
 // What a tool call ran, as the program's name alone: a command's first word
@@ -64,7 +65,7 @@ export function foldStream(state, text, at) {
       for (const c of content) {
         if (c?.type !== "tool_use" || typeof c.id !== "string") continue;
         state.started++;
-        state.pending.set(c.id, { name: oneLine(c.name).slice(0, 64) || "tool", summary: summaryOf(c.name, c.input), since: at });
+        state.pending.set(c.id, { name: toolName(c.name), summary: summaryOf(c.name, c.input), since: at });
       }
     } else if (event.type === "user") {
       for (const c of content) {

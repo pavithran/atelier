@@ -10,6 +10,7 @@ import { checkLimits, type CheckLimits } from "./check-limit.ts";
 import { OFFER_REFRESH_MS, servesProject, type CoreHold, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
 import type { Decision } from "./decisions.ts";
 import { redactKeys } from "./models/pool.ts";
+import { toolName } from "./tool-names.ts";
 import type { LandingLease } from "./landing-lease.ts";
 import type { LandingRecord, ProjectRecord } from "./ledger";
 import type { Block, Item } from "./rules";
@@ -77,7 +78,8 @@ const RUNS_KEPT = 20;
 // name, a tool a bare tool name, a command its program's name; anything
 // else in their place is dropped, never stored or shown.
 const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
-const tool = (v: unknown): string | null => typeof v === "string" && /^[A-Za-z0-9_.:-]{1,64}$/.test(v) && redactKeys(v) === v ? v : null;
+// A step's tool is kept by name only if it is a known tool's (src/tool-names.ts), else as "tool".
+const tool = (v: unknown): string | null => typeof v === "string" ? toolName(v) : null;
 // A command is kept as its program's name alone (npm, git), never its
 // arguments; anything else a runner sends in its place is dropped.
 // The shared redactor runs over it too, as a second line of defence.

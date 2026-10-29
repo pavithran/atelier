@@ -76,3 +76,12 @@ test("round 7: a placeholder is exempt only as a whole word, and quoted fields u
   }
   for (const kept of ["Bearer ${TOKEN}", "Bearer {env:GATEWAY_TOKEN}", "bearer $TOKEN", "Bearer [key removed] sent"]) assert.equal(redactKeys(kept), kept);
 });
+
+test("round 8: an already-removed credential stays only as a whole word, and a credential field loses a value of any JSON type", () => {
+  for (const [note, secret] of [["Bearer [key removed]hunter2", "hunter2"], ["basic [key removed]hunter2 more", "hunter2"],
+    ['{"pwd":12345678}', "12345678"], ['{"token": true}', "true"], ['{"auth": {"user": "u", "pass": "hunter2"}}', "hunter2"], ['{"secret": [1, 2, "hunter2"]}', "hunter2"], ['{"api_key": null}', "null"]]) {
+    assert.ok(!redactKeys(note).includes(secret), `${note} -> ${redactKeys(note)}`);
+    assert.ok(!stderrSummary(`${note}\n`).includes(secret), `runner copy: ${note}`);
+  }
+  assert.equal(redactKeys("Bearer [key removed] next"), "Bearer [key removed] next");
+});

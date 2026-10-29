@@ -272,15 +272,18 @@ const SECRET_ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_/.~])([A-Za-z0-9_.-]*(?:${C
 // a placeholder (${VAR}, {env:NAME}, <token>, [key removed]).
 const HEADER_NAME = "((?:proxy-)?authorization|x-api-key|x-auth-token|api-key)";
 const CREDENTIAL_HEADER = new RegExp(`(['"])${HEADER_NAME}(\\s*:\\s*)(?:(?!\\1)[^\\r\\n])*|\\b${HEADER_NAME}(\\s*:\\s*)[^\\r\\n]*`, "gi");
-const QUOTED_SECRET_KEY = new RegExp(`(["'])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*)\\1(\\s*:\\s*)(["'])((?:\\\\.|(?!\\4)[^\\\\])*)\\4`, "gi");
+// A quoted credential field loses its value whatever its type: a quoted
+// string to its closing quote, anything else (a number, true, null, an object
+// or array) to the end of the line.
+const QUOTED_SECRET_KEY = new RegExp(`(["'])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*)\\1(\\s*:\\s*)(?:(["'])(?:\\\\.|(?!\\4)[^\\\\])*\\4|[^\\r\\n]*)`, "gi");
 // bearer or basic, any case, then whitespace: the next word goes, whatever it
 // is, punctuation included, to the next ASCII whitespace ("basic auth" too).
 // Only a word that is wholly one placeholder holding no secret stays:
 // ${NAME}, {env:NAME}, $NAME, or a credential already removed.
-const SCHEME_TOKEN = /\b(bearer|basic)(\s+)(\[key removed\]|[^ \t\r\n\f\v]+)/gi;
+const SCHEME_TOKEN = /\b(bearer|basic)(\s+)(\[key removed\](?=[ \t\r\n\f\v]|$)|\[key removed\][^ \t\r\n\f\v]+|[^ \t\r\n\f\v]+)/gi;
 const PLACEHOLDER = /^(?:\$\{[A-Z0-9_]+\}|\{env:[A-Za-z0-9_]+\}|\$[A-Z0-9_]+|\[key removed\])$/;
 export function redactKeys(s: string): string {
-  return s.replace(QUOTED_SECRET_KEY, (_m, q: string, name: string, colon: string, vq: string) => `${q}${name}${q}${colon}${vq}[key removed]${vq}`)
+  return s.replace(QUOTED_SECRET_KEY, (_m, q: string, name: string, colon: string, vq: string | undefined) => vq ? `${q}${name}${q}${colon}${vq}[key removed]${vq}` : `${q}${name}${q}${colon}[key removed]`)
     .replace(CREDENTIAL_HEADER, (_m, q: string | undefined, qname: string | undefined, qcolon: string | undefined, name: string | undefined, colon: string | undefined) => q ? `${q}${qname}${qcolon}[key removed]` : `${name}${colon}[key removed]`)
     .replace(SCHEME_TOKEN, (m, scheme: string, space: string, token: string) => PLACEHOLDER.test(token) ? m : `${scheme}${space}[key removed]`)
     .replace(SECRET_ASSIGNMENT, "$1[key removed]")
