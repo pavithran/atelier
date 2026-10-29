@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
@@ -21,9 +21,11 @@ const entry = (harness: ModelEntry["harness"], id: string): ModelEntry => ({
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["src/**"] };
 const BUILDER = "zcode/glm-5.3";
 
+// Since G18 a write on the developer token names the acting model, one in the pool.
+const ACTING = "claude-code/opus-5.5";
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

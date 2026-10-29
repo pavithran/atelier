@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { CriteriaReviewClaim, CriteriaReviewView, Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -365,10 +365,13 @@ it("without the policy nothing is held, and a criteria review may still be recor
 // a runner that offers the job, and the gate on dispatch.
 const TOKEN = "criteria-routes-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
+// Since G18 a write by the "owner" actor on the developer token names the acting model. GPT
+// neither reviews (GLM does) nor builds (Opus does); the criteria it writes count as its own work.
+const ACTING = GPT;
 function call(method: string, path: string, actor: string | null, body?: unknown, token = TOKEN, headers: Record<string, string> = {}) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json", ...headers },
+    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(actor === "owner" && token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

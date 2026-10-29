@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { world } from "./helpers/retention-world.ts";
@@ -225,9 +225,10 @@ function repos(name: string, overlap: boolean, agent = INTEGRATOR) {
   const ARTIFACTS = { get: async (repo: string) => Object.assign(repo === `${name}--baseline` ? w.repo(m) : w.repo(n), { [Symbol.dispose]() {} }) } as unknown as Artifacts;
   return { o, m, n, ARTIFACTS };
 }
+// Since G18 a write by a reserved actor (the integrator) on the developer token names the acting model.
 const call = (name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts) =>
   worker.fetch(new Request(`https://atelier.test/api/projects/${name}/${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === INTEGRATOR ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 
 for (const overlap of [false, true]) {

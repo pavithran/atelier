@@ -1,6 +1,7 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { parseRuleError } from "../src/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 
 // t323 through the Worker and the Ledgers: a review request a runner released
@@ -58,9 +59,10 @@ it("a review released twice for the same harness exit is refused to every runner
   expect(live.stopped).toMatchObject({ head: HEAD, count: 2, last: NOTE });
 
   // Another runner of the same model is refused it.
-  let refused: { code?: string } | null = null;
-  try { await L(key).claimReview(id, OPUS, SECOND); } catch (error) { refused = error as { code?: string }; }
-  expect(refused).toMatchObject({ code: "review_stopped" });
+  // Across a Ledger stub the code travels in the message (parseRuleError reads it).
+  let refused: unknown = null;
+  try { await L(key).claimReview(id, OPUS, SECOND); } catch (error) { refused = error; }
+  expect(parseRuleError(refused)).toMatchObject({ code: "review_stopped" });
 
   // Unclaimed past the checked limit, it is asked of another model.
   await offers(key, 11 * MIN);

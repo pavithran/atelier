@@ -1,11 +1,11 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { Ledger } from "../src/ledger.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
-import type { Evidence } from "../src/rules.ts";
+import { parseRuleError, type Evidence } from "../src/rules.ts";
 import { REVIEW_OFFER_MINUTES, reportLimits, stuckReport } from "../src/stuck/report.ts";
 import { causeOf } from "../src/stuck/episodes.ts";
 
@@ -47,8 +47,9 @@ async function asked(name: string, reviewers: string[]) {
 it("a runner is offered the oldest review request it can serve, skipping older ones it cannot", async () => {
   const name = "review-queue-offer";
   const { ids } = await asked(name, [GLM, GLM, GPT]);
+  // Since G18 a write on the developer token names the acting model.
   const api = (path: string, method = "GET", body?: unknown, token = TOKEN, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === TOKEN ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   const minted = await api("/tokens", "POST", { actor: GPT, projects: [name] });
   expect(minted.status, await minted.clone().text()).toBe(201);
@@ -143,9 +144,10 @@ it("two timeouts at one head stop the review on its successor, which no claim, q
   expect(live.request).not.toBe(first.request);
   expect(live.stopped).toMatchObject({ reason: "timeout", count: 2, head: live.head });
   // The stop is in the ledger, not in a runner: another claim is refused.
-  let refused: { code?: string } | null = null;
-  try { await L.claimReview(ids[0], GPT, RUNNER); } catch (error) { refused = error as { code?: string }; }
-  expect(refused).toMatchObject({ code: "review_stopped" });
+  // Across a Ledger stub the code travels in the message (parseRuleError reads it).
+  let refused: unknown = null;
+  try { await L.claimReview(ids[0], GPT, RUNNER); } catch (error) { refused = error; }
+  expect(parseRuleError(refused)).toMatchObject({ code: "review_stopped" });
   expect(await L.liveReviewRequest(ids[0], live.head!)).toMatchObject({ request: live.request, stopped: expect.stringContaining("narrow the criteria, move the findings to a task, or override") });
   const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
   const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");

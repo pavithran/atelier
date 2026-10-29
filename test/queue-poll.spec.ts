@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
-import { runInDurableObject } from "cloudflare:test";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
+import { runInDurableObject } from "./support/workers.ts";
 import worker from "../src/index.ts";
 import { coreHold, OFFER_LIVE_MS, OFFER_REFRESH_MS, type RunnerOffer } from "../src/dispatch/rules.ts";
 
@@ -16,10 +16,12 @@ const A = "codex/gpt-6-astra";
 const H0 = "0".repeat(40);
 const H1 = "a".repeat(40);
 
+// Since G18 a write on the developer token names the acting model.
+const ACTING = "claude-code/opus-5.5";
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

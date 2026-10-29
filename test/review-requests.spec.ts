@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { expect, it, onTestFinished } from "vitest";
+import { env } from "./support/workers.ts";
+import { runDurableObjectAlarm, runInDurableObject } from "./support/workers.ts";
+import { expect, it, onTestFinished } from "./support/vitest.ts";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
 import { allSkipped } from "../src/landing-verdict.ts";
@@ -25,6 +25,8 @@ import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.
 const H0 = "0".repeat(40);
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const OPUS = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
+// Since G18 a write by the "owner" actor on the developer token names the acting model, one in the pool.
+const ACTING = OPUS;
 const PLANNER = OPUS;
 const policy: ProjectPolicy = { checks: ["npm test"], protected: [] };
 
@@ -595,33 +597,30 @@ it("a named reviewer who later contributes is passed over and the plan picks aga
 
 // t230: the review claim carries a read token for the branch the item merges
 // into, so the review job can diff from the merge base: a part's is its
-// plan's integration branch (the plan's fork), any other item's the baseline.
+// plan's integration branch, any other item's the baseline. On the Node server
+// (task 5) one read grant reads both branches of the project's one repository,
+// so the token is the same and only the branch differs.
 it("the review claim route names the plan's branch as a part's merge target", async () => {
   const { default: worker } = await import("../src/index.ts");
   const name = "review-claim-target";
   const L = await setup(name);
-  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  // The project's branch is on its record, as init sets it, so no repository is read for it.
+  const record = { name, repo: `${name}--baseline`, branch: "main", policy, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const { id, partId } = await approved(L);
   await L.setFork(id, "plan-fork", H0, "owner");
   await submitPart(L, partId, "a".repeat(40));
-  const asked: string[] = [];
-  const ARTIFACTS = {
-    get: async (repo: string) => ({
-      info: async () => ({ remote: `https://git.test/${repo}`, defaultBranch: "main" }),
-      createToken: async () => { asked.push(repo); return { plaintext: `token-${repo}`, id: "id", expiresAt: "soon" }; },
-      [Symbol.dispose]() {},
-    }),
-  } as unknown as Artifacts;
   const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${partId}/review-claim`, {
     method: "POST",
     headers: { authorization: "Bearer review-claim-token", "x-atelier-actor": GPT, "x-atelier-runner": "home:studio", "content-type": "application/json" },
     body: "{}",
-  }), { ...env, ATELIER_TOKEN: "review-claim-token", ARTIFACTS } as typeof env);
-  expect(res.status).toBe(200);
-  const claim = await res.json() as { readToken: { remote: string }; target: { remote: string; token: string; branch: string } };
-  expect(claim.readToken.remote).toBe(`https://git.test/fork-${partId}`);
-  expect(claim.target).toEqual({ remote: "https://git.test/plan-fork", token: "token-plan-fork", branch: "main" });
-  expect(asked).toEqual([`fork-${partId}`, "plan-fork"]);
+  }), { ...env, ATELIER_TOKEN: "review-claim-token" } as typeof env);
+  expect(res.status, await res.clone().text()).toBe(200);
+  const claim = await res.json() as { readToken: { remote: string; token: string; branch: string }; target: { remote: string; token: string; branch: string } };
+  const remote = `https://atelier.zone/git/${name}.git`;
+  expect(claim.readToken).toMatchObject({ remote, branch: `t/${partId.slice(1)}` });
+  expect(claim.target).toEqual({ remote, token: claim.readToken.token, branch: `plan/${id.slice(1)}` });
 });
 
 // A review claim carries the project's review bar and, from round 2, the
@@ -938,7 +937,7 @@ it("the review-skip route persists the skip under its request before acknowledgi
   const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   const skip = (item: string, runner: string, body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${item}/review-skip`, {
     method: "POST",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),
   }), token);
   // A skip for a missing item is refused: the awaited write's failure reaches
@@ -984,7 +983,7 @@ it("a runner token posts a review skip for a review job it was offered, as the j
   const bindings = { ...env, ATELIER_TOKEN: OWNER_TOKEN } as typeof env;
   const call = (method: string, path: string, bearer: string, actor: string, runner: string | null, body?: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${bearer}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" },
+    headers: { authorization: `Bearer ${bearer}`, "x-atelier-actor": actor, ...(bearer === OWNER_TOKEN ? { "x-atelier-acting": ACTING } : {}), ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }), bindings);
   const issue = async (runner: string) => {
@@ -1306,7 +1305,6 @@ it.each([true, false])("the HTTP post-merge review records a verdict (approve=%s
   const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   await index.registerProject(await L.project());
   for (const model of POOL) await index.putModel(model);
-  const asked: string[] = [];
   const headReads: string[] = [];
   const ARTIFACTS = {
     get: async (repo: string) => ({
@@ -1315,12 +1313,11 @@ it.each([true, false])("the HTTP post-merge review records a verdict (approve=%s
       log: async () => { headReads.push(repo); throw new Error("repository head unavailable"); },
       info: async () => ({ remote: `https://git.test/${repo}`, defaultBranch: "main" }),
       readCommit: async () => null,
-      createToken: async () => { asked.push(repo); return { plaintext: `token-${repo}`, id: "id", expiresAt: "soon" }; },
       [Symbol.dispose]() {},
     }),
   } as unknown as Artifacts;
   const call = (verb: string, actor: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/${verb}`, {
-    method: "POST", headers: { authorization: ["Bearer", "post-merge-token"].join(" "), "x-atelier-actor": actor, "x-atelier-runner": "home:studio", "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: ["Bearer", "post-merge-token"].join(" "), "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "x-atelier-runner": "home:studio", "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: "post-merge-token", ARTIFACTS } as typeof env);
   const requested = await call("review-request", "owner", { reviewer: GPT, wanted: true });
   expect(requested.status).toBe(200);
@@ -1328,8 +1325,8 @@ it.each([true, false])("the HTTP post-merge review records a verdict (approve=%s
   const res = await call("review-claim", GPT, {});
   expect(res.status).toBe(200);
   const claim = await res.json() as ReviewClaim;
-  expect(claim).toMatchObject({ head: merge, criteria: await L.criteria(id), landed: { commit: merge }, readToken: { remote: `https://git.test/${name}--baseline` } });
-  expect(asked).toEqual([`${name}--baseline`, `${name}--baseline`]);
+  expect(claim).toMatchObject({ head: merge, criteria: await L.criteria(id), landed: { commit: merge }, readToken: { remote: `https://atelier.zone/git/${name}.git`, token: expect.any(String) } });
+  // On the Node server (task 5) the claim mints a read grant on the project's one repository, not an Artifacts token on its baseline.
   const findings = [{ ...blocker(), severity: approve ? "follow-up" as const : "blocking" as const }];
   const verdict = { head: merge, criteria: claim.criteria, request: claim.request, approve, note: "Audited the merge", findings };
   // Neither the submitted head nor an unrelated SHA can answer this claim.
@@ -1597,7 +1594,7 @@ it("authenticated renewal and release require the current generation and the cla
   const ownerToken = "review-lease-owner";
   const bindings = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;
   const call = (path: string, bearer: string, actor: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${bearer}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${bearer}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
   }), bindings);
   const issued = await call("/tokens", ownerToken, "owner", { actor: GPT, projects: [name] });
   expect(issued.status).toBe(201);

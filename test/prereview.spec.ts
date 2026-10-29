@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -26,6 +26,8 @@ const AT = "2026-10-11T12:00:00.000Z";
 const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({
   id, harness, where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: AT,
 });
+// Since G18 a write on the developer token names the acting model, one in the pool.
+const ACTING = OPUS;
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["src/**"] };
 
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
@@ -215,7 +217,7 @@ it("a fresh blocking verdict takes the waiter out at once, fences CLI and Workfl
   await refusal(L.queueProjectLanding(t2, "owner", false, "wf-1"), "prereview_blocked");
   // The CLI's route says the same.
   const res = await worker.fetch(new Request("https://atelier.test/api/projects/pre-block/landing-lease", {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ item: t2, queued: true }),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ item: t2, queued: true }),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(res.status).toBe(409);
   expect(((await res.json()) as { error: string }).error).toBe("prereview_blocked");
@@ -413,7 +415,7 @@ it("a runner's skip under the owner's token, before any claim, records the unava
   const s = (await views(L, t2))[0];
   expect(s.state).toBe("open");
   const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${t2}/review-skip`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-runner": RUNNER.runner, "content-type": "application/json" },
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" },
     body: JSON.stringify({ head: head(2), request: s.request, note: "capped" }),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(res.status, await res.clone().text()).toBe(200);
@@ -571,7 +573,9 @@ it("a lapsed lease takes every pre-review out of reach without ending it, until 
   expect(((await L.queued()) as unknown as { reviews: { dispatch: Dispatch }[] }).reviews.filter((r) => r.dispatch.job === "prereview")).toEqual([]);
   await refusal(claim(L, t2), "not_eligible", /no landing holds a live lease/);
   expect((await views(L, t2))[0].state).toBe("open");
-  await L.renewProjectLanding(t1, "owner");
+  // Since task 6 a lapsed lease is never renewed back to life: the holder refuses a renewal and takes the lease again.
+  await refusal(L.renewProjectLanding(t1, "owner"), "no_lease", /lapsed at/);
+  await L.beginProjectLanding(t1, "owner");
   expect((await claim(L, t2)).prereview?.binding.main).toBe(MAIN);
 });
 
@@ -596,10 +600,10 @@ it("the routes bind the claim to the baseline's head and judge the verdict again
   };
   const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as unknown as typeof env;
   const call = (token: string, actor: string, path: string, body: unknown, runner?: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json", ...(runner ? { "x-atelier-runner": runner } : {}) }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json", ...(runner ? { "x-atelier-runner": runner } : {}) }, body: JSON.stringify(body),
   }), bindings);
   const minted = await worker.fetch(new Request("https://atelier.test/api/tokens", {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ actor: GPT, projects: [project] }),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ actor: GPT, projects: [project] }),
   }), bindings);
   expect(minted.status).toBe(201);
   const token = ((await minted.json()) as { token: string }).token;

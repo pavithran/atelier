@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
+import { env } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
-import { expect, it } from "vitest";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { Finding } from "../src/review/verdict.ts";
@@ -20,10 +20,12 @@ const L = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name
 const blocker: Finding = { file: "a.ts", line: 1, severity: "blocking", text: "drops rows" };
 const followUp: Finding = { file: "b.ts", line: 2, severity: "follow-up", text: "name it" };
 
+// Since G18 a write by the "owner" actor on the developer token names the acting model, here one that neither built nor reviewed.
+const ACTING = "zcode/glm-5.3";
 function post(name: string, id: string, actor: string, body: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/finding`, {
     method: "POST",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" },
     body: JSON.stringify(body),
   }), testEnv);
 }
