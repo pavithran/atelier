@@ -22,14 +22,19 @@ const oneLine = (text) => String(text ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]
 // argument, path, pattern or description is ever kept, so no key can leak
 // through one, whatever form it takes. A call that runs no command (an edit,
 // a read) keeps no summary: its tool's name says what it was.
-// Shell quoting or escaping before (or in) the program word could hide
-// where an assignment's value ends (API_KEY="a b" npm), so such a command
-// is kept as the fixed name sh, and no word of it is read further.
+// The raw command is read through an allowlist, before any normalizing:
+// it is split on ASCII space and tab alone, and every character up to the
+// end of the program word must be one of A-Z a-z 0-9 _ = . / + : @ % -.
+// Anything else there (a quote, a backslash, $, a non-breaking or zero-width
+// space, a CR or LF, any non-ASCII letter) could hide where an assignment's
+// value ends, so the command is kept as the fixed name sh.
 export const PROGRAM = /^[A-Za-z0-9._+-]{1,40}$/;
+const SAFE_WORD = /^[A-Za-z0-9_=./+:@%-]+$/;
 export function summaryOf(name, input = {}) {
   if (typeof input?.command !== "string") return null;
-  for (const word of oneLine(input.command).split(" ").filter(Boolean)) {
-    if (/["'\\`$]/.test(word)) return "sh";
+  for (const word of input.command.split(/[ \t]+/)) {
+    if (word === "") continue;
+    if (!SAFE_WORD.test(word)) return "sh";
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
     const program = word.split("/").pop() ?? "";
     return PROGRAM.test(program) ? program : "sh";

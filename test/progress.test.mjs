@@ -354,3 +354,16 @@ test("a command whose assignments are quoted or escaped is kept as sh, never any
   assert.equal(keep("npm"), "npm");
   for (const bad of [V + " ", "a".repeat(41), `prefix ${V}`, "sk-abcdefghijklmnop", "0123456789abcdef0123456789abcdef"]) assert.equal(keep(bad), null, bad);
 });
+
+test("the program word is read from the raw command through an allowlist: odd whitespace or letters before it give sh", () => {
+  const V = "secret-value";
+  for (const [c, name] of [
+    [`API_KEY=prefix\u00a0${V} printenv`, "sh"], [`API_KEY=prefix\u200b${V} printenv`, "sh"], [`API_KEY=prefix\r${V} printenv`, "sh"],
+    [`API_KEY=prefix\n${V} printenv`, "sh"], [`API_KEY=${V}\tprintenv -0`, "printenv"], [`\tX=1\t git status`, "git"],
+    [`prïntenv ${V}`, "sh"], [`X=1 nоde app.js`, "sh"], [`API_KEY=a%b@c:d+e/f printenv`, "printenv"],
+  ]) {
+    const got = summaryOf("Bash", { command: c });
+    assert.equal(got, name, JSON.stringify(c));
+    assert.ok(!got.includes("secret"), JSON.stringify(c));
+  }
+});
