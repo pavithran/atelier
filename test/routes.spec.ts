@@ -2,7 +2,6 @@ import { env, server } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import { NO_OWNER_FACTOR } from "../src/rules.ts";
 import { expect, it } from "./support/vitest.ts";
-import { test as knownBug } from "node:test";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
 
@@ -476,12 +475,10 @@ it("init refuses an approval over its limit instead of cutting it", async () => 
   expect((await L.project()).policy.approval).toBe("b".repeat(500));
 });
 
-// A known bug of the Node runtime, found by this port (task 7) and left to
-// fix in src: the namespace names each Ledger's file by its name without
-// folding case (fileName in src/runtime/namespace.mjs), so on macOS's
-// case-insensitive disk project:Repo-Collision opens project:repo-collision's
-// file. Run as a todo, so it reports without failing the run.
-knownBug("init refuses another name for a registered baseline before touching Artifacts", { todo: "Ledger file names collide by case on a case-insensitive disk" }, async () => {
+// The Ledger of the refused name is its own: on macOS's case-insensitive
+// disk it opened the registered one's file until Ledger file names escaped
+// uppercase letters (src/runtime/ledger-file.mjs, found by task 7).
+it("init refuses another name for a registered baseline before touching Artifacts", async () => {
   await project("repo-collision");
   const res = await call("PUT", "/projects/Repo-Collision", "owner", { title: "Duplicate" });
   expect(res.status).toBe(409);

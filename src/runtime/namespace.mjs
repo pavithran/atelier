@@ -34,6 +34,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SqlStorage, openDatabase } from "./sql.mjs";
+import { ledgerFile } from "./ledger-file.mjs";
 
 const ALARM_RETRIES = 6;
 const TIMER_MAX = 2 ** 31 - 1;
@@ -43,9 +44,6 @@ export function notSupported(what) {
   return new Error(`not_supported: ${what} is not available on the Node server`);
 }
 
-function fileName(name) {
-  return encodeURIComponent(name).replace(/\./g, "%2E").replace(/\*/g, "%2A") + ".sqlite";
-}
 
 function crossed(err) {
   if (!(err instanceof Error)) return new Error(String(err));
@@ -85,7 +83,7 @@ class Obj {
     this.ns = ns;
     this.name = name;
     this.id = ns.idFromName(name);
-    this.db = openDatabase(join(ns.dir, "ledgers", fileName(name)));
+    this.db = openDatabase(join(ns.dir, "ledgers", ledgerFile(name)));
     this.sql = new SqlStorage(this.db);
     this.db.exec("CREATE TABLE IF NOT EXISTS _atelier_alarm (id INTEGER PRIMARY KEY CHECK (id = 1), at REAL, gen INTEGER NOT NULL, retries INTEGER NOT NULL DEFAULT 0)");
     this.tail = Promise.resolve();
