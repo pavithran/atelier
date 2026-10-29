@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { formatBrief, formatCriteriaReviews, formatReviews } from "../cli/atelier.mjs";
+import { approvalsByHead } from "../cli/commands/show.mjs";
 
 // `atelier show` cannot show a review's findings in full: the brief cuts the
 // newest rejection's note to one line and its --json carried no reviews at
@@ -43,6 +44,10 @@ const BRIEF = {
 const STAGE = { stage: "built", detail: { head: "2222222222222222222222222222222222222222", source: "push" } };
 // show prints the project's check limit (G7); this fixture's policy sets none.
 const LIMIT = { ...checkLimits({ checks: [] }), checkSilence: [] };
+// show --json leads with the task's own fields under ls --json's names (G4);
+// this fixture's item records only its id and head.
+const TASK = { id: "t1", head: HEAD_B, dispatch: null, runner: null, holds: [], lastFailure: null, unclaimed: [], dispatchState: null,
+  approvals: approvalsByHead({ item: { id: "t1", head: HEAD_B }, reviews: REVIEWS }), standingGo: { landing: null, overrideConfirmation: null, fastMode: null } };
 const briefText = (origin) => `${formatBrief("proj", "t1", BRIEF, origin)}\n\nStage: built at 22222222\n\nCheck limit: ${limitText({ checks: [] })}`;
 // t407: replies no verdict could be read from, kept on the task with the
 // reviewer and the head. One carries a forged Atelier line, which must not
@@ -107,7 +112,7 @@ test("show --json carries the reviews with their findings, newest first", async 
   for (const argv of [["show", "t1", "--json", "--project", "proj"], ["show", "t1", "--reviews", "--json", "--project", "proj"]]) {
     const r = await f.run(argv);
     assert.equal(r.status, 0, r.output);
-    assert.deepEqual(JSON.parse(r.output), { ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [] });
+    assert.deepEqual(JSON.parse(r.output), { ...TASK, ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [] });
   }
 });
 
@@ -138,7 +143,7 @@ test("show --reviews prints each unparsable reply with the reviewer and the head
   assert.equal(full.status, 0, full.output);
   assert.ok(full.output.includes(lines[kept]), "the kept reply is printed with the reviews");
   const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
-  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]], failedChecks: [] });
+  assert.deepEqual(JSON.parse(asJson.output), { ...TASK, ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]], failedChecks: [] });
 });
 
 // t438: the reviews of the acceptance criteria themselves, apart from the
@@ -217,7 +222,7 @@ test("show --reviews prints the criteria reviews after the reviews when the serv
   const plain = await f.run(["show", "t1", "--project", "proj"]);
   assert.ok(!plain.output.includes("Criteria reviews:"), "the brief alone prints none");
   const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
-  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [], criteriaReview: CRITERIA_VIEW });
+  assert.deepEqual(JSON.parse(asJson.output), { ...TASK, ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [], criteriaReview: CRITERIA_VIEW });
 });
 
 // A fake server answering the two routes show reads: the brief and the item's

@@ -406,7 +406,8 @@ it("conflicts, failed preparation, malformed replies, skips and runner failures 
   const p = await landing("pre-outcomes-2");
   const c = await claim(p.L, p.t2);
   await p.L.releaseReview(p.t2, GPT, outcomeNote({ outcome: "preparation", detail: "npm run regenerate failed" }), true, c.request);
-  expect((await views(p.L, p.t2))[0]).toMatchObject({ state: "preparation", detail: "npm run regenerate failed" });
+  // Round 12: a runner's detail is kept as facts alone.
+  expect((await views(p.L, p.t2))[0]).toMatchObject({ state: "preparation", detail: "step run" });
   const s = (await views(p.L, p.t3))[0];
   await p.L.recordReviewSkip(p.t3, s.request, head(3), RUNNER.runner, GPT, "capped", true);
   expect((await views(p.L, p.t3))[0]).toMatchObject({ state: "unavailable", outcome: "skipped" });
@@ -415,6 +416,13 @@ it("conflicts, failed preparation, malformed replies, skips and runner failures 
   const cq = await claim(q.L, q.t2);
   await q.L.releaseReview(q.t2, GPT, "harness exited 1", true, cq.request);
   expect((await views(q.L, q.t2))[0]).toMatchObject({ state: "unavailable", outcome: "runner" });
+  // Round 12: a pre-review infrastructure failure whose clone echoes a credential URL keeps none of it.
+  const leak = await landing("pre-outcomes-leak");
+  const cl = await claim(leak.L, leak.t2);
+  await leak.L.releaseReview(leak.t2, GPT, outcomeNote({ outcome: "runner", detail: "git clone https://x:secret@host/repo.git failed:\nfatal: unable to access 'https://x:secret@host/repo.git/'" }), true, cl.request);
+  const leaked = JSON.stringify([await views(leak.L, leak.t2), await events(leak.L, leak.t2), await leak.L.detail(leak.t2)]);
+  expect(leaked).not.toContain("secret");
+  expect((await views(leak.L, leak.t2))[0]).toMatchObject({ outcome: "runner", detail: "step clone" });
   // G6: a runner failure is asked again by command, not by the poll.
   await q.L.queueProjectLanding(q.t2, "owner");
   expect((await views(q.L, q.t2)).map((v) => [v.state, v.attempts])).toEqual([["unavailable", 1]]);
@@ -433,10 +441,10 @@ it("a runner's skip under the owner's token, before any claim, records the unava
   expect(s.state).toBe("open");
   const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${t2}/review-skip`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" },
-    body: JSON.stringify({ head: head(2), request: s.request, note: "capped" }),
+    body: JSON.stringify({ head: head(2), request: s.request }),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(res.status, await res.clone().text()).toBe(200);
-  expect((await views(L, t2))[0]).toMatchObject({ state: "unavailable", outcome: "skipped", detail: expect.stringMatching(/home:studio skipped it: capped/) });
+  expect((await views(L, t2))[0]).toMatchObject({ state: "unavailable", outcome: "skipped", detail: expect.stringMatching(/^home:studio skipped it$/) });
   // The waiter keeps its place, and a second report changes nothing.
   expect((await queueIds(L))[0]).toBe(t2);
   await L.recordReviewSkip(t2, s.request, head(2), RUNNER.runner, "owner", "capped", true);

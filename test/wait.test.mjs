@@ -59,10 +59,11 @@ test("waitFor polls until the task gets there, with exit code 0", async () => {
   assert.equal(reads.length, 0);
 });
 
-test("waitFor fails with code 1 when the task is abandoned mid-wait", async () => {
+test("waitFor ends with code 4, naming the task, when it is abandoned mid-wait", async () => {
   const reads = [detail("claimed"), detail("abandoned")];
   const r = await waitFor("merged", async () => reads.shift(), { ...clock() });
-  assert.deepEqual([r.ok, r.code], [false, 1]);
+  assert.deepEqual([r.ok, r.code], [false, 4]);
+  assert.match(r.text, /^t5 is abandoned/);
 });
 
 test("waitFor gives up at the timeout with code 3", async () => {
@@ -71,17 +72,17 @@ test("waitFor gives up at the timeout with code 3", async () => {
   assert.match(r.text, /still claimed; gave up waiting for merged/);
 });
 
-test("waitFor rides through a server that is briefly unreachable, then gives up with code 4", async () => {
+test("waitFor rides through a server that is briefly unreachable, then gives up with code 5", async () => {
   const down = Object.assign(new Error("server request failed"), { code: 4 });
   const reads = [down, down, detail("merged")];
   const r = await waitFor("merged", async () => { const x = reads.shift(); if (x instanceof Error) throw x; return x; }, { ...clock() });
   assert.equal(r.code, 0);
   const dead = await waitFor("merged", async () => { throw down; }, { ...clock(), retries: 2 });
-  assert.deepEqual([dead.ok, dead.code], [false, 4]);
+  assert.deepEqual([dead.ok, dead.code], [false, 5]);
   const refused = Object.assign(new Error("not_found: no such task"), { code: 1 });
   let calls = 0;
   const gone = await waitFor("merged", async () => { calls++; throw refused; }, { ...clock() });
-  assert.deepEqual([gone.code, calls], [4, 1], "a refusal is not retried");
+  assert.deepEqual([gone.code, calls], [5, 1], "a refusal is not retried");
 });
 
 // The process table, as ps and lsof print it.
@@ -231,14 +232,14 @@ test("atelier wait prints the outcome and exits by it", async (t) => {
   const merged = await runWait(t, [detail("claimed"), detail("merged")], ["t5", "--project", "demo", "--interval", "0.05"]);
   assert.deepEqual([merged.code, merged.output], [0, "t5 merged"]);
   const dead = await runWait(t, [detail("abandoned")], ["t5", "--for", "submitted", "--project", "demo"]);
-  assert.deepEqual([dead.code, dead.output], [1, "t5 is abandoned; it will not be submitted"]);
+  assert.deepEqual([dead.code, dead.output], [4, "t5 is abandoned; it will not be submitted"]);
   const slow = await runWait(t, [detail("claimed")], ["t5", "--project", "demo", "--timeout", "0.2", "--interval", "0.05"]);
   assert.equal(slow.code, 3);
   const missing = await runWait(t, [], ["t6", "--project", "demo"]);
-  assert.equal(missing.code, 4);
+  assert.equal(missing.code, 5);
   const bad = await runWait(t, [], ["t5", "--for", "soon", "--project", "demo"]);
   assert.equal(bad.code, 1);
-  assert.match(bad.output, /--for needs one of merged, submitted, reviewed, any-change/);
+  assert.match(bad.output, /--for needs one of merged, submitted, reviewed, any-change, answered, accepted, filed/);
 });
 
 

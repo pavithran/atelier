@@ -192,8 +192,8 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
   expect((await t.poll()).status).toBe(200);
   expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
   expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: (await t.L.item("t1")).head, passed: true })).status).toBe(200);
-  expect((await t.api("POST", `${t.base}/release`, { note: "done" })).status).toBe(200);
-  expect((await t.api("POST", "/runs", { actor: ACTOR, project: t.name, item: "t1", role: "build", outcome: "stalled", detail: "no changes" })).status).toBe(201);
+  expect((await t.api("POST", `${t.base}/release`, { note: "step harness; no new commit" })).status).toBe(200);
+  expect((await t.api("POST", "/runs", { actor: ACTOR, project: t.name, item: "t1", role: "build", outcome: "stalled", detail: "" })).status).toBe(201);
   expect((await t.api("GET", t.base)).status).toBe(403);
   expect((await t.request("GET", "/config", "invalid")).status).toBe(401);
   await I().revokeAgentToken(t.token.id);
@@ -298,7 +298,7 @@ it("concurrent different runners cannot both acquire the same dispatched job", a
 it.each([true, false])("provider-limit release metadata requires a runner token (%s)", async (runner) => {
   const t = await setup();
   await t.claim();
-  const body = { note: "codex usage limit until 2026-10-14T15:00:00.000Z: quota", providerLimit: true };
+  const body = { note: "step harness; codex usage limit until 2026-10-14T15:00:00.000Z", providerLimit: true };
   const response = runner
     ? await t.api("POST", `${t.base}/release`, body)
     : await t.request("POST", `${t.base}/release`, OWNER, ACTOR, body);

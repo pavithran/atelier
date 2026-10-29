@@ -32,7 +32,7 @@
 export const GRANT_LOCKS = {
   claim: "task", unclaim: "task", recordToken: "task", recordRunnerGit: "task", recordOwnerPortToken: "task",
   release: "task", handoff: "task", abandon: "task", dispatch: "task", merged: "task", recordMerge: "task", landedFast: "task",
-  accept: "task", recordPush: "task", observePush: "task", editItem: "task", addReview: "task", setFork: "task", moveFork: "task", taskRefreshed: "task",
+  accept: "task", setBlockedBy: "task", recordPush: "task", observePush: "task", editItem: "task", addReview: "task", setFork: "task", moveFork: "task", taskRefreshed: "task",
   beginProjectLanding: "lease", renewProjectLanding: "lease", cancelProjectLanding: "lease",
   hookPush: "push",
   submit: "planned", addEvidence: "planned",

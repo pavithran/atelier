@@ -8,8 +8,8 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Items", line: 1, slot: 20,
-      form: "edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--context TEXT]",
-      about: "The developer changes a task's title, brief, scope, acceptance criteria, non-goals, stop conditions next gate or context for the reviewers (the decisions a reviewer must not overrule, which every review brief carries). A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared. A new scope is recorded in the task's history and counts at once for a project that refuses overlapping claims, which refuses a claim whose scope overlaps a claimed, submitted or accepted task's alike (a cancelled merge leaves a task accepted); an unscoped task overlaps every one. Changing the acceptance criteria (their text, order or entries) withdraws every review and open or claimed review request of the old ones, an acceptance (the task goes back to claimed) and an override of the review, and says so: a fresh review of the new criteria is needed. The same list again changes nothing. The criteria of an integrated part, or of a task being landed, cannot change.",
+      form: "edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--context TEXT] [--blocked-by tA,tB]",
+      about: "The developer changes a task's title, brief, scope, acceptance criteria, non-goals, stop conditions next gate or context for the reviewers (the decisions a reviewer must not overrule, which every review brief carries). A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared. A new scope is recorded in the task's history and counts at once for a project that refuses overlapping claims, which refuses a claim whose scope overlaps a claimed, submitted or accepted task's alike (a cancelled merge leaves a task accepted); an unscoped task overlaps every one. Changing the acceptance criteria (their text, order or entries) withdraws every review and open or claimed review request of the old ones, an acceptance (the task goes back to claimed) and an override of the review, and says so: a fresh review of the new criteria is needed. The same list again changes nothing. The criteria of an integrated part, or of a task being landed, cannot change. `--blocked-by tA,tB` replaces the tasks it waits on (\"\" clears them): no runner is offered it, no claim takes it and no landing accepts it until every one is merged; an abandoned blocker keeps it waiting and listed, and a cycle is refused.",
     },
   ],
   flags: {
@@ -21,6 +21,7 @@ const spec: CommandSpec = {
     "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear',
     "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear',
     context: '--context needs text: atelier edit ID --context "TEXT", at most 2000 characters, or --context "" to clear',
+    "blocked-by": '--blocked-by needs task ids: atelier edit ID --blocked-by t3,t4, or --blocked-by "" to clear',
   },
   help: {
     flags: {
@@ -32,6 +33,7 @@ const spec: CommandSpec = {
       "--stop-when TEXT": 'replaces what tells the holder to stop and ask; once per entry, or --stop-when "" alone to clear it',
       "--next-gate TEXT": 'replaces the gate the task goes to next; --next-gate "" clears it',
       "--context TEXT": 'replaces the context every reviewer\'s brief carries, at most 2000 characters; --context "" clears it',
+      "--blocked-by tA,tB": 'replaces the tasks this one waits on, comma-separated; --blocked-by "" clears them. The task is not offered, claimed or accepted until each is merged',
     },
     example: 'atelier edit t3 --stop-when "The schema needs to change" --project demo',
   },

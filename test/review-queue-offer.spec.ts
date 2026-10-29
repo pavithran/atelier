@@ -103,7 +103,8 @@ it("a skip for another reason is not described as two releases without a verdict
   const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
   const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");
   expect(entries).toHaveLength(1);
-  expect(entries[0].reason).toContain("no reviewer credentials");
+  // Round 10: the runner's words are not kept; the skip is said without them.
+  expect(entries[0].reason).not.toContain("no reviewer credentials");
   expect(entries[0].reason).not.toContain("released it twice");
 });
 
@@ -116,11 +117,13 @@ it("an open review request a runner skipped after two releases is a stuck episod
   const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
   const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");
   expect(entries).toHaveLength(1);
-  expect(entries[0]).toMatchObject({ subject: ids[0], reason: expect.stringContaining("harness timed out") });
+  // Round 10: the runner's note is not kept; the skip is named by its runner.
+  expect(entries[0]).toMatchObject({ subject: ids[0] });
+  expect(entries[0].reason).not.toContain("harness timed out");
   expect(entries[0].reason).toContain("home:astra");
   expect(entries[0].recovery).toContain(`review-request ${ids[0]} --reviewer H/M`);
   expect(entries[0].recovery).toContain(`review-withdraw ${ids[0]} --request ${request.request}`);
-  expect(causeOf(entries[0])).toContain("harness timed out");
+  expect(causeOf(entries[0])).not.toContain("harness timed out");
 });
 
 // G6 retired the stop a release carried to its successor (t238): a released

@@ -11,7 +11,7 @@ import { runWithLimits } from "../bin/harness/limit.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
-import { redactKeys } from "../src/models/pool.ts";
+import { LOOKS_LIKE_KEY } from "../src/models/pool.ts";
 import { parseVerdict, replyFormat } from "../src/review/verdict.ts";
 import { parseVerification, verifierBrief } from "../src/review/verify.ts";
 
@@ -554,7 +554,10 @@ test("no adapter or catalogue file holds a key", () => {
   for (const dir of ["bin/harness", "cli/harness"]) {
     for (const name of readdirSync(join(repo, dir))) {
       const text = readFileSync(join(repo, dir, name), "utf8");
-      assert.equal(redactKeys(text), text, `${dir}/${name} carries something shaped like a key`);
+      // A key's shape, as the redactor knows it: the redactor itself now also
+      // clears every credential-named line (password: x), which source code
+      // has by design, so it is no longer the detector here.
+      for (const line of text.split("\n")) assert.ok(!LOOKS_LIKE_KEY.test(line), `${dir}/${name} carries something shaped like a key: ${line}`);
       assert.doesNotMatch(text, /apiKey:\s*"(?!\{env:)/, `${dir}/${name} sets an apiKey other than from the environment`);
     }
   }

@@ -65,6 +65,9 @@ export interface Item {
   // (criteriaOf in src/criteria.ts). Null or absent for any other item.
   partAccept?: string[] | null;
   blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
+  // The tasks this task waits on (G3): it is not offered, claimed or
+  // accepted until every one is merged. Absent when it waits on none.
+  blockedBy?: string[];
   // A blocking flag the push scan records (t332): one per file and line whose
   // added text held a key pattern. Only the file, line and a fingerprint of
   // the line are kept, never the matched value. It stands while it names the
@@ -3648,7 +3651,7 @@ export const DUMP_PAGE_BYTES = 2_000_000;
 
 // The meta rows a Ledger writes for itself when it starts or restarts. A
 // Ledger holding these and nothing else is empty: an import may fill it.
-export const LEDGER_STARTUP_META: readonly string[] = ["item-briefs", "review-provenance", "part-acceptance", "deployed-main", "ledger-restart"];
+export const LEDGER_STARTUP_META: readonly string[] = ["item-briefs", "review-provenance", "part-acceptance", "deployed-main", "ledger-restart", "runner-text-cutover"];
 
 // The meta row an import in progress keeps (Ledger.importBegin), never
 // dumped and never imported.

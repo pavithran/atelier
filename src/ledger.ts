@@ -51,6 +51,8 @@ import { ago } from "./floor.ts";
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, unoffered, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
+import { automaticNote, cleanRunFacts, runFactsText, withoutRunText, type RunFacts } from "./run-facts.ts";
+import { nextProgress, parseProgress, type Blocker, type ProgressRecord, type SituationFacts } from "./situation.ts";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
   PREREVIEW_DEPTH, PREREVIEW_JOB,
@@ -304,7 +306,7 @@ type SameExit = { signature: string; count: number };
 
 // A dispatched open task as the queue answers it: the core-file hold with every
 // blocker, the separate claim refusal, and what t420 adds for the owner's listing.
-type Waiting = Item & { held?: CoreHold; orphaned?: OrphanedClaim[]; claimRefusal?: string; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] };
+type Waiting = Item & { held?: CoreHold; orphaned?: OrphanedClaim[]; claimRefusal?: string; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[]; waitingOn?: Blocker[] };
 
 // What an init asks for. A field present replaces the project's current
 // value; a field absent keeps it. `reset` starts from the defaults, as a
@@ -1048,6 +1050,14 @@ export class Ledger extends DurableObject<Env> {
     // The task's stage after the change the event records (eventStage); null
     // for an event of no task and for one written before this column.
     if (!eventColumns.includes("stage")) this.sql.exec(`ALTER TABLE events ADD COLUMN stage TEXT`);
+    // Where runner text stops (round 12): rows recorded before this code first
+    // ran on the Ledger may hold text from a runner's error, process or log,
+    // and are read back by the fixed grammar; rows after hold the runner's
+    // facts and the words people and models wrote. A fresh Ledger has none before.
+    if (!this.sql.exec(`SELECT 1 FROM meta WHERE key = 'runner-text-cutover'`).toArray().length) {
+      const seq = Number(this.sql.exec(`SELECT COALESCE(MAX(seq), 0) AS n FROM events`).one().n);
+      this.sql.exec(`INSERT INTO meta (key, value) VALUES ('runner-text-cutover', ?)`, JSON.stringify({ seq, at: new Date().toISOString() }));
+    }
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
@@ -1117,6 +1127,10 @@ export class Ledger extends DurableObject<Env> {
     // fingerprint, reason, head, by and at, one per flagged line judged
     // safe, never removed. Null until the first clearance.
     if (!columns.includes("secret_cleared")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret_cleared TEXT`);
+    // The tasks a task waits on (G3): a JSON array of ids, null when none.
+    // The queue offers it, a claim takes it and a landing accepts it only
+    // once every one is merged (unmergedBlockers).
+    if (!columns.includes("blocked_by")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked_by TEXT`);
     this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
@@ -1656,7 +1670,7 @@ export class Ledger extends DurableObject<Env> {
   // The events recording and withdrawing assignments, for the acting
   // models' judgement record (src/models/judgement.ts).
   assignmentEvents(): LedgerEvent[] {
-    return this.sql.exec(`SELECT * FROM events WHERE kind IN ('assignment.recorded', 'assignment.withdrawn') ORDER BY seq`).toArray().map(eventOf);
+    return this.sql.exec(`SELECT * FROM events WHERE kind IN ('assignment.recorded', 'assignment.withdrawn') ORDER BY seq`).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
   }
 
   putModel(entry: ModelEntry): ModelEntry {
@@ -1955,7 +1969,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The most recent reports, newest first.
   runs(limit = RUN_REPORTS): RunReport[] {
-    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
+    return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => runRow(r.json));
   }
 
   // The build runs of each waiting dispatch since it was dispatched (t420),
@@ -1965,11 +1979,11 @@ export class Ledger extends DurableObject<Env> {
     return asks.flatMap(({ project, item, since }) => this.sql.exec(
       `SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? AND json_extract(json, '$.role') = 'build' AND json_extract(json, '$.at') >= ? ORDER BY id DESC LIMIT ?`,
       project, item, since, RUN_REPORTS,
-    ).toArray().map((r) => JSON.parse(r.json as string) as RunReport));
+    ).toArray().map((r) => runRow(r.json)));
   }
 
   runsForItem(project: string, item: string): RunReport[] {
-    return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
+    return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => runRow(r.json));
   }
 
   // One page of the run reports a model snapshot reads (t623): those kept at
@@ -1986,7 +2000,7 @@ export class Ledger extends DurableObject<Env> {
     const cut = through ?? ((this.sql.exec(`SELECT MAX(id) AS id FROM runs`).one().id as number | null) ?? 0);
     const rows = this.sql.exec(`SELECT id, json FROM runs WHERE id <= ? AND id < ? AND id >= ? AND json_extract(json, '$.at') < ? ORDER BY id DESC LIMIT ?`, cut, after ?? Number.MAX_SAFE_INTEGER, from, before, limit + 1).toArray();
     const page = rows.slice(0, limit);
-    return { through: cut, runs: page.map((r) => JSON.parse(r.json as string) as RunReport), next: rows.length > limit ? (page[page.length - 1].id as number) : null };
+    return { through: cut, runs: page.map((r) => runRow(r.json)), next: rows.length > limit ? (page[page.length - 1].id as number) : null };
   }
 
   // ── model snapshots (src/models/snapshot.ts, t623) ─────────────────────
@@ -2992,6 +3006,164 @@ export class Ledger extends DurableObject<Env> {
       });
   }
 
+  // The facts `atelier situation` and `atelier wait` read of this project in
+  // one call (G4, src/situation.ts): every live task, and each task named in
+  // `tasks` whatever its state, with the stage its newest event recorded and
+  // since when; the holds the queue keeps; the open review requests; the
+  // landing lease, queued landings and landing records; each task's newest
+  // check; the standing decisions. All recorded state; nothing is decided.
+  situationFacts(tasks: string[] = []): SituationFacts {
+    const named = new Set(tasks);
+    const items = this.items().filter((i) => named.has(i.id) || (i.state !== "merged" && i.state !== "abandoned"));
+    const stages: SituationFacts["stages"] = {};
+    const lastChecks: SituationFacts["lastChecks"] = {};
+    const landings: SituationFacts["landings"] = {};
+    for (const i of items) {
+      // The newest stage, and the oldest event of the unbroken run of it.
+      let stage: string | null = null, since: string | null = null;
+      for (const e of this.sql.exec(`SELECT stage, at FROM events WHERE item_id = ? AND stage IS NOT NULL ORDER BY seq DESC LIMIT 500`, i.id).toArray()) {
+        if (stage === null) stage = e.stage as string;
+        else if (e.stage !== stage) break;
+        since = e.at as string;
+      }
+      if (stage && since) stages[i.id] = { stage, since };
+      const check = this.evidenceFor(i.id).filter((e) => e.grade === "observed").at(-1);
+      if (check) lastChecks[i.id] = { claim: check.claim, passed: check.passed, head: check.head, at: check.at, by: check.by, ...(check.stopped ? { stopped: check.stopped } : {}) };
+      const landing = this.landingRecord(i.id);
+      if (landing) landings[i.id] = landing;
+    }
+    const waiting = this.dispatchWaiting();
+    const held = waiting.flatMap((w) => "held" in w && w.held ? [{ id: w.id, held: w.held }] : []);
+    // Every listed task's blockers with their states (G3), merged ones too.
+    const blockers: SituationFacts["blockers"] = Object.fromEntries(items.filter((i) => i.blockedBy?.length).map((i) => [i.id, i.blockedBy!.map((b) => this.blockerOf(b))]));
+    // Each listed task's progress line, as its runner last reported it (G21).
+    const progress: Record<string, ProgressRecord> = {};
+    for (const i of items) { const p = this.progressOf(i.id); if (p) progress[i.id] = p; }
+    const reviewRequests = this.sql.exec(`SELECT id, item, head, state, dispatch, claimedBy, runner, claimedAt, tier FROM review_requests WHERE state IN ('open', 'claimed') ORDER BY id`).toArray()
+      .map((r) => ({ id: Number(r.id), item: r.item as string, head: r.head as string, state: r.state as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch, claimedBy: (r.claimedBy as string | null) ?? null, runner: (r.runner as string | null) ?? null, claimedAt: (r.claimedAt as string | null) ?? null, tier: r.tier === 1 }));
+    const landJobs = this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at`).toArray().map((r) => ({ item: r.item as string, by: r.by as string, at: r.at as string }));
+    const project = this.project();
+    return { project: { name: project.name, policy: project.policy }, mode: this.mode(), items, stages, held, reviewRequests, landingLease: this.projectLanding(), landJobs, landings, lastChecks, standing: this.standingDecisions(), blockers, progress };
+  }
+
+  // ── a live progress line per task (G21) ───────────────────────────────────
+
+  // The runner's reports of the builds it runs, sent with its poll and
+  // heartbeat (cli/progress.mjs). Each is kept for its task while the task
+  // names that runner as its claim's, so a runner reports only its own
+  // builds; what changed is dated as received, and each run's spend is kept.
+  // Answers how many were kept.
+  recordProgress(runner: string, reports: unknown[]): number {
+    let kept = 0;
+    const now = new Date().toISOString();
+    for (const raw of reports.slice(0, 8)) {
+      const report = parseProgress(raw);
+      if (!report) continue;
+      const row = this.sql.exec(`SELECT runner, owner FROM items WHERE id = ?`, report.task).toArray()[0];
+      if (!row) continue;
+      const holds = typeof row.runner === "string" && row.runner.toLowerCase() === runner.toLowerCase() && row.owner === report.actor;
+      // A build that ended in a release (a failure, a provider limit, work in
+      // progress) reports its last line after the release: it is taken
+      // against the run's recorded identity, the task's newest claim, made
+      // by this actor on this runner, and never over a newer run's line.
+      const claim = holds ? null : this.sql.exec(`SELECT actor, data FROM events WHERE item_id = ? AND kind = 'item.claimed' ORDER BY seq DESC LIMIT 1`, report.task).toArray()[0];
+      const claimedHere = !!claim && claim.actor === report.actor && String((JSON.parse(claim.data as string) as { runner?: string }).runner ?? "").toLowerCase() === runner.toLowerCase();
+      const prev = this.progressOf(report.task);
+      if (!holds && !claimedHere) continue;
+      if (prev && Date.parse(prev.startedAt) > Date.parse(report.startedAt)) continue;
+      const next = nextProgress(prev, report, runner.toLowerCase(), now);
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `task-progress:${report.task}`, JSON.stringify(next));
+      kept++;
+    }
+    return kept;
+  }
+
+  // The landing the developer asked for (atelier land --queue), with their words, while it stands.
+  private landJobOf(id: string): { by: string; at: string; quote: string | null } | null {
+    const row = this.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
+    return row ? { by: row.by as string, at: row.at as string, quote: (row.quote as string | null) ?? null } : null;
+  }
+
+  private cutover(): { seq: number; at: string } {
+    return this.runnerMeta<{ seq: number; at: string }>("runner-text-cutover") ?? { seq: 0, at: "" };
+  }
+
+  progressOf(id: string): ProgressRecord | null {
+    return this.runnerMeta<ProgressRecord>(`task-progress:${id}`);
+  }
+
+  // ── tasks that wait on tasks (G3) ─────────────────────────────────────────
+
+  // A task named as a blocker, with its state and title; one that does not
+  // exist is "missing", which never merges.
+  private blockerOf(id: string): Blocker {
+    const row = this.sql.exec(`SELECT state, title FROM items WHERE id = ?`, id).toArray()[0];
+    return { id, state: (row?.state as string | undefined) ?? "missing", title: (row?.title as string | undefined) ?? "" };
+  }
+
+  // The tasks `item` waits on that are not merged. An abandoned blocker stays
+  // among them, so the task stays waiting and listed until the developer
+  // drops it; nothing releases it silently.
+  unmergedBlockers(item: Pick<Item, "blockedBy">): Blocker[] {
+    return (item.blockedBy ?? []).map((b) => this.blockerOf(b)).filter((b) => b.state !== "merged");
+  }
+
+  // Refuses to claim or accept a task while a task it waits on is not merged.
+  assertBlockersMerged(item: Item, what: "claimed" | "accepted" | "merged" | "given a landing grant"): void {
+    const waits = this.unmergedBlockers(item);
+    if (!waits.length) return;
+    const dead = waits.filter((b) => b.state === "abandoned" || b.state === "missing");
+    const keep = (item.blockedBy ?? []).filter((b) => !dead.some((d) => d.id === b));
+    throw new RuleError("blocked_by", `${item.id} waits on ${waits.map((b) => `${b.id} (${b.state})`).join(", ")}, which must merge before it is ${what}${dead.length ? `; ${dead.map((b) => b.id).join(", ")} will never merge, so it waits until the developer drops ${dead.length === 1 ? "it" : "them"}` : ""}`, 409,
+      dead.length ? `only the developer can: atelier edit ${item.id} --blocked-by ${keep.length ? keep.join(",") : "''"}` : `atelier wait --all ${waits.map((b) => b.id).join(",")} --for merged, then run the same command again`);
+  }
+
+  // The developer sets the tasks a task waits on (G3), replacing the list;
+  // an empty list clears it. Each must exist and none may lead back to the
+  // task through the lists already recorded: a cycle is refused and nothing
+  // changes. A closed task and a plan or its part (ordered by the plan) take none.
+  setBlockedBy(id: string, actor: string, ids: string[]): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer sets the tasks a task waits on", 403, `only the developer can: atelier edit ${id} --blocked-by tA,tB`);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; it waits on nothing now`, 409, "run atelier ls to pick another task");
+    if (item.kind === "plan" || item.kind === "part") throw new RuleError("plan_ordered", `${id} is a plan or a part of one, whose parts are ordered by the plan's dependencies; nothing was changed`, 409, `order the parts in the plan: atelier plan show ${item.plan ?? id}`);
+    const list = [...new Set(ids)];
+    for (const b of list) {
+      if (!/^t[1-9][0-9]*$/.test(b)) throw new RuleError("bad_blocked_by", `"${b}" is not a task id such as t12`, 400);
+      if (b === id) throw new RuleError("blocked_by_cycle", `${id} cannot wait on itself; nothing was changed`, 409, `atelier edit ${id} --blocked-by ${list.filter((x) => x !== id).join(",") || "''"}`);
+      this.item(b);
+    }
+    // A merge already begun may be on the project's branch: a new blocker
+    // could not hold it back, so none is added until it ends or is cancelled.
+    const adding = list.filter((b) => !(item.blockedBy ?? []).includes(b) && this.blockerOf(b).state !== "merged");
+    if (adding.length && this.landing(id)) throw new RuleError("landing", `${id} is being merged, so it cannot be made to wait on ${adding.join(", ")} now; nothing was changed`, 409, `let the merge finish, or cancel it with atelier merge ${id} --cancel, then set the blockers`);
+    const cycle = this.blockedByCycle(id, list);
+    if (cycle) throw new RuleError("blocked_by_cycle", `${cycle.join(" waits on ")}: ${id} would wait on itself through that chain; nothing was changed`, 409, `atelier edit ${id} --blocked-by ${list.filter((x) => x !== cycle[1]).join(",") || "''"}, or atelier edit ${cycle[1]} --blocked-by to break the chain there`);
+    const at = new Date().toISOString();
+    this.update(id, { blocked_by: list.length ? JSON.stringify(list) : null }, at);
+    this.log(id, actor, "item.blocked_by", { blockedBy: list, was: item.blockedBy ?? [] }, at);
+    return this.item(id);
+  }
+
+  // The chain from `id` through one of `list` and the recorded lists back to
+  // `id`, as [id, first, ..., id], or null when there is none.
+  private blockedByCycle(id: string, list: string[]): string[] | null {
+    const edges = new Map(this.sql.exec(`SELECT id, blocked_by FROM items WHERE blocked_by IS NOT NULL`).toArray().map((r) => [r.id as string, JSON.parse(r.blocked_by as string) as string[]]));
+    edges.set(id, list);
+    const seen = new Set<string>();
+    const walk = (from: string, path: string[]): string[] | null => {
+      for (const next of edges.get(from) ?? []) {
+        if (next === id) return [...path, next];
+        if (seen.has(next)) continue;
+        seen.add(next);
+        const found = walk(next, [...path, next]);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(id, [id]);
+  }
+
   private runnerMeta<T>(key: string): T | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).toArray()[0];
     return row ? JSON.parse(row.value as string) : null;
@@ -3017,7 +3189,7 @@ export class Ledger extends DurableObject<Env> {
     // separately from the grants that authorize build/plan operations.
     const queue = this.queued(undefined, idleRunner), { waiting, reviews } = queue;
     for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
-      if (!item.dispatch || "held" in item && item.held) continue;
+      if (!item.dispatch || "held" in item && item.held || ((item as Waiting).waitingOn?.length ?? 0) > 0) continue;
       const assignment = assign(item.dispatch, offer);
       if (!assignment || ["integrate", "refresh"].includes(item.dispatch.job ?? "")) continue;
       // A pre-review (t524) is a review job: it grants what a review does.
@@ -3140,6 +3312,8 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const item = this.item(id);
     assertNotTerminal(item);
+    // A task waiting on tasks not yet merged is not taken (G3).
+    if (actor !== INTEGRATOR) this.assertBlockersMerged(item, "claimed");
     if (runnerToken) this.assertRunnerJob(runnerToken, id, actor, true);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
@@ -3555,7 +3729,9 @@ export class Ledger extends DurableObject<Env> {
       return { ...i, held, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
     });
     if (JSON.stringify(previous) !== JSON.stringify(current)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('core-holds', ?)`, JSON.stringify(current));
-    return result;
+    // A task waiting on tasks not yet merged (G3) carries them: the queue
+    // offers it to no runner until every one is merged.
+    return result.map((w) => { const waits = this.unmergedBlockers(w); return waits.length ? { ...w, waitingOn: waits } : w; });
   }
 
   // Both halves of the queue in one call, as a runner's poll reads them:
@@ -3608,7 +3784,9 @@ export class Ledger extends DurableObject<Env> {
     const out = new Map<string, T[]>();
     for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:%`).toArray()) {
       const id = (row.key as string).split(":")[1];
-      out.set(id, [...out.get(id) ?? [], JSON.parse(row.value as string) as T]);
+      // A run skip kept before the facts rule shows its facts' line, never its note.
+      const value = JSON.parse(row.value as string) as T & { note?: string; facts?: RunFacts | null };
+      out.set(id, [...out.get(id) ?? [], (prefix === "run-skip" ? withoutRunText(value, "note") : value) as T]);
     }
     return out;
   }
@@ -3640,7 +3818,7 @@ export class Ledger extends DurableObject<Env> {
   // A task the reporting runner holds is kept too, for any kind it reports
   // (RUN_SKIP_KINDS in src/dispatch/rules.ts says why each may follow a run
   // that kept its claim); a kind it never reports is refused.
-  recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, note: string): boolean {
+  recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, rawFacts: unknown): boolean {
     if (!isRunSkipKind(kind)) throw new RuleError("bad_kind", `a run skip's kind is ${RUN_SKIP_KINDS.join(", ")}, not ${String(kind).slice(0, 40)}`, 400);
     const item = this.item(id);
     const d = item.dispatch;
@@ -3652,7 +3830,9 @@ export class Ledger extends DurableObject<Env> {
     // an X-Atelier-Runner header names any actor, so the report is refused
     // unless it comes from the actor that holds the task.
     if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403, `the holder reports the skip, or run atelier show ${id}`);
-    const skip: RunSkip = { runner, actor, kind, failures, note: redactKeys(note.replace(TEXT_CONTROLS, " ")).slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
+    // No text of the run's output is kept: the note is the facts' line.
+    const facts = cleanRunFacts(rawFacts);
+    const skip: RunSkip = { runner, actor, kind, failures, note: runFactsText(facts), ...(facts ? { facts } : {}), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("run-skip", id, runner, d.at, skip);
     // A task the runner released before it decided to give up (an ordinary
     // stall, twice) carries no word of it (t584): the give-up is recorded here,
@@ -3660,7 +3840,7 @@ export class Ledger extends DurableObject<Env> {
     if (!heldByRunner && kind !== "skipped") {
       const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched', 'item.gave_up') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const said = last?.kind === "item.released" && String((JSON.parse(last.data as string) as { note?: unknown }).note ?? "").startsWith(GAVE_UP);
-      if (last?.kind !== "item.gave_up" && !said) this.log(id, actor, "item.gave_up", { runner, kind, note: skip.note }, skip.at);
+      if (last?.kind !== "item.gave_up" && !said) this.log(id, actor, "item.gave_up", { runner, kind, note: skip.note, ...(facts ? { facts } : {}) }, skip.at);
     }
     return true;
   }
@@ -4865,7 +5045,9 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  release(id: string, actor: string, note: string, proved = false, token?: string | null, providerLimit = false): Item {
+  release(id: string, actor: string, note: string, proved = false, token?: string | null, providerLimit = false, automatic = false): Item {
+    // A runner's release keeps its facts alone, whoever calls (round 11).
+    if (automatic) note = automaticNote(note);
     const item = this.releaseAllowed(id, actor, note);
     // The holder's release of a build that ended validation_blocked (t326)
     // blocks the task instead, as block() would: it keeps its owner, runner
@@ -4892,7 +5074,7 @@ export class Ledger extends DurableObject<Env> {
       return this.item(id);
     }
     this.update(id, { owner: null, state: "open" }, at);
-    this.log(id, actor, "item.released", { from: item.owner, by: actor, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
+    this.log(id, actor, "item.released", { from: item.owner, by: actor, note, automatic, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -4930,6 +5112,8 @@ export class Ledger extends DurableObject<Env> {
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
+    // The lander merges no task before the tasks it waits on (G3).
+    this.assertBlockersMerged(item, "accepted");
     if (criteria !== undefined) assertShownCriteria(item, criteria);
     const project = this.project(), policy = project.policy;
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
@@ -5083,6 +5267,9 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409, `run atelier show ${id}, review it again, then atelier merge ${id}`);
     }
+    // A task accepted before a blocker was added keeps its acceptance, but
+    // no merge of it begins until every blocker is merged (G3).
+    this.assertBlockersMerged(item, "merged");
     // A standing secret flag blocks the merge too (t332), as it blocks
     // acceptance through the gate; the message names the flag, never the value.
     const secret = secretBlockers(item);
@@ -6083,7 +6270,10 @@ export class Ledger extends DurableObject<Env> {
       request: prereviewRequest(row.id as number), item: row.item as string, state: row.state as PrereviewState,
       reviewer: (row.claimedBy as string | null) ?? (d?.agent && d.model ? `${d.agent}/${d.model}` : null), runner: (row.runner as string | null) ?? null,
       binding, at: row.at as string, claimedAt: (row.claimedAt as string | null) ?? null, settledAt: (row.settledAt as string | null) ?? null,
-      attempts: row.attempts as number, outcome: result.outcome ?? null, detail: result.detail ?? null, files: result.files ?? [],
+      // An older result's detail is read as facts too, but a malformed verdict's or a skip's (round 12).
+      // A detail the reviewer's runner sent (by the claim's reviewer) is read
+      // as facts too, however old; the server's own (stale, withdrawn) stays.
+      attempts: row.attempts as number, outcome: result.outcome ?? null, detail: result.detail == null ? null : runnerDetail(result as { outcome?: string; by?: string }, row.claimedBy as string | null) && String(row.settledAt ?? "") <= this.cutover().at ? automaticNote(result.detail) : result.detail, files: result.files ?? [],
       verdict: result.verdict ?? null, note: result.note ?? null, findings: result.findings ?? [], detached: row.detached === 1, ownerAction: result.ownerAction ?? null,
     };
     return { ...view, recovery: prereviewRecovery(view) };
@@ -6371,7 +6561,7 @@ export class Ledger extends DurableObject<Env> {
   // The task's latest event of the kinds named, or undefined.
   private lastEvent(id: string, kinds: string[]): LedgerEvent | undefined {
     const row = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN (${kinds.map(() => "?").join(",")}) ORDER BY seq DESC LIMIT 1`, id, ...kinds).toArray()[0];
-    return row ? eventOf(row) : undefined;
+    return row ? eventOf(row, this.owner, this.cutover().seq) : undefined;
   }
 
   // A rerun of a release that already stands, for the route to answer before
@@ -6398,7 +6588,7 @@ export class Ledger extends DurableObject<Env> {
 
   private eventAt(seq: number): LedgerEvent | undefined {
     const row = this.sql.exec(`SELECT * FROM events WHERE seq = ?`, seq).toArray()[0];
-    return row ? eventOf(row) : undefined;
+    return row ? eventOf(row, this.owner, this.cutover().seq) : undefined;
   }
 
   // The revisions a task was submitted at up to its latest acceptance, and
@@ -6471,7 +6661,7 @@ export class Ledger extends DurableObject<Env> {
   // This task's review events at a head, oldest first: each one's sequence,
   // reviewer and findings, as `atelier finding` selects among them.
   private reviewEventsAt(id: string, head: string): { seq: number; by: string; findings: Finding[] }[] {
-    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected') ORDER BY seq`, id).toArray().map(eventOf)
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected') ORDER BY seq`, id).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq))
       .filter((e) => e.data.head === head)
       .map((e) => ({ seq: e.seq, by: e.actor, findings: Array.isArray(e.data.findings) ? e.data.findings as Finding[] : [] }));
   }
@@ -6870,7 +7060,7 @@ export class Ledger extends DurableObject<Env> {
   fastLandingEvents(id: string): LedgerEvent[] {
     const landed = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'item.landed_fast'`, id).one().seq;
     if (landed === null || landed === undefined) return [];
-    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.landed_fast', 'item.fix_filed') OR (seq >= ? AND kind IN ('review.requested', 'review.approved', 'review.rejected'))) ORDER BY seq DESC`, id, landed).toArray().map(eventOf);
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.landed_fast', 'item.fix_filed') OR (seq >= ? AND kind IN ('review.requested', 'review.approved', 'review.rejected'))) ORDER BY seq DESC`, id, landed).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
   }
 
   // The events the task page's other blocks are defined by, newest first,
@@ -6888,7 +7078,7 @@ export class Ledger extends DurableObject<Env> {
       `SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.merged', 'part.integrated', 'item.submitted', 'item.defect_of', 'item.defect', 'item.merge_recorded', 'review.overridden') OR (? IS NOT NULL AND seq >= ? AND (kind = 'item.fast_ready' OR kind IN (${stale})))) ORDER BY seq DESC`,
       id, ready ?? null, ready ?? 0, ...FAST_READY_STALE,
     ).toArray();
-    return rows.map(eventOf);
+    return rows.map((r) => eventOf(r, this.owner, this.cutover().seq));
   }
 
   // The events the task page's finding judgements are read from (t47), by
@@ -6896,7 +7086,7 @@ export class Ledger extends DurableObject<Env> {
   // verdicts recorded on their findings and the served annotations, oldest
   // first. A long record never drops the review a verdict names.
   judgementEvents(id: string): LedgerEvent[] {
-    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected', 'review.finding', ?) ORDER BY seq`, id, SERVED).toArray().map(eventOf);
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected', 'review.finding', ?) ORDER BY seq`, id, SERVED).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
   }
 
   // Whether the task merged in fast mode: by a receipt (landedFast) or by a
@@ -6920,7 +7110,7 @@ export class Ledger extends DurableObject<Env> {
   fastReadyList(): FastReadyEntry[] {
     this.project();
     const kinds = ["item.fast_ready", ...FAST_READY_STALE];
-    const rows = this.sql.exec(`SELECT * FROM events WHERE item_id IN (SELECT DISTINCT item_id FROM events WHERE kind = 'item.fast_ready') AND kind IN (SELECT value FROM json_each(?)) ORDER BY seq`, JSON.stringify(kinds)).toArray().map(eventOf);
+    const rows = this.sql.exec(`SELECT * FROM events WHERE item_id IN (SELECT DISTINCT item_id FROM events WHERE kind = 'item.fast_ready') AND kind IN (SELECT value FROM json_each(?)) ORDER BY seq`, JSON.stringify(kinds)).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
     const byItem = new Map<string, LedgerEvent[]>();
     for (const e of rows) byItem.set(e.itemId!, [...(byItem.get(e.itemId!) ?? []), e]);
     const out: FastReadyEntry[] = [];
@@ -7001,7 +7191,7 @@ export class Ledger extends DurableObject<Env> {
   // changes: notes are only added, and a repeat of one is the same note.
   goalNotes(id: string): GoalNote[] {
     const rows = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'goal.notes' ORDER BY seq`, id).toArray();
-    return openNotes(rows.map(eventOf).flatMap((e) => e.data.notes as GoalNote[]));
+    return openNotes(rows.map((r) => eventOf(r, this.owner, this.cutover().seq)).flatMap((e) => e.data.notes as GoalNote[]));
   }
 
   // The goal's notes numbered, each with the task filed from it, if any, as
@@ -7053,7 +7243,7 @@ export class Ledger extends DurableObject<Env> {
     const rows = id
       ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`, id, below, limit).toArray()
       : this.sql.exec(`SELECT * FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?`, below, limit).toArray();
-    return rows.map(eventOf);
+    return rows.map((r) => eventOf(r, this.owner, this.cutover().seq));
   }
 
   // The figures a project's showcase page draws, over the whole record, counted in SQL
@@ -7185,7 +7375,7 @@ export class Ledger extends DurableObject<Env> {
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
     const lastDeploy = this.lastDeploy();
-    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id) };
+    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -7270,9 +7460,13 @@ export class Ledger extends DurableObject<Env> {
     return listed.filter((i) => i.state === "open" && i.dispatch).flatMap((i) => {
       const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched', 'item.gave_up') ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
       if (last?.kind !== "item.released" && last?.kind !== "item.gave_up") return [];
-      const note = (JSON.parse(last.data as string) as { note?: unknown }).note;
+      const data = JSON.parse(last.data as string) as { note?: unknown; facts?: RunFacts | null };
+      const note = data.note;
+      // A give-up's note is its run's facts alone (round 10), however old the row.
+      // A give-up release is a runner's alone, so its note is read as one (round 11).
+      const why = last.kind === "item.gave_up" ? runFactsText(cleanRunFacts(data.facts)) : typeof note === "string" ? automaticNote(note).slice(GAVE_UP.length) : "";
       return typeof note === "string" && (last.kind === "item.gave_up" || note.startsWith(GAVE_UP))
-        ? [{ project, itemId: i.id, title: i.title, kind: "gave-up" as const, reason: `${last.kind === "item.gave_up" ? note : note.slice(GAVE_UP.length)}; run \`atelier dispatch ${i.id}\` to send it out again`, weight: 72 }] : [];
+        ? [{ project, itemId: i.id, title: i.title, kind: "gave-up" as const, reason: `${why || "the runner gave it up"}; run \`atelier dispatch ${i.id}\` to send it out again`, weight: 72 }] : [];
     });
   }
 
@@ -7511,7 +7705,7 @@ export class Ledger extends DurableObject<Env> {
   // reported as unavailable, never as an empty history.
   private pastFindings(item: Item): HistoryRead {
     try {
-      const rows = this.sql.exec(`SELECT * FROM events WHERE kind = 'review.finding' ORDER BY seq`).toArray().map(eventOf);
+      const rows = this.sql.exec(`SELECT * FROM events WHERE kind = 'review.finding' ORDER BY seq`).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
       const abandoned = new Set(this.sql.exec(`SELECT id FROM items WHERE state = 'abandoned'`).toArray().map((r) => r.id as string));
       return { entries: historyEntries(rows, item.scope, item.id, abandoned) };
     } catch {
@@ -7786,7 +7980,8 @@ export class Ledger extends DurableObject<Env> {
     // an invalid proposal, which blocks the plan instead.
     const released = this.events(item.id).find((e) => e.kind === "item.released");
     const releasedNote = released && typeof released.data.note === "string" ? released.data.note : "";
-    const harnessFailure = releasedNote.startsWith("the harness failed: ") ? releasedNote : null;
+    // A runner's release names the harness step as a fact (round 11); an older one said it in words.
+    const harnessFailure = /^(?:the harness failed: |step harness\b)/.test(releasedNote) ? releasedNote : null;
     return {
       item,
       phase: planPhase({ proposed: newest !== null, approved: approval !== null, blocked: record.blocked, state: item.state }),
@@ -8433,15 +8628,17 @@ export class Ledger extends DurableObject<Env> {
   // skipped, instead of waiting out the hour. The request must be the item's
   // and at `head`, so a report never lands against nothing; a request no
   // longer open is still recorded, since a report may arrive late.
-  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, note: string, proved = false): void {
-    note = redactKeys(note);
+  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, rawFacts: unknown, proved = false): void {
+    // No text of the run's output is kept: the note is the facts' line.
+    const facts = cleanRunFacts(rawFacts);
+    const note = runFactsText(facts);
     if (isPrereviewRequest(request)) { this.prereviewOutcome(itemId, actor, request, { outcome: "skipped", detail: `${runner} skipped it${note ? `: ${note.slice(0, REASON_MAX)}` : ""}` }, proved, head); return; }
     this.item(itemId);
     const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
     if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404, "run atelier show ID");
     if (row.head !== head) throw new RuleError("bad_head", `review request ${request} of ${itemId} is at ${(row.head as string).slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
     const at = new Date().toISOString();
-    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
+    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note } : {}), ...(facts ? { facts } : {}) }, at, proved);
   }
 
   // The live request the task's detail reads: at its head, or for a merged
@@ -8481,9 +8678,11 @@ export class Ledger extends DurableObject<Env> {
     if (!this.sql.exec(`SELECT id FROM review_requests WHERE id = ? AND item = ? AND state = 'open'`, request, itemId).toArray().length) return [];
     const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
     return rows.flatMap((r) => {
-      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; note?: unknown };
+      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; facts?: RunFacts | null };
       if (data.request !== request) return [];
-      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(typeof data.note === "string" && data.note ? { note: data.note } : {}) }];
+      // The note is the skip's facts alone (round 10), however old the row.
+      const note = runFactsText(cleanRunFacts(data.facts));
+      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(note ? { note } : {}) }];
     });
   }
 
@@ -8703,7 +8902,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The orchestrator's context for a task: the latest item.context event.
   private taskContext(id: string): string | null {
-    return contextOf(this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'item.context' ORDER BY seq`, id).toArray().map(eventOf));
+    return contextOf(this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'item.context' ORDER BY seq`, id).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq)));
   }
 
   // Sets or replaces the task's context, decisions the reviewer must not
@@ -8724,7 +8923,7 @@ export class Ledger extends DurableObject<Env> {
     const latest = this.events(id);
     const oldest = latest.length ? latest[latest.length - 1].seq : Number.MAX_SAFE_INTEGER;
     const older = this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' AND seq < ? ORDER BY seq DESC`, id, oldest).toArray()
-      .map(eventOf);
+      .map((r) => eventOf(r, this.owner, this.cutover().seq));
     return [...latest, ...older];
   }
 
@@ -8733,7 +8932,7 @@ export class Ledger extends DurableObject<Env> {
   // rejection whose every blocking finding the owner refuted no longer blocks
   // another review at its head (t240).
   private findingVerdicts(id: string): LedgerEvent[] {
-    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' ORDER BY seq`, id).toArray().map(eventOf);
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'review.finding' ORDER BY seq`, id).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
   }
 
   // Each reviewer model's precision on the blocking findings the owner judged
@@ -8747,7 +8946,7 @@ export class Ledger extends DurableObject<Env> {
     // and the served annotations, so a finding counts under the model that
     // served its review here as on the Models page (t621; gpt-6-astra's and
     // gemini-4-argon's reviews: routing read the declared model).
-    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected', 'event.served') ORDER BY seq`).toArray().map(eventOf);
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected', 'event.served') ORDER BY seq`).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
     return buildPrecision([{ project: "this", events }], window, this.owner);
   }
 
@@ -9297,7 +9496,12 @@ export class Ledger extends DurableObject<Env> {
   }
 
   releaseReview(itemId: string, actor: string, note: string, proved = false, request?: number): void {
-    if (isPrereviewRequest(request)) { this.prereviewOutcome(itemId, actor, request, parseOutcomeNote(String(note ?? "")), proved); return; }
+    // A pre-review's outcome (the runner protocol alone sends one) keeps facts
+    // alone (round 12): the outcome word, a conflict's files and main, and a
+    // detail rebuilt by the fixed grammar (a malformed verdict's says what the
+    // reviewer wrote). Other notes the runner sends are facts already (the
+    // runner's guard test); text a person or a model writes stays.
+    if (isPrereviewRequest(request)) { const o = parseOutcomeNote(String(note ?? "")); this.prereviewOutcome(itemId, actor, request, o.outcome === "malformed" ? o : { ...o, detail: automaticNote(o.detail) }, proved); return; }
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
     this.item(itemId);
@@ -9428,7 +9632,10 @@ export class Ledger extends DurableObject<Env> {
   }
 
   criteriaReviewsFor(id: string): CriteriaReview[] {
-    return this.sql.exec(`SELECT * FROM criteria_reviews WHERE item = ? ORDER BY id`, id).toArray().map(toCriteriaReview);
+    // A failure recorded before the cutover is read by the fixed grammar (round 12).
+    const at = this.cutover().at;
+    return this.sql.exec(`SELECT * FROM criteria_reviews WHERE item = ? ORDER BY id`, id).toArray().map(toCriteriaReview)
+      .map((c) => c.failure && c.decidedAt && c.decidedAt <= at ? { ...c, failure: automaticNote(c.failure) } : c);
   }
 
   criteriaResolutionsFor(id: string): CriteriaResolution[] {
@@ -10403,7 +10610,7 @@ export class Ledger extends DurableObject<Env> {
 
   private refreshResultOf(key: string): RefreshResult | null {
     const row = this.sql.exec(`SELECT json FROM refresh_results WHERE key = ?`, key).toArray()[0];
-    return row ? JSON.parse(row.json as string) as RefreshResult : null;
+    return row ? refreshResultRow(row.json, this.cutover().at) : null;
   }
 
   private saveRefreshResult(result: RefreshResult): void {
@@ -10470,7 +10677,7 @@ export class Ledger extends DurableObject<Env> {
       const item = this.item(r.item as string);
       const target = this.currentTarget(item, at)!;
       const last = this.sql.exec(`SELECT json FROM refresh_results WHERE item = ? ORDER BY rowid DESC LIMIT 1`, item.id).toArray()[0];
-      return { item: item.id, title: item.title, state: item.state, owner: item.owner, head: item.head, standing: this.refreshStandingOf(item, at), target, last: last ? JSON.parse(last.json as string) as RefreshResult : null };
+      return { item: item.id, title: item.title, state: item.state, owner: item.owner, head: item.head, standing: this.refreshStandingOf(item, at), target, last: last ? refreshResultRow(last.json, this.cutover().at) : null };
     });
   }
 
@@ -11197,6 +11404,8 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("import_in_progress", `import ${open} into this Ledger has begun and not finished; it already holds some of that dump's rows. Resume it with step resume, or abort it with step abort, naming ${open}`, 409, `run atelier ledger import --file F --resume ${open}, or atelier ledger import --abort ${open}`);
     }
     const held = this.heldRows();
+    // The cutover this empty Ledger wrote at its start gives way to the dump's own (importFinish).
+    if (!held.length) this.sql.exec(`DELETE FROM meta WHERE key = 'runner-text-cutover'`);
     if (held.length) throw new RuleError("ledger_not_empty", `this Ledger is not empty: ${held.join(", ")} hold rows. An import loads a dump into an empty Ledger only, so nothing was imported`, 409, "import into a server where the project holds nothing, or under another project name");
     const shape = this.tableShapes();
     const existing = new Map(Object.entries(shape).map(([name, columns]) => [name, new Set(columns)]));
@@ -11342,6 +11551,12 @@ export class Ledger extends DurableObject<Env> {
           `drop what it loaded with atelier ledger import --abort ${id} --project ${project}`);
       }
       this.sql.exec(`DELETE FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK);
+      // A dump carries its own Ledger's cutover; one from before it (a 1.0
+      // dump) did not, and its rows may hold a runner's text (round 12): they
+      // are read back by the fixed grammar, as rows older than this code are.
+      if (!this.sql.exec(`SELECT 1 FROM meta WHERE key = 'runner-text-cutover'`).toArray().length) {
+        this.sql.exec(`INSERT INTO meta (key, value) VALUES ('runner-text-cutover', ?)`, JSON.stringify({ seq: Number(this.sql.exec(`SELECT COALESCE(MAX(seq), 0) AS n FROM events`).one().n), at: new Date().toISOString() }));
+      }
     });
     const counts = Object.fromEntries(this.dumpTables().map((t) => [t.name, Number(this.sql.exec(`SELECT COUNT(*) AS n FROM "${t.name}"`).one().n)]));
     await this.ctx.storage.setAlarm(Date.now() + 1000);
@@ -11417,13 +11632,56 @@ function toEvent(r: Row): LedgerEvent {
 }
 
 // An events row as the Ledger returns it.
-function eventOf(r: Row): LedgerEvent {
+function eventOf(r: Row, owner?: string, cutover = 0): LedgerEvent {
+  let data = JSON.parse(r.data as string);
+  // A release's note read back (round 11): a runner's (automatic) as its
+  // facts alone; one written by hand as it was. A release recorded before
+  // the flag counts as a runner's unless the developer made it.
+  if (r.kind === "item.released" && data && typeof data.note === "string" && (data.automatic === true || (data.automatic === undefined && r.actor !== owner))) data = { ...data, note: automaticNote(data.note) };
+  // A pre-review's settled event copies the result's detail: an old one is read
+  // by the grammar too, but a malformed verdict's (the reviewer's words) or a skip's.
+  const field = (r.seq as number) <= cutover ? RUNNER_TEXT_EVENTS[r.kind as string] ?? (String(r.kind).startsWith("prereview.") && data && data.outcome !== "malformed" && data.outcome !== "skipped" ? "detail" : undefined) : undefined;
+  if (field && data && typeof data[field] === "string" && data[field]) data = { ...data, [field]: automaticNote(data[field]) };
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
     ...(typeof r.stage === "string" ? { stage: r.stage } : {}),
-    actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
+    // A runner's note of a run (a skip, a give-up), written before the facts
+    // rule, is read back as its facts' line alone, never its raw text.
+    actor: r.actor as string, kind: r.kind as string, data: RUN_NOTE_EVENTS.has(r.kind as string) && data && typeof data.note === "string" ? withoutRunText(data, "note") : data,
   };
+}
+const RUN_NOTE_EVENTS = new Set(["review.skipped", "item.gave_up"]);
+// Events whose note or reason a runner wrote from an error, a child process
+// or a log, read back by the fixed grammar however old (round 12).
+const RUNNER_TEXT_EVENTS: Record<string, "note" | "reason"> = {
+  "review.released": "note", "criteria_review.failed": "reason", "integration.failed": "reason",
+  "refresh.released": "reason", "refresh.checks_failed": "reason", "refresh.superseded": "reason", "refresh.returned": "reason", "refresh.failed": "reason",
+};
+
+// Whether a pre-review result's detail is one the reviewer's runner sent:
+// a runner failure, a preparation, a timeout or a conflict. Those details are
+// read by the fixed grammar.
+function runnerDetail(result: { outcome?: string; by?: string; detail?: string }, claimedBy: string | null): boolean {
+  // A stale end is kept as written: the server writes most of them (its own
+  // drift), and a runner's is kept as facts when it is stored (releaseReview).
+  void claimedBy;
+  return ["runner", "preparation", "timeout", "conflict", "stale"].includes(result.outcome ?? "");
+}
+
+// A refresh result read back: its reason by the fixed grammar (round 12).
+function refreshResultRow(json: unknown, cutoverAt = ""): RefreshResult {
+  const r = JSON.parse(json as string) as RefreshResult & { reason?: string };
+  if (!(r.at <= cutoverAt)) return r;
+  // Only a failure's reason is a runner's; "checks pending" and the like are the server's own.
+  return typeof r.reason === "string" && r.reason && ["superseded", "returned", "mechanical", "checks"].includes(r.outcome) && r.reason !== "checks pending" ? { ...r, reason: automaticNote(r.reason) } : r;
+}
+
+// A run report read back: its detail is the facts' line, so a report kept
+// before the facts rule shows nothing raw.
+function runRow(json: unknown): RunReport {
+  const run = JSON.parse(json as string) as RunReport;
+  return run.runner === "owner" ? run : withoutRunText(run, "detail");
 }
 
 // A criteria_reviews row as the Ledger returns it (t438).
@@ -11535,6 +11793,8 @@ function toItem(r: Row): Item {
     ...(r.plan ? { plan: r.plan as string } : {}),
     ...(r.part_key ? { partKey: r.part_key as string } : {}),
     ...(r.deps ? { deps: JSON.parse(r.deps as string) as string[] } : {}),
+    // Only a task that waits on others carries the list (G3).
+    ...(r.blocked_by ? { blockedBy: JSON.parse(r.blocked_by as string) as string[] } : {}),
     ...(r.kind === "part" && r.part_accept ? { partAccept: JSON.parse(r.part_accept as string) as string[] } : {}),
   };
 }

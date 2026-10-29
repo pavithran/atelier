@@ -74,6 +74,9 @@ export default async function runnerCommand() {
   try {
     await runRunner(args, {
       credential: apiToken(),
+      // How often a busy runner's heartbeat (and the build's progress line,
+      // G21) goes; a test shortens it.
+      ...(Number(process.env.ATELIER_HEARTBEAT_MS) > 0 ? { heartbeatMs: Number(process.env.ATELIER_HEARTBEAT_MS) } : {}),
       api: { server, I },
       projectPolicy,
       workspacePath,

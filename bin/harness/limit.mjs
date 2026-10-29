@@ -28,6 +28,7 @@
 // harness for FALLBACK_MINUTES (60) from the moment it sees the limit.
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 import { runAdapter } from "../../cli/harness/adapter.mjs";
 
@@ -274,7 +275,14 @@ export function limitSpawn(harness, io = {}) {
   return (exe, argv, options) => {
     if (options?.input === undefined) return spawn(exe, argv, options);
     const inheritsStdout = options.stdio?.[1] === "inherit";
-    const run = spawn(exe, structuredArgs(harness, argv), { ...options, stdio: ["pipe", "pipe", "pipe"] });
+    // A claude-code build the runner follows (G21) writes its stream-json
+    // events straight to the progress log, so they can be read while it runs;
+    // stream-json is structured as json is, and the limit is read from the log.
+    const following = harness === "claude-code" && typeof options.progressLog === "string" && typeof options.stdio?.[1] === "number";
+    const ran = following
+      ? spawn(exe, argv, { ...options, stdio: ["pipe", options.stdio[1], "pipe"] })
+      : spawn(exe, structuredArgs(harness, argv), { ...options, stdio: ["pipe", "pipe", "pipe"] });
+    const run = following ? { ...ran, stdout: logText(options.progressLog) } : ran;
     const limit = detectLimit(run, { now: io.now?.() ?? Date.now(), timeZone: io.timeZone, harness });
     // A marker line a harness printed itself is not the adapter's.
     const stderr = String(run.stderr ?? "").split("\n").filter((l) => !l.startsWith(LIMIT_MARKER)).join("\n");
@@ -283,10 +291,22 @@ export function limitSpawn(harness, io = {}) {
       ? answerOutput(harness, run.stdout) : run.stdout;
     if (inheritsStdout && stdout) out(String(stdout));
     if (stderr) err(stderr.endsWith("\n") ? stderr : `${stderr}\n`);
-    if (!limit) return run.status === 0 ? { ...run, stdout } : run;
+    // The followed build's answer is printed by the adapter from the log.
+    if (!limit) return following ? { ...run, stdout: "" } : run.status === 0 ? { ...run, stdout } : run;
     err(`${LIMIT_MARKER} ${JSON.stringify({ harness, ...limit })}\n`);
     return { ...run, status: PROVIDER_LIMIT_EXIT, stdout: "" };
   };
+}
+
+// The stream-json log's result line, the one document claude's json output
+// would have been, which the limit and the answer are read from.
+function logText(path) {
+  let text = "";
+  try { text = readFileSync(path, "utf8"); } catch { return ""; }
+  for (const line of text.split("\n").reverse()) {
+    try { if (JSON.parse(line)?.type === "result") return line; } catch { /* not a whole event */ }
+  }
+  return "";
 }
 
 // What bin/harness/atelier-*.mjs run: the adapter, with limits reported.

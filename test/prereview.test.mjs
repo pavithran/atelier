@@ -333,7 +333,8 @@ test("a baseline that moved since the claim is reported stale before any reviewe
   assert.deepEqual([state.phase, state.outcome], ["prereviewed", "stale"]);
   const note = parseOutcomeNote(argOf(calls.find((c) => c.argv?.[0] === "review-release").argv, "--note"));
   assert.equal(note.outcome, "stale");
-  assert.match(note.detail, /main moved from eeeeeeee/);
+  // Round 12: a runner's detail is facts alone.
+  assert.match(note.detail, /^step [a-z-]+/);
   assert.ok(!calls.some((c) => c.harness), "no harness for a tree of another main");
   assert.ok(!calls.some((c) => c.argv?.[0] === "review"));
 });

@@ -461,7 +461,7 @@ it("the routes: a dispatch is refused until the criteria review the owner asks f
   expect(brief.text).toContain("## Review of the acceptance criteria");
   expect(brief.text).toContain("finding 1: blocking criterion-1 Fast is not a measurement. [resolution: refuted, 200 ms is the measurement]");
   // A failure recorded by the claimant alone; an unclaimed review has none to fail.
-  const failed = await call("POST", `${P}/items/${id}/criteria-review-failed`, null, { request: claim2.request, note: "late" }, glmToken);
+  const failed = await call("POST", `${P}/items/${id}/criteria-review-failed`, null, { request: claim2.request, note: "step harness" }, glmToken);
   expect(failed.status).toBe(409);
 });
 

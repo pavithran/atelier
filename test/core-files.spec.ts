@@ -130,7 +130,8 @@ it("a claim a runner gives up lifts the core-file hold at once and reaches the i
   expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toBeUndefined();
   const entry = (await L.inbox(new Date().toISOString())).find((e) => e.itemId === live.id);
   expect(entry).toMatchObject({ kind: "gave-up" });
-  expect(entry?.reason).toBe(`the merge failed twice (its commits are pushed); run \`atelier dispatch ${live.id}\` to send it out again`);
+  // Round 11: a give-up's note is read as facts alone.
+  expect(entry?.reason).toBe(`step merge; run \`atelier dispatch ${live.id}\` to send it out again`);
   // A release that does not start with the runner's word is no give-up, and a new claim ends one.
   await L.claim(live.id, A, { runner: "home:studio", kind: "home" });
   expect((await L.inbox(new Date().toISOString())).some((e) => e.kind === "gave-up")).toBe(false);
@@ -152,7 +153,8 @@ it("a give-up reported for a task the runner already released reaches the inbox 
   expect(await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit")).toBe(true);
   await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit");
   const entries = (await L.inbox(new Date().toISOString())).filter((e) => e.kind === "gave-up");
-  expect(entries.map((e) => e.reason)).toEqual([`harness made no new commit; run \`atelier dispatch ${item.id}\` to send it out again`]);
+  // Round 10: the runner's words are not kept; the give-up is said from its facts, here none.
+  expect(entries.map((e) => e.reason)).toEqual([`the runner gave it up; run \`atelier dispatch ${item.id}\` to send it out again`]);
   const events = (await L.events(item.id)) as unknown as { kind: string }[];
   expect(events.filter((e) => e.kind === "item.gave_up")).toHaveLength(1);
 });

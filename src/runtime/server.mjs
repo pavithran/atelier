@@ -13,7 +13,7 @@
 // /Users/atelierd/secrets is). Nothing read from either is written to disk.
 import "./loader.mjs";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -121,7 +121,10 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   globalThis.caches ??= { default: { match: async () => undefined, put: async () => undefined, delete: async () => false } };
   const repos = resolve(reposDir ?? join(dir, "repos"));
   const artifacts = new LocalArtifacts({ reposDir: repos });
-  const bindings = { ARTIFACTS: artifacts, LARGE: new LocalLarge(join(dir, "large")), ...given };
+  // DISK: the free space of the volume the data directory is on, which
+  // `atelier situation` reports (G4).
+  const disk = { read: () => { const s = statfsSync(dir); return { path: dir, freeBytes: s.bavail * s.bsize, totalBytes: s.blocks * s.bsize }; } };
+  const bindings = { ARTIFACTS: artifacts, LARGE: new LocalLarge(join(dir, "large")), DISK: disk, ...given };
   const workerEnv = {};
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
   const git = new GitHost({ dataDir: dir, reposDir: repos, hooksDir, namespace, settings: workerEnv });

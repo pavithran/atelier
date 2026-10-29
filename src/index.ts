@@ -3,7 +3,7 @@ import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./s
 import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { readRetention } from "./retention.ts";
-import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, type OwnerDirection } from "./rules.ts";
+import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, VALIDATION_BLOCKED, type OwnerDirection } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
@@ -24,7 +24,7 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_M
 import { cleanTitle, titleOf, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, redactKeys, type ModelEntry, type PoolFamily } from "./models/pool";
 import { cleanCard, cleanCardModel, cleanWithdrawal } from "./models/cards.ts";
 import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.ts";
 import { builderCandidates, candidatesText } from "./models/suggest.ts";
@@ -49,6 +49,9 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } f
 import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
 import { parseReadiness } from "./runners/readiness";
+import { diskOf, lastRunOf, situationOf } from "./situation.ts";
+import { automaticNote, isFacts, isFactsOutcome } from "./run-facts.ts";
+import { parseOutcomeNote } from "./dispatch/prereview.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -1992,6 +1995,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const header = req.headers.get("x-atelier-runner");
       const runner = header === null ? null : parseRunner(header);
       if (header !== null && !runner) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner as kind:name", 400);
+      // The gate (round 13): a runner's run report carries facts, never a detail.
+      if (isRunnerRequest(c) && typeof body.detail === "string" && body.detail) notFacts("free text", "detail");
       if (runner) return json(await I.putRun(cleanRun(body, new Date().toISOString(), runner.runner)), 201);
       // The owner records a run by hand: no runner ran it, so none is named.
       if (actor !== ownerActor(env)) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner", 400);
@@ -2060,6 +2065,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // poll is, and passed to every project, it keeps the claim it is
     // building under holding. It reads no queue and is offered nothing. A
     // server from before it answers as to a poll, which the runner ignores.
+    // The builds' progress lines a runner sends with its poll or heartbeat
+    // (G21), each kept by its task's project; a runner token's alone.
+    if (c.token?.runner && offer && Array.isArray(body.progress) && body.progress.length) {
+      const reports = body.progress.slice(0, 8) as { project?: unknown }[];
+      await Promise.all(projects.map((p) => {
+        const mine = reports.filter((r) => typeof r?.project === "string" && namesOf(p).includes(r.project));
+        return mine.length ? ledgerOf(env, p).recordProgress(c.token!.runner!, mine).catch((e: unknown) => console.error("progress not recorded", String(e))) : null;
+      }));
+    }
     if (offer && body.heartbeat === true) {
       await Promise.all(projects.map((p) => ledgerOf(env, p).recordRunnerPolls(polls).catch(() => {})));
       return json([]);
@@ -2100,6 +2114,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
           if ("held" in item && item.held) return [];
+          // A task waiting on tasks not yet merged is offered to none (G3).
+          if ("waitingOn" in item && (item as { waitingOn?: unknown[] }).waitingOn?.length) return [];
           const a = item.dispatch?.job === "land" ? { agent: "atelier", model: "lander", actor: "atelier/lander" } : item.dispatch ? assign(item.dispatch, offer) : null;
           // A queued landing is not the task's claim: a claimed task lands
           // as ordinary land does, so its holder is not the lander's to match.
@@ -2170,6 +2186,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(await readStuckReport(env, ref, c.url.origin, limits));
   }
 
+  // One read of where the project stands (G4, src/situation.ts): recorded
+  // facts only. `tasks=t1,t2` adds those tasks whatever their state, which
+  // `atelier wait` reads; no lock is taken.
+  if (parts[2] === "situation" && parts.length === 3 && m === "GET") {
+    requireOwner(env, actor);
+    const tasks = (c.url.searchParams.get("tasks") ?? "").split(",").filter((t) => /^t[1-9][0-9]*$/.test(t));
+    const [facts, offers, tokens, record] = await Promise.all([L.situationFacts(tasks), index(env).runnerOffers().catch(() => null), index(env).agentTokens().catch(() => null), L.project()]);
+    const runs = Object.fromEntries(await Promise.all(facts.items.map(async (i) => [i.id, (await index(env).runsForItem(project, i.id).catch(() => []))[0]] as const)));
+    return json(situationOf({ facts, offers, tokens, names: namesOf(record), commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, disk: diskOf(env), now: new Date(), runs }));
+  }
+
   // The recorded transitions of the project's stuck episodes (t198).
   if (parts[2] === "stuck" && parts[3] === "episodes" && parts.length === 4 && m === "GET") {
     requireOwner(env, actor);
@@ -2220,6 +2247,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}, not accepted, so no landing grant was issued`, 409, `run atelier land ${id}`);
       if (item.acceptedHead !== head) throw new RuleError("acceptance_changed", `${id} is accepted at ${String(item.acceptedHead).slice(0, 12)}, not ${head.slice(0, 12)}, so no landing grant was issued for that head`, 409, `run atelier merge ${id} again, which lands the accepted head`);
+      // No landing grant while a task it waits on is unmerged (G3); the hook
+      // checks the same again at push time (stillLanding).
+      await L.assertBlockersMerged(item, "given a landing grant");
       const g = git.mint({ project: ref.key, kind: "landing", task: id, actor, accepted: head, lease: lease.id });
       await keepGitGrant(c, git, ref.key, g);
       return json({ kind: "landing", remote, token: g.token, expiresAt: g.expiresAt, branch, accepted: head });
@@ -2789,7 +2819,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   const id = parts[3];
   const verb = parts[4];
-  if (!verb && m === "GET") return json(await L.detail(id));
+  // The task's newest run report rides with it (its facts and the log's host
+  // and path on the runner; never its output).
+  if (!verb && m === "GET") return json({ ...await L.detail(id), lastRun: lastRunOf((await index(env).runsForItem(project, id).catch(() => []))[0]) });
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);
@@ -3182,6 +3214,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // The tasks a task waits on (G3): the developer replaces the list; the
+    // Ledger refuses a cycle, a closed task and a plan's part.
+    case "blocked-by":
+      return json(await L.setBlockedBy(id, actor, asStrings(body.blockedBy ?? [], "blockedBy")));
     // The queued-landing pre-review, on the model's request (G17): once per
     // call, of the reviewer it names; without one, the candidates and a refusal.
     case "prereview": {
@@ -3299,10 +3335,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
     case "review-renew": {
+      if (isRunnerRequest(c)) notFacts(body.note, "note");
       await L.renewReview(id, actor, Number(body.request));
       return json({ renewed: true });
     }
     case "review-release": {
+      // The gate (round 13): a release of a review on a runner's or a model's
+      // token carries facts (a pre-review's outcome with a facts detail).
+      if (isRunnerRequest(c) && !isFactsOutcome(body.note, parseOutcomeNote)) notFacts(body.note, "note");
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token, body.request);
       return json({ released: true });
     }
@@ -3323,7 +3363,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // against that request alone, never against a later one at the same head.
       const request = body.request;
       if (typeof request !== "number" || !Number.isInteger(request) || request < 1) throw new RuleError("bad_request", "a review skip names the review request it refused, by number", 400);
-      await L.recordReviewSkip(id, request, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
+      if (isRunnerRequest(c) && body.note !== undefined && body.note !== "") notFacts("free text", "note");
+      await L.recordReviewSkip(id, request, head, runner.runner, actor, body.facts, !!c.token);
       return json({ skipped: true });
     }
     // A runner's word that it gives up a dispatched build or plan job under
@@ -3344,7 +3385,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Under a runner token the job's actor is the caller, checked at the gateway.
       const by = c.token?.runner ? actor : String(body.actor ?? "");
       if (!validActor(by)) throw new RuleError("bad_actor", "a run skip names the harness/model the job ran under", 400);
-      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, String(body.note ?? "")) });
+      if (isRunnerRequest(c) && body.note !== undefined && body.note !== "") notFacts("free text", "note");
+      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, body.facts) });
     }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
     // task, its last VERDICT_LIMITS.reply characters with the reviewer and
@@ -3447,6 +3489,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.requestLand(id, actor, typeof body.quote === "string" ? body.quote : undefined), 201);
     }
     case "refresh-lease": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // A task refresh's lease (t462, src/refresh/): the integrator's for a
       // task-refresh job, a resolver's for a task-resolve job. The answer
       // carries a write token for the task's fork, the one live beside its
@@ -3493,6 +3537,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshPushing(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), head: String(body.head ?? "") }));
     }
     case "refresh-checked": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // The refreshed head's required checks ran, by the leaseholder (t462).
       const r = await L.refreshChecked(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), passed: body.passed === true, reason: String(body.reason ?? "") });
       if (r.revoke) await revoke(env, (await L.item(id)).fork, r.revoke);
@@ -3521,6 +3567,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
     }
     case "refresh-failed": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // A task's refresh (t462) that ended without a new head names its
       // lease: its conflicts went to a resolver or back to the builder, or
       // the task moved under it.
@@ -3546,6 +3594,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null, await index(env).runnerOffers()));
     }
     case "integration-failed": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // The integrator reports a failed merge. The Worker checks the branch was
       // restored to its integration head before the part is sent back, so a
       // failure never leaves another part's commits discarded. `kind` names a
@@ -3588,7 +3638,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
     case "release": {
-      const note = String(body.note ?? "");
+      // A runner's release (a failure, a give-up, work in progress) keeps its
+      // facts alone (automaticNote, the round-11 review); a release written
+      // by hand keeps its words.
+      const automatic = isRunnerRequest(c);
+      // The gate (round 13): a runner's release note is facts, or it is
+      // refused. A build that ended validation_blocked sends the builder's
+      // report in its own field, blocked (round 14): words the builder wrote
+      // for the developer, redacted, kept as the block's reason. No note
+      // prefix lets prose through the grammar.
+      if (automatic) notFacts(body.note, "note");
+      if (body.blocked !== undefined && (typeof body.blocked !== "string" || !body.blocked.trim())) throw new RuleError("bad_blocked", "blocked is the builder's validation_blocked report, as text with something in it", 400, "send the report's words in blocked, or leave blocked out");
+      // The runner's facts beyond the step (a work-in-progress commit, its
+      // push) follow the report, as the runner's own note.
+      const facts = automatic ? automaticNote(body.note).replace(/^step [a-z-]+(?:; |$)/, "") : "";
+      const words = typeof body.blocked === "string" ? `${VALIDATION_BLOCKED}${redactKeys(body.blocked.replace(/^\s*validation_blocked:\s*/i, ""))}${facts ? `; ${facts}` : ""}` : null;
+      const note = words ?? (automatic ? automaticNote(body.note) : String(body.note ?? ""));
       // Released by this actor already and held by no one now: the repeat of
       // a release whose answer was lost. Held by someone else, it is refused below.
       const repeated = await L.repeatedRelease(id, actor, note);
@@ -3599,7 +3664,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await revoke(env, before.fork, oldToken);
       // Only a runner credential can exempt this release from plan attempts;
       // neither an actor nor a free-text note establishes infrastructure failure.
-      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true);
+      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true, automatic && !words);
       return json(item);
     }
     case "accept": {
@@ -3791,6 +3856,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // timed out or wrote a reply no verdict could be read from.
     case "criteria-review-failed": {
       if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
+      if (isRunnerRequest(c)) notFacts(body.note, "note");
       return json(await L.failCriteriaReview(id, actor, body.request, String(body.note ?? ""), !!c.token));
     }
     // The owner's answer to one finding of a criteria review.
@@ -4344,8 +4410,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const readiness = parseReadiness(body.readiness);
   // What the runner remembers of the tasks it passes by (G5).
   const memory = parseMemory(body.memory);
+  // The commit the runner's checkout runs (G4), which situation compares with the server's.
+  const commit = typeof body.commit === "string" && /^[0-9a-f]{40,64}$/.test(body.commit) ? body.commit : null;
   return {
-    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}),
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}), ...(commit ? { commit } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     ...(Array.isArray(body.checkouts) ? { checkouts: body.checkouts.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {
@@ -4391,7 +4459,10 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
     if (listedApart(item)) return { project, item: runner ? runnerWhyItem(item, undefined) : item };
-    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), cleared: mine(item.clearedSkips), offers, runs: reports, project, offer, busy });
+    const waits = (item as { waitingOn?: { id: string; state: string }[] }).waitingOn ?? [];
+    // A task waiting on tasks not yet merged (G3) says so first: no runner is offered it until they merge.
+    const blockedBy: UnclaimedReason[] = waits.length ? [{ kind: "held", line: `Waiting on ${waits.map((b) => `${b.id} (${b.state})`).join(", ")} to merge${waits.some((b) => b.state === "abandoned") ? `; an abandoned blocker never merges, so the developer drops it with atelier edit ${item.id} --blocked-by` : `; atelier wait --all ${waits.map((b) => b.id).join(",")} --for merged waits for them`}.` }] : [];
+    const why = [...blockedBy, ...unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), cleared: mine(item.clearedSkips), offers, runs: reports, project, offer, busy })];
     if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this
     // listing from an older server's, which carries `held` alone.
@@ -5166,7 +5237,7 @@ export default {
           // A claim that lost the race to a hold (held, t540) is no
           // refusal: the queue stops offering the task while the hold
           // stands, and offers it again once it clears.
-          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held") return;
+          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held" || rule.code === "blocked_by") return;
           const forbidden = !!token?.runner && rule.status === 403;
           try {
             const held = await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined, forbidden);
@@ -5268,3 +5339,21 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+// The gate on a runner's text (round 13): a field a runner fills from an
+// error, a child process or a log must be facts in the grammar
+// (src/run-facts.ts), or the request is refused; its text stays in the
+// runner's own log.
+// Whether a request is a runner's (round 14), the one test every gate on a
+// runner's text uses: a runner token, or any credential naming a runner in
+// X-Atelier-Runner, as the runner sends on every call it makes (under its
+// own token, the agent token it mints for a job's model, or the developer's
+// token). A model's session writing by hand names no runner and keeps its words.
+function isRunnerRequest(c: Ctx): boolean {
+  return !!c.token?.runner || c.req.headers.has("x-atelier-runner");
+}
+
+function notFacts(value: unknown, field: string): void {
+  if (isFacts(value)) return;
+  throw new RuleError("not_facts", `${field} must be facts in the runner's grammar (the step, the exit, the signal, the log's host and path, a fixed outcome), never text from an error, a process or a log; nothing was recorded`, 400, "send the facts (automaticNote in src/run-facts.ts) and keep the text in the runner's own log");
+}

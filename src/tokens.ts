@@ -236,27 +236,27 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The poll: what the runner can run and when it started (t420), answered
   // with the tasks it may claim. GET /queue is the owner's listing, which
   // runnerRoute refuses a runner token (test/runner-routes.test.mjs).
-  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "projects", "readiness", "checkouts", "memory"], via: "runner", jobs: [] },
+  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "projects", "readiness", "checkouts", "memory", "commit", "progress"], via: "runner", jobs: [] },
   // The same poll asked with `why` (t420), when a poll offered nothing: the
   // server answers the listing GET gives, cut to the token's projects, each
   // waiting dispatch with why it is not being taken. The same route, the
   // same credential, a body field more: declared apart so the idle path is
   // its own authorization case.
-  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why", "projects", "readiness", "checkouts", "memory"], via: "runner", jobs: [] },
+  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why", "projects", "readiness", "checkouts", "memory", "commit", "progress"], via: "runner", jobs: [] },
   // A busy runner's heartbeat (t537): its offer marked as one, which renews
   // its last poll while a job runs and is offered nothing back.
-  { name: "queue-heartbeat", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "heartbeat", "projects", "readiness", "checkouts", "memory"], via: "runner", jobs: [] },
+  { name: "queue-heartbeat", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "heartbeat", "projects", "readiness", "checkouts", "memory", "commit", "progress"], via: "runner", jobs: [] },
   // The baseline's head, for a post-merge review the runner keeps waiting on
   // a merge commit no source held (t591).
   { name: "baseline-head", method: "GET", path: "/projects/{project}/baseline-head", credential: "runner", body: [], via: "runner", jobs: REVIEW },
-  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
-  { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "note"], via: "runner", jobs: REVIEW },
+  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "facts"], via: "runner", jobs: ["build", "plan", "review"] },
+  { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "facts"], via: "runner", jobs: REVIEW },
   // The runner's word that it gives up a build or plan job under its
   // dispatch (t420), after failed runs or infrastructure failures in a row:
   // taken as a run report for the job is, under the job's actor. The actor
   // in the body is read under the owner's token alone; a runner token's
   // report is the header's actor, checked at the gateway.
-  { name: "run-skip", method: "POST", path: `${ITEM}/run-skip`, credential: "runner", body: ["actor", "role", "kind", "failures", "note"], via: "runner", jobs: ["build", "plan"] },
+  { name: "run-skip", method: "POST", path: `${ITEM}/run-skip`, credential: "runner", body: ["actor", "role", "kind", "failures", "facts"], via: "runner", jobs: ["build", "plan"] },
   // The project's record, read for its preparation policy (t378) before a
   // build whose last run left a validation marker.
   { name: "project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "runner", jobs: ["build"] },
@@ -269,7 +269,7 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The claim reads the project's preparation policy (t378) into the
   // workspace's Git config.
   { name: "claim-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "claim", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
-  { name: "release", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["note"], via: "cli", command: "release", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  { name: "release", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["note", "blocked"], via: "cli", command: "release", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
   // A release that reports a provider limit is sent by the runner itself
   // (leaseCall), so shutdown can give it a deadline of its own.
   { name: "release-provider-limit", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["providerLimit", "note"], via: "runner", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },

@@ -103,6 +103,9 @@ export interface RunnerOffer {
   // What the runner remembers of the tasks it passes by, sent with its poll
   // and read back after a restart (G5, src/runners/memory.ts).
   memory?: RunnerMemory;
+  // The commit the runner's checkout runs (G4): situation flags one that
+  // differs from the server's.
+  commit?: string;
 }
 
 export interface Assignment {
@@ -560,7 +563,8 @@ export interface RunSkip {
   actor: string;
   kind: RunSkipKind;
   failures: number;
-  note: string;         // the last failure's reason, as the runner said it
+  note: string;         // the facts' line (src/run-facts.ts), never the run's output
+  facts?: import("../run-facts.ts").RunFacts | null;
   dispatchAt: string;
   head?: string | null;
   updatedAt?: string;

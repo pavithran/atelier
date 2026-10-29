@@ -127,7 +127,8 @@ test("a dirty tree left by a harness that exits 0 is committed as wip, pushed th
   assert.equal(await tip("t1"), wip, "the commit is on the task's branch");
   assert.equal(git(w.workspace, "log", "-1", "--format=%s"), "wip: t1 Real push");
   assert.ok(release(calls).includes(wip.slice(0, 8)), release(calls));
-  assert.match(release(calls), /pushed for the next run/);
+  // Round 11: facts alone: the step, what happened, the commit and the run's log.
+  assert.match(release(calls), new RegExp(`^step harness; no new commit; work in progress ${wip.slice(0, 8)} pushed; log [^:]+:/`));
 });
 
 test("an untracked file with a key-shaped line is refused by the scan, and the release note says so without the key", async () => {
@@ -136,8 +137,8 @@ test("an untracked file with a key-shaped line is refused by the scan, and the r
   const state = await runTask(assignment("t2"), config, "home:studio", io);
   assert.equal(await tip("t2"), "", "nothing reached the branch");
   const note = release(calls);
-  assert.match(note, /but the push was refused, so it is only in this runner's workspace/);
-  assert.match(note, /secret scan found a key-shaped line: config\.env:2/);
+  assert.match(note, /push refused; work in progress [0-9a-f]{8} kept local/);
+  assert.equal(note.includes("config.env"), false, "the note names no file of the refusal's text; the run's log has it");
   assert.equal(note.includes(KEY), false, "the note shows no key");
   assert.equal(state.workInProgress, git(w.workspace, "rev-parse", "HEAD"), "the commit is in the workspace, said so");
 });
@@ -148,7 +149,7 @@ test("a push refused for another reason (another task's credential) is said in t
   await runTask(assignment("t3"), config, "home:studio", io);
   assert.equal(await tip("t3"), "");
   const note = release(calls);
-  assert.match(note, /but the push was refused/);
+  assert.match(note, /push refused/);
   assert.doesNotMatch(note, /secret scan/);
   assert.ok(note.length > 120, "the server's reason follows");
 });

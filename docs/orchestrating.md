@@ -469,10 +469,50 @@ loop, which matches its own command line and cannot see a death:
 `--for merged` (the default) ends when the task merges, `--for submitted`
 when its agent submits, `--for reviewed` when a review is recorded at its
 head and current acceptance criteria, and `--for any-change` at the first
-change of state, head, holder or review count. It prints one line and exits 0 when reached, 1 when the task
-failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
-the task cannot be read. A task whose agent died stays claimed, so pair a
-long wait with `--timeout` and look at `atelier status` when it ends.
+change of state, head, holder or review count. It waits on a condition too
+(G3): `atelier wait --all tA,tB --for merged` until every task merges,
+`--any tA,tB` until one does, `--for STAGE` (filed, agreed, queued,
+building, built, checked, reviewed, landable, landed, shipped) until the
+recorded stage reaches it, `--for answered` until the task's review requests
+are answered, and `atelier wait --runner home:NAME --silent N` until a runner
+has been silent N minutes or never polled. A condition already met returns at
+once. It reads the situation (`GET /projects/P/situation`) and holds no lock,
+so two waits never interfere, and it rides through a server restart, reading
+again once the server is back. It prints one line and exits 0 when met, 1
+when it cannot be (blocked, or rejected in review), 3 at `--timeout`, 4 when
+a task it names was abandoned, naming it, and 5 when the server cannot be
+read. Never poll with `sleep` for a task's state. A task whose agent died
+stays claimed, so pair a long wait with `--timeout` and read `atelier
+situation` when it ends: its progress line says whether the builder still
+runs a command.
+
+`atelier situation --project P` (`--json` for a model) is one read of the
+project from recorded facts: each live task with its state, holder, runner,
+head, scope, recorded stage and how long it has been at it, its last check
+and its progress line; core-file and blocked-by holds; open review requests
+with reviewer and age; runners with their last poll, current job, served
+projects, offered models and the commit they run, flagged when silent five
+minutes, on a commit other than the server's, or never polled; landings;
+blocks and whose words lift them; the check limits and mode; standing
+decisions; free disk where the server runs (a warning under 10 percent); and
+spend per task and model where a run reported it. Under `--json` every error
+is `{code, detail, next}`.
+
+A build's progress line (G21) comes from its runner with each poll and
+heartbeat: commands run so far and the one running now (from the builder's
+stream-json log, which the Claude Code adapter writes beside the workspace),
+whether a process the model started is alive, commits on `t/N`, elapsed
+time, tokens and cost. `situation` flags a stall: no change for 30 minutes
+with no child process alive, or no command completed five minutes after the
+build started (the `claude -p` that hangs on a privacy prompt under launchd).
+
+A task can wait on others: `atelier edit ID --blocked-by tA,tB` (`""`
+clears the list). The queue offers it to no runner, a claim is refused
+(`blocked_by`, naming the wait) and a landing will not accept it until every
+one is merged. An abandoned blocker keeps it waiting and listed, never
+released, until the developer drops it from the list; a cycle is refused
+when it is set. `atelier show` and `atelier situation` list the blockers with
+their states.
 When the
 review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
