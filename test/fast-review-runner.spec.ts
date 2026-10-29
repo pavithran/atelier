@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 // @ts-expect-error the runner is plain JavaScript without declarations
@@ -43,8 +43,9 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
     [Symbol.dispose]() {},
   }) } as unknown as Artifacts;
   const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as typeof env;
+  // G18: a write with the developer token names the model acting; the agent token is exempt.
   const request = (method: string, path: string, token: string, actor: string, body?: unknown, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...headers },
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": OPUS } : {}), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
 
@@ -77,6 +78,8 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
     if (!res.ok) throw new Error(`${verb}: ${res.status} ${text}`);
     return text;
   };
+  // 2.0 task 2/5: the baseline's read grant names the project's repository on
+  // this server (PUBLIC_ORIGIN/git/NAME.git), not an Artifacts repository.
   // Git and the harness stood in: the claim's clone lacks the merge until
   // the baseline is fetched; the merge's first parent is PARENT.
   const git: { cloned?: string; fetched: string[]; held: boolean; diff?: [string, string] } = { fetched: [], held: false };
@@ -85,7 +88,7 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
     workspacePath: () => "/work/t1",
     clone: async (remote: string) => { git.cloned = remote; },
     hasCommit: async () => git.held,
-    fetch: async (_dir: string, remote: string, _token: string, ref: string) => { git.fetched.push(`${remote} ${ref}`); if (remote.includes("--baseline")) git.held = true; },
+    fetch: async (_dir: string, remote: string, _token: string, ref: string) => { git.fetched.push(`${remote} ${ref}`); if (remote.endsWith(`/git/${name}.git`)) git.held = true; },
     checkout: async (_dir: string, head: string) => { if (!git.held || head !== M1) throw new Error(`fatal: unable to read tree (${head})`); },
     revParse: async (_dir: string, spec: string) => spec === `${M1}^@` ? `${PARENT}\n${C1}` : spec === "FETCH_HEAD" ? M1 : "",
     show: async () => { throw new Error("no override"); },
@@ -108,9 +111,9 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
   expect(state, JSON.stringify(state)).toMatchObject({ phase: "reviewed", verdict: "approve" });
   // The claim named the merge and the baseline; the clone lacked the merge
   // and the baseline was read for it; the diff is from its first parent.
-  expect(git.cloned).toBe(`https://git.test/${name}--baseline.git`);
+  expect(git.cloned).toBe(`https://atelier.zone/git/${name}.git`);
   expect(calls.map((c) => c[0])).toEqual(["review-claim", "baseline-token", "review"]);
-  expect(git.fetched[0]).toBe(`https://git.test/${name}--baseline.git main`);
+  expect(git.fetched[0]).toBe(`https://atelier.zone/git/${name}.git main`);
   expect(git.diff).toEqual([PARENT, M1]);
 
   // The verdict is on the ledger, at the merge commit, as the post-merge review.
@@ -158,8 +161,9 @@ async function fastMerged(name: string) {
     [Symbol.dispose]() {},
   }) } as unknown as Artifacts;
   const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as typeof env;
+  // G18: a write with the developer token names the model acting; the agent token is exempt.
   const request = (method: string, path: string, token: string, actor: string, body?: unknown, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...headers },
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": OPUS } : {}), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
   const issued = await request("POST", "/tokens", OWNER, "owner", { actor: ASTRA, projects: [name] });
@@ -191,7 +195,7 @@ async function fastMerged(name: string) {
     workspacePath: () => "/work/t1",
     clone: async () => {},
     hasCommit: async () => held,
-    fetch: async (_dir: string, remote: string) => { if (remote.includes("--baseline")) held = true; },
+    fetch: async (_dir: string, remote: string) => { if (remote.endsWith(`/git/${name}.git`)) held = true; },
     checkout: async (_dir: string, head: string) => { if (!held || head !== M1) throw new Error(`fatal: unable to read tree (${head})`); },
     revParse: async (_dir: string, spec: string) => spec === `${M1}^@` ? `${PARENT}\n${C1}` : spec === "FETCH_HEAD" ? M1 : "",
     show: async () => { throw new Error("no override"); },

@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { afterAll, beforeAll, expect, it } from "./support/vitest.ts";
 import { setRetryBaseMs } from "../src/transient.ts";
 import worker from "../src/index.ts";
 import { renderItem } from "../src/ui.ts";
@@ -20,6 +20,9 @@ const AT = "2026-10-14T00:00:00.000Z";
 const BUILDER = "claude-code/opus-5.5", ASTRA = "codex/gpt-6-astra", ARGON = "antigravity/gemini-4-argon";
 const BASE = "a".repeat(40), HEAD = "b".repeat(40), MERGE = "c".repeat(40), OTHER = "d".repeat(40), LATER = "e".repeat(40), SOLO = "f".repeat(40), FLAT = "9".repeat(40);
 const T = "0".repeat(40);
+// G18: a write with the developer token names the model acting (an agent or
+// runner token already names its actor, and the header is refused with it).
+const ACTING = "claude-code/opus-5.5";
 beforeAll(() => setRetryBaseMs(1));
 afterAll(() => setRetryBaseMs());
 
@@ -44,16 +47,11 @@ async function setup(name: string, policy: Record<string, unknown> = {}) {
   // A pause in the baseline's reads: readCommit waits on it while it is set.
   let pause: Promise<void> | null = null, reading: () => void = () => {};
   const paused = new Promise<void>((ok) => { reading = ok; });
-  let forkPause: Promise<void> | null = null, forking: () => void = () => {}, minted = 0;
-  const forkStarted = new Promise<void>((ok) => { forking = ok; });
-  let forkResume: () => void = () => {};
-  const holdFork = () => { forkPause = new Promise<void>((ok) => { forkResume = () => { forkPause = null; ok(); }; }); return { started: forkStarted, resume: () => forkResume() }; };
+  let minted = 0;
   const artifacts = {
     get: async () => ({
       log: async () => main,
       readCommit: async (hash: string) => { if (pause) { reading(); await pause; } return [...main, ...elsewhere].find((c) => c.hash === hash) ?? null; },
-      // A fork waits while forkPause is set, as Artifacts takes its time making one.
-      fork: async () => { if (forkPause) { forking(); await forkPause; } return {}; },
       info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
       createToken: async () => ({ id: `tok-${++minted}`, plaintext: "secret", expiresAt: new Date(Date.now() + 3_600_000).toISOString() }),
       revokeToken: async (id: string) => { if (revokeFails) throw new Error("INTERNAL_ERROR: Artifacts is unavailable"); revoked.push(id); },
@@ -61,13 +59,13 @@ async function setup(name: string, policy: Record<string, unknown> = {}) {
     }),
   } as unknown as Artifacts;
   const request = (method: string, path: string, token: string, actor: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
+    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
   const call = (id: string, body: unknown, actor = "owner", token = TOKEN) => request("POST", `/projects/${name}/items/${id}/record-merge`, token, actor, body);
   const issue = async (body: unknown) => (await (await request("POST", "/tokens", TOKEN, "owner", body)).json() as { token: string }).token;
   let resume: () => void = () => {};
   const hold = () => { pause = new Promise<void>((ok) => { resume = () => { pause = null; ok(); }; }); return { paused, resume: () => resume() }; };
-  return { L, call, issue, request, holdFork, revoked, hold, failRevoke: (fails: boolean) => { revokeFails = fails; }, dropMerge: () => { main = main.filter((c) => c.hash !== MERGE && c.hash !== LATER); } };
+  return { L, call, issue, request, revoked, hold, failRevoke: (fails: boolean) => { revokeFails = fails; }, dropMerge: () => { main = main.filter((c) => c.hash !== MERGE && c.hash !== LATER); } };
 }
 const reviews = [{ by: ASTRA, verdict: "approve", head: HEAD, at: "2026-10-13" }, { by: ARGON, verdict: "approve", head: HEAD }];
 const refusal = async (r: Response, status: number, code: string, detail?: RegExp) => {
@@ -91,7 +89,7 @@ it("records a claimed task merged outside Atelier, with its merge, the commit me
   expect(await L.tokenId(item.id)).toBeNull();
   expect(revoked).toEqual(["tok-1"]);
   const events = (await L.events(item.id)) as unknown as LedgerEvent[];
-  expect(events.find((e) => e.kind === "item.merged")?.data).toEqual({ mergeCommit: MERGE, head: HEAD, observedOnBaseline: true, outside: true });
+  expect(events.find((e) => e.kind === "item.merged")?.data).toEqual({ mergeCommit: MERGE, head: HEAD, observedOnBaseline: true, outside: true, acting: ACTING });
   expect(events.find((e) => e.kind === "item.merge_recorded")?.data).toMatchObject({ mergeCommit: MERGE, commit: HEAD, reviews, outside: true });
   // Nothing says it was accepted or reviewed through the gate.
   expect(events.map((e) => e.kind)).not.toEqual(expect.arrayContaining(["item.accepted"]));
@@ -259,25 +257,25 @@ it("refuses the record when the workspace changes after it was read, and drops n
 // gpt-6-astra's third review of t653: a first claim waiting on Artifacts for
 // its fork, a record-merge made meanwhile, and then the claim's setFork,
 // which replaced the merged task's head with the fork's base. Record-merge
-// now refuses while a claim is in flight (held, workspace not complete), and
-// setFork refuses a task its claim no longer holds.
-it("refuses the record while a claim is in flight, through the real claim route, and the claim then completes", async () => {
-  const { L, call, issue, request, holdFork } = await setup("record-merge-inflight");
+// refuses while a claim is in flight (held, workspace not complete), and
+// setFork refuses a task its claim no longer holds. 2.0 task 5: a claim makes
+// a branch on the Git host, not a fork, so the route's claim cannot be held at
+// the fork any more; the test holds the claim at its reservation in the Ledger
+// (the state the route's claim is in until it completes) and drives the
+// developer's record through the route.
+it("refuses the record while a claim is in flight, through the route, and records it once the claim completes", async () => {
+  const { L, call } = await setup("record-merge-inflight");
   const item = await L.newItem("Claimed while the merge is recorded", [], "owner");
-  const agent = await issue({ actor: BUILDER, projects: ["record-merge-inflight"] });
-  const { started, resume } = holdFork();
-  const claiming = request("POST", `/projects/record-merge-inflight/items/${item.id}/claim`, agent, BUILDER, {});
-  await started;
-  // The claim holds the task; its fork is being made.
+  const { generation } = await L.claim(item.id, BUILDER);
+  // The claim holds the task; its workspace is not complete.
   expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: BUILDER, fork: null });
   await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews }), 409, "claim_in_flight", /being claimed by claude-code\/opus-5\.5/);
-  resume();
-  const claimed = await claiming;
-  expect(claimed.status, await claimed.clone().text()).toBe(200);
-  const now = await L.item(item.id);
-  expect(now).toMatchObject({ state: "claimed", owner: BUILDER });
-  expect(now.fork).not.toBeNull();
   expect(((await L.events(item.id)) as unknown as LedgerEvent[]).some((e) => e.kind === "item.merged")).toBe(false);
+  await L.setFork(item.id, "record-merge-inflight--t1", BASE, BUILDER, false, generation);
+  await L.recordToken(item.id, BUILDER, generation, null, "tok-inflight");
+  const r = await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews });
+  expect(r.status, await r.clone().text()).toBe(200);
+  expect((await L.item(item.id)).state).toBe("merged");
 });
 
 it("a fork recorded after the task was merged or claimed again is refused, and the merged head is unchanged", async () => {

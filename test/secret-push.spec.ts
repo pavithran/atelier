@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { afterEach, expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { Item } from "../src/rules.ts";
@@ -14,6 +14,8 @@ import type { Item } from "../src/rules.ts";
 
 const TOKEN = "secret-push-owner";
 const A = "claude-code/opus-5.5";
+// t178/G18: a model clearing a flag on the developer token carries the developer's words.
+const SAID = "yes, that is a fake key";
 const H0 = "0".repeat(40), H1 = "1".repeat(40), H2 = "2".repeat(40), H3 = "3".repeat(40), H4 = "4".repeat(40);
 const T0 = "a".repeat(40), T1 = "b".repeat(40), T2 = "c".repeat(40), T3 = "9".repeat(40);
 const B0 = "d".repeat(40), B1 = "e".repeat(40), B2 = "f".repeat(40), B3 = "8".repeat(40);
@@ -115,8 +117,9 @@ async function setup(name: string) {
   return L;
 }
 
+// G18: a write as the developer names the model acting (an actor that is a harness/model names itself).
 const api = (bindings: typeof env) => (method: string, path: string, actor: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": A } : {}), "content-type": "application/json" },
   body: body === undefined ? undefined : JSON.stringify(body),
 }), bindings);
 
@@ -195,7 +198,7 @@ it("a reader that shows another commit than the recorded head leaves the scan pe
   expect(d.gate.ready).toBe(false);
   expect(d.gate.blockers).toContainEqual(expect.stringMatching(/^secret scan pending for 11111111/));
   // The owner cannot clear what has not been judged.
-  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key" });
+  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key", quote: SAID });
   expect(clear.status).toBe(409);
   expect(((await clear.json()) as { error: string }).error).toBe("secret_pending");
   // The event for the same head, with the reader now showing the commit
@@ -299,7 +302,7 @@ it("a flag the owner cleared stays cleared when a later push keeps the same line
   const call = api(bindings);
   expect((await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 })).status).toBe(200);
   expect((await L.item("t1")).secret).toMatchObject([{ file: "keys.ts", line: 1, commit: H1, head: H1 }]);
-  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts" });
+  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts", quote: SAID });
   expect(clear.status).toBe(200);
   // H3 keeps keys.ts exactly as H1 had it, and adds a file that uses it: the
   // scan finds the same line again and records it as cleared, not blocking.
@@ -374,7 +377,7 @@ it("a tree the head names and no repository holds leaves the scan pending and th
   await q.send();
   expect(q.counts).toEqual({ acks: 0, retries: 1 });
   expect(await L.item("t1")).toMatchObject({ head: H1, secretScan: H1 });
-  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key" });
+  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key", quote: SAID });
   expect(clear.status).toBe(409);
 });
 
@@ -398,7 +401,7 @@ it("a key one commit added and a later commit removed is flagged at the head, na
   expect(flagged.data).toMatchObject({ head: H2, hits: [{ file: "keys.ts", line: 1, commit: H1 }] });
   expect(JSON.stringify([pushed, d, await events(L)])).not.toContain(FAKE_KEY);
   // The owner's clearance holds for the line, so the gate no longer refuses on it.
-  expect((await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts" })).status).toBe(200);
+  expect((await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts", quote: SAID })).status).toBe(200);
   expect((await detail(call, name)).gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
 });
 

@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { Dispatch, CoreHold } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -22,10 +22,13 @@ const artifacts = {
   }),
 } as unknown as Artifacts;
 
+// G18: a write with the developer token names the model acting, and once the
+// pool has entries it must be one of them, so each test names one it seeds.
+let acting = A;
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": acting, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
 }
@@ -101,12 +104,15 @@ it("--overlap-ok with a builder the owner holds from building is refused and cha
   await L.setProject(record, "owner");
   const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   await index.registerProject(record);
+  // The pool is the server's, not the test's: only the pool this test names.
+  for (const m of await index.models() as ModelEntry[]) await index.removeModel(m.id);
   const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
     id, harness: "opencode", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: "2026-10-06T12:00:00.000Z", ...change,
   });
   await index.putModel(entry("glm-5.3-flash"));
   await index.putModel(entry("qwen3-coder-next", { state: "paused", stateAt: "2026-10-06T12:00:00.000Z", note: "AI Studio down" }));
   await index.putModel(entry("kimi-k3", { roles: ["review"] }));
+  acting = "opencode/glm-5.3-flash";
   const id = ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
   const first = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "keep" });
   const { dispatch } = (await first.json()) as { dispatch: Record<string, unknown> };
@@ -130,6 +136,9 @@ const POOL: ModelEntry[] = ["shared", "new"].map((id) => ({
   id, harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: "2026-10-06T12:00:00.000Z",
 }));
 async function setup(name: string, coreFiles = ["src/**"]) {
+  const pool = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  for (const m of await pool.models() as ModelEntry[]) await pool.removeModel(m.id);
+  acting = "codex/shared";
   for (const m of POOL) await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel(m);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const record = { name, repo: name, policy: { checks: [], protected: [], coreFiles }, createdAt: new Date().toISOString() };

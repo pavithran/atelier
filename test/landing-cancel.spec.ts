@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 // The landing route's cancel, driven through the Worker's own fetch handler
@@ -41,9 +41,10 @@ function baseline(length: number, mergeAt?: number) {
   } as unknown as Artifacts;
 }
 
+// G18: a write with the developer token names the model acting.
 function cancel(name: string, ARTIFACTS: Artifacts) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/landing`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
   }), { ...testEnv, ARTIFACTS } as typeof env);
 }
 

@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -41,9 +41,10 @@ async function project(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   return ledger(name);
 }
+// G18: a write as the developer names the model acting (an actor that is a harness/model names itself).
 function api(method: string, path: string, actor: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
@@ -234,7 +235,7 @@ it("the switch to fast mode needs the developer's confirmation from the Settings
   const SECRET = "fast-confirm-secret-no-session-holds";
   const bindings = { ...testEnv, OVERRIDE_SECRET: SECRET } as typeof env;
   const switchFast = () => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/mode`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ mode: "fast", reason: "forks fail" }),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": OPUS, "content-type": "application/json" }, body: JSON.stringify({ mode: "fast", reason: "forks fail" }),
   }), bindings);
   const allow = (headers: Record<string, string>, fields: Record<string, string>) => worker.fetch(new Request(`https://atelier.test/ui/${name}/mode/allow-fast`, {
     method: "POST", redirect: "manual", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams(fields),
@@ -302,8 +303,10 @@ it("the developer token switches to fast mode on the developer's quoted words an
   const bare = await post({ mode: "fast", reason: "forks fail" }, { "x-atelier-acting": OPUS });
   expect(bare.status).toBe(403);
   expect(await bare.json()).toMatchObject({ error: "fast_mode_unconfirmed", detail: expect.stringContaining("--quote") });
-  // Words with no acting model, or blank words: refused.
-  expect(await (await post({ mode: "fast", reason: "forks fail", quote: QUOTE })).json()).toMatchObject({ error: "no_acting" });
+  // Words with no acting model, or blank words: refused. G18 now refuses the
+  // developer token's write that names no acting model before the route's own
+  // no_acting check, so the answer is acting_required.
+  expect(await (await post({ mode: "fast", reason: "forks fail", quote: QUOTE })).json()).toMatchObject({ error: "acting_required" });
   expect(await (await post({ mode: "fast", reason: "forks fail", quote: "  " }, { "x-atelier-acting": OPUS })).json()).toMatchObject({ error: "bad_quote" });
   // An agent token is refused, with or without an acting header.
   const agent = (await (await api("POST", "/tokens", "owner", { actor: GPT, projects: [name] })).json() as { token: string }).token;

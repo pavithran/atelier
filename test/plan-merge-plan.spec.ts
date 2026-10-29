@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -208,9 +208,10 @@ function artifacts(commits: Record<string, Commit>, heads: Record<string, string
 }
 
 const TOKEN = "merge-plan-token";
+// G18: the developer token's write names the model acting; the integrator's own actor is not one.
 function claimAsIntegrator(name: string, id: string, ARTIFACTS: Artifacts) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/claim`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": INTEGRATOR, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": INTEGRATOR, "x-atelier-acting": "claude-code/opus-5.5", "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 }
 // The pre-check's verdict: conflict_predicted when it refuses; otherwise the

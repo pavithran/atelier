@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
@@ -8,7 +8,7 @@ import { LAND_JSON_MAX } from "../src/ledger.ts";
 import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
-import MERGE_STEPS from "./fixtures/land/merge-steps.json";
+import MERGE_STEPS from "./fixtures/land/merge-steps.json" with { type: "json" };
 
 // The server side of atelier land (t187): the project's landing lease on the
 // Ledger (one landing at a time, refused with who holds it and since when, a
@@ -23,6 +23,7 @@ import MERGE_STEPS from "./fixtures/land/merge-steps.json";
 const H0 = "0".repeat(40);
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const OPUS = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra";
+// G18: each write with the developer token below names the model acting (GPT, a pool model that built nothing here).
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["src/**"] };
 
 const AT = "2026-10-06T12:00:00.000Z";
@@ -199,7 +200,7 @@ it("the landing-lease route takes, renews and cancels the lease for the owner, a
   const TOKEN = "land-routes-token";
   const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify(body),
   }), token);
   const took = await post({ item: a });
   expect(took.status).toBe(200);
@@ -306,7 +307,7 @@ it("the landing-lease route's confirm reads main itself, refusing a main it does
   const ARTIFACTS = { get: async () => ({ log: async () => [{ hash: top }], [Symbol.dispose]() {} }) };
   const bindings = { ...env, ATELIER_TOKEN: "land-routes-token", ARTIFACTS } as unknown as typeof env;
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
-    method: "POST", headers: { authorization: ["Bearer", "land-routes-token"].join(" "), "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: ["Bearer", "land-routes-token"].join(" "), "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify(body),
   }), bindings);
   expect((await post({ item: a })).status).toBe(200);
   const refused = await post({ item: a, confirm: true, main: M1 });
@@ -458,7 +459,7 @@ it("asking again for a review every runner that offers the reviewer has skipped 
   const ownerToken = "land-routes-token";
   const token = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;
   const ask = async () => (await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${b}/review-request`, {
-    method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
+    method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
   }), token)).json() as Promise<{ requested: boolean; request: number; reason: string }>;
   const asked = await ask();
   expect(asked).toMatchObject({ requested: true });
@@ -600,7 +601,7 @@ it("naming another reviewer redirects an unclaimed review request, says so, and 
   for (const m of NAMED_POOL) await index.putModel(m);
   const askToken = "land-redirect-ask-token";
   const askRes = await worker.fetch(new Request(`https://atelier.test/api/projects/land-redirect/items/${id}/review-request`, {
-    method: "POST", headers: { authorization: `Bearer ${askToken}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify({ reviewer: GEMINI }),
+    method: "POST", headers: { authorization: `Bearer ${askToken}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify({ reviewer: GEMINI }),
   }), { ...env, ATELIER_TOKEN: askToken } as typeof env);
   const unasked = await askRes.json() as Record<string, unknown>;
   expect(askRes.status, JSON.stringify(unasked)).toBe(200);
@@ -622,7 +623,7 @@ it("naming another reviewer redirects an unclaimed review request, says so, and 
   const token = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;
   const post = async (actor: string, body: unknown) => {
     const res = await worker.fetch(new Request(`https://atelier.test/api/projects/land-redirect/items/${id}/review-withdraw`, {
-      method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": actor }, body: JSON.stringify(body),
+      method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": GPT } : {}) }, body: JSON.stringify(body),
     }), token);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
@@ -697,7 +698,7 @@ it("the merge steps atelier land posts reach the ledger whole through the land r
   // them against this fixture, so a field it sends that the ledger refuses
   // fails here rather than as a warning in a real landing.
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${id}/land`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify(body),
   }), token);
   for (const [name, body] of Object.entries(MERGE_STEPS)) {
     const r = await post(body);
@@ -705,7 +706,9 @@ it("the merge steps atelier land posts reach the ledger whole through the land r
   }
   const recorded = (await events(L, id)).filter((e) => e.kind === "land.merge").sort((a, b) => a.seq - b.seq);
   const without = ({ step: _step, ms: _ms, ...rest }: Record<string, unknown>) => rest;
-  expect(recorded.map((e) => without(e.data))).toEqual(Object.values(MERGE_STEPS).map((b) => without(b)));
+  // G18: each step records the acting model the request named; the rest is what was posted.
+  expect(recorded.map((e) => e.data.acting)).toEqual(recorded.map(() => GPT));
+  expect(recorded.map((e) => { const { acting: _acting, ...rest } = e.data; return without(rest); })).toEqual(Object.values(MERGE_STEPS).map((b) => without(b)));
   expect(recorded[0].data.regenerated).toEqual([{ name: "fixtures", outputs: [{ path: "gen-fixtures.txt", matches: "neither side" }], log: "/tmp/merge-logs/fixtures.log", logSha: "f".repeat(64) }]);
   expect(recorded[1].data).toMatchObject({ failed: true, source: ["work.txt"], generated: ["gen-fixtures.txt"], mainHead: "0".repeat(40) });
   expect(recorded[2].data.routeLevel).toEqual({ base: 6, main: 7, task: 7, was: 7, set: 8 });
