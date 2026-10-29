@@ -57,15 +57,25 @@ const dry = (script, args) => {
 // The Studio's first run stopped at "atelierd can authenticate": atelierd has no
 // AuthenticationAuthority, and dscl says so with exit status 0. The check must
 // read dscl's words.
-test("an attribute a record lacks is reported by dscl's output, with exit status 0, and the setup reads the output", { skip: darwin }, () => {
+test("an attribute a record lacks is reported on dscl stderr with exit status 0", { skip: darwin }, () => {
   const r = spawnSync("/usr/bin/dscl", [".", "-read", "/Users/nobody", "AtelierNoSuchAttribute"], { encoding: "utf8" });
   assert.equal(r.status, 0, "dscl's exit status does not say the attribute is missing");
-  assert.equal(r.stdout.trim() + r.stderr.trim(), "No such key: AtelierNoSuchAttribute");
-  const text = readFileSync(SETUP, "utf8");
-  const line = text.split("\n").find((l) => l.includes("AuthenticationAuthority") && l.includes("fail"));
-  assert.ok(line, "the setup checks AuthenticationAuthority");
-  assert.match(line, /No such key: AuthenticationAuthority/);
-  assert.doesNotMatch(line, />\/dev\/null/, "the answer is read from the output, not the exit status");
+  assert.equal(r.stdout, "");
+  assert.equal(r.stderr.trim(), "No such key: AtelierNoSuchAttribute");
+});
+
+test("setup accepts missing AuthenticationAuthority and refuses a present one", () => {
+  for (const present of [false, true]) {
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
+DSCL=fake_dscl
+fake_dscl() {
+  [ "$*" = '. -read /Users/atelierd AuthenticationAuthority' ] || return 9
+  ${present ? "echo 'AuthenticationAuthority: ;ShadowHash;…'" : "echo 'No such key: AuthenticationAuthority' >&2"}
+  return 0
+}
+no_auth_authority atelierd`, SETUP], { env: env(), encoding: "utf8" });
+    assert.equal(r.status, present ? 1 : 0, r.stderr);
+  }
 });
 
 test("every Studio script parses", () => {
@@ -112,8 +122,11 @@ test("running setup again keeps the https public origin the tunnel step set, and
     assert.equal(r.status, 0, r.stderr);
     assert.ok(readFileSync(out, "utf8").includes(`<key>PUBLIC_ORIGIN</key><string>${kept || "http://100.99.0.102:4101"}</string>`), origin);
   }
-  const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c && kept_origin "$1"`, SETUP, join(d, "missing.plist")], { env: env(), encoding: "utf8" });
-  assert.notEqual(r.status, 0);
+  symlinkSync(join(d, "in.plist"), join(d, "linked.plist"));
+  for (const name of ["missing.plist", "linked.plist"]) {
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c && kept_origin "$1"`, SETUP, join(d, name)], { env: env(), encoding: "utf8" });
+    assert.notEqual(r.status, 0, name);
+  }
 });
 
 test("production is set up the same way with port 4100, zone.atelier.server, server-production and its own data, repositories, secrets, token and log", { skip: darwin }, () => {
@@ -494,8 +507,20 @@ test("setup health checks /api/version and the restored commit, with the nulls t
   const h = mkdtempSync(join(root, "health-"));
   mkdirSync(join(h, "server"));
   const commit = "a".repeat(40);
-  writeFileSync(join(h, "server/COMMIT"), commit);
-  for (const [body, expected] of [[`{"commit":"${commit}"}`, 0], [`{"commit":"${commit}","main":null,"capabilities":["a"]}`, 0], ['{"commit":"wrong"}', 1], ["not json", 1]]) {
+  for (const [savedCommit, body, expected] of [
+    [commit, `{"commit":"${commit}"}`, 0],
+    [commit, `{"commit":"${commit}","main":null,"capabilities":["a"]}`, 0],
+    [commit, '{"commit":"wrong"}', 1], [commit, "not json", 1],
+    ["", "not json", 1], ["", '{"commit":""}', 1],
+    [null, '{"commit":null,"main":null,"routeLevel":2}', 0],
+    [null, '{"routeLevel":2.5,"main":null}', 0],
+    [null, '{"routeLevel":true}', 1],
+    [null, "not json", 1], [null, '{}', 1],
+    [null, '{"routeLevel":"2"}', 1], [null, '{"routeLevel":null}', 1],
+  ]) {
+    const file = join(h, "server/COMMIT");
+    if (savedCommit === null) rmSync(file, { force: true });
+    else writeFileSync(file, savedCommit);
     const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
 HOME_DIR="$1" WORK="$1" CURL=fake_curl
 LSOF=fake_lsof SEQ=fake_seq SLEEP=fake_sleep

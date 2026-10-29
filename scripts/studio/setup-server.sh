@@ -134,9 +134,15 @@ dry() { [ "${DRYRUN:-}" = 1 ]; }
 kept_origin() {
   local file=$1 value
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  if [ "$EUID" = 0 ]; then trusted_entry "$file" || return 1; fi
   value=$("$PLUTIL" -extract EnvironmentVariables.PUBLIC_ORIGIN raw -o - "$file" 2>/dev/null) || return 1
   [[ "$value" =~ ^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
   printf '%s' "$value"
+}
+
+# dscl reports a missing attribute on stderr while returning success.
+no_auth_authority() {
+  [ "$("$DSCL" . -read "/Users/$1" AuthenticationAuthority 2>&1 || true)" = "No such key: AuthenticationAuthority" ]
 }
 
 write_plist() {
@@ -213,13 +219,19 @@ start_others() {
 # replaced go back, and every job that ran starts again. It decides by its
 # own checks, not by set -e.
 health() {
-  local attempt
+  local attempt expected_commit
   for attempt in $("$SEQ" 1 30); do
-    # plutil cannot read a JSON null, and the reply holds "main": null, so the reply is
-    # not converted whole: only the commit is extracted, as install-server.sh does.
+    # Extract individual fields: converting the whole reply fails on JSON nulls.
     if "$LSOF" -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
       && "$CURL" -q -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" > "$WORK/version.json" 2>/dev/null; then
-      if [ ! -f "$HOME_DIR/$SERVER/COMMIT" ] || [ "$("$PLUTIL" -extract commit raw -o - "$WORK/version.json" 2>/dev/null)" = "$("$CAT" "$HOME_DIR/$SERVER/COMMIT")" ]; then return 0; fi
+      if [ -f "$HOME_DIR/$SERVER/COMMIT" ]; then
+        expected_commit=$("$CAT" "$HOME_DIR/$SERVER/COMMIT") || return 1
+        [ -n "$expected_commit" ] || return 1
+        if [ "$("$PLUTIL" -extract commit raw -o - "$WORK/version.json" 2>/dev/null)" = "$expected_commit" ]; then return 0; fi
+      elif "$PLUTIL" -extract routeLevel raw -expect integer -o - "$WORK/version.json" >/dev/null 2>&1 \
+        || "$PLUTIL" -extract routeLevel raw -expect float -o - "$WORK/version.json" >/dev/null 2>&1; then
+        return 0
+      fi
     fi
     "$SLEEP" 1
   done
@@ -438,9 +450,7 @@ if "$DSCL" . -read /Users/$SVC >/dev/null 2>&1 || "$DSCL" . -read /Groups/$SVC >
   [ "$("$DSCL" . -list /Users UniqueID | "$AWK" -v u="$uid" '$2==u' | "$WC" -l | "$TR" -d ' ')" = 1 ] || fail "uid $uid is shared"
   [ "$("$DSCL" . -list /Groups PrimaryGroupID | "$AWK" -v g="$uid" '$2==g' | "$WC" -l | "$TR" -d ' ')" = 1 ] || fail "gid $uid is shared"
   [ "$("$DSCL" . -read /Users/$SVC Password 2>/dev/null | "$AWK" '{print $2}')" = '*' ] || fail "$SVC has a password"
-  # dscl exits 0 and prints "No such key" for an attribute the record lacks, so the
-  # answer is read from its output, never from its exit status.
-  [ "$("$DSCL" . -read /Users/$SVC AuthenticationAuthority 2>&1 || true)" = "No such key: AuthenticationAuthority" ] || fail "$SVC can authenticate"
+  no_auth_authority "$SVC" || fail "$SVC can authenticate"
 else
   ID=450
   while "$DSCL" . -list /Users UniqueID | "$AWK" '{print $2}' | "$GREP" -qx "$ID" || "$DSCL" . -list /Groups PrimaryGroupID | "$AWK" '{print $2}' | "$GREP" -qx "$ID"; do ID=$((ID+1)); done
