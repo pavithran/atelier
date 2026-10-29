@@ -164,7 +164,12 @@ export default async function wrapCommand() {
   data.head = git(["rev-parse", "HEAD"], { cwd });
   const note = await call("POST", `${P(name)}/sessions`, cleanSession(data), as);
   console.log(sessionNoteText(note));
-  if (cfg.projects[name].fresh === true) await syncCommand();
+  // On the Node server the project's repository is the baseline, which only
+  // a landing moves (Atelier 2.0, tasks 6 and 11): wrap publishes nothing
+  // there and says how the checkout stands against it.
+  const { head: serverHead, repository } = await call("GET", `${P(name)}/baseline-head`, undefined, OWNER);
+  if (repository === "server") console.log(serverBaselineText(name, cfg.projects[name].branch, serverHead, cwd));
+  else if (cfg.projects[name].fresh === true) await syncCommand();
   else await publishBaseline();
   console.log("Nothing deployed or published as a release.");
   console.log(FILING_RELAY);
@@ -173,6 +178,19 @@ export default async function wrapCommand() {
   // step; only now does a remote that did not take the push fail the command.
   const failed = data.pushes.filter((p) => !p.passed);
   if (failed.length) die(`the session is recorded, but the push failed for ${failed.length} remote${failed.length === 1 ? "" : "s"}: ${failed.map((p) => sessionText(p.remote, 200)).join(", ")}`);
+}
+
+// What wrap says in place of publishing on the Node server: where the
+// server's branch is, and what the checkout holds beyond it, which reaches
+// the branch only through a landing.
+function serverBaselineText(name, branch, serverHead, cwd) {
+  const head = git(["rev-parse", "HEAD"], { cwd });
+  if (!serverHead) return `Baseline: ${name}'s repository on the server has no ${branch} yet; atelier init in this checkout pushes it.`;
+  if (head === serverHead) return `Baseline: the server's repository is the baseline, and its ${branch} is at ${short(serverHead)}, as this checkout is. Nothing to publish.`;
+  const ahead = git(["rev-list", "--count", head, "--not", serverHead], { cwd, allowFail: true }).stdout?.trim();
+  return ahead && ahead !== "0"
+    ? `Baseline: the server's repository is the baseline, and its ${branch} is at ${short(serverHead)}. This checkout holds ${ahead} commit${ahead === "1" ? "" : "s"} it lacks, which were not published: only a landing moves ${branch} there.\nnext: carry them as a task: atelier new "TITLE" --project ${name}, claim it, push them to its branch, then atelier land tN --project ${name}`
+    : `Baseline: the server's repository is the baseline, and its ${branch} is at ${short(serverHead)}; this checkout is behind it.\nnext: atelier pull --project ${name}`;
 }
 
 // The baseline alone: the step `wrap` ends with for a baseline that holds the

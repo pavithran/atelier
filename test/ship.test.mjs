@@ -157,7 +157,7 @@ function standIn(state) {
     const view = (a) => ({ ...a, status: a.consumed ? "consumed" : a.withdrawn ? "withdrawn" : "active" });
     if (path === "/live") return send(state.live ?? 200, {});
     if (path === "/version") return send(200, { commit: state.liveCommit });
-    if (path === "/api/projects/demo/baseline-head") return send(200, { head: git(state.baseline, "rev-parse", "main") });
+    if (path === "/api/projects/demo/baseline-head") return send(200, { head: git(state.baseline, "rev-parse", "main"), ...(state.repository ? { repository: state.repository } : {}) });
     if (path === "/api/projects/demo/actions" && req.method === "GET") return send(200, { approvals: [...state.approvals].reverse().map(view), runs: [] });
     if (path === "/api/projects/demo/actions" && req.method === "POST") {
       const a = { id: `a${state.approvals.length + 1}`, kind: body.kind, commit: body.commit, note: body.note, by: "owner", at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString() };
@@ -510,6 +510,22 @@ test("ship gives the scan and baseline steps the parent's Atelier configuration,
   const r = await f.run(["ship", "--push"]);
   const lines = existsSync(f.marker) ? readFileSync(f.marker, "utf8").trim().split("\n") : [];
   assert.deepEqual(lines, [`scan:test-token|${f.url}|${f.dir}`, `baseline:test-token|${f.url}|${f.dir}`, "studio:||"], r.stdout + r.stderr);
+});
+
+// Atelier 2.0, task 11: on the Node server the project's repository is the
+// baseline, which only a landing moves, so the baseline step (atelier sync)
+// is skipped, said and recorded as skipped; the steps around it run.
+test("on a server whose repository is the baseline, ship skips the baseline step and runs the rest", async (t) => {
+  const dump = (name) => ["node", "-e", `require("fs").appendFileSync(process.env.SHIP_MARKER, ${JSON.stringify(name)} + "\\n")`];
+  const f = await fixture(t, { ship: { schema_version: 1, kind: "atelier.ship", class: "other", push: { remote: "github", branch: "main" }, scan: { run: dump("scan") }, baseline: { run: dump("baseline") }, studio: { run: dump("studio") } } });
+  f.state.repository = "server";
+  const r = await f.run(["ship", "--push"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(readFileSync(f.marker, "utf8").trim().split("\n"), ["scan", "studio"]);
+  assert.match(r.stdout, /baseline: skipping .*: the server's repository is the baseline, which only a landing moves/);
+  assert.match(r.stdout, /Shipped demo at [0-9a-f]{8}: .*baseline \(skipped\), studio ran/);
+  const baseline = f.state.runs.find((x) => x.step === "baseline");
+  assert.match(baseline.note, /skipped: the server's repository is the baseline/);
 });
 
 test("ship source binding replaces caller input without exposing Atelier credentials (t182)", () => {

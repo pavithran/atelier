@@ -71,7 +71,12 @@ The remote is given at the address the request came to when that is this machine
 
 The CLI clones the branch alone (`git clone --single-branch --branch t/N`) and fetches the project's branch from the same remote as the baseline: one remote, `origin`. `atelier push` pushes `HEAD:refs/heads/t/N`. A check's clean clone, `atelier diff` and a review job clone `t/N` alone with a read grant, which `read-token`, `base-token` and `review-claim` answer on this server.
 
-`atelier init` makes the project's repository, its HEAD on the project's branch, and mints nothing: the owner's first push of the project's branch, into the empty repository, goes with the server token. Later commits reach it only through a landing, so `atelier init` run again with new commits, `atelier sync`, `atelier wrap`'s baseline step and `atelier ship`'s baseline step, which push the project's branch with the server token, are refused by the hook on this server. Init sends the prose standard's text with its path, so a claim can hand it to a builder with no checkout.
+`atelier init` makes the project's repository, its HEAD on the project's branch, and mints nothing: the owner's first push of the project's branch, into the empty repository, goes with the server token. Later commits reach it only through a landing. The four commands that pushed the project's branch with the server token on 1.x no longer push on this server (task 11), since the repository is the baseline and the server answers `repository: "server"` from `baseline-head`:
+
+- `atelier init` run again records the policy and pushes nothing. It says how the checkout's branch stands against the server's, and names a landing for commits the server lacks, or `atelier pull` for a checkout behind. `--history-since` is refused: the repository takes the whole history.
+- `atelier sync` goes away. There is no separate baseline to carry commits to; it refuses, naming `atelier pull` for one direction and a landing for the other.
+- `atelier wrap` keeps its session note, commit and checkout remotes, and in place of publishing the baseline it reports the server's branch and what the checkout holds beyond it.
+- `atelier ship` skips its baseline step, which ran `atelier sync`, and records it as skipped. It already ships only the revision the server's branch holds. Init sends the prose standard's text with its path, so a claim can hand it to a builder with no checkout.
 
 Before Git reads a byte, the server checks the credential. A request with no live grant for this project gets 401 at `info/refs`. A read grant asking to push gets 403.
 

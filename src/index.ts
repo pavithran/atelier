@@ -2439,8 +2439,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.wrapSession(body, actor), 201);
     }
   }
+  // `repository: "server"` on the Node server, where the project's
+  // repository is the baseline and only a landing moves its branch: sync,
+  // wrap and ship read it (Atelier 2.0, task 11).
   if (parts[2] === "baseline-head" && parts.length === 3 && m === "GET") {
-    return json({ head: await headOf(env, (await L.project()).repo) });
+    return json({ head: await headOf(env, (await L.project()).repo), ...(gitHost(env) ? { repository: "server" } : {}) });
   }
   // The task refresh queue (t462): GET lists each task's target with its
   // standing — why a busy or blocked one waits — and its last outcome; POST

@@ -14,6 +14,11 @@ export default async function syncCommand() {
   const git = landingGit;
   const name = project();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = needCheckout(name, p);
+  // On the Node server the project's repository is the baseline: there is no
+  // separate copy to carry commits to, and only a landing moves its branch
+  // (Atelier 2.0, tasks 6 and 11), so sync has nothing to do there.
+  const { repository } = await call("GET", `${P(name)}/baseline-head`, undefined, OWNER);
+  if (repository === "server") die(serverSyncRefusal(name, p.branch));
   const fresh = p.fresh === true;
   // Before anything is sent, main must hold the baseline's main (t644): a
   // checkout another Mac has moved past would have its push refused as a
@@ -67,4 +72,10 @@ export default async function syncCommand() {
     const n = Object.keys(built.pairs).length;
     console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
   } finally { unlock(); }
+}
+
+// sync's answer on the Node server, which wrap also gives for a checkout
+// set up with part of its history: what to run instead, each way.
+export function serverSyncRefusal(name, branch) {
+  return `${name}'s server keeps the project's repository itself, and that repository is the baseline: there is no separate baseline to carry commits to, and only a landing moves ${branch} there. Nothing was sent.\nnext: atelier pull --project ${name} brings this checkout to the server's ${branch}; commits made here outside Atelier reach it as a task: atelier new "TITLE" --project ${name}, claim it, push them to its branch, then atelier land tN --project ${name}`;
 }
