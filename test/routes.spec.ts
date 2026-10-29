@@ -2,9 +2,8 @@ import { env, server } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import { NO_OWNER_FACTOR } from "../src/rules.ts";
 import { expect, it } from "./support/vitest.ts";
-import worker from "../src/index.ts";
+import worker, { observePushed } from "../src/index.ts";
 import { signIn } from "./signin.ts";
-import { queue } from "./workers-removed.ts";
 
 // The queue and claim routes driven through the Worker's own fetch handler,
 // so the header parsing and wiring are tested, not only the Ledger beneath.
@@ -59,7 +58,7 @@ it("dispatch through the API, then the queue answers the owner and a matching ru
 it("a claim on a dispatched task is refused without the right runner header", async () => {
   await project("routes-b");
   const created = await (await call("POST", "/projects/routes-b/items", "owner", { title: "Edit", scope: ["a/**"] })).json() as { id: string };
-  await call("POST", `/projects/routes-b/items/${created.id}/dispatch`, "owner", { to: "home", agent: "opencode" });
+  await call("POST", `/projects/routes-b/items/${created.id}/dispatch`, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash" });
   const claim = (actor: string, runner?: string) =>
     call("POST", `/projects/routes-b/items/${created.id}/claim`, actor, {}, runner ? { "x-atelier-runner": runner } : {});
 
@@ -79,10 +78,10 @@ it("a claim on a dispatched task is refused without the right runner header", as
 it("the queue offers a runner the claim its dead run left held, to it alone", async () => {
   await project("routes-held");
   const created = await (await call("POST", "/projects/routes-held/items", "owner", { title: "Build", scope: ["a/**"] })).json() as { id: string };
-  // No agent named, so the offer's own choice of agent takes the claim.
-  await call("POST", `/projects/routes-held/items/${created.id}/dispatch`, "owner", { to: "home" });
-  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-held"));
+  // G17: the dispatch names its agent and model; the claim is that actor's.
   const model = "Qwen3-Coder-Next-4bit:studio-code";
+  await call("POST", `/projects/routes-held/items/${created.id}/dispatch`, "owner", { to: "home", agent: "opencode", model });
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-held"));
   const actor = `opencode/${model}`;
   await L.claim(created.id, actor, { runner: "home:mbp", kind: "home" });
   await L.setFork(created.id, "routes-held--t1", "0".repeat(40), actor);
@@ -94,9 +93,9 @@ it("the queue offers a runner the claim its dead run left held, to it alone", as
 
   const other = await offered({ runner: "home:mbp-2", agents: [{ agent: "opencode", models: [model] }] }) as { project: string; item: { id: string } }[];
   expect(other.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
-  // An offer whose assignment would name another actor cannot take the claim
-  // over (claim refuses another's holder), so it is not offered at all.
-  const rerouted = await offered({ runner: "home:mbp", agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "opencode", models: [model] }] }) as { project: string; item: { id: string } }[];
+  // An offer that cannot run the dispatch's own agent and model (G17: the dispatch names them)
+  // cannot take the claim over (claim refuses another's holder), so it is not offered at all.
+  const rerouted = await offered({ runner: "home:mbp", agents: [{ agent: "claude-code", models: ["opus-5.5"] }] }) as { project: string; item: { id: string } }[];
   expect(rerouted.some((q) => q.project === "routes-held" && q.item.id === created.id)).toBe(false);
   // The owner's queue listing counts waiting work, not claims held of it.
   const all = await (await call("GET", "/queue", "owner")).json() as { project: string; item: { id: string } }[];
@@ -125,9 +124,9 @@ it("a merge-main dispatch names main's head from the baseline, and needs one whe
 
   // The task has no workspace yet: main's head is read first, and a baseline
   // that answers nothing refuses the headless form asking for one.
-  const unreadable = await post({ job: "merge-main" }, artifacts(null));
+  const unreadable = await post({ job: "merge-main", agent: "claude-code", model: "opus-5.5" }, artifacts(null));
   expect([unreadable.status, ((await unreadable.json()) as { error: string }).error]).toEqual([503, "bad_head"]);
-  const bare = await post({ job: "merge-main", head: M }, artifacts(M));
+  const bare = await post({ job: "merge-main", head: M, agent: "claude-code", model: "opus-5.5" }, artifacts(M));
   expect([bare.status, ((await bare.json()) as { error: string }).error]).toEqual([409, "no_fork"]);
 
   const ledger = env.LEDGER.get(env.LEDGER.idFromName("project:routes-merge-main"));
@@ -136,7 +135,7 @@ it("a merge-main dispatch names main's head from the baseline, and needs one whe
   await ledger.release(created.id, "claude-code/opus-5.5", "built");
   // With no head named, the route reads main's head from the baseline and
   // the dispatch carries it, ready for a runner that offers the job.
-  const res = await post({ job: "merge-main" }, artifacts(M));
+  const res = await post({ job: "merge-main", agent: "claude-code", model: "opus-5.5" }, artifacts(M));
   expect(res.status).toBe(200);
   const sent = await res.json() as { dispatch: { job: string; head: string } | null };
   expect(sent.dispatch).toMatchObject({ job: "merge-main", head: M, task: true });
@@ -423,8 +422,9 @@ it("the single-family route records the company with who and when, records the r
   expect(refusal.error).toBe("single_family");
   expect(refusal.detail).toBe("gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode (anthropic): use one of anthropic's models, or return to cross-family review with atelier init --cross-family");
   expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status).toBe(200);
-  // A dispatch that names no model leaves the choice to the runner's offer, as before.
-  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" })).status).toBe(200);
+  // G17: a dispatch that names no model is refused (builder_needed); the runner's offer no longer chooses.
+  const unnamed = await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" });
+  expect([unnamed.status, ((await unnamed.json()) as { error: string }).error]).toEqual([409, "builder_needed"]);
   // Back under the default any model may be named.
   await put({ singleFamily: null });
   expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
@@ -582,7 +582,7 @@ it("removal counts an open item queued for a runner as live work", async () => {
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Queued for a runner", [], "owner");
-  await L.dispatch("t1", "owner", { to: "home" });
+  await L.dispatch("t1", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   const refused = await call("DELETE", `/projects/${name}`, "owner");
   expect(refused.status).toBe(409);
   expect(await refused.json()).toMatchObject({ error: "live_work", detail: expect.stringContaining("queued for a runner") });
@@ -1013,7 +1013,7 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" } as never);
   await L.submit("t1", agent, "Did the work");
   await L.newItem("Queued", [], "owner");
-  await L.dispatch("t2", "owner", { to: "home" });
+  await L.dispatch("t2", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   for (const actor of ["owner", agent]) {
     const res = await call("GET", `/projects/${name}/standing`, actor);
     expect(res.status).toBe(200);
@@ -1037,7 +1037,7 @@ it("the project page carries the same standing as the route", async () => {
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("A queued <task>", [], "owner");
-  await L.dispatch("t1", "owner", { to: "cloud" });
+  await L.dispatch("t1", "owner", { to: "cloud", agent: "claude-code", model: "opus-5.5" });
   const signedIn = await signIn(TOKEN, testEnv);
   const page = await worker.fetch(new Request(`https://atelier.test/p/${name}`, { headers: { cookie: signedIn } }), testEnv);
   expect(page.status).toBe(200);
@@ -1295,20 +1295,23 @@ it("init refuses a branch name with letters beyond ASCII, naming what to do, bef
   await expect(repoBranch("branch-unicode")).rejects.toThrow();
 });
 
-it("push events are read on the project's branch, not the one the fork's info reports", async () => {
+// Task 8 retired the Artifacts push event and the branch its info reported: the
+// post-receive hook reports a push to a task's branch (t/N), the head is read from
+// that branch, and a push to the project's own branch records nothing.
+it("a push reported on the project's branch records nothing, and one on the task's branch is read from that branch", async () => {
   const name = "branch-events", A = "opencode/glm-5.3", H0 = "0".repeat(40), H1 = "1".repeat(40), H2 = "2".repeat(40);
   const record = { name, repo: name, branch: "master", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record as never, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
-  await L.newItem("Observe", [], "owner"); await L.claim("t1", A); await L.setFork("t1", `${name}--t1`, H0, A);
-  // The fork's history as the consumer reads it: H2 on top of H0, the base.
+  await L.newItem("Observe", [], "owner"); await L.claim("t1", A); await L.setFork("t1", `${name}/t/1`, H0, A);
+  // The task branch's history as the server reads it: H2 on top of H0, the base.
   const artifacts = { get: async () => ({ info: async () => ({ defaultBranch: "main" }), log: async () => [{ hash: H2, parents: [H0] }, { hash: H0, parents: [] }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
-  const notice = (ref: string) => ({ type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref, after: H1 } });
-  const send = (body: unknown) => queue({ messages: [{ body, ack() {}, retry() {} }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: artifacts });
-  await send(notice("refs/heads/main"));
+  const send = (ref: string) => observePushed({ ...env, ARTIFACTS: artifacts } as typeof env, { project: name, ref, after: H1 });
+  expect(await send("refs/heads/main")).toMatchObject({ observed: false });
+  expect(await send("refs/heads/master")).toMatchObject({ observed: false });
   expect((await L.item("t1")).head).toBe(H0);
-  await send(notice("refs/heads/master"));
+  expect(await send("refs/heads/t/1")).toMatchObject({ observed: true, item: "t1", head: H2 });
   expect((await L.item("t1")).head).toBe(H2);
 });
 
@@ -1558,9 +1561,12 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   expect((await L.reviewRequests("t1")).map((r) => r.state)).toEqual(["claimed"]);
 
   // The owner changes the criteria while the reviewer runs: the claim is
-  // withdrawn and the same reviewer is asked again at the same head.
+  // withdrawn. G6: the same reviewer is no longer asked again by itself; the
+  // developer asks again at the same head by command.
   const changed = await (await owner("POST", "/items/t1/edit", { accept: TWO })).json() as { criteriaChange: { reviews: number; requests: number; asked: string[] } };
-  expect(changed.criteriaChange).toMatchObject({ reviews: 0, requests: 1, asked: [GPT] });
+  expect(changed.criteriaChange).toMatchObject({ reviews: 0, requests: 1, asked: [] });
+  expect((await L.reviewRequests("t1")).map((r) => [r.head, r.state])).toEqual([[H1, "withdrawn"]]);
+  await L.requestReview("t1", "owner", GPT, [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }]);
   expect((await L.reviewRequests("t1")).map((r) => [r.head, r.state])).toEqual([[H1, "withdrawn"], [H1, "open"]]);
   // The old verdict, with or without its request, and one with no binding, are refused, saying to refresh.
   for (const [body, error] of [
@@ -1590,7 +1596,7 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
 // maxlength stops a note at 2000 of those, but a browser posts each break as
 // CRLF. A note the form took must not then be refused as 2010 characters, so
 // the form handler stores every break as LF before the limit is checked. The
-// API and CLI text is checked and stored as given.
+// API and CLI text is checked and stored as given. G17: each dispatch names its model.
 it("a dispatch note at the limit posted with CRLF line breaks is taken and stored with LF, while API text is kept as given", async () => {
   const name = "routes-crlf-note";
   await project(name);
@@ -1605,7 +1611,7 @@ it("a dispatch note at the limit posted with CRLF line breaks is taken and store
 
   const cookie = await signIn(TOKEN, testEnv);
   const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/dispatch`, {
-    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ to: "home", agent: "", model: "", note: posted }), redirect: "manual",
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ to: "home", agent: "claude-code", model: "opus-5.5", note: posted }), redirect: "manual",
   }), testEnv);
   expect(form.status, await form.clone().text()).toBe(303);
   expect((await L.item("t1")).dispatch?.note).toBe(stored);
@@ -1613,10 +1619,10 @@ it("a dispatch note at the limit posted with CRLF line breaks is taken and store
   // The API, as atelier dispatch --note-file sends a file, stores the text as
   // given: a lone CR is kept, and CRLF counts as two units, so the same note
   // in CRLF (2010 units) is refused whole, never folded to fit.
-  const api = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: lines.join("\r") });
+  const api = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", agent: "claude-code", model: "opus-5.5", note: lines.join("\r") });
   expect(api.status, await api.clone().text()).toBe(200);
   expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
-  const over = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: posted });
+  const over = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", agent: "claude-code", model: "opus-5.5", note: posted });
   expect(over.status).toBe(400);
   expect(((await over.json()) as { error: string }).error).toBe("too_long");
   expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));

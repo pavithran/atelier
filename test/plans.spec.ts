@@ -59,6 +59,11 @@ const inbox = async (L: L) => (await L.inbox(new Date().toISOString())).map((e) 
 const view = async (L: L, id: string) => L.planView(id);
 const waiting = async (L: L) => (await L.waiting()).map((i) => `${i.id}:${i.dispatch?.agent}/${i.dispatch?.model}`);
 
+// The routes the developer names at an approval (G17: Atelier picks none): a
+// builder and a reviewer of another family for each part.
+const routes = (plan: { parts: { key: string }[] }, builder = GLM, reviewer = GPT) =>
+  Object.fromEntries(plan.parts.map((p) => [p.key, { builder, reviewer }]));
+
 // A plan proposed by its planner and approved, its parts created.
 async function proposed(L: L, plan = doc(part("a"))) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
@@ -71,7 +76,7 @@ async function proposed(L: L, plan = doc(part("a"))) {
 
 async function approved(L: L, plan = doc(part("a"))) {
   const { id, hash } = await proposed(L, plan);
-  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL);
+  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL, [], routes(plan));
   return { id, hash, parts: Object.fromEntries(parts.map((p) => [p.partKey!, p.id])) };
 }
 
@@ -107,7 +112,7 @@ it("a goal becomes a plan item dispatched as a plan job, and the planner's valid
   const L = await setup("plan-propose");
   await refusal(L.newPlan("Ship it", [], "codex/gpt-6-astra", PLANNER, []), "not_project_owner", /only the developer starts a plan/);
   await refusal(L.newPlan("   ", [], "owner", PLANNER, []), "bad_goal", /a plan needs a goal/);
-  await refusal(L.newPlan("Ship it", [], "owner", null, []), "no_planner", /the model pool is empty/);
+  await refusal(L.newPlan("Ship it", [], "owner", null, []), "planner_needed", /names no planner, and Atelier picks none[\s\S]*No model in the pool is eligible/);
   const { item, planner, reasons } = await L.newPlan("Ship the feature\nwith care", ["src/**"], "owner", PLANNER, []);
   expect(item).toMatchObject({ id: "t1", kind: "plan", state: "open", title: "Ship the feature with care", scope: ["src/**"] });
   expect(item.dispatch).toMatchObject({ to: "home", agent: "claude-code", model: "opus-5.5", job: "plan", by: "owner" });
@@ -193,21 +198,24 @@ it("a newer proposal makes the older hash unapprovable, and after approval nothi
   await refusal(L.approvePlan(first.id, "codex/gpt-6-astra", second.hash, false, POOL), "not_project_owner", /only the developer approves/);
   await refusal(L.approvePlan(first.id, "owner", "abc", false, POOL), "bad_hash", /full hash/);
   await refusal(L.approvePlan(first.id, "owner", first.hash, false, POOL), "stale_plan", new RegExp(`is not t1's newest proposal, which is ${second.hash}`));
-  // Approval is refused while a part cannot be routed: one model has no reviewer of another family.
-  await refusal(L.approvePlan(first.id, "owner", second.hash, false, [POOL[0]]), "unrouted", /part a has no reviewer/);
-  const { parts } = await L.approvePlan(first.id, "owner", second.hash, false, POOL);
+  // Approval names its routes (G17): without them it refuses and lists the candidates, asking nothing and posting nothing.
+  await refusal(L.approvePlan(first.id, "owner", second.hash, false, POOL), "routes_needed", /names no routes, and Atelier picks none[\s\S]*part a: builders/);
+  await refusal(L.approvePlan(first.id, "owner", second.hash, false, POOL, [], { a: { builder: GLM, reviewer: GPT } }), "routes_needed", /names no route for part b/);
+  const { parts } = await L.approvePlan(first.id, "owner", second.hash, false, POOL, [], routes(doc(part("a"), part("b"))));
   expect(parts.map((p) => [p.id, p.kind, p.plan, p.partKey, p.deps, p.title])).toEqual([
     ["t2", "part", "t1", "a", [], "Part a"], ["t3", "part", "t1", "b", [], "Part b"],
   ]);
-  await refusal(L.approvePlan(first.id, "owner", second.hash, false, POOL), "plan_approved", /a plan is approved once/);
+  await refusal(L.approvePlan(first.id, "owner", second.hash, false, POOL, [], routes(doc(part("a"), part("b")))), "plan_approved", /a plan is approved once/);
   await refusal(L.postPlan(first.id, PLANNER, doc(part("c"))), "plan_approved", /does not change/);
   await refusal(L.revisePlan(first.id, "owner", "more"), "plan_approved", /revised only before approval/);
   const v = await view(L, first.id);
   expect(v).toMatchObject({ phase: "building", approval: { hash: second.hash, allowPaid: false, limits: { maxParallel: 2, attempts: 3, reviewRounds: 2, maxJobs: 8, hours: 24 } } });
   expect(Date.parse(v.approval!.deadline) - Date.parse(v.approval!.at)).toBe(24 * 3_600_000);
-  // Every part has a builder, two alternates and a reviewer of another family, fixed now.
+  // Every part has the builder and the reviewer the developer named (another family), fixed now; no alternates are picked.
   for (const p of v.parts) {
-    expect(p.route?.alternates).toHaveLength(2);
+    expect(p.route?.builder?.actor).toBe(GLM);
+    expect(p.route?.reviewer?.actor).toBe(GPT);
+    expect(p.route?.alternates).toHaveLength(0);
     expect(familyOf(p.route!.reviewer!.actor.split("/")[1])).not.toBe(familyOf(p.route!.builder!.actor.split("/")[1]));
   }
   const approvedEvent = (await events(L, first.id)).find((e) => e.kind === "plan.approved")!;
@@ -221,11 +229,11 @@ it("approval is refused while the planner still holds its claim, so no write tok
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error("expected a valid proposal");
   // The planner still holds the claim, so approval is refused.
-  await refusal(L.approvePlan(item.id, "owner", post.hash, false, POOL), "planning", /held by claude-code\/opus-5\.5, which is planning now/);
+  await refusal(L.approvePlan(item.id, "owner", post.hash, false, POOL, [], routes(doc(part("a")))), "planning", /held by claude-code\/opus-5\.5, which is planning now/);
   expect((await L.item(item.id)).owner).toBe(PLANNER);
   // Once released, the same hash approves.
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], routes(doc(part("a"))));
   expect(parts).toHaveLength(1);
 });
 
@@ -298,31 +306,34 @@ it("parts are dispatched as their dependencies merge, never more than maxParalle
   expect((await view(L, id)).approval!.jobsUsed).toBe(4);
 });
 
-it("a part released twice by its builder moves to the first alternate", async () => {
+// G17: the developer's named route has a builder and no alternates, so a part
+// the builder gives up twice blocks the plan (it used to move to an alternate).
+it("a part released twice by its builder blocks the plan, since the named route has no alternate", async () => {
   const L = await setup("plan-alternate");
   const { id, parts } = await approved(L);
   const route = (await view(L, id)).parts[0].route!;
+  expect(route.alternates).toEqual([]);
   expect(await giveUp(L, parts.a)).toBe(route.builder!.actor);
   expect((await L.item(parts.a)).dispatch).toMatchObject({ by: "atelier/orchestrator" });
   expect(await giveUp(L, parts.a)).toBe(route.builder!.actor);
-  const next = (await events(L, parts.a)).find((e) => e.kind === "item.dispatched")!;
-  expect(next.data).toMatchObject({ reason: `two attempts by ${route.builder!.actor} did not finish; moving to the next alternate` });
-  expect(`${next.data.agent}/${next.data.model}`).toBe(route.alternates[0].actor);
+  const dispatches = (await events(L, parts.a)).filter((e) => e.kind === "item.dispatched");
+  expect(dispatches[0].data).toMatchObject({ reason: `released without a commit; re-dispatching to ${route.builder!.actor}` });
+  expect(await waiting(L)).toEqual([]);
+  expect((await view(L, id))).toMatchObject({ phase: "blocked", blocked: "part a has no alternates left" });
   expect((await view(L, id)).parts[0].attempts).toEqual([
     { actor: route.builder!.actor, outcome: "give-up" }, { actor: route.builder!.actor, outcome: "give-up" },
   ]);
 });
 
-it("a limit blocks the plan: three attempts, then the plan's job budget after a retry", async () => {
+it("a limit blocks the plan: two attempts by the named builder, then the plan's job budget after a retry", async () => {
   const L = await setup("plan-limit");
   const { id, parts } = await approved(L);
   await giveUp(L, parts.a);
   await giveUp(L, parts.a);
-  await giveUp(L, parts.a);
-  expect((await view(L, id))).toMatchObject({ phase: "blocked", blocked: "part a has reached 3 attempts" });
+  expect((await view(L, id))).toMatchObject({ phase: "blocked", blocked: "part a has no alternates left" });
   expect(await waiting(L)).toEqual([]);
   expect(await inbox(L)).toEqual([`${id}:plan-blocked:85`]);
-  expect((await events(L, id)).find((e) => e.kind === "plan.blocked")).toMatchObject({ actor: "atelier/orchestrator", data: { reason: "part a has reached 3 attempts" } });
+  expect((await events(L, id)).find((e) => e.kind === "plan.blocked")).toMatchObject({ actor: "atelier/orchestrator", data: { reason: "part a has no alternates left" } });
 
   // The owner retries: attempts count afresh, and the builder is asked again.
   await refusal(L.retryPlan(parts.a, "codex/gpt-6-astra"), "not_project_owner", /only the developer/);
@@ -330,8 +341,13 @@ it("a limit blocks the plan: three attempts, then the plan's job budget after a 
   expect((await view(L, id)).blocked).toBeNull();
   const builder = (await view(L, id)).parts[0].route!.builder!.actor;
   expect(await waiting(L)).toEqual([`${parts.a}:${builder}`]);
-  // That was the fourth of the plan's four part dispatches, so the next release blocks it.
+  // That was the third of the plan's four part dispatches; the builder gives up and is asked a fourth time.
   await giveUp(L, parts.a);
+  expect(await waiting(L)).toEqual([`${parts.a}:${builder}`]);
+  // Its next release blocks the plan for want of an alternate; a second retry would need a fifth dispatch, so the budget blocks it.
+  await giveUp(L, parts.a);
+  expect((await view(L, id)).blocked).toBe("part a has no alternates left");
+  await L.retryPlan(parts.a, "owner");
   expect((await view(L, id)).blocked).toBe("the plan has used its 4 part dispatches (4 per part)");
   expect(await waiting(L)).toEqual([]);
 });
@@ -380,7 +396,7 @@ it("parts never appear as accept, assess, failing, scope or stale entries, and o
   const post = await L.postPlan(id, PLANNER, doc(part("a", { scope: ["src/**"] }), part("b", { dependsOn: ["a"] })));
   // Approval needs the plan item unheld, so the planner releases first.
   await L.release(id, PLANNER, "proposed");
-  const { parts: created } = await L.approvePlan(id, "owner", post.valid ? post.hash : "", false, POOL);
+  const { parts: created } = await L.approvePlan(id, "owner", post.valid ? post.hash : "", false, POOL, [], routes(doc(part("a"), part("b"))));
   const parts = { a: created[0].id };
   const d = (await L.item(parts.a)).dispatch!;
   const actor = `${d.agent}/${d.model}`;
@@ -443,9 +459,13 @@ it("a stored agents list names no planner role, and picks no planner or builder 
   };
   const named = await (await setup("plan-governed-named", governed)).newPlan("Ship", [], "owner", GPT, []);
   expect(named.item.dispatch).toMatchObject({ agent: "codex" });
-  const picked = (await (await setup("plan-governed", governed)).newPlan("Ship again", [], "owner", null, POOL)).item.dispatch;
-  const plain = (await (await setup("plan-ungoverned")).newPlan("Ship again", [], "owner", null, POOL)).item.dispatch;
-  expect({ agent: picked?.agent, model: picked?.model }).toEqual({ agent: plain?.agent, model: plain?.model });
+  // G17: no planner is picked; the refusal lists the same candidates with or without a stored agents list.
+  const candidates = async (L: L) => {
+    const err = await L.newPlan("Ship again", [], "owner", null, POOL).then(() => new Error("expected planner_needed"), (e: unknown) => e as Error);
+    expect(parseRuleError(err)?.code, err.message).toBe("planner_needed");
+    return [...parseRuleError(err)!.detail.matchAll(/^\s+(\S+\/\S+) \(/gm)].map((m) => m[1]);
+  };
+  expect(await candidates(await setup("plan-governed", governed))).toEqual(await candidates(await setup("plan-ungoverned")));
 });
 
 it("a tick that fails is undone and logged, and the change that ran it stands", async () => {
@@ -474,7 +494,7 @@ it("a submitted part's criteria change needs a fresh review before it integrates
   const L = await setup("plan-criteria");
   const { id: planId, hash } = await proposed(L);
   await L.setFork(planId, `fork-${planId}`, H0, "owner");
-  const { parts } = await L.approvePlan(planId, "owner", hash, false, POOL);
+  const { parts } = await L.approvePlan(planId, "owner", hash, false, POOL, [], routes(doc(part("a"))));
   const partId = parts[0].id;
   const d = (await L.item(partId)).dispatch!;
   const builder = `${d.agent}/${d.model}`;

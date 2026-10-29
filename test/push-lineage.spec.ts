@@ -1,9 +1,8 @@
 import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
-import worker from "../src/index.ts";
+import worker, { observePushed } from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { parseRuleError } from "../src/rules.ts";
-import { queue } from "./workers-removed.ts";
 
 // A push whose head no longer holds the head the Ledger recorded has
 // rewritten the fork's history: the commits recorded before are off the
@@ -27,7 +26,7 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Keep every push", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setFork("t1", `${name}/t/1`, H0, A);
   return L;
 }
 
@@ -200,11 +199,8 @@ it("a search that stops at its budget is refused as unverified, not as a rewrite
   expect(reads).toEqual({ log: 11, commits: 0 });
   expect((await L.item("t1")).head).toBe(H1);
   expect((await events(L)).some((e) => e.kind === "push.observed" && e.data.head === tip)).toBe(false);
-  // Seen through the queue, the same head is left where it is and the note says why.
-  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref: "refs/heads/main", after: tip } };
-  let acks = 0, retries = 0;
-  await queue({ messages: [{ body: notice, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, bindings);
-  expect([acks, retries]).toEqual([1, 0]);
+  // Reported by the post-receive hook, the same head is left where it is and the note says why.
+  expect(await observePushed(bindings, { project: name, ref: "refs/heads/t/1", after: tip })).toMatchObject({ observed: false, item: "t1", head: tip });
   expect((await L.item("t1")).head).toBe(H1);
   expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: tip, recorded: H1, reason: "ancestry_unverified" });
   // A declaration naming another head is refused the same way; one naming the
@@ -241,17 +237,13 @@ it("a push event whose head does not hold the recorded one leaves the head and n
   await L.recordPush("t1", A, H1, H1);
   const graph: Record<string, string[]> = { [H0]: [], [H1]: [H0], [H3]: [H0] };
   const { binding } = artifacts(() => H3, graph);
-  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref: "refs/heads/main", after: H3 } };
-  let acks = 0, retries = 0;
-  const send = () => queue({ messages: [{ body: notice, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: binding });
-  await send();
-  expect([acks, retries]).toEqual([1, 0]);
+  const send = () => observePushed({ ...env, ARTIFACTS: binding } as typeof env, { project: name, ref: "refs/heads/t/1", after: H3 });
+  expect(await send()).toMatchObject({ observed: false, item: "t1", head: H3 });
   expect((await L.item("t1")).head).toBe(H1);
   expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: H3, recorded: H1 });
   // The CLI's own call, declaring the head it rebased from, records the push; the event seen again changes nothing.
   expect((await push(name, { head: H3, rebasedFrom: H1 }, { ...testEnv, ARTIFACTS: binding } as typeof env)).status).toBe(200);
   expect((await L.item("t1")).head).toBe(H3);
-  await send();
-  expect([acks, retries]).toEqual([2, 0]);
+  expect(await send()).toMatchObject({ observed: true, item: "t1", head: H3 });
   expect((await events(L)).filter((e) => e.kind === "push.unrecorded")).toHaveLength(1);
 });

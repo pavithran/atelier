@@ -35,8 +35,9 @@ async function setup(name: string, scope: string[]) {
   await index().registerProject(record);
   await L.newItem("Winner", scope, "owner");
   await L.newItem("Loser", ["src/ledger.ts"], "owner");
-  await L.dispatch("t1", "owner", {});
-  await L.dispatch("t2", "owner", {});
+  // A dispatch names its agent and model (G17), the pair the runner offers.
+  await L.dispatch("t1", "owner", { agent: "codex", model: "gpt-6-astra" });
+  await L.dispatch("t2", "owner", { agent: "codex", model: "gpt-6-astra" });
   const runner = `home:${name}-3`;
   const issued = await api("/tokens", "POST", { runner, projects: [name] });
   expect(issued.status, await issued.clone().text()).toBe(201);

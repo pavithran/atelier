@@ -161,7 +161,7 @@ it("applies project scope to direct reads, writes and aggregate lists", async ()
   await project("token-inside");
   await project("token-outside");
   await L("token-inside").dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
-  await L("token-outside").dispatch("t1", "owner", { to: "home" });
+  await L("token-outside").dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
   const { token } = await issue(["token-inside"]);
   expect((await call("GET", "/projects/token-inside/items/t1", token)).status).toBe(200);
   for (const [method, path] of [["GET", "/projects/token-outside"], ["POST", "/projects/token-outside/items/t1/claim"], ["POST", "/projects/token-outside/baseline-token"]]) {

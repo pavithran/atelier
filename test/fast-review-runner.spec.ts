@@ -151,7 +151,9 @@ async function fastMerged(name: string) {
   await L.submit(item.id, OPUS);
   await L.accept(item.id, "owner", C1);
   await L.merged(item.id, "owner", M1, true);
-  // The server asked the post-merge review of Astra at the merge commit.
+  // G17/G6: the server asks no review of its own; the developer asks Astra's, by command, at the merge commit.
+  expect(await L.liveReviewRequest(item.id, M1)).toBeNull();
+  await L.requestReview(item.id, "owner", ASTRA, [entry("gpt-6-astra", "codex"), entry("opus-5.5", "claude-code")]);
   expect(await L.liveReviewRequest(item.id, M1)).toMatchObject({ reviewer: ASTRA });
 
   const artifacts = { get: async (repo: string) => ({
@@ -262,15 +264,18 @@ it("a post-merge reply held back by sandbox limits is a failed review, not a rej
   // No verdict is recorded, no fix task is opened, and the reply is kept on the task.
   expect(await L.reviewsFor(item.id)).toEqual([]);
   expect(await L.unparsableFor(item.id)).toHaveLength(1);
-  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: false, review: { state: "open" }, fix: null });
+  // G6: the request ends no_verdict and stays on record, owed; the server asks no successor by itself.
+  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: true, review: { state: "no_verdict" }, fix: null });
 
-  // The second reply of the same shape stops the request: the review is owed,
-  // and atelier status names the task.
+  // The developer asks the review again by command; the second reply of the
+  // same shape ends that request too (G6: the "stopped" state of a repeated
+  // exit is retired): the review is owed, and atelier status names the task.
+  await L.requestReview(item.id, "owner", ASTRA, [entry("gpt-6-astra", "codex"), entry("opus-5.5", "claude-code")]);
   const second = await run(LIMITED);
   expect(second, JSON.stringify(second)).toMatchObject({ phase: "failed" });
   expect(await L.reviewsFor(item.id)).toEqual([]);
   expect(await L.unparsableFor(item.id)).toHaveLength(2);
-  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: true, review: { state: "stopped without a verdict" }, fix: null });
+  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: true, review: { state: "no_verdict" }, fix: null });
   const mode = await (await request("GET", `/projects/${name}/mode`, OWNER, "owner")).json() as { line: string };
-  expect(mode.line).toContain(`Post-merge review owed: ${item.id} (stopped without a verdict)`);
+  expect(mode.line).toContain(`Post-merge review owed: ${item.id} (no_verdict)`);
 });

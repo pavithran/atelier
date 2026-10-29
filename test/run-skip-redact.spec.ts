@@ -2,7 +2,7 @@ import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 
 // t376: a run skip's note is stored with key=value secrets removed, as a
-// usage report's text is.
+// usage report's text is. G17: the dispatch names its agent and model.
 
 const A = "claude-code/opus-5.5", RUNNER = { runner: "home:studio", kind: "home" as const };
 
@@ -14,7 +14,7 @@ it("a run skip's note loses the values of API_TOKEN=... and PASSWORD=...", async
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Holder", ["cli/**"], "owner");
-  await L.dispatch("t1", "owner", {});
+  await L.dispatch("t1", "owner", { agent: "claude-code", model: "opus-5.5" });
   await L.claim("t1", A, RUNNER);
   expect(await L.recordRunSkip("t1", RUNNER.runner, A, "unfinished", 1, "API_TOKEN=abc123def456 PASSWORD=hunter2")).toBe(true);
   const stored = JSON.stringify((await L.queued()).waiting);

@@ -22,7 +22,8 @@ async function setup(project: string) {
 
 async function held(L: Awaited<ReturnType<typeof setup>>, title: string) {
   const id = (await L.newItem(title, ["src/**"], "owner")).id;
-  await L.dispatch(id, "owner", { to: "home" });
+  // A dispatch names its agent and model (G17).
+  await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   await L.claim(id, A, RUNNER);
   return id;
 }

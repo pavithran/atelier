@@ -37,7 +37,8 @@ async function setup(name: string) {
   await index().registerProject(record);
   await L.newItem("Claimed", ["src/**"], "owner");
   await L.newItem("Waiting", ["src/**"], "owner");
-  await L.dispatch("t2", "owner", {});
+  // A dispatch names its agent and model (G17), the pair the runners offer.
+  await L.dispatch("t2", "owner", { agent: "codex", model: "gpt-6-astra" });
   // t1 is claimed under the runner home:NAME-held, the t539 of the case.
   const held = `home:${name}-held`;
   await L.claim("t1", A, { runner: held, kind: "home" });

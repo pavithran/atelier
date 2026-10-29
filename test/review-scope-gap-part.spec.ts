@@ -33,7 +33,7 @@ async function rejectedPart(name: string, file: string) {
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship it", parts: [part] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, undefined, { a: { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" } });
   const partId = parts[0].id;
   const d = (await L.item(partId)).dispatch!;
   const builder = `${d.agent}/${d.model}`;

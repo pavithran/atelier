@@ -79,7 +79,7 @@ it("the owner renames a project; both names reach the same Ledger, and an answer
   // Where the project stands, and the inbox, name it as it is now.
   expect(((await (await call("GET", "/projects/old-a/standing", "owner")).json()) as { project: { name: string } }).project.name).toBe("new-a");
   await L("old-a").newItem("Waiting", [], "owner");
-  await L("old-a").dispatch("t2", "owner", { to: "home" });
+  await L("old-a").dispatch("t2", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   const queue = await (await call("GET", "/queue", "owner")).json() as { project: string; item: { id: string } }[];
   expect(queue.find((q) => q.item.id === "t2" && ["old-a", "new-a"].includes(q.project))?.project).toBe("new-a");
 });
@@ -604,8 +604,8 @@ it("after a release and reuse, an old page link and an owner-token runner config
   expect(await old.text()).toContain("Old task");
   // A runner polling with the owner token and no scope is offered every project's queue, each entry under the name it answers to now:
   // the name a config lists is the replacement's, and the renamed project's work is under its new name.
-  await L("reuse-a").dispatch("t1", "owner", { to: "home" });
-  await L("reuse-a-2").dispatch("t1", "owner", { to: "home" });
+  await L("reuse-a").dispatch("t1", "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
+  await L("reuse-a-2").dispatch("t1", "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   const polled = await call("POST", "/queue", "owner", { runner: "home:reuse-runner", agents: [{ agent: "opencode", models: ["glm-5.3"] }], projects: ["reuse-a"] });
   expect(polled.status, await polled.clone().text()).toBe(200);
   const queue = await polled.json() as { project: string; item: { title: string } }[];

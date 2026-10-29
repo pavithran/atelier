@@ -123,7 +123,7 @@ it("a claim on a project whose main has no commit answers 409 empty_branch, leav
 it("t496: an abandoned dispatched task stays closed on every poll and retry", async () => {
   const name = "abandon-closed";
   const { L, claim } = await setup(name, 1, 0);
-  await L.dispatch("t1", "owner", { to: "home" });
+  await L.dispatch("t1", "owner", { to: "home", agent: "claude-code", model: "agent-1" });
   expect(await L.waiting()).toHaveLength(1);
   await L.abandon("t1", "owner", "Owner closed it while it was being claimed");
   expect(await L.item("t1")).toMatchObject({ state: "abandoned", owner: null, dispatch: null });

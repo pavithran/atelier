@@ -152,7 +152,8 @@ it("a same-family post-merge review is refused for a merge that did not land fas
   expect(await L.requestReview(item.id, "owner", GPT, POOL)).toMatchObject({ requested: true });
 });
 
-it("a rejected post-merge review of a fast landing files a fix task from its findings, and full mode lists the landing", async () => {
+// G6: no fix task is filed from a rejection any more; the rejection is a recorded fact the developer acts on by command.
+it("a rejected post-merge review of a fast landing files no fix task, and full mode lists the landing with its rejection", async () => {
   const L = await project("fast-fix");
   const item = await L.newItem("Risky", ["src/**"], "owner", { accept: ["Works"] });
   await L.confirmFastMode("owner", "access");
@@ -163,16 +164,16 @@ it("a rejected post-merge review of a fast landing files a fix task from its fin
   // The follow-up stays a note on the goal; only the blocking finding is a criterion (t203).
   const findings = [{ file: "src/a.ts", line: 3, severity: "blocking" as const, text: "Drops the record" }, { file: "src/b.ts", line: 7, severity: "follow-up" as const, text: "Rename the helper" }];
   await L.addReview({ itemId: item.id, by: GPT, head: M2, criteria: claim.criteria, request: claim.request, approve: false, note: "Drops data", findings, at: AT }, undefined, true);
-  const fix = await L.item("t2");
-  expect(fix).toMatchObject({ title: expect.stringMatching(/^Fix after fast landing of t1: Risky/), state: "open", accept: ["src/a.ts:3: Drops the record"] });
+  await expect(L.item("t2")).rejects.toThrow(/no_item/);
   const full = await L.setMode("owner", "full", undefined);
-  expect(full.landed).toEqual([expect.objectContaining({ item: "t1", review: expect.objectContaining({ state: "rejected" }), fix: "t2" })]);
+  expect(full.landed).toEqual([expect.objectContaining({ item: "t1", review: expect.objectContaining({ state: "rejected" }) })]);
+  expect(full.landed?.[0]).toMatchObject({ fix: null });
 });
 
 // A merge made in fast mode through the ordinary route (land, the lander,
 // merge) leaves no receipt, only the fast mark on its merge event (t300). It
 // is owed its review all the same, the review may be same-family, and a
-// rejection files a fix task.
+// rejection is listed (G6: it files no fix task).
 async function mergedInFastMode(L: Awaited<ReturnType<typeof project>>, title: string, commit: string, mergeCommit: string) {
   const item = await L.newItem(title, ["src/**"], "owner", { accept: ["Works"] });
   await L.claim(item.id, OPUS);
@@ -185,15 +186,16 @@ async function mergedInFastMode(L: Awaited<ReturnType<typeof project>>, title: s
   return item;
 }
 
-it("a task merged in fast mode through the ordinary route is owed a same-family review, listed, and a rejection files a fix task", async () => {
+it("a task merged in fast mode through the ordinary route is owed a same-family review, listed, and a rejection is listed with no fix task filed", async () => {
   const L = await project("fast-merged");
   await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
   const ok = await mergedInFastMode(L, "Merged fast", C1, M1);
   expect(await L.mergedFast(ok.id)).toBe(true);
   expect((await L.fastLandings())[0]).toMatchObject({ item: ok.id, owed: true, review: { state: "not requested" }, receipt: { mergeCommit: M1, builder: OPUS } });
-  // The pool holds only the builder's family: the pick still finds a reviewer.
-  const asked = await L.requestReview(ok.id, "owner", null, [POOL[0], POOL[1]]);
+  // G17: the server picks no reviewer; a request that names none is refused, and one that names a same-family model is taken.
+  await refusal(L.requestReview(ok.id, "owner", null, [POOL[0], POOL[1]]), "reviewer_needed", /names no reviewer/);
+  const asked = await L.requestReview(ok.id, "owner", SONNET, [POOL[0], POOL[1]]);
   expect(asked).toMatchObject({ requested: true, reviewer: SONNET });
   expect((await L.fastLandings())[0]).toMatchObject({ owed: false, review: { state: "open" } });
   const claim = await L.claimReview(ok.id, SONNET, RUNNER) as unknown as ReviewClaim;
@@ -208,8 +210,8 @@ it("a task merged in fast mode through the ordinary route is owed a same-family 
   await L.addReview({ itemId: bad.id, by: SONNET, head: M2, criteria: badClaim.criteria, request: badClaim.request, approve: false, note: "Drops data", findings, at: AT }, undefined, true);
   const landed = await L.fastLandings();
   expect(landed.map((l) => l.item)).toEqual([ok.id, bad.id]);
-  expect(landed[1]).toMatchObject({ review: { state: "rejected" }, fix: expect.stringMatching(/^t\d+$/) });
-  expect(await L.item(landed[1].fix!)).toMatchObject({ accept: ["src/a.ts:3: Drops the record"] });
+  expect(landed[1]).toMatchObject({ review: { state: "rejected" } });
+  expect(landed[1]).toMatchObject({ fix: null });
   // Full mode lists both and keeps the record.
   expect((await L.setMode("owner", "full", undefined)).landed?.map((l) => l.item)).toEqual([ok.id, bad.id]);
 });

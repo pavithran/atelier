@@ -70,7 +70,7 @@ it("leaving fast mode holds again every task not yet claimed, and the setting ne
   await L.claim(a.id, OPUS, RUNNER);
   await L.setMode("owner", "full", undefined);
   expect((await L.project()).policy.requireCriteriaReview).toBe(true);
-  await refusal(L.dispatch(b.id, "owner", { to: "home" }), "criteria_unreviewed", /cannot be dispatched/);
+  await refusal(L.dispatch(b.id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" }), "criteria_unreviewed", /cannot be dispatched/);
   await refusal(L.claim(b.id, OPUS, RUNNER), "criteria_unreviewed", /cannot be claimed/);
   const after = await view(L, b.id);
   expect(after.skipped).toBeUndefined();

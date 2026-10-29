@@ -7,6 +7,11 @@ import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import type { Evidence, Item, ProjectPolicy } from "../src/rules.ts";
 
+// The routes the developer names at an approval (G17: Atelier picks none): every part built by
+// zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.
+const routesOf = async (L: { planView(id: string): Promise<{ plan?: { parts: { key: string }[] } | null }> }, id: string) =>
+  Object.fromEntries(((await L.planView(id)).plan?.parts ?? []).map((p) => [p.key, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
+
 // A part claimed again whose branch holds nothing beyond the commit it
 // started from starts from the plan branch's head when the branch has moved
 // since (docs/orchestrator.md, section 5): the claim route moves the branch
@@ -116,7 +121,7 @@ async function setup(name: string, bCommits: boolean) {
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a"), part("b")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   const [a, b] = [parts[0].id, parts[1].id];
   const bBranch = `t/${b.slice(1)}`;
   const bFork = `${name}/${bBranch}`;
@@ -207,6 +212,8 @@ it("a part first dispatched, and one claimed again while the plan's branch has n
   // Move b to MA, release it, and claim it again with the branch still at MA.
   expect((await claim(name, b, builder)).status).toBe(200);
   await L.release(b, builder, "no new commit");
+  // G17: the named route has no alternate, so a second give-up blocks the plan until the developer retries the part.
+  await L.retryPlan(b, "owner");
   const next = actorOf(await L.item(b));
   expect((await claim(name, b, next)).status).toBe(200);
   expect(repo.tip(bBranch)).toBe(MA);

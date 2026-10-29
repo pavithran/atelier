@@ -1,12 +1,13 @@
 import { env } from "./support/workers.ts";
 import { afterEach, expect, it, vi } from "./support/vitest.ts";
-import worker from "../src/index.ts";
+import worker, { observePushed } from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { Item } from "../src/rules.ts";
-import { queue as runQueue } from "./workers-removed.ts";
 
-// The push scan through the Worker's two push paths (t332): the push route
-// and the queue consumer. Each records the head with its scan pending, scans
+// The push scan through the server's two push paths (t332): the push route
+// and the push the post-receive hook reports (observePushed; task 8 retired
+// the Artifacts queue consumer, whose retry is now the hook's logged failure
+// and the next `atelier push`). Each records the head with its scan pending, scans
 // that exact commit, and records the result only for it, so a scan that
 // fails, a reader that shows another commit, or a result for a head since
 // superseded never passes a push silently. The key in the fixture is built
@@ -114,7 +115,7 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
   await L.newItem("Wire the keys", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setFork("t1", `${name}/t/1`, H0, A);
   return L;
 }
 
@@ -126,12 +127,16 @@ const api = (bindings: typeof env) => (method: string, path: string, actor: stri
 
 type Detail = { item: Item; gate: { ready: boolean; blockers: string[] } };
 const detail = async (call: ReturnType<typeof api>, name: string) => (await (await call("GET", `/projects/${name}/items/t1`, "owner")).json()) as Detail;
-const notice = (name: string, after: string) => ({ type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref: "refs/heads/main", after } });
 const events = async (L: Awaited<ReturnType<typeof setup>>) => (await L.events("t1")) as unknown as LedgerEvent[];
 
+// The hook's report of a push to t/1, as observePushed takes it: a report that
+// completes is what the queue acknowledged; a scan that cannot be read throws,
+// which the hook logs and which the queue retried (the pending mark stands).
 function queue(bindings: typeof env, name: string, after: string) {
   const counts = { acks: 0, retries: 0 };
-  const send = () => runQueue({ messages: [{ body: notice(name, after), ack() { counts.acks++; }, retry() { counts.retries++; } }] } as unknown as MessageBatch<unknown>, bindings);
+  const send = async () => {
+    try { await observePushed(bindings, { project: name, ref: "refs/heads/t/1", after }); counts.acks++; } catch { counts.retries++; }
+  };
   return { counts, send };
 }
 

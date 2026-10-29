@@ -80,7 +80,7 @@ it("the queue holds core overlaps during building and landing, but offers them w
   const elsewhere = await create("Non-core overlap", ["src/index.ts"]);
   const allowed = await create("Core edit, owner allows", ["src/ledger.ts"]);
   for (const [id, body] of [[core, {}], [elsewhere, {}], [allowed, { overlapOk: true }]] as const) {
-    const sent = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", ...body });
+    const sent = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3-flash", ...body });
     expect(sent.status, await sent.clone().text()).toBe(200);
   }
   const offer = { runner: "home:studio", agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }] };
@@ -119,7 +119,7 @@ it("a claim a runner gives up lifts the core-file hold at once and reaches the i
   const live = await L.newItem("Merge main", ["src/**"], "owner");
   await L.claim(live.id, A);
   const waiting = await L.newItem("Core edit", ["src/ledger.ts"], "owner");
-  await L.dispatch(waiting.id, "owner", { to: "home", agent: "opencode" });
+  await L.dispatch(waiting.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash" });
   expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toMatchObject({ id: live.id, state: "claimed" });
   const gone = await L.dispatch(live.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra", overlapOk: true, release: true });
   expect(gone.state).toBe("open");

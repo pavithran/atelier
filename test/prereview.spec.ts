@@ -10,7 +10,8 @@ import { assign, type Dispatch } from "../src/dispatch/rules.ts";
 import { renderItem, type Detail } from "../src/ui.ts";
 
 // Pre-review on the Ledger (t524): while a landing holds the project's lease
-// the next two live FIFO waiters are pre-reviewed, deduplicated by binding;
+// the developer asks a pre-review of a waiter behind it (G17: the server asks
+// none by itself), deduplicated by binding;
 // the request reaches a runner through the queue's review list only where a
 // runner advertises the job, is claimed through the review claim and
 // answered through the review route under its own number, and its result is
@@ -72,12 +73,19 @@ async function submitted(L: L, h: string): Promise<string> {
   return id;
 }
 
-// t1 holds the lease; t2, t3 and t4 queue behind it in that order.
-async function landing(project: string, p?: ProjectPolicy) {
+// G17/G6: the server asks no pre-review by itself; the developer asks one by
+// command (atelier prereview ID --reviewer H/M), of a reviewer a live runner offers.
+const POOL = [entry("gpt-6-astra", "codex"), entry("opus-5.5", "claude-code"), entry("sonnet-5.5", "claude-code")];
+const ask = async (L: L, id: string, reviewer: string | null = GPT) => L.requestPrereview(id, "owner", reviewer, POOL, await index().runnerOffers() as never);
+
+// t1 holds the lease; t2, t3 and t4 queue behind it in that order. The
+// pre-reviews of the next two (t2, t3) are asked as the developer would.
+async function landing(project: string, p?: ProjectPolicy, reviewer = GPT) {
   const L = await setup(project, p);
   const [t1, t2, t3, t4] = [await submitted(L, head(1)), await submitted(L, head(2)), await submitted(L, head(3)), await submitted(L, head(4))];
   await L.beginProjectLanding(t1, "owner");
   for (const id of [t2, t3, t4]) await L.queueProjectLanding(id, "owner");
+  for (const id of [t2, t3]) await ask(L, id, reviewer);
   return { L, t1, t2, t3, t4 };
 }
 
@@ -102,14 +110,16 @@ async function verdict(L: L, id: string, c: ReviewClaim, approve: boolean, findi
 
 const queueIds = async (L: L) => ((await L.readLandingQueue()) as { item: string }[]).map((w) => w.item);
 
-it("pre-reviews the next two live waiters behind the holder, once per binding, and offers them only to a runner that advertises the job", async () => {
+// G17/G6: the pre-reviews are asked by command (landing() asks t2 and t3), not by the queue's poll.
+it("a pre-review asked of a waiter behind the holder is asked once per binding, and offered only to a runner that advertises the job", async () => {
   const { L, t1, t2, t3, t4 } = await landing("pre-next-two");
   expect(await views(L, t1)).toEqual([]);
   expect((await views(L, t2)).map((v) => [v.state, v.reviewer])).toEqual([["open", GPT]]);
   expect((await views(L, t3)).map((v) => v.state)).toEqual(["open"]);
   expect(await views(L, t4)).toEqual([]);
-  // Every poll asks again; the binding is the same, so nothing new is asked.
+  // Every poll leaves it; asking again at the same binding is refused as pending, and nothing new is asked.
   for (let i = 0; i < 3; i++) { await L.queueProjectLanding(t2, "owner"); await L.renewProjectLanding(t1, "owner"); }
+  await refusal(ask(L, t2), "prereview_pending", /one at a time/);
   expect(await views(L, t2)).toHaveLength(1);
   const v = (await views(L, t2))[0];
   expect(v.binding).toMatchObject({ head: head(2), criteria: ((await L.detail(t2)) as unknown as { criteria: string }).criteria, contributors: [OPUS], main: null, tree: null });
@@ -128,22 +138,23 @@ it("pre-reviews the next two live waiters behind the holder, once per binding, a
   expect(status.map((w) => [w.item, w.prereview?.state ?? null])).toEqual([[t2, "open"], [t3, "open"], [t4, null]]);
 });
 
-it("asks nothing where no live runner advertises pre-review, and records an unavailable result where no reviewer qualifies", async () => {
+// G17/G6: where no reviewer qualifies the request is refused, naming the candidates; no "unavailable" result is recorded by the server.
+it("asks nothing where no live runner advertises pre-review, and is refused where no reviewer qualifies", async () => {
   const L = await setup("pre-capability");
   await offer(["build", "review"]);
   const [t1, t2] = [await submitted(L, head(1)), await submitted(L, head(2))];
   await L.beginProjectLanding(t1, "owner");
   await L.queueProjectLanding(t2, "owner");
   expect(await views(L, t2)).toEqual([]);
+  await refusal(ask(L, t2), "prereview_refused", /no live runner offers the prereview job for codex\/gpt-6-astra/);
   // Offered, but only of the builder's own family: no reviewer qualifies.
   await offer(["build", "review", "prereview"], [{ agent: "claude-code", models: ["opus-5.5"] }]);
   await L.queueProjectLanding(t2, "owner");
-  const [v] = await views(L, t2);
-  expect(v).toMatchObject({ state: "unavailable", outcome: "no-reviewer", attempts: 1 });
-  expect(v.recovery).toMatch(/asked again while the task waits/);
+  await refusal(ask(L, t2, null), "reviewer_needed", /No model in the pool is eligible/);
+  await refusal(ask(L, t2, OPUS), "prereview_refused", /it contributed to/);
+  expect(await views(L, t2)).toEqual([]);
   // No block: the waiter keeps its place and its landing goes on.
   await L.queueProjectLanding(t2, "owner");
-  expect(await views(L, t2)).toHaveLength(1);
   expect(await queueIds(L)).toEqual([t2]);
   await L.cancelProjectLanding(t1, "owner");
   await L.beginProjectLanding(t2, "owner");
@@ -311,8 +322,10 @@ it("a result whose head, main, criteria or contributors moved is stale and chang
   await verdict(b.L, b.t2, cb, false, [BLOCKING]);
   expect((await views(b.L, b.t2)).find((v) => v.request === cb.request)).toMatchObject({ state: "stale", detail: expect.stringMatching(/main moved/) });
   expect(await queueIds(b.L)).toContain(b.t2);
-  // A new pre-review is asked for the new binding.
+  // G6: a new pre-review for the new binding is asked by command, not by the poll.
   await b.L.queueProjectLanding(b.t2, "owner");
+  expect((await views(b.L, b.t2)).map((v) => v.state)).toEqual(["stale"]);
+  await ask(b.L, b.t2);
   expect((await views(b.L, b.t2))[0].state).toBe("open");
 
   // Criteria: the owner changed them while it was reviewed.
@@ -337,8 +350,10 @@ it("a lost claim makes the verdict stale; a second claim of the same request is 
   expect(v).toMatchObject({ state: "unavailable", outcome: "timeout" });
   expect((await events(L, t2)).some((e) => e.kind === "prereview.stale")).toBe(true);
   expect(await queueIds(L)).toContain(t2);
-  // Retries are bounded and asked again after a timeout.
+  // G6: nothing is asked again by itself after a timeout; the developer asks again by command.
   await L.queueProjectLanding(t2, "owner");
+  expect((await views(L, t2)).map((v) => v.state)).toEqual(["unavailable"]);
+  await ask(L, t2);
   expect((await views(L, t2))[0]).toMatchObject({ state: "open", attempts: 2 });
 });
 
@@ -367,7 +382,9 @@ it("a waiter that leaves the queue is no longer pre-reviewed", async () => {
   await L.queueProjectLanding(t3, "owner", true);
   await L.renewProjectLanding(t1, "owner");
   expect((await views(L, t3))[0]).toMatchObject({ state: "withdrawn" });
-  // t4 moves up into the window.
+  // G6: t4 moving up into the window asks nothing; its pre-review is asked by command.
+  expect(await views(L, t4)).toEqual([]);
+  await ask(L, t4);
   expect((await views(L, t4))[0]?.state).toBe("open");
 });
 
@@ -398,10 +415,10 @@ it("conflicts, failed preparation, malformed replies, skips and runner failures 
   const cq = await claim(q.L, q.t2);
   await q.L.releaseReview(q.t2, GPT, "harness exited 1", true, cq.request);
   expect((await views(q.L, q.t2))[0]).toMatchObject({ state: "unavailable", outcome: "runner" });
-  // A runner failure is asked again at the next poll, not after
-  // PREREVIEW_RETRY_MS, which only a no-reviewer result waits out (the
-  // comment at PREREVIEW_RETRY_MS once said every retryable result waited).
+  // G6: a runner failure is asked again by command, not by the poll.
   await q.L.queueProjectLanding(q.t2, "owner");
+  expect((await views(q.L, q.t2)).map((v) => [v.state, v.attempts])).toEqual([["unavailable", 1]]);
+  await ask(q.L, q.t2);
   expect((await views(q.L, q.t2)).map((v) => [v.state, v.attempts])).toEqual([["open", 2], ["unavailable", 1]]);
 });
 
@@ -449,11 +466,13 @@ it("a gate review is never displaced: none is asked beside it, and the claim bin
   expect((await views(L, t3))[0].state).toBe("open");
 });
 
-it("under single-family mode the reviewer is another model of the company, chosen from the offers", async () => {
+it("under single-family mode the reviewer is another model of the company, named among the offers", async () => {
   await index().putModel(entry("sonnet-5.5", "claude-code"));
   try {
     const single = { ...policy, familyMode: { single: "anthropic" as const, by: "owner", at: AT } };
-    const { L, t2 } = await landing("pre-single", single);
+    const { L, t2 } = await landing("pre-single", single, SONNET);
+    // Unnamed, the request lists astra refused for the mode; naming it is refused too.
+    await refusal(ask(L, (await queueIds(L))[2]), "prereview_refused", /single-family mode/);
     expect((await views(L, t2))[0]).toMatchObject({ state: "open", reviewer: SONNET });
     const c = await claim(L, t2, SONNET);
     expect(c.prereview?.reviewer).toBe(SONNET);
@@ -532,8 +551,10 @@ it("a rejection with no blocking finding, or an approval with one, is malformed:
   await c.L.addReview({ itemId: c.t2, by: GPT, head: cc.head, criteria: cc.criteria, request: cc.request, approve: false, note: "No.", at: new Date().toISOString(), findings: envelope([{ file: "a", line: 1, severity: "follow-up", text: "nit" }]) as never, mainNow: MAIN } as never, undefined, true, "api");
   expect((await views(c.L, c.t2))[0]).toMatchObject({ state: "unavailable", outcome: "malformed" });
   expect(await queueIds(c.L)).toContain(c.t2);
-  // A malformed result may clear: it is asked again within the bound.
+  // G6: a malformed result is asked again by command, not by the poll.
   await L.queueProjectLanding(t2, "owner");
+  expect((await views(L, t2)).map((v) => v.state)).toEqual(["unavailable"]);
+  await ask(L, t2);
   expect((await views(L, t2))[0]).toMatchObject({ state: "open", attempts: 2 });
 });
 
@@ -654,7 +675,8 @@ for (const [label, change] of [
 }
 
 for (const workflow of [false, true]) for (const outcome of ["passed", "conflict"]) {
-  it(`asks a new pre-review after main moves following a ${outcome}, without a merge event (${workflow ? "Workflow" : "CLI"})`, async () => {
+  // G6/G17: the poll that finds main moved asks nothing; the developer asks the new binding's pre-review by command.
+  it(`asks no new pre-review by itself after main moves following a ${outcome}, without a merge event, and asks it by command (${workflow ? "Workflow" : "CLI"})`, async () => {
     const { L, t1, t2 } = await landing(`pre-settled-main-${outcome}-${workflow}`);
     const c = await claim(L, t2);
     if (outcome === "passed") await verdict(L, t2, c, true);
@@ -687,6 +709,8 @@ for (const workflow of [false, true]) for (const outcome of ["passed", "conflict
     });
     await L.renewProjectLanding(t1, "owner");
     expect(await L.mergeGeneration()).toBe(generation);
+    expect(await views(L, t2)).toHaveLength(1);
+    await ask(L, t2);
     const rows = await views(L, t2);
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ state: "open", attempts: 1, binding: { main: moved } });
@@ -699,43 +723,3 @@ for (const workflow of [false, true]) for (const outcome of ["passed", "conflict
     expect(await queueIds(L)).toContain(t2);
   });
 }
-
-// gpt-6-astra's nineteenth review of t622, finding 3: with no model offered
-// for the pre-review job, the selection returned before the assignment-aware
-// selector, so the unavailable result named no assignment.
-it("an unavailable pre-review names the review assignment it could not apply", async () => {
-  const L = await setup("pre-assigned");
-  await L.assignmentsChanged({ version: 990, assignments: [{ id: "a990", kind: "assigned", scope: "*", role: "review", choices: [{ actor: GPT, model: "gpt-6-astra" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
-  // A live runner advertises pre-review, offering no pool model for it.
-  await offer(["build", "review", "prereview"], [{ agent: "opencode", models: ["nothing-here"] }]);
-  const [t1, t2] = [await submitted(L, head(1)), await submitted(L, head(2))];
-  await L.beginProjectLanding(t1, "owner");
-  await L.queueProjectLanding(t2, "owner");
-  const unavailable = (await events(L, t2)).find((e) => e.kind === "prereview.unavailable");
-  expect(String(unavailable?.data.detail)).toMatch(/no model in the pool is offered for the prereview job by a live runner/);
-  expect(String(unavailable?.data.detail)).toMatch(/Role assignment a990 skipped/);
-});
-
-// gpt-6-astra's twentieth review of t622, finding 2: the pre-reviewer read the
-// assignments without the paths the change measured, so a task whose change
-// touches src/auth.ts never read its security-review assignment.
-it("a pre-review reads the security-review assignment when the measured change is security work", async () => {
-  const L = await setup("pre-security");
-  await L.assignmentsChanged({ version: 995, assignments: [{ id: "a995", kind: "assigned", scope: "*", role: "security-review", choices: [{ actor: GPT, model: "gpt-6-astra" }], reason: "Finds auth defects.", quote: "q", evidence: [], by: "owner", at: AT }] });
-  const auth = async (h: string) => {
-    const id = (await L.newItem(`Task ${h.slice(-2)}`, ["src/**"], "owner", { accept: ["It works"] })).id;
-    await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
-    await L.claim(id, OPUS, RUNNER);
-    await L.setFork(id, `fork-${id}`, H0, OPUS);
-    await L.recordPush(id, OPUS, h, h);
-    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: h, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/auth.ts"] } satisfies Evidence);
-    await L.submit(id, OPUS);
-    return id;
-  };
-  const [t1, t2] = [await auth(head(1)), await auth(head(2))];
-  await L.beginProjectLanding(t1, "owner");
-  await L.queueProjectLanding(t2, "owner");
-  const requested = (await events(L, t2)).find((e) => e.kind === "prereview.requested");
-  expect(requested?.data.reviewer).toBe(GPT);
-  expect(String(requested?.data.reason)).toMatch(/Role assignment a995 \(security-review/);
-});

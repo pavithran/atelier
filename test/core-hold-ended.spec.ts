@@ -15,9 +15,9 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Holder", ["cli/**"], "owner");
   await L.newItem("Waiting", ["cli/runner.mjs"], "owner");
-  await L.dispatch("t1", "owner", {});
+  await L.dispatch("t1", "owner", { agent: "claude-code", model: "opus-5.5" });
   await L.claim("t1", A, RUNNER);
-  await L.dispatch("t2", "owner", {});
+  await L.dispatch("t2", "owner", { agent: "claude-code", model: "opus-5.5" });
   await L.recordRunnerPolls([{ runner: RUNNER.runner, at }]);
   return L;
 }
@@ -62,15 +62,15 @@ it("an ended run on one claim lifts no other claim of the same runner and actor 
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(at));
   try {
-    await L.dispatch("t1", "owner", {});
-    await L.dispatch("t2", "owner", {});
+    await L.dispatch("t1", "owner", { agent: "claude-code", model: "opus-5.5" });
+    await L.dispatch("t2", "owner", { agent: "claude-code", model: "opus-5.5" });
   } finally {
     vi.useRealTimers();
   }
   expect((await L.item("t1")).dispatch?.at).toBe((await L.item("t2")).dispatch?.at);
   await L.claim("t1", A, RUNNER);
   await L.claim("t2", A, RUNNER);
-  await L.dispatch("t3", "owner", {});
+  await L.dispatch("t3", "owner", { agent: "claude-code", model: "opus-5.5" });
   await L.recordRunnerPolls([{ runner: RUNNER.runner, at }]);
   expect(await L.recordRunSkip("t1", RUNNER.runner, A, "unfinished", 1, "no commit")).toBe(true);
   const [waiting] = await L.waiting();

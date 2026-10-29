@@ -110,7 +110,8 @@ it("the owner's set reaches every project's ledger, which then refuses the model
 // tick, so the owner's standing reaches it two ways: a pool change withdraws
 // an unclaimed request to a model now held from reviewing, and a claim of
 // one made before the change (the pool reached the ledger another way) is
-// refused and withdraws it. Either way the next landing asks another.
+// refused and withdraws it. Either way the next landing asks another (G17:
+// asked by the model, which is told the standing when it names none).
 const BUILDER = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const H0 = "0".repeat(40), H1 = "a".repeat(40);
@@ -147,7 +148,9 @@ it("a pool change withdraws a standalone task's unclaimed review request to a mo
     expect(await open(L, id), name).toEqual([]);
     expect((await withdrawn(L, id)).map((e) => e.data), name).toEqual([expect.objectContaining({ head: H1, reviewer: GPT, reason: expect.stringMatching(reason) })]);
     await refusal(L.claimReview(id, GPT, RUNNER), "no_review", /has no open review request/);
-    expect(await L.requestReview(id, "owner", null, pool), name).toMatchObject({ requested: true, reviewer: GLM });
+    // The model names none: the refusal lists the held model with its standing.
+    await refusal(L.requestReview(id, "owner", null, pool), "reviewer_needed", reason);
+    expect(await L.requestReview(id, "owner", GLM, pool), name).toMatchObject({ requested: true, reviewer: GLM });
   }
 });
 
@@ -174,7 +177,8 @@ it("a review request made before its model was held is refused at claim and with
   await refusal(L.claimReview(id, GPT, RUNNER), "model_held", new RegExp(`codex/gpt-6-astra is reserved since 2026-10-05 \\(the developer's standing\\): astra's credits; its review of ${id} is withdrawn`));
   expect(await open(L, id)).toEqual([]);
   expect((await withdrawn(L, id)).map((e) => e.data)).toEqual([expect.objectContaining({ head: H1, reviewer: GPT, reason: expect.stringMatching(/reserved since 2026-10-05/) })]);
-  expect(await L.requestReview(id, "owner", null, pool)).toMatchObject({ requested: true, reviewer: GLM });
+  await refusal(L.requestReview(id, "owner", null, pool), "reviewer_needed", /codex\/gpt-6-astra is reserved since 2026-10-05/);
+  expect(await L.requestReview(id, "owner", GLM, pool)).toMatchObject({ requested: true, reviewer: GLM });
 });
 
 // A queued build or plan job is claimed by a runner, not asked by a landing,
@@ -231,33 +235,34 @@ it("a build dispatched before its model was held is refused at claim and withdra
 // t649 (found reviewing t622, gemini-4-argon's and gpt-6-astra's tenth
 // reviews): a dispatch naming a model and no harness skipped the standing
 // check, so the owner could queue a build for a held model, and a pool
-// change left such a queued build standing.
-it("a dispatch naming a model without a harness is refused, and withdrawn by a pool change, while its model is held", async () => {
-  for (const [name, change, reason] of HELD) {
+// change left such a queued build standing. G17: a dispatch names its harness
+// and its model, so a model alone is refused (the Ledger reads the standing
+// first, so a held one as model_held, a free one as builder_needed; the
+// route says builder_needed to both), and no such build is ever queued.
+it("a dispatch naming a model without a harness is refused, whether its model is held or free", async () => {
+  for (const [name, change] of HELD) {
     const L = await project(`build-held-bare-${name}`);
-    const bare = new RegExp(`^${reason.source.replace("codex\\/", "")}`);
     await L.poolChanged(holding(change));
     const { id } = await L.newItem("Small task", ["src/**"], "owner");
-    await refusal(L.dispatch(id, "owner", { to: "home", model: "gpt-6-astra" }), "model_held", bare);
+    await refusal(L.dispatch(id, "owner", { to: "home", model: "gpt-6-astra" }), "model_held", /gpt-6-astra is (paused|reserved) since/);
     expect((await L.item(id)).dispatch, name).toBeNull();
     await L.poolChanged(POOL);
-    expect((await L.dispatch(id, "owner", { to: "home", model: "gpt-6-astra" })).dispatch, name).toMatchObject({ agent: null, model: "gpt-6-astra" });
-    await L.poolChanged(holding(change));
+    await refusal(L.dispatch(id, "owner", { to: "home", model: "gpt-6-astra" }), "builder_needed", /names the model gpt-6-astra but no agent/);
     expect((await L.item(id)).dispatch, name).toBeNull();
-    expect((await undispatched(L, id)).map((e) => e.data), name).toEqual([{ reason: expect.stringMatching(bare) }]);
   }
 });
 
 // gemini-4-argon's review of t649: a bare model read no entry as its own,
-// so a held entry listing the model as an alias held its free entry.
-it("a dispatch naming a free model without a harness is not held by another entry listing it as an alias", async () => {
+// so a held entry listing the model as an alias held its free entry. A
+// dispatch names the harness now (G17); its exact entry is the free one.
+it("a dispatch naming a free model is not held by another entry listing it as an alias", async () => {
   const luna = entry("gpt-6-luna", "codex");
   const astra = { ...entry("gpt-6-astra", "codex"), aliases: ["gpt-6-luna"], state: "paused" as const, stateAt: AT, note: "AI Studio down" };
   for (const [order, pool] of [["entry first", [luna, astra]], ["alias owner first", [astra, luna]]] as const) {
     const L = await project(`bare-own-${order.replaceAll(" ", "-")}`);
     await L.poolChanged([...pool]);
     const { id } = await L.newItem("Small task", ["src/**"], "owner");
-    expect((await L.dispatch(id, "owner", { to: "home", model: "gpt-6-luna" })).dispatch, order).toMatchObject({ agent: null, model: "gpt-6-luna" });
+    expect((await L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-luna" })).dispatch, order).toMatchObject({ agent: "codex", model: "gpt-6-luna" });
   }
 });
 

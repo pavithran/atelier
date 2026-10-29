@@ -84,7 +84,7 @@ it("queued reads the waiting tasks, their push actors and their core-file holds 
   const held = await L.newItem("Core edit", ["src/ledger.ts"], "owner");
   const free = await L.newItem("Elsewhere", ["docs/**"], "owner");
   const pushed = await L.newItem("Pushed then released", ["docs/a.md"], "owner");
-  for (const id of [held.id, free.id, pushed.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode" });
+  for (const id of [held.id, free.id, pushed.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   await L.claim(pushed.id, "opencode/glm-5.3", { runner: "home:studio", kind: "home" });
   await L.setFork(pushed.id, `${name}--${pushed.id}`, H0, "opencode/glm-5.3");
   await L.recordPush(pushed.id, "opencode/glm-5.3", H1, H1);
@@ -121,7 +121,7 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   const free = await L.newItem("Docs", ["docs/**"], "owner");
   // Dispatched before the live item is claimed: a dispatch made after it
   // would itself be refused (t405), so the overlap arises only this way.
-  for (const id of [held.id, refused.id, free.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode" });
+  for (const id of [held.id, refused.id, free.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   await L.claim(live.id, A);
   await L.setFork(live.id, `${name}--${live.id}`, H0, A);
   // A live runner offers opencode, and has failed the free task twice; a
@@ -156,7 +156,8 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   expect(kinds(free.id)).toEqual(["skipped"]);
   expect(kinds(nobody.id)).toEqual(["unoffered"]);
   const line = (id: string, kind: string) => (all.find((q) => q.project === name && q.item.id === id)?.item.why ?? []).find((r) => r.kind === kind)?.line ?? "";
-  expect(line(free.id, "skipped")).toBe(`Skipped by home:why after 2 failed runs under this dispatch (the last timed-out); that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the cause, then atelier dispatch ${free.id} --to home --agent opencode.`);
+  // The re-dispatch command names the model too (G17: a dispatch names both).
+  expect(line(free.id, "skipped")).toBe(`Skipped by home:why after 2 failed runs under this dispatch (the last timed-out); that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the cause, then atelier dispatch ${free.id} --to home --agent opencode --model glm-5.3.`);
   expect(line(nobody.id, "unoffered")).toMatch(new RegExp(`^No live runner can take it: .*atelier dispatch ${nobody.id} --agent H --model M`));
   expect(line(refused.id, "overlap")).toMatch(new RegExp(`^Overlap refused: ${live.id} \\(claimed by ${A}\\) holds a scope`));
   const heldLine = (all.find((q) => q.project === name && q.item.id === held.id)?.item.why ?? []).find((r) => r.kind === "held")?.line ?? "";
@@ -172,7 +173,7 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   const { error, detail } = await claim.json() as { error: string; detail: string };
   const after = await (await call("GET", "/queue")).json() as typeof all;
   const refusedLine = (after.find((q) => q.project === name && q.item.id === refused.id)?.item.why ?? []).find((r) => r.kind === "refused")?.line ?? "";
-  expect(refusedLine).toBe(`Claim refused: home:why claimed it as opencode/glm-5.3 and was refused (${error}: ${detail.slice(0, 300)}); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch ${refused.id} --to home --agent opencode.`);
+  expect(refusedLine).toBe(`Claim refused: home:why claimed it as opencode/glm-5.3 and was refused (${error}: ${detail.slice(0, 300)}); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch ${refused.id} --to home --agent opencode --model glm-5.3.`);
 });
 
 // The queue's overlap reason is the claim's own test (overlappingLive): an
@@ -187,7 +188,7 @@ it("the queue's overlap reason refuses exactly where the claim does, accepted it
   const live = await L.newItem("Accepted work", ["src/**"], "owner");
   const other = await L.newItem("Also src", ["src/index.ts"], "owner");
   const own = await L.newItem("Same claimant", ["src/rules.ts"], "owner");
-  await L.dispatch(other.id, "owner", { to: "home", agent: "opencode" });
+  await L.dispatch(other.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   await L.dispatch(own.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
   await L.claim(live.id, A);
   await runInDurableObject(L, async (_instance, state) => {

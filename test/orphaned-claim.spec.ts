@@ -20,7 +20,8 @@ async function setup(name: string, runner: string | null) {
   await index().registerProject(record);
   await L.newItem("Claimed", ["src/**"], "owner");
   await L.newItem("Waiting", ["src/**"], "owner");
-  await L.dispatch("t2", "owner", {});
+  // A dispatch names its agent and model (G17), the pair the runners offer.
+  await L.dispatch("t2", "owner", { agent: "codex", model: "gpt-6-astra" });
   await L.claim("t1", A, runner ? { runner, kind: "home" } : null);
   const minted = await api("/tokens", "POST", { actor: A, projects: [name] });
   expect(minted.status, await minted.clone().text()).toBe(201);
@@ -110,7 +111,7 @@ it("a heartbeat is offered nothing, even a task its runner could take", async ()
   const name = "orphaned-claim-beat", runner = "home:orphaned-beat";
   const { L, offered, beat } = await setup(name, runner);
   await L.newItem("Free", ["docs/**"], "owner");
-  await L.dispatch("t3", "owner", {});
+  await L.dispatch("t3", "owner", { agent: "codex", model: "gpt-6-astra" });
   await polled(runner, 1000);
   expect(await offered()).toContain("t3");
   expect(await beat()).toEqual([]);

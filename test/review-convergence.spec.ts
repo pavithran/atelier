@@ -48,7 +48,8 @@ async function firstSubmission(L: L) {
 
 // One round: the review is asked, claimed and answered by GPT.
 async function round(L: L, id: string, at: string, approve: boolean, findings: Finding[], note = "One bug.") {
-  const asked = await L.requestReview(id, "owner", null, POOL);
+  // G17: the round names its reviewer.
+  const asked = await L.requestReview(id, "owner", GPT, POOL);
   expect(asked, "a round is asked for").toMatchObject({ needed: true, requested: true, head: at });
   const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
   await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: at, approve, note, findings, at: new Date().toISOString() });
@@ -105,7 +106,7 @@ it("a pre-existing finding is recorded as a note and does not block, and a label
   await pushed(L, id, head(1));
   const preExisting: Finding = { file: "src/untouched.ts", line: 40, severity: "follow-up", label: "pre-existing", text: "Reads a stale value." };
   const unverified: Finding = { file: "src/land.ts", line: 3, severity: "follow-up", label: "unverified", text: "Maybe drops a row." };
-  await L.requestReview(id, "owner", null, POOL);
+  await L.requestReview(id, "owner", GPT, POOL);
   const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
   const review = { request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: head(1), approve: true, note: "Approved with follow-ups.", at: new Date().toISOString() };
   // A label on a finding that still blocks says nothing true, so it is refused.
@@ -127,7 +128,7 @@ it("a goal's notes outlast the 200 events events() returns by default (t203)", a
   const id = await firstSubmission(L);
   await pushed(L, id, head(1));
   const note: Finding = { file: "src/untouched.ts", line: 40, severity: "follow-up", label: "pre-existing", text: "Reads a stale value." };
-  await L.requestReview(id, "owner", null, POOL);
+  await L.requestReview(id, "owner", GPT, POOL);
   const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
   await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: head(1), approve: true, note: "Approved.", findings: [note], at: new Date().toISOString() });
   for (let i = 0; i < 210; i++) {

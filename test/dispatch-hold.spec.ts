@@ -43,7 +43,8 @@ async function setup(name: string, refuseOverlap = false) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("First", ["src/**"], "owner");
   await L.newItem("Second", ["src/**"], "owner");
-  await L.dispatch("t2", "owner", {});
+  // A dispatch names its builder in full (G17).
+  await L.dispatch("t2", "owner", { agent: "codex", model: "gpt-6-astra" });
   await L.claim("t1", A);
   return L;
 }
@@ -102,6 +103,9 @@ it("real authenticated queue routes offer submitted/accepted work unless landing
     state.storage.sql.exec("UPDATE meta SET value = ? WHERE key = 'landing-lease'", JSON.stringify({ item: "t1", holder: "owner", at: new Date(Date.now() - LANDING_LEASE_EXPIRY_MS).toISOString() }));
   });
   expect(await offered()).toContain("t2");
+  // t2's dispatch names a builder (G17), and the one that holds t1 is exempt
+  // from the overlap refusal, so t2 goes to another builder before it is set.
+  await L.dispatch("t2", "owner", { agent: "opencode", model: "glm-5.3" });
   const record = await L.project();
   await L.setProject({ ...record, policy: { ...record.policy, refuseOverlap: true } }, "owner");
   const queued = (await L.waiting())[0];

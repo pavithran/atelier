@@ -217,6 +217,9 @@ it("aliases cannot be reassigned across project admissions and alias claims can 
   await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
   await L.claimReview("t1", ALIAS, runner);
   await L.releaseReview("t1", ALIAS, "Retry later");
+  // G6: a release ends the request as released; the model asks again by command.
+  expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("released");
+  await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
   expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("open");
   await withdraw(L);
   expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("withdrawn");
@@ -230,6 +233,8 @@ it("admitted aliases renew and release only their current claim generation", asy
   const first = await L.claimReview("t1", ALIAS, runner) as unknown as ReviewClaim;
   await L.renewReview("t1", ALIAS, first.request);
   await L.releaseReview("t1", ALIAS, "Restart", true, first.request);
+  // G6: the release opens no successor; the model asks again by command.
+  await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
   const next = await L.claimReview("t1", ALIAS, runner) as unknown as ReviewClaim;
   expect(next.request).not.toBe(first.request);
   await refusal(L.renewReview("t1", ALIAS, first.request), "stale_request");

@@ -5,7 +5,7 @@ import type { Ledger } from "../src/ledger.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
-import { parseRuleError, type Evidence } from "../src/rules.ts";
+import type { Evidence } from "../src/rules.ts";
 import { REVIEW_OFFER_MINUTES, reportLimits, stuckReport } from "../src/stuck/report.ts";
 import { causeOf } from "../src/stuck/episodes.ts";
 
@@ -123,45 +123,8 @@ it("an open review request a runner skipped after two releases is a stuck episod
   expect(causeOf(entries[0])).toContain("harness timed out");
 });
 
-// A review released without a verdict twice at one head (t238, t191's review at
-// 99df3c67 was claimed and released four times) is stopped on the request
-// itself, and each release's successor carries the stop.
-async function releaseOnce(L: ReturnType<typeof ledger>, id: string, note: string) {
-  const [request] = await L.reviewWaiting();
-  await L.claimReview(id, GPT, RUNNER);
-  await L.releaseReview(id, GPT, note, false, request.request!);
-  return (await L.reviewWaiting())[0];
-}
-
-it("two timeouts at one head stop the review on its successor, which no claim, queue or report overlooks (t238)", async () => {
-  const name = "review-stopped-timeouts";
-  const { L, ids } = await asked(name, [GPT]);
-  const first = await releaseOnce(L, ids[0], "harness timed out");
-  expect(first.stopped).toMatchObject({ reason: "timeout", count: 1 });
-  expect(await L.claimReview(ids[0], GPT, RUNNER)).toBeTruthy();
-  await L.releaseReview(ids[0], GPT, "harness timed out", false, first.request!);
-  const live = (await L.reviewWaiting())[0];
-  expect(live.request).not.toBe(first.request);
-  expect(live.stopped).toMatchObject({ reason: "timeout", count: 2, head: live.head });
-  // The stop is in the ledger, not in a runner: another claim is refused.
-  // Across a Ledger stub the code travels in the message (parseRuleError reads it).
-  let refused: unknown = null;
-  try { await L.claimReview(ids[0], GPT, RUNNER); } catch (error) { refused = error; }
-  expect(parseRuleError(refused)).toMatchObject({ code: "review_stopped" });
-  expect(await L.liveReviewRequest(ids[0], live.head!)).toMatchObject({ request: live.request, stopped: expect.stringContaining("narrow the criteria, move the findings to a task, or override") });
-  const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
-  const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");
-  expect(entries).toHaveLength(1);
-  expect(entries[0].reason).toContain(`review request ${live.request}`);
-  expect(entries[0].reason).toContain("the harness timed out");
-  expect(entries[0].reason).toContain("override with the developer's word");
-});
-
-it("a provider limit and an interrupt build no stop, and the two reasons count together (t238)", async () => {
-  const name = "review-stopped-other";
-  const { L, ids } = await asked(name, [GPT]);
-  expect((await releaseOnce(L, ids[0], "codex usage limit until 2026-10-24T09:00:00.000Z: limit")).stopped).toBeUndefined();
-  expect((await releaseOnce(L, ids[0], "interrupted")).stopped).toBeUndefined();
-  expect((await releaseOnce(L, ids[0], "harness timed out")).stopped).toMatchObject({ reason: "timeout", count: 1 });
-  expect((await releaseOnce(L, ids[0], "no VERDICT line")).stopped).toMatchObject({ reason: "no-verdict", count: 2 });
-});
+// G6 retired the stop a release carried to its successor (t238): a released
+// request ends as `released`, opens no successor and counts no stop, so
+// "two timeouts at one head stop the review" and "a provider limit and an
+// interrupt build no stop" have no subject. test/review-same-exit.spec.ts
+// asserts the release as the recorded fact it is now.
