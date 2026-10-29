@@ -84,7 +84,7 @@ after(async () => { await server?.close(); });
 
 test("a runner that does not hold the task's job cannot take its grant through git-token, posing as the holder; the holder's runner can", async () => {
   const id = await newTask("Held by runner a");
-  assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode" })).status, 200);
+  assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3" })).status, 200);
   const runners = {};
   for (const name of ["home:a", "home:b"]) {
     runners[name] = (await api("POST", "/tokens", { runner: name, projects: ["demo"] })).body.token;

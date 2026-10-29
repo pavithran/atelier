@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { checkLimits, stopLine, stopOf } from "../../src/check-limit.ts";
-import { OWNER, P, actor, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
+import { OWNER, P, actor, apiToken, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 import { pushCheckoutRemote } from "../checkout-push.mjs";
 import { guardedPush, privateChanges, privateGuardFor, remoteBases } from "../private-guard.mjs";
@@ -175,6 +175,19 @@ export default async function wrapCommand() {
   if (failed.length) die(`the session is recorded, but the push failed for ${failed.length} remote${failed.length === 1 ? "" : "s"}: ${failed.map((p) => sessionText(p.remote, 200)).join(", ")}`);
 }
 
+// What wrap says in place of publishing on the Node server: where the
+// server's branch is, and what the checkout holds beyond it, which reaches
+// the branch only through a landing.
+function serverBaselineText(name, branch, serverHead, cwd) {
+  const head = git(["rev-parse", "HEAD"], { cwd });
+  if (!serverHead) return `Baseline: ${name}'s repository on the server has no ${branch} yet; atelier init in this checkout pushes it.`;
+  if (head === serverHead) return `Baseline: the server's repository is the baseline, and its ${branch} is at ${short(serverHead)}, as this checkout is. Nothing to publish.`;
+  const ahead = git(["rev-list", "--count", head, "--not", serverHead], { cwd, allowFail: true }).stdout?.trim();
+  return ahead && ahead !== "0"
+    ? `Baseline: the server's repository is the baseline, and its ${branch} is at ${short(serverHead)}. This checkout holds ${ahead} commit${ahead === "1" ? "" : "s"} it lacks, which were not published: only a landing moves ${branch} there.\nnext: carry them as a task: atelier new "TITLE" --project ${name}, claim it, push them to its branch, then atelier land tN --project ${name}`
+    : `Baseline: the server's repository is the baseline, and its ${branch} is at ${short(serverHead)}; this checkout is behind it.\nnext: atelier pull --project ${name}`;
+}
+
 // The baseline alone: the step `wrap` ends with for a baseline that holds the
 // whole history.
 async function publishBaseline() {
@@ -182,6 +195,13 @@ async function publishBaseline() {
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
   if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
   const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+  // On the Node server the project's repository is the baseline, which only
+  // a landing moves (Atelier 2.0, tasks 6 and 11): wrap publishes nothing
+  // there and says how the checkout stands against it.
+  if (t.repository === "server") {
+    const listed = git(["ls-remote", t.remote, `refs/heads/${p.branch}`], { cwd: p.path, token: apiToken(), hooks: false, allowFail: true });
+    return console.log(serverBaselineText(name, p.branch, /^([0-9a-f]{40,64})\s/.exec(listed.stdout ?? "")?.[1] ?? null, p.path));
+  }
   // Another checkout may have moved the baseline on (t644): the push would be
   // refused as a non-fast-forward, so wrap refuses first and names pull.
   // A baseline without the branch yet takes the first push as it is.

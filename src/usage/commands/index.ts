@@ -29,6 +29,7 @@ import command_done from "./done.ts";
 import command_edit from "./edit.ts";
 import command_events from "./events.ts";
 import command_fast from "./fast.ts";
+import command_file_fix from "./file-fix.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
 import command_flow from "./flow.ts";
@@ -38,6 +39,7 @@ import command_guide from "./guide.ts";
 import command_handoff from "./handoff.ts";
 import command_help from "./help.ts";
 import command_identity from "./identity.ts";
+import command_import_tasks from "./import-tasks.ts";
 import command_inbox from "./inbox.ts";
 import command_init from "./init.ts";
 import command_integrated from "./integrated.ts";
@@ -47,6 +49,7 @@ import command_ledger from "./ledger.ts";
 import command_login from "./login.ts";
 import command_ls from "./ls.ts";
 import command_merge from "./merge.ts";
+import command_migrate from "./migrate.ts";
 import command_mode from "./mode.ts";
 import command_models from "./models.ts";
 import command_new from "./new.ts";
@@ -55,6 +58,7 @@ import command_open from "./open.ts";
 import command_ops from "./ops.ts";
 import command_owners from "./owners.ts";
 import command_plan from "./plan.ts";
+import command_prereview from "./prereview.ts";
 import command_projects from "./projects.ts";
 import command_pull from "./pull.ts";
 import command_push from "./push.ts";
@@ -128,6 +132,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/edit.ts", spec: command_edit },
   { path: "src/usage/commands/events.ts", spec: command_events },
   { path: "src/usage/commands/fast.ts", spec: command_fast },
+  { path: "src/usage/commands/file-fix.ts", spec: command_file_fix },
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
   { path: "src/usage/commands/flow.ts", spec: command_flow },
@@ -137,6 +142,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/handoff.ts", spec: command_handoff },
   { path: "src/usage/commands/help.ts", spec: command_help },
   { path: "src/usage/commands/identity.ts", spec: command_identity },
+  { path: "src/usage/commands/import-tasks.ts", spec: command_import_tasks },
   { path: "src/usage/commands/inbox.ts", spec: command_inbox },
   { path: "src/usage/commands/init.ts", spec: command_init },
   { path: "src/usage/commands/integrated.ts", spec: command_integrated },
@@ -146,6 +152,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/login.ts", spec: command_login },
   { path: "src/usage/commands/ls.ts", spec: command_ls },
   { path: "src/usage/commands/merge.ts", spec: command_merge },
+  { path: "src/usage/commands/migrate.ts", spec: command_migrate },
   { path: "src/usage/commands/mode.ts", spec: command_mode },
   { path: "src/usage/commands/models.ts", spec: command_models },
   { path: "src/usage/commands/new.ts", spec: command_new },
@@ -154,6 +161,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/ops.ts", spec: command_ops },
   { path: "src/usage/commands/owners.ts", spec: command_owners },
   { path: "src/usage/commands/plan.ts", spec: command_plan },
+  { path: "src/usage/commands/prereview.ts", spec: command_prereview },
   { path: "src/usage/commands/projects.ts", spec: command_projects },
   { path: "src/usage/commands/pull.ts", spec: command_pull },
   { path: "src/usage/commands/push.ts", spec: command_push },

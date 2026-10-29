@@ -220,7 +220,14 @@ export function situationOf(input: SituationInput) {
     project, observedAt: now.toISOString(),
     server: { commit: input.commit, disk },
     tasks, holds, reviewRequests, runners, landings, blocks, limits,
-    standing: facts.standing.map((d) => ({ id: d.id, text: d.text, quote: d.quote, by: d.by, at: d.at, ...(d.acting ? { acting: d.acting } : {}) })),
+    standing: facts.standing.filter((d) => !d.standing).map((d) => ({ id: d.id, text: d.text, quote: d.quote, by: d.by, at: d.at, ...(d.acting ? { acting: d.acting } : {}) })),
+    // The standing instructions the developer recorded (G6, atelier decide
+    // --standing KEY VALUE), each with whether it acts now: only while the
+    // project is in fast mode. A session withdraws one with atelier decisions
+    // withdraw ID.
+    standingInstructions: facts.standing.filter((d) => d.standing).map((d) => ({
+      id: d.id, key: d.standing!.key, value: d.standing!.value, acts: facts.mode.mode === "fast", quote: d.quote, by: d.by, at: d.at, ...(d.acting ? { acting: d.acting } : {}),
+    })),
     // What each task's runs cost per model, as the runners reported it from
     // the builder's log (G21); a run that reported none is null, never guessed.
     spend: spendOf(facts),

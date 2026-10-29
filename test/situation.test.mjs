@@ -283,3 +283,20 @@ test("show --json's 2a fields: approval per head carried or not and why, approve
   assert.deepEqual([heads[1].approvedBy, heads[1].rejectedBy, heads[1].notCarried[0].reason], [["x/one"], ["x/two"], "main changed src/a.ts"]);
   assert.deepEqual(standingGoOf(d), { landing: d.landJob, overrideConfirmation: d.item.overrideConfirmation, fastMode: "fast mode on the developer's words" });
 });
+
+test("situation lists G6's standing instructions, each with whether it acts now, beside the standing decisions", async () => {
+  const fast = await cli(["mode", "fast", "--reason", "the test's fast run", "--quote", "go fast for the test", "--project", "demo"], { ATELIER_ACTOR: ACTING });
+  assert.equal(fast.code, 0, fast.stderr);
+  const set = await cli(["decide", "--standing", "queue-landable", "on", "--quote", "queue what is landable", "--project", "demo"]);
+  assert.equal(set.code, 0, set.stderr);
+  const s = JSON.parse((await cli(["situation", "--project", "demo", "--json"])).stdout);
+  const i = s.standingInstructions.find((x) => x.key === "queue-landable");
+  assert.ok(i, JSON.stringify(s.standingInstructions));
+  assert.deepEqual([i.value, i.acts, i.quote], ["on", true, "queue what is landable"]);
+  assert.ok(!s.standing.some((d) => d.id === i.id), "an instruction is listed once, as an instruction");
+  assert.match((await cli(["situation", "--project", "demo"])).stdout, new RegExp(`${i.id}: queue-landable = on .*withdraw with atelier decisions withdraw ${i.id}`));
+  assert.equal((await cli(["mode", "full", "--quote", "back to full", "--project", "demo"], { ATELIER_ACTOR: ACTING })).code, 0);
+  const after = JSON.parse((await cli(["situation", "--project", "demo", "--json"])).stdout);
+  const off = after.standingInstructions.find((x) => x.id === i.id);
+  assert.equal(off?.acts ?? false, false, "outside fast mode it does not act");
+});

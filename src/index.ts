@@ -7,7 +7,7 @@ import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteria
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
-import { scanCommit } from "./secret-scan.ts";
+import { scanCommit, type SecretHit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone, timeZone } from "./time";
@@ -15,7 +15,7 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
-import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { checkRemote, forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
@@ -27,7 +27,7 @@ import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { cleanCard, cleanCardModel, cleanWithdrawal } from "./models/cards.ts";
 import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.ts";
-import { suggestBuilder } from "./models/suggest.ts";
+import { builderCandidates, candidatesText } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, isModel, ownerWriteRefusal, registeredActing } from "./models/judgement.ts";
@@ -122,14 +122,10 @@ type Settings = {
   // owner's Access identity is the factor there (ownerFactorOf).
   OVERRIDE_SECRET?: string;
   // The origin this Worker answers on, for links built where there is no
-  // request to read it from, such as the stuck notices the cron sends:
+  // request to read it from, such as the stuck notices the timer sends:
   // https://atelier.zone in production, https://next.atelier.zone on the
   // staging copy (wrangler.jsonc, env.staging), https://atelier.zone unset.
   PUBLIC_ORIGIN?: string;
-  // The Artifacts namespace the ARTIFACTS binding names, whose push events
-  // the queue accepts (pushNotice): "atelier" in production and unset,
-  // "atelier-staging" on the staging copy.
-  ARTIFACTS_NAMESPACE?: string;
 };
 
 // The factor no agent holds, which an override's confirmation rests on
@@ -280,7 +276,17 @@ type GitHost = {
   moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
   revokeAfterPushes(id: string): Promise<boolean>;
   revokeLanding(args: { key: string; task: string }): Promise<number>;
+  mirror(args: { key: string; branch: string | null; remote: string; token: string | null; policy: { clearances: { file: string; fingerprint: string }[]; private: string[] } }): Promise<HostMove>;
+  carry(args: { key: string; projectBranch: string; branch: string; task: string; remote: string; ref: string; token: string | null; head: string }): Promise<{ head: string; tip: string | null; carried: boolean; error?: undefined } | { error: string; detail: string }>;
+  dropBranch(args: { key: string; projectBranch: string; branch: string; task: string; at: string }): Promise<boolean>;
+  keepWayBack(args: { key: string; remote: string | null; token?: string | null }): void;
+  wayBackOf(key: string): { remote: string } | null;
+  pushBack(args: { key: string; branch: string }): Promise<{ remote: string; head?: string; notes?: string | null; error?: string; detail?: string } | null>;
+  readFile(args: { key: string; branch: string; path: string }): Promise<string | null>;
 };
+// What move-host did (src/git/move.mjs, mirrorBranch), or why it did nothing.
+type HostMove = { error?: undefined; branch: string; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number }
+  | { error: string; detail: string; before?: string | null; remoteHead?: string; hits?: SecretHit[] };
 
 function gitHost(env: Env): GitHost | null {
   return (env as unknown as { GIT?: GitHost }).GIT ?? null;
@@ -733,7 +739,9 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
   }
   if (step === "dump" && m === "GET") {
     const table = c.url.searchParams.get("table");
-    if (table === null) return json({ ...(await L.dumpManifest() as Record<string, unknown>), project, key: ref.key, ledger: own });
+    // The tokens that reach the project come from the index beside the
+    // Ledger's tables (G14), by hash, with every name the project has had.
+    if (table === null) return json({ ...(await L.dumpManifest() as Record<string, unknown>), project, key: ref.key, ledger: own, ...(await index(env).projectTokens(ref.key)) });
     const after = Number(c.url.searchParams.get("after") ?? 0);
     if (!Number.isSafeInteger(after) || after < 0) throw new RuleError("bad_request", "after is a row number", 400);
     return json(await L.dumpRows(table, after));
@@ -748,20 +756,52 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
         if (!record || typeof record.repo !== "string") throw new RuleError("bad_dump", `the dump carries no project record, so ${project} cannot be registered here`, 400);
         await index(env).assertRepoAvailable(project, record.repo);
       }
+      // The tokens it carries (G14), checked before anything is loaded: a
+      // token this server holds under another hash, or a hash it holds under
+      // another id, refuses the import.
+      const tokens = carriedTokens(manifest.tokens);
+      const clash = tokens.length ? await index(env).tokenConflicts(tokens) : [];
+      if (clash.length) throw new RuleError("token_conflict", `this server already holds token ${clash.slice(0, 5).join(", ")}${clash.length > 5 ? ", …" : ""} under another hash or id, so the dump's tokens cannot move here and nothing was imported`, 409, `only the developer can: revoke the clashing token here with atelier token revoke ID, or import into another server`);
       return json(await L.importBegin(manifest, crypto.randomUUID()), 201);
     }
     if (body.step === "resume") return json(await L.importProgress(body.import));
     if (body.step === "abort") return json({ project, ...(await L.importAbort(body.import)) });
     if (body.step === "rows") return json(await L.importRows(body.import, body.table, body.columns, body.rows));
     if (body.step === "finish") {
-      const { counts, record } = await L.importFinish(body.import);
+      // A token minted here since begin may clash with one the dump
+      // carries: refused before the finish, so the import stays open to be
+      // aborted or finished once the clash is gone.
+      const carriedNow = carriedTokens(body.tokens);
+      const clashNow = carriedNow.length ? await index(env).tokenConflicts(carriedNow) : [];
+      if (clashNow.length) throw new RuleError("token_conflict", `this server now holds token ${clashNow.slice(0, 5).join(", ")}${clashNow.length > 5 ? ", …" : ""} under another hash or id, minted since the import began, so import ${String(body.import).slice(0, 40)} was not finished`, 409, `only the developer can: revoke the clashing token here with atelier token revoke ID, then run atelier ledger import --file F --resume ${String(body.import).slice(0, 40)} --project ${project}; or abort it with atelier ledger import --abort ${String(body.import).slice(0, 40)} --project ${project}`);
+      const { counts, migrated, record } = await L.importFinish(body.import);
       const registered = !ref.registered && record !== null;
       if (registered) await index(env).registerProject({ ...(record as ProjectRecord), name: project });
-      return json({ project, counts, registered });
+      // The tokens move last, once the rows are in and the project is
+      // registered, each limited to the project's name here (G14). The
+      // finish carries the dump's token records, which begin checked.
+      const tokens = carriedTokens(body.tokens);
+      const names = Array.isArray(body.names) ? body.names.filter((n: unknown): n is string => typeof n === "string") : [];
+      const carried = tokens.length ? await index(env).importTokens(tokens, project, names, actor) : null;
+      return json({ project, counts, migrated, registered, ...(carried ? { tokens: carried } : {}) });
     }
     throw new RuleError("bad_request", "step is begin, resume, rows, finish or abort", 400);
   }
   throw new RuleError("not_found", "no such route", 404);
+}
+
+// The token records a dump carries (G14): each an id, a SHA-256 hash and
+// the record as the index stored it. Anything else refuses the import.
+function carriedTokens(raw: unknown): { id: string; hash: string; json: string }[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > 10_000) throw new RuleError("bad_dump", "the dump's tokens are a list of records", 400);
+  return raw.map((t) => {
+    const v = t as { id?: unknown; hash?: unknown; json?: unknown };
+    if (typeof v?.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v.id) || typeof v.hash !== "string" || !/^[0-9a-f]{64}$/.test(v.hash) || typeof v.json !== "string" || v.json.length > 10_000) {
+      throw new RuleError("bad_dump", "each of the dump's tokens is an id, a SHA-256 hash and its record", 400);
+    }
+    return { id: v.id, hash: v.hash, json: v.json };
+  });
 }
 
 function requireOwner(env: Env, actor: string) {
@@ -1219,6 +1259,164 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
 }
 
+// ── moving a project to the Studio (Atelier 2.0, task 11) ───────────────
+//
+// Design section 5, steps 4 to 7. The developer's alone, on the Node server.
+// The old host's credential comes in the request body, reaches git through
+// its environment (src/git/move.mjs) and is kept only for the way back.
+
+// A remote as it may be recorded: without a query, which could carry a
+// credential, and cut to a length.
+const shownRemote = (remote: string) => remote.replace(/[?#].*$/, "").slice(0, 300);
+
+function sourceOf(body: Record<string, unknown>, command: string): { remote: string; token: string | null } {
+  const remote = typeof body.remote === "string" ? body.remote.trim() : "";
+  const bad = checkRemote(remote);
+  if (bad) throw new RuleError("bad_remote", `${bad}, so nothing was fetched`, 400, `run ${command} --from REMOTE, naming the old host's repository`);
+  if (body.token !== undefined && body.token !== null && (typeof body.token !== "string" || !body.token || body.token.length > 4096 || /[\s\0]/.test(body.token))) {
+    throw new RuleError("bad_token", "the old host's token is one line of text", 400, `run ${command} --token-env VAR, naming a variable that holds it`);
+  }
+  return { remote, token: typeof body.token === "string" ? body.token : null };
+}
+
+// POST /projects/P/move-host { remote, token?, wayBack? } mirrors the
+// project's branch, notes and tags from the old host into its repository
+// here (`atelier projects move-host`); run again at the cut-over, it carries
+// what changed since. { wayBack: true } also keeps the remote and its token
+// so each landing pushes the branch back during the bake; { pushBack: true }
+// pushes it back now; { endBake: true } forgets the way back.
+async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): Promise<Response> {
+  const { env, body, actor } = c;
+  requireOwner(env, actor);
+  const git = gitHost(env);
+  if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories, so a project's repository cannot move to it", 404, "move the project to the Studio server");
+  const project = ref.name;
+  const p = await L.project();
+  // A record from before records named the branch has none, and before the
+  // first move there is no repository here to read it from: the remote's
+  // HEAD branch is taken then (mirrorBranch).
+  const named = p.branch ?? await projectBranch(env, p).catch(() => null);
+  const branch = named ?? "main";
+  const command = `atelier projects move-host ${project}`;
+  if (body.endBake === true) {
+    const kept = git.wayBackOf(ref.key);
+    git.keepWayBack({ key: ref.key, remote: null });
+    if (kept) await L.hostMoved(actor, "project.way_back", { state: "ended", remote: kept.remote });
+    return json({ project, branch, wayBack: null, ended: !!kept });
+  }
+  if (body.pushBack === true) {
+    const r = await git.pushBack({ key: ref.key, branch });
+    if (!r) throw new RuleError("no_way_back", `${project} keeps no way back on this server, so nothing was pushed`, 409, `run ${command} --from REMOTE --token-env VAR --way-back`);
+    await L.hostMoved(actor, "project.way_back", r.error ? { state: "failed", remote: r.remote, head: r.head ?? null, detail: r.detail } : { state: "pushed", remote: r.remote, head: r.head, notes: r.notes ?? null });
+    if (r.error) throw new RuleError("push_back_failed", `${branch} was not pushed back to ${r.remote}: ${r.detail}`, 409, `check the old baseline and its token, then run ${command} --push-back`);
+    return json({ project, branch, wayBack: { remote: r.remote, head: r.head, notes: r.notes ?? null } });
+  }
+  // move-host is the migration's alone (review of task 11): once the bake
+  // has ended, or a landing has moved the branch here with no way back
+  // open, only a landing moves the project's branch.
+  const state = await L.hostMoveState();
+  if (state.ended || (state.landedSince && !git.wayBackOf(ref.key))) {
+    throw new RuleError("bake_over", `${project}'s repository moved to this server and ${state.ended ? "its bake has ended" : "has had a landing here with no way back open"}, so move-host no longer moves ${branch}; only a landing does`, 409,
+      `carry the commits as a task and land it: atelier new "TITLE" --project ${project}, claim it, push them to its branch, then atelier land tN --project ${project}`);
+  }
+  const { remote, token } = sourceOf(body, command);
+  // The developer clears the key-shaped lines a refused move found, with the
+  // reason and their words; the scan below then lets those lines through.
+  if (body.clearSecret !== undefined) await L.clearHostMove(actor, body.clearSecret, ownerDirection(body.quote, c.acting ?? null, "clearing a moved history's secret flag"));
+  const policy = { clearances: (await L.hostMoveScan()).clearances, private: await L.privatePaths() };
+  let done: HostMove;
+  try { done = await git.mirror({ key: ref.key, branch: named, remote, token, policy }); }
+  catch (error) {
+    throw new RuleError("fetch_failed", `${shownRemote(remote)} could not be read: ${String((error as Error)?.message ?? error).slice(0, 400)}; nothing was moved`, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
+  }
+  if (done.error === "scan_refused") {
+    const hits = done.hits ?? [];
+    if (hits.length) await L.hostMoveRefused(actor, shownRemote(remote), done.remoteHead ?? "", hits);
+    throw new RuleError("scan_refused", `the history ${shownRemote(remote)} would add does not pass the checks a push meets: ${done.detail}`, 409, hits.length
+      ? `take the line out of the old baseline's history, or only the developer can clear it: ${command} --from REMOTE --clear-secret "why it is safe" --quote "the developer's words" --as H/M`
+      : `take the private files out of the old baseline's history, then run ${command} --from REMOTE again`);
+  }
+  if (done.error === "no_branch") throw new RuleError("no_branch", `${done.detail}, so nothing was moved`, 404, `name the repository that holds ${p.name}'s ${branch}: ${command} --from REMOTE`);
+  if (done.error === "diverged") {
+    throw new RuleError("diverged", `${done.detail}: this server's ${branch} holds commits the remote lacks and the remote holds commits this server lacks, so nothing was moved`, 409,
+      `only the developer can: find why both moved (git log on both), then move the host from a remote whose ${branch} holds this server's`);
+  }
+  if (done.error !== undefined) throw new RuleError("move_failed", `${done.detail}; nothing was recorded`, 409, `run ${command} --from REMOTE again`);
+  const moved = done.branch;
+  // A project registered on 1.x never stored its prose standard's text,
+  // which a claim hands to a builder with no checkout: it is read from the
+  // branch just moved.
+  let prose: string | null = null;
+  if (p.policy.proseStandard && !(await L.proseStandardText())) {
+    const text = await git.readFile({ key: ref.key, branch: moved, path: p.policy.proseStandard });
+    if (text) { await L.setProseStandardText(text); prose = p.policy.proseStandard; }
+  }
+  if (body.wayBack === true) git.keepWayBack({ key: ref.key, remote, token });
+  const wayBack = git.wayBackOf(ref.key);
+  const record = { remote: shownRemote(remote), branch: moved, before: done.before, head: done.head, remoteHead: done.remoteHead, moved: done.moved, notes: done.notes, tags: done.tags, ...(body.wayBack === true ? { wayBack: true } : {}) };
+  await L.hostMoved(actor, "project.host_moved", record, done.moved === "ahead" ? null : done.head);
+  return json({ project, ...record, proseStandard: prose, wayBack: wayBack ? { remote: shownRemote(wayBack.remote) } : null, remote: gitRemote(c, project) });
+}
+
+// POST /projects/P/items/tN/migrate { remote, ref?, token? } carries an open
+// task across (`atelier migrate tN`): its work, fetched from its old fork,
+// becomes its branch t/N here at the head the Ledger records, and the
+// Ledger records the branch as its workspace. Its claim and head stand; the
+// holder's next claim mints its Git grant.
+async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>, id: string): Promise<Response> {
+  const { env, body, actor } = c;
+  requireOwner(env, actor);
+  const git = gitHost(env);
+  if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories, so no task moves to it", 404, "migrate tasks on the Studio server");
+  const p = await L.project();
+  const main = await projectBranch(env, p);
+  const item = await L.item(id);
+  const branch = itemBranch(item);
+  const fork = `${ref.key}/${branch}`;
+  const command = `atelier migrate ${id} --project ${ref.name}`;
+  const holder = item.owner ? `the holder runs atelier claim ${id} --as ${item.owner}` : `the next builder runs atelier claim ${id} --as H/M`;
+  if (item.fork === fork) return json({ item, branch, head: item.head, migrated: false, remote: gitRemote(c, ref.name), next: holder });
+  assertNotTerminal(item);
+  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace on Artifacts, so nothing moves; its claim here makes ${branch}`, 409, `run atelier claim ${id} --as H/M`);
+  const head = item.head ?? item.base;
+  if (!head) throw new RuleError("no_head", `${id} records no head or base, so there is nothing to carry`, 409, `only the developer can: release ${id} with atelier release ${id}, so its next claim starts it here`);
+  const { remote, token } = sourceOf(body, command);
+  const wanted = typeof body.ref === "string" && body.ref ? body.ref : main;
+  const from = wanted.startsWith("refs/") ? wanted : `refs/heads/${wanted}`;
+  if (!/^refs\/[A-Za-z0-9._\/-]{1,200}$/.test(from) || from.includes("..")) throw new RuleError("bad_ref", `${wanted.slice(0, 80)} is not a branch name`, 400, `run ${command} --from REMOTE --ref BRANCH`);
+  const done = await git.carry({ key: ref.key, projectBranch: main, branch, task: id, remote, ref: from, token, head });
+  if (done.error !== undefined) {
+    const detail = `${done.detail}, so ${id} was not moved`;
+    if (done.error === "not_moved") throw new RuleError("not_moved", detail, 409, `only the developer can: atelier projects move-host ${ref.name} --from REMOTE, then ${command} --from REMOTE`);
+    if (done.error === "head_missing") throw new RuleError("head_missing", detail, 409, `name the fork that holds ${head.slice(0, 12)}: ${command} --from REMOTE --ref BRANCH`);
+    if (done.error === "branch_exists") throw new RuleError("branch_exists", detail, 409, `only the developer can: compare ${branch} here with ${id}'s head (atelier show ${id})`);
+    throw new RuleError("fetch_failed", detail, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
+  }
+  let moved: Item;
+  try { moved = await L.migrateFork(id, fork, actor, { from: item.fork, head, tip: done.tip, remote: shownRemote(remote) }); }
+  catch (error) {
+    if (done.carried) await git.dropBranch({ key: ref.key, projectBranch: main, branch, task: id, at: head });
+    throw error;
+  }
+  return json({ item: moved, branch, head, tip: done.tip, migrated: true, remote: gitRemote(c, ref.name), next: holder });
+}
+
+// The way back during the bake (design section 5, step 6): after a landing's
+// merge is recorded, the project's branch is pushed back to the old
+// baseline, when the project keeps one. A failure is recorded and answered,
+// never undoing the merge; `atelier projects move-host P --push-back` retries.
+async function pushBackAfterMerge(env: Env, L: ReturnType<typeof ledger>, key: string, p: ProjectRecord, actor: string): Promise<Record<string, unknown> | null> {
+  const git = gitHost(env);
+  if (!git) return null;
+  let r;
+  try { r = await git.pushBack({ key, branch: await projectBranch(env, p) }); }
+  catch (error) { r = { remote: git.wayBackOf(key)?.remote ?? "", error: "push_failed", detail: String((error as Error)?.message ?? error).slice(0, 300) }; }
+  if (!r) return null;
+  const record = r.error ? { state: "failed", remote: shownRemote(r.remote), head: r.head ?? null, detail: r.detail } : { state: "pushed", remote: shownRemote(r.remote), head: r.head, notes: r.notes ?? null };
+  await L.hostMoved(actor, "project.way_back", record).catch((e) => console.error(errorLine("record the way back's push", e)));
+  return record;
+}
+
 // A claim on the Node server (Atelier 2.0, task 5; design section 4.5),
 // after L.claim recorded it: the task's branch, t/N (plan/N for a plan), is
 // made in the project's repository at the tip of the branch it starts from
@@ -1245,7 +1443,7 @@ async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t:
     // A workspace recorded on an Artifacts fork is moved to this server by
     // the migration, not by a claim.
     if (item.fork && item.fork !== fork) {
-      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: move ${id} to this server, then run atelier claim ${id} --as ${actor}`);
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
     }
     const made = await git.claimBranch({ key, projectBranch: main, branch, from });
     if (!made.head) {
@@ -2009,6 +2207,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // holder: the Ledger records it as the item's write token (`git:HASH`), so
   // a new one rotates it and every change of holder revokes it. 404 where the
   // server hosts no Git (the Workers deploy).
+  if (parts[2] === "move-host" && parts.length === 3 && m === "POST") return await moveHost(c, ref, L);
   if (parts[2] === "git-token" && parts.length === 3 && m === "POST") {
     const git = gitHost(env);
     if (!git) throw new RuleError("not_found", "this server hosts no Git repositories", 404);
@@ -2053,6 +2252,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     else if (c.token && c.token.actor !== actor) throw new RuleError("actor_mismatch", `this agent token speaks for ${c.token.actor}, not ${actor}; no Git credential was issued`, 403, `send the request as ${c.token.actor}`);
     const item = await L.item(id);
     if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
+    // A task whose work is still on its Artifacts fork has no branch here
+    // yet; a grant now would let a push make t/N apart from that work.
+    if (item.fork && item.fork !== `${ref.key}/${itemBranch(item)}`) {
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration, so no credential was issued`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
+    }
     // recordToken waits for the pushes in flight on the task (src/runtime/ledger-locks.mjs).
     const slot = await L.tokenSlot(id);
     const g = git.mint({ project: ref.key, kind: item.kind === "plan" ? "plan" : "task", task: id, actor, generation: slot.generation });
@@ -2314,8 +2518,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.wrapSession(body, actor), 201);
     }
   }
+  // `repository: "server"` on the Node server, where the project's
+  // repository is the baseline and only a landing moves its branch: ship
+  // reads it (Atelier 2.0, task 11).
   if (parts[2] === "baseline-head" && parts.length === 3 && m === "GET") {
-    return json({ head: await headOf(env, (await L.project()).repo) });
+    return json({ head: await headOf(env, (await L.project()).repo), ...(gitHost(env) ? { repository: "server" } : {}) });
   }
   // The task refresh queue (t462): GET lists each task's target with its
   // standing — why a busy or blocked one waits — and its last outcome; POST
@@ -2434,8 +2641,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // On the Node server a read is a read grant; the developer writes the
     // project's branch with the server token itself (docs/branches.md).
     const git = gitHost(env);
-    if (git && scope === "read") return json(await gitRead(c, git, ref.key, project, actor, await projectBranch(env, p)));
-    if (git) return json({ remote: gitRemote(c, project), token: null, defaultBranch: await projectBranch(env, p) });
+    // `repository: "server"` says the repository is the baseline, which only
+    // a landing moves: sync and wrap read it (Atelier 2.0, task 11).
+    if (git && scope === "read") return json({ ...(await gitRead(c, git, ref.key, project, actor, await projectBranch(env, p))), repository: "server" });
+    if (git) return json({ remote: gitRemote(c, project), token: null, defaultBranch: await projectBranch(env, p), repository: "server" });
     return json(await mintFor(c, p.repo, scope, await projectBranch(env, p)));
   }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
@@ -2552,6 +2761,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // Standing decisions (src/decisions.ts): GET lists every one with its
   // status, for the owner and for an agent token (agentRoute); POST records
   // one and POST decisions/ID/withdraw withdraws one, for the owner alone.
+  // atelier import-tasks (G14): open tasks and standing decisions from a
+  // project's own files, the developer's alone; the CLI parses the file and
+  // sends one entry per item, each with its line.
+  if (parts[2] === "import-tasks" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    const source = typeof body.source === "string" && body.source.trim() ? body.source.trim().slice(0, 200) : "the file";
+    if (!Array.isArray(body.entries) || body.entries.length > 500) throw new RuleError("bad_entries", "entries is a list of at most 500 tasks and decisions", 400, "split the file, then run atelier import-tasks on each part");
+    const entries = body.entries.map((e: Record<string, unknown>, i: number) => {
+      const line = Number.isSafeInteger(e?.line) ? e.line as number : i + 1;
+      if (e?.kind === "task" && typeof e.title === "string" && e.title.trim() && (e.brief === undefined || e.brief === null || typeof e.brief === "string")) return { line, kind: "task" as const, title: e.title.trim(), brief: typeof e.brief === "string" && e.brief.trim() ? e.brief.trim() : null };
+      if (e?.kind === "decision" && typeof e.text === "string" && e.text.trim()) return { line, kind: "decision" as const, text: e.text.trim() };
+      throw new RuleError("bad_entries", `${source} line ${line}: an entry is a task with a title or a decision with text`, 400, `fix line ${line} of ${source}, then run atelier import-tasks again`);
+    });
+    return json({ project: ref.name, source, ...(await L.importTasks(source, entries, actor, c.acting ?? null)) });
+  }
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);
@@ -2633,6 +2857,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
+    case "migrate": return await migrateTask(c, ref, L, id);
     case "claim": {
       // An integrate job's claim is preceded by a mergeability pre-check: a
       // predicted conflict sends the part back to its builder without a runner
@@ -2933,23 +3158,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A live claim is not ended by a dispatch unless --release says so; refused
       // first, before a builder is suggested for a task nobody may take (t391).
       await L.refuseLiveHolder(id, body);
-      let suggestion;
-      // atelier dispatch with no --agent asks for the suggestion; a dispatch
-      // that names no agent without asking stays open to any runner's agent.
-      // An overlap override of an existing dispatch keeps its builder
-      // restrictions unless named, so it asks for no suggestion.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && waitingDispatch(await L.item(id)))) {
+      // atelier dispatch with no --agent names no builder (G17): the server
+      // picks none. It prints the candidates, each with its reliability line
+      // and any gate filter that refuses it, and refuses; the model names one.
+      // An overlap override of an existing dispatch keeps its builder, so it
+      // asks for nothing.
+      // Every new dispatch names both its agent and its model, whatever the
+      // client sent: a harness alone, a model alone or neither leaves the
+      // runner to choose, which is a pick the server does not make. An
+      // overlap override of a waiting dispatch that names both keeps it.
+      const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
+      const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
+      const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
+      if (!named && !keptNamed) {
         requireOwner(env, actor);
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
-        // The suggestion is checked against runners' offers for the job this
-        // dispatch will carry, a plain build unless it names another.
-        // Read for this project (offersFor, t652): a model only a runner
-        // scoped to another project offers is not suggested here.
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
-        const slash = suggestion.actor.indexOf("/");
-        body.agent = suggestion.actor.slice(0, slash);
-        body.model = suggestion.actor.slice(slash + 1);
-        body.to = suggestion.where;
+        const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
+        const first = candidates.find((c) => !c.refusal);
+        const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
+        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
       }
       // A merge-main dispatch names the main head its job merges. The owner
       // names none after a landing conflicted, so the head is main's as the
@@ -2971,8 +3198,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reasons, or, for a builder the developer named, each build
       // assignment bearing on the task skipped for it (gpt-6-astra's seventh
       // review of t622, finding 2).
-      const why = suggestion ? suggestion.reasons.join(" ") : await namedBuilderReasons(env, ref.key, body, actor);
-      return json({ ...await L.dispatch(id, actor, body, oldToken, why), ...(suggestion ? { suggestion } : {}) });
+      const why = await namedBuilderReasons(env, ref.key, body, actor);
+      return json(await L.dispatch(id, actor, body, oldToken, why));
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
@@ -2980,6 +3207,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Ledger refuses a cycle, a closed task and a plan's part.
     case "blocked-by":
       return json(await L.setBlockedBy(id, actor, asStrings(body.blockedBy ?? [], "blockedBy")));
+    // The queued-landing pre-review, on the model's request (G17): once per
+    // call, of the reviewer it names; without one, the candidates and a refusal.
+    case "prereview": {
+      requireOwner(env, actor);
+      const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      const records = { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key };
+      return json(await L.requestPrereview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), records), 201);
+    }
+    // A task filed from one of the goal's notes (G6): the server files none
+    // by itself; the model files one with atelier file-fix ID --from-note N.
+    case "file-fix": {
+      requireOwner(env, actor);
+      const filed = await L.fileFix(id, actor, body.note, c.acting ?? null);
+      return json(filed, filed.already ? 200 : 201);
+    }
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit": {
@@ -3166,6 +3408,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      // The separate tier review, of the tier model named (G17): never asked
+      // by the server itself.
+      if (body.tier === true) return json(await L.requestTierReview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), body.hand === true));
       const track = reviewer === null ? { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
@@ -3438,8 +3683,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const merged = await L.merged(id, actor, merge, true, item.acceptedHead);
       // One use: the task's landing grant goes once its push is recorded.
       await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
+      const wayBack = await pushBackAfterMerge(env, L, ref.key, p, actor);
       const postMerge = await L.postMergeRun(id);
-      return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
+      return json({ ...merged, ...(postMerge ? { postMerge } : {}), ...(wayBack ? { wayBack } : {}) });
     }
     // A merge made outside Atelier, recorded after the fact (t653): the
     // baseline is read here, where Git is, for the merge commit's parents and
@@ -3482,7 +3728,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const recorded = await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace);
       // A landing grant still live for the task ends with its merge recorded.
       await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
-      return json(recorded);
+      const wayBack = await pushBackAfterMerge(env, L, ref.key, p, actor);
+      return json(wayBack ? { ...recorded, wayBack } : recorded);
     }
     case "landing": {
       requireOwner(env, actor);
@@ -3606,7 +3853,9 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       // The runner offers come with the pool, so the routing an approval
       // fixes counts a reviewer only when a live runner offers it for the
       // review job (routeParts in src/plans/route.ts).
-      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers());
+      // The routes are the model's (G17): { KEY: { builder, reviewer } }.
+      if (body.routes !== undefined && (typeof body.routes !== "object" || body.routes === null || Array.isArray(body.routes))) throw new RuleError("bad_route", "routes maps each part's key to { builder, reviewer }", 400, `atelier plan approve ${id} --hash HASH --route KEY=BUILDER:REVIEWER`);
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers(), (body.routes as Record<string, { builder?: unknown; reviewer?: unknown }> | undefined) ?? null);
       return json(await L.planView(id));
     }
     case "revise":
@@ -3836,15 +4085,14 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
   return stuckReport(project, origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names);
 }
 
-// Every 10 minutes: each project's stuck rules are evaluated and the
-// transitions of its episodes recorded. A project that cannot be read at all
+// Every 10 minutes, on the server's timer (src/runtime/timers.mjs): each
+// project's stuck rules are evaluated and the transitions of its episodes
+// recorded. A project that cannot be read at all
 // records nothing, so it clears nothing. Episodes are kept under the project's
 // storage key, which a rename keeps and a released name does not reach, never
 // under its name (t196).
-// The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
-// and the origin the recorded evidence links name: the PUBLIC_ORIGIN var, so
-// the staging copy links to itself, and production's origin when it is unset.
-const STUCK_CRON = "*/10 * * * *";
+// The origin the recorded evidence links name: the PUBLIC_ORIGIN setting, so
+// the staging server links to itself, and production's origin when it is unset.
 const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.trim().replace(/\/+$/, "") || "https://atelier.zone";
 // Sends the project's due episodes (src/stuck/notices.ts) in as many messages
 // as the channel's body limit needs, and records each message's episodes only
@@ -3857,7 +4105,10 @@ const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.tr
 async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, name: string, at: string): Promise<void> {
   const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
   if (!topic) return;
-  const due = await I.stuckDue(key, at);
+  // The project's standing notice-delay (src/standing.ts) replaces the
+  // default wait; an unreadable project waits the default.
+  const delay = await ledger(env, key).standing().then((m) => m.get("notice-delay"), () => undefined);
+  const due = await I.stuckDue(key, at, delay ? Number(delay) * 60_000 : undefined);
   for (const { request, episodes } of stuckBatchRequests(topic, stuckOrigin(env), name, due)) {
     try {
       const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
@@ -3886,11 +4137,10 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
   }
 }
 
-// Every 5 minutes (t223): each registered project's live tasks are read
+// Every 5 minutes, on the server's timer (t223): each registered project's live tasks are read
 // against their stage limits and the stage events recorded (Ledger.stageTick).
 // A project that cannot be read records nothing. The run itself is recorded on
 // the index, which `status` reads for when the tick last ran.
-const STAGE_CRON = "*/5 * * * *";
 export async function recordStageTicks(env: Env, now = new Date()): Promise<{ read: number; unread: number }> {
   const I = index(env);
   let read = 0, unread = 0;
@@ -4749,55 +4999,50 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // answers 404 before auth is asked, as it does after it.
 const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
+// A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
+// task 8; design section 4.4): what queue() did for a push event from
+// Artifacts, for one push and with no queue behind it. The hook POSTs
+// { project, ref, before, after, grant } to the loopback internal listener
+// with the per-process secret (src/git/host.mjs) and waits for this answer;
+// a failure is logged there and the ref stays moved, so the next `atelier
+// push` records the head (the push route reads the branch itself).
+// The branch is read again here (headOf), never taken from the hook's word,
+// and observed as the Artifacts event was: a head that does not hold the
+// recorded one is noted (push.unrecorded), not taken as progress; one that
+// does is recorded with the authors its commits name and the retention a
+// merge of main may carry, and the hook's own secret scan becomes its scan
+// record. On the Node server the push's grant names who pushed (`actor`,
+// from the server's own grant record), so the push is recorded as that
+// holder's, as `atelier push` would record it a moment later (recordPush);
+// a push recordPush refuses (a rewrite not declared, a holder no longer
+// holding) is observed as an Artifacts event was (observePush). A push to
+// any other ref, or to the branch of a task that is closed or no longer its
+// workspace, records nothing.
+export type PushedNotice = { project: string; ref: string; before?: string; after?: string; actor?: string };
+export async function observePushed(env: Env, notice: PushedNotice): Promise<{ observed: boolean; item?: string; head?: string | null; reason?: string }> {
+  const branch = /^refs\/heads\/((?:t|plan)\/[1-9][0-9]*)$/.exec(String(notice.ref ?? ""))?.[1];
+  if (!branch) return { observed: false, reason: `${notice.ref} is not a task's branch` };
+  const project = (await index(env).projects()).find((p) => (p.key ?? p.name) === notice.project);
+  if (!project) return { observed: false, reason: `no project ${notice.project}` };
+  const key = project.key ?? project.name;
+  const L = ledgerOf(env, project);
+  const fork = `${key}/${branch}`;
+  const itemId = await L.itemIdOfFork(fork);
+  const item = itemId ? await L.item(itemId) : undefined;
+  if (!item) return { observed: false, reason: `no task's workspace is ${branch}` };
+  if (["merged", "abandoned"].includes(item.state)) return { observed: false, item: item.id, reason: `${item.id} is ${item.state}` };
+  const current = await headOf(env, fork);
+  if (!current) return { observed: false, item: item.id, head: null, reason: `${branch} has no commits` };
+  const { holdsRecorded } = await pushLineage(env, fork, current, item.head, null);
+  const authors = holdsRecorded ? await pushedAuthors(env, fork, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
+  const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
+  let recorded: Item = await L.hookPush(item.id, notice.actor ?? null, current, notice.after ?? null, holdsRecorded, authors, retention);
+  if (recorded.head === current) recorded = await scanRecorded(env, L, recorded);
+  if (recorded.head === current) return { observed: true, item: item.id, head: current };
+  return { observed: false, item: item.id, head: current, reason: holdsRecorded === true ? `${item.id}'s recorded head moved meanwhile` : `${branch} no longer holds ${item.id}'s recorded head; atelier push records it once the rewrite is declared` };
+}
+
 export default {
-  // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
-  // A run with nothing due reads nothing but the index's list of takes.
-  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-    if (controller.cron === STAGE_CRON) { await recordStageTicks(env, new Date(controller.scheduledTime)); return; }
-    if (controller.cron === STUCK_CRON) { await recordStuckEpisodes(env, new Date(controller.scheduledTime)); return; }
-    await takeModelSnapshots(env, controller.scheduledTime);
-  },
-  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
-    for (const message of batch.messages) {
-      try {
-        // Events from the namespace this Worker's ARTIFACTS binding names
-        // alone; another namespace's, such as production's on staging, are dropped.
-        const notice = pushNotice(message.body, (env as unknown as Settings).ARTIFACTS_NAMESPACE?.trim() || undefined);
-        if (notice) {
-          const projects = await index(env).projects();
-          for (const project of projects) {
-            const L = ledgerOf(env, project);
-            const itemId = await L.itemIdOfFork(notice.repo);
-            const item = itemId ? await L.item(itemId) : undefined;
-            if (!item || ["merged","abandoned"].includes(item.state)) continue;
-            // Only a push to the project's branch moves the head headOf reads.
-            if (notice.ref !== `refs/heads/${await projectBranch(env, project)}`) break;
-            const current = await headOf(env,notice.repo);
-            if (current) {
-              // A head that does not hold the recorded one is not taken as
-              // progress (observePush); the compare-and-set retry is for a
-              // head that should have moved and did not.
-              const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
-              const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
-              const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors,true,retention);
-              // The push scan for a push seen on the fork, as the push route
-              // runs it: file and line only, never the value. It runs for the
-              // head recorded with its scan pending, which a sighting that
-              // moved the head just wrote and a redelivery after a failed
-              // scan still finds; a scan that throws leaves the event
-              // retried, so no push is acknowledged with its scan pending. A
-              // duplicate sighting of a scanned head runs nothing.
-              if (recorded.head === current) await scanRecorded(env, L, recorded);
-              if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
-            }
-            break;
-          }
-        }
-        message.ack();
-      } catch (error) { console.error("push event retry", error); message.retry(); }
-    }
-  },
   async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const pathname = url.pathname.endsWith("/") && url.pathname.length > 1 ? url.pathname.slice(0, -1) : url.pathname;

@@ -4,15 +4,15 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { LEDGER_DUMP_FORMAT } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectDump, importDump, parseDump } from "../ledger-dump.mjs";
-import { OWNER, P, args, call, die, project, server } from "../atelier.mjs";
+import { OWNER, P, RequestError, args, call, die, project, request, server } from "../atelier.mjs";
 
 // The developer's way back from a switch of the server (t342):
 // docs/orchestrating.md, "Before a switch of the server", says when to run each.
 export default async function ledgerCommand() {
   const [, sub] = args._;
-  const takes = { bookmark: [], restore: ["bookmark"], dump: ["file"], import: ["file"] }[sub];
+  const takes = { bookmark: [], restore: ["bookmark"], dump: ["file"], import: ["file", "resume", "abort"] }[sub];
   if (!takes || args._.length !== 2) die(COMMAND_USAGE.ledger);
-  for (const flag of ["bookmark", "file"]) if (args[flag] !== undefined && !takes.includes(flag)) die(`atelier ledger ${sub} does not take --${flag}`);
+  for (const flag of ["bookmark", "file", "resume", "abort"]) if (args[flag] !== undefined && !takes.includes(flag)) die(`atelier ledger ${sub} does not take --${flag}`);
   const name = project();
   const path = `${P(name)}/ledger`;
 
@@ -38,11 +38,32 @@ export default async function ledgerCommand() {
     console.log(formatDump(dump, file, new URL(server()).host));
     return;
   }
+  const host = new URL(server()).host;
+  // An import that failed partway is taken back (task 10): everything it
+  // loaded is deleted and the tables it made or remade are as before.
+  if (args.abort !== undefined) {
+    if (typeof args.abort !== "string" || !args.abort || args.file !== undefined || args.resume !== undefined) die(`name the import to abort alone: atelier ledger import --abort ID --project ${name}`);
+    const r = await call("POST", `${path}/import`, { step: "abort", import: args.abort }, OWNER);
+    console.log(formatAbort(r, name, host));
+    return;
+  }
   if (typeof args.file !== "string" || !args.file) die(`name the dump to load: atelier ledger import --file F --project ${name}`);
+  if (args.resume !== undefined && (typeof args.resume !== "string" || !args.resume)) die(`name the import to resume: atelier ledger import --file F --resume ID --project ${name}`);
   let dump;
   try { dump = parseDump(readFileSync(args.file, "utf8"), LEDGER_DUMP_FORMAT); } catch (error) { die(`${args.file}: ${error.message}`); }
-  const done = await importDump(dump, (body) => call("POST", `${path}/import`, body, OWNER));
-  console.log(formatImport(dump, done, name, new URL(server()).host));
+  let done;
+  try { done = await importDump(dump, (body) => request("POST", `${path}/import`, body, OWNER), () => {}, args.resume ?? null); }
+  catch (error) {
+    if (!error.importId) {
+      if (error instanceof RequestError) die(error.message, error.code);
+      throw error;
+    }
+    // The import stays in progress on the server, holding what it loaded;
+    // the developer resumes it or takes it back.
+    const said = String(error.message ?? error).split("\nnext: ")[0];
+    die(`${name} on ${host}: import ${error.importId} stopped: ${said}. What it loaded stays on the server until it is resumed or aborted.\nnext: atelier ledger import --file ${args.file} --resume ${error.importId} --project ${name}, or atelier ledger import --abort ${error.importId} --project ${name}`);
+  }
+  console.log(formatImport(dump, done, name, host));
 }
 
 // Names the server and waits for its name to be typed back. The index is
@@ -98,7 +119,14 @@ export function formatDump(dump, file, host) {
 export function formatImport(dump, done, name, host) {
   const want = dump.tables.reduce((n, t) => n + t.rows.length, 0);
   return [
-    `${name}${host ? ` on ${host}` : ""}: imported ${want} rows of ${dump.tables.length} tables from the dump of ${dump.project} (schema version ${dump.schemaVersion}); the Ledger now holds ${rowsOf(done.counts)} rows.`,
+    `${name}${host ? ` on ${host}` : ""}: imported ${want} rows of ${dump.tables.length} tables from the dump of ${dump.project} (schema version ${dump.schemaVersion}); the Ledger now holds ${rowsOf(done.counts)} rows, each table's count as the dump's manifest gave it.`,
+    ...(done.migrated?.length ? [`The dump was written by older code: ${done.migrated.join(", ")} ${done.migrated.length === 1 ? "was" : "were"} migrated to this server's schema.`] : []),
+    ...(done.tokens ? [`${done.tokens.added} token${done.tokens.added === 1 ? "" : "s"} carried with the project${done.tokens.held ? `, ${done.tokens.held} already on this server` : ""}.`] : []),
     ...(done.registered ? [`${name} was not registered on this server and is now.`] : []),
   ].join("\n");
+}
+
+export function formatAbort(r, name, host) {
+  const removed = Object.entries(r.removed ?? {});
+  return `${name}${host ? ` on ${host}` : ""}: import ${r.import} aborted; ${removed.length ? `removed ${removed.map(([t, n]) => `${n} row${n === 1 ? "" : "s"} of ${t}`).join(", ")}` : "it had loaded nothing"}. The Ledger is empty again, and a new import may begin.`;
 }

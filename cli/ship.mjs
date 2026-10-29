@@ -407,6 +407,7 @@ export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
 //   env, secrets, redact       the environment, the values to cut and the cutter
 //   dryRun, push               the flags
 //   identity                   the project's commitIdentity, read when pushing
+//   repositoryIsBaseline       the server keeps the project's repository (Node)
 export async function ship(ctx) {
   const { name, cwd, branch, git, request, print, fail } = ctx;
   const P = `/projects/${encodeURIComponent(name)}`;
@@ -422,6 +423,11 @@ export async function ship(ctx) {
   else if (ctx.paired(commit) !== head) refusals.push(`HEAD ${short(head)} is not the baseline's head ${short(commit)}; ship runs only the revision Atelier holds. Merge with atelier merge, publish with atelier wrap, or check out the baseline's head, then ship again`);
   const plan = composeShip(cwd);
   if (!plan.problems.length) await resolveSkips(plan, { git, cwd, head });
+  // On the Node server the project's repository is the baseline, which only
+  // a landing moves (Atelier 2.0, tasks 6 and 11): the baseline step, which
+  // carried the checkout to a separate baseline, has nothing to do, and ship
+  // already runs only the revision the server's branch holds.
+  if (ctx.repositoryIsBaseline) for (const s of plan.steps) if (s.step === "baseline") for (const run of s.runs) run.skip = "the server's repository is the baseline, which only a landing moves";
   let target = null;
   const pushStep = plan.steps.find((s) => s.step === "push");
   if (pushStep) {

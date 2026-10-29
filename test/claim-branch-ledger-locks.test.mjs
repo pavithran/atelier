@@ -77,7 +77,9 @@ const GRANT_WRITES = /SET[^`]*\b(token_id|claim_gen|owner)\s*=|dropToken\(|assig
 // "planned" (which takes no lock on an ordinary task).
 const LANDING_WRITES = /SET[^`]*\b(head|accepted_head)\s*=|update\([^;]*\b(head:|accepted_head:|state: "accepted")|VALUES \('landing-lease'|DELETE FROM meta WHERE key = 'landing-lease'/s;
 
-function uncovered(source, table = GRANT_LOCKS, WRITES = GRANT_WRITES, allowed = ["task", "planned", "project", "lease"]) {
+// "push" (task 8) is the post-receive record, under the task's lock its push
+// holds, or the task's lock when none does: a task scope.
+function uncovered(source, table = GRANT_LOCKS, WRITES = GRANT_WRITES, allowed = ["task", "planned", "project", "lease", "push"]) {
   const methods = ledgerMethods(source);
   const PRIMITIVES = new Set(["dropToken", "assignOwner", "update"]);
   const writers = new Set([...methods.values()].filter((m) => !PRIMITIVES.has(m.name) && m.name !== "constructor" && WRITES.test(m.body)).map((m) => m.name));
@@ -100,12 +102,12 @@ test("every Ledger method that writes an item's owner, write token or claim gene
   assert.deepEqual(missing, [], `these Ledger methods write an owner, token or claim generation, or close an item, and take no lock: ${missing.join(", ")}; add them to GRANT_LOCKS in src/runtime/ledger-locks.mjs`);
   for (const [name, scope] of Object.entries(GRANT_LOCKS)) {
     assert.ok(methods.has(name) && !methods.get(name).private, `${name} is a public Ledger method`);
-    assert.ok(["task", "planned", "project", "lease"].includes(scope), `${name}: ${scope}`);
+    assert.ok(["task", "planned", "project", "lease", "push"].includes(scope), `${name}: ${scope}`);
   }
 });
 
 test("every Ledger method that writes an item's head or acceptance, or the landing lease, takes a lock (task 6)", () => {
-  const { reachable, missing } = uncovered(LEDGER, GRANT_LOCKS, LANDING_WRITES, ["task", "project", "lease"]);
+  const { reachable, missing } = uncovered(LEDGER, GRANT_LOCKS, LANDING_WRITES, ["task", "project", "lease", "push"]);
   assert.ok(reachable.includes("accept") && reachable.includes("recordPush") && reachable.includes("beginProjectLanding"), `the scan found ${reachable.join(", ")}`);
   assert.deepEqual(missing, [], `these Ledger methods write a head, an acceptance or the landing lease, and take no lock: ${missing.join(", ")}; give them a task, lease or project scope in GRANT_LOCKS`);
 });

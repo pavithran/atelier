@@ -23,6 +23,9 @@
 //            take, takeover, renewal or release waits for the landing push in
 //            flight on either, and a landing push that starts meanwhile waits
 //            for it and is then refused.
+//   push     the post-receive record of a push to the task's branch (task 8):
+//            it runs under the lock the push itself holds (GitHost.pushHolds),
+//            and takes the task's lock as "task" does when no push holds it.
 // Since task 6 every method that writes an item's head or acceptance takes
 // the task's lock too (never "planned"): a landing grant counts only while
 // its task is accepted at its head.
@@ -31,6 +34,7 @@ export const GRANT_LOCKS = {
   release: "task", handoff: "task", abandon: "task", dispatch: "task", merged: "task", recordMerge: "task", landedFast: "task",
   accept: "task", setBlockedBy: "task", recordPush: "task", observePush: "task", editItem: "task", addReview: "task", setFork: "task", moveFork: "task", taskRefreshed: "task",
   beginProjectLanding: "lease", renewProjectLanding: "lease", cancelProjectLanding: "lease",
+  hookPush: "push",
   submit: "planned", addEvidence: "planned",
   claimReview: "planned", withdrawReviewRequest: "planned", claimCriteriaReview: "planned", addCriteriaReview: "planned",
   failCriteriaReview: "planned", requestCriteriaReview: "planned", resolveCriteriaFinding: "planned",
@@ -38,6 +42,12 @@ export const GRANT_LOCKS = {
   planRefresh: "project", planResolve: "project", reroutePlan: "project", retryPlan: "project",
   refreshed: "project", refreshFailed: "project", poolChanged: "project", setMode: "project",
   retickDeployed: "project", initProject: "project", alarm: "project",
+  // An import (task 10) loads every table, items included, and its finish
+  // runs the migrations, which may fill a head column; its abort empties
+  // them all.
+  importBegin: "project", importRows: "project", importFinish: "project", importAbort: "project",
+  // atelier migrate (task 11) changes which branch the task's work is on.
+  migrateFork: "task",
 };
 
 const TASK = /^t[1-9][0-9]*$/;
@@ -82,6 +92,7 @@ export function ledgerLocks(git, stub) {
       task = planned ? null : id;
     }
     if (scope === "lease") return leaseLocked(key, id, call);
+    if (scope === "push" && task && git.pushHolds?.(key, task)) return call();
     let release;
     try { release = await git.lock(key, task); }
     catch { throw await refused(task); }

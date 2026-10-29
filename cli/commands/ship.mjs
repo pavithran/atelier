@@ -27,7 +27,7 @@ export default async function shipCommand() {
   // baseline is read, which a merge it waited for moves. A dry run changes
   // nothing and takes none.
   const checkout = args["dry-run"] === true ? null : await holdCheckout({ project: name, kind: "ship", cwd });
-  const { head: baselineHead } = await call("GET", `${P(name)}/baseline-head`, undefined, OWNER);
+  const { head: baselineHead, repository } = await call("GET", `${P(name)}/baseline-head`, undefined, OWNER);
   // The operations wrap refuses to run beside, read the way wrapReady reads them.
   const inProgress = () => [...new Set(Object.keys(WRAP_MARKERS).filter((marker) => (marker === "landing"
     ? [landingJournalFile(landingHome(gitDir)), oldLandingJournalFile(gitDir)]
@@ -56,7 +56,7 @@ export default async function shipCommand() {
   process.on("exit", onExit);
   try {
     await runShip({
-      name, cwd, branch: p.branch, baselineHead, inProgress,
+      name, cwd, branch: p.branch, baselineHead, inProgress, repositoryIsBaseline: repository === "server",
       paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
       git: (a, o = {}) => git(a, o),
       request: (method, path, body) => call(method, path, body, OWNER),

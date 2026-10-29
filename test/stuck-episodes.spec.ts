@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // t196 through the Worker and the index Ledger: the scheduled handler's
 // */10 tick reads each project's stuck report and records opened and cleared
@@ -34,7 +35,7 @@ const claimed = async (key: string, title: string) => {
   return id;
 };
 // The 10 minute cron firing, `hours` after now.
-const tick = (hours: number, e: typeof env = testEnv) => worker.scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, e);
+const tick = (hours: number, e: typeof env = testEnv) => scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, e);
 const episodes = async (key: string) => (await I().stuckEpisodes(key)).map((t) => [t.item, t.cause.split(":")[0], t.episode, t.kind]);
 
 it("repeated ticks open one episode, resolution clears it, and a recurrence opens a new one", async () => {

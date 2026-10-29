@@ -174,9 +174,9 @@ test("the CLI still reads an older server's view, which has no p90, a pull recor
 
 test("the log pull, its cron and the gateway token are gone", () => {
   const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-  // The one schedule left is the model snapshots' (t623); the list replaces
-  // whatever an earlier deploy left on the Worker.
-  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*"\*\/5 \* \* \* \*",\s*"\*\/10 \* \* \* \*",\s*"7 \*\/6 \* \* \*"\s*\]\s*\}/);
+  // No schedule is left on the Worker: the Node server runs the model
+  // snapshots, the stage tick and the stuck episodes on timers (task 8).
+  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*\]\s*\}/);
   assert.doesNotMatch(wrangler, /AI_GATEWAY_TOKEN/);
   // The README quotes t278's receipt, the ledger's own record of the task
   // that built the log pull and lost it; the identifiers it names are quoted

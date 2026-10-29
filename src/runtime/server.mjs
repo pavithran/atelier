@@ -4,7 +4,8 @@
 // directory (src/runtime/namespace.mjs). Artifacts reads the bare
 // repositories and `large` is files (src/git/artifacts.mjs, large.mjs); the
 // Artifacts writes refuse with `not_supported` until the tasks that replace
-// them land. The landing Workflow is gone (task 6).
+// them land. The landing Workflow is gone (task 6). The Worker's crons are
+// timers here and its push queue the post-receive hook's POST (task 8).
 //
 // Settings come from three places, later ones winning: defaults for the
 // environment, the process environment (only the names in SETTINGS), and a
@@ -17,7 +18,8 @@ import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { Namespace } from "./namespace.mjs";
-import { GitHost, GRANT_LIVE } from "../git/host.mjs";
+import { GitHost, INTERNAL_ROUTES } from "../git/host.mjs";
+import { Timers, realClock } from "./timers.mjs";
 import { ledgerLocks } from "./ledger-locks.mjs";
 import { LocalArtifacts } from "../git/artifacts.mjs";
 import { LocalLarge } from "./large.mjs";
@@ -105,13 +107,17 @@ async function send(res, response, head) {
 // test's own until the tasks that replace them land.
 // reposDir holds the bare repositories (default DATA/repos), hooksDir the
 // hooks they name (default the checkout's hooks/).
-export async function startServer({ env = "staging", dataDir, reposDir, hooksDir, port = 0, host = "0.0.0.0", secretsDir, vars, bindings: given = {} } = {}) {
+// `timers` runs the Worker's three crons on timers (src/runtime/timers.mjs):
+// on by default in production and staging, off in a test server unless
+// given; `{ clock }` drives them with a test's clock, false turns them off.
+export async function startServer({ env = "staging", dataDir, reposDir, hooksDir, port = 0, host = "0.0.0.0", secretsDir, vars, bindings: given = {}, timers: timing = env !== "test" } = {}) {
   if (env !== "production" && env !== "staging" && env !== "test") throw new Error(`--env is production or staging, not ${env}`);
   if (!dataDir) throw new Error("--data DIR names the environment's data directory");
   process.umask(0o077);
   const dir = resolve(dataDir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const { Ledger, default: worker } = await import("../index.ts");
+  const { Ledger, default: worker, observePushed, recordStageTicks, recordStuckEpisodes, takeModelSnapshots } = await import("../index.ts");
+  const { LIMITS } = await import("../limits.ts");
   globalThis.caches ??= { default: { match: async () => undefined, put: async () => undefined, delete: async () => false } };
   const repos = resolve(reposDir ?? join(dir, "repos"));
   const artifacts = new LocalArtifacts({ reposDir: repos });
@@ -126,6 +132,13 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   // Every Ledger change that ends or rotates a task's grant waits for the
   // pushes in flight on the task (src/runtime/ledger-locks.mjs).
   namespace.around = ledgerLocks(git, (name) => namespace.get(namespace.idFromName(name)));
+  // A push to a task's branch is recorded as its holder's push once the ref
+  // moved, from the post-receive hook's POST (src/git/host.mjs). A failure
+  // is logged here and answered 500, which the hook logs too.
+  git.onPushed = async (notice) => {
+    try { return await observePushed(workerEnv, notice); }
+    catch (err) { console.error(`the push of ${notice.ref} to ${notice.project} was not recorded: ${err?.message ?? err}`); throw err; }
+  };
   const pending = new Set();
   const server = createServer(async (req, res) => {
     // A request target is a path: one that does not start with a single
@@ -160,12 +173,12 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
     done.finally(() => pending.delete(done));
   });
   server.keepAliveTimeout = 65_000;
-  // The hook's grant check (GRANT_LIVE) has a listener of its own on the
-  // loopback address, whatever address the server itself listens on (a
-  // tailnet one included), and answers nothing else.
+  // The hooks' grant check and push notice (INTERNAL_ROUTES) have a listener
+  // of their own on the loopback address, whatever address the server itself
+  // listens on (a tailnet one included), and it answers nothing else.
   const internal = createServer((req, res) => {
-    if (req.url !== GRANT_LIVE) { req.resume(); res.writeHead(404); res.end(); return; }
-    const done = git.handleInternal(req, res).catch((err) => { console.error("grant check failed:", err.message); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
+    if (!INTERNAL_ROUTES.has(req.url)) { req.resume(); res.writeHead(404); res.end(); return; }
+    const done = git.handleInternal(req, res).catch((err) => { console.error(`${req.url} failed:`, err.message); if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy(); });
     pending.add(done);
     done.finally(() => pending.delete(done));
   });
@@ -176,11 +189,26 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const bound = server.address().port;
   Object.assign(workerEnv, settings({ env, port: bound, secretsDir, vars }), bindings, { LEDGER: namespace });
   namespace.start();
+  // The Worker's crons (wrangler.jsonc gave scheduled() three), at the
+  // periods src/limits.ts names, each given the moment it was due, as
+  // scheduledTime was.
+  const indexStub = () => namespace.get(namespace.idFromName("__index"));
+  const ticking = timing ? new Timers({
+    clock: timing.clock ?? realClock,
+    store: { last: (job) => indexStub().timerLast(job), ran: (job, at) => indexStub().timerRan(job, at) },
+    jobs: [
+      { name: "stage tick", every: LIMITS.timers.stageTickMs, run: (at) => recordStageTicks(workerEnv, at) },
+      { name: "stuck episodes", every: LIMITS.timers.stuckEpisodesMs, run: (at) => recordStuckEpisodes(workerEnv, at) },
+      { name: "model snapshots", every: LIMITS.timers.modelSnapshotsMs, offset: LIMITS.timers.modelSnapshotsOffsetMs, run: (at) => takeModelSnapshots(workerEnv, at.getTime()) },
+    ],
+  }).start() : null;
   const url = `http://localhost:${bound}`;
   let closing;
   const close = () => closing ??= (async () => {
-    // No new connections; requests in flight finish; then every connection
-    // closes, kept-alive ones included.
+    // The timers stop first, and a run in flight finishes; then no new
+    // connections; requests in flight finish; then every connection closes,
+    // kept-alive ones included.
+    await ticking?.stop();
     const closed = new Promise((ok) => server.close(() => ok()));
     server.closeIdleConnections();
     await Promise.all([...pending]);
@@ -191,5 +219,5 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
     git.close();
     artifacts.close();
   })();
-  return { url, port: bound, env, namespace, git, close, settings: workerEnv };
+  return { url, port: bound, env, namespace, git, close, settings: workerEnv, timers: ticking };
 }

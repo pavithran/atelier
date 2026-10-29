@@ -19,8 +19,8 @@ export default async function dispatchCommand() {
   if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
   const note = noteFromFile(id) ?? args.note;
   const body = { to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}), ...(args.release === true ? { release: true } : {}) };
-  // With no --agent the server chooses the builder from the pool and the
-  // models' records (t370), and says which and why.
+  // With no --agent the server picks no builder (G17): it refuses, printing
+  // the candidates with their reliability lines, and the model names one.
   // --overlap-ok with no destination, note or job releases a waiting
   // dispatch's hold and keeps its builder, job and place in the queue; the
   // server dispatches it as usual when none is waiting.
@@ -31,14 +31,15 @@ export default async function dispatchCommand() {
       body.retainAt = before.dispatch.at;
     }
   }
-  const suggest = !body.retain && args.agent === undefined && args.job === undefined;
+  // Both --agent and --model, or the server lists the candidates and refuses
+  // (G17); a harness alone is no builder.
+  const suggest = !body.retain && !(typeof args.agent === "string" && args.agent && typeof args.model === "string" && args.model);
   if (suggest) body.suggest = true;
   const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
   const d = item.dispatch;
   if (item.releasedClaim) console.log(`${id}: released the claim of ${item.releasedClaim.from}, by ${d.by ?? OWNER}; their next push or finish is told the task was taken back by the developer's dispatch.`);
-  if (item.suggestion) console.log(`Builder: ${item.suggestion.actor}. ${item.suggestion.reasons.join(" ")}`);
-  // A server older than the suggestion ignores the ask and leaves the dispatch open.
-  else if (suggest && !item.retainedDispatch && !d.agent) console.log("Warning: the server chose no builder; deploy the server, then dispatch again, or name one with --agent.");
+  // A server older than G17 may answer an unnamed dispatch with one left open to any agent.
+  if (suggest && !item.retainedDispatch && !d.agent) console.log("Warning: the dispatch names no builder; deploy the server, then dispatch again with --agent H --model M.");
   // A server older than the override ignores it and answers without it.
   if (args["overlap-ok"] === true && !d.overlapOk) console.log("Warning: the server did not record --overlap-ok; deploy the server, then dispatch again.");
   else if (args["overlap-ok"] === true) {
@@ -46,7 +47,7 @@ export default async function dispatchCommand() {
     if (item.releasedCoreHold) console.log(`${id}: released core-file hold waiting on ${item.releasedCoreHold.id}; both scopes reach core pattern ${item.releasedCoreHold.core}.`);
     else console.log(`${id}: overlap override recorded.`);
     // A hold-only release keeps the waiting dispatch (t447).
-    if (body.retain && !item.suggestion) {
+    if (body.retain) {
       const who = d.agent ? `${d.agent}${d.model ? `/${d.model}` : " (any model)"}` : d.model ? `any agent / ${d.model}` : "any agent and model";
       console.log(`${id} keeps its dispatch; builder: ${who}; job: ${d.job ?? "build"}.`);
     }

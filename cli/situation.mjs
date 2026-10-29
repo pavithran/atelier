@@ -60,6 +60,7 @@ export function situationText(s) {
   ], "none");
 
   section("Standing decisions", s.standing.map((d) => `  ${d.id}: ${flat(d.text)} (${d.at.slice(0, 10)}, "${flat(d.quote)}")`), "none");
+  section("Standing instructions", (s.standingInstructions ?? []).map((d) => `  ${d.id}: ${flat(d.key)} = ${flat(d.value)}${d.acts ? "" : " (not acting: the project is not in fast mode)"} (${d.at.slice(0, 10)}, "${flat(d.quote)}"); withdraw with atelier decisions withdraw ${d.id} --note "why"`), "none");
 
   const disk = s.server.disk;
   section("Server", [
