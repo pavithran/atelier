@@ -139,7 +139,9 @@ test("the ordinary merge clears the task's grant with the merge: the old grant i
   await git(seed, "reset", "-q", "--hard", "FETCH_HEAD");
   await git(seed, ...bearer(OWNER), "fetch", "-q", remote(), `refs/heads/t/${id.slice(1)}`);
   await git(seed, "merge", "-q", "--no-ff", "-m", `Merge ${id}`, "FETCH_HEAD");
-  await git(seed, ...bearer(OWNER), "push", "-q", remote(), "HEAD:refs/heads/main");
+  // Since task 6 only a landing grant moves main over Git; the fixture
+  // writes the bare repository, standing in for that landing's push.
+  await git(join(root, "data", "repos", "demo.git"), "fetch", "-q", seed, "HEAD:refs/heads/main");
   const merged = await api("POST", `/projects/demo/items/${id}/merged`, { mergeCommit: await git(seed, "rev-parse", "HEAD") });
   assert.equal(merged.status, 200, JSON.stringify(merged.body));
   assert.equal(merged.body.state, "merged");

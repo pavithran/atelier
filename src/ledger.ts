@@ -5358,7 +5358,9 @@ export class Ledger extends DurableObject<Env> {
     // The taker leaves the queue (its row, had it one, is spent), and the
     // lease is written as before.
     this.setProjectLandingQueue(rows.filter((w) => w.item !== id));
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
+    // A resume by the task holding it keeps the holding's id; any other take draws a new one (task 6).
+    const leaseId = held?.item === id && held.id ? held.id : crypto.randomUUID();
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at, id: leaseId } satisfies LandingLease));
     // A take is an event; a landing resuming its own lease is not a new one.
     if (held?.item !== id) this.log(id, actor, "landing.leased", { ...(expired ? { replaced: expired.item, replacedHolder: expired.holder } : {}) }, at);
     // The task's own pre-review, if one is still pending, no longer controls

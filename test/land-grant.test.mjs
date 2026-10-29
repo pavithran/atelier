@@ -120,8 +120,11 @@ test("a landing grant goes only to the lease holder, for an accepted task, at it
   assert.equal(await refsStatus(w, second), 200);
   assert.equal((await w.api("POST", "/projects/demo/landing-lease", { cancel: true, item: id })).status, 200);
   assert.equal(await refsStatus(w, second), 401);
-  // Used: a grant whose landing's merge is recorded is revoked.
+  // Released and retaken within the five minutes: the old grant stays dead,
+  // for it was bound to the holding of the lease that ended.
   assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
+  assert.equal(await refsStatus(w, second), 401);
+  // Used: a grant whose landing's merge is recorded is revoked.
   const third = (await mintLanding(w, id, head)).json.token;
   const s = await scratch(w, "used", head);
   const main = await w.tip();
@@ -154,6 +157,54 @@ test("with a landing grant, the hook refuses a push of the project's branch whos
   const ok = await s.push(token, `${merge}:refs/heads/main`);
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(await w.tip(), merge);
+  // One update of the branch per grant: a second merge of H on top is refused,
+  // and the grant's notes stay writable until the landing is recorded.
+  no(await s.push(token, `${s.commit("H again", merge, head)}:refs/heads/main`), /already updated the project's branch once/);
+  assert.equal(await w.tip(), merge);
+  w.git(s.dir, "notes", "--ref=atelier", "add", "-m", `Atelier: demo/${id}`, merge);
+  const notes = await s.push(token, "refs/notes/atelier:refs/notes/atelier");
+  assert.equal(notes.status, 0, notes.stderr);
+});
+
+test("a landing push holds its task's lock past its hook check: a release and a takeover of the lease wait for it, and a push after them is refused", async (t) => {
+  const w = await landingWorld(t);
+  const { id, head } = await w.task({ files: { "task.txt": "task\n" } });
+  const { id: other } = await w.task({ files: { "other.txt": "other\n" } });
+  await accept(w, id);
+  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
+  const token = (await mintLanding(w, id, head)).json.token;
+  const s = await scratch(w, "locks", head);
+  const main = await w.tip();
+  const merge = s.commit(`Merge ${id}`, main, head);
+  // The push is held just after the hook's check said live, before Git
+  // updates the ref.
+  let open, paused = false;
+  const gate = new Promise((ok) => { open = ok; });
+  t.after(() => open());
+  const live = w.server.git.live.bind(w.server.git);
+  w.server.git.live = async (grant, update) => { const r = await live(grant, update); if (update) { paused = true; await gate; } return r; };
+  const pushing = s.push(token, `${merge}:refs/heads/main`);
+  for (let i = 0; i < 200 && !paused; i++) await new Promise((ok) => setTimeout(ok, 25));
+  assert.ok(paused, "the push reached its hook check");
+  const settled = (p) => { let done = false; p.then(() => { done = true; }); return () => done; };
+  const released = w.api("POST", "/projects/demo/landing-lease", { cancel: true, item: id });
+  const taken = released.then(() => w.api("POST", "/projects/demo/landing-lease", { item: other }));
+  const releaseDone = settled(released);
+  await new Promise((ok) => setTimeout(ok, 400));
+  assert.equal(releaseDone(), false, "the release waits for the landing push");
+  assert.equal((await w.api("GET", "/projects/demo/landing-lease")).json.lease.item, id);
+  open();
+  w.server.git.live = live;
+  const pushed = await pushing;
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.equal((await released).status, 200);
+  assert.equal((await taken).status, 200);
+  assert.equal((await w.api("GET", "/projects/demo/landing-lease")).json.lease.item, other);
+  // After the takeover the grant writes nothing: not the branch, not the notes.
+  assert.equal(await refsStatus(w, token), 401);
+  w.git(s.dir, "notes", "--ref=atelier", "add", "-m", `Atelier: demo/${id}`, merge);
+  const late = await s.push(token, "refs/notes/atelier:refs/notes/atelier");
+  assert.notEqual(late.status, 0, late.stdout);
 });
 
 test("the landing push is scanned with the task's clearances: a line the owner cleared on the task lands in the merged history", async (t) => {
@@ -179,11 +230,16 @@ test("the landing push is scanned with the task's clearances: a line the owner c
   for (const claim of (await w.L().project()).policy.checks) await w.L().addEvidence({ itemId: id, claim, grade: "observed", head, passed: true, by: BUILDER, at: new Date().toISOString(), changedPaths: ["fixture.env"] });
   await w.L().submit(id, BUILDER);
   await w.L().addReview({ itemId: id, by: REVIEWER, head, approve: true, criteria: criteriaOf(await w.L().item(id)), note: "Fine", at: new Date().toISOString() }, undefined, true);
-  // The control: the same merge pushed with a credential that names no
-  // task (the server token) is refused for that line.
+  // The controls. The server token moves no project branch past its
+  // creation, and names a landing instead; and the same merge pushed with
+  // it to a branch it may write, which names no task, is refused for the line.
   const s = await scratch(w, "control", head);
   const main = await w.tip();
-  const control = await s.push(OWNER, `${s.commit("merge without the task", main, head)}:refs/heads/main`);
+  const unreviewed = s.commit("merge without the task", main, head);
+  const owner = await s.push(OWNER, `${unreviewed}:refs/heads/main`);
+  assert.notEqual(owner.status, 0, owner.stdout);
+  assert.match(owner.stderr, /main moves only by a landing.*next: atelier land/);
+  const control = await s.push(OWNER, `${unreviewed}:refs/heads/dev/control`);
   assert.notEqual(control.status, 0, control.stdout);
   assert.match(control.stderr, /key-shaped line: fixture\.env:1/);
   // The landing's grant carries the task, so its clearance applies.
@@ -206,9 +262,12 @@ test("the landing's record and record-merge refuse a merge the project's branch 
   // A merge of H the repository holds on a developer branch only.
   const aside = s.commit(`Merge ${id} aside`, main, head);
   assert.equal((await s.push(OWNER, `${aside}:refs/heads/dev/aside`)).status, 0);
-  // A merge on main whose parents lack H, put there by the owner.
+  // A merge on main whose parents lack H.
   const wrong = s.commit("merge of another head", main, unreviewed);
-  assert.equal((await s.push(OWNER, `${wrong}:refs/heads/main`)).status, 0);
+  const put = (sha) => { w.git(s.dir, "update-ref", "refs/heads/put", sha); w.setMain(s.dir, "refs/heads/put"); };
+  // (Put there as a merge outside Atelier: since task 6 no credential but a
+  // landing grant moves main, so the fixture writes the bare repository.)
+  put(wrong);
   const refused = (r, code, text) => {
     assert.equal(r.status, 409, r.text);
     assert.equal(r.json.error, code);
@@ -229,7 +288,7 @@ test("the landing's record and record-merge refuse a merge the project's branch 
   assert.equal((await w.detail(id)).item.state, "accepted", "nothing was recorded");
   // A merge of H on the branch, now the tip's ancestor, is recorded.
   const good = s.commit(`Merge ${id}`, wrong, head);
-  assert.equal((await s.push(OWNER, `${good}:refs/heads/main`)).status, 0);
+  put(good);
   await w.moveMain({ "later.txt": "later\n" });
   const ok = await merged(good);
   assert.equal(ok.status, 200, ok.text);

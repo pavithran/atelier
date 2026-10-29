@@ -3,7 +3,10 @@
 // CLI share this module, so both read the same expiry: a lease not renewed
 // for LANDING_LEASE_EXPIRY_MS is treated as free, which is how a landing
 // killed without releasing it stops blocking the project (t214).
-export interface LandingLease { item: string; holder: string; at: string; renewedAt?: string }
+// `id` names one holding of the lease (task 6): a fresh take or takeover
+// draws a new one, a renewal or a resume by the same task keeps it, so a
+// landing grant bound to it ends with any release or takeover for good.
+export interface LandingLease { item: string; holder: string; at: string; renewedAt?: string; id?: string }
 export const LANDING_LEASE_EXPIRY_MS = 15 * 60_000;
 
 // Whether the lease has lapsed at `now` (milliseconds since the epoch).

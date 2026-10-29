@@ -109,7 +109,7 @@ function mover(w, times) {
 export HOME=${w.root} GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
 n=$(cat ${count} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${count}
 if [ $n -le ${times} ]; then
-  d=$(mktemp -d) && git clone -q ${url} $d && cd $d && echo $n > moved-$n.txt && git add . && git -c user.name=Demo -c user.email=t@example.test commit -q -m "main moves during the landing ($n)" && git push -q origin HEAD:refs/heads/main
+  d=$(mktemp -d) && git clone -q ${url} $d && cd $d && echo $n > moved-$n.txt && git add . && git -c user.name=Demo -c user.email=t@example.test commit -q -m "main moves during the landing ($n)" && git -C ${w.bare} fetch -q $d HEAD:refs/heads/main
   cd / && rm -rf $d
 fi
 exit 0

@@ -91,7 +91,7 @@ function landingGrant(t, grant) {
   const { stillLanding } = server.git;
   server.git.stillLanding = async () => true;
   t.after(() => { server.git.stillLanding = stillLanding; });
-  return server.git.grants.mint({ project: "demo", kind: "landing", ...grant });
+  return server.git.grants.mint({ project: "demo", kind: "landing", lease: "test-lease", ...grant });
 }
 
 test("a task credential writes its own branch and nothing else", async () => {
@@ -125,8 +125,13 @@ test("a landing grant moves the project's branch only by a merge of the accepted
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(await lsRemote(remote(OWNER), "refs/heads/main"), merge);
   git(work, "update-ref", "refs/heads/main", merge);
-  // The owner's own credential moves main by fast-forward only.
+  // The owner's own credential moves main by fast-forward only, and since
+  // task 6 not at all once it exists: only a landing does, which it names.
   refused(await push(OWNER, `+${commit("rewrite main", main)}:refs/heads/main`), /main moves by fast-forward only/);
+  refused(await push(OWNER, `${commit("owner's own", merge)}:refs/heads/main`), /main moves only by a landing.*next: atelier land/);
+  // A landing grant updates main once: a second merge of the accepted head is refused.
+  refused(await push(landing.token, `${commit("merge t5 again", merge, accepted)}:refs/heads/main`), /already updated the project's branch once/);
+  assert.equal(await lsRemote(remote(OWNER), "refs/heads/main"), merge);
 });
 
 // G2: the landing's provenance notes go on a push of their own to
@@ -191,7 +196,7 @@ test("a task credential is given only to the task's holder", async () => {
 
 test("no plaintext token is kept in the grant store or put in the hook's environment", async () => {
   const t5 = await taskToken("t5");
-  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted: "a".repeat(40) });
+  const landing = server.git.grants.mint({ project: "demo", kind: "landing", task: "t5", actor: AGENT, accepted: "a".repeat(40), lease: "test-lease" });
   const data = join(root, "data");
   for (const f of readdirSync(data).filter((f) => f.startsWith("git-grants"))) {
     const bytes = readFileSync(join(data, f));

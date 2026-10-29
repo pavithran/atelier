@@ -272,7 +272,7 @@ function ownerName(env: Env): string | null {
 // The Git host the Node server gives as env.GIT (src/git/host.mjs); absent
 // on the Workers deploy.
 type GitHost = {
-  mint(grant: { project: string; kind: "task" | "read" | "plan" | "landing"; task?: string; actor: string; generation?: number; accepted?: string }): { id: string; token: string; hash: string; expiresAt: string };
+  mint(grant: { project: string; kind: "task" | "read" | "plan" | "landing"; task?: string; actor: string; generation?: number; accepted?: string; lease?: string }): { id: string; token: string; hash: string; expiresAt: string };
   revoke(id: string): boolean;
   createRepo(args: { key: string; branch: string }): Promise<{ created: boolean }>;
   claimBranch(args: { key: string; projectBranch: string; branch: string; from: string }): Promise<{ base: string | null; head: string | null; created: boolean }>;
@@ -2000,13 +2000,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const head = String(body.head ?? "");
       if (!/^[0-9a-f]{40}$/.test(head)) throw new RuleError("bad_head", "name the accepted head as a 40-character commit id", 400);
       const lease = await L.liveProjectLanding();
-      if (!lease || lease.item !== id || lease.holder !== actor) {
+      if (!lease || !lease.id || lease.item !== id || lease.holder !== actor) {
         throw new RuleError("no_lease", lease ? `the landing lease is held for ${lease.item} by ${lease.holder}, not for ${id} by ${actor}; a landing grant goes only to the holder of the project's landing lease, so none was issued` : `no live landing lease is held, so no landing grant for ${id} was issued; a landing grant goes only to its holder`, 409, `run atelier land ${id}`);
       }
       const item = await L.item(id);
       if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}, not accepted, so no landing grant was issued`, 409, `run atelier land ${id}`);
       if (item.acceptedHead !== head) throw new RuleError("acceptance_changed", `${id} is accepted at ${String(item.acceptedHead).slice(0, 12)}, not ${head.slice(0, 12)}, so no landing grant was issued for that head`, 409, `run atelier merge ${id} again, which lands the accepted head`);
-      const g = git.mint({ project: ref.key, kind: "landing", task: id, actor, accepted: head });
+      const g = git.mint({ project: ref.key, kind: "landing", task: id, actor, accepted: head, lease: lease.id });
       await keepGitGrant(c, git, ref.key, g);
       return json({ kind: "landing", remote, token: g.token, expiresAt: g.expiresAt, branch, accepted: head });
     }

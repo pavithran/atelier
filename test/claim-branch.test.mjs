@@ -203,7 +203,8 @@ test("a branch that holds nothing of its own moves to the project branch's new t
   assert.equal((await cli(["release", id, "--as", BUILDER, "--project", "demo", "--note", "later"], { token: agentToken })).code, 0);
   writeFileSync(join(checkout, "a.txt"), "one more\n");
   await git(checkout, "commit", "-q", "-am", "main moves");
-  await git(checkout, ...withToken(OWNER), "push", "-q", remote(), "HEAD:refs/heads/main");
+  // Main moves as a landing moves it (since task 6 nothing else does over Git).
+  await git(join(root, "data", "repos", "demo.git"), "fetch", "-q", checkout, "HEAD:refs/heads/main");
   const main = await tip("refs/heads/main");
   assert.notEqual(main, was);
   assert.equal((await cli(["claim", id, "--as", BUILDER, "--project", "demo"], { token: agentToken })).code, 0);
@@ -225,7 +226,8 @@ test("atelier update takes the project's branch from the same remote, and push -
   writeFileSync(join(checkout, "e.txt"), "five\n");
   await git(checkout, "add", "e.txt");
   await git(checkout, "commit", "-q", "-m", "main adds e");
-  await git(checkout, ...withToken(OWNER), "push", "-q", remote(), "HEAD:refs/heads/main");
+  // Main moves as a landing moves it (since task 6 nothing else does over Git).
+  await git(join(root, "data", "repos", "demo.git"), "fetch", "-q", checkout, "HEAD:refs/heads/main");
   const main = await tip("refs/heads/main");
   const updated = await cli(["update", id, "--as", BUILDER, "--project", "demo"], { token: agentToken, cwd: dir });
   assert.equal(updated.code, 0, `${updated.stdout}\n${updated.stderr}`);
