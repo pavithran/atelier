@@ -75,6 +75,7 @@ const OUTCOMES: readonly [RegExp, string][] = [
   [/\bnothing to submit\b/, "nothing to submit"],
   [/\bstates no verdict\b|\bno readable verdict\b|\bwithout a verdict\b/, "the reply states no verdict"],
   [/\bnot mechanical\b/, "not mechanical"],
+  [/\bplan job done\b/, "plan job done"],
 ];
 
 export function automaticNote(note: unknown): string {
@@ -106,4 +107,21 @@ export function automaticNote(note: unknown): string {
   const log = /\blog ([A-Za-z0-9][A-Za-z0-9._-]{0,62}):(\/[A-Za-z0-9._/-]{1,300})(?=[;\s]|$)/.exec(s);
   if (log && !log[2].includes("..")) parts.push(`log ${log[1]}:${log[2]}`);
   return `${prefix}${parts.join("; ")}`;
+}
+
+// Whether a text a runner sends is facts in the grammar: it reads back as
+// itself (automaticNote is the identity on its own output), or is empty.
+// The server's gate (round 13) refuses anything else in a field the runner
+// fills from an error, a child process or a log.
+export function isFacts(text: unknown): boolean {
+  if (text === undefined || text === null || text === "") return true;
+  return typeof text === "string" && automaticNote(text) === text;
+}
+
+// A pre-review's outcome note is facts when its detail is (a malformed
+// verdict's detail is the reviewer's own words, which stay).
+export function isFactsOutcome(note: unknown, parse: (s: string) => { outcome: string; detail: string }): boolean {
+  if (typeof note !== "string" || !note) return true;
+  const o = parse(note);
+  return o.outcome === "malformed" || isFacts(o.detail);
 }

@@ -56,20 +56,23 @@ it("a runner reports a run under its name; the owner token reads the reports; an
   const body = { actor: "opencode/glm-5.3", role: "review", outcome: "refused", project: "rel-runs", item: "t4", detail: "Select a model before continuing" };
   // No runner header: the owner records a run by hand, under the owner's name.
   expect((await call("POST", "/runs", "owner", body)).status).toBe(201);
-  expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "laptop" })).status).toBe(400);
-  const bad = await call("POST", "/runs", "owner", { ...body, outcome: "crashed" }, { "x-atelier-runner": "home:studio" });
+  // Under a runner's name the run's text is refused (round 13); its facts go.
+  expect((await (await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" })).json())).toMatchObject({ error: "not_facts" });
+  const run = { ...body, detail: "" };
+  expect((await call("POST", "/runs", "owner", run, { "x-atelier-runner": "laptop" })).status).toBe(400);
+  const bad = await call("POST", "/runs", "owner", { ...run, outcome: "crashed" }, { "x-atelier-runner": "home:studio" });
   expect(bad.status).toBe(400);
   expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge, validation_blocked, infrastructure_miss" });
-  const sent = await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" });
+  const sent = await call("POST", "/runs", "owner", run, { "x-atelier-runner": "home:studio" });
   expect(sent.status).toBe(201);
   // Round 10: a runner's report keeps no text of the run; the detail sent is dropped.
   expect(await sent.json()).toMatchObject({ ...body, detail: "", runner: "home:studio" });
-  await call("POST", "/runs", "owner", { ...body, outcome: "stalled", role: "build" }, { "x-atelier-runner": "home:studio" });
+  await call("POST", "/runs", "owner", { ...run, outcome: "stalled", role: "build" }, { "x-atelier-runner": "home:studio" });
   const read = (await (await call("GET", "/runs", "codex/gpt-6-astra")).json()) as RunReport[];
   expect(read.slice(0, 2).map((r) => [r.outcome, r.role])).toEqual([["stalled", "build"], ["refused", "review"]]);
   const issued = await (await call("POST", "/tokens", "owner", { actor: "opencode/glm-5.3" })).json() as { token: string };
   const agent = await worker.fetch(new Request("https://atelier.test/api/runs", {
-    method: "POST", headers: { authorization: `Bearer ${issued.token}`, "x-atelier-runner": "home:studio", "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${issued.token}`, "x-atelier-runner": "home:studio", "content-type": "application/json" }, body: JSON.stringify(run),
   }), testEnv);
   expect(agent.status).toBe(403);
 });
@@ -119,7 +122,7 @@ it("each model's reliability across projects: the JSON route, the Models page an
   // rel-b: the same model under another harness and a registered alias, approved at its first review.
   const b1 = await submitted("rel-b", "antigravity/claude-opus-5-5", H1);
   await L("rel-b").addReview({ itemId: b1, by: GPT, head: H1, criteria: NO_CRITERIA, approve: true, note: "fine", at: new Date().toISOString() });
-  await call("POST", "/runs", "owner", { actor: "opencode/glm-5.3", role: "review", outcome: "refused", detail: "no model" }, { "x-atelier-runner": "home:studio" });
+  await call("POST", "/runs", "owner", { actor: "opencode/glm-5.3", role: "review", outcome: "refused", detail: "" }, { "x-atelier-runner": "home:studio" });
 
   const answer = await call("GET", "/reliability", "owner");
   expect(answer.status).toBe(200);
@@ -216,9 +219,11 @@ it("persists blocked validation and retrieves only the task's reports", async ()
   await project("blocked-validation");
   const id = await submitted("blocked-validation", GPT, H1);
   const body = { actor: GPT, role: "build", outcome: "validation_blocked", project: "blocked-validation", item: id, detail: "npm test could not run: listen EPERM" };
-  expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" })).status).toBe(201);
-  await call("POST", "/runs", "owner", { ...body, item: "t2" }, { "x-atelier-runner": "home:studio" });
-  await call("POST", "/runs", "owner", { ...body, project: "another-validation" }, { "x-atelier-runner": "home:studio" });
+  expect((await (await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" })).json())).toMatchObject({ error: "not_facts" });
+  const run = { ...body, detail: "" };
+  expect((await call("POST", "/runs", "owner", run, { "x-atelier-runner": "home:studio" })).status).toBe(201);
+  await call("POST", "/runs", "owner", { ...run, item: "t2" }, { "x-atelier-runner": "home:studio" });
+  await call("POST", "/runs", "owner", { ...run, project: "another-validation" }, { "x-atelier-runner": "home:studio" });
   expect(await index.runsForItem("blocked-validation", id)).toEqual([expect.objectContaining({ ...body, detail: "", runner: "home:studio" })]);
   const cookie = await signIn(TOKEN, testEnv);
   const page = await worker.fetch(new Request(`https://atelier.test/p/blocked-validation/${id}`, { headers: { cookie } }), testEnv);

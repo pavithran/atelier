@@ -172,7 +172,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
       const top = remote.split(/\s+/)[0];
       if (!HASH.test(top)) throw new Error("cannot reconcile the announced push: no fork head");
       if (top !== lease.pushing.head) {
-        await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", "the settled fork does not name the announced refresh"]);
+        await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", automaticNote("step merge; the settled fork does not name the announced refresh")]);
         recorded = true;
         return { phase: "failed", reason: "the fork moved", recorded: true };
       }

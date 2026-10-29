@@ -441,7 +441,7 @@ it("a runner's skip under the owner's token, before any claim, records the unava
   expect(s.state).toBe("open");
   const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${t2}/review-skip`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" },
-    body: JSON.stringify({ head: head(2), request: s.request, note: "capped" }),
+    body: JSON.stringify({ head: head(2), request: s.request }),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(res.status, await res.clone().text()).toBe(200);
   expect((await views(L, t2))[0]).toMatchObject({ state: "unavailable", outcome: "skipped", detail: expect.stringMatching(/^home:studio skipped it$/) });

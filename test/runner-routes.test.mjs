@@ -763,7 +763,7 @@ test("a build job: claim, reads, tokens, push, evidence, submit and release, eac
   assert.equal((await expect(api("GET", `${p.base(id)}/diffs/${sha}`), 404, "diffs")).error, "no_such_payload");
   // Submitted, then released: the job is no longer the runner's to read.
   assert.equal((await expect(api("POST", `${p.base(id)}/submit`, { body: { summary: "Built" } }), 200, "submit")).state, "submitted");
-  assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { note: "done" } }), 200, "release")).state, "open");
+  assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { note: "step harness; no new commit" } }), 200, "release")).state, "open");
   await denied(api("GET", p.base(id)), token, "item after release");
   // The developer's own push of the released task's work (atelier push
   // --owner-port, t571): the owner's token alone; a runner token is refused.
@@ -784,8 +784,8 @@ test("a release that reports a provider limit reaches the ledger under the runne
   await claimed(p, token, id);
   // The runner's release for a provider's usage limit (leaseCall, t505): the
   // same route as a plain release, with the one field the exemption reads.
-  assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { providerLimit: true, note: "the provider's limit resets at noon" } }), 200, "release-provider-limit")).state, "open");
-  await denied(api("POST", `${p.base(id)}/release`, { body: { providerLimit: true, note: "again" } }), token, "a second release after the first");
+  assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { providerLimit: true, note: "step harness; claude usage limit until 2026-10-29T12:00:00Z" } }), 200, "release-provider-limit")).state, "open");
+  await denied(api("POST", `${p.base(id)}/release`, { body: { providerLimit: true, note: "step harness" } }), token, "a second release after the first");
   // The fork-less fast build was removed (t228): in fast mode the build is
   // offered plain, and a runner older than that, calling fast-take or
   // fast-ready, is refused with not_fast_build and claims with a fork.
@@ -830,7 +830,7 @@ test("a plan job: claim, the brief, a valid document, a refused one, and the rel
   const posted = await expect(api("POST", `${p.base(item.id)}/plan`, { body: JSON.stringify(PLAN_DOCUMENT) }), 200, "plan");
   assert.equal(posted.valid, true);
   await denied(api("POST", `${p.base(item.id)}/plan/approve`, { body: {} }), token, "approve");
-  await expect(api("POST", `${p.base(item.id)}/release`, { body: { note: "plan job done" } }), 200, "release");
+  await expect(api("POST", `${p.base(item.id)}/release`, { body: { note: "step plan; plan job done" } }), 200, "release");
   assert.equal((await expect(api("POST", "/queue", { body: OFFER }), 200, "poll after")).some((j) => j.item.id === item.id), false);
   cover("plan");
 });
@@ -845,7 +845,7 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   await denied(api("POST", "/runs", { body: { actor: ACTOR, role: "build", outcome: "stalled", project: p.name, item: id, detail: "" } }), token, "report before a poll");
   await expect(api("POST", "/queue", { body: OFFER }), 200, "poll");
   for (const outcome of ["stalled", "timed-out", "refused", "harness_failed", "validation_blocked"]) {
-    const run = await expect(api("POST", "/runs", { body: { actor: ACTOR, role: "build", outcome, project: p.name, item: id, detail: `the harness ${outcome}` } }), 201, outcome);
+    const run = await expect(api("POST", "/runs", { body: { actor: ACTOR, role: "build", outcome, project: p.name, item: id, facts: { exitCode: 1, program: "claude" } } }), 201, outcome);
     assert.deepEqual([run.runner, run.outcome, run.actor], [RUNNER, outcome, ACTOR]);
   }
   // A report for a role or an actor the poll was not offered, or a project
@@ -858,7 +858,7 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   assert.equal((await expect(api("POST", "/runs", { body: { actor: ACTOR, role: "build", outcome: "wandered-off", project: p.name, item: id, detail: "" } }), 400, "bad outcome")).error, "bad_run");
   // A failed build is released with the failure as its note, however long.
   await expect(api("POST", `${p.base(id)}/claim`, { body: {} }), 200, "claim");
-  await expect(api("POST", `${p.base(id)}/release`, { body: { note: "harness exited 1: ".padEnd(2000, "x") } }), 200, "release with the failure");
+  await expect(api("POST", `${p.base(id)}/release`, { body: { note: "step harness; exit 1" } }), 200, "release with the failure");
   // The review skip: the runner's word that it will not serve a review job
   // its poll was offered, as that job's actor.
   const job = await reviewJob(p, token);
@@ -866,7 +866,7 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   const review = offered.find((j) => j.item.id === job.id);
   assert.deepEqual([review.actor, review.item.request, review.item.head, review.item.dispatch.job], [REVIEWER, job.request, H1, "review"]);
   // Round 10: a skip carries facts, never the run's text.
-  const skipBody = { head: job.head, request: job.request, facts: { program: "opencode", exitCode: 1 }, note: "no agent token for the reviewer" };
+  const skipBody = { head: job.head, request: job.request, facts: { program: "opencode", exitCode: 1 }, note: "" };
   await denied(api("POST", `${p.base(job.id)}/review-skip`, { actor: ACTOR, body: skipBody }), token, "skip as the builder");
   await denied(api("POST", `${p.base(id)}/review-skip`, { actor: REVIEWER, body: skipBody }), token, "skip of a build job");
   assert.equal((await expect(api("POST", `${p.base(job.id)}/review-skip`, { actor: REVIEWER, body: { ...skipBody, head: H0 } }), 409, "skip at another head")).error, "bad_head");
@@ -914,7 +914,7 @@ test("the review job's calls are the reviewer's agent token's, never the runner 
   assert.deepEqual(await expect(asReviewer("review-renew", { request: claim.request, note: "" }), 200, "review-renew"), { renewed: true });
   // atelier review-claim --renew, by hand (t575): the request number alone.
   assert.deepEqual(await expect(asReviewer("review-renew", { request: claim.request }), 200, "review-renew by hand"), { renewed: true });
-  await expect(asReviewer("review-release", { request: claim.request, note: "the harness could not start" }), 200, "review-release");
+  await expect(asReviewer("review-release", { request: claim.request, note: "step harness; exit 1" }), 200, "review-release");
   const integrator = ["integrated", "integration-failed", "refreshed", "refresh-failed"];
   for (const verb of integrator) assert.deepEqual([runnerRoute("POST", parts(verb)), agentRoute("POST", parts(verb))], [false, true], verb);
   cover("review-claim", "review-renew", "review-claim-renew", "review-release", "review-release-lease", "review-unparsable", "review-unparsable-lease", "review", ...integrator);
@@ -946,8 +946,8 @@ test("the criteria review job's calls are the reviewer's agent token's: the clai
   const verdict = await expect(as(agent, approved, "criteria-review", { rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, note: "Clear and measurable.", findings: [], checks: [] }), 200, "criteria-review");
   assert.ok(JSON.stringify(verdict).includes("Clear and measurable."), JSON.stringify(verdict));
   const second = await expect(as(agent, failed, "criteria-review-claim", {}), 200, "second claim");
-  await expect(as(agent, failed, "criteria-review-failed", { request: second.request, note: "the harness wrote no verdict" }), 200, "criteria-review-failed");
-  assert.notEqual((await as(agent, failed, "criteria-review-failed", { request: second.request, note: "twice" })).status, 200, "a failure of a review already ended");
+  await expect(as(agent, failed, "criteria-review-failed", { request: second.request, note: "step harness; the reply states no verdict" }), 200, "criteria-review-failed");
+  assert.notEqual((await as(agent, failed, "criteria-review-failed", { request: second.request, note: "step harness" })).status, 200, "a failure of a review already ended");
   cover("criteria-review-claim", "criteria-review", "criteria-review-failed");
 });
 
@@ -986,12 +986,12 @@ test("the task refresh's lease calls are the integrator's agent token's: a runne
   assert.equal((await expect(as("refresh-pushing", { ...lease, head: H1 }), 200, "refresh-pushing")).id, leaseId);
   await refusal("refresh-checked", { ...lease, passed: true }, 409, "no_refresh");
   await refusal("refreshed", { ...lease, head: H1 }, 409, "unverified_merge");
-  await refusal("refresh-failed", { ...lease, outcome: "returned", reason: "x", report: {} }, 400, "bad_report");
-  await refusal("refresh-lease", { release: leaseId, reason: "x" }, 409, "refresh_pushing");
+  await refusal("refresh-failed", { ...lease, outcome: "returned", reason: "step merge", report: {} }, 400, "bad_report");
+  await refusal("refresh-lease", { release: leaseId, reason: "step merge" }, 409, "refresh_pushing");
   // A lease another task took is not this one's to renew or report under.
   const taken = await p.L.leaseRefresh(other.id, "atelier/integrator", RUNNER, "refresh");
   await refusal("refresh-lease", { renew: taken.lease.id }, 409, "lease_lost");
-  assert.equal((await expect(call("POST", `${p.base(other.id)}/refresh-failed`, { token: integrator.token, actor: "atelier/integrator", runner: RUNNER, body: { lease: taken.lease.id, mainHead: taken.lease.mainHead, expectedHead: taken.lease.expectedHead, outcome: "mechanical", reason: "mechanical conflicts in package-lock.json" } }), 200, "refresh-failed")).error, undefined);
+  assert.equal((await expect(call("POST", `${p.base(other.id)}/refresh-failed`, { token: integrator.token, actor: "atelier/integrator", runner: RUNNER, body: { lease: taken.lease.id, mainHead: taken.lease.mainHead, expectedHead: taken.lease.expectedHead, outcome: "mechanical", reason: "step merge; not mechanical" } }), 200, "refresh-failed")).error, undefined);
   cover("refresh-lease", "refresh-pushing", "refresh-checked");
 });
 
@@ -1325,7 +1325,7 @@ test("the runner's helpers run as the real commands under the runner token: a re
   const queue = await cli(["queue"], env, dir);
   assert.equal(queue.status, 1, queue.stdout + queue.stderr);
   assert.match(queue.stderr, /runner_forbidden/);
-  const release = await cli(["release", id, "--project", p.name, "--as", ACTOR, "--note", "the harness made no commit"], env, dir);
+  const release = await cli(["release", id, "--project", p.name, "--as", ACTOR, "--note", "step harness; no new commit"], env, dir);
   assert.equal(release.status, 0, release.stdout + release.stderr);
   assert.match(release.stdout, new RegExp(`^${id} released`));
   assert.equal((await expect(call("GET", p.base(id)), 200, "item")).item.state, "open");

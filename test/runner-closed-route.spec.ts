@@ -168,7 +168,7 @@ for (const state of STATES) for (const transition of ["release", "other runner",
     await t.claim();
     let current: Awaited<ReturnType<typeof t.issue>> | undefined;
     if (transition === "release" || transition === "other runner") {
-      expect((await t.api("POST", `${t.base}/release`, { note: "give up" })).status).toBe(200);
+      expect((await t.api("POST", `${t.base}/release`, { note: "step harness; exit 1" })).status).toBe(200);
       if (transition === "other runner") {
         current = await t.issue("home:other");
         expect((await t.request("POST", "/queue", current.token, ACTOR, { ...t.offer, runner: "home:other" })).status).toBe(200);

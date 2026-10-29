@@ -1010,19 +1010,19 @@ it("the review-skip route persists the skip under its request before acknowledgi
   }), token);
   // A skip for a missing item is refused: the awaited write's failure reaches
   // the runner instead of a success that never persisted.
-  const missing = await skip("t999", "home:studio", { head, request, note: "no agent token" });
+  const missing = await skip("t999", "home:studio", { head, request });
   expect(missing.status).toBe(404);
   expect(await missing.json()).toMatchObject({ error: "no_item" });
   // A skip that names no request, or a request the item does not have, is refused.
-  const unnumbered = await skip(partId, "home:studio", { head, note: "no agent token" });
+  const unnumbered = await skip(partId, "home:studio", { head });
   expect(unnumbered.status).toBe(400);
   expect(await unnumbered.json()).toMatchObject({ error: "bad_request" });
-  const unknown = await skip(partId, "home:studio", { head, request: 99, note: "no agent token" });
+  const unknown = await skip(partId, "home:studio", { head, request: 99 });
   expect(unknown.status).toBe(404);
   expect(await unknown.json()).toMatchObject({ error: "no_request" });
   expect(await L.reviewSkips(partId, request)).toEqual([]);
   // A skip for a real request is persisted under it before the response acknowledges it.
-  const ok = await skip(partId, "home:studio", { head, request, note: "no agent token" });
+  const ok = await skip(partId, "home:studio", { head, request });
   expect(ok.status).toBe(200);
   expect(await ok.json()).toEqual({ skipped: true });
   expect(await L.reviewSkips(partId, request)).toEqual([{ runner: "home:studio", at: expect.any(String) }]);
@@ -1061,7 +1061,7 @@ it("a runner token posts a review skip for a review job it was offered, as the j
   };
   const studio = await issue("home:studio");
   const offer = (runner: string) => ({ runner, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["review"] });
-  const skip = (bearer: string, actor: string, runner: string | null, body: Record<string, unknown> = { head, request, note: "no agent token" }) =>
+  const skip = (bearer: string, actor: string, runner: string | null, body: Record<string, unknown> = { head, request }) =>
     call("POST", `/projects/${name}/items/${partId}/review-skip`, bearer, actor, runner, body);
   const denied = async (res: Response) => {
     expect(res.status).toBe(403);

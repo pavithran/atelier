@@ -428,7 +428,7 @@ test("round 10: a run whose output holds every secret form so far stores none of
   // A runner that sends text anyway, and rows kept before the facts rule.
   const now = new Date().toISOString();
   const posted = await fetch(`${base}/api/runs`, { method: "POST", headers: { authorization: `Bearer ${runnerToken}`, "content-type": "application/json", "x-atelier-runner": "home:studio", "x-atelier-actor": BUILDER }, body: JSON.stringify({ actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: text }) });
-  assert.equal(posted.status, 201, await posted.text());
+  assert.equal((await posted.json()).error, "not_facts", "since round 13 the server refuses it");
   const index = server.namespace.get(server.namespace.idFromName("__index"));
   await index.putRun({ actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: text, runner: "home:old", at: now });
   const answers = [
@@ -484,7 +484,10 @@ test("round 11: a git failure echoing https://x:secret@host/repo.git reaches no 
   assert.equal((await asRunner("POST", "/queue", offer)).status, 200);
   const claimed = await asRunner("POST", `/projects/demo/items/${id}/claim`, {});
   assert.equal(claimed.status, 200, await claimed.clone().text());
-  const released = await asRunner("POST", `/projects/demo/items/${id}/release`, { note: `${reason}; the uncommitted work is committed as abcdef12 (wip)` });
+  // Since round 13 the server refuses the raw text, and takes the runner's facts.
+  const refused = await asRunner("POST", `/projects/demo/items/${id}/release`, { note: `${reason}; the uncommitted work is committed as abcdef12 (wip)` });
+  assert.equal((await refused.json()).error, "not_facts");
+  const released = await asRunner("POST", `/projects/demo/items/${id}/release`, { note: "step fetch; work in progress abcdef12 pushed" });
   assert.equal(released.status, 200, await released.clone().text());
   // A release written by hand keeps its words.
   const manual = await api("POST", "/projects/demo/items", { title: "Released by hand" });
@@ -513,4 +516,52 @@ test("round 11: a git failure echoing https://x:secret@host/repo.git reaches no 
   rows.close();
   assert.equal(raw.filter((d) => d.includes("secret")).length, 1, "the old row alone");
   assert.ok(raw.some((d) => d.includes('"automatic":true') && !d.includes("secret")));
+});
+
+test("round 13: the server refuses raw text in every field a runner fills from an error, a process or a log, and takes facts", async () => {
+  const RAW = "git clone https://x:secret@host/repo.git failed: fatal: unable to access";
+  const id = (await api("POST", "/projects/demo/items", { title: "The gate", scope: ["src/**"] })).body.id;
+  assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status, 200);
+  const P = `/projects/demo/items/${id}`;
+  // Each credential a runner sends with: its runner token (its builds), an
+  // agent token (a reviewer's, the integrator's), and the developer's token
+  // naming the runner (a runner without a token of its own).
+  const reviewer = (await api("POST", "/tokens", { actor: "codex/gpt-6", projects: ["demo"] })).body.token;
+  const integrator = (await api("POST", "/tokens", { actor: "atelier/integrator", projects: ["demo"] })).body.token;
+  const as = (token, actor, extra = {}) => (method, path, body) => fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...extra }, body: JSON.stringify(body) });
+  const runner = as(runnerToken, BUILDER, { "x-atelier-runner": "home:studio" });
+  assert.equal((await runner("POST", "/queue", { runner: "home:studio", kind: "home", jobs: ["build"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }] })).status, 200);
+  assert.equal((await runner("POST", `${P}/claim`, {})).status, 200);
+  const owner = as(OWNER, "owner", { "x-atelier-runner": "home:studio", "x-atelier-acting": acting });
+  const cases = [
+    [runner, "POST", "/runs", { actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: RAW }, "detail"],
+    [runner, "POST", `${P}/release`, { note: RAW }, "note"],
+    [owner, "POST", "/runs", { actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: RAW }, "detail"],
+    [owner, "POST", `${P}/run-skip`, { actor: BUILDER, role: "build", kind: "failures", failures: 2, note: RAW }, "note"],
+    [owner, "POST", `${P}/review-skip`, { head: "a".repeat(40), request: 1, note: RAW }, "note"],
+    [as(reviewer, "codex/gpt-6"), "POST", `${P}/review-release`, { note: RAW, request: 1 }, "note"],
+    [as(reviewer, "codex/gpt-6"), "POST", `${P}/review-release`, { note: JSON.stringify({ outcome: "preparation", detail: RAW }), request: 1 }, "note"],
+    [as(reviewer, "codex/gpt-6"), "POST", `${P}/review-renew`, { note: RAW, request: 1 }, "note"],
+    [as(reviewer, "codex/gpt-6"), "POST", `${P}/criteria-review-failed`, { request: 1, note: RAW }, "note"],
+    [as(integrator, "atelier/integrator"), "POST", `${P}/integration-failed`, { part: "a", kind: "conflict", reason: RAW }, "reason"],
+    [as(integrator, "atelier/integrator"), "POST", `${P}/refresh-failed`, { mainHead: "a".repeat(40), kind: "conflict", reason: RAW }, "reason"],
+    [as(integrator, "atelier/integrator"), "POST", `${P}/refresh-lease`, { release: "x", reason: RAW }, "reason"],
+    [as(integrator, "atelier/integrator"), "POST", `${P}/refresh-checked`, { lease: "x", passed: false, reason: RAW }, "reason"],
+  ];
+  for (const [send, method, path, body, field] of cases) {
+    const r = await send(method, path, body);
+    const answer = await r.json();
+    assert.equal(answer.error, "not_facts", `${path} ${field}: ${r.status} ${JSON.stringify(answer)}`);
+    assert.equal(r.status, 400);
+    assert.match(answer.next, /automaticNote/);
+    assert.ok(!JSON.stringify(answer).includes("secret"));
+  }
+  // Facts pass the gate (the route's own checks follow), and a release the
+  // developer writes keeps its words: the gate is the runner's.
+  assert.notEqual((await (await runner("POST", "/runs", { actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, facts: { exitCode: 1 } })).json()).error, "not_facts");
+  assert.notEqual((await (await as(reviewer, "codex/gpt-6")("POST", `${P}/review-release`, { note: "step clone; exit 128", request: 1 })).json()).error, "not_facts");
+  assert.equal((await runner("POST", `${P}/release`, { note: "step clone; exit 128" })).status, 200);
+  const mine = (await api("POST", "/projects/demo/items", { title: "By hand", scope: ["lib/**"] })).body.id;
+  await L().claim(mine, BUILDER);
+  assert.notEqual((await api("POST", `/projects/demo/items/${mine}/release`, { note: RAW })).body.error, "not_facts");
 });

@@ -119,7 +119,7 @@ it("a runner's reported infrastructure skip reaches the owner's listing, for a j
   const token = (await issued.json() as { token: string }).token;
   const offer = { runner: "home:why-infra", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build"], started: new Date(Date.now() - 60_000).toISOString() };
   expect((await request("POST", "/queue", token, "codex/gpt-6-astra", offer)).status).toBe(200);
-  const skip = { project: name, item: task.id, actor: "codex/gpt-6-astra", role: "build", kind: "infrastructure", failures: 3, note: "git reset failed: index.lock exists" };
+  const skip = { project: name, item: task.id, actor: "codex/gpt-6-astra", role: "build", kind: "infrastructure", failures: 3 };
   const res = await request("POST", `/projects/${name}/items/${task.id}/run-skip`, token, "codex/gpt-6-astra", skip);
   expect(res.status, await res.clone().text()).toBe(200);
   expect(await res.json()).toEqual({ kept: true });
@@ -131,7 +131,7 @@ it("a runner's reported infrastructure skip reaches the owner's listing, for a j
   expect(await listing()).toEqual([{ kind: "skipped", line: `Skipped by home:why-infra after 3 infrastructure failures in a row under this dispatch; that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the runner's workspace, git or harness, then atelier dispatch ${task.id} --to home --agent codex --model gpt-6-astra.` }]);
   // The owner's token, naming the runner, reports one too (the runner on the owner's token); since G18 it also names the acting model.
   const owned = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${task.id}/run-skip`, {
-    method: "POST", body: JSON.stringify({ ...skip, kind: "failures", failures: 2, note: "harness made no new commit" }),
+    method: "POST", body: JSON.stringify({ ...skip, kind: "failures", failures: 2 }),
     headers: { authorization: `Bearer ${OWNER}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "x-atelier-runner": "home:why-infra", "content-type": "application/json" },
   }), testEnv);
   expect(owned.status, await owned.clone().text()).toBe(200);
@@ -280,7 +280,7 @@ it("explains when an offering runner's token is scoped to another project, when 
   // 4. When home:pavimbp reports a local skip (kind: "skipped"), GET /queue says "Skipped by ..." (never "Refused by ..."),
   // and editing the task clears the skip so the runner will try it again.
   const skipRes = await request("POST", `/projects/${micah}/items/${t6.id}/run-skip`, OWNER, "owner", {
-    actor: "opencode/glm-5.3", kind: "skipped", failures: 1, note: "validation_blocked: broken lockfile",
+    actor: "opencode/glm-5.3", kind: "skipped", failures: 1,
   }, { "x-atelier-runner": "home:paviMBP" });
   expect(skipRes.status).toBe(200);
   const qSkipped = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];

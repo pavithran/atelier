@@ -4156,7 +4156,7 @@ export async function runPlanTask(assignment, config, name, io) {
     // failed without a refusal) is released too, as runTask releases it.
     if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped && state.notReady == null))) {
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.phase === "failed" ? automaticNote(state.reason) : "plan job done"], workspace, { providerLimit: !!state.providerLimit });
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.phase === "failed" ? automaticNote(state.reason) : automaticNote("plan job done")], workspace, { providerLimit: !!state.providerLimit });
         io.log(state.phase === "failed" ? "released: the plan job is back in the queue" : "released: the plan job is done");
       } catch (releaseError) { io.log(`claim not released: release failed: ${releaseError.message}`); }
     }

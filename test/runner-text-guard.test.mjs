@@ -65,7 +65,7 @@ test("every --note and --reason the runner sends is built by the facts builder, 
       const value = m[1].trim();
       const ok = /^(?:automaticNote|failureReleaseNote|outcomeNote)\(/.test(value) || /^"[^"]*"/.test(value) || MODEL_WORDS.some((w) => value.startsWith(w))
         // A conditional whose every branch is one of the above.
-        || /^(?:error\.)?validationBlocked \? blockNote\(.*: (?:failureReleaseNote|automaticNote)\(/.test(value) || /^state\.phase === "failed" \? automaticNote\(state\.reason\) : "[^"]*"/.test(value);
+        || /^(?:error\.)?validationBlocked \? blockNote\(.*: (?:failureReleaseNote|automaticNote)\(/.test(value) || /^state\.phase === "failed" \? automaticNote\(state\.reason\) : automaticNote\("[^"]*"\)/.test(value);
       if (!ok) offenders.push(`${file}:${s.slice(0, m.index).split("\n").length}: ${value.slice(0, 120)}`);
     }
   }

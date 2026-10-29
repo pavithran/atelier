@@ -11638,7 +11638,9 @@ function eventOf(r: Row, owner?: string, cutover = 0): LedgerEvent {
   // facts alone; one written by hand as it was. A release recorded before
   // the flag counts as a runner's unless the developer made it.
   if (r.kind === "item.released" && data && typeof data.note === "string" && (data.automatic === true || (data.automatic === undefined && r.actor !== owner))) data = { ...data, note: automaticNote(data.note) };
-  const field = (r.seq as number) <= cutover ? RUNNER_TEXT_EVENTS[r.kind as string] : undefined;
+  // A pre-review's settled event copies the result's detail: an old one is read
+  // by the grammar too, but a malformed verdict's (the reviewer's words) or a skip's.
+  const field = (r.seq as number) <= cutover ? RUNNER_TEXT_EVENTS[r.kind as string] ?? (String(r.kind).startsWith("prereview.") && data && data.outcome !== "malformed" && data.outcome !== "skipped" ? "detail" : undefined) : undefined;
   if (field && data && typeof data[field] === "string" && data[field]) data = { ...data, [field]: automaticNote(data[field]) };
   return {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
@@ -11664,7 +11666,7 @@ function runnerDetail(result: { outcome?: string; by?: string; detail?: string }
   // A stale end is kept as written: the server writes most of them (its own
   // drift), and a runner's is kept as facts when it is stored (releaseReview).
   void claimedBy;
-  return ["runner", "preparation", "timeout", "conflict"].includes(result.outcome ?? "");
+  return ["runner", "preparation", "timeout", "conflict", "stale"].includes(result.outcome ?? "");
 }
 
 // A refresh result read back: its reason by the fixed grammar (round 12).

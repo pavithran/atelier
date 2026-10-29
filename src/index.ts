@@ -50,7 +50,8 @@ import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
 import { parseReadiness } from "./runners/readiness";
 import { diskOf, lastRunOf, situationOf } from "./situation.ts";
-import { automaticNote } from "./run-facts.ts";
+import { automaticNote, isFacts, isFactsOutcome } from "./run-facts.ts";
+import { parseOutcomeNote } from "./dispatch/prereview.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -1994,6 +1995,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const header = req.headers.get("x-atelier-runner");
       const runner = header === null ? null : parseRunner(header);
       if (header !== null && !runner) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner as kind:name", 400);
+      // The gate (round 13): a runner's run report carries facts, never a detail.
+      if ((c.token?.runner || runner) && typeof body.detail === "string" && body.detail) notFacts("free text", "detail");
       if (runner) return json(await I.putRun(cleanRun(body, new Date().toISOString(), runner.runner)), 201);
       // The owner records a run by hand: no runner ran it, so none is named.
       if (actor !== ownerActor(env)) throw new RuleError("bad_runner", "a run report names its runner in X-Atelier-Runner", 400);
@@ -3332,10 +3335,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
     case "review-renew": {
+      if (c.token) notFacts(body.note, "note");
       await L.renewReview(id, actor, Number(body.request));
       return json({ renewed: true });
     }
     case "review-release": {
+      // The gate (round 13): a release of a review on a runner's or a model's
+      // token carries facts (a pre-review's outcome with a facts detail).
+      if (c.token && !isFactsOutcome(body.note, parseOutcomeNote)) notFacts(body.note, "note");
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token, body.request);
       return json({ released: true });
     }
@@ -3356,6 +3363,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // against that request alone, never against a later one at the same head.
       const request = body.request;
       if (typeof request !== "number" || !Number.isInteger(request) || request < 1) throw new RuleError("bad_request", "a review skip names the review request it refused, by number", 400);
+      if ((c.token?.runner || req.headers.has("x-atelier-runner")) && body.note !== undefined && body.note !== "") notFacts("free text", "note");
       await L.recordReviewSkip(id, request, head, runner.runner, actor, body.facts, !!c.token);
       return json({ skipped: true });
     }
@@ -3377,6 +3385,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Under a runner token the job's actor is the caller, checked at the gateway.
       const by = c.token?.runner ? actor : String(body.actor ?? "");
       if (!validActor(by)) throw new RuleError("bad_actor", "a run skip names the harness/model the job ran under", 400);
+      if ((c.token?.runner || req.headers.has("x-atelier-runner")) && body.note !== undefined && body.note !== "") notFacts("free text", "note");
       return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, body.facts) });
     }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
@@ -3480,6 +3489,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.requestLand(id, actor, typeof body.quote === "string" ? body.quote : undefined), 201);
     }
     case "refresh-lease": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (c.token) notFacts(body.reason, "reason");
       // A task refresh's lease (t462, src/refresh/): the integrator's for a
       // task-refresh job, a resolver's for a task-resolve job. The answer
       // carries a write token for the task's fork, the one live beside its
@@ -3526,6 +3537,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshPushing(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), head: String(body.head ?? "") }));
     }
     case "refresh-checked": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (c.token) notFacts(body.reason, "reason");
       // The refreshed head's required checks ran, by the leaseholder (t462).
       const r = await L.refreshChecked(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), passed: body.passed === true, reason: String(body.reason ?? "") });
       if (r.revoke) await revoke(env, (await L.item(id)).fork, r.revoke);
@@ -3554,6 +3567,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
     }
     case "refresh-failed": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (c.token) notFacts(body.reason, "reason");
       // A task's refresh (t462) that ended without a new head names its
       // lease: its conflicts went to a resolver or back to the builder, or
       // the task moved under it.
@@ -3579,6 +3594,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshFailed(id, actor, mainHead, String(body.reason ?? ""), typeof body.kind === "string" ? body.kind : null, await index(env).runnerOffers()));
     }
     case "integration-failed": {
+      // The gate on a runner's text (round 13): the reason is facts, or the request is refused.
+      if (c.token) notFacts(body.reason, "reason");
       // The integrator reports a failed merge. The Worker checks the branch was
       // restored to its integration head before the part is sent back, so a
       // failure never leaves another part's commits discarded. `kind` names a
@@ -3625,6 +3642,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // facts alone (automaticNote, the round-11 review); a release written
       // by hand keeps its words.
       const automatic = !!c.token?.runner;
+      // The gate (round 13): a runner's release note is facts, or the
+      // builder's validation_blocked report, or it is refused.
+      if (automatic && !String(body.note ?? "").startsWith("validation_blocked: ")) notFacts(body.note, "note");
       const note = automatic ? automaticNote(body.note) : String(body.note ?? "");
       // Released by this actor already and held by no one now: the repeat of
       // a release whose answer was lost. Held by someone else, it is refused below.
@@ -3828,6 +3848,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // timed out or wrote a reply no verdict could be read from.
     case "criteria-review-failed": {
       if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
+      if (c.token) notFacts(body.note, "note");
       return json(await L.failCriteriaReview(id, actor, body.request, String(body.note ?? ""), !!c.token));
     }
     // The owner's answer to one finding of a criteria review.
@@ -5310,3 +5331,12 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+// The gate on a runner's text (round 13): a field a runner fills from an
+// error, a child process or a log must be facts in the grammar
+// (src/run-facts.ts), or the request is refused; its text stays in the
+// runner's own log.
+function notFacts(value: unknown, field: string): void {
+  if (isFacts(value)) return;
+  throw new RuleError("not_facts", `${field} must be facts in the runner's grammar (the step, the exit, the signal, the log's host and path, a fixed outcome), never text from an error, a process or a log; nothing was recorded`, 400, "send the facts (automaticNote in src/run-facts.ts) and keep the text in the runner's own log");
+}
