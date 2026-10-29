@@ -1,5 +1,10 @@
 # Orchestration scripts
 
+For developer-token writes, set `export ATELIER_ACTING=H/M` to your
+registered harness/model. Owner commands keep the owner actor; use
+`ATELIER_ACTING` for `ship`, `wrap`, `branch push|fetch` and `plan show`.
+Builder and reviewer commands use `--as H/M` to name their actor.
+
 The scripts a session uses to run Atelier's partner agents and to land their
 work, kept here so that any session on any machine with the Atelier CLI can
 use them. `docs/orchestrating.md` says when and why; this file says how to
@@ -284,8 +289,7 @@ The name must be `home:` followed by letters, digits, dots, underscores or
 hyphens. Both read the same config unless you give one a `--config PATH` of
 its own. A runner takes exactly the jobs its config's `jobs` lists; without
 `jobs` it takes every build form and the plan job, as before. To keep a
-runner for reviews alone — so one long build cannot hold every review behind
-it, which `atelier land` gives up waiting on after 60 minutes — give it a
+runner for reviews alone, so a long build does not delay every review, give it a
 config of its own with `"jobs": ["review"]`, like:
 
 ```json
@@ -326,12 +330,18 @@ pass review and then stop. Run exactly one.
 The integrator does not claim under the developer's token that `atelier login`
 stored. It acts as the reserved actor `atelier/integrator`, whose claim the
 server takes only through an agent token bound to that actor; a claim with
-any other token is refused (`integrator_token`). Issue the token from a
-developer session and start the integrator with it in `ATELIER_TOKEN`:
+any other token is refused (`integrator_token`). Provision the token through `POST /api/tokens` with the developer bearer
+credential, `x-atelier-actor: owner`, `x-atelier-acting: H/M` naming the
+registered model acting for the developer, and the body
+`{"actor":"atelier/integrator","projects":["PROJECT"],"days":30}`.
+Replace PROJECT with the registered project. The current `atelier token
+issue` uses `--as` for both the token actor and the acting declaration, so
+it cannot issue a token for this reserved actor. Use the API. In a separate
+terminal, set `ATELIER_TOKEN` to the returned token and unset
+`ATELIER_ACTING`, then run:
 
 ```sh
-atelier token issue --as atelier/integrator --label integrator   # prints the token once
-ATELIER_TOKEN=atl_… atelier runner --integrate --name home:mac-integrator
+atelier runner --integrate --name home:mac-integrator
 ```
 
 Started with the developer's token instead, the integrator is offered the jobs

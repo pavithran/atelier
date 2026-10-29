@@ -1,5 +1,17 @@
 # Models, reliability and usage
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
@@ -24,10 +36,14 @@ Keychain entry on the runner's machine that holds its key. Atelier stores
 that name and never a key; a form or request that carries one is refused.
 A harness model (Antigravity, Codex, Claude Code) needs no key.
 
-```text
-atelier models add GLM-5.3-Flash-4_8bit --harness opencode --where home --endpoint http://studio.local:8000/v1
-atelier models add claude-3-7-sonnet-20250219 --harness opencode --where cloud --provider anthropic --keychain anthropic.API_KEY
-atelier models add gemini-3.1-pro --harness antigravity --where cloud
+On a fresh server, register the acting model first. If the pool already has
+entries, add the acting model on the Models page before these commands.
+
+```sh
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add opus-5.5 --harness claude-code --where cloud
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add GLM-5.3-Flash-4_8bit --harness opencode --where home --endpoint http://studio.local:8000/v1
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add claude-3-7-sonnet-20250219 --harness opencode --where cloud --provider anthropic --keychain anthropic.API_KEY
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add gemini-3.1-pro --harness antigravity --where cloud
 atelier models
 ```
 
@@ -57,9 +73,9 @@ effort, and any other details. The card's limitations are kept apart from
 its claims.
 
 ```text
-atelier models card opus-5.5 --file card.json
-atelier models card --file docs/model-cards/2026-10-13.json
-atelier models card opus-5.5 --withdraw c12 --reason "The vendor withdrew the page."
+ATELIER_ACTING=claude-code/opus-5.5 atelier models card opus-5.5 --file card.json
+ATELIER_ACTING=claude-code/opus-5.5 atelier models card --file docs/model-cards/2026-10-13.json
+ATELIER_ACTING=claude-code/opus-5.5 atelier models card opus-5.5 --withdraw c12 --reason "The vendor withdrew the page."
 atelier models show opus-5.5
 ```
 
@@ -103,7 +119,7 @@ names the harness/model that did it for them.
 ```text
 atelier models assign security-review codex/gpt-6-astra --reason "Every blocking finding judged was real" --quote "astra does security reviews" --evidence atelier/t592 --evidence atelier/t593 --as claude-code/opus-5.5
 atelier models roles
-atelier models roles withdraw a1 --note "why"
+ATELIER_ACTING=claude-code/opus-5.5 atelier models roles withdraw a1 --note "why"
 ```
 
 Records are never changed. A new assignment for the same role and scope
@@ -125,10 +141,8 @@ Who decides, strongest first:
    a reviewer the developer names, a plan part's `prefer`, and the previous
    round's reviewer on a re-review.
 3. The project's review tier (`atelier init --review-tier`). Its models
-   review a protected change before the rest of the pool; an assignment orders
-   the tier's models among themselves and adds none to it. A tier model
-   outside the pool is still asked in the tier's order, but no assignment
-   moves it ahead.
+   appear in the tier's candidate list; an assignment orders them and adds
+   none to it. The developer or orchestrator must request the review.
 4. Assignments, most specific first: a role's own (security-review for
    security, concurrency or gate work, claims-review for docs) before review,
    and this project's before every project's. The first with an eligible
@@ -139,8 +153,9 @@ Who decides, strongest first:
 The pool's roles (build, review, plan) are eligibility; an assignment's roles
 are judgement. The pool's tier (frontier, execution, budget) is informational
 and no selector reads it. A plan keeps the routing it was approved with; an
-assignment applies when a plan is previewed, approved or rerouted, and when
-its tick picks a reviewer the routing no longer gives. Each project's ledger
+assignment orders candidates when a plan is previewed, approved or rerouted.
+The developer or orchestrator chooses from those candidates; the tick picks
+no replacement reviewer. Each project's ledger
 holds a copy of the assignments that bear on it, sent when one changes and
 with the pool. `src/models/assignments.ts` holds the rules.
 
@@ -236,20 +251,22 @@ newest verdict (`src/models/precision.ts`). Under 5 judged findings the row
 shows n and says it is too few to rank. Routing reads the same figure, from
 the project's own ledger, to order reviewers that already qualify: another
 family than every contributor, available, allowed and offered. The
-landing's reviewer and the plan tick's fallback (`pickReviewer`, which asks
-the tier and then the pool in precision order), the separate tier review
-(`pickTierReviewer`) and a plan's routed reviewer (`routeParts`) all ask the
-more precise reviewer first, at (held + 1) / (judged + 2); a reviewer with
-fewer than 5 judged orders as neutral, one half. A re-review still goes
-first to the previous round's reviewer. Precision never makes a reviewer
+candidate lists from `pickReviewer`, `pickTierReviewer` and `routeParts`
+use precision to order eligible models, at (held + 1) / (judged + 2).
+A reviewer with fewer than 5 judged findings orders as neutral, one half. These
+scorers ask no reviewer. The developer or orchestrator names the reviewer
+for a landing or separate tier review, and each plan part's builder and
+reviewer at approval. The plan tick uses that named reviewer; when it is
+unusable, the tick logs `plan.review_needed` and waits for an explicit
+choice. Precision never makes a reviewer
 qualify, so a reviewer disallowed by the family policy or paused is passed over
 however precise. In single-family mode, a different model of the selected
 company qualifies; another company never does.
 
 ```text
-atelier defect t12 --note "pagination drops the last page" --found-in t19
-atelier finding t12 --head SHA --index 1 --verdict confirmed --note "fixed in t19"
-atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --item t12 --project atelier
+ATELIER_ACTING=claude-code/opus-5.5 atelier defect t12 --note "pagination drops the last page" --found-in t19
+ATELIER_ACTING=claude-code/opus-5.5 atelier finding t12 --head SHA --index 1 --verdict confirmed --note "fixed in t19"
+ATELIER_ACTING=claude-code/opus-5.5 atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --item t12 --project atelier
 ```
 
 `atelier defect` traces a defect to the revision an item was accepted at;
@@ -283,7 +300,7 @@ follows its app's provider settings, and served deepseek-flash while its
 events said glm-5.3. The developer records what served them:
 
 ```text
-atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
+ATELIER_ACTING=claude-code/opus-5.5 atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
 ```
 
 It lists the events recorded under `--recorded` from `--from` up to `--to`
@@ -447,11 +464,11 @@ reliability tie-breaker does.
 The developer can admit a registered model as a reviewer in one project:
 
 ```text
-atelier models add Qwen3-Coder-Next --harness opencode --where home --endpoint http://ai-server:8000/v1 --alias studio-review
-atelier models admit Qwen3-Coder-Next --project weblog --reason "Qualified against the full diff"
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add Qwen3-Coder-Next --harness opencode --where home --endpoint http://ai-server:8000/v1 --alias studio-review
+ATELIER_ACTING=claude-code/opus-5.5 atelier models admit Qwen3-Coder-Next --project weblog --reason "Qualified against the full diff"
 atelier models reviewers --project weblog
-atelier land t21 --project weblog --reviewer opencode/studio-review
-atelier models withdraw Qwen3-Coder-Next --project weblog --reason "Retiring this reviewer"
+ATELIER_ACTING=claude-code/opus-5.5 atelier land t21 --project weblog --reviewer opencode/studio-review
+ATELIER_ACTING=claude-code/opus-5.5 atelier models withdraw Qwen3-Coder-Next --project weblog --reason "Retiring this reviewer"
 ```
 
 Admissions use the registered canonical id and its aliases, irrespective of

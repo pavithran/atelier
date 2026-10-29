@@ -1,9 +1,16 @@
 # Working from several Macs
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 A developer who works on one project from several Macs keeps a checkout of it
 on each, outside iCloud. Git carries code, history and work in progress
@@ -111,7 +118,7 @@ Mac where the work is:
 ```bash
 git switch -c dev/idea
 git commit -am "Half of the idea"
-atelier branch push --project PROJECT
+ATELIER_ACTING=claude-code/opus-5.5 atelier branch push --project PROJECT
 ```
 
 `branch push` pushes the current branch, or the one named, to the project's
@@ -123,7 +130,7 @@ other Mac:
 
 ```bash
 atelier branch ls --project PROJECT
-atelier branch fetch idea --project PROJECT
+ATELIER_ACTING=claude-code/opus-5.5 atelier branch fetch idea --project PROJECT
 git switch dev/idea
 ```
 

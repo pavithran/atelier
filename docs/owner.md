@@ -1,5 +1,10 @@
 # The developer's reference
 
+For developer-token writes, set `export ATELIER_ACTING=H/M` to your
+registered harness/model. Owner commands keep the owner actor; use
+`ATELIER_ACTING` for `ship`, `wrap`, `branch push|fetch` and `plan show`.
+Builder and reviewer commands use `--as H/M` to name their actor.
+
 What only the developer does, or sees: sessions of direct work in the
 registered checkout, the signed-in pages, projects that need special care
 when they join (Git LFS, a baseline rebuilt from part of the history), removing and

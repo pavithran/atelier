@@ -20,7 +20,7 @@ const spec: CommandSpec = {
       "--note TEXT": "why; kept with the event",
       "--delivered-by tN": "a merged task that delivered this one's work; kept with the event",
     },
-    example: 'atelier abandon t3 --note "Superseded by t5" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier abandon t3 --note "Superseded by t5" --quote "Abandon t3; t5 replaces it" --project demo',
   },
 };
 

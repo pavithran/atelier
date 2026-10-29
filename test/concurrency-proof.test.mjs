@@ -103,6 +103,7 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
       item.head = observed;
       return send(200, { item });
     }
+    if (verb === "abandon" && !body.quote) return send(403, { error: "direction_needed", detail: "abandon needs the developer’s words" });
     if (verb === "abandon") { item.state = "abandoned"; item.owner = null; return send(200, item); }
     return send(404, { error: "not_found", detail: "no such route" });
   });

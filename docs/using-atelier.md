@@ -1,9 +1,16 @@
 # Using Atelier well
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
@@ -60,7 +67,7 @@ always safe; a session can run it for you.
 Something with several parts becomes a plan:
 
 ```sh
-atelier plan "what should be true when this is done" --scope "src/**" --planner claude-code/opus-5.5
+ATELIER_ACTING=claude-code/opus-5.5 atelier plan "what should be true when this is done" --scope "src/**" --planner claude-code/opus-5.5
 ```
 
 A named planner proposes parts. The developer names each part's builder and
@@ -71,7 +78,7 @@ dispatch note, which is capped there (task t198).
 One clear change becomes a task:
 
 ```sh
-atelier new "short title" --brief "the whole task" --accept "what must be true" --scope "path/**"
+ATELIER_ACTING=claude-code/opus-5.5 atelier new "short title" --brief "the whole task" --accept "what must be true" --scope "path/**"
 ```
 
 The title, at most 80 characters, is what every list shows; the brief and the
@@ -139,7 +146,7 @@ Before accepting anything, look at three things:
 A single task lands with:
 
 ```sh
-atelier land ID --reviewer antigravity/gemini-3.1-pro
+ATELIER_ACTING=claude-code/opus-5.5 atelier land ID --reviewer antigravity/gemini-3.1-pro
 ```
 
 The command checks and submits a claimed task at its recorded head, then
@@ -190,8 +197,9 @@ that is how Atelier improves.
 - Do not edit inside an agent's workspace while its agent runs. Wait for it,
   or hand the task off with `atelier handoff ID --to H/M`.
 - `atelier wrap "summary"` is for work done directly in your own checkout:
-  it runs the checks, commits, updates the baseline and leaves a session
-  note. Work that goes through tasks and plans does not need it.
+  it runs the checks, commits and leaves a session note. It reports the
+  baseline without updating it; only a landing moves the server branch.
+  Work that goes through tasks and plans does not need it.
 - When something breaks, ask what task it becomes, not only how to get past
   it.
 

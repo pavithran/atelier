@@ -1,5 +1,17 @@
 # Setup in detail
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 The README's "Quickstart" section gives the steps that take a fresh clone to a
 running server and a registered project. This document holds the rest: how
 the CLI stores its token and talks to the server, what agent tokens may do,
@@ -196,7 +208,7 @@ Give each agent its own token from a developer session:
 ```sh
 atelier token issue --as codex/gpt-6-astra --project my-project --days 30 --label "Task runner"
 atelier token ls
-atelier token revoke ID
+ATELIER_ACTING=claude-code/opus-5.5 atelier token revoke ID
 ```
 
 Issuing prints the token once. Set `ATELIER_TOKEN` to that value in the
@@ -302,7 +314,7 @@ A project's policy names the identity its commits carry (t451,
 `src/commit-identity.ts`):
 
 ```sh
-atelier init --commit-name "Project Owner" --commit-email 123+owner@users.noreply.github.com \
+ATELIER_ACTING=claude-code/opus-5.5 atelier init --commit-name "Project Owner" --commit-email 123+owner@users.noreply.github.com \
   --agent-email agents@example.com --private-email owner@personal.example
 ```
 

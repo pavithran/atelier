@@ -133,7 +133,10 @@ export const COMMAND_USAGE: Record<string, string> = Object.fromEntries(Object.k
 
 // Shared owner path for init's project section and every built-in guide.
 export const OWNER_LANDING = `For developer-token writes below, set \`export ATELIER_ACTING=H/M\` to the
-registered model acting for you, or pass \`--as H/M\` on each command.
+registered model acting for you. Owner commands such as \`ship\`, \`wrap\`,
+\`branch push|fetch\` and \`plan show\` keep the owner actor; do not give them
+\`--as\`. Builder and reviewer commands name their actor with \`--as H/M\`.
+Leave ATELIER_ACTING unset with agent and runner tokens.
 
 The developer runs \`atelier land ID --reviewer H/M\` in the registered
 checkout to land a submitted task at its recorded head. It asks the named
@@ -203,7 +206,8 @@ For each session the developer runs in the registered checkout:
 
 A protected action (a deploy, a device install, a paid model run or a Photos
 writeback) runs only with the developer's approval for one exact revision
-of the main line, given with \`atelier approve KIND --head SHA\` and used once.
+of the main line, given with \`atelier approve KIND --head SHA --quote "the developer's words"\`
+and used once. ATELIER_ACTING names the model relaying those words.
 \`atelier ship\`, run in the registered checkout when the developer asks, runs the
 project's ship order, uses those approvals and records every step; its
 \`--push\` pushes the branch to the project's own remotes and needs no

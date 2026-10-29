@@ -1,9 +1,16 @@
 # Atelier
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 **Git keeps the code. Atelier brings the receipts.**
 
@@ -478,7 +485,7 @@ it whole: `atelier merge ID --head SHA`.
 
 A plan that reaches a limit blocks and appears in the inbox; the developer
 decides with `atelier plan retry ID`, `atelier plan reroute ID --to H/M`,
-`atelier abandon ID` or `atelier plan stop ID [--note TEXT]`, which closes
+`atelier abandon ID --quote "Abandon this task"` or `atelier plan stop ID [--note TEXT]`, which closes
 the plan and its open parts and revokes their Git grants. History and
 evidence stay. [docs/orchestrator.md](docs/orchestrator.md) is the design.
 
@@ -673,9 +680,9 @@ is used by one run. Pushing the project branch to its own remotes needs no
 protected-action approval:
 
 ```sh
-atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --as claude-code/opus-5.5
-atelier ship --dry-run --as claude-code/opus-5.5
-atelier ship --as claude-code/opus-5.5
+atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --quote "Deploy release 12" --as claude-code/opus-5.5
+ATELIER_ACTING=claude-code/opus-5.5 atelier ship --dry-run
+ATELIER_ACTING=claude-code/opus-5.5 atelier ship
 ```
 
 `atelier ship` composes the order from the project's ship file

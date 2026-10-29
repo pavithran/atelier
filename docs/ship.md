@@ -1,9 +1,16 @@
 # Protected actions and `atelier ship`
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 A protected action runs only with the developer's approval for one exact
 revision of the project's main line, and each approval is used by one run.
@@ -53,7 +60,7 @@ yet.
 The developer approves one kind at one revision:
 
 ```bash
-atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --expires 24h
+ATELIER_ACTING=claude-code/opus-5.5 atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --quote "Deploy release 12" --expires 24h
 ```
 
 When the developer approves in chat, the model records their words with
@@ -69,7 +76,7 @@ The approval then holds the words as its `quote` field and the model as its
 and a run that used the approval carries them on its `action.ran` event and in
 the record the runs route returns. Those are the places to read them:
 `atelier status` and `atelier receipt` list no action approvals or runs.
-`--quote` without `--as` is refused.
+`--quote` needs an acting model, from `--as` or `ATELIER_ACTING`.
 
 Run in the registered checkout at the revision to ship, or with the form
 under "Protected actions" on the project's page, which binds the approval to

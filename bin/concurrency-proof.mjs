@@ -319,7 +319,7 @@ async function cleanup(items) {
   // from the server, since the abandon may have landed though its reply did not.
   for (let round = 0; pending.length && round <= cfg.retries; round++) {
     if (round > 0) await sleep(backoffMs(round - 1, null));
-    const batch = await Promise.all(pending.map((item) => timed(() => request("POST", `${I(cfg.project, item.id)}/abandon`, { note: "concurrency proof cleanup" }))));
+    const batch = await Promise.all(pending.map((item) => timed(() => request("POST", `${I(cfg.project, item.id)}/abandon`, { note: "concurrency proof cleanup", quote: "Abandon every task created by this concurrency proof" }))));
     results.push(...batch);
     const left = [];
     for (let i = 0; i < pending.length; i++) {

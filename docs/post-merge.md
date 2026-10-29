@@ -1,5 +1,17 @@
 # Post-merge steps
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 Post-merge policy is developer-only. Each landing reserves a durable Ledger run
 **before publishing the merge**. Its member task IDs, policy approval, ordered
 steps and before/after default-branch SHAs survive executor death, task closure,
@@ -17,7 +29,7 @@ and `atelier land`, which declare it, refuse older servers, and
 The developer runs init in the registered checkout, not a task workspace:
 
 ```sh
-atelier init \
+ATELIER_ACTING=claude-code/opus-5.5 atelier init \
   --post-merge 'verify=npm test' \
   --post-merge-options 'verify={"class":"check","when":"always","protect":["package.json","test/**"]}' \
   --post-merge 'deploy=npm run deploy' \
@@ -82,10 +94,10 @@ as `uncertain`; it blocks both before and after that deadline.
 
 ```sh
 atelier land t123 --post-merge status
-atelier land t123 --post-merge resume
-atelier land t123 --post-merge retry --reason 'Fixed the failed dependency setup'
-atelier land t123 --post-merge skip --reason 'Owner waives this step because ...'
-atelier land t123 --post-merge reconcile --resolution no-effect --reason 'Stopped executor; verified no external effect'
+ATELIER_ACTING=claude-code/opus-5.5 atelier land t123 --post-merge resume
+ATELIER_ACTING=claude-code/opus-5.5 atelier land t123 --post-merge retry --reason 'Fixed the failed dependency setup'
+ATELIER_ACTING=claude-code/opus-5.5 atelier land t123 --post-merge skip --reason 'Owner waives this step because ...'
+ATELIER_ACTING=claude-code/opus-5.5 atelier land t123 --post-merge reconcile --resolution no-effect --reason 'Stopped executor; verified no external effect'
 ```
 
 `resume` runs pending work, `retry` authorizes the failed unresolved step and

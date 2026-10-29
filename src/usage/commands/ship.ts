@@ -15,7 +15,7 @@ const spec: CommandSpec = {
       "--dry-run": "composes the ship order and checks its approvals, running nothing",
       "--push": "also pushes the registered branch to the project's own remotes; the developer's own act at this revision, needing no separate approval",
     },
-    example: "atelier ship --dry-run --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier ship --dry-run --project demo",
   },
 };
 

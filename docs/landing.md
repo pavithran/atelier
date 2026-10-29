@@ -1,9 +1,16 @@
 # Landing and merging
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
@@ -28,7 +35,7 @@ the workspace remains unchanged.
 Once a part of a plan is submitted, if the gate needs an independent review, the server queues a review request automatically as a `review` job, and a runner that offers review jobs claims it. Approval moves the part to integration. For a single task outside a plan, nothing is queued automatically; its review is requested when the developer lands it whole (see Landing a task whole, below), or they can complete an exact revision by hand with:
 
 ```sh
-atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
+ATELIER_ACTING=claude-code/opus-5.5 atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
 ```
 
 `--approve` records the developer's own review, which is not the independent
@@ -428,17 +435,14 @@ be in the pool, not refused, and not paid per token. It runs on the developer's
 Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
 minutes (`ATELIER_LAND_TRIAGE_TIMEOUT` milliseconds).
 
-The triage runs after the push and before the required checks. A
-submission asks for the review, and so does the checks' passing evidence for
-a task already submitted at an older head: the push withdraws its open
-review request, and that evidence asks it again at the pushed head. Since
-the triage runs first, one that stops has asked nothing of a reviewer. If the task was
-submitted before the landing, the stop says it stays submitted, with any
-request already open at the pushed head left open.
+The triage reads the task's recorded head before the review request.
+`atelier land` never pushes to the task branch. A claimed task must have
+its workspace changes committed and pushed before landing; the command
+runs its required checks and submits that recorded head. A submitted task
+keeps its recorded head and any review already open there.
 
-The triage reads the pushed head — after the merge of main and the
-regeneration — as a diff against its merge base with main, with the task's
-acceptance criteria (and a part's, numbered after them) as they are now.
+The triage compares that head with its merge base with main and reads the
+task's acceptance criteria (and a part's, numbered after them) as they are now.
 For each criterion it answers met, not-met or unsure, with its evidence and
 a file and line, or the reason no location applies. Its brief has it trace
 the production request paths the change touches and list the runtime
@@ -454,7 +458,7 @@ Only every criterion met goes on. A criterion not met or unsure, a task with
 no criteria, a reply that cannot be read, a timeout, or a model that is
 unavailable stops the landing before the task is submitted: the
 findings are printed with the command to run again, the lease is never
-taken, and the task stays with its holder, its merged head pushed. The project
+taken, and the recorded task head stays unchanged. The project
 developer can skip the triage with `--no-triage "REASON"`, or go past a stop with
 `--override-triage "REASON"`; either is recorded with the head and the
 criteria binding before the landing goes on, and a record the server

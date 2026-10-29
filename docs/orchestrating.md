@@ -1,9 +1,16 @@
 # Running Atelier for a project
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
@@ -293,7 +300,7 @@ the project's preparation policy once, from the project checkout. For
 Atelier:
 
 ```sh
-atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund" \
+ATELIER_ACTING=claude-code/opus-5.5 atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund" \
   --prepare-input package.json --prepare-input package-lock.json \
   --prepare-output node_modules
 ```

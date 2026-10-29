@@ -1,9 +1,16 @@
 # Orchestrator design
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
@@ -196,24 +203,26 @@ authenticated `POST /api/projects/PROJECT/items/ID/review-renew` with
 the lease at most once per 30 seconds. This is a runner API route, not a CLI
 command. N is the generation returned by `review-claim`, also sent with the
 verdict, `review-unparsable` and `review-release ID --request N`. Expired
-claims are replaced and reoffered on the next queue poll with the same
-reviewer routing, head, criteria and gate/tier identity. A restarted runner,
-including one with the same name or reviewer actor, can claim that new
-generation; a duplicate cannot steal an unexpired claim. Old renewals,
-verdicts and releases cannot affect its successor. The landing Workflow
+claims become `lapsed`; they are not replaced or reoffered. The developer
+or orchestrator must request another review with `atelier review-request ID
+--reviewer H/M`. That command creates a new request generation. A duplicate
+cannot steal an unexpired claim. Old renewals, verdicts and releases cannot
+affect a later request. The landing Workflow
 was removed in 2.0. `atelier land` records a land request and stops when
 approval is missing; run it again after approval or use a lander runner.
 On SIGINT or SIGTERM the runner stops its review child before attempting a
 release with a five-second deadline. SIGKILL, lost responses and failed
-cleanup recover through lease expiry. Only developer credentials can omit
+cleanup leave a lapsed request after lease expiry; the developer or
+orchestrator must ask again. Only developer credentials can omit
 `--request` when manually releasing the current claim for the named actor.
 
 A request no runner has claimed can be withdrawn by the developer (t627):
 `atelier review-withdraw ID --reason TEXT` records the reason on a
 `review.withdrawn` event, and the gate then asks no one until the developer
-asks again, of any reviewer, at the same head; a plan's tick asks a part's
-review of another reviewer its routing allows, never the withdrawn one at
-that head, or waits for the developer. `atelier land ID --reviewer
+or orchestrator asks again at the same head. A plan's tick logs
+`plan.review_needed` with candidates; it does not choose a replacement
+reviewer. Use `atelier review-request ID --reviewer H/M`, or name the
+part's reviewer with `atelier plan reroute ID --to H/M`. `atelier land ID --reviewer
 H/M` naming a different reviewer does the same in one step: it withdraws the
 unclaimed request, asks the new reviewer and prints which request it
 withdrew. A claimed request is refused both ways, since a runner is serving
@@ -246,7 +255,7 @@ The queue offers a tier request as `job:"review"` like any review, and the claim
 - `atelier land` stops when a gate approval is missing; a tier request still open or claimed is withdrawn when the change is accepted, integrated, merged or closed, and a verdict on a withdrawn tier request is refused, so it never reopens accepted work.
 `atelier show ID --reviews`, the task page, the decision brief, gate blockers and `atelier plan show` label separate tier reviews and tier requests as such, and a gate review or request by a tier model as the gate review, top tier.
 
-**A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. After two rounds, the part goes to an alternate builder; after that, the plan is blocked. An approval moves the part to integration: the tick dispatches the plan item's integrate job (`integrateDispatch` in `src/ledger.ts`; section 5).
+**A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. Approval stores no alternate builders. Once the named builder exhausts its attempts, the plan blocks; the developer or orchestrator chooses the next builder with `atelier plan reroute ID --to H/M`. An approval moves the part to integration: the tick dispatches the plan item's integrate job (`integrateDispatch` in `src/ledger.ts`; section 5).
 
 ## 4b. t438: review of the acceptance criteria before dispatch
 
@@ -254,7 +263,7 @@ The criteria are what section 4's review judges a change against, so criteria th
 
 **Revisions and authors.** The stored criteria are recorded by revision (`criteria_revisions` in `src/ledger.ts`): every change of the lists is a new revision with its author, and an approval binds to a revision number, not to the text. An edit and its revert are two revisions, neither the approved one, so the approval is gone for good; an edit that stores the same lists again is no revision and keeps it. A revision's authors are everyone who wrote any revision up to it.
 
-**The reviewer.** `atelier criteria-review ID [--reviewer H/M]` asks for one: a model of a recognised family different from every model author's, by the family rules the gate applies to code (`familyRefusal` in `src/rules.ts`); criteria only the developer or Atelier wrote have no model author, so any recognised family may review them. Criteria with no recorded author, a model author of no recognised family, or no qualifying reviewer refuse with the reason rather than guessing. A plan asks for each part's criteria review itself before it dispatches the part, of another family than the planner that wrote them.
+**The reviewer.** `atelier criteria-review ID --reviewer H/M` asks for one: a model of a recognised family different from every model author's, by the family rules the gate applies to code (`familyRefusal` in `src/rules.ts`); criteria only the developer or Atelier wrote have no model author, so any recognised family may review them. Criteria with no recorded author, a model author of no recognised family, or no qualifying reviewer refuse with the reason rather than guessing. A plan holds the part before dispatch and logs `criteria_review.needed` with candidates. The developer or orchestrator names a reviewer with `atelier criteria-review ID --reviewer H/M`; the tick asks nobody.
 
 **Storage.** `criteria_reviews(item, rev, criteria, authors, reviewer, dispatch, state, ...)` holds each review with its binding, author and reviewer identities, verdict, findings and the checks after deploy it flagged; `criteria_resolutions` holds the developer's verdicts on its findings (`atelier criteria-finding ID --review N --index N --verdict confirmed|refuted|fixed`). The queue offers an open review as `job:"criteria-review"` under its own request number; `criteria-review-claim` binds it to one reviewer, `criteria-verdict` records the verdict bound to the revision, binding and request the claim gave, and `criteria-review-failed` records a harness that stopped, timed out or wrote no verdict, which approves nothing. A claim that lapses fails the same way, and a verdict that arrives after the criteria changed is refused.
 

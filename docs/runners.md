@@ -1,9 +1,16 @@
 # Runners and dispatch
 
-For developer-token writes in the examples below, set
-`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
-`--as H/M` on each command. Use the model acting for you, registered in
-your model pool. Agent and runner tokens name their own actors.
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch` and `plan show` keep the owner actor and use
+`ATELIER_ACTING`; do not add `--as` to them. Commands that act as a builder
+or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
 
 A runner is a program that asks the Atelier server for work and runs a coding
 agent's harness on it. It reaches the server over HTTP and the task's Git
@@ -87,7 +94,7 @@ Failed preparation is an infrastructure failure and is never cached.
 Issue a runner credential **on the developer's machine**:
 
 ```sh
-atelier token issue --runner home:studio --project demo --days 30
+ATELIER_ACTING=claude-code/opus-5.5 atelier token issue --runner home:studio --project demo --days 30
 ```
 
 `Studio` also means `home:studio`; names are normalized to lower case.
@@ -100,7 +107,7 @@ One runner can serve several projects with one token. Name each project with
 its own `--project`:
 
 ```sh
-atelier token issue --runner home:studio --project demo --project site --days 30
+ATELIER_ACTING=claude-code/opus-5.5 atelier token issue --runner home:studio --project demo --project site --days 30
 ```
 
 The runner stores and uses this token exactly as a one-project token, below;

@@ -1,5 +1,10 @@
 # Branches and write isolation on the Studio
 
+For developer-token writes, set `export ATELIER_ACTING=H/M` to your
+registered harness/model. Owner commands keep the owner actor; use
+`ATELIER_ACTING` for `ship`, `wrap`, `branch push|fetch` and `plan show`.
+Builder and reviewer commands use `--as H/M` to name their actor.
+
 Atelier 2.0 keeps each project in one bare Git repository on the Studio, and each task works on a branch of it, `t/N`. This page says how one holder per task still holds when every task shares a repository, how a landing reaches the project's branch, how a project moves here from 1.x, and what stands outside the Studio. The design is `design-branches-2026-10-28.md`, sections 4.3 to 4.10, in `~/Documents/ai-project-data/atelier/`; what was built, piece by piece, is `docs/2.0-log.md`. Where the two differ, the code and the log are right.
 
 ## What enforces it
