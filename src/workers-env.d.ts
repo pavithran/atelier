@@ -1,7 +1,7 @@
 // The Workers types the server's sources name, for the Node server (Atelier
 // 2.0, task 7). They were generated into worker-configuration.d.ts by
-// `wrangler types`; wrangler is gone, and this declares only what the code
-// uses, as the Node runtime provides it: the bindings (Env), the Durable
+// wrangler's types command; wrangler is gone, and this declares only what
+// the code uses, as the Node runtime provides it: the bindings (Env), the Durable
 // Object state and stubs (src/runtime/namespace.mjs), SQL storage
 // (src/runtime/sql.mjs), the Artifacts reader (src/git/artifacts.mjs), the
 // LARGE store (src/runtime/large.mjs), and the handler types of
