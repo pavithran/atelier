@@ -6,9 +6,11 @@
 // update the grant does not cover.
 //   1. One ref per push, the one the grant names: task tN writes
 //      refs/heads/t/N, plan tN refs/heads/plan/N, landing the project's
-//      branch, owner the project's branch and refs/heads/dev/*.
+//      branch, owner the project's branch and refs/heads/dev/*. Landing and
+//      owner also write Atelier's provenance notes, refs/notes/atelier, on a
+//      push of their own; a task or plan grant never does.
 //   2. No deletes; the server deletes task branches itself.
-//   3. Fast-forward only on the project's branch and plan/*.
+//   3. Fast-forward only on the project's branch, plan/* and the notes ref.
 //   4. A landing push is a merge whose first parent is the branch's tip and
 //      whose parents include the accepted head.
 // Then, for a push those four allow, the two rules that read the pushed
@@ -30,11 +32,12 @@ function refuse(message) {
 }
 
 const n = /^t(\d+)$/.exec(task)?.[1];
+const NOTES = "refs/notes/atelier";
 const writes = {
   task: n && { test: (r) => r === `refs/heads/t/${n}`, text: `t/${n}` },
   plan: n && { test: (r) => r === `refs/heads/plan/${n}`, text: `plan/${n}` },
-  landing: branch && { test: (r) => r === `refs/heads/${branch}`, text: branch },
-  owner: branch && { test: (r) => r === `refs/heads/${branch}` || /^refs\/heads\/dev\/[^/].*$/.test(r), text: `${branch} and dev/*` },
+  landing: branch && { test: (r) => r === `refs/heads/${branch}` || r === NOTES, text: `${branch} and ${NOTES}` },
+  owner: branch && { test: (r) => r === `refs/heads/${branch}` || r === NOTES || /^refs\/heads\/dev\/[^/].*$/.test(r), text: `${branch}, dev/* and ${NOTES}` },
 }[kind];
 if (!writes) refuse("this credential writes nothing here");
 
@@ -45,11 +48,11 @@ if (!writes.test(ref)) refuse(`this credential writes ${writes.text} only, not $
 if (ZERO.test(sha)) refuse(`no deletes: ${ref.replace(/^refs\/heads\//, "")} stays; the server deletes task branches itself`);
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-const guarded = ref === `refs/heads/${branch}` || ref.startsWith("refs/heads/plan/");
+const guarded = ref === `refs/heads/${branch}` || ref.startsWith("refs/heads/plan/") || ref === NOTES;
 if (guarded && !ZERO.test(old)) {
   try { git("merge-base", "--is-ancestor", old, sha); } catch { refuse(`${ref.replace(/^refs\/heads\//, "")} moves by fast-forward only`); }
 }
-if (kind === "landing") {
+if (kind === "landing" && ref === `refs/heads/${branch}`) {
   if (ZERO.test(old)) refuse(`a landing merges onto ${branch}, which has no tip yet`);
   const parents = git("rev-list", "--parents", "-n", "1", sha).split(" ").slice(1);
   if (parents[0] !== old) refuse(`a landing's first parent is ${branch}'s tip ${old.slice(0, 12)}`);

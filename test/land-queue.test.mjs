@@ -335,8 +335,8 @@ test("atelier land with several tasks runs the ordinary landing for each, prefix
   f.box.review.approveAfter = null;
   const r = await f.run(f.checkout, "land", "t1", "t2", "--parallel", "2");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /\[t1\] Pushed \w{8} to t1's fork\./);
-  assert.match(r.output, /\[t2\] Pushed \w{8} to t2's fork\./);
+  assert.match(r.output, /\[t1\] Land request recorded for t1 \(owner\)\./);
+  assert.match(r.output, /\[t2\] Land request recorded for t2 \(owner\)\./);
   assert.match(r.output, /^t1 asked, not landed:/m);
   assert.match(r.output, /^t2 asked, not landed:/m);
   assert.doesNotMatch(r.output, /^t[12] landed\./m);

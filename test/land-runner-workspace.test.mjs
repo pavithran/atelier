@@ -13,17 +13,13 @@ import { recordTokenExpiry, storeWorkspaceToken } from "../cli/atelier.mjs";
 // against runLand with the server's answers faked and Git real: the
 // workspace is a temporary clone whose origin is the runner route
 // (ORIGIN/git/runner/PROJECT/ITEM.git) carrying the runner's Git credential
-// in the workspace's credentials file, as a runner's claim leaves it. Before
-// the lease, or the Workflow, the landing re-claims the task for its holder
-// with its runner identity, whatever expiry the workspace records, takes the
-// fork remote and write token the claim answers as origin (the route's push
-// URL dropped, its header gone, the expiry recorded before the fetch), and
-// pushes to the fork; the next landing finds the fork and claims nothing. A
-// holder the workspace was not claimed by, a refused re-claim, a claim with
-// no credentials or a remote that cannot be adopted stops the landing before
-// the lease, with the commits untouched; a dry run reads the remotes and
-// writes nothing; and no message carries a credential. Fork workspaces keep
-// their expiry refresh and push retry, and an accepted task refreshes nothing.
+// in the workspace's credentials file, as a runner's claim leaves it. Since
+// G2 the plain landing pushes nothing to the task's branch, so it needs no
+// credential of the workspace's and leaves it as it is: nothing is
+// re-claimed or moved. The Workflow landing, which still pushes the
+// workspace's merge of main, re-claims the task for its holder before it
+// starts and moves the workspace to its fork; an accepted task refreshes
+// nothing either way.
 
 // Each runLand leaves its signal handlers on the process, as the landing does.
 process.setMaxListeners(0);
@@ -101,6 +97,7 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
       return { item: { id: "t1" }, workspace: { remote: fork, token: FORK_TOKEN, expiresAt: fresh, defaultBranch: "main" } };
     }
     if (path === `${itemPath}/base-token`) return { remote: baseline, token: "read", defaultBranch: "main" };
+    if (path === `${itemPath}/read-token`) return { remote: fork, token: "read", defaultBranch: "main" };
     if (path === `${itemPath}/landing-workflow`) return method === "GET" && calls.some((c) => c.method === "POST" && c.path === path)
       ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
       : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, stage: "lease" };
@@ -161,171 +158,16 @@ const noSecret = (l, ...errors) => {
   for (const secret of [RUNNER_SECRET, FORK_TOKEN, "another-runner-secret"]) assert.ok(!said.includes(secret), `a credential was printed: ${said}`);
 };
 
-for (const [label, expiresAt] of [["a valid expiry", "2999-01-01T00:00:00.000Z"], ["an expired expiry", new Date(Date.now() - 60_000).toISOString()], ["no recorded expiry", null]]) {
-  test(`a workspace on the runner route with ${label} is re-claimed for its holder and moved to its fork before the lease (t488)`, async (t) => {
+test("a submitted task whose workspace is on the runner route lands without touching it: nothing is re-claimed, moved or pushed (G2)", async (t) => {
+  for (const expiresAt of ["2999-01-01T00:00:00.000Z", new Date(Date.now() - 60_000).toISOString(), null]) {
     const l = landing(t, { expiresAt });
     await runLand(l.io);
-    assert.equal(l.claims().length, 1);
-    assert.equal(l.claims()[0].as, "codex/gpt-6-astra");
-    assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
-    const claimAt = l.indexOf((c) => c.path.endsWith("/claim"));
-    // Before the merge of main, so before anything that could take the
-    // lease (which --no-review never takes, t550).
-    const mergeAt = l.indexOf((c) => c.path.endsWith("/base-token"));
-    assert.ok(claimAt >= 0 && mergeAt > claimAt, "the re-claim comes before the merge of main");
-    assert.equal(l.leaseTaken(), false);
-    assertOnFork(l);
-    assert.deepEqual(l.adoption, ["store", "record", "fetch"], "the expiry is recorded before the fetch");
-    assert.deepEqual(l.commands, ["push", "check", "submit"]);
-    assert.ok(l.lines.some((x) => /fetches from and pushes to the runner route https:\/\/atelier\.invalid\/git\/runner\/proj\/t1\.git/.test(x) && /re-claiming t1 for its holder/.test(x)), l.lines.join("\n"));
-    assert.ok(l.lines.some((x) => x.startsWith("Moved t1's workspace to its fork ") && x.includes("for codex/gpt-6-astra")), l.lines.join("\n"));
-    noSecret(l);
-    // The next landing finds the fork with a far expiry and rotates nothing.
-    const before = headers(l.dir);
-    await runLand(l.io);
-    assert.equal(l.claims().length, 1, "no second claim");
-    assert.deepEqual(headers(l.dir), before);
-    assert.equal(l.commands.filter((c) => c === "push").length, 2);
-    assert.equal(l.lines.filter((x) => /runner route|Moved t1's workspace/.test(x)).length, 2, "the second landing says nothing of the route");
-  });
-}
-
-test("a runner route set as origin's push URL alone is detected and dropped for the fork (t488)", async (t) => {
-  const l = landing(t, { pushUrlOnly: true, directHeader: true });
-  assert.equal(config(l.dir, "remote.origin.url"), l.fork);
-  await runLand(l.io);
-  assert.equal(l.claims().length, 1);
-  assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
-  assertOnFork(l);
-  assert.ok(l.lines.some((x) => /pushes to the runner route/.test(x)), l.lines.join("\n"));
-  assert.deepEqual(l.commands, ["push", "check", "submit"]);
-  noSecret(l);
-});
-
-// Git pushes to every push URL origin is configured with, where `git config
-// --get` answers only the last: a route before the fork, as much as one
-// after it, is detected and every push URL is dropped for the fork.
-for (const pushUrls of [[ROUTE, "fork"], ["fork", ROUTE]]) {
-  test(`a runner route among several push URLs, ordered [${pushUrls.map((u) => (u === "fork" ? "fork" : "route")).join(", ")}], is detected and every push URL is dropped for the fork (t488)`, async (t) => {
-    const l = landing(t, { pushUrls, directHeader: true });
-    assert.equal(config(l.dir, "remote.origin.url"), l.fork);
-    assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), pushUrls.map((u) => (u === "fork" ? l.fork : u)));
-    await runLand(l.io);
-    assert.equal(l.claims().length, 1);
-    assert.equal(l.claims()[0].as, "codex/gpt-6-astra");
-    assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
-    const claimAt = l.indexOf((c) => c.path.endsWith("/claim"));
-    // Before the merge of main, so before anything that could take the
-    // lease (which --no-review never takes, t550).
-    const mergeAt = l.indexOf((c) => c.path.endsWith("/base-token"));
-    assert.ok(claimAt >= 0 && mergeAt > claimAt, "the re-claim comes before the merge of main");
-    assert.equal(l.leaseTaken(), false);
-    assertOnFork(l);
-    assert.deepEqual(l.adoption, ["store", "record", "fetch"]);
-    assert.ok(l.lines.some((x) => /pushes to the runner route https:\/\/atelier\.invalid\/git\/runner\/proj\/t1\.git/.test(x) && /re-claiming t1 for its holder/.test(x)), l.lines.join("\n"));
-    assert.deepEqual(l.commands, ["push", "check", "submit"]);
-    noSecret(l);
-    // The next landing finds the fork alone and claims nothing.
-    await runLand(l.io);
-    assert.equal(l.claims().length, 1, "no second claim");
-    assertOnFork(l);
-  });
-}
-
-test("a runner route among several fetch URLs, which Git pushes to as well, is detected and origin is left the fork alone (t488)", async (t) => {
-  for (const urls of [["fork", ROUTE], [ROUTE, "fork"]]) {
-    const l = landing(t, { urls, directHeader: true });
-    assert.equal(configAll(l.dir, "remote.origin.url").length, 2);
-    await runLand(l.io);
-    assert.equal(l.claims().length, 1, urls.join(","));
-    assertOnFork(l);
-    assert.ok(l.lines.some((x) => /the runner route https:\/\/atelier\.invalid\/git\/runner\/proj\/t1\.git/.test(x)), l.lines.join("\n"));
-    assert.deepEqual(l.commands, ["push", "check", "submit"]);
+    assert.equal(l.claims().length, 0);
+    assert.ok(!l.commands.includes("push"), l.commands.join(", "));
+    assert.equal(l.leaseTaken(), false, "--no-review never takes the lease");
+    assertUntouched(l, { expiresAt: expiresAt ?? null });
     noSecret(l);
   }
-});
-
-test("a refused re-claim of a workspace with several push URLs leaves every push URL and the route's credential as they were (t488)", async (t) => {
-  for (const pushUrls of [[ROUTE, "fork"], ["fork", ROUTE]]) {
-    const l = landing(t, { pushUrls, claim: "owned: t1 is held by codex/gpt-6-astra on home:mbp, not by this claim" });
-    const before = configAll(l.dir, "remote.origin.pushurl");
-    const error = await runLand(l.io).then(() => null, (e) => e);
-    assert.ok(error, pushUrls.join(","));
-    assert.match(error.message, /could not be moved from the runner route to its fork, so the landing stops before taking the lease/);
-    assert.equal(l.leaseTaken(), false);
-    assert.deepEqual(l.commands, []);
-    assert.deepEqual(l.adoption, []);
-    assert.equal(config(l.dir, "remote.origin.url"), l.fork);
-    assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), before);
-    assert.ok(headers(l.dir).includes(`http.${ROUTE}.extraheader Authorization: Bearer ${RUNNER_SECRET}`));
-    assert.equal(sh(l.dir, "rev-parse", "HEAD"), l.head);
-    noSecret(l, error);
-  }
-});
-
-test("a header .git/config holds for the runner route goes with the route (t488)", async (t) => {
-  const l = landing(t, { directHeader: true });
-  assert.equal(headers(l.dir).filter((h) => h.includes(RUNNER_SECRET)).length, 2);
-  await runLand(l.io);
-  assertOnFork(l);
-});
-
-test("a re-claim the server refuses stops the landing before the lease, with the workspace and its commits untouched (t488)", async (t) => {
-  const l = landing(t, { claim: "owned: t1 is held by codex/gpt-6-astra on home:mbp, not by this claim" });
-  const error = await runLand(l.io).then(() => null, (e) => e);
-  assert.ok(error, "the landing stops");
-  assert.match(error.message, /could not be moved from the runner route to its fork, so the landing stops before taking the lease/);
-  assert.match(error.message, /owned: t1 is held by codex\/gpt-6-astra/);
-  assert.match(error.message, /run atelier land t1 again/);
-  assert.equal(l.claims().length, 1);
-  assert.equal(l.leaseTaken(), false);
-  assert.deepEqual(l.commands, []);
-  assert.deepEqual(l.adoption, []);
-  assertUntouched(l);
-  noSecret(l, error);
-});
-
-test("a workspace whose recorded actor is not the task's holder is not re-claimed by anyone, and the landing stops before the lease (t488)", async (t) => {
-  for (const holder of ["owner", "claude-code/opus-5.5"]) {
-    const l = landing(t, { holder, actor: "codex/gpt-6-astra" });
-    const error = await runLand(l.io).then(() => null, (e) => e);
-    assert.ok(error, `held by ${holder}`);
-    assert.match(error.message, /stops before taking the lease/);
-    assert.match(error.message, /claimed by codex\/gpt-6-astra/);
-    assert.equal(l.claims().length, 0, `held by ${holder}`);
-    assert.equal(l.leaseTaken(), false);
-    assert.deepEqual(l.commands, []);
-    assertUntouched(l);
-  }
-});
-
-test("a re-claim answering no token, no remote or another runner route stops the landing before the lease (t488)", async (t) => {
-  for (const [claim, why] of [["no-token", /returned no workspace token/], ["no-remote", /returned no workspace remote/], ["route", /answered another runner route/]]) {
-    const l = landing(t, { claim });
-    const error = await runLand(l.io).then(() => null, (e) => e);
-    assert.ok(error, claim);
-    assert.match(error.message, why);
-    assert.match(error.message, /stops before taking the lease/);
-    assert.equal(l.claims().length, 1);
-    assert.equal(l.leaseTaken(), false);
-    assert.deepEqual(l.commands, []);
-    assert.deepEqual(l.adoption, [], claim);
-    assertUntouched(l);
-    noSecret(l, error);
-  }
-});
-
-test("a fork remote that cannot be adopted stops the landing before the lease, with the commits untouched (t488)", async (t) => {
-  const l = landing(t, { claim: "bad-remote" });
-  const error = await runLand(l.io).then(() => null, (e) => e);
-  assert.ok(error);
-  assert.match(error.message, /could not be moved from the runner route to its fork, so the landing stops before taking the lease/);
-  assert.equal(l.leaseTaken(), false);
-  assert.deepEqual(l.commands, []);
-  assert.deepEqual(l.adoption, ["store", "record"], "the fetch failed");
-  assert.equal(sh(l.dir, "rev-parse", "HEAD"), l.head);
-  assert.ok(!headers(l.dir).some((h) => h.includes(RUNNER_SECRET)), "the route's credential is gone");
-  noSecret(l, error);
 });
 
 test("land --workflow moves a runner-route workspace to its fork before starting the Workflow, and starts none when the move fails (t488)", async (t) => {
@@ -344,78 +186,6 @@ test("land --workflow moves a runner-route workspace to its fork before starting
     assert.equal(l.leaseTaken(), false, claim);
     assert.equal(sh(l.dir, "rev-parse", "HEAD"), l.head);
   }
-});
-
-test("a dry run names the runner route and claims, rewrites and fetches nothing (t488)", async (t) => {
-  for (const pushUrlOnly of [false, true]) {
-    const l = landing(t, { dryRun: true, pushUrlOnly, directHeader: true });
-    const before = { credentials: readFileSync(join(l.dir, ".git", "atelier-credentials"), "utf8"), config: readFileSync(join(l.dir, ".git", "config"), "utf8") };
-    await runLand(l.io);
-    assert.ok(l.lines.some((x) => /\(first\) re-claim t1 for its holder codex\/gpt-6-astra on home:mbp/.test(x) && /runner route https:\/\/atelier\.invalid\/git\/runner\/proj\/t1\.git/.test(x)), l.lines.join("\n"));
-    assert.ok(l.lines.includes("Nothing was changed."));
-    assert.equal(l.claims().length, 0);
-    assert.equal(l.leaseTaken(), false);
-    assert.deepEqual(l.adoption, []);
-    assert.deepEqual(l.commands, []);
-    assert.equal(readFileSync(join(l.dir, ".git", "atelier-credentials"), "utf8"), before.credentials);
-    assert.equal(readFileSync(join(l.dir, ".git", "config"), "utf8"), before.config);
-    assertUntouched(l, { pushUrlOnly });
-    noSecret(l);
-  }
-  for (const pushUrls of [[ROUTE, "fork"], ["fork", ROUTE]]) {
-    const l = landing(t, { dryRun: true, pushUrls, directHeader: true });
-    const before = { credentials: readFileSync(join(l.dir, ".git", "atelier-credentials"), "utf8"), config: readFileSync(join(l.dir, ".git", "config"), "utf8") };
-    await runLand(l.io);
-    assert.ok(l.lines.some((x) => /\(first\) re-claim t1 for its holder codex\/gpt-6-astra on home:mbp/.test(x) && /pushes to the runner route/.test(x)), l.lines.join("\n"));
-    assert.equal(l.claims().length, 0);
-    assert.deepEqual(l.adoption, []);
-    assert.equal(readFileSync(join(l.dir, ".git", "config"), "utf8"), before.config);
-    assert.equal(readFileSync(join(l.dir, ".git", "atelier-credentials"), "utf8"), before.credentials);
-    assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), pushUrls.map((u) => (u === "fork" ? l.fork : u)));
-    noSecret(l);
-  }
-  const fork = landing(t, { dryRun: true, onFork: true });
-  await runLand(fork.io);
-  assert.ok(!fork.lines.some((x) => /runner route/.test(x)));
-});
-
-test("a fork workspace keeps its expiry refresh: far from expiry nothing is claimed, within the window the token is refreshed once in place (t488)", async (t) => {
-  const far = landing(t, { onFork: true });
-  await runLand(far.io);
-  assert.equal(far.claims().length, 0);
-  assert.equal(far.leaseTaken(), false, "--no-review never takes the lease (t550)");
-  assert.deepEqual(headers(far.dir), [`http.${far.fork}.extraheader Authorization: Bearer old-fork-token`]);
-  assert.deepEqual(far.commands, ["push", "check", "submit"]);
-  assert.ok(!far.lines.some((x) => /runner route|Moved t1's workspace/.test(x)), far.lines.join("\n"));
-  const soon = landing(t, { onFork: true, expiresAt: new Date(Date.now() + 10 * 60_000).toISOString() });
-  await runLand(soon.io);
-  assert.equal(soon.claims().length, 1);
-  assert.equal(soon.claims()[0].as, "codex/gpt-6-astra");
-  assert.deepEqual(soon.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
-  assert.ok(soon.lines.some((x) => /write token expires .*refreshing it for its holder before the landing takes the lease/.test(x)), soon.lines.join("\n"));
-  assert.ok(soon.lines.some((x) => /^Refreshed t1's workspace write token for codex\/gpt-6-astra/.test(x)), soon.lines.join("\n"));
-  assertOnFork(soon);
-  assert.deepEqual(soon.commands, ["push", "check", "submit"]);
-  noSecret(soon);
-});
-
-test("a fork workspace keeps its push retry: a push refused for an expired token is refreshed and tried once more, on the fork (t488)", async (t) => {
-  const once = landing(t, { onFork: true, push: ["remote: Invalid or expired token\nfatal: unable to access the fork"] });
-  await runLand(once.io);
-  assert.deepEqual(once.commands, ["push", "push", "check", "submit"]);
-  assert.equal(once.claims().length, 1);
-  assertOnFork(once);
-  const twice = landing(t, { onFork: true, push: ["Invalid or expired token", "Invalid or expired token"] });
-  await assert.rejects(runLand(twice.io), /atelier push failed[\s\S]*Invalid or expired token/);
-  assert.deepEqual(twice.commands, ["push", "push"]);
-  assert.equal(twice.claims().length, 1);
-  // A push on the runner route that somehow reaches the server is retried
-  // the same way, and the retry runs on the fork the landing moved to.
-  const moved = landing(t, { push: ["Invalid or expired token"] });
-  await runLand(moved.io);
-  assert.deepEqual(moved.commands, ["push", "push", "check", "submit"]);
-  assert.equal(moved.claims().length, 2);
-  assertOnFork(moved);
 });
 
 test("an accepted task on the runner route refreshes nothing: it is merged, not landed (t488, t188)", async (t) => {

@@ -26,7 +26,9 @@ const git = (...args) => execFileSync("git", args, { env, encoding: "utf8", stdi
 
 // The commits `base` excludes for a push of `sha` to `ref`.
 function baseOf({ old, ref, branch }) {
-  if (ref === `refs/heads/${branch}`) return ZERO.test(old) ? [] : [old];
+  // The project's branch and the provenance notes ref move by fast-forward:
+  // the commits a push adds are those past the old tip.
+  if (ref === `refs/heads/${branch}` || ref === "refs/notes/atelier") return ZERO.test(old) ? [] : [old];
   try { return [git("rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`)].filter(Boolean); } catch { return []; }
 }
 

@@ -223,8 +223,12 @@ export function failedStep(output) {
   return found ? found[1] : "land";
 }
 
-// The report of a landing that failed: the step and the tail of its log.
-export function failureReport(id, output) {
+// The report of a landing that failed: the step and the tail of its log, or,
+// where the task's landing record names them (G1), the failing step, its
+// attempt and the last lines of that step's own output, as `show --json`
+// carries them, so each attempt is one line with the record's step and tail.
+export function failureReport(id, output, record = null) {
+  if (record?.failedStep) return `landing ${id} failed at ${record.failedStep} (attempt ${record.attempt}${record.files?.length ? `; files: ${record.files.join(", ")}` : ""})${record.tail ? `:\n${record.tail}` : "."}`;
   const tail = String(output ?? "").split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-LOG_TAIL_LINES).join("\n");
   return `landing ${id} failed at ${failedStep(output)}${tail ? `:\n${tail}` : "."}`;
 }
@@ -293,5 +297,6 @@ export async function runLandJob(id, io) {
     }
   }
   const output = result.timedOut ? `${result.output}\natelier land failed (timed out)` : result.output;
-  return { ok: false, refused: false, reason: failureReport(id, output) };
+  const record = await io.landingRecord?.().catch(() => null) ?? null;
+  return { ok: false, refused: false, failed: true, reason: failureReport(id, output, record) };
 }

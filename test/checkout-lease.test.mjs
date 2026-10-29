@@ -359,7 +359,7 @@ test("ship records a failed deploy with its head and who, which the events and s
   assert.deepEqual(JSON.parse(await atelier("show", "t1", "--json")).lastDeploy.result, "failed");
 });
 
-test("the next landing reports a checkout head changed outside the lease as a fact with a next, and lands", async (t) => {
+test("the next landing reports a checkout head changed outside the lease as a fact with a next, refuses unreviewed commits ahead of main (G2), and lands once they are on main", async (t) => {
   if (!canInspectSlots(t)) return;
   const real = await serve(t);
   await newProject(real);
@@ -382,8 +382,16 @@ test("the next landing reports a checkout head changed outside the lease as a fa
   execFileSync("git", ["push", "-q", "origin", "main"], { cwd: ws });
   f.box.reviewOf = { t2: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] } };
   const second = await f.run(f.checkout, "land", "t2");
-  assert.equal(second.status, 0, second.output);
   assert.match(second.output, new RegExp(`Fact: demo's registered checkout is at ${byHand.slice(0, 8)}, not at ${merged.slice(0, 8)} where t1's merge left it at .* UTC: something changed it outside atelier merge and atelier ship, such as a commit, a pull or a deploy by hand\\. Nothing was refused; the landing goes on from ${byHand.slice(0, 8)}\\.\\nnext: see what changed with git log ${merged.slice(0, 8)}\\.\\.${byHand.slice(0, 8)} in the checkout; deploy through atelier ship --project demo, which records the deploy`));
+  // The commit by hand is ahead of main and no landing reviewed it, so the
+  // landing's merge refuses to carry it (G2's exact starting tip).
+  assert.notEqual(second.status, 0, second.output);
+  assert.match(second.output, /1 commit ahead of the project's main \([0-9a-f]{8}\), which no landing reviewed/);
+  assert.notEqual(f.box.states.t2, "merged");
+  // Once the developer puts it on main themselves, the landing goes on and lands.
+  execFileSync("git", ["push", "-q", "origin", "main"], { cwd: f.checkout });
+  const third = await f.run(f.checkout, "land", "t2");
+  assert.equal(third.status, 0, third.output);
   assert.equal(f.box.states.t2, "merged");
   const moved = (await real.api("GET", "/projects/demo/events")).body.events.find((e) => e.kind === "checkout.moved");
   assert.deepEqual([moved.itemId, moved.data.was, moved.data.now, moved.data.kind], [null, merged, byHand, "landing"]);

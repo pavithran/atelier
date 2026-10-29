@@ -75,9 +75,9 @@ test("a signal ends the landing with its status after the release, though the ac
 test("a signal while the failed landing's release is unanswered waits for that release, then ends with the signal's status", async (t) => {
   for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) {
     const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-    // The server reads another main under the lease: the landing stops
-    // unaccepted, on its own, and releases the lease.
-    f.box.serverMain = "f".repeat(40);
+    // The checks fail on the merged tree under the lease: the landing stops
+    // unmerged, on its own, and releases the lease (G2).
+    f.box.checks = ["exit 3"];
     let letGo = false;
     f.box.holdOn = (url, body) => url.endsWith("/landing-lease") && body.cancel === true && !letGo;
     const landing = spawnLanding(f);
@@ -88,6 +88,6 @@ test("a signal while the failed landing's release is unanswered waits for that r
     const ended = await landing.done;
     assert.equal(ended.status, status, landing.output());
     assert.equal(f.box.lease, null, landing.output());
-    assert.equal(f.posts("/accept").length, 0);
+    assert.equal(f.posts("/merged").length, 0);
   }
 });

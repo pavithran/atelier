@@ -84,7 +84,7 @@ test("the config lists the land job, and the offer names a checkout only when th
 });
 
 // The runner's loop: the offers it polls with and the job it runs.
-async function loop(t, { checkouts, config = {}, git = {}, journal = false, land = { code: 0, output: "ok" }, polls = 1, task = { state: "merged", head: HEAD, reviews: [] } }) {
+async function loop(t, { checkouts, config = {}, git = {}, journal = false, land = { code: 0, output: "ok" }, polls = 1, task = { state: "merged", head: HEAD, reviews: [] }, jobAt = null, landing = null }) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-land-job-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "runner.json");
@@ -98,7 +98,7 @@ async function loop(t, { checkouts, config = {}, git = {}, journal = false, land
       return key in git ? git[key] : { code: 0, output: key === "rev-parse" ? `${HEAD}\n` : "" };
     }
     if (argv[2] === "ls") return { code: 0, output: JSON.stringify([{ id: "t9", state: task.state, head: task.head }]), stderr: "" };
-    if (argv[2] === "show") return { code: 0, output: JSON.stringify({ reviews: task.reviews }), stderr: "" };
+    if (argv[2] === "show") return { code: 0, output: JSON.stringify({ reviews: task.reviews, ...(landing ? { landing: landing(spawned.length) } : {}) }), stderr: "" };
     spawned.push({ argv, cwd: options.cwd, env: options.env });
     return { ...land, stderr: "" };
   };
@@ -107,7 +107,7 @@ async function loop(t, { checkouts, config = {}, git = {}, journal = false, land
     workspacePath: () => dir, executeChild, checkouts, checkoutOf: () => "/checkout", landJournal: () => journal,
     baselineHead: async () => HEAD, harnessReady: async () => ({ ready: true }),
     wait: () => new Promise((resolve) => setImmediate(resolve)),
-    async queue(offer) { offers.push(offer); if (++n > polls) { process.emit("SIGTERM"); return []; } return [job]; },
+    async queue(offer) { offers.push(offer); if (++n > polls) { process.emit("SIGTERM"); return []; } return [jobAt ? { ...job, item: { ...job.item, ...jobAt(n) } } : job]; },
   });
   return { logs, offers, spawned };
 }
@@ -150,6 +150,27 @@ test("a failed landing is told once with its step, and not run again at the next
   const { logs, spawned } = await loop(t, { checkouts: ["atelier"], land: { code: 1, output: "atelier check failed (exit 1):\n1 failing" }, polls: 3 });
   assert.equal(spawned.length, 1);
   assert.equal(logs.filter((l) => l.includes("failed at check")).length, 1);
+});
+
+// G1: a failed landing is not tried again on a timer. The server stops
+// offering it; the runner, should the server still list it, passes it by
+// while the job is the one that failed (its head and queue time), however
+// many polls pass, and runs it again once the head changes or the developer
+// queues it again. Each attempt is one log line, naming the landing record's
+// failing step, attempt and tail.
+test("a failed landing is never run again on a timer, only for a new head or a new queueing, one line per attempt", async (t) => {
+  const head2 = "b".repeat(40);
+  const jobAt = (n) => n <= 40 ? { head: HEAD, dispatch: { job: "land", at: "2026-10-24T00:00:00.000Z" } }
+    : n <= 80 ? { head: head2, dispatch: { job: "land", at: "2026-10-24T00:00:00.000Z" } }
+      : { head: head2, dispatch: { job: "land", at: "2026-10-28T12:00:00.000Z" } };
+  const landing = (attempt) => ({ step: "checks", attempt, at: "2026-10-28T12:00:00.000Z", head: HEAD, failedStep: "checks", tail: "FAIL npm test\n1 failing" });
+  const { logs, spawned } = await loop(t, { checkouts: ["atelier"], land: { code: 1, output: "atelier merge failed (exit 1):\nwhatever the merge said" }, task: { state: "accepted", head: HEAD, reviews: [] }, polls: 120, jobAt, landing });
+  assert.equal(spawned.length, 3, "once at the first head, once at the new head, once queued again");
+  const lines = logs.filter((l) => l.includes("failed at checks"));
+  assert.equal(lines.length, 3);
+  // The log keeps each failure to one line.
+  assert.match(lines[0], /landing t9 failed at checks \(attempt 1\): FAIL npm test 1 failing$/);
+  assert.match(lines[2], /\(attempt 3\)/);
 });
 
 test("land --queue with --dry-run is refused before anything is asked of the server", () => {

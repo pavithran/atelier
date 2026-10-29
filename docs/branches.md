@@ -12,8 +12,8 @@ A builder could write to any branch of a shared repository if nothing stopped it
 |---|---|---|
 | `task` | `refs/heads/t/N` of its task | while the task's Ledger records it |
 | `read` | nothing; reads every branch | 8 hours |
-| `landing` | the project's branch, once, with a merge of the accepted head | 5 minutes |
-| owner | the project's branch and `refs/heads/dev/*` | the server token itself |
+| `landing` | the project's branch, once, with a merge of the accepted head; and `refs/notes/atelier` | 5 minutes |
+| owner | the project's branch, `refs/heads/dev/*` and `refs/notes/atelier` | the server token itself |
 
 A task grant counts only while the task's Ledger records it as the item's write token (`git:HASH` in `items.token_id`). The Ledger already changes that record on every change of holder: release, handoff, abandon, merge and a new claim. So each of those revokes the grant with no extra step, and asking for a new grant replaces the old one. A task has one live write credential at a time.
 
@@ -21,10 +21,10 @@ A task grant counts only while the task's Ledger records it as the item's write 
 
 **The pre-receive hook refuses every ref update the grant does not cover** (`hooks/pre-receive`). The server runs `git receive-pack` with the grant's id and binding in the environment, never its token, and the hook applies four rules to the ref update:
 
-1. One ref per push, the one the grant names. Any other ref is refused with `atelier: this credential writes t/N only`.
+1. One ref per push, the one the grant names. Any other ref is refused with `atelier: this credential writes t/N only`. Landing and owner grants also write Atelier's provenance notes, `refs/notes/atelier`, on a push of their own; a task or plan grant never does.
 2. No deletes. The server deletes task branches itself after a merge.
-3. The project's branch and `plan/*` move by fast-forward only. A task branch may be rewritten (`atelier update` rebases); the Ledger decides whether a rewritten head counts.
-4. A landing push must be a merge whose first parent is the branch's tip and whose parents include the accepted head.
+3. The project's branch, `plan/*` and `refs/notes/atelier` move by fast-forward only. A task branch may be rewritten (`atelier update` rebases); the Ledger decides whether a rewritten head counts.
+4. A landing push to the project's branch must be a merge whose first parent is the branch's tip and whose parents include the accepted head.
 
 For a push those four allow, the hook then reads the pushed files (`src/git/scan.mjs`):
 
@@ -49,7 +49,8 @@ The server sweeps leftover policy and report directories from `data/ENV/hook-sca
 
 For later:
 
-- A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task.
+- A landing grant must carry its task id, so the task's clearances apply to the landing push. The route that mints landing grants is a later task (task 6).
+- Until then the landing's push carries the developer's credential. Since G2 it is one function, `pushMergeToProjectBranch` in `cli/landing.mjs`, which pushes the merge commit alone to the project's branch (rule 4's shape: first parent the branch's tip, the accepted head among the parents); task 6 swaps that credential for a landing grant minted to the holder of the landing lease. The provenance notes go on a push of their own to `refs/notes/atelier`, which the owner and landing grants may write (rule 1); a refused notes push never undoes the merge, and the next landing pushes the notes merged with the baseline's.
 - Allowed lines (`docs/atelier/privacy-allow.json`) are dropped before the report. The owner sees them only in the allowance file's diff.
 
 7. The grant is still live. Last, the hook asks the server whether the grant it was let in with still counts and its actor still holds the task (`POST /internal/grant-live` on a loopback listener of its own, with a random per-process secret the server puts in the hook's environment). A grant the server does not confirm, or a server that does not answer, refuses the push.

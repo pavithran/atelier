@@ -93,9 +93,9 @@ test("--no-review leaves the task submitted, accepts and merges nothing, and nev
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
   assert.deepEqual(f.posts("/landing-lease"), []);
   assert.equal(f.box.lease, null);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review"]);
   const dry = await f.run(f.checkout, "land", "t2", "--no-review", "--dry-run");
-  assert.doesNotMatch(dry.output, /accept t2 at the pushed head/);
+  assert.doesNotMatch(dry.output, /accept t2 at/);
 });
 
 
@@ -131,12 +131,13 @@ test("the lease held by another landing does not hold up the checks and the revi
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-06 09:30 UTC\); t1 takes the lease for its merge as soon as the lease is free\./);
-  // The merge of main, the checks and the review ran while t2 held the
-  // lease; the first ask of the lease came once the review was decided.
+  // The review ran while t2 held the lease; the first ask of the lease came
+  // once the review was decided, and the merge, its checks and the push
+  // under it (G2).
   const firstLease = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.method === "POST");
   assert.ok(firstLease > recordedAt(f, "review"));
   assert.equal(grantedTo(f).length, 1);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged", "release"]);
   assert.equal(f.box.states.t1, "merged");
 });
 

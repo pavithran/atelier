@@ -3341,11 +3341,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (main) await L.noteMainHead(main);
       return json(await L.integratePart(id, actor, partKey, mergeCommit, true, holdsMain));
     }
+    case "land-merge": {
+      // The landing entering its merge (G1, atelier merge ID --landing): one
+      // Ledger call, ordered with the cancel of its queued landing.
+      requireOwner(env, actor);
+      return json({ landing: await L.beginLandMerge(id, actor, typeof body.attempt === "number" ? body.attempt : undefined) });
+    }
     case "land-job": {
       // Queues the task's landing for a runner that holds the registered
       // checkout (t226, atelier land ID --queue). The developer's alone: a
       // runner or agent token cannot name the verb.
       requireOwner(env, actor);
+      // { cancel: true } removes the queued landing (G1, --queue --cancel).
+      if (body.cancel === true) return json(await L.cancelLand(id, actor));
       return json(await L.requestLand(id, actor, typeof body.quote === "string" ? body.quote : undefined), 201);
     }
     case "refresh-lease": {

@@ -45,11 +45,11 @@ test("a refused renewal stops the heartbeat and is said once, and the lost lease
 test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", { timeout: CEILING_MS }, async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
-  // The landing is held under the lease, reading main again before it
-  // accepts (t550).
-  f.box.holdOn = (url) => url.endsWith("/base-token") && f.box.leaseLog.length > 0;
+  // The landing is held under the lease, reading the task again before it
+  // accepts (G2: whether its queued landing was cancelled).
+  f.box.holdOn = (url) => /\/items\/t1$/.test(url) && f.box.leaseLog.length > 0;
   const landing = spawnLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.box.holding?.endsWith("/base-token"), CEILING_MS, "the read of main under the lease");
+  await until(() => /\/items\/t1$/.test(f.box.holding ?? ""), CEILING_MS, "the read of the task under the lease");
   const before = { checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   // The Mac sleeps (t232): the renewals pause, the lease lapses, and t2's
   // landing, queued with --wait, takes it over.

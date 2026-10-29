@@ -97,6 +97,8 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       acceptanceProtected: box.policy?.protected ?? ["work.txt"],
       ...(box.mode ? { mode: box.mode } : {}),
       gate: box.gate ?? { ready: true, outOfScope: [], blockers: [] }, evidence: box.evidence[id] ?? [], reviews, events,
+      // The landing record's attempt, which atelier land names to its merge (G1).
+      landing: { attempt: 1, step: "start", at: new Date().toISOString(), head, failedStep: null, tail: null },
       // The live gate request and the replies the server could not read
       // (t613), where a test gives them: `liveReview` null is a request
       // gone; absent, the server sends neither, as an older one did.
@@ -461,7 +463,7 @@ export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test"
   // Git as a landing asks it: main already merged, nothing to compare or
   // regenerate, the config above.
   const fakeGit = (args, o = {}) => {
-    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? committed ? "a".repeat(40) : null : "";
+    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? committed ? "a".repeat(40) : null : args[0] === "ls-remote" ? `${"b".repeat(40)}\trefs/heads/main` : "";
     if (o.allowFail) return { status: out === null ? 1 : 0, stdout: out ?? "", stderr: "" };
     return out ?? "";
   };

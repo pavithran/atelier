@@ -79,7 +79,9 @@ test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process grou
     const f = await landFixture(t);
     const pidFile = join(f.p, "regen-sleeper.pid");
     f.box.regen = `sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`;
-    const landing = waitingLanding(f);
+    // The regenerate step runs under the lease, in the merge's clean clone
+    // (G2), as a grandchild of the landing: the signal still ends its group.
+    const landing = spawnLanding(f);
     await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), 15_000, "the regenerate command's sleeper");
     const sleeper = Number(readFileSync(pidFile, "utf8"));
     landing.child.kill(signal);
@@ -162,8 +164,9 @@ test("re-running land on the task holding the lease reaches the release from eve
   f.box.states.t1 = "merged";
   const merged = await f.run(f.checkout, "land", "t1");
   assert.equal(merged.status, 1, merged.output); assert.match(merged.output, /t1 is merged; there is nothing to land\./); assert.match(merged.output, offer);
-  f.box.states.t1 = "submitted";
-  // A merge in progress in the workspace.
+  // A claimed task is checked and submitted in its workspace (G2), so its
+  // workspace is read: a merge in progress there refuses.
+  f.box.states.t1 = "claimed";
   writeFileSync(join(f.workspace("t1"), ".git", "MERGE_HEAD"), `${f.forkHead("t1")}\n`);
   const midMerge = await f.run(f.checkout, "land", "t1");
   assert.equal(midMerge.status, 1, midMerge.output); assert.match(midMerge.output, /a Git merge is already in progress/); assert.match(midMerge.output, offer);

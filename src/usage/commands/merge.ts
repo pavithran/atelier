@@ -11,8 +11,8 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Developer", line: 1, slot: 20,
-      form: "merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON [--quote WORDS]]] [--policy-changed-ok]",
-      about: "The developer lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted task is accepted at that exact revision first: `--approve` records the developer's review, with `--note` as its reason, which is not the independent review, and `--override-review` accepts with their override, as `accept` does, confirmed the same way: on the developer's direction with `--quote` and `--as`, or by the permission from the task's page. Run again, it resumes an interrupted merge; `--cancel` ends one. A plan whose branch would conflict with main is not accepted, and one accepted that conflicts at the merge is put back to building through `plan refresh`, which takes main into its branch.",
+      form: "merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON [--quote WORDS]]] [--policy-changed-ok] [--landing]",
+      about: "The developer lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted task is accepted at that exact revision first: `--approve` records the developer's review, with `--note` as its reason, which is not the independent review, and `--override-review` accepts with their override, as `accept` does, confirmed the same way: on the developer's direction with `--quote` and `--as`, or by the permission from the task's page. Run again, it resumes an interrupted merge; `--cancel` ends one. A plan whose branch would conflict with main is not accepted, and one accepted that conflicts at the merge is put back to building through `plan refresh`, which takes main into its branch. The merge is pushed to the project's branch alone, never to the task's branch. With `--landing`, as `atelier land` runs it under the landing lease, the project's checks run on the merged tree before anything is pushed (after its regenerate command, whose changes join the merge commit), each step is recorded on the task's landing record, and main moving between the checks and the push makes the merge and the checks again, twice at most.",
     },
     {
       group: "Developer", line: 1, slot: 30,
@@ -27,6 +27,7 @@ const spec: CommandSpec = {
     approve: true,
     note: false,
     "policy-changed-ok": true,
+    landing: true,
     "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"',
     quote: '--quote needs the developer\'s words: atelier merge ID --head FULL_REVISION --override-review REASON --quote "what the developer said"',
   },
@@ -38,6 +39,7 @@ const spec: CommandSpec = {
       "--override-review REASON": "with --head, accepts with the developer's override of a missing independent review, on the developer's direction (--quote) or once allowed on the task's page with the Access sign-in or the confirmation secret; --as H/M names the harness/model overriding for the developer",
       "--quote WORDS": "with --override-review, the developer's own words directing the override; with --as H/M, the model acting on them, they confirm it with the developer token alone, and both are recorded with it",
       "--policy-changed-ok": "lands a change that touches paths the project's policy began to protect after acceptance, or that no longer meets a rule it was accepted under, once that change of policy is reviewed",
+      "--landing": "how atelier land runs it: the project's checks run once on the merged tree in a clean clone before the push, a failure pushes nothing and leaves the task accepted, every step goes on the task's landing record (show --json), and main moving before the push redoes the merge and checks at most twice",
       "--cancel": "ends an interrupted merge, so the task's holder can push again",
       "--discard-local": "with --cancel, removes the unpublished merge commit from the checkout",
     },
