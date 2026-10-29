@@ -1,3 +1,4 @@
+import { gitCommand } from "./command.mjs";
 // Rules 5 and 6 of the pre-receive hook (Atelier 2.0, design section 4.4):
 // the secret scan and the private-file guard over the commits a push adds,
 // before the ref moves. The hook imports this after src/runtime/loader.mjs,
@@ -22,7 +23,7 @@ const LISTED = 20;
 
 // Git as the scans read history: no replacement refs rewrite a commit.
 const env = { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" };
-const git = (...args) => execFileSync("git", args, { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 }).trim();
+const git = (...args) => execFileSync(gitCommand(), args, { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 }).trim();
 
 // The commits `base` excludes for a push of `sha` to `ref`.
 function baseOf({ old, ref, branch }) {

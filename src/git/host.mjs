@@ -1,3 +1,4 @@
+import { gitCommand } from "./command.mjs";
 // The Git host of the Node server (Atelier 2.0, task 2; design sections 4.3
 // and 4.4): the grant store, the bare repositories and the authorisation of a
 // Git request against the Ledgers. `binding()` is what src/index.ts reads as
@@ -300,7 +301,7 @@ export class GitHost {
   async readFile({ key, branch, path, max = 200_000 }) {
     if (typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes("..")) return null;
     const { execFile } = await import("node:child_process");
-    return new Promise((ok) => execFile("git", ["show", `refs/heads/${branch}:${path}`], { cwd: this.repo(key, branch), encoding: "utf8", maxBuffer: max * 4 }, (err, stdout) => ok(err || stdout.length > max ? null : stdout)));
+    return new Promise((ok) => execFile(gitCommand(), ["show", `refs/heads/${branch}:${path}`], { cwd: this.repo(key, branch), encoding: "utf8", maxBuffer: max * 4 }, (err, stdout) => ok(err || stdout.length > max ? null : stdout)));
   }
   // Ends a task's landing grants (task 6): each is revoked once the pushes
   // made with it have ended. A grant is one landing's, so the record of that

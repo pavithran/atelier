@@ -21,6 +21,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>ATELIER_GIT</key><string>/Library/Developer/CommandLineTools/usr/bin/git</string>
     <key>HOME</key><string>@HOME@</string>
   </dict>
   <key>WorkingDirectory</key><string>@HOME@</string>

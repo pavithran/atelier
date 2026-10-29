@@ -1,3 +1,4 @@
+import { gitCommand } from "../src/git/command.mjs";
 // The private-file guard (t645): files a project keeps on the developer's
 // Macs and never pushes anywhere, such as PROJECT.md, the developer's plan.
 // The project's iCloud folder keeps them and the list of them,
@@ -28,7 +29,7 @@ export const privateRoot = () => process.env.ATELIER_PRIVATE_ROOT || join(homedi
 function gitRead(cwd, args, { env } = {}) {
   const merged = { ...process.env, ...env };
   for (const key of ["GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS", "GIT_LITERAL_PATHSPECS"]) delete merged[key];
-  return spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: merged });
+  return spawnSync(gitCommand(), args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: merged });
 }
 
 // Git as the checks read history: no replacement refs or grafts rewrite what

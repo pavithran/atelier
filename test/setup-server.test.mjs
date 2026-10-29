@@ -50,7 +50,7 @@ const dry = (script, args) => {
   writeFileSync(copy, readFileSync(script, "utf8").replaceAll("/var/tmp/atelier-", `${root}/atelier-`));
   const r = spawnSync("/bin/bash", ["-p", copy, ...args], { env: env(), encoding: "utf8" });
   // Each run's scratch directory has its own random name.
-  const norm = (text) => text.replace(new RegExp(`${root}/atelier-(setup|tunnel)\\.[A-Za-z0-9]+`, "g"), "/var/tmp/atelier-$1.X");
+  const norm = (text) => text.replace(/^(\+ )\/(?:usr\/bin|usr\/sbin|bin)\//gm, "$1").replace(new RegExp(`${root}/atelier-(setup|tunnel)\\.[A-Za-z0-9]+`, "g"), "/var/tmp/atelier-$1.X");
   return { status: r.status, out: norm(r.stdout), err: norm(r.stderr) };
 };
 
@@ -85,7 +85,7 @@ test("the staging LaunchDaemon keeps its settings and uses the verified Command 
   const out = join(root, "staging.plist");
   const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c && write_plist "$1"`, SETUP, out], { env: env(), encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(readFileSync(out, "utf8"), expected.replace("bin:/usr/bin:", "bin:/Library/Developer/CommandLineTools/usr/bin:/usr/bin:"));
+  assert.equal(readFileSync(out, "utf8"), expected.replace("bin:/usr/bin:", "bin:/Library/Developer/CommandLineTools/usr/bin:/usr/bin:").replace("    <key>HOME</key>", "    <key>ATELIER_GIT</key><string>/Library/Developer/CommandLineTools/usr/bin/git</string>\n    <key>HOME</key>"));
 });
 
 test("production is set up the same way with port 4100, zone.atelier.server, server-production and its own data, repositories, secrets, token and log", { skip: darwin }, () => {
@@ -124,7 +124,7 @@ test("setup installs the sibling installer, never the release's installer", { sk
   const absent = dry(SETUP, ["--env", "staging", i.tar, i.bin, i.token]);
   assert.equal(absent.status, 0, absent.err);
   const text = readFileSync(SETUP, "utf8");
-  assert.ok(text.indexOf('trusted_source "$SOURCE"') < text.indexOf('WORK=$(mktemp'));
+  assert.ok(text.indexOf('trusted_source "$SOURCE"') < text.indexOf('WORK=$("$MKTEMP"'));
   assert.doesNotMatch(text, /release lacks scripts\/studio\/install-server/);
 });
 
@@ -140,7 +140,7 @@ test("trusted setup source checks every parent, both files, symlinks and ACLs; r
   const source = join(root, "trusted"); mkdirSync(source);
   for (const f of ["setup-server.sh", "install-server.sh"]) { writeFileSync(join(source, f), "reviewed"); chmodSync(join(source, f), 0o755); }
   const run = (path, extra = {}) => spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
-PATH="$1:$PATH"
+STAT="$1/stat" LS="$1/ls"
 trusted_source "$2" || { source_help; exit 1; }
 GIT="$2" OTOOL=/bin/ls check_tools`, SETUP, bin, path], { env: { ...env(), ...extra }, encoding: "utf8" });
   assert.equal(run(join(source, "install-server.sh")).status, 0);
@@ -251,7 +251,7 @@ esac
 test("production's setup stops every atelierd job, staging's server and the tunnel included, and starts again those that ran", { skip: darwin }, () => {
   const j = jobsHarness(["zone.atelier.server.staging", "zone.atelier.tunnel", "zone.atelier.backup.staging"]);
   const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
-PATH="${j.bin}:$PATH"
+LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep"
 loaded=" zone.atelier.server.staging zone.atelier.tunnel zone.atelier.backup.staging"
 stop_all || exit 3
 ls "${j.h}/state" | wc -l | tr -d ' '
@@ -275,7 +275,7 @@ test("production's setup, failing midway, puts its code back and starts every jo
   writeFileSync(join(home, "bin", "node"), "new node");
   writeFileSync(join(home, "bin", "cloudflared"), "staging's tunnel");
   const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
-PATH="${j.bin}:$PATH"
+LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep"
 HOME_DIR="${home}"
 loaded=" zone.atelier.server.staging zone.atelier.tunnel"
 stop_all || exit 3
@@ -295,12 +295,13 @@ test("the tunnel's production step stops every atelierd job, staging's server in
   const jobs = /\n(JOBS="[^"]*")\n/.exec(text)[1];
   const r = spawnSync("/bin/bash", ["-p", "-c", `${jobs}\n${fn("stop_all")}\n${fn("start_loaded")}
 SVC=atelierd
-PATH="${j.bin}:$PATH"
+SEQ=/usr/bin/seq SLEEP=/bin/sleep
+LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep"
 loaded=" zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel"
 stop_all || exit 3
 ls "${j.h}/state" | wc -l | tr -d ' '
-launchctl bootstrap system /Library/LaunchDaemons/zone.atelier.server.plist
-launchctl bootstrap system /Library/LaunchDaemons/zone.atelier.tunnel.plist
+"$LAUNCHCTL" bootstrap system /Library/LaunchDaemons/zone.atelier.server.plist
+"$LAUNCHCTL" bootstrap system /Library/LaunchDaemons/zone.atelier.tunnel.plist
 start_loaded zone.atelier.server zone.atelier.tunnel`], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), "0");
@@ -309,13 +310,13 @@ start_loaded zone.atelier.server zone.atelier.tunnel`], { encoding: "utf8" });
   assert.equal(j.log().split("\n").filter((l) => l.startsWith("bootstrap")).length, 3, "each started once");
 });
 
-test("both privileged entry points ignore BASH_ENV and discard hostile root environment", () => {
+test("all three privileged entry points ignore BASH_ENV and discard hostile root environment", () => {
   const h = mkdtempSync(join(root, "hostile-"));
   const marker = join(h, "ran");
   const bashEnv = join(h, "bash-env");
   writeFileSync(bashEnv, `echo executed > '${marker}'\n`);
   const hostile = { ...process.env, BASH_ENV: bashEnv, ENV: bashEnv, SHELLOPTS: "xtrace", PS4: `$(echo traced > '${marker}')`, DEVELOPER_DIR: h, HOME: h, PWD: h, NODE_OPTIONS: "--import=evil", DRYRUN: "1", ATELIER_BIND: "evil", SUDO_USER: "pavi" };
-  for (const script of [SETUP, resolve("scripts/studio/install-server.sh")]) {
+  for (const script of [SETUP, TUNNEL, resolve("scripts/studio/install-server.sh")]) {
     const text = readFileSync(script, "utf8");
     assert.ok(text.startsWith("#!/bin/bash -p\n"));
     // Exercise the actual shebang before any argument validation.
@@ -326,6 +327,8 @@ test("both privileged entry points ignore BASH_ENV and discard hostile root envi
     const prelude = text.slice(text.indexOf('if builtin test "$EUID"'), text.indexOf("# Atelier 2.0")).replace('builtin test "$EUID" = 0', 'builtin true');
     const r = spawnSync("/bin/bash", ["-p", "-c", `${prelude}\n/usr/bin/env\npwd\numask`], { env: hostile, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
+    const unprivileged = spawnSync("/bin/bash", ["-c", prelude], { encoding: "utf8" });
+    assert.equal(unprivileged.status, 1); assert.match(unprivileged.stderr, /privileged bash/);
     for (const key of ["BASH_ENV", "ENV", "DEVELOPER_DIR", "NODE_OPTIONS", "DRYRUN", "ATELIER_BIND", "SHELLOPTS", "PS4"]) assert.doesNotMatch(r.stdout, new RegExp(`^${key}=`, "m"));
     assert.match(r.stdout, /^HOME=\/var\/root$/m);
     assert.match(r.stdout, /^PATH=\/usr\/bin:\/bin:\/usr\/sbin:\/sbin$/m);
@@ -343,17 +346,17 @@ test("node validation rejects script shims, empty libraries and otool errors eve
     writeFileSync(tool, `#!/bin/sh\n${body}\n`); chmodSync(tool, 0o755);
     return spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c\nWORK="$1" OTOOL="$2"\ncheck_node "$3"`, SETUP, h, tool, binary], { encoding: "utf8" });
   };
-  const shimResult = run(shim, 'echo "$2: is not an object file"');
+  const shimResult = run(shim, 'echo "$4: is not an object file"');
   assert.equal(shimResult.status, 1); assert.match(shimResult.stderr, /Mach-O executable/);
   for (const [body, why] of [
-    ['echo "$2:"', /empty library list/],
-    ['echo "$2:"; echo error >&2', /otool reported an error/],
-    ['echo "$2: is not an object file"', /invalid node library/],
-    ['echo "$2:"; printf "\\t/Users/pavi/lib.dylib (compatibility version 1.0.0)\\n"', /outside the system libraries/],
+    ['echo "$4:"', /empty library list/],
+    ['echo "$4:"; echo error >&2', /otool reported an error/],
+    ['echo "$4: is not an object file"', /invalid node library/],
+    ['echo "$4:"; printf "\\t/Users/pavi/lib.dylib (compatibility version 1.0.0)\\n"', /outside the system libraries/],
   ]) {
     const r = run("/bin/ls", body); assert.equal(r.status, 1, r.stderr); assert.match(r.stderr, why);
   }
-  const good = run("/bin/ls", 'echo "$2:"; printf "\\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\\n"');
+  const good = run("/bin/ls", 'echo "$4:"; printf "\\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\\n"');
   assert.equal(good.status, 0, good.stderr);
   const actual = spawnSync("/bin/bash", ["-p", "-c", 'SETUP_SERVER_LIB=1 source "$0" --env staging a b c; WORK="$1"; check_node /bin/ls', SETUP, h], { encoding: "utf8" });
   assert.equal(actual.status, 0, actual.stderr);
@@ -365,10 +368,10 @@ test("missing Command Line Tools fail with the installation command, and service
   for (const path of [SETUP, resolve("scripts/studio/install-server.sh")]) {
     const text = readFileSync(path, "utf8");
     assert.match(text, /GIT=\/Library\/Developer\/CommandLineTools\/usr\/bin\/git/);
-    assert.match(text, /OTOOL=\/Library\/Developer\/CommandLineTools\/usr\/bin\/llvm-otool/);
+    assert.match(text, /GIT=\/Library\/Developer\/CommandLineTools\/usr\/bin\/git/);
     assert.match(text, /trusted_source "\$tool"/);
     assert.doesNotMatch(text, /GIT=\/usr\/bin\/git|^otool /m);
-    assert.match(text, /-u "\$SVC" \/usr\/bin\/env -i HOME="\$HOME_DIR" PATH=/);
+    assert.match(text, /-u "\$SVC" -- (?:"\$ENV_CMD"|\/usr\/bin\/env) -i HOME="\$HOME_DIR" PATH=/);
   }
 });
 
@@ -377,7 +380,8 @@ test("setup takes the installer's shared lock and refuses unsafe parents or a li
   const script = `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
 LOCK_DIR="$1"
 trusted_entry() { [ "$1" != "\${BAD_PARENT:-}" ]; }
-stat() { echo root; }
+STAT=fake_stat
+fake_stat() { echo root; }
 acquire_lock
 cat "$LOCK"
 acquire_lock`;
@@ -415,7 +419,8 @@ test("setup records recovery before either backup move and restores after a fail
 HOME_DIR="$1"; DRYRUN=; stopped=1
 run() { "$@"; }
 # A failed move returns to the same EXIT recovery used by setup.
-mv() { case "$2" in *${failAt}) return 1 ;; esac; /bin/mv "$@"; }
+MV=fake_mv
+fake_mv() { case "$2" in *${failAt}) return 1 ;; esac; /bin/mv "$@"; }
 stop_all() { return 0; }; start_others() { return 0; }
 trap 'recover' EXIT
 backup_code`, SETUP, h], { encoding: "utf8" });
@@ -432,7 +437,8 @@ test("setup recovery leaves code untouched if bootout fails, and reports a faile
     writeFileSync(join(h, "server-production.old/COMMIT"), "old"); writeFileSync(join(h, "server-production/COMMIT"), "new");
     const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
 HOME_DIR="$1"; stopped=1; swapped=1; loaded=" $LABEL"
-launchctl() { case "$1" in print) return 0 ;; bootout) return ${failStop ? 1 : 0} ;; bootstrap) return 0 ;; esac; }
+LAUNCHCTL=fake_launchctl
+fake_launchctl() { case "$1" in print) return 0 ;; bootout) return ${failStop ? 1 : 0} ;; bootstrap) return 0 ;; esac; }
 ${failStop ? "" : "stop_all() { return 0; }; health() { return 1; }"}
 recover`, SETUP, h], { encoding: "utf8" });
     assert.equal(r.status, 1, r.stderr);
@@ -449,9 +455,94 @@ test("setup health checks /api/version and the restored commit", { skip: darwin 
   for (const [body, expected] of [[`{"commit":"${commit}"}`, 0], ['{"commit":"wrong"}', 1], ["not json", 1]]) {
     const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
 HOME_DIR="$1" WORK="$1" CURL=fake_curl
-lsof() { return 0; }; seq() { echo 1; }; sleep() { :; }
+LSOF=fake_lsof SEQ=fake_seq SLEEP=fake_sleep
+fake_lsof() { return 0; }; fake_seq() { echo 1; }; fake_sleep() { :; }
 fake_curl() { [ "$1" = -q ] && [ "\${@: -1}" = "http://100.99.0.102:4101/api/version" ] || return 9; printf '%s' "$BODY"; }
 health`, SETUP, h], { env: { ...process.env, BODY: body }, encoding: "utf8" });
     assert.equal(r.status, expected, r.stderr);
   }
+});
+
+test("real setup and installer trust checks refuse developer-owned parents and node shims", { skip: darwin }, () => {
+  const h = mkdtempSync(join(root, "real-trust-"));
+  const shim = join(h, "node");
+  writeFileSync(shim, "#!/bin/sh\nexit 0\n"); chmodSync(shim, 0o755);
+  const installer = resolve("scripts/studio/install-server.sh");
+  for (const script of [SETUP, installer]) {
+    const source = script === SETUP ? 'SETUP_SERVER_LIB=1 source "$0" --env staging a b c' : 'INSTALL_SERVER_LIB=1 source "$0" --env staging ' + "a".repeat(40);
+    const run = (body) => spawnSync("/bin/bash", ["-p", "-c", `${source}\nWORK="$1"\n${body}`, script, h, shim], { encoding: "utf8" });
+    assert.equal(run('trusted_entry /bin').status, 0);
+    const parent = run('trusted_entry "$1"');
+    assert.equal(parent.status, 1); assert.match(parent.stderr, /not root-owned/);
+    assert.equal(run('trusted_source "$2"').status, 1);
+    const node = run('check_node "$2"');
+    assert.equal(node.status, 1); assert.match(node.stderr, /Mach-O executable/);
+    assert.equal(run('GIT=/bin/ls OTOOL=/bin/cat; check_tools').status, 0);
+    chmodSync(shim, 0o644);
+    const tools = run('GIT="$2"; check_tools');
+    chmodSync(shim, 0o755);
+    assert.equal(tools.status, 1); assert.match(tools.stderr, /unsafe or missing tool/);
+    if (script === installer) {
+      const lock = run('check_lock_parent "$1"');
+      assert.equal(lock.status, 1); assert.match(lock.stderr, /unsafe lock directory/);
+      assert.ok(lock.stderr.includes(h), "the real temporary lock parent was refused");
+    } else {
+      const lock = run('LOCK_DIR="$1"; acquire_lock');
+      assert.equal(lock.status, 1); assert.match(lock.stderr, /unsafe lock directory/);
+      assert.ok(lock.stderr.includes(h), "the real temporary lock parent was refused");
+    }
+  }
+});
+
+test("setup installs cleanup traps before lock acquisition and preserves a competing lock", () => {
+  const text = readFileSync(SETUP, "utf8");
+  const prefix = text.slice(text.indexOf("LOCK= WORK="), text.indexOf("\n# 1. Copy"));
+  const h = mkdtempSync(join(root, "trap-order-"));
+  // Run the actual trap and acquire ordering, with directory preparation
+  // isolated from /Library. The failing lock acquisition has already acquired
+  // its file; cleanup must be active before it can fail.
+  const body = prefix.replace(/if ! dry; then[\s\S]*?\nfi/, 'acquire_lock');
+  const r = spawnSync("/bin/bash", ["-p", "-c", `set -eu
+RM=/bin/rm
+acquire_lock() { LOCK="$1/owned"; : > "$LOCK"; return 1; }
+${body.replace('acquire_lock\n', 'acquire_lock "$1"\n')}`, "trap-test", h], { encoding: "utf8" });
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(readdirSync(h).length, 0, "EXIT trap removed the acquired lock");
+});
+
+test("first production failure removes newly installed code, plist and installer and restarts other jobs", () => {
+  for (const stopFails of [false, true]) {
+    const h = mkdtempSync(join(root, "first-production-"));
+    mkdirSync(join(h, "server-production")); mkdirSync(join(h, "bin"));
+    writeFileSync(join(h, "bin/node"), "node");
+    writeFileSync(join(h, "daemon.plist"), "RunAtLoad");
+    writeFileSync(join(h, "install-server.sh"), "installer");
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+HOME_DIR="$1" WORK="$1" INSTALLER_DIR="$1" PLIST="$1/daemon.plist"
+stopped=1 swapped=1 new_server=1 new_node=1 plist_written=1 installer_written=1
+stop_all() { return ${stopFails ? 1 : 0}; }
+start_others() { echo restarted > "$HOME_DIR/restarted"; }
+recover`, SETUP, h], { encoding: "utf8" });
+    assert.equal(r.status, stopFails ? 1 : 0, r.stderr);
+    assert.equal(readFileSync(join(h, "restarted"), "utf8"), "restarted\n");
+    for (const f of ["server-production", "bin/node", "daemon.plist", "install-server.sh"]) {
+      assert.equal(readdirSync(f.includes("/") ? join(h, "bin") : h).includes(f.split("/").at(-1)), stopFails, f);
+    }
+  }
+});
+
+test("the installer's production service command clears inherited environment and separates sudo options", () => {
+  const installer = resolve("scripts/studio/install-server.sh");
+  const r = spawnSync("/bin/bash", ["-p", "-c", `INSTALL_SERVER_LIB=1 source "$0" --env staging ${"a".repeat(40)}
+SUDO=fake_sudo HOME_DIR=/service-home SVC=atelierd
+fake_sudo() {
+  [ "$1" = -u ] && [ "$2" = atelierd ] && [ "$3" = -- ] || exit 9
+  shift 3
+  "$@"
+}
+service_command /usr/bin/env`, installer], { env: { ...process.env, NODE_OPTIONS: "hostile", SERVICE_SECRET: "must-not-pass" }, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^HOME=\/service-home$/m);
+  assert.match(r.stdout, /^PATH=\/usr\/bin:\/bin:\/usr\/sbin:\/sbin$/m);
+  assert.doesNotMatch(r.stdout, /NODE_OPTIONS|SERVICE_SECRET/);
 });

@@ -592,7 +592,9 @@ const studioFixture = async (t) => {
   writeFileSync(join(bin, "ssh"), STUDIO_SSH);
   chmodSync(join(bin, "ssh"), 0o755);
   const preload = join(f.dir, "version-response.mjs");
-  writeFileSync(preload, `const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
+  writeFileSync(preload, `import cp from "node:child_process"; import { syncBuiltinESMExports } from "node:module";
+const originalSpawn = cp.spawnSync; cp.spawnSync = (cmd, args, options) => originalSpawn(cmd === "/usr/bin/ssh" ? ${JSON.stringify(join(bin, "ssh"))} : cmd, args, options); syncBuiltinESMExports();
+const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
   const sshLog = join(f.dir, "ssh.txt");
   const run = (extra) => f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, SSH_LOG: sshLog, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_MAIN: f.head, SHIP_VERIFY_WINDOW_MS: "0", ATELIER_SHIP_HEAD: "spoofed", ...extra });
   const calls = () => (existsSync(sshLog) ? readFileSync(sshLog, "utf8").trim().split("\n") : []);
@@ -602,7 +604,7 @@ const studioFixture = async (t) => {
 for (const matches of [true, false]) test(`the Studio deploy ${matches ? "installs the captured commit and passes" : "stops wrap and push when the live commit is another"} (t182)`, async (t) => {
   const { f, run, calls } = await studioFixture(t);
   const r = await run({ SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40) });
-  assert.deepEqual(calls(), [`-t ai-studio sudo /Library/Atelier/install-server.sh --env staging ${f.head}`], r.stderr + r.stdout);
+  assert.deepEqual(calls(), [`-t -- ai-studio /usr/bin/sudo -- /Library/Atelier/install-server.sh --env staging ${f.head}`], r.stderr + r.stdout);
   assert.match(r.stdout, /\d\. deploy +node scripts\/ship-studio\.mjs deploy --env staging --version-url https:\/\/next\.atelier\.zone\/api\/version --host ai-studio .*\[has the terminal: it may ask for a password, such as sudo's\]/);
   const deployRun = f.state.runs.find((run) => run.step === "deploy");
   assert.equal(deployRun.passed, true);

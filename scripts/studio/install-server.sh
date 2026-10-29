@@ -1,6 +1,7 @@
 #!/bin/bash -p
 # Privileged bash ignores BASH_ENV, imported functions and shell options.
 if builtin test "$EUID" = 0; then
+  case ":$SHELLOPTS:" in *:privileged:*) ;; *) builtin echo "privileged bash (-p) is required" >&2; exit 1 ;; esac
   for inherited in $(builtin compgen -e); do
     builtin export -n "$inherited"
     builtin unset "$inherited" 2>/dev/null || :
@@ -67,7 +68,9 @@ umask 077
 cd /
 
 fail() { echo "install: $*" >&2; exit 1; }
+ID_CMD=/usr/bin/id
 SVC=atelierd
+service_command() { "$SUDO" -u "$SVC" -- "$ENV_CMD" -i HOME="$HOME_DIR" PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C "$@"; }
 if [ "$EUID" = 0 ]; then
   export PATH=/usr/bin:/bin:/usr/sbin:/sbin
   HOME_DIR=/Users/$SVC
@@ -77,23 +80,24 @@ if [ "$EUID" = 0 ]; then
   WAIT=60
   REGISTRY=https://registry.npmjs.org/
   NODE=$HOME_DIR/bin/node
-  as_svc() { "$SUDO" -u "$SVC" /usr/bin/env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C "$@"; }
-elif [ -n "${ATELIER_INSTALL_TEST_HOME:-}" ]; then
-  HOME_DIR=$ATELIER_INSTALL_TEST_HOME
+  as_svc() { service_command "$@"; }
+elif [ -n "${ATELIER_INSTALL_TEST_HOME:-}${INSTALL_SERVER_LIB:-}" ]; then
+  HOME_DIR=${ATELIER_INSTALL_TEST_HOME:-/nonexistent}
   DAEMONS=$HOME_DIR/LaunchDaemons
-  SVC=$(/usr/bin/id -un)
+  SVC=$("$ID_CMD" -un)
   OWNER=$SVC
   TEST=1
   WAIT=${ATELIER_INSTALL_TEST_WAIT:-60}
   [[ "$WAIT" =~ ^[0-9]{1,3}$ ]] || fail "ATELIER_INSTALL_TEST_WAIT is a number of seconds"
   REGISTRY=${ATELIER_INSTALL_TEST_REGISTRY:-https://registry.npmjs.org/}
   NODE=$(command -v node)
-  as_svc() { /usr/bin/env -i HOME="$HOME_DIR" PATH="$PATH" LC_ALL=C "$@"; }
+  as_svc() { "$ENV_CMD" -i HOME="$HOME_DIR" PATH="$PATH" LC_ALL=C "$@"; }
 else
   fail "run as root (sudo)"
 fi
 
 SUDO=/usr/bin/sudo
+ENV_CMD=/usr/bin/env
 GIT=/Library/Developer/CommandLineTools/usr/bin/git
 STAT=/usr/bin/stat
 LS=/bin/ls
@@ -117,6 +121,7 @@ CHOWN=/usr/sbin/chown
 FIND=/usr/bin/find
 CHMOD=/bin/chmod
 SHLOCK=/usr/bin/shlock
+FILE=/usr/bin/file
 # Only these tools need stand-ins in non-root tests.
 if [ -n "$TEST" ]; then
   GIT=$(command -v git)
@@ -124,6 +129,13 @@ if [ -n "$TEST" ]; then
   LSOF=$(command -v lsof)
   CURL=$(command -v curl)
   MV=$(command -v mv)
+fi
+
+
+if [ "$EUID" = 0 ]; then
+  for tool in "$STAT" "$LS" "$SED" "$GREP" "$CAT" "$LAUNCHCTL" "$SEQ" "$SLEEP" "$LSOF" "$PLUTIL" "$RM" "$MV" "$MKDIR" "$MKTEMP" "$CP" "$CHMOD" "$TAR" "$AWK" "$CHOWN" "$SUDO" "$ENV_CMD" "$CURL" "$SHLOCK" "$FIND" "$FILE" "$ID_CMD"; do
+    [ -f "$tool" ] && [ -x "$tool" ] && [ "$("$STAT" -f %Su "$tool")" = root ] || { echo "unsafe system tool $tool" >&2; exit 1; }
+  done
 fi
 
 USAGE="usage: install-server.sh --env staging|production COMMIT
@@ -174,29 +186,54 @@ trusted_source() {
 trusted_entry() {
   local path=$1 listing
   [ ! -L "$path" ] && { [ -d "$path" ] || [ -f "$path" ]; } || { echo "install: $path is not a plain source" >&2; return 1; }
-  [ "$(stat -f %Su "$path")" = root ] || { echo "install: $path is not root-owned" >&2; return 1; }
-  [ $(( 0$(stat -f %Lp "$path") & 022 )) = 0 ] || { echo "install: $path is group/world-writable" >&2; return 1; }
-  listing=$(ls -lde "$path") || return 1
-  [ -z "$(printf '%s\n' "$listing" | sed -n '2,$p')" ] || { echo "install: $path carries an ACL" >&2; return 1; }
+  [ "$("$STAT" -f %Su "$path")" = root ] || { echo "install: $path is not root-owned" >&2; return 1; }
+  [ $(( 0$("$STAT" -f %Lp "$path") & 022 )) = 0 ] || { echo "install: $path is group/world-writable" >&2; return 1; }
+  listing=$("$LS" -lde "$path") || return 1
+  [ -z "$(printf '%s\n' "$listing" | "$SED" -n '2,$p')" ] || { echo "install: $path carries an ACL" >&2; return 1; }
 }
 
 # Never use Apple's xcode-select dispatch shims as root or atelierd.
-OTOOL=/Library/Developer/CommandLineTools/usr/bin/llvm-otool
 check_tools() {
   local tool
-  for tool in "$GIT" "$OTOOL"; do
-    [ -x "$tool" ] || fail "missing $tool; PAVI can install Command Line Tools with: xcode-select --install"
-    trusted_source "$tool" || fail "unsafe tool $tool; repair its ownership/permissions before continuing"
+  for tool in "$GIT"; do
+    trusted_source "$tool" || fail "unsafe or missing tool $tool; repair ownership/permissions, or install Command Line Tools: /usr/bin/xcode-select --install (requires the Mac screen over SSH); PAVI can also download the Command Line Tools package"
+    [ -x "$tool" ] || fail "$tool is not executable"
   done
 }
 
-[ -n "$TEST" ] || { check_tools; trusted_source "$NODE" || fail "unsafe node at $NODE"; }
+check_node() {
+  local description
+  description=$("$FILE" -b "$1") || fail "cannot identify node"
+  [[ "$description" = *Mach-O*executable* ]] || fail "node must be a Mach-O executable"
+}
+check_lock_parent() {
+  local d=$1
+  while :; do
+    trusted_entry "$d" || fail "unsafe lock directory $d"
+    [ "$d" != / ] || break
+    d=${d%/*}; [ -n "$d" ] || d=/
+  done
+}
+if [ "${INSTALL_SERVER_LIB:-}" = 1 ] && [ "$EUID" != 0 ]; then return 0 2>/dev/null || exit 0; fi
+if [ -n "$TEST" ]; then
+  # Only the simulated Git operation uses the stand-in; tool validation is real.
+  TEST_GIT=$GIT
+  GIT=/Library/Developer/CommandLineTools/usr/bin/git
+  check_tools
+  GIT=$TEST_GIT
+  safe_dir "$HOME_DIR"
+else
+  check_tools
+  trusted_source "$NODE" || fail "unsafe node at $NODE"
+fi
+check_node "$NODE"
 
 # One lock for both environments: their service home is shared. shlock
 # atomically acquires a PID file and reclaims it only if that PID is dead.
 LOCK=/Library/Atelier/lock/install.lock
-if [ -n "$TEST" ]; then LOCK=$HOME_DIR/install.lock
+if [ -n "$TEST" ]; then safe_dir "$HOME_DIR"; LOCK=$HOME_DIR/install.lock
 else
+  check_lock_parent /Library/Atelier/lock
   for d in / /Library /Library/Atelier /Library/Atelier/lock; do
     safe_dir "$d"
     [ "$("$STAT" -f %Su "$d")" = root ] || fail "$d is not root-owned"
@@ -447,7 +484,7 @@ for (const [path, p] of Object.entries(lock.packages)) {
     if (!name.startsWith("package/") || /(^|\/)\.\.(\/|$)/.test(name)) no(`${path}'s package names ${name}, outside package/`);
   }
   mkdirSync(join(dir, path), { recursive: true });
-  execFileSync("/usr/bin/tar", ["-xzf", tgz, "-C", join(dir, path), "--strip-components", "1"]);
+  execFileSync("/usr/bin/tar", ["-xzof", tgz, "-C", join(dir, path), "--strip-components", "1"]);
   rmSync(tgz);
 }
 console.log(`install: ${n} runtime package${n === 1 ? "" : "s"} fetched and checked against the lock file`);

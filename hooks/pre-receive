@@ -24,6 +24,7 @@
 //      owner has not cleared refuses the push, naming file and line.
 //   6. The private-file guard: no commit adds a private path.
 //   7. The grant is still live, asked of the server at hook time.
+import { gitCommand } from "../src/git/command.mjs";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
@@ -52,7 +53,7 @@ const [old, sha, ref] = lines[0].split(" ");
 if (!writes.test(ref)) refuse(`this credential writes ${writes.text} only, not ${ref.replace(/^refs\/heads\//, "")}`);
 if (ZERO.test(sha)) refuse(`no deletes: ${ref.replace(/^refs\/heads\//, "")} stays; the server deletes task branches itself`);
 
-const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const git = (...args) => execFileSync(gitCommand(), args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const guarded = ref === `refs/heads/${branch}` || ref.startsWith("refs/heads/plan/") || ref === NOTES;
 if (guarded && !ZERO.test(old)) {
   try { git("merge-base", "--is-ancestor", old, sha); } catch { refuse(`${ref.replace(/^refs\/heads\//, "")} moves by fast-forward only`); }

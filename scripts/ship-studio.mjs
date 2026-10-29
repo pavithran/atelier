@@ -22,6 +22,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+export const SHIP_GIT = process.platform === "darwin" ? "/Library/Developer/CommandLineTools/usr/bin/git" : "git";
 const COMMIT = /^[a-f0-9]{40}$/;
 const HOST = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 export const ENVIRONMENTS = ["staging", "production"];
@@ -35,7 +36,7 @@ export function sourceHead({ cwd = process.cwd(), env = process.env } = {}) {
   if (typeof expected !== "string" || !COMMIT.test(expected)) {
     throw new Error("ATELIER_SHIP_HEAD must name the source commit captured by atelier ship.");
   }
-  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  const git = (...args) => execFileSync(SHIP_GIT, args, { cwd, encoding: "utf8" }).trim();
   if (git("rev-parse", "HEAD") !== expected) throw new Error("The checkout moved from the source commit captured by atelier ship.");
   if (git("status", "--porcelain", "--untracked-files=all")) throw new Error("The checkout has uncommitted changes; refusing to deploy from it.");
   return expected;
@@ -83,13 +84,13 @@ export async function deployStudio({ cwd = process.cwd(), env = process.env, env
   // the commit: after a landing it does. The installer checks again itself.
   const { main } = await liveVersion(versionUrl, fetchImpl);
   if (typeof main !== "string" || !COMMIT.test(main)) throw new Error(`${versionUrl} names no branch head (main is ${JSON.stringify(main)}); the project's branch on the Studio cannot be checked.`);
-  const git = (...args) => run("git", args, { cwd, encoding: "utf8" });
+  const git = (...args) => run(SHIP_GIT, args, { cwd, encoding: "utf8" });
   if (git("cat-file", "-e", `${main}^{commit}`).status !== 0) throw new Error(`The Studio's branch head ${main} is not in this checkout; fetch it, then ship again.`);
   if (git("merge-base", "--is-ancestor", head, main).status !== 0) throw new Error(`${head} is not on the project's branch on the Studio (its head is ${main}); only landed commits are installed.`);
-  const install = ["sudo", INSTALLER, "--env", environment, head];
+  const install = ["/usr/bin/sudo", "--", INSTALLER, "--env", environment, head];
   console.log(`Installing ${head} on ${environment} with ${INSTALLER} under sudo${host ? ` on ${host}` : ""}; sudo asks for the administrator password.`);
   const r = host
-    ? run("ssh", ["-t", host, install.join(" ")], { stdio: "inherit", env })
+    ? run("/usr/bin/ssh", ["-t", "--", host, ...install], { stdio: "inherit", env })
     : run(install[0], install.slice(1), { stdio: "inherit", env });
   if (r.error) throw r.error;
   if (r.status !== 0) {

@@ -1,3 +1,4 @@
+import { gitCommand } from "./command.mjs";
 // Moving a project's repository to the Studio (Atelier 2.0, task 11; design
 // section 5, steps 4 to 7). The server itself fetches from the old host, an
 // Artifacts baseline or any Git remote the developer names, and writes the
@@ -38,7 +39,7 @@ function gitEnv(token) {
 // Runs git in the bare repository `dir`. A failure's message is git's own
 // last lines, with any token taken out.
 function git(dir, args, token = null, timeout = 15 * 60_000) {
-  return new Promise((ok, fail) => execFile("git", args, { cwd: dir, encoding: "utf8", env: gitEnv(token), maxBuffer: 1 << 26, timeout }, (err, stdout, stderr) => {
+  return new Promise((ok, fail) => execFile(gitCommand(), args, { cwd: dir, encoding: "utf8", env: gitEnv(token), maxBuffer: 1 << 26, timeout }, (err, stdout, stderr) => {
     if (!err) return ok(stdout.trim());
     let said = String(stderr || err.message).trim().split("\n").filter((l) => !/^hint:/.test(l)).slice(-3).join(" ").slice(0, 400);
     if (token) said = said.split(token).join("[token]");

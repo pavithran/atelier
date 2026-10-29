@@ -19,7 +19,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
-import { deployStudio, INSTALLER, parseArgs, sourceHead, verifyStudio } from "../scripts/ship-studio.mjs";
+import { deployStudio, INSTALLER, SHIP_GIT, parseArgs, sourceHead, verifyStudio } from "../scripts/ship-studio.mjs";
 
 const SCRIPT = resolve("scripts/studio/install-server.sh");
 const darwin = process.platform === "darwin" ? false : "the install script reads owners with BSD stat; macOS only";
@@ -107,7 +107,7 @@ exec /usr/bin/git "$@"`);
     child.on("close", (status) => done({ status, stdout, stderr }));
   });
   const commitOf = (dir) => (existsSync(join(home, dir, "COMMIT")) ? readFileSync(join(home, dir, "COMMIT"), "utf8").trim() : null);
-  return { home, repo, env, sync, install, commitOf, loaded: () => existsSync(join(home, "loaded")), launchctl: () => (existsSync(join(home, "launchctl.log")) ? readFileSync(join(home, "launchctl.log"), "utf8") : "") };
+  return { home, bin, repo, env, sync, install, commitOf, loaded: () => existsSync(join(home, "loaded")), launchctl: () => (existsSync(join(home, "launchctl.log")) ? readFileSync(join(home, "launchctl.log"), "utf8") : "") };
 }
 
 // Installs `commit` and checks it answered.
@@ -142,19 +142,19 @@ test("ship runs the fixed installer under sudo through ssh -t with the environme
   const head = c.head();
   const calls = [];
   const run = (cmd, args, options) => {
-    if (cmd === "git") return spawnSync(cmd, args, options);
+    if (cmd === SHIP_GIT) return spawnSync(cmd, args, options);
     calls.push({ cmd, args, stdio: options.stdio });
     return { status: 0 };
   };
   const live = (main) => async () => Response.json({ commit: OLD, main });
   assert.equal(await deployStudio({ cwd: c.cwd, env: { ATELIER_SHIP_HEAD: head }, environment: "production", host: "ai-studio", versionUrl: URL_, run, fetchImpl: live(head) }), head);
-  assert.deepEqual(calls, [{ cmd: "ssh", args: ["-t", "ai-studio", `sudo /Library/Atelier/install-server.sh --env production ${head}`], stdio: "inherit" }]);
+  assert.deepEqual(calls, [{ cmd: "/usr/bin/ssh", args: ["-t", "--", "ai-studio", "/usr/bin/sudo", "--", INSTALLER, "--env", "production", head], stdio: "inherit" }]);
   // A branch head ahead of the commit holds it too.
   const ahead = c.commit("later.txt", "x");
   c.git("checkout", "-q", "HEAD~1");
   calls.length = 0;
   await deployStudio({ cwd: c.cwd, env: { ATELIER_SHIP_HEAD: head }, environment: "staging", versionUrl: URL_, run, fetchImpl: live(ahead) });
-  assert.deepEqual(calls, [{ cmd: "sudo", args: ["/Library/Atelier/install-server.sh", "--env", "staging", head], stdio: "inherit" }]);
+  assert.deepEqual(calls, [{ cmd: "/usr/bin/sudo", args: ["--", "/Library/Atelier/install-server.sh", "--env", "staging", head], stdio: "inherit" }]);
   // Not on the branch, not known here, or not reported: nothing runs.
   c.git("checkout", "-q", "main");
   calls.length = 0;
@@ -183,7 +183,7 @@ test("ship's deploy, through a stand-in sudo, has root build the release from th
   const head = c.head();
   c.put("untracked.txt", "not in the commit\n");
   rmSync(join(c.cwd, "untracked.txt"));
-  await deployStudio({ cwd: c.cwd, env: { ...s.env, ATELIER_SHIP_HEAD: head }, environment: "staging", versionUrl: URL_, fetchImpl: async () => Response.json({ commit: OLD, main: head }) });
+  await deployStudio({ cwd: c.cwd, env: { ...s.env, ATELIER_SHIP_HEAD: head }, environment: "staging", versionUrl: URL_, fetchImpl: async () => Response.json({ commit: OLD, main: head }), run: (cmd, args, opts) => cmd === "/usr/bin/sudo" ? spawnSync(join(s.bin, "sudo"), args.slice(1), { ...opts, env: s.env }) : spawnSync(cmd, args, opts) });
   assert.equal(s.commitOf("server"), head);
   assert.equal(s.commitOf("server.prev"), OLD);
   assert.ok(s.loaded());

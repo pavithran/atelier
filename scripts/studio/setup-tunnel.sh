@@ -1,12 +1,26 @@
-#!/bin/bash
+#!/bin/bash -p
+# Privileged bash ignores BASH_ENV, imported functions and shell options.
+# Only SUDO_USER is retained for the optional developer-owned DNS command.
+if builtin test "$EUID" = 0; then
+  case ":$SHELLOPTS:" in *:privileged:*) ;; *) builtin echo "privileged bash (-p) is required" >&2; exit 1 ;; esac
+  for inherited in $(builtin compgen -e); do
+    case "$inherited" in SUDO_USER) continue ;; esac
+    builtin export -n "$inherited"
+    builtin unset "$inherited" 2>/dev/null || :
+  done
+  export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
+fi
+unset DEVELOPER_DIR
+umask 077
+cd /
 # Atelier 2.0 on the Studio: the Cloudflare Tunnel and Access for the owner
 # pages (design-branches-2026-10-28.md, sections 4.10 and 4.11; plan task 9).
 # Run as root on the Studio, by the developer, who types the administrator
 # password at sudo's prompt. Two steps, each run once:
 #
-#   sudo bash setup-tunnel.sh CLOUDFLARED CREDENTIALS.json
+#   /usr/bin/sudo /bin/bash -p setup-tunnel.sh CLOUDFLARED CREDENTIALS.json
 #       staging, after setup-server.sh --env staging (run on 2026-10-28)
-#   sudo bash setup-tunnel.sh --production CLOUDFLARED CREDENTIALS.json ACCESS_AUD [--route-dns ORIGIN_CERT]
+#   /usr/bin/sudo /bin/bash -p setup-tunnel.sh --production CLOUDFLARED CREDENTIALS.json ACCESS_AUD [--route-dns ORIGIN_CERT]
 #       production, at the cut-over only, after setup-server.sh --env production
 #
 # CLOUDFLARED       the cloudflared binary to install for the daemon
@@ -49,6 +63,39 @@ set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 077
 
+STAT=/usr/bin/stat
+LS=/bin/ls
+SED=/usr/bin/sed
+GREP=/usr/bin/grep
+CAT=/bin/cat
+LAUNCHCTL=/bin/launchctl
+SEQ=/usr/bin/seq
+SLEEP=/bin/sleep
+PGREP=/usr/bin/pgrep
+PLUTIL=/usr/bin/plutil
+RM=/bin/rm
+MV=/bin/mv
+INSTALL=/usr/bin/install
+MKDIR=/bin/mkdir
+MKTEMP=/usr/bin/mktemp
+CP=/bin/cp
+CHMOD=/bin/chmod
+AWK=/usr/bin/awk
+DSCL=/usr/bin/dscl
+CHOWN=/usr/sbin/chown
+SUDO=/usr/bin/sudo
+ID_CMD=/usr/bin/id
+CURL=/usr/bin/curl
+FILE=/usr/bin/file
+OTOOL=/Library/Developer/CommandLineTools/usr/bin/llvm-otool
+
+
+if [ "$EUID" = 0 ]; then
+  for tool in "$STAT" "$LS" "$SED" "$GREP" "$CAT" "$LAUNCHCTL" "$SEQ" "$SLEEP" "$PGREP" "$PLUTIL" "$RM" "$MV" "$INSTALL" "$MKDIR" "$MKTEMP" "$CP" "$CHMOD" "$AWK" "$DSCL" "$CHOWN" "$SUDO" "$ID_CMD" "$CURL" "$FILE"; do
+    [ -f "$tool" ] && [ -x "$tool" ] && [ "$("$STAT" -f %Su "$tool")" = root ] || { echo "unsafe system tool $tool" >&2; exit 1; }
+  done
+fi
+
 USAGE="usage: setup-tunnel.sh CLOUDFLARED CREDENTIALS.json
        setup-tunnel.sh --production CLOUDFLARED CREDENTIALS.json ACCESS_AUD [--route-dns ORIGIN_CERT]"
 MODE=staging
@@ -83,7 +130,10 @@ fail() { echo "setup: $*" >&2; exit 1; }
 dry() { [ "${DRYRUN:-}" = 1 ]; }
 run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
 
-dry || [ "$(id -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
+if ! dry; then
+  [[ "$DEV" =~ ^[a-z_][a-z0-9_-]*$ ]] && [ "$DEV" != root ] && "$ID_CMD" -u "$DEV" >/dev/null 2>&1 || fail "SUDO_USER must name a real developer account"
+fi
+dry || [ "$("$ID_CMD" -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
 [ -f "$CF_SRC" ] || [ -L "$CF_SRC" ] || fail "no cloudflared at $CF_SRC"
 [ -f "$CREDS_SRC" ] && [ ! -L "$CREDS_SRC" ] || fail "no credentials file at $CREDS_SRC"
 
@@ -104,30 +154,68 @@ fi
 safe_dir() {
   local d=$1 owner
   [ -d "$d" ] && [ ! -L "$d" ] || fail "$d is not a plain directory"
-  owner=$(stat -f %Su "$d")
+  owner=$("$STAT" -f %Su "$d")
   [ "$owner" = root ] || [ "$owner" = "$SVC" ] || fail "$d is owned by $owner"
-  [ $(( 0$(stat -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
-  ! ls -lde "$d" | sed -n '2,$p' | grep -q . || fail "$d carries an ACL"
+  [ $(( 0$("$STAT" -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
+  ! "$LS" -lde "$d" | "$SED" -n '2,$p' | "$GREP" -q . || fail "$d carries an ACL"
 }
+trusted_source() {
+  local path=$1 part current= rest
+  case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+  rest=${path#/}
+  trusted_entry / || return 1
+  while [ -n "$rest" ]; do
+    part=${rest%%/*}
+    if [ "$rest" = "$part" ]; then rest=; else rest=${rest#*/}; fi
+    case "$part" in ''|.) continue ;; ..) echo "setup: source path contains .." >&2; return 1 ;; esac
+    current="$current/$part"
+    trusted_entry "$current" || return 1
+  done
+  [ -f "$path" ] || { echo "setup: $path is not a source file" >&2; return 1; }
+}
+trusted_entry() {
+  local path=$1 listing
+  [ ! -L "$path" ] && { [ -d "$path" ] || [ -f "$path" ]; } || { echo "setup: $path is not a plain source" >&2; return 1; }
+  [ "$("$STAT" -f %Su "$path")" = root ] || { echo "setup: $path is not root-owned" >&2; return 1; }
+  [ $(( 0$("$STAT" -f %Lp "$path") & 022 )) = 0 ] || { echo "setup: $path is group/world-writable" >&2; return 1; }
+  listing=$("$LS" -lde "$path") || return 1
+  [ -z "$(printf '%s\n' "$listing" | "$SED" -n '2,$p')" ] || { echo "setup: $path carries an ACL" >&2; return 1; }
+}
+
+if ! dry; then
+  trusted_source "$OTOOL" || fail "unsafe or missing Command Line Tools llvm-otool; /usr/bin/xcode-select --install requires the Mac screen, or download the package"
+  [ -x "$OTOOL" ] || fail "llvm-otool is not executable"
+fi
 safe_dir /Library/LaunchDaemons
-dry || { dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-server.sh first"; }
+dry || { "$DSCL" . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-server.sh first"; }
 dry || { safe_dir "$HOME_DIR"; safe_dir "$HOME_DIR/bin"; safe_dir "$HOME_DIR/secrets"; safe_dir "$HOME_DIR/secrets/$MODE"; }
 if ! dry && { [ ! -f "$T_PLIST" ] || [ -L "$T_PLIST" ]; }; then fail "no $MODE LaunchDaemon; run setup-server.sh --env $MODE first"; fi
 
-WORK=$(mktemp -d /var/tmp/atelier-tunnel.XXXXXX)
-trap 'rm -rf "$WORK"' EXIT
+WORK=$("$MKTEMP" -d /var/tmp/atelier-tunnel.XXXXXX)
+trap '"$RM" -rf "$WORK"' EXIT
 
 # 1. Inputs into root-owned storage, then checked there.
-cp -L "$CF_SRC" "$WORK/cloudflared"
-chmod 755 "$WORK/cloudflared"
-cp "$CREDS_SRC" "$WORK/creds.json"
-otool -L "$WORK/cloudflared" > "$WORK/libs" || fail "cloudflared is not a Mach-O binary"
-sed 1d "$WORK/libs" | awk '{print $1}' > "$WORK/libs.list"
-if grep -vE '^(/System/Library/|/usr/lib/)' "$WORK/libs.list" >/dev/null; then fail "cloudflared links a library outside the system ones"; fi
+"$CP" -L "$CF_SRC" "$WORK/cloudflared"
+"$CHMOD" 755 "$WORK/cloudflared"
+"$CP" "$CREDS_SRC" "$WORK/creds.json"
+description=$("$FILE" -b "$WORK/cloudflared") || fail "cannot identify cloudflared"
+[[ "$description" = *Mach-O*executable* ]] || fail "cloudflared must be a Mach-O executable"
+"$OTOOL" -arch all -L "$WORK/cloudflared" > "$WORK/libs" 2> "$WORK/lib-errors" || fail "cannot read cloudflared libraries"
+[ ! -s "$WORK/lib-errors" ] || fail "otool reported an error"
+count=0
+while IFS= read -r line; do
+  case "$line" in "$WORK/cloudflared:"|"$WORK/cloudflared (architecture "*"):") continue ;; esac
+  [[ "$line" =~ ^[[:space:]]+(/[^[:space:]]+)[[:space:]]+\(compatibility\ version ]] || fail "invalid cloudflared library: $line"
+  lib=${BASH_REMATCH[1]}
+  case "$lib" in /System/Library/*|/usr/lib/*) ;; *) fail "cloudflared links outside the system libraries" ;; esac
+  case "$lib" in */../*|*/./*) fail "noncanonical cloudflared library" ;; esac
+  count=$((count+1))
+done < "$WORK/libs"
+[ "$count" -gt 0 ] || fail "empty cloudflared library list"
 for key in AccountTag TunnelSecret TunnelID; do
-  plutil -extract "$key" raw -o - "$WORK/creds.json" >/dev/null 2>&1 || fail "the credentials file has no $key"
+  "$PLUTIL" -extract "$key" raw -o - "$WORK/creds.json" >/dev/null 2>&1 || fail "the credentials file has no $key"
 done
-[ "$(plutil -extract TunnelID raw -o - "$WORK/creds.json")" = "$TUNNEL" ] || fail "the credentials are not for tunnel $TUNNEL"
+[ "$("$PLUTIL" -extract TunnelID raw -o - "$WORK/creds.json")" = "$TUNNEL" ] || fail "the credentials are not for tunnel $TUNNEL"
 
 # 2. Everything is prepared and checked here before any service stops.
 T="$HOME_DIR/secrets/tunnel"
@@ -136,7 +224,7 @@ S="$HOME_DIR/secrets/$MODE"
 # an earlier one that gave production its public origin.
 with_prod=
 if [ "$MODE" = production ]; then with_prod=1
-elif [ -f "$PROD_PLIST" ] && [ ! -L "$PROD_PLIST" ] && [ "$(plutil -extract EnvironmentVariables.PUBLIC_ORIGIN raw -o - "$PROD_PLIST" 2>/dev/null)" = "https://$HOSTNAME_PROD" ]; then with_prod=1
+elif [ -f "$PROD_PLIST" ] && [ ! -L "$PROD_PLIST" ] && [ "$("$PLUTIL" -extract EnvironmentVariables.PUBLIC_ORIGIN raw -o - "$PROD_PLIST" 2>/dev/null)" = "https://$HOSTNAME_PROD" ]; then with_prod=1
 fi
 {
   printf 'tunnel: %s\ncredentials-file: %s\nno-autoupdate: true\ningress:\n' "$TUNNEL" "$T/$TUNNEL.json"
@@ -144,11 +232,11 @@ fi
   [ -z "$with_prod" ] || printf '  - hostname: %s\n    service: %s\n' "$HOSTNAME_PROD" "$ORIGIN_PROD"
   printf '  - service: http_status:404\n'
 } > "$WORK/config.yml"
-if dry && [ "$MODE" = production ]; then sed 's/^/+ config.yml: /' "$WORK/config.yml"; fi
+if dry && [ "$MODE" = production ]; then "$SED" 's/^/+ config.yml: /' "$WORK/config.yml"; fi
 for pair in "CF_ACCESS_ISS=$ACCESS_ISS" "CF_ACCESS_AUD=$ACCESS_AUD" "CF_ACCESS_OWNER_EMAIL=$ACCESS_EMAIL"; do
   printf '%s\n' "${pair#*=}" > "$WORK/${pair%%=*}"
 done
-cat > "$WORK/plist" <<PLIST
+"$CAT" > "$WORK/plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -178,14 +266,14 @@ cat > "$WORK/plist" <<PLIST
 </dict>
 </plist>
 PLIST
-plutil -lint "$WORK/plist" >/dev/null || fail "the tunnel plist does not parse"
+"$PLUTIL" -lint "$WORK/plist" >/dev/null || fail "the tunnel plist does not parse"
 if dry; then
   echo "+ (copy $T_PLIST, set PUBLIC_ORIGIN to https://$T_HOST, check it parses)"
 else
-  cp "$T_PLIST" "$WORK/server.old.plist"
-  cp "$T_PLIST" "$WORK/server.plist"
-  plutil -replace EnvironmentVariables.PUBLIC_ORIGIN -string "https://$T_HOST" "$WORK/server.plist"
-  plutil -lint "$WORK/server.plist" >/dev/null || fail "the edited $MODE plist does not parse"
+  "$CP" "$T_PLIST" "$WORK/server.old.plist"
+  "$CP" "$T_PLIST" "$WORK/server.plist"
+  "$PLUTIL" -replace EnvironmentVariables.PUBLIC_ORIGIN -string "https://$T_HOST" "$WORK/server.plist"
+  "$PLUTIL" -lint "$WORK/server.plist" >/dev/null || fail "the edited $MODE plist does not parse"
 fi
 [ ! -L "$PLIST" ] || fail "$PLIST is a link"
 
@@ -201,20 +289,20 @@ loaded=
 stop_all() {
   local job
   for job in $JOBS; do
-    launchctl print "system/$job" >/dev/null 2>&1 || continue
-    launchctl bootout "system/$job" 2>/dev/null
-    for _ in $(seq 1 20); do launchctl print "system/$job" >/dev/null 2>&1 || break; sleep 0.5; done
-    if launchctl print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop" >&2; return 1; fi
+    "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1 || continue
+    "$LAUNCHCTL" bootout "system/$job" 2>/dev/null
+    for _ in $("$SEQ" 1 20); do "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1 || break; "$SLEEP" 0.5; done
+    if "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop" >&2; return 1; fi
   done
-  for _ in $(seq 1 60); do pgrep -u "$SVC" >/dev/null || break; sleep 0.5; done
-  if pgrep -u "$SVC" >/dev/null; then echo "setup: a process of $SVC is still running" >&2; return 1; fi
+  for _ in $("$SEQ" 1 60); do "$PGREP" -u "$SVC" >/dev/null || break; "$SLEEP" 0.5; done
+  if "$PGREP" -u "$SVC" >/dev/null; then echo "setup: a process of $SVC is still running" >&2; return 1; fi
 }
 # Starts the jobs that were loaded, but those named, which were started already.
 start_loaded() {
   local job skip=" $* " rc=0
   for job in $JOBS; do
     case "$skip" in *" $job "*) continue ;; esac
-    case " $loaded " in *" $job "*) launchctl bootstrap system "/Library/LaunchDaemons/$job.plist" || { echo "setup: $job did not start; sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist" >&2; rc=1; } ;; esac
+    case " $loaded " in *" $job "*) "$LAUNCHCTL" bootstrap system "/Library/LaunchDaemons/$job.plist" || { echo "setup: $job did not start; /usr/bin/sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist" >&2; rc=1; } ;; esac
   done
   return $rc
 }
@@ -235,32 +323,32 @@ restore() {
   if [ -n "$snapshot" ]; then
     local name
     for name in CF_ACCESS_ISS CF_ACCESS_AUD CF_ACCESS_OWNER_EMAIL; do
-      if [ -f "$WORK/old.$name" ]; then install -o "$SVC" -g "$SVC" -m 600 "$WORK/old.$name" "$S/$name" || echo "setup: could not restore $S/$name" >&2
-      elif [ -f "$WORK/none.$name" ] && [ ! -L "$S/$name" ]; then rm -f "$S/$name" || echo "setup: could not remove $S/$name" >&2; fi
+      if [ -f "$WORK/old.$name" ]; then "$INSTALL" -o "$SVC" -g "$SVC" -m 600 "$WORK/old.$name" "$S/$name" || echo "setup: could not restore $S/$name" >&2
+      elif [ -f "$WORK/none.$name" ] && [ ! -L "$S/$name" ]; then "$RM" -f "$S/$name" || echo "setup: could not remove $S/$name" >&2; fi
     done
   fi
-  install -o root -g wheel -m 644 "$WORK/server.old.plist" "$T_PLIST" || echo "setup: could not restore $T_PLIST" >&2
-  [ ! -f "$WORK/config.old.yml" ] || install -o "$SVC" -g "$SVC" -m 600 "$WORK/config.old.yml" "$T/config.yml" || echo "setup: could not restore $T/config.yml" >&2
-  [ ! -f "$WORK/tunnel.old.plist" ] || install -o root -g wheel -m 644 "$WORK/tunnel.old.plist" "$PLIST" || echo "setup: could not restore $PLIST" >&2
+  "$INSTALL" -o root -g wheel -m 644 "$WORK/server.old.plist" "$T_PLIST" || echo "setup: could not restore $T_PLIST" >&2
+  [ ! -f "$WORK/config.old.yml" ] || "$INSTALL" -o "$SVC" -g "$SVC" -m 600 "$WORK/config.old.yml" "$T/config.yml" || echo "setup: could not restore $T/config.yml" >&2
+  [ ! -f "$WORK/tunnel.old.plist" ] || "$INSTALL" -o root -g wheel -m 644 "$WORK/tunnel.old.plist" "$PLIST" || echo "setup: could not restore $PLIST" >&2
   # The server this run changes starts again, as staging's recovery always
   # did; every other job only if it ran.
-  launchctl bootstrap system "$T_PLIST" || echo "setup: the previous $MODE server did not start; sudo launchctl bootstrap system $T_PLIST" >&2
+  "$LAUNCHCTL" bootstrap system "$T_PLIST" || echo "setup: the previous $MODE server did not start; /usr/bin/sudo launchctl bootstrap system $T_PLIST" >&2
   start_loaded "$T_LABEL"
 }
-trap 'status=$?; [ $status = 0 ] || restore; rm -rf "$WORK"; exit $status' EXIT
+trap 'status=$?; [ $status = 0 ] || restore; "$RM" -rf "$WORK"; exit $status' EXIT
 for job in $JOBS; do [ ! -L "/Library/LaunchDaemons/$job.plist" ] || fail "/Library/LaunchDaemons/$job.plist is a link"; done
 if ! dry; then
   # What ran, and the tunnel's current config and plist, so a failure puts
   # them back as they were.
   for job in $JOBS; do
-    if launchctl print "system/$job" >/dev/null 2>&1; then
+    if "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1; then
       [ -f "/Library/LaunchDaemons/$job.plist" ] || fail "$job is loaded but its plist is missing; it could not be started again"
       loaded="$loaded $job"
     fi
   done
   [ ! -L "$T/config.yml" ] || fail "$T/config.yml is a link"
-  [ ! -f "$T/config.yml" ] || cp "$T/config.yml" "$WORK/config.old.yml"
-  [ ! -f "$PLIST" ] || cp "$PLIST" "$WORK/tunnel.old.plist"
+  [ ! -f "$T/config.yml" ] || "$CP" "$T/config.yml" "$WORK/config.old.yml"
+  [ ! -f "$PLIST" ] || "$CP" "$PLIST" "$WORK/tunnel.old.plist"
   stopped=1
   stop_all || fail "the $SVC jobs could not all be stopped"
 fi
@@ -274,43 +362,43 @@ if ! dry; then
   # uses this only once all three are recorded.
   for name in CF_ACCESS_ISS CF_ACCESS_AUD CF_ACCESS_OWNER_EMAIL; do
     [ ! -L "$S/$name" ] || fail "$S/$name is a link"
-    if [ -f "$S/$name" ]; then cp "$S/$name" "$WORK/old.$name"; else : > "$WORK/none.$name"; fi
+    if [ -f "$S/$name" ]; then "$CP" "$S/$name" "$WORK/old.$name"; else : > "$WORK/none.$name"; fi
   done
   snapshot=1
 fi
 [ ! -L "$T" ] || fail "$T is a link"
-run install -o root -g "$SVC" -m 750 "$WORK/cloudflared" "$HOME_DIR/bin/cloudflared.new"
-run mv -f "$HOME_DIR/bin/cloudflared.new" "$HOME_DIR/bin/cloudflared"
-run mkdir -p "$T"
-run chown "$SVC:$SVC" "$T"
-run chmod 700 "$T"
+run "$INSTALL" -o root -g "$SVC" -m 750 "$WORK/cloudflared" "$HOME_DIR/bin/cloudflared.new"
+run "$MV" -f "$HOME_DIR/bin/cloudflared.new" "$HOME_DIR/bin/cloudflared"
+run "$MKDIR" -p "$T"
+run "$CHOWN" "$SVC:$SVC" "$T"
+run "$CHMOD" 700 "$T"
 dry || safe_dir "$T"
 for f in "$T/$TUNNEL.json" "$T/config.yml" "$S/CF_ACCESS_ISS" "$S/CF_ACCESS_AUD" "$S/CF_ACCESS_OWNER_EMAIL" "$HOME_DIR/log/tunnel.log" "$HOME_DIR/log/tunnel.log.prev"; do
   [ ! -L "$f" ] || fail "$f is a link"
 done
-run install -o "$SVC" -g "$SVC" -m 600 "$WORK/creds.json" "$T/$TUNNEL.json"
-run install -o "$SVC" -g "$SVC" -m 600 "$WORK/config.yml" "$T/config.yml"
+run "$INSTALL" -o "$SVC" -g "$SVC" -m 600 "$WORK/creds.json" "$T/$TUNNEL.json"
+run "$INSTALL" -o "$SVC" -g "$SVC" -m 600 "$WORK/config.yml" "$T/config.yml"
 for name in CF_ACCESS_ISS CF_ACCESS_AUD CF_ACCESS_OWNER_EMAIL; do
-  run install -o "$SVC" -g "$SVC" -m 600 "$WORK/$name" "$S/$name"
+  run "$INSTALL" -o "$SVC" -g "$SVC" -m 600 "$WORK/$name" "$S/$name"
 done
 # This run's tunnel log starts empty, so readiness reads this run alone.
-[ ! -e "$HOME_DIR/log/tunnel.log" ] || run mv -f "$HOME_DIR/log/tunnel.log" "$HOME_DIR/log/tunnel.log.prev"
-run install -o root -g wheel -m 644 "$WORK/plist" "$PLIST"
-dry || install -o root -g wheel -m 644 "$WORK/server.plist" "$T_PLIST"
+[ ! -e "$HOME_DIR/log/tunnel.log" ] || run "$MV" -f "$HOME_DIR/log/tunnel.log" "$HOME_DIR/log/tunnel.log.prev"
+run "$INSTALL" -o root -g wheel -m 644 "$WORK/plist" "$PLIST"
+dry || "$INSTALL" -o root -g wheel -m 644 "$WORK/server.plist" "$T_PLIST"
 
 # 5. The server first, then the tunnel in front of it.
-run launchctl bootstrap system "$T_PLIST"
-run launchctl bootstrap system "$PLIST"
+run "$LAUNCHCTL" bootstrap system "$T_PLIST"
+run "$LAUNCHCTL" bootstrap system "$PLIST"
 
 # 6. Both answer: the server with the new origin, the tunnel registered in
 #    this run's log.
 if ! dry; then
   ok=
-  for _ in $(seq 1 30); do
-    if curl -fsS --connect-timeout 1 --max-time 2 "$T_ORIGIN/api/version" >/dev/null 2>&1 \
-      && launchctl print "system/$T_LABEL" 2>/dev/null | grep -q "PUBLIC_ORIGIN => https://$T_HOST" \
-      && grep -q "Registered tunnel connection" "$HOME_DIR/log/tunnel.log" 2>/dev/null; then ok=1; break; fi
-    sleep 1
+  for _ in $("$SEQ" 1 30); do
+    if "$CURL" -fsS --connect-timeout 1 --max-time 2 "$T_ORIGIN/api/version" >/dev/null 2>&1 \
+      && "$LAUNCHCTL" print "system/$T_LABEL" 2>/dev/null | "$GREP" -q "PUBLIC_ORIGIN => https://$T_HOST" \
+      && "$GREP" -q "Registered tunnel connection" "$HOME_DIR/log/tunnel.log" 2>/dev/null; then ok=1; break; fi
+    "$SLEEP" 1
   done
   [ -n "$ok" ] || fail "$MODE or the tunnel did not come up in 30 s; see $HOME_DIR/log/$MODE.log and tunnel.log (sudo tail)"
   stopped=
@@ -327,11 +415,11 @@ if [ -n "$DNS_CERT" ]; then
   if dry; then
     printf '+ sudo -H -u %s %s tunnel --origincert %s route dns --overwrite-dns %s %s\n' "$DEV" "$CF_SRC" "$DNS_CERT" "$TUNNEL" "$T_HOST"
   else
-    sudo -H -u "$DEV" "$CF_SRC" tunnel --origincert "$DNS_CERT" route dns --overwrite-dns "$TUNNEL" "$T_HOST" > "$WORK/dns.out" 2>&1 \
-      || { cat "$WORK/dns.out" >&2; echo "setup: the DNS route failed; the tunnel and $MODE are up, and $T_HOST's DNS is as cloudflared left it" >&2; exit 2; }
-    cat "$WORK/dns.out"
+    "$SUDO" -H -u "$DEV" -- "$CF_SRC" tunnel --origincert "$DNS_CERT" route dns --overwrite-dns "$TUNNEL" "$T_HOST" > "$WORK/dns.out" 2>&1 \
+      || { "$CAT" "$WORK/dns.out" >&2; echo "setup: the DNS route failed; the tunnel and $MODE are up, and $T_HOST's DNS is as cloudflared left it" >&2; exit 2; }
+    "$CAT" "$WORK/dns.out"
     host_re=${T_HOST//./\\.}
-    grep -qE "(Added CNAME $host_re which will route to this tunnel|(^|[[:space:]])$host_re is already configured to route to your tunnel)" "$WORK/dns.out" \
+    "$GREP" -qE "(Added CNAME $host_re which will route to this tunnel|(^|[[:space:]])$host_re is already configured to route to your tunnel)" "$WORK/dns.out" \
       || { echo "setup: cloudflared did not report $T_HOST itself; check the zone's DNS records now: a certificate for another zone adds $T_HOST under that zone" >&2; exit 2; }
     echo "$T_HOST now routes to the tunnel"
   fi

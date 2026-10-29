@@ -1,3 +1,4 @@
+import { gitCommand } from "../git/command.mjs";
 // The Atelier server under Node (Atelier 2.0, task 1; design section 4.2):
 // one process serving `src/index.ts`'s `fetch` over Node's `http`, with the
 // Ledger Durable Objects as SQLite files under the environment's data
@@ -54,7 +55,7 @@ export function deployedMain(root = new URL("../..", import.meta.url)) {
   catch (error) { if (error.code !== "ENOENT") return undefined; }
   if (recorded !== undefined) return COMMIT_ID.test(recorded.trim()) ? recorded.trim() : undefined;
   try {
-    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const head = execFileSync(gitCommand(), ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     return COMMIT_ID.test(head) ? head : undefined;
   } catch { return undefined; }
 }

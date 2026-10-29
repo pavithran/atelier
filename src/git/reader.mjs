@@ -1,3 +1,4 @@
+import { gitCommand } from "./command.mjs";
 // A reader over one bare repository (Atelier 2.0, task 4; design section
 // 4.2): the calls src/diff.ts and the modules beside it make (info, log,
 // readCommit, readTree, readBlob, readFile), answered from Git itself.
@@ -38,7 +39,7 @@ class Batch {
   #chain = Promise.resolve();
 
   constructor(dir, env) {
-    this.#proc = spawn("git", ["cat-file", "--batch"], { cwd: dir, env, stdio: ["pipe", "pipe", "ignore"] });
+    this.#proc = spawn(gitCommand(), ["cat-file", "--batch"], { cwd: dir, env, stdio: ["pipe", "pipe", "ignore"] });
     this.#proc.stdout.on("data", (d) => { this.#buf = this.#buf.length ? Buffer.concat([this.#buf, d]) : d; this.#settle(); });
     const ended = (err) => { this.#end ??= err ?? new Error("git cat-file ended"); this.#settle(); };
     this.#proc.on("error", ended);
@@ -185,7 +186,7 @@ function typeOf(path) {
 
 function revList(dir, args) {
   return new Promise((ok, fail) => {
-    execFile("git", ["rev-list", ...args], { cwd: dir, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+    execFile(gitCommand(), ["rev-list", ...args], { cwd: dir, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
       if (!err) return ok(stdout.split("\n").filter(Boolean));
       // A ref that does not resolve is an empty history.
       if (err.code === 128) return ok([]);
