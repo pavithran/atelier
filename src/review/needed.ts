@@ -31,7 +31,7 @@ export type ReviewRecord = Review & { seq?: number };   // seq: the review event
 // (src/review/tier.ts) runs beside the gate's and never holds the gate's back.
 export interface ReviewRequestView {
   head: string;
-  state: "open" | "claimed" | "answered" | "withdrawn" | "lapsed";
+  state: "open" | "claimed" | "answered" | "withdrawn" | "lapsed" | "released" | "no_verdict";
   claimedBy?: string | null;
   claimedAt?: string | null;   // server-clock time of the last claim renewal
   tier?: boolean;

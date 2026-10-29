@@ -9023,37 +9023,13 @@ export class Ledger extends DurableObject<Env> {
     this.askTierReview(item, need, reviewer, ORCHESTRATOR, at, false, undefined, this.heldOffers());
   }
 
-  // A request number is also its claim generation. Never reopen a claimed
-  // row: late verdicts, skips and cleanup retain the old number forever.
-  // The request is asked again of the same reviewer through the standing
-  // check: one the owner has since paused, reserved or kept from reviewing is
-  // not asked again, and the request is withdrawn with the reason, as
-  // poolChanged withdraws an open one, so the gate asks another.
-  //
-  // A release by the runner, with its note, adds to the stop the successor
-  // carries (t238); a lapsed lease only carries the stop the request had.
-  private replaceReviewClaim(request: number, release?: { note: string; at: string }): void {
-    this.ctx.storage.transactionSync(() => {
-      const row = this.sql.exec(`SELECT item, head, dispatch, briefHash, wanted, tier, topTier, criteria, carried, stopped FROM review_requests WHERE id = ? AND state = 'claimed'`, request).toArray()[0];
-      if (!row) return;
-      this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'claimed'`, request);
-      const d = JSON.parse(row.dispatch as string) as Dispatch;
-      const reviewer = d.agent && d.model ? `${d.agent}/${d.model}` : null;
-      // A refusal for the input's size is kept in the ledger, so no runner
-      // takes the same input again (t230): the request is withdrawn with the
-      // reason, and a new one is asked for at a new head or by the developer.
-      const sizeRefusal = release && release.note.includes(SIZE_REFUSED) ? release.note : undefined;
-      const held = sizeRefusal ?? (reviewer ? actorStanding(this.poolStanding(), reviewer, "review") : null);
-      if (held) {
-        this.log(row.item as string, ORCHESTRATOR, "review.withdrawn", { head: row.head, reviewer, reason: held, request, ...(row.tier === 1 ? { tier: true } : {}) }, new Date(Date.now()).toISOString());
-        return;
-      }
-      const dispatch = { ...this.standingDispatch({ to: d.to, agent: d.agent, model: d.model, note: d.note }, "review", d.by, d.at), job: "review" as const };
-      const prev = parseStop(row.stopped);
-      const stop = release && row.tier == null ? stopAfter(prev, row.head as string, stopReasonOf(release.note), release.note, release.at) : prev;
-      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, tier, topTier, criteria, carried, stopped, openedAt) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
-        row.item, row.head, JSON.stringify(dispatch), row.briefHash, row.wanted, row.tier, row.topTier, row.criteria, row.carried, stop ? JSON.stringify(stop) : null, new Date().toISOString());
-    });
+  // A claimed request its runner released, or answered with no readable
+  // verdict, ends in that state (G6, G11): `released` or `no_verdict`, which
+  // no runner is offered and no verdict answers. Nothing reopens it by itself;
+  // `show` prints the fact with the command that asks again, atelier
+  // review-request ID --reviewer X. The unparsable reply stays kept apart.
+  private endReviewClaim(request: number, state: "released" | "no_verdict"): void {
+    this.sql.exec(`UPDATE review_requests SET state = ? WHERE id = ? AND state = 'claimed'`, state, request);
   }
 
   // A claim whose lease lapsed ends: the request becomes `lapsed`, which no
@@ -9071,13 +9047,22 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  // The requests at the task's head whose claim lapsed, newest first, for show.
-  lapsedRequests(id: string): { request: number; head: string; claimedBy: string; lapsedAt: string; tier: boolean }[] {
+  // The requests at the task's head whose claim ended with no verdict,
+  // newest first, for show: lapsed (the lease ran out), released by its
+  // runner, or answered with no readable verdict (G6, G11).
+  lapsedRequests(id: string): { request: number; head: string; claimedBy: string; state: "lapsed" | "released" | "no_verdict"; at: string; note: string | null; tier: boolean }[] {
     const item = this.item(id);
     if (!item.head) return [];
-    return this.sql.exec(`SELECT id, head, claimedBy, claimedAt, tier FROM review_requests WHERE item = ? AND head = ? AND state = 'lapsed' ORDER BY id DESC`, id, item.head).toArray()
-      .map((r) => ({ request: r.id as number, head: r.head as string, claimedBy: r.claimedBy as string, lapsedAt: new Date(Date.parse(r.claimedAt as string) + REVIEW_LEASE_MS).toISOString(), tier: r.tier === 1 }));
+    const notes = new Map(this.sql.exec(`SELECT data, at FROM events WHERE item_id = ? AND kind = 'review.released' ORDER BY seq`, id).toArray()
+      .map((e) => { const d = JSON.parse(e.data as string) as { request?: number; note?: string }; return [d.request, { note: d.note ?? null, at: e.at as string }] as const; }));
+    return this.sql.exec(`SELECT id, head, claimedBy, claimedAt, state, tier FROM review_requests WHERE item = ? AND head = ? AND state IN ('lapsed', 'released', 'no_verdict') ORDER BY id DESC`, id, item.head).toArray()
+      .map((r) => {
+        const released = notes.get(r.id as number);
+        const lapsed = r.state === "lapsed";
+        return { request: r.id as number, head: r.head as string, claimedBy: r.claimedBy as string, state: r.state as "lapsed" | "released" | "no_verdict", at: lapsed ? new Date(Date.parse(r.claimedAt as string) + REVIEW_LEASE_MS).toISOString() : released?.at ?? (r.claimedAt as string), note: lapsed ? null : released?.note ?? null, tier: r.tier === 1 };
+      });
   }
+
 
   private currentReviewClaim(item: string, actor: string, request?: number): Row {
     const admission = reviewerAdmission(actor, this.project().policy);
@@ -9112,8 +9097,8 @@ export class Ledger extends DurableObject<Env> {
     }
     const row = this.currentReviewClaim(itemId, actor, request);
     const at = new Date().toISOString();
-    this.replaceReviewClaim(row.id as number, { note, at });
-    this.log(itemId, actor, "review.released", { note, request }, at, proved);
+    this.endReviewClaim(row.id as number, "released");
+    this.log(itemId, actor, "review.released", { note, request: row.id as number, next: `atelier review-request ${itemId} --reviewer ${row.claimedBy as string}` }, at, proved);
   }
 
   // The developer withdraws an open, unclaimed review request of the item's
@@ -9188,8 +9173,8 @@ export class Ledger extends DurableObject<Env> {
     // The reply released the request it answered (t613): only such a reply
     // stalls a landing, and the record says so.
     this.sql.exec(`UPDATE unparsable SET json = json_set(json, '$.released', json('true')) WHERE id = (SELECT MAX(id) FROM unparsable WHERE item_id = ?)`, itemId);
-    this.replaceReviewClaim(row.id as number, { note, at });
-    this.log(itemId, actor, "review.released", { note, request }, at, proved);
+    this.endReviewClaim(row.id as number, "no_verdict");
+    this.log(itemId, actor, "review.released", { note, request, noVerdict: true, next: `atelier review-request ${itemId} --reviewer ${actor}` }, at, proved);
     return { released: true };
   }
 

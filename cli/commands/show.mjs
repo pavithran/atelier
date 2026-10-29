@@ -89,8 +89,10 @@ export default async function showCommand() {
   if (d.landing) blocks.push(`Landing: attempt ${d.landing.attempt}, ${d.landing.failedStep ? `failed at ${d.landing.failedStep}${d.landing.files?.length ? ` (${d.landing.files.map(flat).join(", ")})` : ""}` : `at ${d.landing.step}`}, ${String(d.landing.at).slice(0, 16).replace("T", " ")} UTC${d.landing.failedStep && d.landing.tail ? `\n  ${String(d.landing.tail).split("\n").map(flat).join("\n  ")}` : ""}`);
   if (deploy) blocks.push(`Last deploy: ${deployText(deploy)}`);
   if (tier) blocks.push(tierLine(id, tier));
-  // A claim whose lease lapsed is a fact (G6): nothing asks again by itself.
-  if (lapsed.length) blocks.push(lapsed.map((r) => `Review request ${r.request}${r.tier ? " (the tier's)" : ""}: claim by ${flat(r.claimedBy)} lapsed at ${String(r.lapsedAt).slice(0, 16).replace("T", " ")} UTC; ask again with atelier review-request ${id} --reviewer ${flat(r.claimedBy)}${r.tier ? " --tier-review" : ""}, or name another`).join("\n"));
+  // A claim that ended with no verdict is a fact (G6, G11): its lease lapsed,
+  // its runner released it, or its reply held no readable verdict. Nothing
+  // asks again by itself.
+  if (lapsed.length) blocks.push(lapsed.map((r) => endedLine(id, r)).join("\n"));
   if (unclaimed.length) blocks.push(unclaimed.map((r) => unclaimedLine(id, r)).join("\n"));
   if (notes.length) blocks.push(["Notes (atelier file-fix " + id + " --from-note N files one):", ...notes.map(noteLine)].join("\n"));
   if (acted.length) blocks.push(["Acts on the developer token:", ...acted.map(actedLine)].join("\n"));
@@ -133,4 +135,13 @@ export function tierLine(id, t) {
   const eligible = t.candidates.filter((c) => !c.refusal).map((c) => flat(c.actor));
   const refused = t.candidates.filter((c) => c.refusal).map((c) => `${flat(c.actor)} (${flat(c.refusal)})`);
   return `Tier review needed at ${String(t.head).slice(0, 8)} beside ${flat(t.gate)}'s gate review; candidates: ${eligible.join(", ") || "none"}${refused.length ? `; refused: ${refused.join(", ")}` : ""}. Ask it with atelier review-request ${id} --reviewer H/M --tier-review`;
+}
+
+// One review request whose claim ended with no verdict, and how to ask again.
+export function endedLine(id, r) {
+  const when = String(r.at ?? "").slice(0, 16).replace("T", " ");
+  const what = r.state === "lapsed" ? `claim by ${flat(r.claimedBy)} lapsed at ${when} UTC`
+    : r.state === "no_verdict" ? `${flat(r.claimedBy)} replied with no readable verdict at ${when} UTC (the reply is kept: atelier show ${id} --reviews)`
+      : `released by ${flat(r.claimedBy)}'s runner at ${when} UTC${r.note ? `: ${flat(String(r.note).slice(0, 200))}` : ""}`;
+  return `Review request ${r.request}${r.tier ? " (the tier's)" : ""}: ${what}; ask again with atelier review-request ${id} --reviewer ${flat(r.claimedBy)}${r.tier ? " --tier-review" : ""}, or name another`;
 }

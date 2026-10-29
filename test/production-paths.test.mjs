@@ -225,3 +225,25 @@ test("a lapsed review claim is a fact: polling the queue asks no successor, and 
     assert.deepEqual((await L.reviewRequests(id)).map((r) => r.state), ["lapsed", "open"]);
   } finally { await ns.close(); }
 });
+
+test("a released request and one answered with no readable verdict stay on record; nothing reopens them, and review-request does", async () => {
+  const { ns, L, submitted, offers } = await world("ended");
+  try {
+    for (const [n, end] of [[1, "released"], [2, "no_verdict"]]) {
+      const id = await submitted(head(n));
+      await L.requestReview(id, "owner", GPT, POOL, true, false, undefined, await offers());
+      const claim = await L.claimReview(id, GPT, RUNNER, true);
+      if (end === "released") await L.releaseReview(id, GPT, "harness exited 2", true, claim.request);
+      else assert.deepEqual(await L.unparsableReview(id, GPT, claim.head, "the reply had no VERDICT line", "Some text and no verdict.", true, claim.request), { released: true });
+      for (let i = 0; i < 3; i++) await L.queued();
+      assert.deepEqual((await L.reviewRequests(id)).map((r) => r.state), [end], `${end}: no successor request appears by itself`);
+      const ended = (await L.detail(id)).lapsedRequests;
+      assert.deepEqual(ended.map((r) => [r.request, r.state, r.claimedBy]), [[claim.request, end, GPT]]);
+      if (end === "released") assert.equal(ended[0].note, "harness exited 2");
+      else assert.equal((await L.detail(id)).unparsable.length, 1, "the unparsable reply is kept");
+      const again = await L.requestReview(id, "owner", GPT, POOL, true, false, undefined, await offers());
+      assert.equal(again.requested, true);
+      assert.deepEqual((await L.reviewRequests(id)).map((r) => r.state), [end, "open"], `${end}: the command reopens it`);
+    }
+  } finally { await ns.close(); }
+});
