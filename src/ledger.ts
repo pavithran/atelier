@@ -5358,8 +5358,10 @@ export class Ledger extends DurableObject<Env> {
     // The taker leaves the queue (its row, had it one, is spent), and the
     // lease is written as before.
     this.setProjectLandingQueue(rows.filter((w) => w.item !== id));
-    // A resume by the task holding it keeps the holding's id; any other take draws a new one (task 6).
-    const leaseId = held?.item === id && held.id ? held.id : crypto.randomUUID();
+    // A resume by the task whose holding is still live keeps the holding's
+    // id; any other take, a retake after the holding lapsed included, draws
+    // a new one, so a landing grant minted under the old holding stays dead (task 6).
+    const leaseId = held?.item === id && held.id && !landingLeaseLapsed(held, Date.parse(at)) ? held.id : crypto.randomUUID();
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at, id: leaseId } satisfies LandingLease));
     // A take is an event; a landing resuming its own lease is not a new one.
     if (held?.item !== id) this.log(id, actor, "landing.leased", { ...(expired ? { replaced: expired.item, replacedHolder: expired.holder } : {}) }, at);
@@ -5390,6 +5392,9 @@ export class Ledger extends DurableObject<Env> {
         : "";
       throw new RuleError("no_lease", (held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`) + older, 409, `run atelier land ${id} to take the landing lease again`);
     }
+    // A holding that lapsed is over (task 6): it is taken again, with a new
+    // id, never renewed back to life.
+    if (landingLeaseLapsed(held, Date.parse(at))) throw new RuleError("no_lease", `${id}'s landing lease lapsed at ${new Date(Date.parse(held.renewedAt ?? held.at) + LANDING_LEASE_EXPIRY_MS).toISOString().slice(0, 16).replace("T", " ")} UTC without a renewal, so it is not renewed; take it again`, 409, `run atelier land ${id} to take the landing lease again`);
     this.dispatchWaiting();
     const renewed = { ...held, renewedAt: at };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify(renewed));

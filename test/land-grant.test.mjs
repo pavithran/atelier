@@ -8,11 +8,13 @@
 // pre-receive hook (test/land-node-shared.mjs), with `atelier land` and
 // `atelier merge` as child processes. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
-import { writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
 import { criteriaOf } from "../src/criteria.ts";
 import { hashToken } from "../src/git/grants.mjs";
+import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
 import { BUILDER, OWNER, REVIEWER, eventsOf, landingWorld } from "./land-node-shared.mjs";
 
 // Every grant the Git host let in while `during` ran, by kind, and the
@@ -28,6 +30,21 @@ async function grantsUsed(w, during) {
 
 // The status info/refs answers a token with, before Git reads a byte.
 const refsStatus = async (w, token) => (await fetch(`${w.base}/git/demo.git/info/refs?service=git-receive-pack`, { headers: { authorization: `Basic ${Buffer.from(`x:${token}`).toString("base64")}` } })).status;
+
+// Moves the landing lease's last renewal back past its expiry in the
+// server's SQLite file, as a holder that stalled that long looks to the server.
+function lapse(w) {
+  const ledgers = join(w.root, "data", "ledgers");
+  for (const file of readdirSync(ledgers).filter((n) => n.endsWith(".sqlite"))) {
+    const db = new DatabaseSync(join(ledgers, file));
+    db.exec("PRAGMA busy_timeout = 5000");
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'landing-lease'").get();
+    if (row) db.prepare("UPDATE meta SET value = ? WHERE key = 'landing-lease'").run(JSON.stringify({ ...JSON.parse(row.value), renewedAt: new Date(Date.now() - LANDING_LEASE_EXPIRY_MS - 1000).toISOString() }));
+    db.close();
+    if (row) return;
+  }
+  throw new Error("no landing lease to lapse");
+}
 
 const accept = async (w, id) => {
   const r = await w.api("POST", `/projects/demo/items/${id}/accept`, { head: (await w.detail(id)).item.head });
@@ -124,6 +141,17 @@ test("a landing grant goes only to the lease holder, for an accepted task, at it
   // for it was bound to the holding of the lease that ended.
   assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
   assert.equal(await refsStatus(w, second), 401);
+  // Lapsed and retaken by the same task: the holding ended, so the grant
+  // minted under it stays dead, and the lapsed holding is not renewed.
+  const fourth = (await mintLanding(w, id, head)).json.token;
+  assert.equal(await refsStatus(w, fourth), 200);
+  lapse(w);
+  assert.equal(await refsStatus(w, fourth), 401);
+  const renewal = await w.api("POST", "/projects/demo/landing-lease", { item: id, renew: true });
+  assert.equal(renewal.status, 409, renewal.text);
+  assert.equal(renewal.json.error, "no_lease");
+  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: id })).status, 200);
+  assert.equal(await refsStatus(w, fourth), 401);
   // Used: a grant whose landing's merge is recorded is revoked.
   const third = (await mintLanding(w, id, head)).json.token;
   const s = await scratch(w, "used", head);
