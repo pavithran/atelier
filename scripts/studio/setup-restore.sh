@@ -92,48 +92,36 @@ path_state() {
   elif [ -e "$1" ]; then echo "present, not a directory"
   else echo "absent"; fi
 }
-# The state of one path after an incomplete undo, from the flags this run
-# recorded, and the step that puts it back: whatever this run placed at the
-# live path is removed, and the original, if this run moved it, is moved
-# back. Sets `unresolved` when no step can put it back.
+# What this run did to one path, what stands at its two places now (a
+# link named as one), and hints for repairing it by hand.
 manual_steps() {
   local name=$1 cur=$2 old=$3 moved=$4 placing=$5 undone=$6
-  echo "  $name: this run $([ -n "$moved" ] && echo "moved the original to $old" || echo "found no original to move")$([ -n "$placing" ] && echo ", and began placing the restored copy at $cur")."
-  echo "    now: $cur is $(path_state "$cur"); $old is $(path_state "$old")."
-  if [ -n "$undone" ]; then echo "    put back by the recovery; nothing to do."; return; fi
-  if [ -n "$moved" ] && { [ -L "$old" ] || [ ! -d "$old" ]; }; then
-    echo "    the original is not at $old as a directory: find it before anything else."
-    unresolved=1
-    return
+  echo "  $name: this run $([ -n "$moved" ] && echo "moved the original to $old" || echo "moved nothing")$([ -n "$placing" ] && echo ", and began placing the restored copy at $cur")$([ -n "$undone" ] && echo "; the recovery put it back")."
+  echo "    $cur: $(path_state "$cur")"
+  echo "    $old: $(path_state "$old")"
+  [ -z "$undone" ] || return 0
+  if [ -L "$cur" ]; then echo "    hint: $cur is a link; remove the link itself: sudo rm '$cur'"
+  elif [ -n "$placing" ] && ! absent "$cur"; then echo "    hint: remove the partial restored copy: sudo rm -rf '$cur'"; fi
+  if [ -n "$moved" ]; then
+    if [ -d "$old" ] && [ ! -L "$old" ]; then echo "    hint: then move the original back: sudo mv '$old' '$cur'"
+    else echo "    hint: the original is not at $old as a directory; find it first"; fi
   fi
-  if [ -n "$placing" ] || [ -n "$moved" ]; then
-    if ! absent "$cur"; then echo "    sudo rm -rf '$cur'"; fi
-  fi
-  if [ -n "$moved" ]; then echo "    sudo mv '$old' '$cur'"; fi
-  [ -n "$placing" ] || [ -n "$moved" ] || echo "    nothing to do."
 }
 
 # Recovery after the jobs have stopped: the moves undone, and the jobs that
-# ran started again only when every undo succeeded. Otherwise every job
-# stays stopped, since a server started on half-restored or mismatched
-# directories would serve them, or make a missing data directory afresh;
-# what is where is printed, with the commands that finish by hand.
+# ran started again only when every undo succeeded. If any undo step failed,
+# for any reason, every job stays stopped and no start command is printed,
+# since a server started on half-restored or mismatched directories would
+# serve them, or make a missing data directory afresh; what stands at each
+# of the four paths is printed, with repair hints.
 recover() {
   if undo_moves; then start_loaded; return; fi
-  local job unresolved=
   {
     echo "setup: the restore could not be undone completely; every $SVC job is left stopped."
-    echo "setup: what this run did, and what is left:"
+    echo "setup: what this run did, and what stands at each of the four paths:"
     manual_steps "data" "$D" "$D_OLD" "$moved_d" "$placing_d" "$undone_d"
     manual_steps "repos" "$R" "$R_OLD" "$moved_r" "$placing_r" "$undone_r"
-    if [ -n "$unresolved" ]; then
-      echo "setup: do not start the $SVC jobs until each path above is resolved by hand."
-    else
-      echo "  then, and only then, start the jobs:"
-      for job in $JOBS; do
-        case " $loaded " in *" $job "*) echo "  sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist" ;; esac
-      done
-    fi
+    echo "setup: repair these, then run setup-restore.sh again (or bootstrap by hand once all four are as they were)."
   } >&2
   return 1
 }
