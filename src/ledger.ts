@@ -3644,11 +3644,13 @@ export class Ledger extends DurableObject<Env> {
   // read by the push route from the repository and kept for the overlap
   // rule. A head the item has moved past is ignored, so a stale list never
   // counts; null or an empty list leaves the task judged on its scope.
+  // A list longer than CHANGED_FILES_MAX is not kept at all: a cut list would
+  // read as complete, so the task is judged on its scope instead.
   recordChangedFiles(id: string, head: string, paths: string[] | null): void {
     const item = this.item(id);
     if (item.head !== head) return;
-    if (paths === null) { this.sql.exec(`DELETE FROM changed_files WHERE item = ?`, id); return; }
-    this.sql.exec(`INSERT OR REPLACE INTO changed_files (item, head, paths) VALUES (?, ?, ?)`, id, head, JSON.stringify(paths.slice(0, 5000)));
+    if (paths === null || paths.length > CHANGED_FILES_MAX) { this.sql.exec(`DELETE FROM changed_files WHERE item = ?`, id); return; }
+    this.sql.exec(`INSERT OR REPLACE INTO changed_files (item, head, paths) VALUES (?, ?, ?)`, id, head, JSON.stringify(paths));
   }
 
   // Each item with the files it changed at its current head, where known.
@@ -11643,6 +11645,9 @@ export class Ledger extends DurableObject<Env> {
     return seq;
   }
 }
+
+// The most changed files kept for a task's overlap (G13); past it, its scope counts.
+export const CHANGED_FILES_MAX = 5000;
 
 // The events that change an item's holder or push actors (itemActors).
 const ACTOR_EVENT_KINDS: readonly string[] = ["item.claimed", "item.handoff", "item.released", "push.observed", "item.refreshed", "item.landed_fast"];

@@ -120,3 +120,32 @@ test("overlap is judged on the changed files once a task has commits; a held dis
   assert.equal(abandoned.code, 0, `${abandoned.stdout}\n${abandoned.stderr}`);
   assert.ok((await poll()).includes(clash), "offered once its blocker is abandoned");
 });
+
+// Round 1 of astra's review (finding 2): a list past the limit is not cut and
+// taken as complete; the task is judged on its scope, as one with no list is.
+test("a changed-files list past the limit is not kept: the task's glob counts again", async () => {
+  const agentToken = (await api("POST", "/tokens", { actor: BUILDER, projects: ["demo"] })).body.token;
+  const otherToken = (await api("POST", "/tokens", { actor: OTHER, projects: ["demo"] })).body.token;
+  const big = await task("A wide change", ["src/**"]);
+  assert.equal((await cli(["claim", big, "--as", BUILDER], { token: agentToken })).code, 0);
+  const dir = join(cache, "work", "demo", big);
+  writeFileSync(join(dir, "src", "a", "x.txt"), "three\n");
+  await git(dir, "add", ".");
+  await git(dir, "commit", "-q", "-m", "change src/a");
+  assert.equal((await cli(["push", big, "--as", BUILDER], { token: agentToken, cwd: dir })).code, 0);
+  const L = server.namespace.get(server.namespace.idFromName("project:demo"));
+  const head = (await api("GET", `/projects/demo/items/${big}`)).body.item.head;
+  const paths = (n) => Array.from({ length: n }, (_, i) => `src/a/f${i}.txt`);
+  const other = await task("Touches src/b again", ["src/b/**"]);
+  // At the limit the list stands, and src/b is clear of it.
+  await L.recordChangedFiles(big, head, paths(5000));
+  const clear = await cli(["claim", other, "--as", OTHER], { token: otherToken });
+  assert.equal(clear.code, 0, clear.stderr);
+  await cli(["release", other, "--as", OTHER], { token: otherToken });
+  // One past it, the list is dropped and the glob src/** overlaps src/b/**.
+  await L.recordChangedFiles(big, head, paths(5001));
+  const refused = await cli(["claim", other, "--as", OTHER], { token: otherToken });
+  assert.notEqual(refused.code, 0, refused.stdout);
+  assert.match(refused.stderr, new RegExp(`overlap: ${other}'s scope overlaps live ${big}`));
+  await cli(["abandon", big, "--note", "done", "--quote", "abandon it"]);
+});
