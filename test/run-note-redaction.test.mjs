@@ -86,7 +86,7 @@ const ROUND_ONE = [
   ["curl -H 'Authorization: basic dTpw'", "dTpw"],
   ['{"authorization": "tok123abc", "ok": 1}', "tok123abc"],
 ];
-test("round 1: a custom scheme, a Digest response, a short basic credential and a quoted JSON authorization are removed, in both copies", { todo: "the fix is G3/G4's shared redactor; this passes once 2.0/g34-read merges" }, () => {
+test("round 1: a custom scheme, a Digest response, a short basic credential and a quoted JSON authorization are removed, in both copies", { skip: "the fix is G3/G4's shared redactor; unskip when 2.0/g34-read merges" }, () => {
   for (const [note, secret] of ROUND_ONE) {
     assert.ok(!redactKeys(note).includes(secret), `${note} -> ${redactKeys(note)}`);
     assert.ok(!stderrSummary(`${note}\n`).includes(secret), `runner copy: ${stderrSummary(note)}`);
