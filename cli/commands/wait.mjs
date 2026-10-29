@@ -21,8 +21,10 @@ export default async function waitCommand() {
   const result = condition
     ? await waitUntil(condition, (signal) => request("GET", `${P(name)}/situation${condition.ids?.length ? `?tasks=${condition.ids.join(",")}` : ""}`, undefined, OWNER, {}, signal), opts)
     : await (async () => {
-      const id = itemArg(), as = await actor(OWNER), target = args.for ?? "merged";
-      return waitFor(target, (signal) => request("GET", I(name, id), undefined, as, {}, signal), opts);
+      // Who reads is resolved inside the polled read, so a server that is
+      // down at the start is ridden through like one that goes down later.
+      const id = itemArg(), target = args.for ?? "merged";
+      return waitFor(target, async (signal) => request("GET", I(name, id), undefined, await actor(OWNER), {}, signal), opts);
     })();
   // Under --json (or ATELIER_JSON=1) the outcome is one JSON object: on
   // stdout when met, and as every refusal is, {code, detail, next}, on

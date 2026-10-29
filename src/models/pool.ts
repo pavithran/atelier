@@ -254,8 +254,19 @@ const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 // stays so the note still reads. Spaced assignments are left, as code has them.
 const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*=)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
 
+// A credential header (Authorization:, Proxy-Authorization:, X-Api-Key:, any
+// case) loses everything after its colon to the end of the quoted value or
+// the line; a bearer or basic credential, any case and any shape, its token,
+// unless the token is a placeholder (${VAR}, {env:NAME}, <token>, [key removed]).
+const CREDENTIAL_HEADER = /\b((?:proxy-)?authorization|x-api-key|x-auth-token|api-key)(\s*:\s*)("?)[^"\r\n]*/gi;
+const SCHEME_TOKEN = /\b(bearer|basic)(\s+)([^\s"',;]+)/gi;
+// "basic" is also a word: only a base64 credential after it (eight or more
+// characters, with a digit, + / =, or both cases) is taken for one.
+const BASIC_TOKEN = (t: string) => /^[A-Za-z0-9+/=]{8,}$/.test(t) && (/[0-9+/=]/.test(t) || (/[a-z]/.test(t) && /[A-Z]/.test(t)));
 export function redactKeys(s: string): string {
-  return s.replace(SECRET_ASSIGNMENT, "$1[key removed]")
+  return s.replace(CREDENTIAL_HEADER, (_m, name: string, colon: string, quote: string) => `${name}${colon}${quote}[key removed]`)
+    .replace(SCHEME_TOKEN, (m, scheme: string, space: string, token: string) => /^[[{$<]/.test(token) || (scheme.toLowerCase() === "basic" && !BASIC_TOKEN(token)) ? m : `${scheme}${space}[key removed]`)
+    .replace(SECRET_ASSIGNMENT, "$1[key removed]")
     .replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
     .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));
 }

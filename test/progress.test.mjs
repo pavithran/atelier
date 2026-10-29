@@ -313,3 +313,15 @@ test("a codex build reports no command telemetry: said so, never flagged for no 
   assert.equal(progressView(rec, new Date(t + STALL_MS)).stall, "no change in 30 minutes and no child process alive");
   assert.equal(progressView({ ...rec, childAlive: true }, new Date(t + STALL_MS)).stall, null);
 });
+
+test("the shared redactor takes bearer and basic credentials in any case and shape, and credential headers whatever follows", async () => {
+  const { redactKeys } = await import("../src/models/pool.ts");
+  const SECRET = "abcdef12-ghijk345-lmnop678";
+  for (const text of [`Authorization: bearer ${SECRET}`, `AUTHORIZATION: BEARER ${SECRET}`, `curl -H "authorization: Bearer ${SECRET}" x`, `bEaReR ${SECRET}`, `x-api-key: ${SECRET}`, `X-API-KEY:${SECRET} rest`, `Authorization: Basic dXNlcjpwYXNz`, `basic dXNlcjpwYXNz`]) {
+    const out = redactKeys(text);
+    assert.ok(!out.includes(SECRET) && !out.includes("dXNlcjpwYXNz"), `${text} -> ${out}`);
+    assert.ok(!summaryOf("Bash", { command: text }).includes(SECRET.slice(0, 12)));
+    assert.ok(!parseProgress({ task: "t1", actor: BUILDER, startedAt: "2026-10-28T12:00:00.000Z", current: { name: "Bash", summary: text } }).current.summary.includes(SECRET.slice(0, 12)));
+  }
+  assert.equal(redactKeys("a basic test failed"), "a basic test failed", "the word basic alone is prose");
+});

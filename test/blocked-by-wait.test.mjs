@@ -389,3 +389,10 @@ test("under --json a wait that is not met prints {code, detail, next} with the s
   assert.equal(met.code, 0);
   assert.equal(JSON.parse(met.stdout).code, "met");
 });
+
+test("the default single-task wait rides a server down from the start and exits 5 with the JSON object", async () => {
+  const away = await cli(["wait", "t1", "--project", "demo", "--json", "--interval", "0.05"], { ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_RETRY_MS: "" });
+  assert.equal(away.code, 5, away.stderr);
+  const r = JSON.parse(away.stderr.trim().split("\n").at(-1));
+  assert.deepEqual([r.code, Object.keys(r).sort()], ["unreadable", ["code", "detail", "next"]]);
+});
