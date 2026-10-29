@@ -252,10 +252,19 @@ const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 // An assignment whose name holds TOKEN, KEY, SECRET or PASSWORD (API_TOKEN=abc,
 // PASSWORD="x y", written without spaces around the =) loses its value; the name
 // stays so the note still reads. Spaced assignments are left, as code has them.
-const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*=)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
+// A name inside a path (/srv/keys=prod/app.log) is not an assignment (G15),
+// and neither is a value that is an absolute or home path (KEY_FILE=/etc/k).
+const SECRET_ASSIGNMENT = /(?<![\/\\])\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*=)(?!\/|~\/)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
+// An Authorization header loses its whole value, whatever its scheme, and a
+// Bearer or Basic credential loses its value in any case (G15): bearer abc…,
+// BASIC dXNl…, authorization: token abc.
+const AUTH_HEADER = /\b(authorization\s*[:=]\s*)(?:(?:bearer|basic|token|digest)\s+)?("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
+const AUTH_SCHEME = /\b(bearer|basic)\s+[A-Za-z0-9._~+\/=-]{8,}/gi;
 
 export function redactKeys(s: string): string {
-  return s.replace(SECRET_ASSIGNMENT, "$1[key removed]")
+  return s.replace(AUTH_HEADER, "$1[key removed]")
+    .replace(AUTH_SCHEME, "$1 [key removed]")
+    .replace(SECRET_ASSIGNMENT, "$1[key removed]")
     .replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
     .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));
 }
