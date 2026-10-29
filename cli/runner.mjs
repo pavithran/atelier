@@ -3338,8 +3338,10 @@ export async function verifyBlockers(io, ctx, blockers) {
     if (!read.ok) return { failed: `the verification by ${choice.actor} gave no answer: ${read.error}` };
     // PRE-EXISTING counts only when the check was given a base to look at;
     // without one the answer is not one it could give, and the finding blocks.
-    // Who checked and the end of what it said go on the review (G11).
-    return { confirmed: new Set([...read.confirmed, ...(ctx.base ? [] : read.preExisting)]), preExisting: ctx.base ? read.preExisting : new Set(), verifier: choice.actor, answer: String(said).slice(-2000) };
+    // Who checked and the end of what it said go on the review (G11): the
+    // whole reply is redacted before it is cut, so a cut never separates a
+    // credential from the header that names it.
+    return { confirmed: new Set([...read.confirmed, ...(ctx.base ? [] : read.preExisting)]), preExisting: ctx.base ? read.preExisting : new Set(), verifier: choice.actor, answer: redactKeys(String(said)).slice(-2000) };
   } finally {
     await io.removeBrief(brief);
     io.removeDiff(whole);

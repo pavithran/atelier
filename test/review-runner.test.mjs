@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
-import { REVIEW_RENEW_MS } from "../src/rules.ts";
+import { REVIEW_RENEW_MS, cleanVerification } from "../src/rules.ts";
 // What a run report's facts point to: the run's text, kept in a log on the runner's own machine (round 10).
 const logged = (f) => (f?.log ? readFileSync(f.log, "utf8") : "");
 
@@ -2023,6 +2023,33 @@ test("a blocking finding the check does not confirm is recorded as unverified an
     assert.equal(checked.answer, verification);
     assert.deepEqual(checked.demoted, [{ index: 1, label: "unverified", text: "A lapsed claim is never retried." }]);
   }
+});
+
+// Round 3 of astra's review: the verifier's reply is redacted whole, then
+// cut to its last 2,000 characters, on the runner and on the server, so a
+// long Authorization: Digest line across the cut loses its credential.
+const DIGEST_SECRET = "6629fae49393a05397450978507c4ef1";
+const digestReply = () => {
+  const response = `response="${DIGEST_SECRET}"`;
+  // The header name falls before the last 2,000 characters, the response inside them.
+  const filler = Array.from({ length: 60 }, (_, i) => `param${i}="${"v".repeat(20)}"`).join(", ");
+  const line = `Authorization: Digest username="u", ${filler}, ${response}`;
+  return `${line}\nFINDING 1: NOT CONFIRMED because the test passes.`;
+};
+test("a verifier reply whose Authorization: Digest line sits across the cut is redacted before it is cut, on the runner and the server", async () => {
+  const reply = digestReply();
+  assert.ok(reply.length > 2000 && reply.lastIndexOf("Authorization:") < reply.length - 2000 && reply.indexOf(DIGEST_SECRET) > reply.length - 2000, "the line spans the cut");
+  const verdict = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), PROOF]);
+  const { io, calls } = fixture({ verdict, diff: () => HUNK, verification: reply });
+  await runReview(assignment, config, "home:studio", io);
+  const argv = posted(calls);
+  const answer = JSON.parse(argv[argv.indexOf("--verification") + 1]).answer;
+  assert.ok(!answer.includes(DIGEST_SECRET), "the runner's copy");
+  assert.ok(answer.length <= 2000);
+  // The server's copy, given the whole reply.
+  const kept = cleanVerification({ by: "codex/gpt-6", answer: reply, demoted: [] }).answer;
+  assert.ok(!kept.includes(DIGEST_SECRET), "the server's copy");
+  assert.ok(kept.length <= 2000);
 });
 
 test("with two blocking findings, the one the check confirms keeps the rejection and the other is unverified", async () => {
