@@ -11,6 +11,7 @@
 // cli/atelier.mjs owns the server, git and the process: the ship command
 // there passes them in, so this module holds the rules and stays testable.
 
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
@@ -101,7 +102,7 @@ function buildSteps(order, runsFor, hint, push, problems) {
 
 // Atelier's own ship file. Its schema is in docs/ship.md.
 const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "install", "verify-install", "deploy", "verify-deploy", "push", ...ADDED]);
-const RUN_KEYS = new Set(["run", "request", "status", "timeout_seconds", "approval", "description", "if_changed", "retries"]);
+const RUN_KEYS = new Set(["run", "request", "status", "timeout_seconds", "approval", "description", "if_changed", "retries", "terminal"]);
 const DELIVERY_FIELDS = { install: ["installable", "hybrid"], "verify-install": ["installable", "hybrid"], deploy: ["web", "hybrid"], "verify-deploy": ["web", "hybrid"] };
 
 function atelierShip(doc, problems, notes, file) {
@@ -176,6 +177,10 @@ function parseRuns(value, field, problems, file) {
       const ifChanged = parseIfChanged(r.if_changed, where, problems);
       if (!ifChanged) return null;
       extra.ifChanged = ifChanged;
+    }
+    if (r.terminal !== undefined) {
+      if (r.terminal !== true || r.run === undefined) { problems.push(`${where} "terminal" must be true, on a "run"`); return null; }
+      extra.terminal = true;
     }
     if (r.run !== undefined && r.request === undefined) {
       if (!Array.isArray(r.run) || !r.run.length || r.run.some((w) => typeof w !== "string" || !w)) { problems.push(`${where} "run" must be the command and its arguments, as a list of strings`); return null; }
@@ -289,6 +294,7 @@ function runNotes(r, approvals, commit) {
     if (r.kind) parts.push(approvalText(approvals, r.kind, commit));
   }
   if (r.retries) parts.push(`[retried up to ${r.retries} ${r.retries === 1 ? "time" : "times"} if it fails]`);
+  if (r.terminal && !r.skip) parts.push("[has the terminal: it may ask for a password, such as sudo's]");
   return parts.length ? `  ${parts.join(" ")}` : "";
 }
 
@@ -345,6 +351,28 @@ export async function runCommand(argv, { cwd, env, timeoutMs, out = process.stdo
     : r.error ? `could not run ${argv[0]}: ${r.error.message}` : null;
   const status = r.error && !r.signal && !r.timedOut ? null : r.status;
   return { status, signal: r.signal ?? null, output: why ? `${output}\n[atelier] ${why}` : output, durationMs, passed: !r.error && r.status === 0 };
+}
+
+// A run with "terminal": true, such as a deploy whose sudo asks for the
+// administrator password: the command gets this process's terminal, in its
+// process group, so sudo reads the password from the terminal itself and
+// nothing here sees it. Its output goes straight to the terminal and is not
+// kept. It is SIGKILLed when `timeoutMs` passes.
+export async function runTerminal(argv, { cwd, env, timeoutMs }) {
+  const started = Date.now();
+  const r = await new Promise((done) => {
+    let child, timedOut = false;
+    try { child = spawn(argv[0], argv.slice(1), { cwd, env, stdio: "inherit" }); }
+    catch (error) { done({ error }); return; }
+    const timer = timeoutMs ? setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs) : null;
+    child.once("error", (error) => { clearTimeout(timer); done({ error }); });
+    child.once("exit", (status, signal) => { clearTimeout(timer); done({ status, signal, timedOut }); });
+  });
+  const why = r.timedOut ? `ended by SIGKILL after its ${Math.round(timeoutMs / 1000)}s timeout`
+    : r.signal ? `ended by ${r.signal}`
+    : r.error ? `could not run ${argv[0]}: ${r.error.message}` : null;
+  const output = `[atelier] the command had the terminal; its output was shown there and not kept${why ? `\n[atelier] ${why}` : ""}`;
+  return { status: r.error ? null : r.status, signal: r.signal ?? null, output, durationMs: Date.now() - started, passed: !r.error && r.status === 0 };
 }
 
 // The one GET this module makes, for runRequest and the if_changed read.
@@ -509,7 +537,7 @@ export async function ship(ctx) {
         // A retry is the same run: it uses the approval already taken.
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
-          const r = run.argv ? await runCommand(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run);
+          const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });
           if (!run.argv) print(`${s.step}: ${r.output}`);

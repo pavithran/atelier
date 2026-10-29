@@ -24,7 +24,7 @@ export const literalsIn = (text) => [...text.matchAll(LITERAL)].map((m) => m[2])
 
 const W = NAMES[1];
 const DATA = "a project's own files and commands, which Atelier protects and classifies in any project";
-const DEPLOY = "the Workers deploy's tools, which task 9 removes with the deploy";
+const DEPLOY = "atelier server-errors, which reads the Cloudflare Worker's log with wrangler tail and goes with the Worker";
 export const EXCEPTIONS = {
   "src/checks.ts": { why: DATA, literals: [W] },
   "src/how-data.ts": { why: DATA, literals: [`${W}.*`] },
@@ -40,10 +40,6 @@ export const EXCEPTIONS = {
   "test/rules.test.ts": { why: DATA, literals: [`${W}.*`, `${W}.jsonc`, `${W}.j\\u017fonc`] },
   "test/runner-evidence.test.mjs": { why: DATA, literals: [`${W} types`] },
   "test/runner-prepare-policy.spec.ts": { why: DATA, literals: [`${W}.jsonc`] },
-  "scripts/ship-worker.mjs": { why: DEPLOY, literals: [W] },
-  "test/ship-worker.test.mjs": { why: DEPLOY, literals: [W] },
-  "test/ship-staging.test.mjs": { why: DEPLOY, literals: [W] },
-  "test/ship.test.mjs": { why: DEPLOY, literals: [W] },
   "cli/commands/server-errors.mjs": { why: DEPLOY, literals: [`${W} tail --format json`, `${W} tail failed (exit \${code}); no error count is available`, W] },
   "cli/server-errors.test.mjs": { why: DEPLOY, literals: [`${W} tail --format json`] },
 };
