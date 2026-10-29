@@ -260,7 +260,14 @@ const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 // The one list of what names a credential, for assignments and quoted
 // fields alike; AUTH covers authorization.
 const CREDENTIAL_NAMES = "KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|AUTH|CREDENTIAL|COOKIE";
-const SECRET_ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_/.~])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*=)[^\\r\\n]*`, "gi");
+// The same goes for a dotenv or YAML line (PASSWORD = x, password: x): a
+// credential name, then optional spaces, = or :, optional spaces. A query
+// parameter (?token=..., &password=...) loses only its value, to the next
+// &, whitespace or line end; a URL's user:pass@ loses the pass. A value
+// another rule already removed whole is left as it is.
+const SECRET_ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_/.~?&])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*[ \\t]*[=:][ \\t]*(?![ \\t]))(?!\\[key removed\\](?:['"\\s]|$))[^\\r\\n]+`, "gi");
+const SECRET_QUERY = new RegExp(`([?&][A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*=)[^&\\s]*`, "gi");
+const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/:@]*:)([^\s@/]+)(@)/gi;
 
 // A credential header (Authorization:, Proxy-Authorization:, X-Api-Key:, any
 // case) loses everything after its colon: to the quote that closes it when
@@ -275,7 +282,7 @@ const CREDENTIAL_HEADER = new RegExp(`(['"])${HEADER_NAME}(\\s*:\\s*)(?:(?!\\1)[
 // A quoted credential field loses its value whatever its type: a quoted
 // string to its closing quote, anything else (a number, true, null, an object
 // or array) to the end of the line.
-const QUOTED_SECRET_KEY = new RegExp(`(["'])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*)\\1(\\s*:\\s*)(?:(["'])(?:\\\\.|(?!\\4)[^\\\\])*\\4|[^\\r\\n]*)`, "gi");
+const QUOTED_SECRET_KEY = new RegExp(`(["'])([A-Za-z0-9_.-]*(?:${CREDENTIAL_NAMES})[A-Za-z0-9_.-]*)\\1(\\s*[=:]\\s*)(?:(["'])(?:\\\\.|(?!\\4)[^\\\\])*\\4|[^\\r\\n]*)`, "gi");
 // bearer or basic, any case, then whitespace: the next word goes, whatever it
 // is, punctuation included, to the next ASCII whitespace ("basic auth" too).
 // Only a word that is wholly one placeholder holding no secret stays:
@@ -286,6 +293,8 @@ export function redactKeys(s: string): string {
   return s.replace(QUOTED_SECRET_KEY, (_m, q: string, name: string, colon: string, vq: string | undefined) => vq ? `${q}${name}${q}${colon}${vq}[key removed]${vq}` : `${q}${name}${q}${colon}[key removed]`)
     .replace(CREDENTIAL_HEADER, (_m, q: string | undefined, qname: string | undefined, qcolon: string | undefined, name: string | undefined, colon: string | undefined) => q ? `${q}${qname}${qcolon}[key removed]` : `${name}${colon}[key removed]`)
     .replace(SCHEME_TOKEN, (m, scheme: string, space: string, token: string) => PLACEHOLDER.test(token) ? m : `${scheme}${space}[key removed]`)
+    .replace(URL_PASSWORD, "$1[key removed]$3")
+    .replace(SECRET_QUERY, "$1[key removed]")
     .replace(SECRET_ASSIGNMENT, "$1[key removed]")
     .replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
     .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));

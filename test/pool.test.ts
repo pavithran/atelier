@@ -223,7 +223,9 @@ test("redactKeys removes a credential-named assignment's value to the end of the
   assert.equal(redactKeys("API_TOKEN=abc123def456 failed"), "API_TOKEN=[key removed]");
   assert.equal(redactKeys("PASSWORD=hunter2"), "PASSWORD=[key removed]");
   assert.equal(redactKeys('client_secret="two words" next'), 'client_secret=[key removed]');
-  assert.equal(redactKeys('const DURATION_TOKEN = 1'), 'const DURATION_TOKEN = 1');
+  // Spaced and colon forms too since round 9 (dotenv, YAML): code that looks so loses its value as well.
+  assert.equal(redactKeys('const DURATION_TOKEN = 1'), 'const DURATION_TOKEN = [key removed]');
+  assert.equal(redactKeys('const DURATION = 1'), 'const DURATION = 1');
   assert.equal(redactKeys("MODE=fast and TOKENS=1 and keyboard=us"), "MODE=fast and TOKENS=[key removed]");
   assert.equal(redactKeys("API_TOKEN=a b\nnext line"), "API_TOKEN=[key removed]\nnext line");
 });

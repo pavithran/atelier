@@ -85,3 +85,15 @@ test("round 8: an already-removed credential stays only as a whole word, and a c
   }
   assert.equal(redactKeys("Bearer [key removed] next"), "Bearer [key removed] next");
 });
+
+test("round 9: dotenv and YAML credential lines, a URL's password and credential query parameters", () => {
+  for (const [note, secret] of [["PASSWORD = hunter2", "hunter2"], ["password: hunter2", "hunter2"], ["  db.password:   hunter2 # prod", "hunter2"], ["API_TOKEN:hunter2", "hunter2"],
+    ["\"PASSWORD\" = hunter2", "hunter2"], ["postgres://alice:hunter2@localhost/app", "hunter2"], ["redis://:hunter2@cache:6379", "hunter2"],
+    ["GET https://x.test/a?token=hunter2&page=2", "hunter2"], ["https://x.test/a?page=2&password=hunter2 next", "hunter2"], ["password: [key removed]hunter2", "hunter2"]]) {
+    assert.ok(!redactKeys(note).includes(secret), `${note} -> ${redactKeys(note)}`);
+    assert.ok(!stderrSummary(`${note}\n`).includes(secret), `runner copy: ${note}`);
+  }
+  assert.equal(redactKeys("postgres://alice:hunter2@localhost/app"), "postgres://alice:[key removed]@localhost/app");
+  assert.equal(redactKeys("GET https://x.test/a?token=hunter2&page=2 next"), "GET https://x.test/a?token=[key removed]&page=2 next");
+  assert.equal(redactKeys("curl -H 'Authorization: Bearer abc' failed"), "curl -H 'Authorization: [key removed]' failed");
+});
