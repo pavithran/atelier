@@ -1281,15 +1281,20 @@ it("init records main for a repository it creates without a branch, and refuses 
   await expect(repoBranch("branch-bad")).rejects.toThrow();
 });
 
-// The init route's check takes any name Git takes for a branch, letters beyond ASCII included
-// (branchArg), but the repository the Node server makes takes only ASCII (checkBranch in
-// src/git/branches.mjs), so this name is a 500: a known bug found by this port
-// (task 7), left to fix in src and run as a todo, so it reports without
-// failing the run.
-knownBug("init takes a branch name with letters beyond ASCII", { todo: "branchArg and checkBranch disagree on non-ASCII names; init answers 500" }, async () => {
+// The init route took any name Git takes for a branch, letters beyond ASCII
+// included, but the repository the Node server makes takes only ASCII
+// (checkBranch in src/git/branches.mjs), so such a name answered 500 (found
+// by task 7). Both now keep one rule (src/branch-name.ts): init refuses the
+// name, with its next, before any repository is made.
+it("init refuses a branch name with letters beyond ASCII, naming what to do, before making the repository", async () => {
   const res = await branchSend("PUT", "/projects/branch-unicode", "owner", { defaultBranch: "release/übersetzung-2" });
-  expect(res.status, await res.clone().text()).toBe(200);
-  expect(await res.json()).toMatchObject({ project: { branch: "release/übersetzung-2" } });
+  expect(res.status, await res.clone().text()).toBe(400);
+  expect(await res.json()).toEqual({
+    error: "bad_branch",
+    detail: "the default branch must be a branch name of ASCII letters, digits, '.', '_', '/' or '-', such as main or master",
+    next: "check out a branch named that way (such as main) in the project's checkout and run atelier init again",
+  });
+  await expect(repoBranch("branch-unicode")).rejects.toThrow();
 });
 
 it("push events are read on the project's branch, not the one the fork's info reports", async () => {
