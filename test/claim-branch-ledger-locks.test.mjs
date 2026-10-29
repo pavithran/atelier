@@ -77,6 +77,12 @@ const GRANT_WRITES = /SET[^`]*\b(token_id|claim_gen|owner)\s*=|dropToken\(|assig
 // "planned" (which takes no lock on an ordinary task).
 const LANDING_WRITES = /SET[^`]*\b(head|accepted_head)\s*=|update\([^;]*\b(head:|accepted_head:|state: "accepted")|VALUES \('landing-lease'|DELETE FROM meta WHERE key = 'landing-lease'/s;
 
+// Task 13: a refresh grant counts only while its task's refresh lease
+// stands, so the methods that take, renew, record, settle or release that
+// lease lock the task too: those that call the queue's lease transitions or
+// write a lease into the target.
+const REFRESH_LEASE_WRITES = /\b(takeLease|afterRelease|afterSettle|renewLease)\(|\blease: \{/;
+
 // "push" (task 8) is the post-receive record, under the task's lock its push
 // holds, or the task's lock when none does: a task scope.
 function uncovered(source, table = GRANT_LOCKS, WRITES = GRANT_WRITES, allowed = ["task", "planned", "project", "lease", "push"]) {
@@ -110,6 +116,12 @@ test("every Ledger method that writes an item's head or acceptance, or the landi
   const { reachable, missing } = uncovered(LEDGER, GRANT_LOCKS, LANDING_WRITES, ["task", "project", "lease", "push"]);
   assert.ok(reachable.includes("accept") && reachable.includes("recordPush") && reachable.includes("beginProjectLanding"), `the scan found ${reachable.join(", ")}`);
   assert.deepEqual(missing, [], `these Ledger methods write a head, an acceptance or the landing lease, and take no lock: ${missing.join(", ")}; give them a task, lease or project scope in GRANT_LOCKS`);
+});
+
+test("every Ledger method that changes a task refresh's lease takes the task's lock (task 13)", () => {
+  const { reachable, missing } = uncovered(LEDGER, GRANT_LOCKS, REFRESH_LEASE_WRITES, ["task", "project", "push"]);
+  assert.ok(reachable.includes("leaseRefresh") && reachable.includes("releaseRefreshLease") && reachable.includes("recordRefreshToken"), `the scan found ${reachable.join(", ")}`);
+  assert.deepEqual(missing, [], `these Ledger methods change a refresh lease and take no lock: ${missing.join(", ")}; give them a task scope in GRANT_LOCKS`);
 });
 
 test("the scan catches a public method that reaches a writer through another public method", () => {

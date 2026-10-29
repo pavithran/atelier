@@ -116,6 +116,55 @@ test("a handoff requested while a push that passed its hook is paused completes 
   assert.equal(await tipOf(id), head);
 });
 
+// Astra's review of task 13: a task refresh's grant counts only while its
+// lease stands, so the Ledger changes that end or replace the lease take the
+// task's lock too (src/runtime/ledger-locks.mjs). A release asked while a
+// refresh push that passed its hook is paused waits for that push, and the
+// grant writes nothing afterwards.
+test("a refresh lease released while a refresh push that passed its hook is paused waits for the push, and the grant is dead after", async () => {
+  const id = await newTask("Refreshed while it pushes");
+  const claimed = await api("POST", `/projects/demo/items/${id}/claim`, {}, agentToken, BUILDER);
+  assert.equal(claimed.status, 200);
+  const work = await workspace(id, "refresh.txt");
+  await git(work, ...bearer(claimed.body.workspace.token), "push", "-q", remote(), `HEAD:refs/heads/t/${id.slice(1)}`);
+  assert.equal((await api("POST", `/projects/demo/items/${id}/push`, {}, agentToken, BUILDER)).status, 200);
+  const L = server.namespace.get(server.namespace.idFromName("project:demo"));
+  await L.addEvidence({ itemId: id, claim: "git status", grade: "observed", head: await git(work, "rev-parse", "HEAD"), passed: true, by: BUILDER, at: new Date().toISOString(), changedPaths: ["refresh.txt"] });
+  await L.submit(id, BUILDER);
+  await L.accept(id, "owner");
+  await L.noteMainHead("a".repeat(40));
+  const integrator = (await api("POST", "/tokens", { actor: "atelier/integrator", projects: ["demo"] })).body.token;
+  const leased = await api("POST", `/projects/demo/items/${id}/refresh-lease`, { job: "refresh" }, integrator, "atelier/integrator");
+  assert.equal(leased.status, 200, JSON.stringify(leased.body));
+  const grant = leased.body.workspace.token;
+  const dir = await workspace(id, "merge.txt");
+  const head = await git(dir, "rev-parse", "HEAD");
+  rmSync(GO, { force: true });
+  rmSync(PASSED, { force: true });
+  const pushing = tryGit(dir, ...bearer(grant), "push", remote(), `HEAD:refs/heads/t/${id.slice(1)}`);
+  await until(() => existsSync(PASSED));
+  // The hook has passed its grant check; the lease is given back now.
+  let done = null;
+  const release = api("POST", `/projects/demo/items/${id}/refresh-lease`, { release: leased.body.lease.id, reason: "step refresh; given back" }, integrator, "atelier/integrator").then((r) => { done = Date.now(); return r; });
+  await wait(600);
+  assert.equal(done, null, "the release waits for the refresh push");
+  const held = (await L.refreshQueue()).find((t) => t.item === id);
+  assert.equal(held?.target.lease?.id, leased.body.lease.id, "the lease stands while the push it let in runs");
+  const letGo = Date.now();
+  writeFileSync(GO, "");
+  const pushed = await pushing;
+  assert.equal(pushed.code, 0, pushed.stderr);
+  const r = await release;
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.released, true);
+  assert.ok(done >= letGo, "the release completed after the push was let go");
+  assert.equal(await tipOf(id), head, "the push that passed its hook landed");
+  await git(dir, "commit", "-q", "--allow-empty", "-m", "after the release");
+  const late = await tryGit(dir, ...bearer(grant), "push", remote(), `HEAD:refs/heads/t/${id.slice(1)}`);
+  assert.notEqual(late.code, 0, "the grant is dead once its lease is given back");
+  assert.equal(await tipOf(id), head);
+});
+
 test("a handoff from the task page while a push that passed its hook is paused completes only after the push ends", async () => {
   const id = await newTask("Paused push, page handoff");
   const claimed = await api("POST", `/projects/demo/items/${id}/claim`, {}, agentToken, BUILDER);
