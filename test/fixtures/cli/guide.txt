@@ -45,7 +45,7 @@ after approval and passing checks, the developer runs `atelier accept ID`, then
 `atelier merge ID`. For an already accepted task, run `atelier merge ID`,
 not land. Builders and reviewers do not accept or merge their own work.
 `atelier land ID --queue` queues the landing for a runner that lists the land job and holds the registered checkout.
-`atelier land ID` no longer waits for a review: it asks for one, records the land request (`--quote TEXT` names who asked), and the land job runs once the gate counts an approval; `--no-wait` records the request and returns.
+`atelier land ID` no longer waits for a review: it asks for one, records the land request (`--quote TEXT` names who asked), and stops; run it again once the review approves (a land job runs it by itself only under the standing queue-landable instruction); `--no-wait` records the request and returns.
 In fast mode, the developer's standing instruction `atelier decide --standing queue-landable on` lets the stage tick queue a land job for a task that stays landable 5 minutes; without it the tick records the fact and queues nothing.
 A claim makes the task's branch, `t/N`, in the project's repository on the Atelier server at once; a pre-receive hook there lets the task's credential write that branch alone.
 A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in `atelier stuck`, to ask again with `atelier review-request ID --reviewer H/M` or withdraw with `atelier review-withdraw ID --reason TEXT`.

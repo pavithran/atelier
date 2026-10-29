@@ -34,7 +34,7 @@ function repository(t) {
   git('init', '--bare', join(f.dir, 'mirror'));
   git('remote', 'add', 'public', join(f.dir, 'mirror')); git('push', 'public', 'main');
   git('config', 'branch.main.remote', 'public'); git('config', 'branch.main.merge', 'refs/heads/main');
-  // Stub only checks/deploy; git and its history inspection remain real.
+  // Stub only the checks; git and its history inspection remain real.
   f.script('npm', `echo "npm $*" >> "$ATELIER_CACHE/steps"`);
   f.env.NOREPLY = 'public@example.invalid';
   const invoke = () => run('/bin/sh', [post, 't1'], f.env, repo);
@@ -76,14 +76,15 @@ test('full history audit preserves reverted content and requires approval of the
   r = f.invoke();
   assert.equal(r.status, 0, r.stderr);
   const steps = readFileSync(join(f.dir, 'steps'), 'utf8').trim().split('\n');
-  assert.deepEqual(steps.slice(0, 3), ['npm run typecheck', 'npm test', 'npm run deploy']);
+  assert.deepEqual(steps.slice(0, 2), ['npm run typecheck', 'npm test']);
+  assert.ok(!steps.includes('npm run deploy'), 'post-merge deploys nothing; ship deploys');
   f.git('commit', '--allow-empty', '-m', 'new head');
   r = f.invoke();
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stdout, /After clearing every private detail/);
 });
 
-for (const failing of ['typecheck', 'test', 'deploy']) {
+for (const failing of ['typecheck', 'test']) {
   test(`post-merge stops on ${failing} failure before publishing`, (t) => {
     const f = repository(t);
     f.git('commit', '--allow-empty', '-m', 'outgoing');
@@ -97,15 +98,3 @@ for (const failing of ['typecheck', 'test', 'deploy']) {
     assert.ok(!existsSync(join(f.repo, '.git/public-audit/history.patch')));
   });
 }
-
-test('remote smoke checks bracket deployment and a failed after check holds publication', (t) => {
-  const f = repository(t);
-  f.git('commit', '--allow-empty', '-m', 'outgoing');
-  const mirror = f.git('rev-parse', 'public/main');
-  f.env.PUBLIC_AUDIT_HEAD = f.git('rev-parse', 'HEAD');
-  f.env.POST_MERGE_SMOKE = f.script('smoke', `echo "smoke $1" >> "$ATELIER_CACHE/steps"\n[ "$1" = before ]`);
-  const r = f.invoke();
-  assert.equal(r.status, 1, r.stderr);
-  assert.deepEqual(readFileSync(join(f.dir, 'steps'), 'utf8').trim().split('\n').slice(-3), ['smoke before', 'npm run deploy', 'smoke after']);
-  f.git('fetch', 'public'); assert.equal(f.git('rev-parse', 'public/main'), mirror);
-});

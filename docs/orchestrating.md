@@ -885,13 +885,13 @@ steps that follow, and the developer has not yet decided to move them:
   decision and is open; the cost of a per-task suite is measured by `atelier
   flow`, which a wave's landings feed. Until it is decided, run the suite on
   main after each wave.
-- **The deploy and the push to the public mirror.** The same script deploys
-  main and pushes it to the `public` remote after the audit under "After
-  each merge". Atelier can run named post-merge steps for a project (`atelier
-  init --post-merge`, with `atelier land ID --post-merge` to read and resolve
-  a run), but a deploy and a push to a remote the project does not host need
-  the developer's decision, so they stay a script a session runs, once after
-  the wave and not once per task.
+- **The push to the public mirror.** The same script pushes main to the
+  `public` remote after the audit under "After each merge". Atelier can run
+  named post-merge steps for a project (`atelier init --post-merge`, with
+  `atelier land ID --post-merge` to read and resolve a run), but a push to a
+  remote the project does not host needs the developer's decision, so it
+  stays a script a session runs, once after the wave and not once per task.
+  The script deploys nothing; `atelier ship` deploys (docs/ship.md).
 
 `bin/orchestrate/review.sh` also stays: a session without a runner reviews by
 hand with it until the replacement is confirmed in use.
@@ -1060,19 +1060,19 @@ Run `bin/orchestrate/post-merge.sh tN` in the project checkout once a wave
 has landed (after each task when you land one by one) and wait for it. It
 works on main as the checkout pulls it, so one run covers every task the wave
 merged; `tN` names the last. It requires a clean `main`, pulls with
-`--ff-only`, runs `npm run typecheck` and `npm test`, deploys, audits
-outgoing history and publishes: the steps that stay outside Atelier. Any
+`--ff-only`, runs `npm run typecheck` and `npm test`, audits outgoing
+history and publishes: the steps that stay outside Atelier. Any
 failed command stops it and holds the next wave. The steps below explain
 those operations and manual diagnosis; start no further landing while this
 step is pending.
 The script runs the full suite in the clean checkout; a clean clone below
 can reproduce failures independently.
 
-For a task whose platform/runtime behaviour needs a remote smoke check, set
-`POST_MERGE_SMOKE=/absolute/path/to/check`; the executable receives `before`
-and `after` around deployment and must return zero for each. A failure
-holds the next landing. Include the orchestrator's signed-in browser criterion in
-that verification after deployment; a local pass cannot stand in for it.
+A task whose platform or runtime behaviour needs a remote smoke check is
+checked against the deployed server once `atelier ship` has deployed (the
+ship order's `verify-deploy` run, docs/ship.md), and so is the
+orchestrator's signed-in browser criterion; a local pass cannot stand in for
+either.
 
 1. Update and type check:
 
@@ -1110,9 +1110,9 @@ that verification after deployment; a local pass cannot stand in for it.
    deploy itself is the developer's step on the Studio: the server runs from
    a release installed under `/Users/atelierd/server`, which only an
    administrator can replace (`scripts/studio/setup-staging.sh` installs
-   one; `docs/studio.md`). The deploy steps that `post-merge.sh` and the
-   project's ship order still name (`npm run deploy`, `scripts/ship-worker.mjs`)
-   are the 1.x Worker's and do not reach the Studio. The deploy runs no tests,
+   one; `docs/studio.md`). `post-merge.sh` deploys nothing; the deploy step
+   the project's ship order still names (`scripts/ship-worker.mjs`) is the
+   1.x Worker's and does not reach the Studio. The deploy runs no tests,
    which is why step 2 comes first. If it fails, report the error and queue
    no landing that needs the new route.
 4. Publish main to the public mirror once it is checked (t433 makes this a
@@ -1156,7 +1156,7 @@ that verification after deployment; a local pass cannot stand in for it.
    `$(git rev-parse --git-path public-audit)` and stops until
    `PUBLIC_AUDIT_HEAD` names the exact audited head. Setting it acknowledges
    that human inspection; it cannot bypass bad addresses or private paths.
-   On restart, the pending step repeats checks and deployment before pushing;
+   On restart, the pending step repeats the checks before pushing;
    it takes the next task only after the push succeeds. If the push is rejected as
    non-fast-forward, the mirror has a commit main does not: fetch, find it,
    and never force the push.
@@ -1198,9 +1198,11 @@ Before the switch:
    project's registration, the tokens and the pool) and prints the id, `b1`
    say, that restores them with `atelier ledger restore --project P
    --bookmark b1@SERVER`. Cloudflare keeps a Durable Object's history for 30
-   days. The Node server keeps no point-in-time history and refuses both
-   commands with `not_supported`; its way back is the nightly backup
-   (`docs/studio.md`).
+   days. Both commands belong to 1.x: the Node server keeps no
+   point-in-time history and refuses them with `not_supported`. On 2.0 the
+   nightly encrypted backups take their place, restored with
+   `cli/restore.mjs` on the developer's Mac and installed on the Studio with
+   `scripts/studio/setup-restore.sh` (`docs/studio.md`).
 3. Dump each project: `atelier ledger dump --project P --file P.json`.
    The file holds every table of the project's Ledger with its rows, the
    schema version (a hash of every table's columns) and the commit that

@@ -842,11 +842,12 @@ reports what the run measured. It proves three things, and asserts each before
 exiting cleanly:
 
 - **claim spread**: N agents claim N tasks at once; all N succeed and each
-  gets its own workspace;
+  gets its own branch, `t/N`;
 - **claim race**: N agents race for one task; exactly one wins and the other
   N-1 are refused, each refusal naming the holder;
-- **pushes**: with `--push`, each agent makes a tiny commit and pushes it to
-  its own workspace, and the push is observed at its head (without
+- **pushes**: with `--push`, each agent clones its branch, makes a tiny commit
+  and pushes it back to that branch with its task grant, and the push is
+  observed at the branch's head (without
   `--push` no push is made and the phase is skipped, so the run stays cheap).
 
 It then abandons every task it created and prints per-phase throughput and
@@ -859,7 +860,7 @@ bin/concurrency-proof.mjs --project throwaway --agents 1000 --push
 
 The tests run it against a stand-in server on localhost
 (`test/concurrency-proof.test.mjs`). The figures below are one measured run
-against that stand-in on 1.x, a single Node process on this machine, included
+against that stand-in on 1.x, when the report counted forks, a single Node process on this machine, included
 because the brief asks for measured numbers rather than claims; they are not
 the live server's latency:
 

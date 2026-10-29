@@ -1,7 +1,7 @@
 {
   "name": "atelier",
   "version": "1.0.0",
-  "description": "A Git platform for agents on Cloudflare Workers and Artifacts: one owner per item, observed evidence, a human inbox.",
+  "description": "A Git platform for coding agents, run as one Node server with SQLite ledgers and plain Git repositories: one holder per task, observed evidence, a human inbox.",
   "scripts": {
     "test": "node test/run.mjs",
     "typecheck": "tsc -p . && tsc -p test",

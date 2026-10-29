@@ -17,7 +17,7 @@ A builder could write to any branch of a shared repository if nothing stopped it
 | `refresh` | `refs/heads/t/N` of its task, beside the holder's task grant | 8 hours, while the task's refresh lease it was minted under stands and the Ledger records it as that lease's grant |
 | owner | the project's branch only to create it in an empty repository; `refs/heads/dev/*` and `refs/notes/atelier` | the server token itself |
 
-A task or plan grant counts only while the task's Ledger records it as the item's write token (`git:HASH` in `items.token_id`). The Ledger already changes that record on every change of holder: release, handoff, abandon, merge and a new claim. So each of those revokes the grant with no extra step, and asking for a new grant replaces the old one. A task has one live write credential at a time.
+A task or plan grant counts only while the task's Ledger records it as the item's write token (`git:HASH` in `items.token_id`). The Ledger already changes that record on every change of holder: release, handoff, abandon, merge and a new claim. So each of those revokes the grant with no extra step, and asking for a new grant replaces the old one. A task has one live write credential at a time. A task or plan grant also expires 7 days after it was minted (`TTL_MS` in `src/git/grants.mjs`); `atelier push` asks for a new one once Git refuses the old.
 
 `POST /api/projects/P/git-token` with `{"kind": "read"}` or `{"kind": "task", "item": "tN"}` gives one. A task grant goes only to the task's holder. A read grant asked with `"item": "tN"` also names the task's branch (null before its first claim), the branch it merges into (`into`: its plan's branch for a part, the project's otherwise), and its recorded head and base; it is the one read credential every caller uses (Atelier 2.0, task 13, removed the `read-token`, `base-token` and `baseline-token` routes).
 
@@ -28,7 +28,7 @@ A task refresh's lease (t462, the job that merges main's new head into a waiting
 **The pre-receive hook refuses every ref update the grant does not cover** (`hooks/pre-receive`). The server runs `git receive-pack` with the grant's id and binding in the environment, never its token, and the hook applies four rules to each ref update:
 
 1. One ref per push, the one the grant names. Any other ref is refused with `atelier: this credential writes t/N only`. Landing and owner grants also write Atelier's provenance notes, `refs/notes/atelier`, on a push of their own; a task or plan grant never does.
-2. No deletes, by any credential. A merged task's branch stays in the repository.
+2. No deletes, by any credential. Nothing on the server deletes a task's branch either: a merged or abandoned task's `t/N` is kept in the repository, and the nightly bundle carries it.
 3. The project's branch, `plan/*` and `refs/notes/atelier` move by fast-forward only. A task branch may be rewritten (`atelier update` rebases); the Ledger decides whether a rewritten head counts.
 4. A landing push to the project's branch must be a merge whose first parent is the branch's tip and whose parents include the accepted head. The owner's credential (the server token, which the orchestrator holds) only creates the project's branch in an empty repository; after that only a landing grant moves it, and an owner push to it is refused naming `atelier land`. So no credential carries an unreviewed change onto the project's branch.
 
@@ -135,6 +135,8 @@ ENV is `staging` or `production`. Each environment is one `node cli/serve.mjs --
 ## Backups and restore
 
 Every night a LaunchDaemon runs `cli/backup.mjs` as `atelierd` (03:00 for production, 03:30 for staging). It copies every Ledger with SQLite's `VACUUM INTO`, the index first, takes a full `git bundle --all` of each repository (notes and `t/*` included) and the `large/` folder, writes a manifest of sizes and SHA-256 sums, encrypts the archive in the age v1 format to a public key, uploads it to R2 and keeps 30 days. The private key never reaches the Studio: `cli/restore.mjs` decrypts on PAVI's Mac, checks the manifest, restores into fresh directories and, with `--check`, starts a server on them; `scripts/studio/setup-restore.sh` installs a checked restore on the Studio. A restore loses at most the day of Ledger records since the backup; commits pushed since are still in the workspaces. `docs/studio.md` gives the setup and the monthly rehearsal.
+
+`atelier ledger bookmark` and `atelier ledger restore` belong to 1.x, whose Durable Objects kept a point-in-time history. The Node server keeps none and refuses both with `not_supported`; on 2.0 the nightly backups, `cli/restore.mjs` and `scripts/studio/setup-restore.sh` take their place.
 
 ## What the isolation rests on
 

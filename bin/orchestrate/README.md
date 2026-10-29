@@ -538,9 +538,10 @@ terminal sandboxed. No script pushes a project's own remotes or deploys.
 ## Between landings
 
 Run `post-merge.sh TASK` after the CLI reports
-that a task landed through the landing Workflow. This step requires clean
+that a task landed. This step requires clean
 `main`, pulls, runs `npm run typecheck` and `npm test`,
-deploys (developer decision d6), and publishes to `public`. Set `NOREPLY` to the
+and publishes to `public`. It deploys nothing: `atelier ship` deploys
+(docs/ship.md). Set `NOREPLY` to the
 recorded public no-reply address. It checks author and committer separately
 and audits every outgoing commit, including paths removed in later commits.
 
@@ -549,12 +550,10 @@ The first run stops for human inspection of the files in
 binary assets, clear every private detail, then set
 `PUBLIC_AUDIT_HEAD` to the inspected `git rev-parse HEAD` and run the
 step again. This acknowledgement cannot bypass private paths or bad identities.
-A main change invalidates it. `POST_MERGE_SMOKE` can name an executable
-called with `before` and `after` around deployment; use it for declared
-remote smoke checks and verification the orchestrator owes after deploy.
+A main change invalidates it.
 
 Any error prints the failing step and exits nonzero, and nothing else should
 land until it is fixed. Fix the cause and run `post-merge.sh TASK` again for
-the same task. A successful run prints `post-merge complete`. The default step
-repeats checks and deploy on a retry.
+the same task. A successful run prints `post-merge complete`. A retry
+repeats the checks.
 Open task **t460**, a merge queue that tests ahead in parallel and lands in batches, replaces this workaround (it superseded t432, abandoned).

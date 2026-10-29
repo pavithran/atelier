@@ -10,14 +10,34 @@ import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 // t339: the concurrency proof drives N simulated agents against a throwaway
 // project over the CLI's request protocol. These tests stand in for the live
 // server: one owner per item (a claim is refused with its holder named), one
-// fork per claim, and pushes observed, over a real local HTTP server, so the
+// branch t/N per claim in the project's one repository, and pushes observed, over a real local HTTP server, so the
 // script's concurrency and its report are both judged on what was measured.
 
 const script = resolve("bin/concurrency-proof.mjs");
 
 // A fake server with the item routes the proof touches, tracking every request
-// so the tests can check exactly what raced. With bareRoot, each fork is a
-// real local bare repository and a push is observed from its actual head.
+// so the tests can check exactly what raced. With bareRoot, the project is a
+// real local bare repository with a main branch, each claim makes t/N at main's
+// tip as the server does, and a push is observed from the branch's head.
+function git(args, cwd) {
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "owner", GIT_AUTHOR_EMAIL: "owner@proof.test", GIT_COMMITTER_NAME: "owner", GIT_COMMITTER_EMAIL: "owner@proof.test" } });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+  return r.stdout.trim();
+}
+
+// The project's one bare repository, made on first use with one commit on main.
+function projectRepo(bareRoot, name) {
+  const repo = join(bareRoot, `${name}.git`);
+  try { git(["--git-dir", repo, "rev-parse", "main"]); return repo; } catch {}
+  mkdirSync(repo, { recursive: true });
+  git(["init", "--bare", "-q", "-b", "main", repo]);
+  const seed = join(bareRoot, `${name}-seed`);
+  git(["init", "-q", "-b", "main", seed]);
+  git(["commit", "-q", "--allow-empty", "-m", "seed"], seed);
+  git(["push", "-q", repo, "main"], seed);
+  return repo;
+}
+
 async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
   const items = new Map();
   let n = 0;
@@ -54,7 +74,7 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
     if (f?.when === "before") { res.writeHead(503, { "content-type": "application/json", ...(f.headers ?? {}) }); return res.end(JSON.stringify(f.body ?? { error: "unavailable", detail: "try again" })); }
     if (f?.when === "after") {
       const real = send;
-      send = (status, data) => real(503, { error: "artifacts_unavailable", detail: "reply lost" });
+      send = (status, data) => real(503, { error: "unavailable", detail: "reply lost" });
     }
     if (verb === "claim") {
       if (item.owner && item.owner !== actor) {
@@ -63,22 +83,20 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
       if (!item.owner) item.firstOwner = actor;
       item.owner = actor;
       item.state = "claimed";
+      const repo = bareRoot ? projectRepo(bareRoot, name) : null;
       if (!item.workspace) {
-        item.workspace = `${name}--${id}`;
-        if (bareRoot) {
-          mkdirSync(join(bareRoot, item.workspace), { recursive: true });
-          spawnSync("git", ["init", "--bare", "-q", join(bareRoot, item.workspace)], { encoding: "utf8" });
-        }
+        item.workspace = `t/${id.slice(1)}`;
+        if (repo) git(["--git-dir", repo, "update-ref", `refs/heads/${item.workspace}`, "main"]);
       }
-      const remote = bareRoot ? join(bareRoot, item.workspace) : `https://git.test/${item.workspace}.git`;
-      const token = `art_secret_${item.workspace}`;
-      return send(200, { item, workspace: { remote, token, expiresAt: new Date(Date.now() + 3600e3).toISOString(), defaultBranch: "main" }, baseline: { remote, token, defaultBranch: "main" } });
+      const remote = repo ?? `https://git.test/${name}.git`;
+      const token = `atl_grant_${id}`;
+      return send(200, { item, workspace: { remote, branch: item.workspace, token, expiresAt: new Date(Date.now() + 3600e3).toISOString(), defaultBranch: "main" } });
     }
     if (verb === "push") {
       item.pushes += 1;
       let observed = body.head ?? null;
       if (bareRoot && item.workspace) {
-        const r = spawnSync("git", ["--git-dir", join(bareRoot, item.workspace), "rev-parse", "main"], { encoding: "utf8" });
+        const r = spawnSync("git", ["--git-dir", projectRepo(bareRoot, name), "rev-parse", item.workspace], { encoding: "utf8" });
         observed = r.status === 0 ? r.stdout.trim() : null;
       }
       item.head = observed;
@@ -106,12 +124,12 @@ function run(t, server, argv) {
   return new Promise((ok) => child.on("close", (code) => ok({ code, output })));
 }
 
-test("N agents claim N tasks at once: all succeed, each with its own fork, and the tasks are abandoned after", async (t) => {
+test("N agents claim N tasks at once: all succeed, each with its own branch, and the tasks are abandoned after", async (t) => {
   const server = await fakeServer(t);
   const r = await run(t, server, ["--agents", "5"]);
   assert.equal(r.code, 0, r.output);
   assert.match(r.output, /claim spread: 5 requests, 5 ok/);
-  assert.match(r.output, /5 distinct forks/);
+  assert.match(r.output, /5 distinct branches/);
   assert.match(r.output, /claim race: 5 requests, 1 ok, 4 refused/);
   assert.match(r.output, /holder sim\/agent-\d/);
   assert.match(r.output, /4\/4 refusals name the holder/);
@@ -122,7 +140,7 @@ test("N agents claim N tasks at once: all succeed, each with its own fork, and t
   const spread = items.filter((i) => i.title.startsWith("concurrency proof task"));
   assert.equal(spread.length, 5);
   assert.deepEqual(new Set(spread.map((i) => i.firstOwner)), new Set([0, 1, 2, 3, 4].map((i) => `sim/agent-${i}`)));
-  assert.equal(new Set(spread.map((i) => i.workspace)).size, 5, "each agent gets its own fork");
+  assert.equal(new Set(spread.map((i) => i.workspace)).size, 5, "each agent gets its own branch");
   const race = items.find((i) => i.title === "concurrency proof race");
   assert.ok(race, "the race task exists");
   assert.match(race.firstOwner, /^sim\/agent-\d$/, "one agent won the race");
@@ -146,7 +164,7 @@ test("N agents race for one task: the holder is named to every refusal", async (
   assert.match(r.output, /6\/6 refusals name the holder/);
 });
 
-test("--push makes a tiny commit and push per agent, and each push is observed at the fork's head", async (t) => {
+test("--push makes a tiny commit and push per agent, and each push is observed at its branch's head", async (t) => {
   const bareRoot = mkdtempSync(join(tmpdir(), "atelier-concurrency-proof-bare-"));
   t.after(() => rmSync(bareRoot, { recursive: true, force: true }));
   const server = await fakeServer(t, { bareRoot });
@@ -157,9 +175,13 @@ test("--push makes a tiny commit and push per agent, and each push is observed a
   const spread = server.items().filter((i) => i.title.startsWith("concurrency proof task"));
   assert.equal(spread.length, 3);
   for (const item of spread) {
-    assert.equal(item.pushes, 1, "one push observed per fork");
+    assert.equal(item.pushes, 1, "one push observed per branch");
     assert.match(item.head ?? "", /^[a-f0-9]{40}$/, "the observed head is the pushed commit");
+    assert.equal(item.workspace, `t/${item.id.slice(1)}`, "each push went to the task's own branch");
   }
+  const repo = join(bareRoot, "demo.git");
+  assert.equal(git(["--git-dir", repo, "rev-list", "--count", "main"]), "1", "no push reached main");
+  assert.equal(new Set(spread.map((i) => i.head)).size, 3, "three branches, three heads");
 });
 
 test("--push runs the N git pushes concurrently, not one after another", async (t) => {
@@ -195,7 +217,7 @@ test("the report is machine-readable with --json, and its figures match the meas
   assert.equal(report.agents, 4);
   assert.equal(report.project, "demo");
   assert.equal(report.phases.claimSpread.ok, 4);
-  assert.equal(report.phases.claimSpread.distinctForks, 4);
+  assert.equal(report.phases.claimSpread.distinctBranches, 4);
   assert.equal(report.phases.claimRace.winners, 1);
   assert.equal(report.phases.claimRace.refused, 3);
   assert.equal(report.phases.claimRace.namingHolder, 3);

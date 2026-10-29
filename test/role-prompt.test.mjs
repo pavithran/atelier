@@ -214,7 +214,8 @@ test("the guide and the handbook teach landing a wave, not 'Never land two toget
   for (const topic of [/How many at once/, /How many reviews/, /Retained approvals/, /When main moves/, /Failures/, /Recovery/]) assert.match(wave, topic);
   const outside = doc.slice(doc.indexOf("### What stays outside Atelier"), doc.indexOf("### Pre-review while the lease is busy"));
   assert.match(outside, /The wave suite/);
-  assert.match(outside, /The deploy and the push to the public mirror/);
+  assert.match(outside, /The push to the public mirror/);
+  assert.match(outside, /The script deploys nothing; `atelier ship` deploys/);
   const help = run(["land", "--help"]).stdout;
   for (const flag of ["--parallel", "--release-lease", "--post-merge", "--reviewer", "--triage", "--no-review"]) {
     assert.ok(help.includes(flag), `${flag} is in the land help`);
