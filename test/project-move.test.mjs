@@ -130,6 +130,8 @@ test("import-tasks files a project's own tasks and decisions, refuses a line it 
   assert.equal(t6.title, "Port the search page");
   assert.equal(t6.brief, "The old one reads the whole index; page it. Keep the URLs.");
   assert.equal(t6.state, "open");
+  const imported = (await L.dumpRows("events")).rows.map((r) => ({ kind: r[4], data: JSON.parse(r[5]) })).filter((e) => e.kind === "project.imported");
+  assert.equal(imported[0].data.acting, ACTING, "the developer token's write names the acting model (G18)");
   assert.match(JSON.stringify(await L.decisions()), /Plain URLs: no query strings for content pages\./);
   const decided = (await L.decisions()).length;
 

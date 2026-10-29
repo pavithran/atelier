@@ -101,6 +101,7 @@ test("move-host mirrors the baseline's branch, notes and tags into the project's
   assert.equal(moved.length, 1);
   assert.equal(moved[0].data.moved, "created");
   assert.equal(moved[0].data.head, c.main);
+  assert.equal(moved[0].data.acting, ACTING, "the developer token's write names the acting model (G18)");
   // The old host's token is in no event, no answer and no log of the
   // Ledger; the way back keeps it in a file of the server's, mode 600.
   assert.doesNotMatch(JSON.stringify((await L().dumpRows("events")).rows), new RegExp(SOURCE_TOKEN));
@@ -177,7 +178,7 @@ test("migrate carries an open task: its fork's work becomes t/N at the recorded 
   assert.equal(item.head, c.fork, "and the head");
   assert.equal(item.base, c.main);
   const migrated = await events("item.migrated");
-  assert.deepEqual(migrated.map((e) => [e.item, e.data.from, e.data.fork, e.data.head]), [["t2", "relic-t2", "relic/t/2", c.fork]]);
+  assert.deepEqual(migrated.map((e) => [e.item, e.data.from, e.data.fork, e.data.head, e.data.acting]), [["t2", "relic-t2", "relic/t/2", c.fork, ACTING]]);
   assert.doesNotMatch(JSON.stringify(migrated), new RegExp(SOURCE_TOKEN));
   // Run again, it moves nothing.
   const again = await cli(["migrate", "t2", "--from", fork, "--project", "relic"]);
