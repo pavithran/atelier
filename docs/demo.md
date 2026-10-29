@@ -1,5 +1,10 @@
 # Demo: one goal, end to end
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 This walks one goal through Atelier's orchestrator, from the developer
 stating it to the plan's merge into main, with what each command prints in
 outline and where to watch each step. A last section lands a single task
@@ -20,7 +25,7 @@ server and takes only its developer's token):
 
 ```sh
 atelier login --server https://YOUR-SERVER-ADDRESS
-atelier init --title "Demo" --check "npm test" --protect "src/rules.ts"
+atelier init --title "Demo" --check "npm test" --protect "src/rules.ts" --as claude-code/opus-5.5
 ```
 
 `init` creates the project's bare repository on the server, the baseline, pushes the current
@@ -44,8 +49,8 @@ and a model of another family that can review it; an approval is refused
 otherwise. Two entries are enough here:
 
 ```sh
-atelier models add glm-5.3 --harness opencode --where home
-atelier models add opus-5.5 --harness claude-code --where cloud
+atelier models add glm-5.3 --harness opencode --where home --as claude-code/opus-5.5
+atelier models add opus-5.5 --harness claude-code --where cloud --as claude-code/opus-5.5
 ```
 
 `atelier models` lists the pool with each model's family and what a runner
@@ -110,17 +115,16 @@ atelier runner --name home:integrator --integrate
 ## 1. State the goal
 
 ```sh
-atelier plan "Add JSON output to the export script and document it" --scope "src/export.ts" --scope "test/export.test.ts" --scope "README.md" --planner claude-code/opus-5.5 --project demo
+atelier plan "Add JSON output to the export script and document it" --scope "src/export.ts" --scope "test/export.test.ts" --scope "README.md" --planner claude-code/opus-5.5 --project demo --as claude-code/opus-5.5
 ```
 
 Atelier creates the plan item and queues it as a plan job for the planner.
-Without `--planner`, the planner is the first model in the pool for research
-work that is not refused, not paid per token and may plan. A project has one
+Without `--planner`, Atelier refuses and lists candidates. It picks no planner. A project has one
 active plan at a time.
 
 ```text
 t10 is a plan for: Add JSON output to the export script and document it
-Planner: claude-code/opus-5.5. Named by the project owner
+Planner: claude-code/opus-5.5. Named by the developer
 The plan job waits in the queue for claude-code/opus-5.5; a runner that offers plan jobs takes it. To plan by hand, claim t10 as claude-code/opus-5.5 with --runner home:NAME, then atelier plan post t10 FILE. When a proposal arrives, read it with atelier plan show t10 --project demo.
 ```
 
@@ -180,7 +184,7 @@ https://YOUR-SERVER-ADDRESS/p/demo/t10
 `atelier show t10 --project demo` prints the same brief. The split itself:
 
 ```sh
-atelier plan show t10 --project demo
+atelier plan show t10 --project demo --as claude-code/opus-5.5
 ```
 
 ```text
@@ -202,16 +206,15 @@ Parts:
       scope README.md; depends on export-json
       …
 
-The routing shown is what an approval would fix now, without paid models; it is computed again when you approve.
+…
 
-Approve this split: atelier plan approve t10 --hash 3f9c…e21b --project demo
+Approve this split: atelier plan approve t10 --hash HASH --route export-json=opencode/glm-5.3:claude-code/opus-5.5 --route docs-json=opencode/glm-5.3:claude-code/opus-5.5 --project demo
   or send it back: atelier plan revise t10 --note "what to change" --project demo
 ```
 
-Routing is computed by Atelier, never taken from the planner: for each part
-a builder, two alternates and a reviewer of a different family, chosen from
-the pool, the registry and the ledger's record of each model. The reasons
-say why each was chosen and who was passed over.
+Atelier lists candidates from the pool and their records. The developer
+names each part's builder and independent reviewer with `--route`. Approval
+stores no alternates. Without every route, Atelier refuses and lists candidates.
 
 To send the proposal back, `atelier plan revise t10 --note "Split the test
 into its own part" --project demo` returns the plan to its planner with the
@@ -219,7 +222,7 @@ note; the next proposal replaces this one and the old hash can no longer be
 approved. To approve, copy the full 64-character hash the command printed:
 
 ```sh
-atelier plan approve t10 --hash HASH --project demo
+atelier plan approve t10 --hash HASH --route export-json=opencode/glm-5.3:claude-code/opus-5.5 --route docs-json=opencode/glm-5.3:claude-code/opus-5.5 --project demo --as claude-code/opus-5.5
 ```
 
 ```text
@@ -285,7 +288,7 @@ runner and the actor the dispatch asks for:
 ```sh
 atelier start t11 --project demo --as opencode/glm-5.3 --runner home:studio
 # Work in the printed workspace and commit the changes.
-atelier done "Add JSON output to the export script"
+atelier done "Add JSON output to the export script" --as claude-code/opus-5.5
 ```
 
 `start` claims the part, prints the workspace to work in, and prints its
@@ -372,7 +375,7 @@ takes it. Its log is quiet when an integration succeeds; it prints
 
 It claimed the plan item (the server first checks that the part's head
 merges cleanly onto the plan's branch, and sends it back to the builder if
-not), fetched the part's head with `read-token`, merged it with `--no-ff`,
+not), fetched the part's head with `git-token` (`kind: "read"`), merged it with `--no-ff`,
 pushed, and ran the plan's checks on the branch with `atelier check t10`.
 The plan item's checks compare against the baseline, which is right for
 the whole branch. Then it reported `atelier integrated t10 --part
@@ -417,7 +420,7 @@ a cross-family approval at the head that was integrated. In the registered
 checkout:
 
 ```sh
-atelier merge t10 --head FULL_REVISION --project demo
+atelier merge t10 --head FULL_REVISION --project demo --as claude-code/opus-5.5
 ```
 
 With `--head`, a submitted plan is accepted at that exact revision first,
@@ -436,7 +439,7 @@ accepts with an override, and the reason goes on the record as an event of
 its own, never as a review:
 
 ```sh
-atelier merge t10 --head FULL_REVISION --override-review "Each part was reviewed by another family; the integrator only merged them" --project demo
+atelier merge t10 --head FULL_REVISION --override-review "Each part was reviewed by another family; the integrator only merged them" --project demo --as claude-code/opus-5.5
 ```
 
 The merge ends by naming the merge commit and where the provenance is:
@@ -470,15 +473,15 @@ Not every change needs a plan. For one task, the developer files it and either
 dispatches it to a runner or lets an agent take it:
 
 ```sh
-atelier new "Show the time each check took on its row" --scope "src/ui.ts" --project demo
-atelier dispatch t13 --to home --agent opencode --model glm-5.3 --project demo
+atelier new "Show the time each check took on its row" --scope "src/ui.ts" --project demo --as claude-code/opus-5.5
+atelier dispatch t13 --to home --agent opencode --model glm-5.3 --project demo --as claude-code/opus-5.5
 ```
 
 The runner builds it as in step 4, and the agent's `done` leaves it
 submitted. Then the developer lands it whole, in the registered checkout:
 
 ```sh
-atelier land t13 --project demo
+atelier land t13 --reviewer claude-code/opus-5.5 --project demo --as claude-code/opus-5.5
 ```
 
 ```text
@@ -493,7 +496,9 @@ The landing lease for demo is released; another task may merge.
 to the task's branch. Without the project's landing lease, beside any other
 task's landing, it compares the task's edits with code main moved, submits the
 task after running its required checks in a clean clone if it is still
-claimed, and asks the server for the independent review the gate needs. Only
+claimed, and asks the named reviewer. If approval is missing, it records a
+land request and stops without waiting; run it again after approval. The
+output above shows a task whose approval is already recorded. Only
 with the head checked and approved does it take the lease, for the merge
 alone, so two sessions never race main (a second landing queues behind it).
 Under the lease it accepts and merges through the CLI's own `accept` and
@@ -503,7 +508,8 @@ checkout, the project's regenerate command (declared with `init --regenerate`)
 runs on the merged tree and its changes join the merge commit, the required
 checks run once on that tree, and the merge commit goes to the project's branch
 with a landing grant. If main moved meanwhile, Git and the hook refuse the push
-and the merge and checks are made again, twice at most. Each step and its
+and the merge and checks are made again, twice at most. A third refusal
+leaves the task accepted with its approvals. Each step and its
 duration are recorded on the task as `land.*` events. `--reviewer H/M` names
 the reviewer, `--no-review` leaves the task submitted for the developer to
 settle by hand, and `--dry-run` prints the steps and the refusals without

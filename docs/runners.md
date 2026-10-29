@@ -1,5 +1,10 @@
 # Runners and dispatch
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 A runner is a program that asks the Atelier server for work and runs a coding
 agent's harness on it. It reaches the server over HTTP and the task's Git
 branch through the same server (see Git access, below). This document holds the dispatch protocol and the home
@@ -851,14 +856,14 @@ workspace as it is. A work-in-progress
 commit whose push fails stays in the workspace under the claim, as any other
 commit does.
 
-Committed work remains local. A `.git/atelier-validation-blocked` marker,
-naming the actor and the unverified head, stops a restarted runner from
-automatically finishing it as an interrupted build. It holds back only that
-actor at that head: another builder dispatched to the task, or the same one
-after the head moved, runs its harness and the checks as usual.
-After fixing the harness and running the required checks successfully, the
-operator can remove this marker to resume. Changing the command configuration
-alone does not clear a blocked validation report or prove that checks passed.
+Committed work remains local. The server's `validationBlockedAt` and
+`unblockedAt` decide whether a validation block remains unanswered (G5).
+The local `.git/atelier-validation-blocked` marker only keeps the actor,
+head and task revision for that report. With no unanswered server block,
+the runner ignores and clears the marker and runs the builder. The marker
+alone cannot block another actor, head or task revision. Fix the cause and
+use `atelier unblock tN` to answer a server block; deleting the marker or
+changing the command configuration alone does not clear that record.
 
 ### Harnesses that are not signed in
 

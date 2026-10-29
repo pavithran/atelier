@@ -1,5 +1,10 @@
 # Working from several Macs
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 A developer who works on one project from several Macs keeps a checkout of it
 on each, outside iCloud. Git carries code, history and work in progress
 between them, through the project's repository on the server, the baseline;
@@ -28,12 +33,14 @@ makes the checkout from it with the baseline's main, its whole history and its
 receipts, and keeps it as `origin`.
 
 No checkout keeps a token. Each Atelier command that reaches the baseline
-(`clone`, `pull`, `sync`, `wrap`, `merge`) mints its own token, passes it
+(`clone`, `pull`, `merge`) mints its own token, passes it
 only to the Git commands that need it and keeps it nowhere; the
 `atelier branch` commands do the same for the developer's `dev/` branches. `clone`,
 `pull` and `branch` run every Git command with every Git hook off, so no hook
 in the checkout sees the token. A plain `git push` or `git pull` against `origin` has no
-token and is not how a checkout reaches the baseline.
+token and is not how a checkout reaches the baseline. `atelier sync` is
+`not_supported` in 2.0: use `atelier pull` to read the server branch and a
+landing to publish task commits. `wrap` reports the server branch.
 
 `atelier clone` also sets the checkout's `user.name` and `user.email` to the
 commit identity the project's policy names, so commits look the same from

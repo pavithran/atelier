@@ -134,10 +134,10 @@ const PF_LANES: { key: FlowLane; label: string; x: number }[] = [
 
 // The steps, top to bottom. Each has a name and two lines of detail.
 export const PLAN_FLOW: { lane: FlowLane; name: string; sub: [string, string] }[] = [
-  { lane: "owner", name: "State a goal", sub: ['atelier plan "goal" makes a plan task', "and queues a plan job"] },
+  { lane: "owner", name: "State a goal", sub: ['atelier plan "goal" --planner H/M', "makes a plan task and queues its job"] },
   { lane: "runner", name: "Plan", sub: ["a home runner takes the plan job; its", "planner posts a plan document"] },
-  { lane: "owner", name: "Approve the plan", sub: ["atelier plan approve, once, by the", "hash of the newest proposal"] },
-  { lane: "atelier", name: "Route the parts", sub: ["routeParts names a builder, two alternates", "and a reviewer of another family"] },
+  { lane: "owner", name: "Approve the plan", sub: ["atelier plan approve ID --hash HASH", "--route KEY=BUILDER:REVIEWER per part"] },
+  { lane: "atelier", name: "Store named routes", sub: ["store the named builder and reviewer;", "no alternates; no automatic routing"] },
   { lane: "atelier", name: "Dispatch build jobs", sub: ["a part goes out once its dependencies", "have landed, two parts live at a time"] },
   { lane: "runner", name: "Build and check", sub: ["the builder works in the part's branch;", "atelier finish pushes, checks, submits"] },
   { lane: "atelier", name: "Request a review", sub: ["checks pass at the head, paths measured;", "routed to another family"] },
@@ -162,9 +162,9 @@ export const PLAN_FLOW_RETURNS = {
   next: "integrated: the parts that depend on it go out",
 };
 
-export const PLAN_FLOW_LABEL = "One plan's path from goal to merge, in three lanes: the developer, the home runners and their agents, and Atelier. The developer states a goal with atelier plan, which makes a plan task and queues a plan job. A home runner takes the job and its planner posts a plan document. The developer approves it once by its hash, and Atelier routes each part to a builder, two alternates and a reviewer of another model family. Atelier dispatches each part as a build job once its dependencies have landed. The builder pushes, checks and submits; Atelier requests a review from another family, and a review job on a home runner posts the verdict. A rejection with blocking findings returns the part to its builder. The integrator merges an approved part into the plan's integration branch and runs the plan's checks; a conflict or a failure rolls the branch back and returns the part to its builder, and an integrated part lets the parts that depend on it go out. Once every part is integrated the integrator submits the plan task, and the developer accepts it and merges it into main.";
+export const PLAN_FLOW_LABEL = "One plan's path from goal to merge, in three lanes: the developer, the home runners and their agents, and Atelier. The developer states a goal with atelier plan --planner H/M, which makes a plan task and queues a plan job. A home runner takes the job and its planner posts a plan document. The developer approves it once by its hash and names each part's builder and independent reviewer with --route KEY=BUILDER:REVIEWER. Atelier stores those routes with no alternates. Atelier dispatches each part as a build job once its dependencies have landed. The builder pushes, checks and submits; Atelier requests a review from another family, and a review job on a home runner posts the verdict. A rejection with blocking findings returns the part to its builder. The integrator merges an approved part into the plan's integration branch and runs the plan's checks; a conflict or a failure rolls the branch back and returns the part to its builder, and an integrated part lets the parts that depend on it go out. Once every part is integrated the integrator submits the plan task, and the developer accepts it and merges it into main.";
 
-export const PLAN_FLOW_CAPTION = "The plan flow from goal to merge. The developer acts three times: to state the goal, to approve the plan, and to accept and merge it. Between those, Atelier's tick dispatches build, review and integrate jobs and home runners take them. Dashed lines are returns: a rejection with blocking findings, or a merge that conflicts or whose checks fail, sends the part back to its builder; an integrated part lets the parts that depend on it be dispatched.";
+export const PLAN_FLOW_CAPTION = "The plan flow from goal to merge. The developer acts three times: to state the goal, to approve the plan with a named route for every part, and to accept and merge it. Between those, Atelier's tick dispatches build, review and integrate jobs and home runners take them. Dashed lines are returns: a rejection with blocking findings, or a merge that conflicts or whose checks fail, sends the part back to its builder; an integrated part lets the parts that depend on it be dispatched.";
 
 export function planFlowDiagram(): string {
   const p: string[] = [];

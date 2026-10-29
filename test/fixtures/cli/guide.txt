@@ -36,14 +36,21 @@ task with exactly one holder. Never edit the project checkout directly.
    `atelier handoff`, `atelier release`). Every refusal ends with a
    `next:` line naming the command that resolves it.
 
+For developer-token writes below, set `export ATELIER_ACTING=H/M` to the
+registered model acting for you, or pass `--as H/M` on each command.
+
 The developer runs `atelier land ID --reviewer H/M` in the registered
-checkout to land a submitted task: it updates from main, runs checks, obtains
-an independent review, then accepts and merges. Choose a reviewer of another
-family than every contributor. Manual fallback: the reviewer runs
+checkout to land a submitted task at its recorded head. It asks the named
+reviewer and records a land request. If approval is missing, it stops without
+waiting; run it again after approval. Under the lease it accepts, merges
+into the checkout, regenerates when declared, checks the merged tree and
+pushes only the merge. It never writes the task branch. A raced task stays
+accepted with its approvals after the retries end. Choose an independent
+reviewer. Manual fallback: the reviewer runs
 `atelier diff ID` and `atelier review ID --approve|--reject --as H/M --note "…"`;
-after approval and passing checks, the developer runs `atelier accept ID`, then
-`atelier merge ID`. For an already accepted task, run `atelier merge ID`,
-not land. Builders and reviewers do not accept or merge their own work.
+after approval and passing checks, the developer runs `atelier accept ID --as H/M`,
+then `atelier merge ID --as H/M`. An accepted task can use either merge or land.
+Builders and reviewers do not accept or merge their own work.
 `atelier land ID --queue` queues the landing for a runner that lists the land job and holds the registered checkout.
 `atelier land ID` no longer waits for a review: it asks for one, records the land request (`--quote TEXT` names who asked), and stops; run it again once the review approves (a land job runs it by itself only under the standing queue-landable instruction); `--no-wait` records the request and returns.
 In fast mode, the developer's standing instruction `atelier decide --standing queue-landable on` lets the stage tick queue a land job for a task that stays landable 5 minutes; without it the tick records the fact and queues nothing.

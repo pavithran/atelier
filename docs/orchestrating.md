@@ -1,5 +1,10 @@
 # Running Atelier for a project
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
@@ -182,12 +187,10 @@ A task moves through five hands:
 4. **A reviewer from another model family** than everyone who worked on the
    task reads the diff and approves or rejects with findings.
    A project with a review tier (`atelier init --review-tier H/M,H/M`)
-   has a protected change's review asked of a tier model of another family
-   first, and that one review serves both. Only when the gate's reviewer is
-   outside the tier does one tier model that did not build the change
-   review it as well, at the same time, whatever its family in the default mode (only the selected company in single-family mode): its rejection
-   sends the change back like any rejection, its approval never stands in
-   for the cross-family review, and a landing never waits for it.
+   records when a separate tier review is needed, with its candidates.
+   Ask it explicitly with `atelier review-request tN --reviewer H/M
+   --tier-review`. It is never requested automatically. Its approval does
+   not replace an independent gate approval.
 5. **The developer** accepts that exact revision and merges it into the
    registered checkout with `atelier merge`.
 
@@ -443,12 +446,11 @@ has every step):
    landing stops before the lease with the task submitted, and you run the
    same command again once the review approves (`atelier wait ID --for
    reviewed`). An approval is bound to the revision it read.
-   Where the project has a tier, the server asks a qualifying tier model
-   for this review first, and it serves as the tier review too. A
-   `--reviewer` outside the tier gets a separate tier review alongside only
-   when a tier model qualifies under the family policy;
-   `atelier land` waits only for the independent review, stops on a tier
-   rejection, and the acceptance withdraws a tier request still open.
+   Where the project has a tier, a gate review by a qualifying tier model
+   serves both. When a separate tier review is needed, the server records
+   the need and candidates. Ask it with `atelier review-request ID
+   --reviewer H/M --tier-review`; it is never requested automatically.
+   A tier rejection blocks, and acceptance withdraws a tier request still open.
 2. **Under the project's landing lease and the registered checkout's lease**:
    accept, then `atelier merge ID --landing` in the registered checkout. It
    merges the accepted head onto main as it stands, folds the project's
@@ -703,12 +705,13 @@ recurrence after it cleared is told again.
 
 Before starting an agent in a fresh workspace on another machine, run
 `npm ci` there. If it fails, fix the dependency or
-configuration failure before starting the agent. A stale
-`.git/atelier-validation-blocked` marker strands an otherwise finished build:
-read it with `cat .git/atelier-validation-blocked`, fix the reported cause,
-run `npm test` and `npm run typecheck`, then remove the stale marker with
-`rm .git/atelier-validation-blocked` only after both pass and retry
-`atelier finish`. A remaining failure stays blocked.
+configuration failure before starting the agent. A local
+`.git/atelier-validation-blocked` marker does not decide whether work is
+blocked. The runner reads the server's `validationBlockedAt` and
+`unblockedAt`. With no unanswered server block, it ignores and clears the
+marker and runs the builder. Fix the reported cause, then use
+`atelier unblock tN` to answer a server block. Removing a marker alone does
+not clear that record.
 
 ### Choosing a reviewer
 
@@ -867,7 +870,7 @@ Wait for a landing started elsewhere with `atelier wait tN --project atelier
 review use `--for reviewed`, and to observe the next task change use `--for
 any-change`. Add `--timeout 600` to bound the wait, including a stalled
 server read. The command prints the outcome and exits 0 when reached, 1 when
-the task fails, 3 on timeout, or 4 when it cannot read the task. A merge does
+the task fails, 3 on timeout, 4 when abandoned, or 5 when it cannot read the task. A merge does
 not confirm deployment or publishing; check the post-merge step's outcome
 separately.
 
@@ -993,7 +996,7 @@ waiting row's newest `prereview`.
 | A merge that stops on conflicts, naming the files | Main has moved and the merge conflicts | "Conflicts" |
 | `… rejected tN at SHA: …` | The reviewer asked for changes; the landing printed the note and each blocking finding | "Judging a review" |
 | `tN still needs N more approvals at SHA after N reviews` | Every ask was answered with an approval and the gate still lacks some | `atelier show tN` says what the gate counts; look for an approver the gate sets aside (a contributor, or one model asked under two names) |
-| `main moved under the lease N times` | Other landings kept merging first; the task stays submitted | Run the same command once main settles |
+| `main moved from … to … between the checks and the push` | Main raced the checked merge push three times; the task stays accepted with its approvals | Run the same command once main settles |
 | `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then land the task again |
 | `Starting no more landings: …` | A failed landing left post-merge work open, so a wave starts nothing more | `atelier land tN --post-merge status`, resolve it, then run the same command |
 | `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head | Run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |

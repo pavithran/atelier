@@ -1,5 +1,10 @@
 # Atelier
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 **Git keeps the code. Atelier brings the receipts.**
 
 A Git platform for multiple coding agents, run from one Node server on your own machine.
@@ -55,6 +60,20 @@ of the machine that ran it. Anything
 an agent says it did is *Reported*: shown, never counted. A required check
 with no observed result at the current head is *Pending*. Only Observed
 passes count.
+
+The same can be done in steps: `atelier accept ID` then `atelier merge ID`,
+or `atelier merge ID --head FULL_SHA`, which accepts a submitted task at
+that exact revision first. `--approve` on that merge records the developer's own
+review, which is not the independent review. When no reviewer qualifies,
+because no model of another family is available or a contributor's family
+is not recognised, `accept` and `merge` take `--override-review "reason"`.
+The override is recorded as an event of its own, never as a review, counts
+only at the head it names, and waives that review and nothing else.
+
+A merge keeps a journal under the CLI's cache, so an interrupted merge
+resumes when rerun, and `atelier merge ID --cancel` ends one.
+[docs/landing.md](docs/landing.md) holds the journal, the cancel, the lease
+queue and every landing step.
 
 ### Review
 
@@ -244,7 +263,7 @@ uses the public origin the tunnel serves.
 with `npm test`:
 
 ```sh
-atelier init --title "My project" --check "npm test"
+atelier init --title "My project" --check "npm test" --as claude-code/opus-5.5
 ```
 
 `init` creates the project's bare repository on the server, pushes the current
@@ -259,7 +278,7 @@ file a check executes (here `package.json` and `.npmrc`, which decide what
 `t1`:
 
 ```sh
-atelier new "Fix the off-by-one in pagination" --scope "src/**"
+atelier new "Fix the off-by-one in pagination" --scope "src/**" --as claude-code/opus-5.5
 atelier start t1 --as claude-code/opus-5.5
 ```
 
@@ -267,7 +286,7 @@ atelier start t1 --as claude-code/opus-5.5
 clones it as the workspace and prints its path. Change the code there and commit, then, still in the workspace:
 
 ```sh
-atelier done "Fix the off-by-one in pagination"
+atelier done "Fix the off-by-one in pagination" --as claude-code/opus-5.5
 ```
 
 `done` pushes, runs the required checks in a clean clone of the pushed head,
@@ -279,18 +298,19 @@ of its own (see [Further setup](#further-setup)).
 **6. Land it.** Back in the project checkout:
 
 ```sh
-atelier land t1
+atelier land t1 --reviewer codex/gpt-6-astra --as claude-code/opus-5.5
 ```
 
-`land` checks the task's head and asks the review the gate needs, all
-without the project's landing lease. Once the head is approved (or needs no
-review) it takes the lease for the merge alone, accepts the task, merges it
+`land` checks the task's head and asks the named reviewer, all
+without the project's landing lease. If approval is missing, it records a
+land request and stops without waiting. Run it again after approval. Once
+the head is approved (or needs no review) it takes the lease for the merge alone, accepts the task, merges it
 into the checkout with `--no-ff`, runs the required checks on the merged
 tree, and pushes the merge to the project's branch on the server with a
 landing grant. Nothing is pushed to the task's branch, so the reviewed head
 is the one merged. The merge commit carries
 the task's provenance as a git note on `refs/notes/atelier`, and the command
-prints how to read it. A change to a protected path also waits for a review
+prints how to read it. A change to a protected path needs a review
 from another model family, which a runner serves; see [Review](#review) and
 [Runners](#runners).
 
@@ -390,9 +410,9 @@ may frame it with `--non-goal`, `--stop-when` and `--next-gate`; `atelier
 edit` changes that framing later. An agent then needs two commands:
 
 ```sh
-atelier start ID --as harness/model
+atelier start ID --as claude-code/opus-5.5
 # Work in the printed workspace and commit the changes.
-atelier done "What changed and why"
+atelier done "What changed and why" --as claude-code/opus-5.5
 ```
 
 `start` claims the task, prepares the workspace as `claim` does, and prints
@@ -418,11 +438,9 @@ every project.
 ### Plans
 
 A plan turns one goal into several tasks that merge together. The developer
-states the goal with `atelier plan "goal" [--scope GLOB]... [--planner
-H/M]`. Atelier creates the plan item and queues it as a plan job for the
-planner named, or else for the first model in the pool for research work
-that is not refused, not paid per token and may plan. A project has one
-active plan at a time.
+states the goal with `atelier plan "goal" [--scope GLOB]... --planner H/M`.
+The planner must be named. Without it, Atelier refuses and lists candidates.
+A project has one active plan at a time.
 
 A runner that offers plan jobs claims the plan item, which makes the
 plan's integration branch, `plan/N`. It fetches the planner's brief
@@ -434,12 +452,13 @@ refused with every error, and the planner gets one more attempt before the
 plan blocks.
 
 `atelier plan show ID [--json]` prints the newest proposal with its hash.
-`atelier plan approve ID --hash HASH [--allow-paid]` approves that exact
+`atelier plan approve ID --hash HASH --route KEY=BUILDER:REVIEWER [--allow-paid]` approves that exact
 split, once; an older hash is refused, and `atelier plan revise ID --note
 TEXT` sends a proposal back instead. Approval fixes the limits (two parts
 live at once, three attempts a part, four dispatches a part, 24 hours) and
-each part's routing: a builder, two alternates and a reviewer of another
-family, chosen from the model pool and the ledger's record. The parts become
+each part's routing: the builder and reviewer named by `--route` for every
+part. The reviewer must be independent of the builder. No alternates are
+stored. Without every route, approval is refused and lists candidates. The parts become
 tasks, and Atelier dispatches each once the parts it depends on have
 integrated, merged or been abandoned.
 
@@ -465,38 +484,24 @@ evidence stay. [docs/orchestrator.md](docs/orchestrator.md) is the design.
 
 ### Landing
 
-`atelier land ID` runs the whole second half of a single task, for the
-developer in the registered checkout. It merges main into the task's
-workspace, stopping on conflicts and naming the files; runs the project's
-regenerate command when one is declared; pushes, runs the required checks
-and submits; and requests the independent review the gate needs and waits
-for the verdict. None of this holds the project's landing lease, so several
-landings check and review at once. Once the head is checked and approved,
-the landing queues for the lease on the server, so two merges never race
-main, confirms under it that main has not moved, then accepts and merges;
-where main moved, it releases the lease and goes again from the merge of
-main. `--reviewer H/M` names the reviewer; every landing queues for the
-lease, so `--wait` is kept for compatibility and changes nothing; `--no-review`
-leaves the task submitted for the developer to settle, and `--dry-run` prints
-the steps and the refusals without changing anything. A landing stopped
-partway resumes when the same command runs again, and each step is recorded
-on the task as a `land.*` event; a merge that brings more commits from main
-than the record has room for records the first hashes and the count of all
-of them.
+`atelier land ID --reviewer H/M` lands a single task from the registered
+checkout. Before taking the lease, it checks and submits a claimed task at
+its recorded head. A submitted task keeps its checked head. The landing
+asks the named reviewer and records a land request. If approval is still
+missing, it stops without waiting. Run it again after approval. Without a named reviewer, a needed review
+is refused with the candidates listed.
 
-The same can be done in steps: `atelier accept ID` then `atelier merge ID`,
-or `atelier merge ID --head FULL_SHA`, which accepts a submitted task at
-that exact revision first. `--approve` on that merge records the developer's own
-review, which is not the independent review. When no reviewer qualifies,
-because no model of another family is available or a contributor's family
-is not recognised, `accept` and `merge` take `--override-review "reason"`.
-The override is recorded as an event of its own, never as a review, counts
-only at the head it names, and waives that review and nothing else.
+With the gate satisfied, the landing takes the project's lease, accepts the
+head, and merges it into the project's branch in the registered checkout.
+It regenerates when policy declares how, checks the merged tree in a clean
+clone, and pushes only the merge to the project's branch. It never writes
+`t/N` (the task's branch). If main races the push, it undoes the merge and
+merges and checks again, at most twice. A third refusal leaves the task
+accepted with its approvals.
 
-A merge keeps a journal under the CLI's cache, so an interrupted merge
-resumes when rerun, and `atelier merge ID --cancel` ends one.
-[docs/landing.md](docs/landing.md) holds the journal, the cancel, the lease
-queue and every landing step.
+`--no-review` leaves the task submitted for the developer to settle.
+`--dry-run` prints the steps without changing anything. Each step is a
+`land.*` event. See [docs/landing.md](docs/landing.md).
 
 ### Review
 
@@ -596,7 +601,7 @@ the runner runs `finish`. A runner with `--integrate`
 runs no harness and takes only the plans' `integrate` and `refresh` jobs.
 
 The developer sends a task to a kind of runner with `atelier dispatch ID --to
-home|cloud|any [--agent A] [--model M]`, or "Send to an agent" on its page.
+home|cloud|any --agent A --model M`, or "Send to an agent" on its page.
 A runner's config, at `~/.config/atelier/runner.json` or `--config PATH`,
 lists each harness as an argv array with placeholders:
 
@@ -661,16 +666,16 @@ Each project has a showcase page of its own at `/p/NAME/showcase`, drawn from
 that project's record and read after signing in.
 
 **Protected actions.** An action whose effect reaches beyond the repository
-and cannot be taken back by a revert (a deploy, a device install, a push of
-the project's branch to its own remotes, a paid model run, a Photos
-writeback, or a kind the project's ship files name) runs only with the
+and cannot be taken back by a revert (a deploy, a device install, a paid
+model run, a Photos writeback, or a kind the project's ship files name) runs only with the
 developer's approval for one exact revision of the main line, and each approval
-is used by one run:
+is used by one run. Pushing the project branch to its own remotes needs no
+protected-action approval:
 
 ```sh
-atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12"
-atelier ship --dry-run
-atelier ship
+atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --as claude-code/opus-5.5
+atelier ship --dry-run --as claude-code/opus-5.5
+atelier ship --as claude-code/opus-5.5
 ```
 
 `atelier ship` composes the order from the project's ship file

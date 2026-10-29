@@ -1,5 +1,10 @@
 # Landing and merging
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
@@ -104,8 +109,8 @@ abandon.
 
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under
-it is picked up where it was left: the next `atelier merge`, `merge --cancel`
-or `sync` moves the journal under the cache unchanged and goes on from it, and
+it is picked up where it was left: the next `atelier merge` or
+`merge --cancel` moves the journal under the cache unchanged and goes on from it, and
 removes the lock once the process its owner record names (`pid`, or the `pid 2`
 copy iCloud makes) is gone. A live owner still blocks, a lock with no owner
 record waits for a human, and a journal found in both places is refused with
@@ -118,7 +123,7 @@ to its own remotes remain separate decisions.
 
 ## Landing a task whole
 
-`atelier land t9` runs the whole second half in one command, for the project
+`atelier land t9 --reviewer H/M` runs the whole second half in one command, for the project
 developer in the registered checkout. Since Atelier 2.0 (lessons gaps G1 and
 G2) it lands the head the task was checked and reviewed at, and never pushes
 to the task's branch: the landing push already is a merge of the accepted
@@ -391,8 +396,9 @@ Details of the steps:
    on the merged tree.
 4. If the gate needs an independent review, the landing requests one through the
    review-request routes: the reviewer is the one named with
-   `--reviewer H/M`, or a model of another family than every contributor
-   picked from the pool, still without the lease. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection stops the landing (the request stays open and the task stays submitted). `--no-review` leaves the task submitted for the developer to settle by hand.
+   `--reviewer H/M`. Without a named reviewer, a needed review is refused
+   with candidates. It records a land request and stops without waiting
+   when approval is missing. Run it again after approval. A rejection keeps the task submitted. `--no-review` leaves the task submitted for the developer to settle by hand.
 5. With the head checked and approved, the landing takes the lease, accepts
    through the CLI's own `accept`, and merges through `atelier merge t9
    --landing`, each run as this CLI's child, so their checks and their

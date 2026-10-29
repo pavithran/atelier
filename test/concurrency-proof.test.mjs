@@ -55,6 +55,7 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
     let send = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
     // The CLI checks the server's capabilities before new (t458); the version is not a request the proof measures.
     if (url.pathname === "/api/version") return send(200, { capabilities: SERVER_CAPABILITIES });
+    if (method !== "GET" && method !== "HEAD") assert.equal(req.headers["x-atelier-acting"], "codex/gpt-6-astra");
     requests.push({ method, path: url.pathname, actor, body });
     if (url.pathname === "/api/config") return send(200, { ownerActor: "owner", ownerName: "Pavi" });
     const m = /^\/api\/projects\/([^/]+)\/items(?:\/([^/]+))?(?:\/([^/]+))?$/.exec(url.pathname);
@@ -117,7 +118,7 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
 function run(t, server, argv) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-concurrency-proof-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const child = spawn(process.execPath, [script, "--project", "demo", "--server", server.url, "--token", "owner-token", "--scratch", join(dir, ".scratch"), ...argv], { cwd: dir, env: { ...process.env } });
+  const child = spawn(process.execPath, [script, "--project", "demo", "--server", server.url, "--token", "owner-token", "--scratch", join(dir, ".scratch"), ...argv], { cwd: dir, env: { ...process.env, ATELIER_ACTING: "codex/gpt-6-astra" } });
   let output = "";
   child.stdout.on("data", (s) => (output += s));
   child.stderr.on("data", (s) => (output += s));
@@ -313,7 +314,7 @@ test("--agents above the limit, a missing project, or an insecure server is refu
     assert.notEqual(r.code, 0, argv.join(" "));
     assert.match(r.output, message, argv.join(" "));
   }
-  const noProject = spawn(process.execPath, [script, "--server", server.url, "--token", "x", "--agents", "1"], { env: { ...process.env } });
+  const noProject = spawn(process.execPath, [script, "--server", server.url, "--token", "x", "--agents", "1"], { env: { ...process.env, ATELIER_ACTING: "codex/gpt-6-astra" } });
   let out = "";
   noProject.stderr.on("data", (s) => (out += s));
   noProject.stdout.on("data", (s) => (out += s));

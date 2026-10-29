@@ -51,7 +51,9 @@ every task it created.
 
 Developer calls (creating and abandoning tasks) name ATELIER_OWNER, the
 developer's actor (as the atelier CLI is configured with it); without it the
-clean-up is refused and the tasks must be abandoned by hand.
+clean-up is refused and the tasks must be abandoned by hand. Set
+ATELIER_ACTING=H/M to the registered model acting for the developer (G18);
+every write sends it as X-Atelier-Acting.
 
 The developer's token is sent only to the server named, over https (plain http is
 accepted for a server on this machine alone, as the CLI accepts it).
@@ -68,7 +70,7 @@ function usageError(message) {
 }
 
 function parseArgs(argv) {
-  const out = { project: null, agents: 10, server: process.env.ATELIER_SERVER, token: process.env.ATELIER_TOKEN, push: false, scratch: join(".scratch", "concurrency-proof"), cleanup: true, json: false, retries: DEFAULT_RETRIES, backoffMs: DEFAULT_BACKOFF_MS };
+  const out = { acting: process.env.ATELIER_ACTING, project: null, agents: 10, server: process.env.ATELIER_SERVER, token: process.env.ATELIER_TOKEN, push: false, scratch: join(".scratch", "concurrency-proof"), cleanup: true, json: false, retries: DEFAULT_RETRIES, backoffMs: DEFAULT_BACKOFF_MS };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => (i + 1 < argv.length ? argv[++i] : usageError(`--${a.slice(2)} needs a value`));
@@ -91,6 +93,7 @@ function parseArgs(argv) {
   if (!Number.isFinite(out.backoffMs) || out.backoffMs < 0) usageError("--backoff-ms must be a number, 0 or more");
   if (!out.server) usageError("no server: pass --server URL or set ATELIER_SERVER");
   if (!out.token) usageError("no developer token: pass --token or set ATELIER_TOKEN");
+  if (!/^[^/\s]+\/[^/\s]+$/.test(out.acting ?? "")) usageError("set ATELIER_ACTING to the registered harness/model acting for the developer");
   return out;
 }
 
@@ -158,6 +161,7 @@ async function request(method, path, body, actor = OWNER_ACTOR) {
 async function attemptOnce(method, path, body, actor) {
   const headers = { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" };
   headers["x-atelier-actor"] = actor;
+  if (method !== "GET" && method !== "HEAD") headers["x-atelier-acting"] = cfg.acting;
   let res, text;
   try {
     res = await fetch(`${base}/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });

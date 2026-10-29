@@ -1,5 +1,10 @@
 # The task lifecycle and the gate
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
@@ -104,11 +109,12 @@ checkout, a merge whose tree would hold two such paths, on any platform.
 
 The ship files and what they run are protected the same way: `docs/atelier/**`
 in every project, and every file the ship order's commands execute, derived
-from the commands `atelier init` and `atelier sync` record from
+from the commands `atelier init` records from
 `docs/atelier/ship.json` exactly as a check's
 files are derived from its line. An item therefore cannot quietly change what
 the developer's `atelier ship` runs with their environment; see
-[docs/ship.md](ship.md).
+[docs/ship.md](ship.md). `atelier sync` is `not_supported` in 2.0; use
+`atelier pull` to update a checkout and a landing to publish work.
 
 A merge lands agent code in the developer's checkout, where Git's own
 configuration can run files from the tree: a hooks folder that
@@ -117,7 +123,7 @@ defined in configuration, or a configuration file the checkout includes.
 `atelier merge` lists those paths from the checkout's configuration and
 refuses, before it changes the checkout, an accepted change that touches one,
 naming each; the developer reviews those files and lands the change by hand. Every Git command of
-`merge`, `merge --cancel` and `sync` runs with hooks off:
+`merge` and `merge --cancel` runs with hooks off:
 `core.hooksPath=/dev/null` for a hooks folder, and `hook.NAME.enabled=false`
 for each hook defined in configuration, which Git 2.54 still runs under
 `core.hooksPath=/dev/null` alone.
@@ -223,11 +229,10 @@ The company is one of the families a model's name is recognised by
 ([`src/models/pool.ts`](../src/models/pool.ts): anthropic, openai, google,
 zai, deepseek, qwen, minimax, mistral, meta, moonshot, xai, xiaomi,
 bytedance, cohere). The policy records the mode as `familyMode`, with who set
-it and when. Under it, plan routing, a hand dispatch, the builder a dispatch
-without `--agent` is suggested, the reviewer picker, the review tier and the
-landing take only that company's models; a claim or
-handoff by another company's model is refused, so a dispatch that names no
-model cannot hand the work to one either. The gate counts an approval
+it and when. Under it, plan candidates, named dispatches, reviewer
+candidates, the review tier and the landing use only that company's models.
+A dispatch needs both `--agent` and `--model`; without them it refuses and
+lists candidates. A claim or handoff by another company's model is refused. The gate counts an approval
 when the reviewer is a different model of the company from every recorded
 contributor, compared by model name without letter case, a `:profile` suffix
 or the harness: the same model in another harness is still the same model.
@@ -267,8 +272,9 @@ and when. `--reset` drops the mode with the rest of the policy.
 ## Tier review and risk reviews
 
 A project with a review tier (`atelier init --review-tier`) has a separate
-tier review asked beside the gate's review when the gate's reviewer is outside
-the tier. That holds for a change that needs none or one independent review:
+tier review needed when the gate's reviewer is outside the tier. Atelier
+records the need and candidates; it asks none automatically. Request it with
+`atelier review-request ID --reviewer H/M --tier-review`. That holds for a change that needs none or one independent review:
 the tier approval never stands in for the independent one. When the project's
 `riskReviews` ask two or more independent reviews for a change, the gate asks
 no separate tier review. Two approvals from different families, none a

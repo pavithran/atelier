@@ -1,5 +1,10 @@
 # Protected actions and `atelier ship`
 
+For developer-token writes in the examples below, set
+`export ATELIER_ACTING=claude-code/opus-5.5` for the session, or pass
+`--as H/M` on each command. Use the model acting for you, registered in
+your model pool. Agent and runner tokens name their own actors.
+
 A protected action runs only with the developer's approval for one exact
 revision of the project's main line, and each approval is used by one run.
 `atelier ship`, run by the developer in the registered checkout, composes the
@@ -135,7 +140,9 @@ request to the live site, before `atelier ship` runs for it.
 
 ### From `docs/atelier/ship.json`
 
-Atelier's own, as main holds it. Main's file still deploys and verifies the staging Worker of 1.x through `scripts/ship-worker.mjs`, which runs wrangler; the tree has no `wrangler.jsonc`, so that step cannot run here until the file changes. release/1.0's copy deploys with no `--env`, compares with and verifies at `https://atelier.zone/api/version`, and scans, pushes and fast-forwards `release/1.0` under the project `atelier-1.0`.
+Atelier's own, as main holds it. The `baseline` command below is a 1.x
+leftover: `sync` is `not_supported` in 2.0, and Node ship skips this step.
+Main's file still deploys and verifies the staging Worker of 1.x through `scripts/ship-worker.mjs`, which runs wrangler; the tree has no `wrangler.jsonc`, so that step cannot run here until the file changes. release/1.0's copy deploys with no `--env`, compares with and verifies at `https://atelier.zone/api/version`, and scans, pushes and fast-forwards `release/1.0` under the project `atelier-1.0`.
 
 ```json
 {
@@ -367,20 +374,24 @@ records the deploy as failed. `--dry-run` takes no lease.
 
 While a merged revision's declared protected actions have not run, the
 developer's inbox carries a reminder. The kinds the order needs unconditionally
-(install, deploy and the kinds runs name; push needs one only with `--push`)
-are recorded with the project's policy at `atelier init` and `atelier sync`,
+(install, deploy and the kinds runs name) are recorded with the project's
+policy at `atelier init`,
 and for each merged item the entry stands from its `item.merged` event until
 an `action.ran` event of that kind follows it in the ledger, at any revision:
 a ship at a later head delivers an older merge, so its runs retire the older
 reminders too. `atelier status` names `atelier ship --dry-run` as the entry's
 next command.
 
+`atelier sync` is `not_supported` in 2.0. Use `atelier init` to record a
+changed ship order, `atelier pull` to update the checkout, and a landing to
+publish task commits.
+
 ## What ship runs is protected
 
 `docs/atelier/**` is guarded in every project, and the files the composed
 order's commands execute are guarded exactly as the files a check executes
-are: `atelier init` and `atelier sync` read the order from the checkout and
-record its commands in the project's policy, and the gate derives the same
+are: `atelier init` reads the order from the checkout and
+records its commands in the project's policy, and the gate derives the same
 files from them it derives from a check's line (`checkFiles` in
 `src/rules.ts`): a script run directly, the recipe files `make` and `just`
 read, the manifest a package manager runs scripts from, the local binary

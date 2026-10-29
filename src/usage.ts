@@ -132,14 +132,21 @@ export function commandUsage(cmd: string): string {
 export const COMMAND_USAGE: Record<string, string> = Object.fromEntries(Object.keys(COMMAND_HELP).map((cmd) => [cmd, commandUsage(cmd)]));
 
 // Shared owner path for init's project section and every built-in guide.
-export const OWNER_LANDING = `The developer runs \`atelier land ID --reviewer H/M\` in the registered
-checkout to land a submitted task: it updates from main, runs checks, obtains
-an independent review, then accepts and merges. Choose a reviewer of another
-family than every contributor. Manual fallback: the reviewer runs
+export const OWNER_LANDING = `For developer-token writes below, set \`export ATELIER_ACTING=H/M\` to the
+registered model acting for you, or pass \`--as H/M\` on each command.
+
+The developer runs \`atelier land ID --reviewer H/M\` in the registered
+checkout to land a submitted task at its recorded head. It asks the named
+reviewer and records a land request. If approval is missing, it stops without
+waiting; run it again after approval. Under the lease it accepts, merges
+into the checkout, regenerates when declared, checks the merged tree and
+pushes only the merge. It never writes the task branch. A raced task stays
+accepted with its approvals after the retries end. Choose an independent
+reviewer. Manual fallback: the reviewer runs
 \`atelier diff ID\` and \`atelier review ID --approve|--reject --as H/M --note "…"\`;
-after approval and passing checks, the developer runs \`atelier accept ID\`, then
-\`atelier merge ID\`. For an already accepted task, run \`atelier merge ID\`,
-not land. Builders and reviewers do not accept or merge their own work.`;
+after approval and passing checks, the developer runs \`atelier accept ID --as H/M\`,
+then \`atelier merge ID --as H/M\`. An accepted task can use either merge or land.
+Builders and reviewers do not accept or merge their own work.`;
 
 // The text `atelier guide` prints.
 export function guideText(): string {
@@ -346,10 +353,10 @@ Standing rules:
   \`Agent:\` line: you become a contributor, so the reviewer must be of another
   company than you too, or in single-family mode a different model of the
   selected company from every contributor. Send a conflict that changes behaviour back to its
-  builder with \`atelier dispatch ID --job merge-main\`.
+  builder with \`atelier dispatch ID --job merge-main --agent H --model M\`.
 - Land with \`atelier land ID --reviewer H/M\`, which checks and submits
   a claimed task, asks the independent review, and once it approves accepts,
-  merges main, checks the merged tree and merges (run it again after the
+  merges the accepted head into the checkout, checks and pushes the merge (run it again after the
   verdict when the review was still open);
   \`--reviewer H/M\` names a reviewer of another family than every
   contributor, or in single-family mode a different model of the selected
@@ -362,7 +369,7 @@ Standing rules:
   is refused as before; the one-shot runner exits after one verdict and holds
   no claim. Land a wave with \`atelier land ID ID…\`:
   it runs several landings side by side (\`--parallel N\` bounds them),
-  asks only the approvals the project's risk reviews still lack, and takes
+  asks the named reviewer and stops if required approvals are missing, and takes
   the landing lease for one merge at a time. Land retries a transient
   failure of the merge step's fetch (a 5xx, or a revision other than the
   approved one, once), and merges a task it finds already accepted. An override while accepting is
@@ -373,8 +380,8 @@ Standing rules:
   review that rejects ends that landing with the reviewer's findings. An
   approval may carry over a merge of main that leaves the task's files
   alone, and the server alone decides; when main moves under the lease the
-  landing merges main again and asks only what is still missing, and stops
-  after a few rounds with the task submitted. After a failure with
+  landing merges the accepted head onto the new main and checks again. It
+  stops after three refused pushes with the task accepted and its approvals intact. After a failure with
   post-merge work open, no further task starts: read it with \`atelier land
   ID --post-merge status\`, then run the same command again, which resumes
   from the ledger. The suite on main after a wave, the deploy and the push
@@ -386,7 +393,7 @@ Standing rules:
   --for merged\` (or \`--any\`, a stage such as \`--for checked\`, \`--for
   answered\` for a review request, \`--runner home:NAME --silent N\`). It holds
   no lock and rides through a server restart; it exits 0 met, 1 cannot be met,
-  3 at \`--timeout\`, 4 naming a task that was abandoned. Order work with
+  3 at \`--timeout\`, 4 naming a task that was abandoned, 5 when unread. Order work with
   \`atelier edit ID --blocked-by tA,tB\`: the task is not offered, claimed or
   landed until each is merged.
 - Report every run that ended without a result with \`atelier run-report\`.

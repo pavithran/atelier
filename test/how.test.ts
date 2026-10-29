@@ -163,10 +163,11 @@ test("the plan flow draws what the code does, from goal to merge", () => {
   says("Plan", "home runner takes the plan job");
   assert.match(runner, /export async function runPlanTask\(/);
   assert.match(read("cli/runner-config.mjs"), /DEFAULT_JOBS = \["build", "plan",/, "a home runner no longer offers plan jobs");
-  // Approval by hash, then routing to a builder, alternates and a reviewer of another family.
-  says("Approve the plan", "by the hash");
+  // Approval by hash and a named route for each part (G17).
+  says("Approve the plan", "--hash HASH");
   assert.match(read("src/plans/route.ts"), /export function routeParts\(/);
-  says("Route the parts", "routeParts names a builder, two alternates");
+  says("Store named routes", "store the named builder and reviewer");
+  assert.match(ledger, /alternates: \[\], reviewer:/);
   // Dispatch once dependencies land, two live at a time.
   const phase = read("src/plans/phase.ts");
   assert.match(phase, /input\.maxParallel \?\? 2/, "the tick no longer keeps two parts live by default");
