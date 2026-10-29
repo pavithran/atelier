@@ -3428,7 +3428,9 @@ export class Ledger extends DurableObject<Env> {
       if (!proved) throw new RuleError("integrator_token", `${INTEGRATOR} claims only through a token bound to it`, 403, "claim through the integrator token");
     } else {
       // A plan's planner claims its item to write the plan, under the planner role.
-      assertClaimAllowed(item, this.withChangedFiles(this.items()), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+      // Both sides of the overlap are measured (G13): the claiming task by the
+      // files it changed too, where it has any, as a released task may.
+      assertClaimAllowed(this.withChangedFiles([item])[0], this.withChangedFiles(this.items()), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
       // A build or plan job dispatched before the owner paused, reserved or
       // kept this model from the job is not claimable: a dispatch naming it
       // is withdrawn, and the claim refused with the reason.
@@ -3625,7 +3627,7 @@ export class Ledger extends DurableObject<Env> {
     const items = this.items();
     assertDispatchClaimable(item, items, this.project().policy, d, this.owner, false);
     this.assertCriteriaReviewed(item, d, "dispatched");
-    const overlapHeld = this.project().policy.refuseOverlap ? overlapRefusal({ ...item, state: "open", owner: null, dispatch: d }, this.withChangedFiles(items)) : null;
+    const overlapHeld = this.project().policy.refuseOverlap ? overlapRefusal({ ...this.withChangedFiles([item])[0], state: "open", owner: null, dispatch: d }, this.withChangedFiles(items)) : null;
     const retained = input.overlapOk === true && !!waiting;
     const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
@@ -3654,7 +3656,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Each item with the files it changed at its current head, where known.
-  private withChangedFiles(items: Item[]): Item[] {
+  private withChangedFiles<T extends Item>(items: T[]): T[] {
     const rows = this.sql.exec(`SELECT item, head, paths FROM changed_files`).toArray();
     if (!rows.length) return items;
     const known = new Map(rows.map((r) => [r.item as string, { head: r.head as string, paths: JSON.parse(r.paths as string) as string[] }]));
@@ -3809,7 +3811,8 @@ export class Ledger extends DurableObject<Env> {
   // item), the claims runners were refused (`refusals`) and the tasks they
   // gave up after failures (`skips`), each of the task as it stands.
   waiting(): Waiting[] {
-    const held = this.dispatchWaiting(true);
+    // The waiting tasks are measured by their changed files too (G13).
+    const held = this.withChangedFiles(this.dispatchWaiting(true));
     if (!held.length) return held;
     const refused = this.runnerNotes<ClaimRefusal>("claim-refused");
     const skipped = this.runnerNotes<RunSkip>("run-skip");
@@ -3845,7 +3848,8 @@ export class Ledger extends DurableObject<Env> {
     const result = open.map((i) => {
       const d = i.dispatch!;
       const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
-      const claimRefusal = policy.refuseOverlap ? overlappingRefusal(i, all, claimant) : null;
+      // The task as `all` holds it, measured by its changed files (G13).
+      const claimRefusal = policy.refuseOverlap ? overlappingRefusal(all.find((a) => a.id === i.id) ?? i, all, claimant) : null;
       const blockers = coreBlockers(i, live, policy.coreFiles, lease, now, runners);
       const orphaned = coreOrphans(i, live, policy.coreFiles, lease, now, runners).map((o) => ({ ...o, project: projectName }));
       const gone = orphaned.length ? { orphaned } : {};

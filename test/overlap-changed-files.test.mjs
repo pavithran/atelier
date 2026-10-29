@@ -149,3 +149,39 @@ test("a changed-files list past the limit is not kept: the task's glob counts ag
   assert.match(refused.stderr, new RegExp(`overlap: ${other}'s scope overlaps live ${big}`));
   await cli(["abandon", big, "--note", "done", "--quote", "abandon it"]);
 });
+
+// Round 1 of astra's review (finding 3): both sides are measured. A released
+// task whose commits changed only src/a (scope src/**) is not blocked by a
+// live task that changed only src/b, in claim, dispatch and the queue alike.
+test("a released task that changed only src/a is not blocked by a live task that changed only src/b: claim, dispatch and the queue measure both sides", async () => {
+  const agentToken = (await api("POST", "/tokens", { actor: BUILDER, projects: ["demo"] })).body.token;
+  const otherToken = (await api("POST", "/tokens", { actor: OTHER, projects: ["demo"] })).body.token;
+  const runnerToken = (await api("POST", "/tokens", { runner: "home:studio", projects: ["demo"] })).body.token;
+  const work = async (id, token, actor, file) => {
+    assert.equal((await cli(["claim", id, "--as", actor], { token })).code, 0);
+    const dir = join(cache, "work", "demo", id);
+    writeFileSync(join(dir, file), `${id}\n`);
+    await git(dir, "add", ".");
+    await git(dir, "commit", "-q", "-m", `change ${file}`);
+    const pushed = await cli(["push", id, "--as", actor], { token, cwd: dir });
+    assert.equal(pushed.code, 0, pushed.stderr);
+  };
+  const released = await task("Changed src/a, then released", ["src/**"]);
+  await work(released, agentToken, BUILDER, "src/a/x.txt");
+  assert.equal((await cli(["release", released, "--as", BUILDER], { token: agentToken })).code, 0);
+  const blocker = await task("Changes src/b", ["src/**"]);
+  await work(blocker, otherToken, OTHER, "src/b/y.txt");
+
+  // Dispatch: not held; the queue offers it to a runner.
+  const dispatched = await cli(["dispatch", released, "--to", "home", "--agent", "opencode", "--model", "glm-5.3"]);
+  assert.equal(dispatched.code, 0, dispatched.stderr);
+  assert.doesNotMatch(dispatched.stdout, /is held/);
+  const offer = { runner: "home:studio", kind: "home", jobs: ["build"], agents: [{ agent: "opencode", models: ["glm-5.3"] }] };
+  const offered = (await api("POST", "/queue", offer, runnerToken, { "x-atelier-actor": "runner/studio" })).body.map((q) => q.item.id);
+  assert.ok(offered.includes(released), `offered: ${offered}`);
+  assert.equal((await cli(["undispatch", released])).code, 0);
+  // Claim: allowed.
+  const claimed = await cli(["claim", released, "--as", BUILDER], { token: agentToken });
+  assert.equal(claimed.code, 0, claimed.stderr);
+  for (const [id, token, actor] of [[released, agentToken, BUILDER], [blocker, otherToken, OTHER]]) await cli(["release", id, "--as", actor], { token });
+});
