@@ -10,7 +10,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { landingWorld, BUILDER } from "./land-node-shared.mjs";
-import { affectedCommand, parseAffectedTests, selectByList, selectByMap, settleAffectedTests } from "../src/affected-tests.ts";
+import { affectedCommand, parseAffectedTests, selectByList, selectByMap, selectTests, settleAffectedTests, UNMEASURED } from "../src/affected-tests.ts";
 
 const MAP = [{ paths: ["src/a/**"], tests: ["test/a.test.mjs"] }, { paths: ["src/b/**"], tests: ["test/b.test.mjs"] }, { paths: ["docs/**"], tests: [] }];
 const FILES = ["src/a/x.js", "src/b/y.js", "test/a.test.mjs", "test/b.test.mjs", "docs/x.md", "README.md"];
@@ -28,6 +28,23 @@ test("the selection is the declared map's: one module runs its own tests; an unm
   assert.deepEqual(selectByList(1, "", FILES), { kind: "full", why: "the list command exited 1" });
   assert.deepEqual(selectByList(0, "test/nope.mjs", FILES), { kind: "full", why: "the list command named test/nope.mjs, which is not a file at this head" });
   assert.equal(affectedCommand("node --test {tests}", ["test/a.test.mjs", "test/it's.mjs"]), "node --test test/a.test.mjs 'test/it'\\''s.mjs'");
+});
+
+// Round 1 of astra's review (finding 5): cleanClone reports a failed
+// merge-base as undefined; on the map path and the list path alike the
+// check selects the full suite and says why, and the list command is not run.
+test("a change whose paths were not measured selects the full suite on the map and the list paths, saying why", async () => {
+  let ran = 0;
+  const list = async () => { ran++; return { status: 0, output: "test/a.test.mjs\n" }; };
+  for (const changed of [undefined, null]) {
+    assert.deepEqual(await selectTests({ map: MAP }, changed, FILES, list), { kind: "full", why: UNMEASURED });
+    assert.deepEqual(await selectTests({ list: "node scripts/affected.mjs" }, changed, FILES, list), { kind: "full", why: UNMEASURED });
+  }
+  assert.equal(ran, 0, "the list command is not run on an unmeasured change");
+  assert.match(UNMEASURED, /could not be measured/);
+  // Measured, each path selects as before; the list command gets the paths.
+  assert.deepEqual((await selectTests({ map: MAP }, ["src/a/x.js"], FILES, list)).tests, ["test/a.test.mjs"]);
+  assert.deepEqual(await selectTests({ list: "x" }, ["src/a/x.js"], FILES, async (paths) => ({ status: 0, output: paths.includes("src/a/x.js") ? "test/a.test.mjs" : "" })), { kind: "affected", tests: ["test/a.test.mjs"], why: "1 test file the declared list command printed" });
 });
 
 test("the declaration is checked: a run without {tests}, both map and list, a command that is never read-only, a check that is not registered", () => {

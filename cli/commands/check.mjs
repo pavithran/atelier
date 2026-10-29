@@ -6,7 +6,7 @@ import { checkApplies } from "../../src/rules.ts";
 import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
 import { stopLine } from "../../src/check-limit.ts";
 import { appliesText, preparationBinding, refusalOf, refusalText, reusableResult } from "../../src/checks.ts";
-import { affectedCommand, selectByList, selectByMap } from "../../src/affected-tests.ts";
+import { affectedCommand, selectTests } from "../../src/affected-tests.ts";
 import { writeFileSync } from "node:fs";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, git, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
@@ -89,13 +89,11 @@ export default async function checkCommand() {
     // the changed paths against main and the head's tracked files.
     if (affected && toRun.includes(affected.check)) {
       const files = git(["ls-files", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
-      if (affected.map) selection = selectByMap(affected.map, changed, files);
-      else if (changed === null) selection = { kind: "full", why: "the changed paths could not be measured" };
-      else {
-        writeFileSync(join(dir, ".git", "atelier-changed"), changed.join("\n") + "\n");
+      selection = await selectTests(affected, changed, files, async (paths) => {
+        writeFileSync(join(dir, ".git", "atelier-changed"), paths.join("\n") + "\n");
         const listed = await runCheck(`(${affected.list}) < .git/atelier-changed 2>/dev/null`, dir, secrets, sequence.next(), undefined, policy);
-        selection = selectByList(listed.passed ? 0 : listed.status ?? null, listed.output, files);
-      }
+        return { status: listed.passed ? 0 : listed.status ?? null, output: listed.output };
+      });
       console.log(selection.kind === "affected" ? `Affected tests for \`${affected.check}\`: ${selection.why}${selection.tests.length ? `: ${selection.tests.join(", ")}` : ""}.` : `Running the full suite for \`${affected.check}\`: ${selection.why}.`);
     }
     // The command a check runs: the affected tests for the full-suite check

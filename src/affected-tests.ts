@@ -82,8 +82,8 @@ export type Selection =
 // change's paths against main (null when unmeasured); `files` the head's
 // tracked files, which globs in the map are matched against and literal test
 // paths are looked up in.
-export function selectByMap(map: readonly AffectedMapEntry[], changed: readonly string[] | null, files: readonly string[]): Selection {
-  if (changed === null) return { kind: "full", why: "the changed paths could not be measured" };
+export function selectByMap(map: readonly AffectedMapEntry[], changed: readonly string[] | null | undefined, files: readonly string[]): Selection {
+  if (!Array.isArray(changed)) return { kind: "full", why: UNMEASURED };
   const tracked = new Set(files);
   const tests = new Set<string>();
   for (const path of changed) {
@@ -112,6 +112,20 @@ export function selectByList(status: number | null, output: string, files: reado
   const missing = tests.find((t) => !tracked.has(t));
   if (missing) return { kind: "full", why: `the list command named ${missing}, which is not a file at this head` };
   return { kind: "affected", tests, why: `${tests.length} test file${tests.length === 1 ? "" : "s"} the declared list command printed` };
+}
+
+export const UNMEASURED = "the changed paths against main could not be measured (no merge base with main was read)";
+
+// The selection for a task check: the map's, or the list command's run with
+// the changed paths (`list` runs it and gives its exit status and output). A
+// change whose paths were not measured (undefined or null, as the clean
+// clone reports a failed merge-base) selects the full suite on either path,
+// and the list command is not run.
+export async function selectTests(a: Pick<AffectedTests, "map" | "list">, changed: readonly string[] | null | undefined, files: readonly string[], list: (changed: readonly string[]) => Promise<{ status: number | null; output: string }>): Promise<Selection> {
+  if (!Array.isArray(changed)) return { kind: "full", why: UNMEASURED };
+  if (a.map) return selectByMap(a.map, changed, files);
+  const r = await list(changed);
+  return selectByList(r.status, r.output, files);
 }
 
 const quote = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`);
