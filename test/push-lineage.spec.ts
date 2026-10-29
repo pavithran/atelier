@@ -128,8 +128,9 @@ it("the push route reads the fork's history: a fast-forward passes, a rewrite ne
   expect((await L.item("t1")).head).toBe(M);
   // headOf, the two chains of the walk, and the base's line, where the
   // reading of the pushed commits' Agent lines stops (t215); then the secret
-  // scan's diff reads the fork's and the base's heads (t332).
-  expect(reads).toEqual({ log: 6, commits: 0 });
+  // scan's diff reads the fork's and the base's heads (t332); then the
+  // changed files read the pushed head's line and the base's (G13).
+  expect(reads).toEqual({ log: 8, commits: 0 });
   expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
 });
 
@@ -161,8 +162,9 @@ it("the walk continues past a log page: a recorded head deeper than one page, or
   // headOf reads one page; the walk reads the first page, then the next from
   // its last commit's first parent; then the base's line, where the reading
   // of the pushed commits' Agent lines stops (t215); then the secret scan's
-  // diff reads the fork's and the base's heads (t332).
-  expect(reads).toEqual({ log: 6, commits: 0 });
+  // diff reads the fork's and the base's heads (t332); then the changed
+  // files read the pushed head's line and the base's (G13).
+  expect(reads).toEqual({ log: 8, commits: 0 });
   expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
   // A merge whose first parent stands on H0 alone and whose second parent
   // heads 1500 commits on the tip: the chain behind the second parent is
@@ -174,8 +176,9 @@ it("the walk continues past a log page: a recorded head deeper than one page, or
   expect((await push(name, { head: M }, bindings)).status).toBe(200);
   expect((await L.item("t1")).head).toBe(M);
   // One more read than the walk's, for the base's line (t215); then the
-  // secret scan's diff reads the fork's and the base's heads (t332).
-  expect(reads).toEqual({ log: 7, commits: 0 });
+  // secret scan's diff reads the fork's and the base's heads (t332); then
+  // the changed files read the pushed head's line and the base's (G13).
+  expect(reads).toEqual({ log: 9, commits: 0 });
   expect((await events(L)).find((e) => e.kind === "push.observed")?.data).not.toHaveProperty("rebasedFrom");
 });
 

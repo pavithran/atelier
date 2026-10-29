@@ -3614,9 +3614,11 @@ export class Ledger extends DurableObject<Env> {
     if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, this.project().policy, d.model);
     this.assertMergeMainWorkspace(item, d);
     const items = this.items();
-    assertDispatchClaimable(item, items, this.project().policy, d, this.owner, false);
+    // Only an open task's dispatch is held for an overlap (G13); one that
+    // would release a live holder is refused before anything is released.
+    assertDispatchClaimable(item, items, this.project().policy, d, this.owner, this.holds(item));
     this.assertCriteriaReviewed(item, d, "dispatched");
-    const overlapHeld = this.project().policy.refuseOverlap ? overlapRefusal({ ...this.withChangedFiles([item])[0], state: "open", owner: null, dispatch: d }, this.withChangedFiles(items)) : null;
+    const overlapHeld = this.project().policy.refuseOverlap && !this.holds(item) ? overlapRefusal({ ...this.withChangedFiles([item])[0], state: "open", owner: null, dispatch: d }, this.withChangedFiles(items)) : null;
     const retained = input.overlapOk === true && !!waiting;
     const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
@@ -3723,7 +3725,7 @@ export class Ledger extends DurableObject<Env> {
     if (input) {
       const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
       this.assertMergeMainWorkspace(item, d);
-      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner, false);
+      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner, this.holds(item));
       this.assertCriteriaReviewed(item, d, "dispatched");
     }
     return item;

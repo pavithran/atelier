@@ -819,8 +819,11 @@ it("a dispatch refuses the claim rules ahead of the claim: refused overlap, and 
   await S.newItem("Live", ["relay/test/**"], "owner");
   await S.claim("t1", A);
   const t2 = (await S.newItem("Queued", ["relay/test/foo.ts"], "owner")).id;
-  await refusal(S.dispatch(t2, "owner", { to: "home", agent: "codex", model: "gpt-5.5" }), "overlap", /t2's scope overlaps live t1 \(claude-code\/opus-5\.5\); this project refuses overlapping claims/);
-  expect((await S.item(t2)).dispatch).toBeNull();
+  // An open task's overlapping dispatch is recorded and held, naming its
+  // blocker (G13), where it was refused before; its claim is still refused.
+  const held = await S.dispatch(t2, "owner", { to: "home", agent: "codex", model: "gpt-5.5" });
+  expect(held.overlapHeld).toMatchObject({ id: "t1", owner: A });
+  expect((await S.waiting()).find((i) => i.id === t2)?.overlap).toMatchObject({ id: "t1" });
   // The holder of the overlapping item is not refused when named.
   const overlapped = await S.dispatch(t2, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   expect(overlapped.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
@@ -1484,7 +1487,7 @@ it("a task stores a short title, its brief and its acceptance criteria apart, an
   expect(old).toMatchObject({ title: "Short titles for tasks", brief: LONG, accept: [], derived: true });
   // A title that fits is kept whole, with no brief.
   expect(await L.newItem("Plain", [], "owner")).toMatchObject({ title: "Plain", brief: null, accept: [] });
-  await refusal(L.newItem("x".repeat(81), [], "owner", { brief: "the rest" }), "bad_title", /a title is at most 80 characters; put the rest in the brief/);
+  await refusal(L.newItem("x".repeat(81), [], "owner", { brief: "the rest" }), "bad_title", /a title is at most 80 characters and this one is 81; put the rest in the brief/);
   await refusal(L.newItem("  ", [], "owner"), "bad_title", /an item needs a title/);
   const events = (await L.events(old.id)) as unknown as LedgerEvent[];
   expect(events.find((e) => e.kind === "item.created")?.data).toMatchObject({ title: "Short titles for tasks", brief: LONG });
