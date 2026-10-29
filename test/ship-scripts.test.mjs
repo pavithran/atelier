@@ -111,9 +111,13 @@ test("the Studio script takes its checkout and host from its arguments, not the 
   assert.match(local.stderr, /this Mac/);
 });
 
-test("the ship file gives the studio step its checkout and host", () => {
+// The Studio runs the release the deploy installs, not a checkout
+// (Atelier 2.0, task 9): Atelier's own ship file has no studio step, and its
+// deploy names the Studio's host.
+test("Atelier's ship file has no studio step, and its deploy names the Studio's host", () => {
   const ship = JSON.parse(readFileSync("docs/atelier/ship.json", "utf8"));
-  const argv = ship.studio.run;
-  assert.match(argv[argv.indexOf("--checkout") + 1], /^\//);
-  assert.ok(argv[argv.indexOf("--host") + 1]);
+  assert.equal(ship.studio, undefined);
+  assert.equal(ship.baseline, undefined);
+  const argv = ship.deploy.run;
+  assert.equal(argv[argv.indexOf("--host") + 1], "ai-studio");
 });

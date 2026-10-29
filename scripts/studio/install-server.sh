@@ -195,7 +195,7 @@ restore() {
     rm -rf "$S.failed"
     mv "$S" "$S.failed" && mv "$S.prev" "$S" || { echo "install: the previous release could not be moved back; $ENV is stopped; see $HOME_DIR" >&2; return 1; }
   else
-    echo "install: there was no previous release; the new one is left in place" >&2
+    echo "install: there is no previous release to put back; starting what is in $S" >&2
   fi
   launchctl bootstrap system "$PLIST" || { echo "install: $LABEL did not start; sudo launchctl bootstrap system $PLIST" >&2; return 1; }
   local back
