@@ -75,3 +75,20 @@ test("the server's copy: a run report sent with the secrets in it is stored with
   assert.ok(stored.includes("PASSWORD=[key removed]"), stored);
   assert.ok(stored.includes(PATHS[0]), stored);
 });
+
+// Round 1 of astra's review (finding 1): credentials the redactor here lets
+// through. The fix is G3/G4's shared redactor (2.0/g34-read), which merges
+// into the 2.0 branch first; these stay todo until that merge brings it, and
+// must then pass on it. Each secret, and the text around it that must stay.
+const ROUND_ONE = [
+  ["Authorization: Custom abc123", "abc123"],
+  ['Authorization: Digest username="u", realm="r", response="6629fae49393a05397450978507c4ef1"', "6629fae49393a05397450978507c4ef1"],
+  ["curl -H 'Authorization: basic dTpw'", "dTpw"],
+  ['{"authorization": "tok123abc", "ok": 1}', "tok123abc"],
+];
+test("round 1: a custom scheme, a Digest response, a short basic credential and a quoted JSON authorization are removed, in both copies", { todo: "the fix is G3/G4's shared redactor; this passes once 2.0/g34-read merges" }, () => {
+  for (const [note, secret] of ROUND_ONE) {
+    assert.ok(!redactKeys(note).includes(secret), `${note} -> ${redactKeys(note)}`);
+    assert.ok(!stderrSummary(`${note}\n`).includes(secret), `runner copy: ${stderrSummary(note)}`);
+  }
+});
