@@ -4744,15 +4744,12 @@ export class Ledger extends DurableObject<Env> {
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
-    // A rejection on a claim answers that claim and the requests at the head
-    // no runner has claimed; another reviewer's claimed request is left to
-    // finish (G11), as a claimed tier request is, so reviews asked together
-    // each give their verdict, and the rejection stands beside an approval.
-    else if (!r.approve && boundClaims.length) {
-      for (const c of boundClaims) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, c.id);
-      this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL AND (criteria IS NULL OR criteria = ?)`, r.itemId, r.head, r.criteria!);
-    }
-    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, r.approve ? boundClaims.map((c) => c.id as number) : undefined, r.approve && !claimed ? r.by : undefined);
+    // A verdict answers only its own reviewer's request (G11): the claim it
+    // bound, or, unclaimed, the requests asked of its reviewer. Another
+    // reviewer's request, open or claimed, ends only with that reviewer's
+    // verdict or an explicit withdrawal, so reviews asked together each give
+    // theirs, and a rejection stands beside an approval.
+    else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, boundClaims.map((c) => c.id as number), !claimed ? r.by : undefined);
     // A rejection sends the change back for rework, so a tier request at the
     // head no runner has claimed yet is no longer asked for; a claimed one is
     // left to finish, and its findings join the rework.

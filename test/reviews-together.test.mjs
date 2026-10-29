@@ -64,6 +64,26 @@ test("two reviewers asked together at one head both stand open and are claimed s
   assert.equal((await w.detail(id)).item.state, "submitted");
 });
 
+// Round 1 of astra's review (finding 4): A rejects before B claims. B's
+// request is not closed by A's verdict: B claims it and gives its own.
+test("a rejection before the other reviewer claims leaves that request open: it ends only with its own verdict", async (t) => {
+  const w = await landingWorld(t);
+  await reviewers(w);
+  const { id, head } = await w.task({ files: { "shared.txt": "changed\n" }, approve: false });
+  const asked = await w.cli(["review-request", id, "--reviewer", OPUS, "--reviewer", GLM, "--hand"]);
+  assert.equal(asked.status, 0, asked.output);
+  const a = await claim(w, id, OPUS);
+  const rejected = await verdict(w, id, OPUS, a, false, { findings: [{ file: "shared.txt", line: 1, severity: "blocking", text: "wrong" }] });
+  assert.equal(rejected.status, 200, rejected.text);
+  const states = (await w.L().reviewRequests(id)).filter((r) => r.head === head).map((r) => [r.reviewer, r.state]);
+  assert.deepEqual(states, [[OPUS, "answered"], [GLM, "open"]], "A's verdict answered A's request alone");
+  const b = await claim(w, id, GLM);
+  const approved = await verdict(w, id, GLM, b, true);
+  assert.equal(approved.status, 200, approved.text);
+  assert.deepEqual((await w.L().reviewRequests(id)).filter((r) => r.head === head).map((r) => r.state), ["answered", "answered"]);
+  assert.notEqual((await w.cli(["accept", id])).status, 0, "the rejection stands");
+});
+
 test("asking together is refused whole: an ineligible second reviewer asks neither", async (t) => {
   const w = await landingWorld(t);
   await reviewers(w);
