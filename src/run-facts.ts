@@ -60,12 +60,12 @@ export function withoutRunText<T extends { facts?: RunFacts | null }>(row: T, fi
 // this fixed grammar: the step from STEPS, the exit code, the signal, a
 // timeout, a work-in-progress commit, a provider's limit and its reset, the
 // log's host and path. Nothing else of the note is kept, so no error text,
-// stderr or URL a failure echoed reaches the server. A validation_blocked
-// note is the builder's own report, kept as the block's reason (a follow-up),
-// redacted. A release the developer or a model writes by hand keeps its words.
+// stderr or URL a failure echoed reaches the server, and no prefix lets prose
+// through (round 14): a validation_blocked build's report is the builder's
+// words, sent in the release route's own field (blocked), never in a note.
+// A release the developer or a model writes by hand keeps its words.
 export const STEPS = ["claim", "clone", "fetch", "reset", "checkout", "merge", "rebase", "commit", "push", "harness", "check", "submit", "finish", "brief", "prepare", "plan", "workspace", "run"] as const;
 const GAVE_UP_NOTE = "the runner gave up: ";
-const VALIDATION_BLOCKED_NOTE = "validation_blocked: ";
 
 const OUTCOMES: readonly [RegExp, string][] = [
   [/\bno new commit\b/, "no new commit"],
@@ -80,7 +80,6 @@ const OUTCOMES: readonly [RegExp, string][] = [
 
 export function automaticNote(note: unknown): string {
   const s = String(note ?? "");
-  if (s.startsWith(VALIDATION_BLOCKED_NOTE)) return redactKeys(s);
   const prefix = s.startsWith(GAVE_UP_NOTE) ? GAVE_UP_NOTE : "";
   const named = /\bstep ([a-z-]+)\b/.exec(s)?.[1] ?? /\bgit ([a-z-]+)\b/.exec(s)?.[1] ?? (/\bharness\b/.test(s) ? "harness" : null)
     ?? STEPS.find((step) => step !== "run" && new RegExp(`\\b${step}(?:es|s)?\\b`).test(s)) ?? null;

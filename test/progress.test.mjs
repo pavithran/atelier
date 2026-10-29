@@ -19,6 +19,7 @@ import { runAdapter, streamJsonArgv } from "../cli/harness/adapter.mjs";
 import { limitSpawn } from "../bin/harness/limit.mjs";
 import { nextProgress, parseProgress, progressView, situationOf, STALL_MS, STARTUP_MS } from "../src/situation.ts";
 import { progressText, situationText } from "../cli/situation.mjs";
+import { automaticNote, isFacts } from "../src/run-facts.ts";
 
 const OWNER = "atl_00112233445566778899aabbccddeeff";
 const BUILDER = "claude-code/sonnet-5.5";
@@ -518,7 +519,7 @@ test("round 11: a git failure echoing https://x:secret@host/repo.git reaches no 
   assert.ok(raw.some((d) => d.includes('"automatic":true') && !d.includes("secret")));
 });
 
-test("round 13: the server refuses raw text in every field a runner fills from an error, a process or a log, and takes facts", async () => {
+test("rounds 13 and 14: the server refuses raw text in every field a runner fills from an error, a process or a log, under either credential, and takes facts", async () => {
   const RAW = "git clone https://x:secret@host/repo.git failed: fatal: unable to access";
   const id = (await api("POST", "/projects/demo/items", { title: "The gate", scope: ["src/**"] })).body.id;
   assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status, 200);
@@ -532,22 +533,29 @@ test("round 13: the server refuses raw text in every field a runner fills from a
   const runner = as(runnerToken, BUILDER, { "x-atelier-runner": "home:studio" });
   assert.equal((await runner("POST", "/queue", { runner: "home:studio", kind: "home", jobs: ["build"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }] })).status, 200);
   assert.equal((await runner("POST", `${P}/claim`, {})).status, 200);
-  const owner = as(OWNER, "owner", { "x-atelier-runner": "home:studio", "x-atelier-acting": acting });
-  const cases = [
-    [runner, "POST", "/runs", { actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: RAW }, "detail"],
-    [runner, "POST", `${P}/release`, { note: RAW }, "note"],
-    [owner, "POST", "/runs", { actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: RAW }, "detail"],
-    [owner, "POST", `${P}/run-skip`, { actor: BUILDER, role: "build", kind: "failures", failures: 2, note: RAW }, "note"],
-    [owner, "POST", `${P}/review-skip`, { head: "a".repeat(40), request: 1, note: RAW }, "note"],
-    [as(reviewer, "codex/gpt-6"), "POST", `${P}/review-release`, { note: RAW, request: 1 }, "note"],
-    [as(reviewer, "codex/gpt-6"), "POST", `${P}/review-release`, { note: JSON.stringify({ outcome: "preparation", detail: RAW }), request: 1 }, "note"],
-    [as(reviewer, "codex/gpt-6"), "POST", `${P}/review-renew`, { note: RAW, request: 1 }, "note"],
-    [as(reviewer, "codex/gpt-6"), "POST", `${P}/criteria-review-failed`, { request: 1, note: RAW }, "note"],
-    [as(integrator, "atelier/integrator"), "POST", `${P}/integration-failed`, { part: "a", kind: "conflict", reason: RAW }, "reason"],
-    [as(integrator, "atelier/integrator"), "POST", `${P}/refresh-failed`, { mainHead: "a".repeat(40), kind: "conflict", reason: RAW }, "reason"],
-    [as(integrator, "atelier/integrator"), "POST", `${P}/refresh-lease`, { release: "x", reason: RAW }, "reason"],
-    [as(integrator, "atelier/integrator"), "POST", `${P}/refresh-checked`, { lease: "x", passed: false, reason: RAW }, "reason"],
+  // Round 14: every gated route, under the runner's own credential and
+  // under the developer's token naming the runner (X-Atelier-Runner), as
+  // the actor that form sends (the developer, for a report or a skip).
+  const dev = (actor) => as(OWNER, actor, { "x-atelier-runner": "home:studio", "x-atelier-acting": acting });
+  const outcome = JSON.stringify({ outcome: "preparation", detail: RAW });
+  const routes = [
+    [runner, "owner", "/runs", { actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, detail: RAW }, "detail"],
+    [runner, BUILDER, `${P}/release`, { note: RAW }, "note"],
+    [runner, BUILDER, `${P}/release`, { note: "validation_blocked: npm test failed: token=abc" }, "note"],
+    [runner, "owner", `${P}/run-skip`, { actor: BUILDER, role: "build", kind: "failures", failures: 2, note: RAW }, "note"],
+    [runner, "owner", `${P}/review-skip`, { head: "a".repeat(40), request: 1, note: RAW }, "note"],
+    [as(reviewer, "codex/gpt-6", { "x-atelier-runner": "home:studio" }), "codex/gpt-6", `${P}/review-release`, { note: RAW, request: 1 }, "note"],
+    [as(reviewer, "codex/gpt-6", { "x-atelier-runner": "home:studio" }), "codex/gpt-6", `${P}/review-release`, { note: outcome, request: 1 }, "note"],
+    [as(reviewer, "codex/gpt-6", { "x-atelier-runner": "home:studio" }), "codex/gpt-6", `${P}/review-renew`, { note: RAW, request: 1 }, "note"],
+    [as(reviewer, "codex/gpt-6", { "x-atelier-runner": "home:studio" }), "codex/gpt-6", `${P}/criteria-review-failed`, { request: 1, note: RAW }, "note"],
+    [as(integrator, "atelier/integrator", { "x-atelier-runner": "home:studio" }), "atelier/integrator", `${P}/integration-failed`, { part: "a", kind: "conflict", reason: RAW }, "reason"],
+    [as(integrator, "atelier/integrator", { "x-atelier-runner": "home:studio" }), "atelier/integrator", `${P}/refresh-failed`, { mainHead: "a".repeat(40), kind: "conflict", reason: RAW }, "reason"],
+    [as(integrator, "atelier/integrator", { "x-atelier-runner": "home:studio" }), "atelier/integrator", `${P}/refresh-lease`, { release: "x", reason: RAW }, "reason"],
+    [as(integrator, "atelier/integrator", { "x-atelier-runner": "home:studio" }), "atelier/integrator", `${P}/refresh-checked`, { lease: "x", passed: false, reason: RAW }, "reason"],
   ];
+  // A review skip under the runner token needs a review job its poll was
+  // offered: that form is in test/runner-routes.test.mjs (round 14).
+  const cases = routes.flatMap(([send, actor, path, body, field]) => [...(path.endsWith("/review-skip") ? [] : [[send, "POST", path, body, field]]), [dev(actor), "POST", path, body, field]]);
   for (const [send, method, path, body, field] of cases) {
     const r = await send(method, path, body);
     const answer = await r.json();
@@ -559,9 +567,23 @@ test("round 13: the server refuses raw text in every field a runner fills from a
   // Facts pass the gate (the route's own checks follow), and a release the
   // developer writes keeps its words: the gate is the runner's.
   assert.notEqual((await (await runner("POST", "/runs", { actor: BUILDER, role: "build", outcome: "harness_failed", project: "demo", item: id, facts: { exitCode: 1 } })).json()).error, "not_facts");
-  assert.notEqual((await (await as(reviewer, "codex/gpt-6")("POST", `${P}/review-release`, { note: "step clone; exit 128", request: 1 })).json()).error, "not_facts");
+  assert.notEqual((await (await as(reviewer, "codex/gpt-6", { "x-atelier-runner": "home:studio" })("POST", `${P}/review-release`, { note: "step clone; exit 128", request: 1 })).json()).error, "not_facts");
   assert.equal((await runner("POST", `${P}/release`, { note: "step clone; exit 128" })).status, 200);
   const mine = (await api("POST", "/projects/demo/items", { title: "By hand", scope: ["lib/**"] })).body.id;
   await L().claim(mine, BUILDER);
   assert.notEqual((await api("POST", `/projects/demo/items/${mine}/release`, { note: RAW })).body.error, "not_facts");
+  // Round 14: the builder's validation_blocked report goes in the release's
+  // own field, blocked, redacted, as the block's reason; the note stays facts.
+  // The grammar admits no prefix: an old note that starts with it reads back as facts.
+  assert.ok(!isFacts("validation_blocked: npm test could not run"));
+  assert.equal(automaticNote("validation_blocked: the suite could not run"), "step run");
+  assert.equal((await runner("POST", `${P}/claim`, {})).status, 200);
+  const blocked = await runner("POST", `${P}/release`, { note: "step check; work in progress abcdef12 pushed", blocked: "npm test could not run: listen EPERM; API_TOKEN=abc123" });
+  assert.equal(blocked.status, 200, await blocked.clone().text());
+  const item = await L().item(id);
+  assert.equal(item.state, "blocked");
+  const reason = item.blocked.reason;
+  assert.match(reason, /npm test could not run: listen EPERM/);
+  assert.match(reason, /work in progress abcdef12 pushed/);
+  assert.ok(!reason.includes("abc123"), reason);
 });

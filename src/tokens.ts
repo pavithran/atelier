@@ -269,7 +269,7 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The claim reads the project's preparation policy (t378) into the
   // workspace's Git config.
   { name: "claim-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "claim", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
-  { name: "release", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["note"], via: "cli", command: "release", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  { name: "release", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["note", "blocked"], via: "cli", command: "release", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
   // A release that reports a provider limit is sent by the runner itself
   // (leaseCall), so shutdown can give it a deadline of its own.
   { name: "release-provider-limit", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["providerLimit", "note"], via: "runner", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },

@@ -640,7 +640,11 @@ const releaseNote = (reason) => String(reason ?? "").slice(-NOTE_MAX);
 // back in the queue. The marker in the workspace then records the block
 // (markBlocked), so a run offered the task again, which only an unblock
 // does, clears it and runs the builder.
-const blockNote = (reason) => `${BLOCKED_NOTE}${String(reason ?? "")}`.slice(0, NOTE_MAX);
+// Since round 14 the note is facts like any runner note, and the builder's
+// report goes in the release's own field, --blocked, the one place the
+// server keeps a builder's words.
+const blockNote = (reason) => String(reason ?? "").slice(0, NOTE_MAX - BLOCKED_NOTE.length);
+const blockArgs = (reason, facts = "step check") => ["--note", automaticNote(facts), "--blocked", blockNote(reason)];
 async function markBlocked(io, workspace) {
   try {
     const block = await io.readValidationBlock?.(workspace);
@@ -2280,7 +2284,7 @@ export async function runTask(assignment, config, name, io) {
         state = { ...state, workInProgress: kept };
         const note = `${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} and pushed unsubmitted for the next run to continue`;
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", blockNote(note)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, ...blockArgs(state.reason, `step check; work in progress ${kept.slice(0, 8)} pushed`)], workspace);
           released = true;
           state = { ...state, blocked: true };
           await markBlocked(io, workspace);
@@ -2289,7 +2293,7 @@ export async function runTask(assignment, config, name, io) {
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else if (head === startedAt() && !unstaged) {
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", error.validationBlocked ? blockNote(state.reason) : failureReleaseNote(assignment, state, "", workspace)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, ...(error.validationBlocked ? blockArgs(state.reason) : ["--note", failureReleaseNote(assignment, state, "", workspace)])], workspace);
           // The task is released with nothing committed: nothing is owed.
           await io.clearHarnessFailure?.(workspace).catch((clearError) => io.log(`could not clear the failure marker: ${clearError.message}`));
           unsavedFailures.delete(obligationKey());
@@ -2385,7 +2389,7 @@ export async function giveUpClaim({ io, project, item, actor, workspace, reason,
   // A give-up's note carries facts alone (automaticNote); a validation_blocked
   // one is the builder's report, the block's reason.
   try {
-    await io.cli(["release", item.id, ...at, "--note", validationBlocked ? blockNote(`${String(reason ?? "").slice(-(NOTE_MAX - prefix.length - pushed.length))}${pushed}`) : automaticNote(`${GAVE_UP}${String(reason ?? "")}${pushed}`)], workspace);
+    await io.cli(["release", item.id, ...at, ...(validationBlocked ? blockArgs(String(reason ?? "").slice(-(NOTE_MAX - prefix.length)), `step check${pushed}`) : ["--note", automaticNote(`${GAVE_UP}${String(reason ?? "")}${pushed}`)])], workspace);
     if (validationBlocked) {
       await markBlocked(io, workspace);
       io.log(`blocked ${project}/${item.id} for the developer: its build ended validation_blocked${pushed}`);

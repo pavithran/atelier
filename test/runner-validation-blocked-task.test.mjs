@@ -33,6 +33,8 @@ function withMarker(options = {}, disk = { marker: null }) {
 }
 const releases = (calls) => calls.filter((c) => c.argv?.[0] === "release").map((c) => c.argv);
 const noteOf = (argv) => argv[argv.indexOf("--note") + 1];
+// Since round 14 the builder's report goes in --blocked, the note is facts.
+const blockedOf = (argv) => argv.includes("--blocked") ? argv[argv.indexOf("--blocked") + 1] : undefined;
 
 test("a validation_blocked build blocks its task with the run's reason and does not release it to the queue", async () => {
   const { io, calls, logs, disk } = withMarker({ head: "before" });
@@ -41,12 +43,12 @@ test("a validation_blocked build blocks its task with the run's reason and does 
   const state = await runTask(assignment, config, "home:studio", io);
   assert.equal(runOutcome(state), "validation_blocked");
   assert.equal(state.blocked, true);
-  // One release, whose note the Ledger takes as a block: it starts with
-  // VALIDATION_BLOCKED and carries the run's reason.
+  // One release, which the Ledger takes as a block: the builder's report in
+  // --blocked (round 14), the run's reason, and a note of facts.
   const sent = releases(calls);
   assert.equal(sent.length, 1);
-  assert.ok(noteOf(sent[0]).startsWith(VALIDATION_BLOCKED));
-  assert.match(noteOf(sent[0]), /npm test could not run: listen EPERM/);
+  assert.equal(noteOf(sent[0]), "step check");
+  assert.match(blockedOf(sent[0]), /npm test could not run: listen EPERM/);
   assert.ok(logs.includes("blocked for the developer: validation_blocked with no new commit"), logs.join("\n"));
   assert.ok(!logs.includes("released: no new commit"));
   assert.ok(logs.some((l) => l.endsWith("claim kept, the task blocked for the developer")), logs.join("\n"));
@@ -109,7 +111,7 @@ test("a validation_blocked build that committed is pushed and blocked, not given
   const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
   const first = argvs.findIndex((a) => a[0] === "release");
   assert.ok(argvs.findIndex((a) => a[0] === "push") < first, "the commit is pushed before the task is blocked");
-  assert.ok(noteOf(argvs[first]).startsWith(VALIDATION_BLOCKED));
+  assert.ok(blockedOf(argvs[first]));
   assert.ok(!releases(calls).some((a) => noteOf(a).startsWith(GAVE_UP)), "the task is not given up to the queue");
   assert.ok(logs.some((l) => l.startsWith("blocked atelier/t13 for the developer")), logs.join("\n"));
   // After the unblock: claimed again and built again, not passed by.
@@ -126,7 +128,8 @@ test("giving up a validation_blocked build pushes it and blocks the task with th
   assert.equal(await giveUpClaim({ io, project: "atelier", item: { id: "t13" }, actor: assignment.actor, workspace: "/w", reason: "npm test could not run", validationBlocked: true }), true);
   const argvs = calls.filter((c) => c.argv).map((c) => c.argv[0]);
   assert.deepEqual(argvs, ["push", "release"]);
-  assert.equal(noteOf(releases(calls)[0]), `${VALIDATION_BLOCKED}npm test could not run`);
+  assert.equal(blockedOf(releases(calls)[0]), "npm test could not run");
+  assert.equal(noteOf(releases(calls)[0]), "step check");
   assert.equal(disk.marker.blocked, true);
   assert.ok(logs.some((l) => l.startsWith("blocked atelier/t13 for the developer")));
   // A release the server refuses leaves the claim held and the marker as it was.

@@ -870,6 +870,8 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   await denied(api("POST", `${p.base(job.id)}/review-skip`, { actor: ACTOR, body: skipBody }), token, "skip as the builder");
   await denied(api("POST", `${p.base(id)}/review-skip`, { actor: REVIEWER, body: skipBody }), token, "skip of a build job");
   assert.equal((await expect(api("POST", `${p.base(job.id)}/review-skip`, { actor: REVIEWER, body: { ...skipBody, head: H0 } }), 409, "skip at another head")).error, "bad_head");
+  // Round 14: a note of the run's text is refused under the runner token.
+  assert.equal((await expect(api("POST", `${p.base(job.id)}/review-skip`, { actor: REVIEWER, body: { ...skipBody, note: "fatal: unable to access https://x:secret@host" } }), 400, "raw note")).error, "not_facts");
   assert.deepEqual(await expect(api("POST", `${p.base(job.id)}/review-skip`, { actor: REVIEWER, body: skipBody }), 200, "review-skip"), { skipped: true });
   assert.deepEqual((await p.L.reviewSkips(job.id, job.request)).map((s) => [s.runner, s.note]), [[RUNNER, "opencode; exit 1"]], "the note sent is dropped; the facts' line stands");
   const reported = await expect(api("POST", "/runs", { body: { actor: REVIEWER, role: "review", outcome: "refused", project: p.name, item: job.id, detail: "" } }), 201, "review run report");
