@@ -50,6 +50,7 @@ import { ago } from "./floor.ts";
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
+import type { SituationFacts } from "./situation.ts";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
   PREREVIEW_ATTEMPTS, PREREVIEW_DEPTH, PREREVIEW_JOB, PREREVIEW_RETRY_MS,
@@ -3099,6 +3100,40 @@ export class Ledger extends DurableObject<Env> {
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
         return { ...item, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
+  }
+
+  // The facts `atelier situation` and `atelier wait` read of this project in
+  // one call (G4, src/situation.ts): every live task, and each task named in
+  // `tasks` whatever its state, with the stage its newest event recorded and
+  // since when; the holds the queue keeps; the open review requests; the
+  // landing lease, queued landings and landing records; each task's newest
+  // check; the standing decisions. All recorded state; nothing is decided.
+  situationFacts(tasks: string[] = []): SituationFacts {
+    const named = new Set(tasks);
+    const items = this.items().filter((i) => named.has(i.id) || (i.state !== "merged" && i.state !== "abandoned"));
+    const stages: SituationFacts["stages"] = {};
+    const lastChecks: SituationFacts["lastChecks"] = {};
+    const landings: SituationFacts["landings"] = {};
+    for (const i of items) {
+      // The newest stage, and the oldest event of the unbroken run of it.
+      let stage: string | null = null, since: string | null = null;
+      for (const e of this.sql.exec(`SELECT stage, at FROM events WHERE item_id = ? AND stage IS NOT NULL ORDER BY seq DESC LIMIT 500`, i.id).toArray()) {
+        if (stage === null) stage = e.stage as string;
+        else if (e.stage !== stage) break;
+        since = e.at as string;
+      }
+      if (stage && since) stages[i.id] = { stage, since };
+      const check = this.evidenceFor(i.id).filter((e) => e.grade === "observed").at(-1);
+      if (check) lastChecks[i.id] = { claim: check.claim, passed: check.passed, head: check.head, at: check.at, by: check.by, ...(check.stopped ? { stopped: check.stopped } : {}) };
+      const landing = this.landingRecord(i.id);
+      if (landing) landings[i.id] = landing;
+    }
+    const held = this.dispatchWaiting().flatMap((w) => "held" in w && w.held ? [{ id: w.id, held: w.held }] : []);
+    const reviewRequests = this.sql.exec(`SELECT id, item, head, state, dispatch, claimedBy, runner, claimedAt, tier FROM review_requests WHERE state IN ('open', 'claimed') ORDER BY id`).toArray()
+      .map((r) => ({ id: Number(r.id), item: r.item as string, head: r.head as string, state: r.state as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch, claimedBy: (r.claimedBy as string | null) ?? null, runner: (r.runner as string | null) ?? null, claimedAt: (r.claimedAt as string | null) ?? null, tier: r.tier === 1 }));
+    const landJobs = this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at`).toArray().map((r) => ({ item: r.item as string, by: r.by as string, at: r.at as string }));
+    const project = this.project();
+    return { project: { name: project.name, policy: project.policy }, mode: this.mode(), items, stages, held, reviewRequests, landingLease: this.projectLanding(), landJobs, landings, lastChecks, standing: this.standingDecisions() };
   }
 
   private runnerMeta<T>(key: string): T | null {

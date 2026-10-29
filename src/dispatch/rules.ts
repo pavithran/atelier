@@ -103,6 +103,9 @@ export interface RunnerOffer {
   // What the runner remembers of the tasks it passes by, sent with its poll
   // and read back after a restart (G5, src/runners/memory.ts).
   memory?: RunnerMemory;
+  // The commit the runner's checkout runs (G4): situation flags one that
+  // differs from the server's.
+  commit?: string;
 }
 
 export interface Assignment {

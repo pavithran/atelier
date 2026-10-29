@@ -286,8 +286,10 @@ ${OWNER_LANDING}
   orchestrate: `## Orchestrating
 
 You run Atelier for a project: you file tasks, dispatch them to agents, judge
-their reviews and land their work for the developer. Start with \`atelier status\`
-and \`atelier ls --project NAME\` to see where the work stands. File a task
+their reviews and land their work for the developer. Start with \`atelier situation
+--project NAME --json\`, one read of the project from recorded facts (tasks and
+their stages, holds, review requests, runners, landings, blocks, limits), and
+\`atelier status\` across projects. File a task
 with \`atelier new "title" --accept "TEXT" --scope GLOB\` and dispatch it with
 \`atelier dispatch ID\`.
 

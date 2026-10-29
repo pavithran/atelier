@@ -36,11 +36,12 @@ export default async function showCommand() {
   // each reason in words and the command that releases it. Read from the
   // queue's entry for it, so `show` and `status` say the same thing. A
   // review or pre-review request of the task (t524) is not its build.
-  let why = [];
+  let why = [], queued = null;
   try {
     const entry = ((await request("GET", "/queue", undefined, as)) ?? [])
       .find((q) => q.project === name && q.item?.id === id && q.item.dispatch?.job !== "review" && q.item.dispatch?.job !== PREREVIEW_JOB);
     why = entry ? queueReasons(entry.item) : [];
+    queued = entry?.item ?? null;
   } catch { /* the brief still prints; the queue's reason is a bonus */ }
   // The failed checks at the current head, as the gate reads them (t436,
   // src/check-failure.ts): each named by command, head and evidence id,
@@ -71,7 +72,7 @@ export default async function showCommand() {
   // event naming its acting harness/model, with the developer's words where
   // the verb needs them.
   const acted = actedThroughOwner(d.events ?? [], id);
-  if (args.json) return console.log(JSON.stringify({ ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
+  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued) : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
@@ -102,4 +103,26 @@ export function actedThroughOwner(events, id) {
 
 export function actedLine(a) {
   return `  ${String(a.at ?? "").slice(0, 16).replace("T", " ")} ${a.kind} by ${flat(a.actor)}, acting ${flat(a.acting)}${a.quote ? `, on the developer's words: \u201c${flat(a.quote)}\u201d` : ""}`;
+}
+
+// The task's own fields under the key names `ls --json` uses (G4): id,
+// state, owner, head and its times, with scope, dispatch, runner, the holds
+// the queue keeps it under and its last failure. A merged or abandoned task
+// answers the same.
+export function taskJson(d, queued = null) {
+  const i = d.item;
+  const held = queued?.held ? (queued.held.blockers ?? [queued.held]).map((b) => ({ kind: "core-file", blocker: b.id, state: b.state, owner: b.owner, file: b.core, since: queued.held.since ?? null })) : [];
+  return {
+    id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
+    scope: i.scope, dispatch: i.dispatch ?? null, runner: i.runner ?? null, holds: held, lastFailure: lastFailureOf(d),
+  };
+}
+
+// The newest failure recorded of the task: a failed or stopped observed
+// check, or a landing that failed at a step. Null when none is recorded.
+export function lastFailureOf(d) {
+  const checks = (d.evidence ?? []).filter((e) => e.grade === "observed" && e.passed === false)
+    .map((e) => ({ kind: "check", claim: e.claim, head: e.head, at: e.at, ...(e.stopped ? { stopped: e.stopped } : {}) }));
+  const landing = d.landing?.failedStep ? [{ kind: "landing", step: d.landing.failedStep, head: d.landing.head ?? null, at: d.landing.at }] : [];
+  return [...checks, ...landing].sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] ?? null;
 }

@@ -73,10 +73,21 @@ export const cliState = { doneStep: undefined, loginToken: null, loginServer: nu
 export const doneChecks = [];
 export const CLEAN_CLONE = "in a clean clone on this machine";
 
-export function die(msg, code = 1) {
+// Under --json or ATELIER_JSON=1 every error is one JSON object on stderr,
+// {code, detail, next} (G4, G8): a server's refusal as the server gave it
+// (call), and any other error here, with "unreachable" for a server that
+// could not be reached (exit 4), else "refused", and the command that
+// resolves it when the caller names one.
+export function die(msg, code = 1, next = null) {
   if (cliState.doneStep) msg = `${cliState.doneStep} failed: ${msg}`;
-  process.stderr.write(`atelier: ${msg}\n`);
+  if (jsonWanted()) process.stderr.write(`${JSON.stringify({ code: code === 4 ? "unreachable" : "refused", detail: msg, next })}\n`);
+  else process.stderr.write(`atelier: ${msg}${next ? `\nnext: ${next}` : ""}\n`);
   process.exit(code);
+}
+function jsonWanted() {
+  let json = false;
+  try { json = !!args.json; } catch { /* args is not parsed yet */ }
+  return json || process.env.ATELIER_JSON === "1";
 }
 
 function loadConfig() {
@@ -2183,5 +2194,6 @@ if (isMain) {
   // The flags are checked first, so a misuse is refused without a request;
   // then the server's capabilities, before the handler's first request.
   await requireCapabilities(cmd);
-  await fn();
+  // Under --json an error no handler caught is still {code, detail, next}.
+  try { await fn(); } catch (error) { if (jsonWanted()) die(error?.message ?? String(error)); throw error; }
 }

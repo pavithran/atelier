@@ -4876,6 +4876,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // reloads.
     const reloading = reload && !args.once;
     const started = reloading ? await reload.checkout.head().catch(() => null) : null;
+    // The commit this runner runs goes with its offer, so situation can flag
+    // one that differs from the server's (G4).
+    const ownCommit = started ?? (reload ? await reload.checkout.head().catch(() => null) : null);
+    if (ownCommit) offer.commit = ownCommit;
     const target = process.env[RELOAD_TARGET];
     delete process.env[RELOAD_TARGET];
     if (target && (!started || !await reload.checkout.contains(target, started))) {

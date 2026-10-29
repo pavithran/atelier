@@ -48,6 +48,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } f
 import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
 import { parseReadiness } from "./runners/readiness";
+import { diskOf, situationOf } from "./situation.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -1966,6 +1967,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     try { limits = reportLimits(Object.fromEntries(c.url.searchParams)); }
     catch (error) { throw new RuleError("bad_limit", String((error as Error).message), 400); }
     return json(await readStuckReport(env, ref, c.url.origin, limits));
+  }
+
+  // One read of where the project stands (G4, src/situation.ts): recorded
+  // facts only. `tasks=t1,t2` adds those tasks whatever their state, which
+  // `atelier wait` reads; no lock is taken.
+  if (parts[2] === "situation" && parts.length === 3 && m === "GET") {
+    requireOwner(env, actor);
+    const tasks = (c.url.searchParams.get("tasks") ?? "").split(",").filter((t) => /^t[1-9][0-9]*$/.test(t));
+    const [facts, offers, tokens, record] = await Promise.all([L.situationFacts(tasks), index(env).runnerOffers().catch(() => null), index(env).agentTokens().catch(() => null), L.project()]);
+    return json(situationOf({ facts, offers, tokens, names: namesOf(record), commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, disk: diskOf(env), now: new Date() }));
   }
 
   // The recorded transitions of the project's stuck episodes (t198).
@@ -4090,8 +4101,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const readiness = parseReadiness(body.readiness);
   // What the runner remembers of the tasks it passes by (G5).
   const memory = parseMemory(body.memory);
+  // The commit the runner's checkout runs (G4), which situation compares with the server's.
+  const commit = typeof body.commit === "string" && /^[0-9a-f]{40,64}$/.test(body.commit) ? body.commit : null;
   return {
-    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}),
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}), ...(commit ? { commit } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     ...(Array.isArray(body.checkouts) ? { checkouts: body.checkouts.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {
