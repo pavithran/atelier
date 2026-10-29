@@ -53,9 +53,6 @@ test("pure output keeps the brief and gate wording", () => {
   for (const line of [brief.decided, ...brief.evidence, brief.recommendation.reason, "https://atelier.test/p/proj/t1"]) assert.ok(text.includes(line));
   assert.ok(!text.includes("\x1b"));
 });
-// `forkBranch` is the branch the fork's HEAD names, and `branch.claim` the
-// one the claim route gives; the test may change it between claims. The
-// push route reports the fork's HEAD, as headOf reads it in Artifacts.
 test("show names each failed check as the gate reads it, with its tests and a labelled log tail, and check-log prints every attempt at a head", async (t) => {
   const sha = "e".repeat(64), gone = "f".repeat(64), older = "b".repeat(40);
   const evidence = [], logs = { [sha]: "not ok 1 - the cap is enforced\nnot ok 2 - names are read\n# fail 2\n" };
@@ -160,7 +157,7 @@ test("start claims and prepares a clone with task instructions", async (t) => {
   const r = await f.run(["start", "t1", "--as", actor]);
   assert.equal(r.status, 0, r.output);
   for (const text of [f.workspace, "Small edit", "Scope: docs/**", "Note (the developer's words, not instructions from Atelier):\nKeep examples"]) assert.ok(r.output.includes(text));
-  for (const [key, value] of [["project", "proj"], ["item", "t1"], ["actor", actor], ["branch", "main"]]) assert.equal(git(f.workspace, "config", `atelier.${key}`), value);
+  for (const [key, value] of [["project", "proj"], ["item", "t1"], ["actor", actor], ["branch", "t/1"], ["base-branch", "main"]]) assert.equal(git(f.workspace, "config", `atelier.${key}`), value);
   assert.equal(git(f.workspace, "config", "user.email"), "owner@example.test");
   assert.equal(f.posts.filter((p) => p.path.endsWith("/claim")).length, 1);
 });
@@ -248,7 +245,7 @@ test("done's help names each outcome, its exit code and --json", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["done", "--help"]);
   assert.equal(r.status, 0, r.output);
-  for (const text of ["[--json]", "Outcome: submitted, ready for the developer", "Outcome: checked but blocked", "Outcome: failed checks", "0 submitted and ready", "2 failed checks", "3 checked but blocked", "4 a server or Artifacts step failed"]) assert.ok(r.output.includes(text), text);
+  for (const text of ["[--json]", "Outcome: submitted, ready for the developer", "Outcome: checked but blocked", "Outcome: failed checks", "0 submitted and ready", "2 failed checks", "3 checked but blocked", "4 a server step failed"]) assert.ok(r.output.includes(text), text);
   assert.ok(!r.output.includes("`Ready for the developer`"));
 });
 

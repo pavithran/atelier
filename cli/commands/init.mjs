@@ -6,8 +6,6 @@ import { PROSE_TEXT_MAX } from "../../src/prose-standard.ts";
 import { checkFiles, parseRiskReviews, preparationPaths } from "../../src/rules.ts";
 import { limitText } from "../../src/check-limit.ts";
 import { appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
-import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
-import { pushHistory } from "../push-steps.mjs";
 import { discoverPrivate, guardedPush, moveProjectEntryOnDisk, privateGuardFor, remoteBases } from "../private-guard.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
@@ -190,28 +188,16 @@ export default async function initCommand() {
     ...(args.title === undefined ? {} : { title: args.title }),
     defaultBranch: branch,
   }, OWNER);
-  // The Node server mints no token for the developer's push of the project's
+  // The server mints no token for the developer's push of the project's
   // branch: the developer pushes with the server token (docs/branches.md).
-  const onServer = !!r.baseline && !r.baseline.token;
-  if (onServer) r.baseline.token = apiToken();
-  // On the Node server the repository is the baseline, and once its branch
-  // exists only a landing moves it (task 6): a later init records the policy
-  // and pushes nothing (Atelier 2.0, task 11). What the checkout holds that
-  // the server's branch lacks is said, with the way it gets there.
-  const serverHead = onServer ? serverBranchHead(r.baseline.remote, branch, top, r.baseline.token) : null;
-  if (onServer && typeof args["history-since"] === "string") {
-    die(`${name} is on a server whose repository is the baseline, which takes the whole history: --history-since does nothing there.\nnext: atelier init${serverHead ? "" : " (the first push sends the whole history)"} --project ${name}, without --history-since`);
-  }
-  // A project too large for Artifacts joins with its recent history only
-  // (cli/fresh.mjs). Once set up that way it stays that way: a later init
-  // changes the policy and pushes nothing; atelier sync carries new commits.
-  const fresh = cfg.projects?.[name]?.fresh === true;
-  const since = typeof args["history-since"] === "string" ? args["history-since"] : null;
-  if (args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
-  let pushed = "HEAD";
-  // No commit the baseline lacks may carry a private file (t645), whether
-  // the history goes whole, in steps or rebuilt. A list in iCloud opts a
-  // registered project in first.
+  r.baseline.token = apiToken();
+  // The repository is the baseline, and once its branch exists only a
+  // landing moves it (task 6): a later init records the policy and pushes
+  // nothing (Atelier 2.0, task 11). What the checkout holds that the
+  // server's branch lacks is said, with the way it gets there.
+  const serverHead = serverBranchHead(r.baseline.remote, branch, top, r.baseline.token);
+  // No commit the repository lacks may carry a private file (t645). A list
+  // in iCloud opts a registered project in first.
   if (cfg.projects?.[name]) privateGuardFor(name, { discover: true });
   // A first init, of a project this Mac does not register yet, finds its
   // iCloud folder as clone does and reads its list before the first push,
@@ -220,43 +206,13 @@ export default async function initCommand() {
   const pending = cfg.projects?.[name] ? null : {};
   if (pending) discoverPrivate(name, pending);
   const baselineBases = () => remoteBases({ git, cwd: top, remote: r.baseline.remote, ref: `refs/heads/${branch}`, opts: { token: r.baseline.token, ownerRemote: false } });
-  if (serverHead) {
-    // Nothing is pushed.
-  } else if (fresh) {
-    if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
-  } else if (since) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) die("--history-since takes a day, YYYY-MM-DD");
-    if (git(["status", "--porcelain"], { cwd: top })) die("commit or set aside the checkout's changes first; the baseline is built from its commits");
-    const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd: top });
-    const start = git(["rev-list", "-1", "--first-parent", `--before=${since}T00:00:00`, "HEAD"], { cwd: top });
-    if (!start) die(`${branch} has no commit before ${since}`);
-    const head = git(["rev-parse", "HEAD"], { cwd: top });
-    const built = buildHistory(git, top, start, head);
-    // The baseline may already hold the project's original history, which an
-    // init that pushed in steps and stopped partway leaves behind without
-    // registering the project: --history-since replaces the baseline, so the
-    // rebuilt history is pushed over that remainder, on a lease on the tip
-    // read here. A baseline this checkout cannot account for (set up from
-    // another machine) is left to git to refuse.
-    const lease = [];
-    if (!cfg.projects?.[name]) {
-      const listed = git(["ls-remote", r.baseline.remote, `refs/heads/${branch}`], { cwd: top, token: r.baseline.token, allowFail: true });
-      const held = listed.status === 0 ? /^([0-9a-f]{40,64})\s/.exec(listed.stdout)?.[1] ?? null : null;
-      if (held && holds(held, head, top)) lease.push(`--force-with-lease=${branch}:${held}`);
-    }
-    guardedPush({ project: name, pending, cwd: top, tip: built.head, bases: baselineBases, what: `The baseline history of ${name}`, fail: die },
-      () => git(["push", "--quiet", "--recurse-submodules=no", ...lease, r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token }));
-    savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
-    pushed = built.head;
-    console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
-  } else {
-    guardedPush({ project: name, pending, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s baseline`, fail: die }, (sha) => {
-      try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log, head: sha }); }
-      catch (err) { die(err.message); }
-    });
+  // The first push sends the whole history.
+  if (!serverHead) {
+    guardedPush({ project: name, pending, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s repository`, fail: die },
+      (sha) => git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${sha}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token }));
   }
   cfg.projects ??= {};
-  cfg.projects[name] = { ...pending, ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
+  cfg.projects[name] = { ...pending, ...cfg.projects[name], path: top, branch, protect };
   saveConfig(cfg);
   // Now that the project is registered here, the copy of its list of
   // private files is kept with it (Argon's second review of t645).
@@ -266,9 +222,7 @@ export default async function initCommand() {
   if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; developer approval recorded`);
   const titled = r.project.title ? `${r.project.title} (${name})` : name;
   console.log(serverHead ? serverInitText(titled, name, branch, serverHead, top, r.baseline)
-    : fresh ? `${titled}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
-    : onServer ? `${titled}: ${name}'s repository on this server now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`
-    : `${titled}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
+    : `${titled}: ${name}'s repository on this server now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
   console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
   for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);

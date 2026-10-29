@@ -42,7 +42,7 @@ const returned: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"]
 
 const item = (over: Partial<Item> = {}): Item => ({
   id: "t21", title: "Review rules", scope: ["src/review/**"], state: "submitted", owner: OPUS,
-  fork: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [OPUS],
+  workspace: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [OPUS],
   createdAt: T, updatedAt: T, lastPushAt: T, ...over,
 });
 const pass = (over: Partial<Evidence> = {}): Evidence => ({

@@ -105,7 +105,7 @@ it("a dispatch held by a core-file hold stays on its model, however long it wait
 const withHead = async (key: string, job?: "merge-main") => {
   const id = (await L(key).newItem("Rework", ["src/a.ts"], "owner", { accept: ["It works"] })).id;
   await L(key).claim(id, AGENT);
-  await L(key).setFork(id, `${key}--${id}`, "a".repeat(40), AGENT);
+  await L(key).setWorkspace(id, `${key}--${id}`, "a".repeat(40), AGENT);
   await L(key).recordPush(id, AGENT, "c".repeat(40), "c".repeat(40));
   await L(key).release(id, AGENT, "back to the queue");
   await L(key).dispatch(id, "owner", { to: "any", agent: "codex", model: "gpt-6-astra", overlapOk: true, release: true, ...(job ? { job, head: "b".repeat(40) } : {}) });

@@ -6,13 +6,13 @@
 // newline inside a note or finding can never pose as a line of the story.
 //
 // The story is the events that say what became of the task: created, claimed,
-// handed off and released, each pushed head as Artifacts answered it, each
+// handed off and released, each pushed head as Repos answered it, each
 // observed check at each head, each review with its verdict and every finding
 // (the owner's verdict on a finding printed under the finding it judged, as
 // the ledger binds them: head, reviewer, index and the finding itself), the
 // submission, the acceptance and the merge or abandonment that ended it. The
 // landing's own steps (land.*) and the queue's plumbing (dispatches, review
-// requests and their claims, forks, sandbox runs) are the integration record,
+// requests and their claims, branches, sandbox runs) are the integration record,
 // not the story; `--json` carries the whole event stream for a machine reader.
 import { stripVTControlCharacters } from "node:util";
 import { DEFAULT_OWNER, recordedText } from "../src/rules.ts";
@@ -96,9 +96,9 @@ function linesFor(e, verdicts, used, owner, events) {
       return [`acceptance criteria changed by ${flat(e.actor)}${gone.length ? `; withdrawn: ${gone.join(", ")}` : ""}`];
     }
     case "push.observed":
-      return [`head ${short(d.head)} pushed by ${flat(e.actor)}, observed in Artifacts${d.rebasedFrom ? `, rebased from ${short(d.rebasedFrom)}` : ""}${d.reportedHead ? ` (the agent named ${short(d.reportedHead)})` : ""}${d.approvalInvalidated ? "; the acceptance at the earlier head no longer stands" : ""}`];
+      return [`head ${short(d.head)} pushed by ${flat(e.actor)}, observed in the repository${d.rebasedFrom ? `, rebased from ${short(d.rebasedFrom)}` : ""}${d.reportedHead ? ` (the agent named ${short(d.reportedHead)})` : ""}${d.approvalInvalidated ? "; the acceptance at the earlier head no longer stands" : ""}`];
     case "push.unrecorded":
-      return [`head ${short(d.head)} seen in Artifacts outside a recorded push; the recorded head ${short(d.recorded)} stands (${flat(d.reason)})`];
+      return [`head ${short(d.head)} seen in the repository outside a recorded push; the recorded head ${short(d.recorded)} stands (${flat(d.reason)})`];
     case "evidence.observed":
       return [`check ${d.passed ? "passed" : "failed"}, observed${d.where === "sandbox" ? " in a Cloudflare container" : " in a clean clone"}: ${flat(d.claim)} at ${short(d.head)}${d.merged ? `, merged with main ${short(d.mainHead)}` : ""}`];
     case "evidence.reported":

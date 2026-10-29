@@ -5,7 +5,7 @@ import { ago, buildFloor, markFor, position, splitActor, staggers } from "../src
 const T = (min: number) => new Date(Date.UTC(2026, 9, 4, 12, min)).toISOString();
 const project = { name: "p", repo: "p", policy: { checks: ["npm test"], protected: [] }, createdAt: T(0) };
 const item = (over: Record<string, unknown>) => ({
-  id: "t1", title: "Work", scope: [], state: "claimed", owner: "codex/gpt-6", fork: "p--t1", base: null, head: null,
+  id: "t1", title: "Work", scope: [], state: "claimed", owner: "codex/gpt-6", workspace: "p--t1", base: null, head: null,
   acceptedHead: null, createdAt: T(0), updatedAt: T(0), lastPushAt: null, ...over,
 });
 let seq = 0;
@@ -22,7 +22,7 @@ test("evidence marks say where a check ran, and failures and reports stay distin
   assert.equal(markFor(ev(1, "a/b", "evidence.observed", { claim: "npm test", passed: true }))?.kind, "observed-local");
   assert.match(markFor(ev(1, "a/b", "evidence.observed", { claim: "npm test", passed: false, where: "sandbox" }))!.label, /failed in a Cloudflare container/);
   assert.equal(markFor(ev(1, "a/b", "evidence.reported", { claim: "looked fine" }))?.kind, "reported");
-  assert.equal(markFor(ev(1, "a/b", "fork.created")), null);
+  assert.equal(markFor(ev(1, "a/b", "workspace.created")), null);
 });
 
 test("a bench follows the item through handoffs and keeps the whole chain", () => {

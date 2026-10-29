@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { LocalArtifacts } from "../src/git/artifacts.mjs";
+import { LocalRepos } from "../src/git/local-repos.mjs";
 import { LocalLarge } from "../src/runtime/large.mjs";
 import { startServer } from "../src/runtime/server.mjs";
 
@@ -89,7 +89,7 @@ w.repo(reposDir, "BASE", { main: c5, "t/1": s1 });
 w.repo(reposDir, "WORK", { main: t2 });
 w.repo(reposDir, "MERGED", { main: n1, other: n2 });
 w.repo(reposDir, "Empty", {});
-const artifacts = new LocalArtifacts({ reposDir });
+const artifacts = new LocalRepos({ reposDir });
 after(() => artifacts.close());
 
 const bytes = async (blob) => new Uint8Array(await blob.arrayBuffer());
@@ -98,7 +98,7 @@ const code = (promise) => promise.then(() => null, (e) => e.code);
 
 // ── the reader ─────────────────────────────────────────────────────────────
 
-test("the reader answers info, commits and logs as Artifacts does", async () => {
+test("the reader answers info, commits and logs as Repos does", async () => {
   using repo = await artifacts.get("base");
   const info = await repo.info();
   assert.equal(info.name, "base");
@@ -189,17 +189,17 @@ test("many reads at once are answered in order, and an empty repository has no h
   assert.deepEqual(await empty.log(), []);
 });
 
-test("a name no project owns is NOT_FOUND; the write side refuses", async () => {
-  assert.equal(await code(artifacts.get("base--t12")), "NOT_FOUND", "a fork");
+test("a name no project owns is NOT_FOUND, and nothing writes through the binding", async () => {
+  assert.equal(await code(artifacts.get("base--t12")), "NOT_FOUND", "a 1.0 fork's name");
   assert.equal(await code(artifacts.get("nothing")), "NOT_FOUND");
   assert.equal(await code(artifacts.get("../base")), "NOT_FOUND");
-  for (const call of [() => artifacts.create("x"), () => artifacts.delete("base"), async () => { using r = await artifacts.get("base"); await r.createToken(); }, async () => { using r = await artifacts.get("base"); await r.fork("y"); }]) {
-    await assert.rejects(call(), /not_supported/);
-  }
+  assert.equal(artifacts.create, undefined);
+  using r = await artifacts.get("base");
+  for (const write of ["createToken", "revokeToken", "fork"]) assert.equal(r[write], undefined, write);
 });
 
 test("closing the binding ends its readers", async () => {
-  const own = new LocalArtifacts({ reposDir });
+  const own = new LocalRepos({ reposDir });
   const repo = await own.get("base");
   assert.equal((await repo.log({ limit: 1 }))[0].hash, c5);
   own.close();
@@ -350,13 +350,12 @@ test("secret-scan.ts: scanCommit reads the task's commits from the fork and main
 
 // ── the server and LARGE ───────────────────────────────────────────────────
 
-test("the server's ARTIFACTS reads the bare repositories under its repos directory", async () => {
+test("the server's REPOS reads the bare repositories under its repos directory", async () => {
   const root = scratchDir("server");
   const server = await startServer({ env: "test", dataDir: join(root, "data"), reposDir, host: "127.0.0.1" });
   try {
-    using repo = await server.settings.ARTIFACTS.get("base");
+    using repo = await server.settings.REPOS.get("base");
     assert.equal((await repo.log({ limit: 1 }))[0].hash, c5);
-    await assert.rejects(server.settings.ARTIFACTS.create("x"), /not_supported/);
   } finally { await server.close(); }
 });
 

@@ -36,7 +36,7 @@ async function project(name: string) {
 async function submitted(name: string, actor: string, head: string): Promise<string> {
   const { id } = await L(name).newItem(`Work by ${actor}`, ["docs/**"], "owner");
   await L(name).claim(id, actor);
-  await L(name).setFork(id, `${name}--${id}`, H0, actor);
+  await L(name).setWorkspace(id, `${name}--${id}`, H0, actor);
   await L(name).recordPush(id, actor, head, head);
   await L(name).submit(id, actor);
   return id;
@@ -48,8 +48,8 @@ async function accepted(name: string, id: string, head: string) {
 }
 
 // Artifacts as the review routes read it: each fork's head.
-function artifacts(heads: Record<string, string>): Artifacts {
-  return { get: async (repo: string) => ({ log: async () => [{ hash: heads[repo], parents: [] }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
+function artifacts(heads: Record<string, string>): Repos {
+  return { get: async (repo: string) => ({ log: async () => [{ hash: heads[repo], parents: [] }], [Symbol.dispose]() {} }) } as unknown as Repos;
 }
 
 it("a runner reports a run under its name; the owner token reads the reports; an agent token cannot send one", async () => {
@@ -106,7 +106,7 @@ it("each model's reliability across projects: the JSON route, the Models page an
   await L("rel-a").recordPush(t1, OPUS, H2, H2);
   await L("rel-a").addReview({ itemId: t1, by: GPT, head: H2, criteria: NO_CRITERIA, approve: true, note: "good", at: new Date().toISOString() });
   const t2 = await submitted("rel-a", OPUS, H3);
-  const bindings = { ...testEnv, ARTIFACTS: artifacts({ [`rel-a--${t1}`]: H2, [`rel-a--${t2}`]: H3 }) } as typeof env;
+  const bindings = { ...testEnv, REPOS: artifacts({ [`rel-a--${t1}`]: H2, [`rel-a--${t2}`]: H3 }) } as typeof env;
   // The owner approves t1 through the API, as the orchestrator does, and t2 on the task page.
   expect((await call("POST", `/projects/rel-a/items/${t1}/review`, "owner", { approve: true, head: H2, criteria: NO_CRITERIA, note: "go" }, {}, bindings)).status).toBe(200);
   const cookie = await signIn(TOKEN, testEnv);

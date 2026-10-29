@@ -72,7 +72,7 @@ test("the next landing goes on from the merge an earlier landing could not push,
   await assert.rejects(prepareRecordedWorkspace(w.io, w.ctx), /holds 1 commit the recorded head .* lacks/);
   w.g("config", LAND_UNPUSHED, w.merged);
   for (const dryRun of [true, false]) assert.equal(await prepareRecordedWorkspace(w.io, { ...w.ctx, dryRun }), false);
-  assert.match(w.lines.join("\n"), new RegExp(`t1's workspace holds ${w.merged.slice(0, 8)}, the merge an earlier landing made and could not push because the fork refused the workspace token; this landing goes on from it\\.`));
+  assert.match(w.lines.join("\n"), new RegExp(`t1's workspace holds ${w.merged.slice(0, 8)}, the merge an earlier landing made and could not push because the server refused the workspace token; this landing goes on from it\\.`));
   assert.doesNotMatch(w.lines.join("\n"), /the recorded head lacks/);
   assert.equal(w.g("rev-parse", "HEAD"), w.merged);
   assert.deepEqual(w.calls, []);

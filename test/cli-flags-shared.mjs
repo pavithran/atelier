@@ -9,7 +9,7 @@ export function fixture(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   const identity = (cwd) => { git(cwd, "config", "user.name", "Test"); git(cwd, "config", "user.email", "test@example.invalid"); };
-  // The owner's checkout, the baseline it was copied to, and the task fork.
+  // The owner's checkout and the server's repository it was copied to, which holds the task's branch (t/1) too.
   const checkout = join(dir, "checkout");
   mkdirSync(checkout);
   git(checkout, "init", "-q", "-b", "main");
@@ -21,14 +21,13 @@ export function fixture(t) {
   const baseline = join(dir, "baseline.git");
   git(dir, "init", "-q", "--bare", "-b", "main", baseline);
   git(checkout, "push", "-q", baseline, "main");
-  const fork = join(dir, "fork.git");
-  git(dir, "clone", "-q", "--bare", baseline, fork);
+  git(baseline, "branch", "t/1", "main");
   // t1's workspace, as a claim leaves it: the clone records its project, item and actor.
   const workspace = join(dir, "cache", "work", "demo", "t1");
   mkdirSync(join(dir, "cache", "work", "demo"), { recursive: true });
-  git(dir, "clone", "-q", fork, workspace);
+  git(dir, "clone", "-q", "--single-branch", "--branch", "t/1", baseline, workspace);
   identity(workspace);
-  for (const [k, v] of Object.entries({ project: "demo", item: "t1", actor: "codex/test", branch: "main" })) git(workspace, "config", "--local", `atelier.${k}`, v);
+  for (const [k, v] of Object.entries({ project: "demo", item: "t1", actor: "codex/test", branch: "t/1", "base-branch": "main" })) git(workspace, "config", "--local", `atelier.${k}`, v);
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", ownerName: "Pavi", projects: { demo: { path: checkout, branch: "main" } } }));
   const log = join(dir, "requests.jsonl");
   const preload = join(dir, "server.mjs");
@@ -37,7 +36,7 @@ import { appendFileSync } from "node:fs";
 const HEAD = ${JSON.stringify(head)}, BASELINE = ${JSON.stringify(baseline)};
 const TIMES = { createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-10-05T09:30:00.000Z", lastPushAt: "2026-10-05T09:00:00.000Z" };
 // t3 is open and held by nobody; every other item is submitted by codex/test.
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null, ...TIMES });
+const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, dispatch: null, ...TIMES });
 const CHANGES = {
   t4: { reviews: 2, requests: 1, acceptance: false, override: false, asked: ["codex/gpt-6-astra"] },
   t5: { reviews: 0, requests: 1, acceptance: false, override: false, asked: [] },
@@ -67,7 +66,7 @@ globalThis.fetch = async (url, options = {}) => {
     const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, ...familyMode } };
     if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
     else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
-    else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
+    else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: null, defaultBranch: "main" } };
     // As the server answers an older CLI's long title: kept as the brief, the title derived.
     else if (rest === "items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope, ...(body.accept ? { accept: body.accept } : {}), ...(body.title.length > 80 && !body.brief ? { title: "Derived title", brief: body.title, derived: true } : {}) };
     else {

@@ -55,7 +55,7 @@ const H0 = "0".repeat(40), H2 = "b".repeat(40), T = "2026-10-05T12:00:00.000Z";
 const GLM = "zcode/glm-5.3";
 const item: Item = {
   id: "t21", title: "Review rules", scope: ["src/review/**"], state: "submitted", owner: GLM,
-  fork: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [GLM], createdAt: T, updatedAt: T, lastPushAt: T,
+  workspace: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [GLM], createdAt: T, updatedAt: T, lastPushAt: T,
 };
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"] };
 const pass: Evidence = { itemId: "t21", claim: "npm test", grade: "observed", head: H2, passed: true, by: "atelier/sandbox", at: T, changedPaths: ["src/review/needed.ts"], where: "sandbox" };

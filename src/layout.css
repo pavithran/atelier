@@ -387,7 +387,7 @@ pre.diff span { display: block; padding: 0 14px; white-space: pre; }
 .breadcrumbs { font-size: 13px; color: var(--text-muted); margin: 0 0 26px; }
 .breadcrumbs a { color: var(--text-muted); }
 /* The bar's second row is the location now; a browsing page keeps its crumb
-   only where it leads back to a task whose fork it reads. */
+   only where it leads back to a task whose branch it reads. */
 .repo .breadcrumbs:not(:has(a:nth-of-type(3))) { display: none; }
 .standalone { max-width: 920px; }
 .task-list li { border-bottom: 1px solid var(--line); }

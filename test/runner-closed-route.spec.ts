@@ -204,9 +204,10 @@ for (const state of STATES) for (const transition of ["release", "other runner",
     await t.close(state);
     for (const [method, suffix, body] of [
       ["GET", "", undefined], ["POST", "/claim", {}],
-      ["POST", "/push", { head: PUSHED }], ["POST", "/read-token", {}],
+      ["POST", "/push", { head: PUSHED }],
       ["POST", "/submit", { summary: "Built" }],
     ] as const) await forbidden(await t.api(method, `${t.base}${suffix}`, body), t.token.id);
+    await forbidden(await t.api("POST", `/projects/${t.name}/git-token`, { kind: "task", item: "t1" }), t.token.id);
     await t.poll();
     await forbidden(await t.api("GET", t.base), t.token.id);
     if (current) await terminal(await t.request("GET", t.base, current.token, ACTOR), state);
@@ -269,8 +270,7 @@ for (const state of STATES) it(`a held job ${state} during finish, after its pus
   expect((await t.api("POST", `${t.base}/push`, { head: pushed })).status).toBe(200);
   await t.close(state);
   await terminal(await t.api("GET", t.base), state);
-  await terminal(await t.api("POST", `${t.base}/read-token`, {}), state);
-  await terminal(await t.api("POST", `${t.base}/base-token`, { scope: "read" }), state);
+  await terminal(await t.api("POST", `/projects/${t.name}/git-token`, { kind: "task", item: "t1" }), state);
   await terminal(await t.api("POST", `${t.base}/evidence`, { kind: "check", claim: "npm test", head: pushed, passed: true }), state);
   await terminal(await t.api("POST", `${t.base}/submit`, { summary: "Built" }), state);
   await terminal(await t.api("POST", `${t.base}/release`, {}), state);

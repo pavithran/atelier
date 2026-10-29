@@ -35,7 +35,7 @@ test("the brief carries the framing as the item records it, and empty when none 
   const T = "2026-10-03T12:00:00.000Z";
   const policy: ProjectPolicy = { checks: [], protected: [] };
   const base: Item = {
-    id: "t2", title: "Add the page", scope: [], state: "claimed", owner: "codex/gpt-6", fork: "p--t2", base: null, head: null, acceptedHead: null,
+    id: "t2", title: "Add the page", scope: [], state: "claimed", owner: "codex/gpt-6", workspace: "p--t2", base: null, head: null, acceptedHead: null,
     createdAt: T, updatedAt: T, lastPushAt: null,
   };
   const brief = (item: Item) => briefFor({ item, policy, evidence: [], reviews: [], gate: gate(item, policy, [], []), events: [], ownerActor: "owner" });

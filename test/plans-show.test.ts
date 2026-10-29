@@ -15,7 +15,7 @@ const doc = (key: string, change: Partial<PlanPart> = {}): PlanPart => ({
   key, title: `Part ${key}`, kind: "build", taskKind: "feature", scope: [`src/${key}/**`], dependsOn: [],
   provides: [], uses: [], brief: "Build it\nwell", acceptance: ["It works"], tests: [], size: "S", ...change,
 });
-const item = { id: "t1", title: "Ship the feature", scope: ["src/**"], state: "open" as const, owner: null, fork: null, base: null, head: null, acceptedHead: null, createdAt: AT, updatedAt: AT, lastPushAt: null, kind: "plan" as const };
+const item = { id: "t1", title: "Ship the feature", scope: ["src/**"], state: "open" as const, owner: null, workspace: null, base: null, head: null, acceptedHead: null, createdAt: AT, updatedAt: AT, lastPushAt: null, kind: "plan" as const };
 const route = (key: string, builder: string) => ({
   key, builder: { actor: builder, reasons: ["Rank 1 of 3 eligible for feature work, score 0"] }, alternates: [{ actor: "codex/gpt-6-astra", reasons: [] }],
   reviewer: { actor: "zcode/glm-5.3", reasons: [] }, excluded: [], unrouted: null,
@@ -79,7 +79,7 @@ test("once approved, plan show gives each part's state, routing, attempts and th
     "  t4  c  queued for zcode/glm-5.3  Part c",
     "      builder claude-code/opus-5.5: Rank 1 of 3 eligible for feature work, score 0",
     "      alternates codex/gpt-6-astra",
-    "No part is integrated yet; the integration branch still sits at the commit the plan forked from.",
+    "No part is integrated yet; the integration branch still sits at the commit the plan branched from.",
     "1 part waits on you; each line above gives its command.",
   ]) assert.ok(lines.includes(line), line);
   const blocked = planText({ ...building, phase: "blocked", blocked: "part c has reached 3 attempts" }, "demo").split("\n");

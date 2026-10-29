@@ -8,7 +8,7 @@ import type { Detail } from "../src/ui.ts";
 function detail(title = "Review café ☕"): Detail {
   const item: Detail["item"] = {
     id: "t1", title, scope: [], state: "submitted", owner: "codex/gpt-6-astra",
-    fork: "p--t1", base: "0".repeat(40), head: "a".repeat(40), acceptedHead: null,
+    workspace: "p--t1", base: "0".repeat(40), head: "a".repeat(40), acceptedHead: null,
     createdAt: "2026-10-04T00:00:00Z", updatedAt: "2026-10-04T00:00:00Z", lastPushAt: null,
   };
   const policy = { checks: [], protected: [] };

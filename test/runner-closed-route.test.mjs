@@ -11,9 +11,10 @@ import { serveRunner, subsequence } from "./helpers/runner-server.mjs";
 
 // t476, route to runner: the real runner (runRunner) runs the real CLI
 // (cli/atelier.mjs) as child processes against a local server that answers
-// as the Worker does (src/index.ts turns a RuleError into {error, detail} with
-// its status; the terminal answer is runnerTaskTerminal's own), with a fork
-// the workspace clones and pushes over file://. A task closed under the
+// as the server does (src/index.ts turns a RuleError into {error, detail} with
+// its status; the terminal answer is runnerTaskTerminal's own), with a
+// repository the workspace clones and pushes over file://, which holds main
+// and the task's branch t/1. A task closed under the
 // runner's job, before its claim, during its push or during finish after a
 // recorded push, ends the job with the exact state in the log, no run report,
 // the workspace and its commit preserved, no release, no retry on the next
@@ -33,20 +34,21 @@ function git(args, cwd) {
   return r.stdout.trim();
 }
 
-// The task's fork: a bare repository with one commit on main. With
-// `refusePush`, its pre-receive hook refuses every push, as the Worker refuses
-// a closed task's, and leaves a marker the local server reads as the closure.
+// The project's repository: a bare repository with one commit on main and
+// the same commit on the task's branch t/1. With `refusePush`, its
+// pre-receive hook refuses every push, as the server refuses a closed task's,
+// and leaves a marker the local server reads as the closure.
 function makeFork(dir, { refusePush }) {
-  const bare = join(dir, "fork.git"), seed = join(dir, "seed"), marker = join(dir, "push-refused");
+  const bare = join(dir, "repo.git"), seed = join(dir, "seed"), marker = join(dir, "push-refused");
   git(["init", "--quiet", "--initial-branch=main", seed]);
   writeFileSync(join(seed, "README.md"), "seed\n");
   git(["add", "README.md"], seed);
   git(["-c", "user.name=Seed", "-c", "user.email=seed@example.com", "commit", "--quiet", "-m", "seed"], seed);
   git(["init", "--quiet", "--bare", "--initial-branch=main", bare]);
-  git(["push", "--quiet", bare, "main:main"], seed);
+  git(["push", "--quiet", bare, "main:main", "main:refs/heads/t/1"], seed);
   if (refusePush) {
     const hook = join(bare, "hooks", "pre-receive");
-    writeFileSync(hook, `#!/bin/sh\n: > ${JSON.stringify(marker)}\necho "the fork refused the push" >&2\nexit 1\n`);
+    writeFileSync(hook, `#!/bin/sh\n: > ${JSON.stringify(marker)}\necho "the server refused the push" >&2\nexit 1\n`);
     chmodSync(hook, 0o755);
   }
   return { bare, remote: `file://${bare}`, marker, seedHead: git(["rev-parse", "HEAD"], seed) };
@@ -54,26 +56,26 @@ function makeFork(dir, { refusePush }) {
 
 // The server: the routes the claim and finish steps call, answered as the
 // Worker answers them. `closeAt` names when t1 becomes `state`: "claim" (before
-// the runner's claim), "push" (the fork refused the push; its marker says so),
+// the runner's claim), "push" (the repository refused the push; its marker says so),
 // or "finish" (right after the push was recorded). `refuseClaim` answers the
 // claim runner_forbidden; `blockFinish` answers finish's first read with a
 // nonterminal refusal.
 function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockFinish = false } = {}) {
-  const item = { id: "t1", title: "Build", accept: ["works"], scope: [], state: "open", owner: null, runner: null, head: null, base: fork.seedHead, fork: `${PROJECT}--t1`, kind: "task" };
+  const item = { id: "t1", title: "Build", accept: ["works"], scope: [], state: "open", owner: null, runner: null, head: null, base: fork.seedHead, kind: "task" };
   let closedAfterPush = false;
   const closed = () => closeAt === "claim" || closedAfterPush || (closeAt === "push" && existsSync(fork.marker));
   const refusal = (error) => { const rule = parseRuleError(error); return [rule.status, { error: rule.code, detail: rule.detail }]; };
   const terminal = () => refusal(runnerTaskTerminal("t1", state));
   // Once closed, every item route but a refused claim answers the terminal state.
   const unlessClosed = (answer) => (ctx) => closed() ? terminal() : answer(ctx);
-  const read = () => ({ item, head: item.head, remote: fork.remote, token: "read-secret", defaultBranch: "main" });
+  const read = () => ({ kind: "read", remote: fork.remote, token: "read-secret", defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head: item.head, base: item.base });
   const answers = {
     "POST claim": () => {
       if (refuseClaim) return refusal(runnerDenied({ runner: RUNNER, id: "runner-token-id" }));
       if (closed()) return terminal();
       Object.assign(item, { state: "claimed", owner: ACTOR, runner: RUNNER });
       const expiresAt = new Date(Date.now() + 3600_000).toISOString();
-      return { item, commitIdentity: { name: "Builder", email: "builder@example.com", agentEmails: [] }, workspace: { remote: fork.remote, token: "workspace-secret", expiresAt, defaultBranch: "main" }, baseline: { remote: fork.remote, token: "baseline-secret", defaultBranch: "main" } };
+      return { item, commitIdentity: { name: "Builder", email: "builder@example.com", agentEmails: [] }, workspace: { remote: fork.remote, token: "workspace-secret", expiresAt, defaultBranch: "main", branch: "t/1" }, baseline: { remote: fork.remote, token: "baseline-secret", defaultBranch: "main" } };
     },
     "GET item": unlessClosed(() => {
       if (blockFinish) return refusal(new RuleError("blocked", "t1 is blocked: waiting on the owner", 409));
@@ -86,9 +88,10 @@ function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockF
     }),
     "POST release": unlessClosed(() => { Object.assign(item, { state: "open", owner: null, runner: null }); return { item }; }),
   };
-  for (const verb of ["read-token", "base-token", "evidence", "submit"]) answers[`POST ${verb}`] = unlessClosed(read);
-  // A build merges current main before it submits (t435): main is the fork's own.
-  answers["POST projects/:project/baseline-token"] = () => ({ remote: fork.remote, token: "read-secret", defaultBranch: "main" });
+  for (const verb of ["evidence", "submit"]) answers[`POST ${verb}`] = unlessClosed(() => ({ item, head: item.head }));
+  // The review notice and a build's merge of main before it submits (t435)
+  // read the one repository with a read grant.
+  answers["POST projects/:project/git-token"] = unlessClosed(read);
   return serveRunner({ answers }).then((server) => Object.assign(server, { item }));
 }
 
@@ -131,7 +134,7 @@ async function run(t, { fork, server }) {
   }
   const workspace = join(cache, "work", PROJECT, "t1");
   const head = existsSync(join(workspace, ".git")) ? git(["rev-parse", "HEAD"], workspace) : null;
-  return { logs, log: logs.join("\n"), reports, requests: server.requests, workspace, head, forkHead: git(["rev-parse", "main"], fork.bare) };
+  return { logs, log: logs.join("\n"), reports, requests: server.requests, workspace, head, forkHead: git(["rev-parse", "refs/heads/t/1"], fork.bare) };
 }
 
 const claims = (requests) => requests.filter((r) => r === "POST claim").length;
@@ -158,11 +161,10 @@ for (const state of STATES) test(`a task ${state} during its push ends the job w
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  // The claim, finish's read of the task and the review notice's baseline
-  // request, then reads of the task; no push recorded, nothing released or submitted.
-  assert.ok(subsequence(r.requests, ["POST claim", "GET item", "POST base-token", "GET item"]), r.requests.join(", "));
+  // The claim, then reads of the task; no push recorded, nothing released or submitted.
+  assert.ok(subsequence(r.requests, ["POST claim", "GET item", "GET item"]), r.requests.join(", "));
   assert.ok(!r.requests.some((request) => ["POST push", "POST release", "POST submit"].includes(request)), r.requests.join(", "));
-  assert.ok(existsSync(fork.marker), "the fork refused the push");
+  assert.ok(existsSync(fork.marker), "the repository refused the push");
   assert.equal(r.forkHead, fork.seedHead);
   assert.notEqual(r.head, fork.seedHead, "the harness's commit stays in the workspace");
   assert.equal(git(["log", "-1", "--format=%s"], r.workspace), "work");
@@ -179,9 +181,8 @@ for (const state of STATES) test(`a task ${state} during finish, after a success
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  // The review notice's baseline request, then the push went through and was
-  // recorded, then a read answered the state.
-  assert.ok(subsequence(r.requests, ["POST claim", "POST base-token", "POST push", "GET item"]), r.requests.join(", "));
+  // The push went through and was recorded, then a read answered the state.
+  assert.ok(subsequence(r.requests, ["POST claim", "POST push", "GET item"]), r.requests.join(", "));
   assert.ok(!r.requests.some((request) => ["POST release", "POST submit"].includes(request)), r.requests.join(", "));
   assert.equal(r.forkHead, r.head);
   assert.equal(server.item.head, r.head);

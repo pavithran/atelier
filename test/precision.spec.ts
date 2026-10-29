@@ -43,7 +43,7 @@ async function submitted(L: Ledger, actor: string, paths = ["src/x.ts"]): Promis
   const head = (++n).toString(16).padStart(40, "a");
   const { id } = await L.newItem(`Work ${n}`, [], "owner");
   await L.claim(id, actor, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, actor);
+  await L.setWorkspace(id, `fork-${id}`, H0, actor);
   await L.recordPush(id, actor, head, head);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: actor, at: new Date().toISOString(), changedPaths: paths });
   await L.submit(id, actor);

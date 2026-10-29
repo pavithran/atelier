@@ -3,7 +3,7 @@
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
-// sees in Artifacts. Session checks run in the registered checkout and are
+// sees in the repository. Session checks run in the registered checkout and are
 // Reported; one that fails stops wrap before it stages anything, unless
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
@@ -35,7 +35,7 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile } from 
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { absolute, expiredBlocksLine, overrideTail, preparingLine, taskLink, waitingCommand } from "./status.mjs";
+import { absolute, expiredBlocksLine, overrideTail, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
 import { formatProcesses, liveProcesses, parseLsof, parsePs, withinTree } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
@@ -50,7 +50,8 @@ import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { serverFetch } from "./server-fetch.mjs";
-import { joinMainMerges } from "./workspace-fork.mjs";
+import { joinMainMerges } from "./workspace-branch.mjs";
+import * as grants from "./read-grant.mjs";
 import { lowSpeedEnv, secondsOf, serverTimeoutMs, talksToRemote, timedOut, tooSlow, withTimeout } from "./timeouts.mjs";
 import { saveWholeConfig, useConfig } from "./private-guard.mjs";
 
@@ -184,9 +185,9 @@ export function storedToken() {
   try { return readSecret("API_TOKEN", { env: { ...process.env, ATELIER_TOKEN: "" } }); } catch (error) { die(error.message); }
 }
 
-// The environment a git command runs with. Artifacts has no Git LFS: a push
+// The environment a git command runs with. The repository has no Git LFS: a push
 // would try to upload a project's LFS objects and fail, so every push to
-// Atelier skips the upload and Artifacts holds pointer files. A clone, always
+// Atelier skips the upload and the repository holds pointer files. A clone, always
 // a disposable copy (a task workspace, a check run), keeps the pointers rather
 // than trying to download what they point to. Nothing else skips the download:
 // a merge or reset in the owner's own checkout writes real LFS files as
@@ -201,7 +202,7 @@ export function gitEnv(base = process.env, extra = {}, args = [], ownerRemote = 
   return env;
 }
 
-// opts.token is an Artifacts token this one command sends as its
+// opts.token is a grant this one command sends as its
 // Authorization header (see auth). It is cut from any error text shown.
 // opts.hooks === false runs the command with every hook off (hooksOff in
 // cli/landing.mjs), as each Git command of a landing runs (landingGit).
@@ -292,7 +293,7 @@ export function recordTokenExpiry(dir, expiresAt) {
   if (typeof expiresAt === "string" && expiresAt) git(["config", "--local", "atelier.write-token-expires-at", expiresAt], { cwd: dir });
 }
 
-// How Artifacts (or the Worker in front of it) refuses a Git request whose
+// How the server refuses a Git request whose
 // token has lapsed or was revoked.
 // A refused discovery reads "returned error: 40x" when the server answers 403,
 // but a 401 sends git into its credential retry: with the Bearer header
@@ -1163,6 +1164,12 @@ export async function requestText(path, as) {
 export const P = (name) => `/projects/${encodeURIComponent(name)}`;
 export const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 
+// Read grants for the project's repository (cli/read-grant.mjs), through
+// `call`, which dies on a refusal.
+export const readGrant = (name, id, as) => grants.readGrant(call, name, id, as);
+export const taskReadGrant = (name, id, as) => grants.taskReadGrant(call, name, id, as).catch((error) => die(error.message));
+export const baseReadGrant = (name, id, as) => grants.baseReadGrant(call, name, id, as);
+
 // What a holder is told when the developer's dispatch took the task back
 // (t391), read from the events the task answers with, newest first (the
 // ledger's detail). The notice is given only when the most recent event that
@@ -1231,78 +1238,34 @@ export function localStrays() {
 // the cache, outside the iCloud checkout.
 export const landingHome = (gitDir) => landingDir(CACHE, gitDir);
 
-// Take an item and prepare its workspace clone. The claim mints the write
-// token for this actor alone, and the clone is reused when it already exists.
-export async function claimWorkspace(name, id, as, runner) {
-  const r = await call("POST", `${I(name, id)}/claim`, {}, as, runner ? { "x-atelier-runner": runner } : {});
-  // The Node server answers with the task's branch (Atelier 2.0, task 5).
-  if (r.workspace?.branch) return claimBranchWorkspace(name, id, as, runner, r);
-  const dir = workspacePath(name, id);
-  const fresh = !existsSync(join(dir, ".git"));
-  if (fresh) {
-    mkdirSync(dir, { recursive: true });
-    git(["clone", "--quiet", r.workspace.remote, dir], { token: r.workspace.token });
-  }
-  // The workspace keeps its token under Caches, not iCloud (see
-  // storeWorkspaceToken). It is replaced before any fetch: git sends every
-  // configured header, and a revoked one alongside the fresh one is refused.
-  storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
-  recordTokenExpiry(dir, r.workspace.expiresAt);
-  // The merge drivers .gitattributes names (cli/merge-pipeline.mjs), so a
-  // merge or rebase the builder runs by hand here merges declared outputs
-  // and records as Atelier's own merges do, never as plain text.
-  installMergeConfig(dir, { git });
-  if (!fresh) {
-    git(["remote", "set-url", "origin", r.workspace.remote], { cwd: dir });
-    git(["fetch", "--quiet", "origin"], { cwd: dir });
-  }
-  // Each claim writes the branch the server gives, the project's branch,
-  // which is the one Atelier reads, and says so when that changes what the
-  // workspace held. Local commits are untouched: only where the next push
-  // goes changes. The fork's own HEAD is then compared, so a registration
-  // that disagrees with it shows here rather than at the push.
-  const was = fresh ? null : wsConfig("branch", dir);
-  const branch = r.workspace.defaultBranch;
-  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch })) {
-    git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
-  }
-  if (was && was !== branch) console.log(`This workspace pushed to ${was}; it now pushes to ${branch}, the branch Atelier reads. Commits pushed to ${was} in the fork are not seen there: push them again with atelier push.`);
-  if (!fresh) takeForkHead(dir, id, branch, r.baseline);
-  const reads = forkBranch(dir);
-  if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
-  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
-  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
-  if (preparation?.command) console.log(`Preparation (run in ${JSON.stringify(dir)}): ${preparation.command}`);
-  const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
-  // An agent claiming for itself is the builder, and commits in this
-  // environment; a runner checks its builder's own (cli/runner.mjs runTask).
-  if (!runner && r.commitIdentity) {
-    const refused = identityRefusals(dir, process.env, name);
-    if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
-  }
-  return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
-}
-
-// A claim on the Node server (Atelier 2.0, task 5; design section 4.5): the
-// workspace is a clone of the task's branch alone (t/N), with one remote,
-// origin, from which the branch the task starts from (the project's, or a
-// plan's) is fetched as the baseline. `atelier.branch` names the task's
-// branch, the one push writes and Atelier reads the head from;
-// `atelier.base-branch` the baseline's. The claim's answer carries the
+// Take an item and prepare its workspace (design section 4.5): the claim
+// mints the task grant for this actor alone, and the workspace is a clone of
+// the task's branch alone (t/N), with one remote, origin, from which the
+// branch the task starts from (the project's, or a plan's) is fetched as the
+// baseline. The clone is reused when it already exists. `atelier.branch`
+// names the task's branch, the one push writes and Atelier reads the head
+// from; `atelier.base-branch` the baseline's. The claim's answer carries the
 // project's prose standard with its text, kept beside the workspace for the
 // briefs a runner writes there (stageProseStandard).
-async function claimBranchWorkspace(name, id, as, runner, r) {
+export async function claimWorkspace(name, id, as, runner) {
+  const r = await call("POST", `${I(name, id)}/claim`, {}, as, runner ? { "x-atelier-runner": runner } : {});
   const { remote, branch, token } = r.workspace;
   const base = r.baseline?.defaultBranch ?? r.workspace.defaultBranch;
-  if (!/^(?:t|plan)\/[1-9][0-9]*$/.test(branch) || /^-/.test(base ?? "-")) die(`the server named ${JSON.stringify(branch)} on ${JSON.stringify(base)} as ${id}'s branch; nothing was cloned`);
+  if (!/^(?:t|plan)\/[1-9][0-9]*$/.test(branch ?? "") || /^-/.test(base ?? "-")) die(`the server named ${JSON.stringify(branch)} on ${JSON.stringify(base)} as ${id}'s branch; nothing was cloned`);
   const dir = workspacePath(name, id);
   const fresh = !existsSync(join(dir, ".git"));
   if (fresh) {
     mkdirSync(dir, { recursive: true });
     git(["clone", "--quiet", "--single-branch", "--branch", branch, remote, dir], { token });
   }
+  // The workspace keeps its token under Caches, not iCloud (see
+  // storeWorkspaceToken). It is replaced before any fetch: git sends every
+  // configured header, and a revoked one alongside the fresh one is refused.
   storeWorkspaceToken(dir, remote, token);
   recordTokenExpiry(dir, r.workspace.expiresAt);
+  // The merge drivers .gitattributes names (cli/merge-pipeline.mjs), so a
+  // merge or rebase the builder runs by hand here merges declared outputs
+  // and records as Atelier's own merges do, never as plain text.
   installMergeConfig(dir, { git });
   // One remote, fetching the task's branch alone; the baseline is fetched
   // into origin's own name for it.
@@ -1315,12 +1278,14 @@ async function claimBranchWorkspace(name, id, as, runner, r) {
   for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, "base-branch": base })) {
     git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
   }
-  if (!fresh) takeForkHead(dir, id, branch, { remote: "origin", defaultBranch: base });
+  if (!fresh) takeBranchHead(dir, id, branch, { remote: "origin", defaultBranch: base });
   keepProseStandard(dir, r.proseStandard);
   const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
   git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
   if (preparation?.command) console.log(`Preparation (run in ${JSON.stringify(dir)}): ${preparation.command}`);
   const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
+  // An agent claiming for itself is the builder, and commits in this
+  // environment; a runner checks its builder's own (cli/runner.mjs runTask).
   if (!runner && r.commitIdentity) {
     const refused = identityRefusals(dir, process.env, name);
     if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
@@ -1378,43 +1343,25 @@ function setWorkspaceIdentity(dir, policy, checkout, name) {
   return { name: policy.name, email: policy.email };
 }
 
-// The branch a fork's HEAD names, as its Git remote reports it. Atelier
-// reads a task's head from the fork's HEAD (headOf in src/index.ts), so this
-// is the one branch a push is seen on. null when origin cannot be read or
-// does not name a branch.
-export function forkBranch(cwd) {
-  const r = git(["ls-remote", "--symref", "origin", "HEAD"], { cwd, allowFail: true });
-  return forkBranchOf(r);
-}
-const forkBranchOf = (r) => r.status !== 0 ? null : /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(r.stdout)?.[1] ?? null;
-
-// The same read with the workspace's token, renewed first when it lapsed or
-// is refused (t705): a read refused for an expired token would otherwise
-// answer null and skip the checks that depend on the branch.
-export async function workspaceForkBranch(name, id, as) {
-  return forkBranchOf(await workspaceGit(name, id, as, ["ls-remote", "--symref", "origin", "HEAD"], { allowFail: true }));
-}
-
 // Whether `commit` holds `ancestor` in its history, and whether the
 // repository holds a commit at all, as git answers in the given directory.
 export const holds = (ancestor, commit, cwd) => git(["merge-base", "--is-ancestor", ancestor, commit], { cwd, allowFail: true }).status === 0;
 export const hasCommit = (sha, cwd) => git(["cat-file", "-e", `${sha}^{commit}`], { cwd, allowFail: true }).status === 0;
 export const count = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
-// A reused workspace holds what its last session left, and the fork's
+// A reused workspace holds what its last session left, and the task's
 // branch may have moved on since: another holder pushed to it after a
 // handoff, or the same holder pushed from another machine. The fetch alone
 // leaves the workspace behind it, and from there `atelier update` would
 // carry only this workspace's commits onto the baseline and `atelier push
-// --force` would put them over the others. So the fork's commits are taken
+// --force` would put them over the others. So the branch's commits are taken
 // here, before any work: when this workspace has no commits of its own past
-// the fork's branch, it is fast-forwarded to it; when the two have diverged,
-// the claim stops and names the commits to integrate, since replaying this
+// the branch, it is fast-forwarded to it; when the two have diverged, the
+// claim stops and names the commits to integrate, since replaying this
 // workspace's commits can conflict and is the agent's to do. The claim on
 // the server stands either way, and running it again after the rebase
-// finds the workspace in step. A fork branch that origin does not list is
-// left to the push to refuse (see the warning on forkBranch).
-function takeForkHead(dir, id, branch, baseline) {
+// finds the workspace in step.
+function takeBranchHead(dir, id, branch, baseline) {
   const remote = `refs/remotes/origin/${branch}`;
   if (git(["rev-parse", "--verify", "--quiet", remote], { cwd: dir, allowFail: true }).status !== 0) return;
   if (holds(remote, "HEAD", dir)) return;
@@ -1422,17 +1369,17 @@ function takeForkHead(dir, id, branch, baseline) {
   const n = count(missing.split("\n").filter(Boolean).length, "commit");
   if (holds("HEAD", remote, dir)) {
     const ff = git(["merge", "--ff-only", "--quiet", remote], { cwd: dir, allowFail: true });
-    if (ff.status !== 0) die(`${id}'s fork holds ${n} this workspace lacks:\n${missing}\nFast-forwarding ${dir} to them failed:\n${(ff.stderr || ff.stdout).trim()}\nCommit or set aside its changes, then run atelier claim ${id} again.`);
-    console.log(`This workspace was behind ${id}'s fork; it now holds the ${n} pushed there since:\n${missing}`);
+    if (ff.status !== 0) die(`${id}'s branch holds ${n} this workspace lacks:\n${missing}\nFast-forwarding ${dir} to them failed:\n${(ff.stderr || ff.stdout).trim()}\nCommit or set aside its changes, then run atelier claim ${id} again.`);
+    console.log(`This workspace was behind ${id}'s branch; it now holds the ${n} pushed there since:\n${missing}`);
     return;
   }
   // Commits that only merge main (the lander's, t264) are joined, not refused.
   if (baseline && git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token, allowFail: true }).status === 0
     && joinMainMerges(git, dir, remote, "FETCH_HEAD")) {
-    console.log(`This workspace and ${id}'s fork had each moved on; the fork's ${n} only merge main, so they are merged here:\n${missing}`);
+    console.log(`This workspace and ${id}'s branch had each moved on; the branch's ${n} only merge main, so they are merged here:\n${missing}`);
     return;
   }
-  die(`${id}'s fork holds ${n} this workspace lacks, and this workspace holds commits the fork lacks. The fork's:\n${missing}\nPut this workspace's commits on top of them first: cd ${JSON.stringify(dir)} && git rebase ${remote}, then run atelier claim ${id} again. This workspace's commits are untouched.`);
+  die(`${id}'s branch holds ${n} this workspace lacks, and this workspace holds commits the branch lacks. The branch's:\n${missing}\nPut this workspace's commits on top of them first: cd ${JSON.stringify(dir)} && git rebase ${remote}, then run atelier claim ${id} again. This workspace's commits are untouched.`);
 }
 
 // ── clean-room checks ──────────────────────────────────────────────────────
@@ -1444,7 +1391,7 @@ export function redact(text, secrets) {
   return text;
 }
 
-// The Artifacts tokens a workspace's extraHeader settings hold, in
+// The grants a workspace's extraHeader settings hold, in
 // .git/config or in a file it includes: its write token, which a check can
 // read from disk.
 export function workspaceTokens(dir) {
@@ -1633,8 +1580,6 @@ export function formatStanding(s, ownerName = "the developer", origin = "", expi
   if (s.pipeline?.length) lines.push("", `In the pipeline: ${s.pipeline.reduce((n, x) => n + x.count, 0)} tasks: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(", ")}; none waits on ${flat(ownerName)}.`);
   if (s.overlaps?.length) lines.push("", `Overlapping scopes: ${s.overlaps.length} ${s.overlaps.length === 1 ? "pair" : "pairs"}; nothing waits on ${flat(ownerName)}. The JSON lists them.`);
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${notePreview(q.note) ? `  note: ${flat(notePreview(q.note))}` : ""}`));
-  // Task forks Artifacts is still preparing, with their age and what happens next (t18).
-  group("Waiting for a fork", (s.preparing ?? []).map((p) => `${flat(p.id)}  ${preparingLine(p)}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).
@@ -1897,7 +1842,7 @@ export function formatCriteriaReviews(view) {
 
 // The checkout's state against the baseline, in words. The baseline's head
 // comes from the server (GET baseline-head), as the Worker reads it from
-// Artifacts: no token is minted and nothing is fetched into the checkout, so
+// the repository: no token is minted and nothing is fetched into the checkout, so
 // status and unwrap, which print this line, read and write nothing.
 // Every path out of it is one flattened line, whatever a name holds.
 export async function checkoutStatus(name, as) {
@@ -1937,10 +1882,10 @@ function localWorkspaceIds(name) {
 
 // One workspace's facts, as git reports them in the workspace: paths with
 // uncommitted changes (`.scratch/` aside, the session's scratch space),
-// commits not pushed to the fork, a merge in progress and its conflicted
+// commits not pushed to the branch, a merge in progress and its conflicted
 // files, and a COMMIT_MSG.txt an agent left waiting. `from` holds where
 // pushed history is measured from, best first: the head the server last
-// observed, then the fork point for a task nothing was pushed for. A folder
+// observed, then the branch point for a task nothing was pushed for. A folder
 // that is not a Git repository is reported as unreadable, never a crash.
 function localWorkspace(dir, id, from) {
   const unreadable = (why) => ({ id, uncommitted: null, unpushed: null, merging: null, conflicts: null, commitMessage: null, error: why });
@@ -2005,7 +1950,7 @@ export async function landingLease(name, as) {
 // What this machine holds for the project, for the On this Mac section: one
 // entry per task of the project with a workspace under the CLI's cache, in
 // the server's order, plus whether a landing is running here. The heads and
-// fork points come from the server's own task list, so nothing is minted and
+// branch points come from the server's own task list, so nothing is minted and
 // no workspace is written to. null when no task of the project has a
 // workspace here, and the command prints what it did before.
 export async function localStanding(name, as) {

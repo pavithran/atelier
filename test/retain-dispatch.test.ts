@@ -7,7 +7,7 @@ import type { ProjectPolicy } from "../src/rules.ts";
 // Releasing a held dispatch (t447) changes only its overlap override.
 const T = "2026-10-04T12:00:00.000Z";
 const item = (over: Record<string, unknown> = {}) => ({
-  id: "t1", title: "Work", scope: [], state: "open", owner: null, fork: null, base: null, head: null,
+  id: "t1", title: "Work", scope: [], state: "open", owner: null, workspace: null, base: null, head: null,
   acceptedHead: null, createdAt: T, updatedAt: T, lastPushAt: null, dispatch: null, ...over,
 }) as never as { dispatch: ReturnType<typeof makeDispatch> };
 const policy = { checks: [], protected: [] } as unknown as ProjectPolicy;

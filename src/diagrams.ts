@@ -29,7 +29,7 @@ const NODES: Node[] = [
   { x: COL[2], y: 32, w: CW, name: "Orchestrator", sub: "a session; starts agents" },
   { x: COL[3], y: 32, w: CW, name: "Home runner", sub: "build, plan and review jobs" },
   { x: COL[1], y: 118, w: COL[3] + CW - COL[1], name: "atelier CLI, in the checkout and in each workspace", sub: "the usual path to Cloudflare; runs checks in a fresh clone of the pushed head" },
-  { x: 512, y: 196, w: 300, name: "Workspaces", sub: "one per task: a clone of its fork" },
+  { x: 512, y: 196, w: 300, name: "Workspaces", sub: "one per task: a clone of its branch" },
   { x: COL[0], y: 284, w: CW, name: "opencode", sub: "GLM, DeepSeek, OpenRouter" },
   { x: COL[1], y: 284, w: CW, name: "Antigravity", sub: "Gemini, GPT-OSS" },
   { x: COL[2], y: 284, w: CW, name: "Codex", sub: "gpt-6-astra" },
@@ -42,7 +42,7 @@ const NODES: Node[] = [
   // The Ledger spans two columns: a goal enters it as a plan, and it
   // dispatches the plan's parts and the jobs runners take.
   { x: COL[0], y: 540, w: COL[1] + CW - COL[0], name: "Durable Objects: a Ledger per project", sub: "holds each plan and dispatches its parts and jobs", cloud: true },
-  { x: COL[3], y: 540, w: CW, name: "Artifacts", sub: "the baseline and task forks", cloud: true },
+  { x: COL[3], y: 540, w: CW, name: "Git repositories", sub: "each project's branch and its task branches", cloud: true },
 ];
 
 // Connectors: [path, kind]. A flow is the main direction of work; a rail
@@ -57,7 +57,7 @@ const FLOWS: string[] = [
   // Inside Cloudflare: the Worker writes the Ledger.
   `M620 ${460 + NH}V522H${mid(COL[1])}V${540 - 2}`,
   `M662 ${460 + NH}V${540 - 2}`,
-  // The Worker makes each task's fork and mints its scoped Git token.
+  // The Worker makes each task's branch and mints its scoped Git token.
   `M760 ${460 + NH}V522H${mid(COL[3])}V${540 - 2}`,
 ];
 const RAILS: string[] = [
@@ -65,13 +65,13 @@ const RAILS: string[] = [
   `M${COL[0]} 54H146V482H${512 - 2}`,
   // The CLI's API calls reach the Worker.
   `M${COL[3] + CW} 150H972V482H${812 + 2}`,
-  // The CLI's git pushes reach Artifacts.
+  // The CLI's git pushes reach the repository.
   `M${COL[3] + CW} 130H988V562H${COL[3] + CW + 2}`,
 ];
 
-export const LAYERS_LABEL = "Where Atelier runs, in five layers. The developer works through a browser and the terminal, where atelier plan \"goal\" enters a goal as a plan. An orchestrating session or a home runner can act for them, and a home runner takes build, plan and review jobs. All three act through the atelier CLI, which makes one workspace per task, a clone of the task's fork. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach Artifacts, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, which holds each plan and dispatches its parts and jobs; the Worker makes each task's fork in Artifacts.";
+export const LAYERS_LABEL = "Where Atelier runs, in five layers. The developer works through a browser and the terminal, where atelier plan \"goal\" enters a goal as a plan. An orchestrating session or a home runner can act for them, and a home runner takes build, plan and review jobs. All three act through the atelier CLI, which makes one workspace per task, a clone of the task's branch. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach the repository, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, which holds each plan and dispatches its parts and jobs; the Worker makes each task's branch in the repository.";
 
-export const LAYERS_CAPTION = "A goal enters as a plan: atelier plan \"goal\" reaches the Worker through the CLI, and the project's Ledger holds the plan and dispatches its parts. A home runner takes the build and plan jobs, and review jobs when its config offers them; a runner started with --integrate runs no model and takes the integrate and refresh jobs instead, and the refresh that keeps each waiting task merged with main. Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach Artifacts. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's fork alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them. The result is recorded against that head, and the Worker's gate reads it.";
+export const LAYERS_CAPTION = "A goal enters as a plan: atelier plan \"goal\" reaches the Worker through the CLI, and the project's Ledger holds the plan and dispatches its parts. A home runner takes the build and plan jobs, and review jobs when its config offers them; a runner started with --integrate runs no model and takes the integrate and refresh jobs instead, and the refresh that keeps each waiting task merged with main. Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach the repository. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's branch alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them. The result is recorded against that head, and the Worker's gate reads it.";
 
 export function layersDiagram(): string {
   const p: string[] = [];
@@ -131,7 +131,7 @@ export const PLAN_FLOW: { lane: FlowLane; name: string; sub: [string, string] }[
   { lane: "owner", name: "Approve the plan", sub: ["atelier plan approve, once, by the", "hash of the newest proposal"] },
   { lane: "atelier", name: "Route the parts", sub: ["routeParts names a builder, two alternates", "and a reviewer of another family"] },
   { lane: "atelier", name: "Dispatch build jobs", sub: ["a part goes out once its dependencies", "have landed, two parts live at a time"] },
-  { lane: "runner", name: "Build and check", sub: ["the builder works in the part's fork;", "atelier finish pushes, checks, submits"] },
+  { lane: "runner", name: "Build and check", sub: ["the builder works in the part's branch;", "atelier finish pushes, checks, submits"] },
   { lane: "atelier", name: "Request a review", sub: ["checks pass at the head, paths measured;", "routed to another family"] },
   { lane: "runner", name: "Review", sub: ["a review job: runReview gives the brief", "and diff, and posts the verdict"] },
   { lane: "runner", name: "Integrate", sub: ["atelier runner --integrate merges the", "part, runs the plan's checks"] },

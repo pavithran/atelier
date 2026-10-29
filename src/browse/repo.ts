@@ -1,6 +1,6 @@
 // Reading a repository for people: a directory, a file, the log, one commit's
 // changes, and the commits that changed a path. Everything goes through the
-// Artifacts binding's reads (log, readCommit, readTree, readBlob); nothing
+// the REPOS binding's reads (log, readCommit, readTree, readBlob); nothing
 // here writes. The functions take a small interface rather than the binding,
 // so the tests drive them with plain objects.
 
@@ -26,11 +26,11 @@ export interface Source extends Reader {
   file(hash: string, limit: number): Promise<Uint8Array | { size: number } | null>;
 }
 
-// A file Artifacts would not buffer is reported as too large, not as an error.
+// A file the reader would not buffer is reported as too large, not as an error.
 const MEMORY_LIMIT = /MEMORY_LIMIT/;
 const OVERSIZE = new Uint8Array(LIMITS.blobBytes + 1);
 
-export function repoSource(repo: ArtifactsRepo): Source {
+export function repoSource(repo: GitRepo): Source {
   return {
     tree: (h) => repo.readTree(h),
     blob: async (h) => {
@@ -97,7 +97,7 @@ export async function walk(r: Reader, rootTree: string, path: string[]): Promise
     }
     hash = entry.hash;
   }
-  // Artifacts returns a directory whole, so its size bounds this read and no
+  // The reader returns a directory whole, so its size bounds this read and no
   // limit here can avoid that; TREE_LIMIT bounds what is copied out and shown.
   // The sort works on a copy of the references, never on the reader's array.
   const entries = (await r.tree(hash)) ?? [];
@@ -122,7 +122,7 @@ export function viewFile(bytes: Uint8Array | { size: number }): FileView {
   return { kind: "text", lines, bytes: bytes.length };
 }
 
-// The commit a ref names, or the head when there is none. Artifacts' log
+// The commit a ref names, or the head when there is none. The repository's log
 // takes a branch name or a commit id; "HEAD" and "refs/heads/…" resolve to
 // nothing there (measured 2026-10-04), so the head is asked for with no ref.
 export async function resolve(s: Source, ref: string | null): Promise<Commit | null> {

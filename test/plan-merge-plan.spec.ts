@@ -56,7 +56,7 @@ async function submitApproved(L: L, partId: string, head: string, path: string, 
   const d = (await L.item(partId)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   await L.claim(partId, builder, RUNNER);
-  if (fork) await L.setFork(partId, `fork-${partId}`, H0, builder);
+  if (fork) await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, head, head);
   await L.addEvidence(observed(partId, head, path));
   await L.submit(partId, builder);
@@ -75,7 +75,7 @@ async function submitApproved(L: L, partId: string, head: string, path: string, 
 async function plan(L: L) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -201,7 +201,7 @@ it("a part sent back after a conflict is offered and claimable under require-cri
 // A stand-in Artifacts over one object store: commits with their parents and
 // root trees, trees as path-to-content maps, and each repository's head.
 type Commit = { parents: string[]; files: Record<string, string> };
-function artifacts(commits: Record<string, Commit>, heads: Record<string, string>): Artifacts {
+function artifacts(commits: Record<string, Commit>, heads: Record<string, string>): Repos {
   const treeOf = (hash: string) => `tree:${hash}`;
   const meta = (hash: string) => ({ hash, treeHash: treeOf(hash), parents: commits[hash].parents, message: "", author: { name: "", email: "" }, committer: { name: "", email: "" }, authoredAt: 0, committedAt: 0 });
   return {
@@ -219,15 +219,15 @@ function artifacts(commits: Record<string, Commit>, heads: Record<string, string
       readBlob: async (hash: string) => (hash.startsWith("blob:") ? new Blob([hash.slice(5)]) : null),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 const TOKEN = "merge-plan-token";
 // G18: the developer token's write names the model acting; the integrator's own actor is not one.
-function claimAsIntegrator(name: string, id: string, ARTIFACTS: Artifacts) {
+function claimAsIntegrator(name: string, id: string, REPOS: Repos) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/claim`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": INTEGRATOR, "x-atelier-acting": "claude-code/opus-5.5", "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS } as typeof env);
 }
 // The pre-check's verdict: conflict_predicted when it refuses; otherwise the
 // claim goes on to the Ledger, which refuses an integrator without its token.

@@ -12,7 +12,7 @@ const H1 = "a".repeat(40);
 const T = "2026-10-05T10:00:00.000Z";
 const override = { head: H1, by: "owner", reason: "No model of another family was available", at: T };
 const item = (id: string, state: Item["state"], over: Partial<Item> = {}): Item => ({
-  id, title: `Task ${id}`, scope: [], state, owner: null, fork: null, base: null, head: H1, acceptedHead: state === "merged" ? H1 : null,
+  id, title: `Task ${id}`, scope: [], state, owner: null, workspace: null, base: null, head: H1, acceptedHead: state === "merged" ? H1 : null,
   createdAt: T, updatedAt: T, lastPushAt: T, dispatch: null, ...over,
 });
 const project: ProjectRecord = { name: "demo", title: "Demo project", repo: "demo", policy: { checks: ["npm test"], protected: ["AGENTS.md"] }, createdAt: T };

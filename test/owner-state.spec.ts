@@ -21,7 +21,7 @@ const NOW = Date.parse("2026-10-10T18:00:00Z");
 function detail(): Detail {
   return {
     ownerActor: "pavi", ownerFactor: "access",
-    item: { id: "t1", title: "Gallery sightlines", state: "submitted", owner: "codex/gpt-6", scope: ["src/**"], fork: "example--t1", base: "b".repeat(40), head, acceptedHead: null, lastPushAt: time, updatedAt: time, createdAt: time },
+    item: { id: "t1", title: "Gallery sightlines", state: "submitted", owner: "codex/gpt-6", scope: ["src/**"], workspace: "example--t1", base: "b".repeat(40), head, acceptedHead: null, lastPushAt: time, updatedAt: time, createdAt: time },
     policy: project.policy,
     evidence: [{ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6", at: time, changedPaths: ["src/a.ts"] }],
     reviews: [], gate: { ready: false, needsAssessor: true, blockers: ["Protected"], outOfScope: [] }, events: [],

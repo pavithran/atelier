@@ -12,7 +12,7 @@ import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 const cli = resolve("cli/atelier.mjs");
 const commit = "a".repeat(40);
 const T = "2026-10-22T10:00:00.000Z";
-const item = { id: "t1", title: "Fast thing", scope: ["src/**"], state: "claimed", owner: "codex/test", fork: null, base: null, head: null, acceptedHead: null, createdAt: T, updatedAt: T, lastPushAt: null, dispatch: { agent: "claude-code", model: "sonnet-5.5" } };
+const item = { id: "t1", title: "Fast thing", scope: ["src/**"], state: "claimed", owner: "codex/test", workspace: null, base: null, head: null, acceptedHead: null, createdAt: T, updatedAt: T, lastPushAt: null, dispatch: { agent: "claude-code", model: "sonnet-5.5" } };
 const ready = { item: "t1", title: item.title, commit, base: "b".repeat(40), builder: "claude-code/sonnet-5.5", runner: "mac-mini", workspace: "/work/t1", at: T, by: "claude-code/sonnet-5.5" };
 const readyEvent = { seq: 2, itemId: "t1", kind: "item.fast_ready", data: ready, at: T, actor: "claude-code/sonnet-5.5" };
 

@@ -85,10 +85,10 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
     // areas stays readable so that an older CLI's agent gets the 410 the route
     // answers (t769) and not a 403.
     if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions", "board", "areas", "refreshes"].includes(section);
-    // git-token is the Node server's Git credential (Atelier 2.0): a read of
-    // the project, or the write of the task's branch for its holder alone,
-    // which the route checks against the Ledger.
-    return method === "POST" && (section === "baseline-token" && body.scope !== "write" || section === "git-token");
+    // git-token is the server's Git credential (Atelier 2.0): a read of the
+    // project, or the write of the task's branch for its holder alone, which
+    // the route checks against the Ledger.
+    return method === "POST" && section === "git-token";
   }
   if (section !== "items" || !id) return false;
   // criteria-reviews reads where a task's criteria review stands, and
@@ -96,7 +96,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   // criteria reviewer's claim, verdict and failure (t438); asking for one
   // and resolving its findings stay the owner's.
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews"].includes(verb) || parts.length === 6 && ["logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "read-token", "base-token", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
@@ -106,7 +106,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
 // a run report (assertRunnerReport). run-skip is its word that it gives up a
 // build or plan job it was offered (t420), taken the same way. fast-take and
 // fast-ready (t589) are kept as routes only so a runner older than t228 gets
-// the server's not_fast_build refusal, which sends it to claim with a fork,
+// the server's not_fast_build refusal, which sends it to claim the task,
 // where a missing route would be a bare refusal it cannot read.
 const RUNNER_ITEM = "projects/:project/items/:id";
 
@@ -120,15 +120,14 @@ export const RUNNER_ROUTES: readonly { method: string; pattern: string }[] = [
   { method: "GET", pattern: "projects/:project" },
   { method: "GET", pattern: "projects/:project/decisions" },
   { method: "GET", pattern: "projects/:project/baseline-head" },
-  { method: "POST", pattern: "projects/:project/baseline-token" },
-  // A Git credential for the project's repository on the Node server
-  // (Atelier 2.0, docs/branches.md): a read grant, or the task grant of a
-  // task the runner's job holds, which the route gives only to the holder.
+  // A Git credential for the project's repository (Atelier 2.0,
+  // docs/branches.md): a read grant, or the task grant of a task the
+  // runner's job holds, which the route gives only to the holder.
   { method: "POST", pattern: "projects/:project/git-token" },
   { method: "GET", pattern: RUNNER_ITEM },
   ...["brief", "job-brief", "diff"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}` })),
   ...["logs", "diffs"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}/*` })),
-  ...["claim", "read-token", "base-token", "push", "evidence", "submit", "plan", "release", "review-skip", "run-skip", "fast-take", "fast-ready"]
+  ...["claim", "push", "evidence", "submit", "plan", "release", "review-skip", "run-skip", "fast-take", "fast-ready"]
     .map(verb => ({ method: "POST", pattern: `${RUNNER_ITEM}/${verb}` })),
 ];
 
@@ -138,9 +137,7 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
     return route.method === method && pattern.length === parts.length && pattern.every((part, i) =>
       part === ":project" ? !!parts[i] : part === ":id" ? /^t[0-9]+$/.test(parts[i]) : part === "*" || part === parts[i]);
   });
-  if (!allowed) return false;
-  if (body.scope === "write" && (parts.length === 3 && parts[2] === "baseline-token" || ["read-token", "base-token"].includes(parts[4]))) return false;
-  return true;
+  return allowed;
 }
 
 export function runnerDenied(token: AgentToken): RuleError {
@@ -170,8 +167,8 @@ export function runnerDenied(token: AgentToken): RuleError {
 // (`--integrate` runs the integrate and refresh jobs under the reserved
 // actor's token), which agentRoute must allow and runnerRoute refuses; a
 // `public` call needs no token at all. An `owner` call is one a spawned
-// command makes only under the developer's own token (atelier push
-// --owner-port, which no runner passes): runnerRoute and agentRoute both
+// command makes only under the developer's own token (none is declared
+// now): runnerRoute and agentRoute both
 // refuse it, so a runner or agent token that sent it would be turned away at
 // the gateway, and the helper transport refuses it to a runner token before
 // it is sent. `integrator: true` marks a runner
@@ -275,15 +272,13 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "release-provider-limit", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["providerLimit", "note"], via: "runner", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
   { name: "item", method: "GET", path: ITEM, credential: "runner", body: [], via: "cli", command: "finish", jobs: ["build", "integrate", "refresh"], integrator: true },
   { name: "push", method: "POST", path: `${ITEM}/push`, credential: "runner", body: ["head", "rebasedFrom"], via: "cli", command: "push", jobs: ["build", "integrate", "refresh"], integrator: true },
-  // The developer's push of a released task's fork from their own checkout
-  // (atelier push --owner-port, t571). The runner never passes the flag;
-  // it is declared because the push command makes the call.
-  { name: "owner-port-token", method: "POST", path: `${ITEM}/owner-port-token`, credential: "owner", body: [], via: "cli", command: "push", jobs: [] },
-  { name: "read-token", method: "POST", path: `${ITEM}/read-token`, credential: "runner", body: [], via: "cli", command: "read-token", jobs: ["build", "integrate"], integrator: true },
-  { name: "base-token", method: "POST", path: `${ITEM}/base-token`, credential: "runner", body: ["scope"], via: "cli", command: "base-token", jobs: ["build", "refresh"], integrator: true },
+  // Read grants (POST git-token, kind read): the task's own branch, the
+  // branch it merges into, and the project's branch.
+  { name: "read-token", method: "POST", path: "/projects/{project}/git-token", credential: "runner", body: ["kind", "item"], via: "cli", command: "read-token", jobs: ["build", "integrate"], integrator: true },
+  { name: "base-token", method: "POST", path: "/projects/{project}/git-token", credential: "runner", body: ["kind", "item"], via: "cli", command: "base-token", jobs: ["build", "refresh"], integrator: true },
   // The build job's merge of main before it submits (t435) reads the project's
-  // baseline: a read token and the regenerate command, never a write scope.
-  { name: "baseline-token", method: "POST", path: "/projects/{project}/baseline-token", credential: "runner", body: ["scope"], via: "cli", command: "baseline-token", jobs: ["build"] },
+  // branch: a read grant and the regenerate command.
+  { name: "baseline-token", method: "POST", path: "/projects/{project}/git-token", credential: "runner", body: ["kind"], via: "cli", command: "baseline-token", jobs: ["build"] },
   // The same command reads the project's regenerate command from its record.
   { name: "baseline-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "baseline-token", jobs: ["build"] },
   { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "stopped", "merged", "mainHead", "notApplicable", "load", "reuse"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },

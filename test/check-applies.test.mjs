@@ -34,7 +34,7 @@ async function fixture(t, policy, answer = () => undefined, env = {}) {
   writeFileSync(join(source, "docs", "a.md"), "two\n");
   git(source, "add", ".");
   commit("Docs");
-  git(source, "push", "-q", remote, "work");
+  git(source, "push", "-q", remote, "work:refs/heads/t/1");
   const head = git(source, "rev-parse", "HEAD");
   const item = { id: "t1", title: "Docs", scope: [], owner: "codex/test", state: "claimed", head };
   const posts = [];
@@ -43,8 +43,7 @@ async function fixture(t, policy, answer = () => undefined, env = {}) {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
     let data = answer(req.url, body) ?? { item, gate: { ready: false, blockers: [] }, policy: project };
-    if (req.url.endsWith("/read-token")) data = { remote, token: "read", head, defaultBranch: "main" };
-    if (req.url.endsWith("/baseline-token") || req.url.endsWith("/base-token")) data = { remote, token: "base", head, defaultBranch: "main" };
+    if (req.url.endsWith("/git-token")) data = { kind: "read", remote, token: "read", expiresAt: "tomorrow", defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head, base: head };
     if (req.url.endsWith("/evidence")) { posts.push(body); data = { evidence: [{ head, claim: body.claim, changedPaths: ["docs/a.md"] }] }; }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));

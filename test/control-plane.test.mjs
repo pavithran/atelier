@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // ControlPlane is retired. These tests keep ControlPlane files in the checkout
-// to show that merge, sync and init neither read nor write them; the policy
+// to show that merge and init neither read nor write them; the policy
 // merge compares is Atelier's own, as the ledger stores it.
 function fixture(run) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-control-plane-"));
@@ -128,19 +128,6 @@ globalThis.fetch = async (url, options) => {
   });
 }
 
-// A full-history project's sync checks first that main holds the baseline's
-// main (t644), with a read token and Git commands that only read. Since t149
-// it then reads no ControlPlane file and sends no policy: a baseline already
-// at main is left as it is (t242).
-test("sync checks the baseline, then finds a full-history project already current and sends no policy", () => commandFixture(({ command, calls, gitCalls }) => {
-  const result = command(["sync"]);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /example: the baseline already holds main/);
-  assert.deepEqual(calls().map((c) => [c.method, new URL(c.url).pathname]), [["POST", "/api/projects/example/baseline-token"]]);
-  assert.deepEqual(JSON.parse(calls()[0].body), { scope: "read" });
-  assert.deepEqual([...new Set(gitCalls().map((args) => args.find((a) => !a.startsWith("-"))))].sort(), ["config", "fetch", "rev-parse"]);
-}));
-
 test("merge pins the registered checkout's git identity to the project's before it commits, once (t755)", () => commandFixture(({ command, dir, gitCalls }) => {
   // Finding: llm-basics, 2026-10-17, a commit in the registered checkout took
   // the global address and the baseline push was refused.
@@ -212,10 +199,8 @@ test("a plan whose merge conflicts stays accepted, saying why, when the server r
 // ControlPlane files are not read now: none of these commands names them,
 // and merge goes on to Git (its policy refresh is disabled until slice 2).
 for (const content of ["{", "", "{}", "null"]) {
-  test(`policy file ${JSON.stringify(content)} is not read: sync, merge, init and cancel never name it`, () => commandFixture(({ command, dir, calls, gitCalls }) => {
+  test(`policy file ${JSON.stringify(content)} is not read: merge, init and cancel never name it`, () => commandFixture(({ command, dir, calls, gitCalls }) => {
     writeFileSync(join(dir, "docs/control-plane/agent-policy.v1.json"), content);
-    const sync = command(["sync"]);
-    assert.doesNotMatch(sync.stdout + sync.stderr, /ControlPlane|could not be read/);
     const merge = command(["merge", "t1"]);
     assert.doesNotMatch(merge.stderr, /ControlPlane|could not be read|newly protected/);
     assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")), "the merge reached Git");

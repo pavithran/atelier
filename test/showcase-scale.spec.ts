@@ -13,7 +13,7 @@ const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const L = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 const ITEMS = 600, MERGED = 400, EVENTS = 150_000, SERVED = 2000;
 const ACTORS = ["codex/gpt-6", "zcode/glm-5.3", "claude-code/opus-5.5", "opencode/glm-5.3-flash", "atelier/sandbox", "atelier/events", "owner"];
-const KINDS = ["push.observed", "evidence.observed", "evidence.reported", "item.submitted", "review.rejected", "review.approved", "fork.moved", "session.wrapped"];
+const KINDS = ["push.observed", "evidence.observed", "evidence.reported", "item.submitted", "review.rejected", "review.approved", "workspace.moved", "session.wrapped"];
 
 async function seed(name: string) {
   const record = { name, repo: name, title: "Scale", policy: { checks: [], protected: [] }, createdAt: "2026-09-01T00:00:00Z" };

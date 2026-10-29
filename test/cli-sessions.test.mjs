@@ -115,13 +115,15 @@ test("unwrap reports a tracking ref it cannot compare and carries on", (t) => {
 });
 
 
-test("wrap commits with summary, next and trailer when the checks pass, and updates the baseline", (t) => {
+test("wrap commits with summary, next and trailer when the checks pass, and publishes nothing to the baseline", (t) => {
   if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const result = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Finished", "--next", "Fix check");
   assert.equal(result.status, 0, result.stderr);
   assert.notEqual(f.git("rev-parse", "HEAD"), f.head);
-  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+  // Only a landing moves the server's branch: wrap says how the checkout stands against it.
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head);
+  assert.match(result.stdout, /This checkout holds 1 commit it lacks, which were not published: only a landing moves \w+ there\./);
   assert.match(f.git("log", "-1", "--format=%B"), /^Finished\n\nFix check\n\nAtelier-Session: /);
   const writes = f.requests().filter((r) => r.method === "POST" && r.path.endsWith("/sessions"));
   assert.equal(writes.length, 1);
@@ -227,7 +229,9 @@ test("wrap --allow-failing commits past a failing check and records the override
   const result = f.run("wrap", "Finished", "--next", "Fix check", "--allow-failing");
   assert.equal(result.status, 0, result.stderr);
   assert.notEqual(f.git("rev-parse", "HEAD"), f.head);
-  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+  // Only a landing moves the server's branch: wrap says how the checkout stands against it.
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head);
+  assert.match(result.stdout, /This checkout holds 1 commit it lacks, which were not published: only a landing moves \w+ there\./);
   assert.match(f.git("log", "-1", "--format=%B"), /^Finished\n\nFix check\n\nAtelier-Session: /);
   const writes = f.requests().filter((r) => r.method === "POST" && r.path.endsWith("/sessions"));
   assert.equal(writes.length, 1);

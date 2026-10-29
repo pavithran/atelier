@@ -77,7 +77,7 @@ const mergePart = async (L: L, id: string) => (await L.planView(id)).parts.filte
 async function behindPlan(L: L, pool: ModelEntry[] = POOL) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -95,7 +95,7 @@ async function submitApproved(L: L, partId: string, head: string, path: string) 
   const d = (await L.item(partId)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, head, head);
   await L.addEvidence(observed(partId, head, path));
   await L.submit(partId, builder);
@@ -264,7 +264,7 @@ it("plan refresh --resolve adds the part for main's head without a refresh, to t
 // ── the routes, through the Worker ───────────────────────────────────────
 
 // A stand-in Artifacts: each repository a log, newest first, read from a ref.
-function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>): Artifacts {
+function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>): Repos {
   return {
     get: async (name: string) => ({
       log: async ({ ref, limit = 50 }: { ref?: string; limit?: number } = {}) => {
@@ -274,15 +274,15 @@ function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>)
       },
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 // G18: a write as the developer, or as the integrator on the developer token, names the model acting.
-function call(name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts, method = "POST") {
+function call(name: string, path: string, actor: string, body: unknown, REPOS: Repos, method = "POST") {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${path}`, {
     method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" || actor === INTEGRATOR ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS } as typeof env);
 }
 const errorOf = async (res: Response) => ((await res.json()) as { error: string }).error;
 
@@ -384,6 +384,11 @@ it("the merge-main part lists as candidates only the models a runner offers the 
   // G17: no builder is picked; the candidates are only the model a runner offers the merge-main job for, and the assignment's choice is refused with the reason.
   expect(m.route).toMatchObject({ builder: null, unrouted: "no builder is named for it; candidates: claude-code/opus-5.5. Name one with atelier plan reroute PART --to H/M" });
   expect(m.route?.excluded.find((c) => c.actor === "codex/gpt-6-astra")?.reasons.join(" ")).toMatch(/no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
+  // Its reroute routes it: the reason it was unrouted goes with the reroute,
+  // and the plan view says nothing unrouted of it.
+  await L.reroutePlan(m.id, "owner", "claude-code/opus-5.5");
+  const [after] = await mergePart(L, id);
+  expect(after.route).toMatchObject({ builder: { actor: "claude-code/opus-5.5" }, unrouted: null });
 });
 
 // gpt-6-astra's twenty-second review of t622, finding 2: a --to that the

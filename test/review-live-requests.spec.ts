@@ -31,7 +31,7 @@ async function asked(name: string) {
   await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
   const { id } = await L.newItem("Task", ["src/a/**"], "owner", { accept: ["It works"] });
   await L.claim(id, OPUS, RUNNER);
-  await L.setFork(id, `fork-${id}`, "0".repeat(40), OPUS);
+  await L.setWorkspace(id, `fork-${id}`, "0".repeat(40), OPUS);
   await L.recordPush(id, OPUS, HEAD, HEAD);
   await L.addEvidence(passing(id));
   await L.submit(id, OPUS);

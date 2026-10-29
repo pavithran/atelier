@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// The fork-less build was removed: finding a spec form left behind would
+// The claimless build was removed: finding a spec form left behind would
 // list a command that no longer runs, in atelier help and in the usage the
 // command prints for an unknown word.
 test("atelier fast declares status and close only", async () => {

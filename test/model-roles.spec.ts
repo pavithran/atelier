@@ -31,7 +31,7 @@ const artifacts = {
     createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
     [Symbol.dispose]() {},
   }),
-} as unknown as typeof env.ARTIFACTS;
+} as unknown as typeof env.REPOS;
 
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
@@ -153,7 +153,7 @@ it("a project initialised after an assignment for every project reads it from th
     const name = "roles-late-init";
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"] }),
-    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    }), { ...testEnv, REPOS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     const L = ledger(name);
     await L.newItem("Fix the lease race", ["src/lease.ts"], "owner", { accept: ["Works"] });
@@ -187,7 +187,7 @@ it("a separate tier review is recorded as needed with its candidates, and asked 
   const H = "a".repeat(40);
   await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim("t1", "codex/gpt-6-astra");
-  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
   await L.recordPush("t1", "codex/gpt-6-astra", H, H);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit("t1", "codex/gpt-6-astra");
@@ -218,7 +218,7 @@ async function twinTask(name: string, pool: ModelEntry[]) {
   const H = "a".repeat(40);
   await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim("t1", "codex/gpt-6-astra");
-  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
   await L.recordPush("t1", "codex/gpt-6-astra", H, H);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit("t1", "codex/gpt-6-astra");
@@ -274,7 +274,7 @@ it("an assignment moves no tier model ahead, and a refused or paid one carries i
     await index().registerProject(record);
     await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
     await L.claim("t1", "codex/gpt-6-astra");
-    await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+    await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
     await L.recordPush("t1", "codex/gpt-6-astra", H, H);
     await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
     await L.submit("t1", "codex/gpt-6-astra");
@@ -324,7 +324,7 @@ it("a retry is answered from the stored request before anything mutable is check
 it("a review requested naming no reviewer is refused with the candidates, and a named one records the assignment skipped", async () => {
   const L = await project("roles-no-records");
   const H = "a".repeat(40);
-  await L.setFork("t1", "roles-no-records--t1", "0".repeat(40), "claude-code/opus-5.5");
+  await L.setWorkspace("t1", "roles-no-records--t1", "0".repeat(40), "claude-code/opus-5.5");
   await L.recordPush("t1", "claude-code/opus-5.5", H, H);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit("t1", "claude-code/opus-5.5");
@@ -423,7 +423,7 @@ async function planned(name: string, route: { builder: string; reviewer: string 
 async function submitted(L: ReturnType<typeof ledger>, partId: string, actor: string, runner: { runner: string; kind: "home" }) {
   const H = "a".repeat(40);
   await L.claim(partId, actor, runner);
-  await L.setFork(partId, `fork-${partId}`, "0".repeat(40), actor);
+  await L.setWorkspace(partId, `fork-${partId}`, "0".repeat(40), actor);
   await L.recordPush(partId, actor, H, H);
   await L.addEvidence({ itemId: partId, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a/x.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit(partId, actor);
@@ -501,7 +501,7 @@ it("a separate tier review judges and dispatches the pool entry each tier name i
   const H = "a".repeat(40);
   await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim("t1", "codex/gpt-6-astra");
-  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
   await L.recordPush("t1", "codex/gpt-6-astra", H, H);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit("t1", "codex/gpt-6-astra");
@@ -570,7 +570,7 @@ it("rule 2: every ledger site that records an explicit choice names each assignm
   const H = "b".repeat(40);
   const task = await L.newItem("Tidy a helper", ["src/b.ts"], "owner", { accept: ["Works"] });
   await L.claim(task.id, "claude-code/opus-5.5");
-  await L.setFork(task.id, `${name}--${task.id}`, "0".repeat(40), "claude-code/opus-5.5");
+  await L.setWorkspace(task.id, `${name}--${task.id}`, "0".repeat(40), "claude-code/opus-5.5");
   await L.recordPush(task.id, "claude-code/opus-5.5", H, H);
   await L.addEvidence({ itemId: task.id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/b.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit(task.id, "claude-code/opus-5.5");
@@ -608,7 +608,7 @@ it("a builder typed under an alias is dispatched as declared; a review tier type
     const name = "roles-typed-tier";
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/qwen-alias", "codex/gpt-6-astra"] }),
-    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    }), { ...testEnv, REPOS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     expect((await ledger(name).project()).policy.reviewTier).toEqual(["opencode/qwen-3", "codex/gpt-6-astra"]);
   } finally {
@@ -655,7 +655,7 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     await refused("handoff", await call("POST", `${P}/items/t1/handoff`, { to: ALIAS, note: "over to you" }, "claude-code/opus-5.5"));
     // land --reviewer and review-claim, on a submitted task.
     const H = "c".repeat(40);
-    await L.setFork("t1", `${name}--t1`, "0".repeat(40), "claude-code/opus-5.5");
+    await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), "claude-code/opus-5.5");
     await L.recordPush("t1", "claude-code/opus-5.5", H, H);
     await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
     await L.submit("t1", "claude-code/opus-5.5");
@@ -694,7 +694,7 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     // init --review-tier: stored as the exact id, marked so.
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/roles-boundary-init`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),
-    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    }), { ...testEnv, REPOS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     // The tier is converted and marked; the triage model stays as declared,
     // run by the CLI under that name (the thirteenth review).
@@ -770,10 +770,10 @@ it("a runner working under an alias claims, submits and releases as the alias it
         fork: async () => ({}), log: async () => [{ hash: H }],
         [Symbol.dispose]() {},
       }),
-    } as unknown as typeof env.ARTIFACTS;
+    } as unknown as typeof env.REPOS;
     const as = (method: string, path: string, body: unknown, actor: string, runner?: string) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
       method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
-    }), { ...testEnv, ARTIFACTS: forkable } as typeof env);
+    }), { ...testEnv, REPOS: forkable } as typeof env);
     // A dispatch recorded under the alias, as main records one, and a runner offering the alias.
     const task = await L.newItem("Alias task", ["src/e.ts"], "owner", { accept: ["Works"] });
     await L.dispatch(task.id, "owner", { to: "home", agent: "opencode", model: "qwen-alias" });
@@ -855,7 +855,7 @@ it("an agent or runner token's init with an ambiguous tier is refused without na
     // The owner is told it is ambiguous, still without the entries.
     const owner = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/shared"] }),
-    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    }), { ...testEnv, REPOS: artifacts } as typeof env);
     const said = await owner.text();
     expect(owner.status).toBe(400);
     expect(said).toMatch(/opencode\/shared names more than one model in the pool/);
@@ -883,7 +883,7 @@ it("a tier review needed again after the head moves or the criteria change lists
   const A = "a".repeat(40), B = "b".repeat(40);
   const id = (await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] })).id;
   await L.claim(id, "codex/gpt-6-astra");
-  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.setWorkspace(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
   const pushed = async (head: string) => {
     await L.recordPush(id, "codex/gpt-6-astra", head, head);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
@@ -940,7 +940,7 @@ it("a review asked of the reviewer the developer named goes where that exact ent
   const H = "f".repeat(40);
   const id = (await L.newItem("Tidy a helper", ["src/g.ts"], "owner", { accept: ["Works"] })).id;
   await L.claim(id, "claude-code/opus-5.5");
-  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "claude-code/opus-5.5");
+  await L.setWorkspace(id, `${name}--${id}`, "0".repeat(40), "claude-code/opus-5.5");
   await L.recordPush(id, "claude-code/opus-5.5", H, H);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/g.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit(id, "claude-code/opus-5.5");
@@ -965,7 +965,7 @@ it("two profiles named in a tier stay two; a retry under another letter case of 
     const name = "roles-profiles";
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["codex/primary", "codex/backup"] }),
-    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    }), { ...testEnv, REPOS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     expect((await ledger(name).project()).policy.reviewTier).toEqual(["codex/gpt-6-nova:a", "codex/gpt-6-nova:b"]);
     await project("roles-acting-case");
@@ -997,7 +997,7 @@ it("a tier review whose only tier model is paused records the need with that ref
   const H = "9".repeat(40);
   const id = (await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] })).id;
   await L.claim(id, "codex/gpt-6-astra");
-  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.setWorkspace(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
   await L.recordPush(id, "codex/gpt-6-astra", H, H);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit(id, "codex/gpt-6-astra");

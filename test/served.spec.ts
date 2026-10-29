@@ -37,10 +37,10 @@ it("the owner annotates the served model of matching events; a dry run writes no
   await L(name).newItem("Served by another model", ["docs/**"], "owner");
   await L(name).newItem("Reviewed by it", ["docs/**"], "owner");
   await L(name).claim("t1", ZCODE);
-  await L(name).setFork("t1", `${name}--t1`, H0, ZCODE);
+  await L(name).setWorkspace("t1", `${name}--t1`, H0, ZCODE);
   await L(name).recordPush("t1", ZCODE, H1, H1);
   await L(name).claim("t2", OPUS);
-  await L(name).setFork("t2", `${name}--t2`, H0, OPUS);
+  await L(name).setWorkspace("t2", `${name}--t2`, H0, OPUS);
   await L(name).recordPush("t2", OPUS, H1, H1);
   await L(name).addReview({ itemId: "t2", criteria: await L(name).criteria("t2"), by: ZCODE, head: H1, approve: true, note: "fine", at: new Date().toISOString() });
   const before = (await L(name).events(undefined, 100)) as unknown as LedgerEvent[];

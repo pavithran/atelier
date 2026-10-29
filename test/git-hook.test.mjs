@@ -60,7 +60,7 @@ function refused(r, text) {
 }
 
 before(async () => {
-  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { REPOS: artifacts } });
   base = server.url.replace("localhost", "127.0.0.1");
   assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
   assert.equal((await api("PUT", "/projects/other", {})).status, 200);
@@ -211,7 +211,7 @@ test("no plaintext token is kept in the grant store or put in the hook's environ
   const dump = join(root, "hook-env.json");
   writeFileSync(join(hooks, "pre-receive"), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'const fs = require("fs"); fs.writeFileSync(${JSON.stringify(dump)}, JSON.stringify({ ...process.env, POLICY_TEXT: fs.readFileSync(process.env.ATELIER_POLICY, "utf8"), POLICY_MODE: fs.statSync(process.env.ATELIER_POLICY).mode & 0o777 }))'\ncat >/dev/null\n`);
   chmodSync(join(hooks, "pre-receive"), 0o755);
-  const recorder = await startServer({ env: "test", dataDir: join(root, "data2"), host: "127.0.0.1", hooksDir: hooks, vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  const recorder = await startServer({ env: "test", dataDir: join(root, "data2"), host: "127.0.0.1", hooksDir: hooks, vars: { ATELIER_TOKEN: OWNER }, bindings: { REPOS: artifacts } });
   try {
     await fetch(`${recorder.url}/api/projects/rec`, { method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: "{}" });
     const r = await tryGit(work, "push", recorder.url.replace("http://", `http://x:${OWNER}@`) + "/git/rec.git", "HEAD:refs/heads/main");
@@ -252,6 +252,6 @@ test("the policy and report directories a stopped server left are swept when the
   const data = join(root, "data3");
   mkdirSync(join(data, "hook-scans", "push-old"), { recursive: true });
   writeFileSync(join(data, "hook-scans", "push-old", "policy.json"), "{}");
-  const s = await startServer({ env: "test", dataDir: data, host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  const s = await startServer({ env: "test", dataDir: data, host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { REPOS: artifacts } });
   try { assert.equal(existsSync(join(data, "hook-scans", "push-old")), false); } finally { await s.close(); }
 });

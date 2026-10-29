@@ -108,8 +108,8 @@ test("a gate that stays short however many reviews are asked ends the landing at
 });
 
 function execMove(f) {
-  // A new commit on the task's fork, as a push from the builder would be.
+  // A new commit on the task's branch, as a push from the builder would be.
   const ws = f.workspace("t1");
   git(ws, "commit", "--allow-empty", "-m", "Moved");
-  git(ws, "push", "-q", "origin", "main");
+  git(ws, "push", "-q", "origin", "HEAD");
 }

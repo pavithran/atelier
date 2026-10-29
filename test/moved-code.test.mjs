@@ -313,15 +313,15 @@ test("parseRawZ reads NUL-separated entries, renames with both paths; parseHunks
 
 // ── the landings ────────────────────────────────────────────────────────────
 
-// A baseline, the task's workspace forked from it and main moved on after
-// the fork, as a landing finds them.
+// A baseline, the task's workspace on its branch t/1 cut from it and main
+// moved on after, as a landing finds them.
 function landWorld(t, { base, task, main, moves = [] }) {
   const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), ws = join(p, "work", "t1"), mainClone = join(p, "main");
   mkdirSync(seed); git(seed, "init", "-q", "-b", "main"); identity(seed);
   apply(seed, base); git(seed, "add", "-A"); git(seed, "commit", "-qm", "base");
   git(p, "clone", "-q", "--bare", seed, baseline);
-  git(p, "clone", "-q", baseline, ws); identity(ws);
-  for (const [key, value] of Object.entries({ project: "proj", item: "t1", actor: "codex/test", branch: "main", "write-token-expires-at": "2999-01-01T00:00:00.000Z" })) git(ws, "config", `atelier.${key}`, value);
+  git(p, "clone", "-q", baseline, ws); identity(ws); git(ws, "checkout", "-q", "-b", "t/1");
+  for (const [key, value] of Object.entries({ project: "proj", item: "t1", actor: "codex/test", branch: "t/1", "base-branch": "main", "write-token-expires-at": "2999-01-01T00:00:00.000Z" })) git(ws, "config", `atelier.${key}`, value);
   apply(ws, task); git(ws, "add", "-A"); git(ws, "commit", "-qm", "task");
   git(p, "clone", "-q", baseline, mainClone); identity(mainClone);
   const pushMain = (files, mv = []) => {
@@ -349,7 +349,7 @@ function landIo(world, { args = {}, refuseApproval = false, failGit = null } = {
     if (path === leasePath) return method === "GET" ? { lease: null, waiting: [] } : body.cancel || body.renew ? {} : { item: { id: "t1", state: "submitted" } };
     // The landing compares a claimed task's recorded head in its workspace (G2).
     if (path === itemPath) return { item: { id: "t1", state: "claimed", owner: "codex/test", head: world.head() }, policy: { checks: [] } };
-    if (path === `${itemPath}/base-token`) return { remote: world.baseline, token: "read", defaultBranch: "main" };
+    if (path === "/projects/proj/git-token") return { kind: "read", remote: world.baseline, token: "read", expiresAt: "2999-01-01T00:00:00.000Z", defaultBranch: "main", repository: "server", ...(body.item ? { branch: "t/1", into: "main", head: world.head() } : {}) };
     if (path === `${itemPath}/land` && refuseApproval && body.resolvedBy) throw Object.assign(new Error("not_project_owner: only the project owner records a landing's steps"), { status: 403 });
     return {};
   };

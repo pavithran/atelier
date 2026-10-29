@@ -21,7 +21,7 @@ test('stuck registers its extracted handler, flags and help', () => {
 });
 const now = new Date('2026-10-10T12:00:00Z');
 const at = ms => new Date(+now - ms).toISOString();
-const item = (over = {}) => ({ id: 't1', title: 'Task', scope: ['src/**'], state: 'claimed', owner: 'codex/model', head: 'a'.repeat(40), base: null, fork: null, acceptedHead: null, createdAt: at(0), updatedAt: at(0), lastPushAt: null, ...over });
+const item = (over = {}) => ({ id: 't1', title: 'Task', scope: ['src/**'], state: 'claimed', owner: 'codex/model', head: 'a'.repeat(40), base: null, workspace: null, acceptedHead: null, createdAt: at(0), updatedAt: at(0), lastPushAt: null, ...over });
 const snapshot = (over = {}) => ({ items: [item()], events: [], lease: null, reviews: [], coreFiles: ['src/**'], ...over });
 const event = (seq, kind, ms, data = {}, itemId = 't1') => ({ seq, kind, at: at(ms), data, itemId, actor: 'codex/model' });
 const report = (s = snapshot(), offers = [], runs = [], active = [], unavailable = []) => stuckReport('demo', 'https://example.org', now, reportLimits(), s, offers, runs, active, unavailable);

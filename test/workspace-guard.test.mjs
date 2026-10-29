@@ -11,12 +11,12 @@ import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 // the owner's checkout, push would send the checkout's HEAD to the checkout's
 // own origin (the owner's GitHub) and update would rebase the checkout onto
 // the baseline. Every command here runs against a fake server: fetch is
-// replaced by a preload that answers from local bare repositories and logs
+// replaced by a preload that answers from a local bare repository and logs
 // each request, and the server name cannot resolve.
 
 const cli = resolve("cli/atelier.mjs");
 
-function fixture(t, { unclaimed = false, portCapability = true, portFailure = false } = {}) {
+function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-guard-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).trim();
@@ -41,24 +41,20 @@ function fixture(t, { unclaimed = false, portCapability = true, portFailure = fa
   git(checkout, "commit", "-qm", "Unpublished owner work");
   const head = git(checkout, "rev-parse", "HEAD");
 
-  // Atelier's baseline at the first commit, a fork per task, and each task's
-  // workspace as claimWorkspace leaves it.
-  const baseline = join(dir, "baseline.git");
-  git(dir, "init", "-q", "--bare", "-b", "main", baseline);
-  git(checkout, "push", "-q", baseline, `${base}:refs/heads/main`);
-  const forks = {}, workspaces = {};
+  // Atelier's repository, holding the project's branch at the first commit
+  // and a branch per task (t/N), and each task's workspace as claimWorkspace
+  // leaves it: a clone of the task's branch alone.
+  const repo = join(dir, "repo.git");
+  git(dir, "init", "-q", "--bare", "-b", "main", repo);
+  git(checkout, "push", "-q", repo, `${base}:refs/heads/main`);
+  const workspaces = {};
   for (const id of ["t1", "t2"]) {
-    forks[id] = join(dir, `${id}.git`);
-    git(dir, "clone", "-q", "--bare", baseline, forks[id]);
+    git(repo, "branch", `t/${id.slice(1)}`, "main");
     workspaces[id] = join(dir, "cache", "work", "demo", id);
     mkdirSync(join(dir, "cache", "work", "demo"), { recursive: true });
-    git(dir, "clone", "-q", forks[id], workspaces[id]);
+    git(dir, "clone", "-q", "--single-branch", "--branch", `t/${id.slice(1)}`, repo, workspaces[id]);
     identity(workspaces[id]);
-    for (const [k, v] of Object.entries({ project: "demo", item: id, actor: "codex/test", branch: "main" })) git(workspaces[id], "config", "--local", `atelier.${k}`, v);
-    if (unclaimed) {
-      git(workspaces[id], "config", `url.${forks[id]}.insteadOf`, `https://fork.test/${id}.git`);
-      git(workspaces[id], "config", `http.https://fork.test/${id}.git.extraHeader`, "Authorization: Bearer " + "revoked-claim-secret");
-    }
+    for (const [k, v] of Object.entries({ project: "demo", item: id, actor: "codex/test", branch: `t/${id.slice(1)}`, "base-branch": "main" })) git(workspaces[id], "config", "--local", `atelier.${k}`, v);
   }
 
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", ownerName: "Pavi", projects: { demo: { path: checkout, branch: "main" } } }));
@@ -66,41 +62,22 @@ function fixture(t, { unclaimed = false, portCapability = true, portFailure = fa
   const preload = join(dir, "server.mjs");
   writeFileSync(preload, `
 import { appendFileSync } from "node:fs";
-import childProcess, { execFileSync } from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
-const spawn = childProcess.spawnSync;
-childProcess.spawnSync = (cmd, args, opts) => {
-  if (${unclaimed} && cmd === "git" && args[0] === "push") {
-    const remote = args.at(-2);
-    const configured = spawn("git", ["config", "--get-urlmatch", "http.extraHeader", remote], opts);
-    const headers = configured.stdout.trimEnd().split("\\n");
-    // Git's empty value resets all earlier extra headers, including the
-    // released claim's token, before the fresh owner credential is added.
-    const effective = headers.slice(headers.lastIndexOf("") + 1);
-    if (configured.status !== 0 || effective.length !== 1 || effective[0] !== "Authorization: Bearer " + "fresh-owner-port-secret") throw new Error("owner push did not replace its revoked credential");
-    if (${portFailure}) return { status: 1, stdout: "", stderr: "rejected fresh-owner-port-secret" };
-  }
-  return spawn(cmd, args, opts);
-};
-syncBuiltinESMExports();
-const BASE = ${JSON.stringify(base)}, BASELINE = ${JSON.stringify(baseline)}, FORKS = ${JSON.stringify(forks)};
-const forkHead = (id) => execFileSync("git", ["--git-dir", FORKS[id], "rev-parse", "refs/heads/main"], { encoding: "utf8" }).trim();
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: ${JSON.stringify(unclaimed ? "open" : "claimed")}, owner: ${JSON.stringify(unclaimed ? null : "codex/test")}, head: forkHead(id), acceptedHead: null, base: BASE, fork: "demo-" + id, dispatch: null });
+import { execFileSync } from "node:child_process";
+const BASE = ${JSON.stringify(base)}, REPO = ${JSON.stringify(repo)};
+const branchHead = (id) => execFileSync("git", ["--git-dir", REPO, "rev-parse", "refs/heads/t/" + id.slice(1)], { encoding: "utf8" }).trim();
+const item = (id) => ({ id, title: "Task " + id, scope: [], state: "claimed", owner: "codex/test", head: branchHead(id), acceptedHead: null, base: BASE, dispatch: null });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
-  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES.filter(name => portCapability || name !== "items.owner-port.v1"))} });
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {};
   const m = /^\\/api\\/projects\\/demo\\/(.*)$/.exec(path);
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
-  else if (m?.[1] === "baseline-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
+  else if (m?.[1] === "git-token") data = { kind: "read", remote: REPO, token: "fake-read-token", expiresAt: "later", defaultBranch: "main", repository: "server", ...(body.item ? { branch: "t/" + body.item.slice(1), into: "main", head: branchHead(body.item), base: BASE } : {}) };
   else if (m) {
     const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(m[1]) ?? [];
     if (verb === "push") data = { ...item(id), head: body.head };
-    else if (verb === "owner-port-token") data = { remote: "https://fork.test/" + id + ".git", token: "fresh-owner-port-secret", defaultBranch: "main" };
-    else if (verb === "read-token") data = { remote: FORKS[id], token: "fake-fork-token", defaultBranch: "main", head: forkHead(id), base: BASE };
-    else if (verb === "base-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
     else data = { item: item(id), policy: { checks: ["exit 0"], protected: [] }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };
   }
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
@@ -111,8 +88,8 @@ globalThis.fetch = async (url, options = {}) => {
     env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "fake-owner-token", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "codex/test", GIT_CONFIG_NOSYSTEM: "1", ...env },
   });
   const writes = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map(JSON.parse) : []).filter((q) => q.method !== "GET");
-  const forkMain = (id) => git(dir, "--git-dir", forks[id], "rev-parse", "refs/heads/main");
-  return { dir, checkout, origin, base, head, forks, workspaces, git, run, writes, forkMain };
+  const branchTip = (id) => git(dir, "--git-dir", repo, "rev-parse", `refs/heads/t/${id.slice(1)}`);
+  return { dir, checkout, origin, base, head, repo, workspaces, git, run, writes, branchTip };
 }
 
 test("push from the owner's checkout is refused and publishes nothing to the checkout's origin", (t) => {
@@ -125,7 +102,7 @@ test("push from the owner's checkout is refused and publishes nothing to the che
   assert.notEqual(r.status, 0, "push outside the claimed workspace must fail");
   assert.match(r.stderr, /push must run in t1's claimed workspace; this directory is not a task workspace\. Run: cd ".*t1" && atelier push/);
   assert.deepEqual(f.writes(), [], "nothing is recorded on the server");
-  assert.equal(f.forkMain("t1"), f.base);
+  assert.equal(f.branchTip("t1"), f.base);
 });
 
 test("update from the owner's checkout is refused and leaves the checkout untouched", (t) => {
@@ -135,7 +112,7 @@ test("update from the owner's checkout is refused and leaves the checkout untouc
   assert.match(r.stderr, /update must run in t1's claimed workspace/);
   assert.ok(!existsSync(join(f.checkout, ".git", "FETCH_HEAD")), "the baseline was fetched into the owner's checkout");
   assert.equal(f.git(f.checkout, "rev-parse", "HEAD"), f.head);
-  assert.deepEqual(f.writes(), [], "no baseline token was minted");
+  assert.deepEqual(f.writes(), [], "no read grant was requested");
 });
 
 test("finish from the owner's checkout is refused before any request", (t) => {
@@ -155,8 +132,8 @@ test("push and update name another task's workspace and push nothing from it", (
     assert.notEqual(r.status, 0, `${cmd} t1 ran in t2's workspace`);
     assert.match(r.stderr, new RegExp(`${cmd} must run in t1's claimed workspace; this directory is demo/t2's workspace`));
   }
-  assert.equal(f.forkMain("t1"), f.base);
-  assert.equal(f.forkMain("t2"), f.base, "t2's commit was pushed under t1's name");
+  assert.equal(f.branchTip("t1"), f.base);
+  assert.equal(f.branchTip("t2"), f.base, "t2's commit was pushed under t1's name");
   assert.ok(!existsSync(join(f.workspaces.t2, ".git", "FETCH_HEAD")), "the baseline was fetched into t2's workspace");
   assert.deepEqual(f.writes(), []);
 });
@@ -167,7 +144,7 @@ test("push under another actor's name is refused in the claimed workspace", (t) 
   const r = f.run(f.workspaces.t1, ["push"], { ATELIER_ACTOR: "claude-code/opus-5.5" });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /push must run as the actor that claimed t1 in this workspace, codex\/test, not claude-code\/opus-5\.5/);
-  assert.equal(f.forkMain("t1"), f.base);
+  assert.equal(f.branchTip("t1"), f.base);
   assert.deepEqual(f.writes(), []);
 });
 
@@ -180,53 +157,17 @@ test("push and update still run in the item's own workspace", (t) => {
   const work = f.git(ws, "rev-parse", "HEAD");
   const pushed = f.run(ws, ["push"]);
   assert.equal(pushed.status, 0, pushed.stderr);
-  assert.equal(f.forkMain("t1"), work);
+  assert.equal(f.branchTip("t1"), work);
   assert.deepEqual(f.writes().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/push", { head: work }]]);
   // The baseline moves on; update rebases the workspace onto it.
   writeFileSync(join(f.checkout, "merged.txt"), "merged elsewhere\n");
   f.git(f.checkout, "add", ".");
   f.git(f.checkout, "commit", "-qm", "Merged elsewhere");
   const moved = f.git(f.checkout, "rev-parse", "HEAD");
-  f.git(f.checkout, "push", "-q", join(f.dir, "baseline.git"), "main:main");
+  f.git(f.checkout, "push", "-q", f.repo, "main:main");
   const updated = f.run(ws, ["update"]);
   assert.equal(updated.status, 0, updated.stderr);
   assert.match(updated.stdout, new RegExp(`t1 rebased onto baseline ${moved.slice(0, 8)}`));
   assert.equal(f.git(ws, "rev-parse", "HEAD^"), moved);
   assert.equal(f.git(ws, "log", "-1", "--format=%s"), "Work");
-});
-
-test("the owner can push an unclaimed task workspace without changing its configured actor", t => {
-  const f = fixture(t, { unclaimed: true }), dir = f.workspaces.t1;
-  writeFileSync(join(dir, "port.txt"), "owner port");
-  f.git(dir, "add", "."); f.git(dir, "commit", "-m", "Port change", "-m", "Agent: owner");
-  const head = f.git(dir, "rev-parse", "HEAD");
-  // A released workspace's remote/credential is no longer writable. Only
-  // the route's fresh remote and per-process token can perform this push.
-  f.git(dir, "remote", "set-url", "origin", join(f.dir, "revoked.git"));
-  const r = f.run(dir, ["push", "t1", "--as", "owner"]);
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.equal(f.forkMain("t1"), head);
-  assert.equal(f.git(dir, "config", "atelier.actor"), "codex/test");
-  assert.equal(f.git(dir, "config", "http.https://fork.test/t1.git.extraHeader"), "Authorization: Bearer " + "revoked-claim-secret");
-  assert.equal(f.writes().filter(x => x.path.endsWith("/push")).length, 1);
-  assert.equal(f.writes().filter(x => x.path.endsWith("/claim")).length, 0);
-  assert.equal(f.writes().filter(x => x.path.endsWith("/owner-port-token")).length, 1);
-  assert.doesNotMatch(readFileSync(join(dir, ".git", "config"), "utf8") + r.stdout + r.stderr, /fresh-owner-port-secret/);
-});
-
-test("owner port refuses a server without its named capability before requesting credentials", t => {
-  const f = fixture(t, { unclaimed: true, portCapability: false });
-  const r = f.run(f.workspaces.t1, ["push", "t1", "--as", "owner"]);
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /items.owner-port.v1/);
-  assert.deepEqual(f.writes(), []);
-});
-
-test("owner port redacts its fresh credential from a Git refusal", t => {
-  const f = fixture(t, { unclaimed: true, portFailure: true });
-  const r = f.run(f.workspaces.t1, ["push", "t1", "--as", "owner"]);
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /rejected \[redacted\]/);
-  assert.doesNotMatch(r.stdout + r.stderr, /fresh-owner-port-secret/);
-  assert.equal(f.writes().filter(x => x.path.endsWith("/push")).length, 0);
 });

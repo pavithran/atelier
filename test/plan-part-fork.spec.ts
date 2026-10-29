@@ -70,7 +70,7 @@ function claim(name: string, id: string, actor: string, LEDGER = env.LEDGER) {
   }), { ...env, ATELIER_TOKEN: TOKEN, LEDGER } as typeof env);
 }
 
-// The Ledger binding with its next moveFork failing, as a transient error
+// The Ledger binding with its next moveWorkspace failing, as a transient error
 // between the Worker and the Ledger would, after the branch was moved.
 function failingMove() {
   // The stub guard retries a transient error, so it fails more often than it tries.
@@ -81,14 +81,14 @@ function failingMove() {
       const stub = env.LEDGER.get(id);
       return new Proxy(stub, {
         get(target, key) {
-          if (key === "moveFork" && failures > 0) {
+          if (key === "moveWorkspace" && failures > 0) {
             failures--;
             return async () => { throw new Error("Network connection lost."); };
           }
           // A request naming the acting model (G18) calls every method through actingCall.
           if (key === "actingCall") {
             return (acting: string, method: string, args: unknown[]) => {
-              if (method !== "moveFork" || failures <= 0) return (target as unknown as { actingCall: (...a: unknown[]) => unknown }).actingCall(acting, method, args);
+              if (method !== "moveWorkspace" || failures <= 0) return (target as unknown as { actingCall: (...a: unknown[]) => unknown }).actingCall(acting, method, args);
               failures--;
               return Promise.reject(new Error("Network connection lost."));
             };
@@ -119,7 +119,7 @@ async function setup(name: string, bCommits: boolean) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   const planBranch = `plan/${item.id.slice(1)}`;
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `${name}/${planBranch}`, M0, PLANNER);
+  await L.setWorkspace(item.id, `${name}/${planBranch}`, M0, PLANNER);
   repo.point(planBranch, M0);
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a"), part("b")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
@@ -132,7 +132,7 @@ async function setup(name: string, bCommits: boolean) {
   const builderB = actorOf(await L.item(b));
   const first = await claim(name, b, builderB);
   expect(first.status, await first.clone().text()).toBe(200);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: M0, head: M0 });
+  expect(await L.item(b)).toMatchObject({ workspace: bFork, base: M0, head: M0 });
   let PART_B = "";
   if (bCommits) {
     PART_B = repo.commit(M0, "part b");
@@ -143,7 +143,7 @@ async function setup(name: string, bCommits: boolean) {
 
   const builderA = actorOf(await L.item(a));
   await L.claim(a, builderA, RUNNER);
-  await L.setFork(a, `${name}/t/${a.slice(1)}`, M0, builderA);
+  await L.setWorkspace(a, `${name}/t/${a.slice(1)}`, M0, builderA);
   await L.recordPush(a, builderA, PART_A, PART_A);
   await L.addEvidence(observed(a, PART_A, "src/a/x.ts"));
   await L.submit(a, builderA);
@@ -163,7 +163,7 @@ async function setup(name: string, bCommits: boolean) {
   return { L, b, bBranch, bFork, planBranch, repo, M0, MA, PART_B, builder: actorOf(again) };
 }
 
-const moves = async (L: L, id: string) => ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "fork.moved");
+const moves = async (L: L, id: string) => ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "workspace.moved");
 
 it("a part with no commits of its own, dispatched again after the plan's branch moved, starts from the branch's head", async () => {
   const name = "pf-moved";
@@ -172,9 +172,9 @@ it("a part with no commits of its own, dispatched again after the plan's branch 
   const res = await claim(name, b, builder);
   expect(res.status).toBe(200);
   expect(repo.tip(bBranch)).toBe(MA);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: builder, state: "claimed" });
+  expect(await L.item(b)).toMatchObject({ workspace: bFork, base: MA, head: MA, owner: builder, state: "claimed" });
   expect(((await res.json()) as { item: Item }).item).toMatchObject({ base: MA, head: MA });
-  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: M0, base: MA, acting: builder }]);
+  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ workspace: bFork, from: M0, base: MA, acting: builder }]);
   // Claimed again with the branch where it is, the branch stays.
   expect((await claim(name, b, builder)).status).toBe(200);
   expect(repo.tip(bBranch)).toBe(MA);
@@ -186,7 +186,7 @@ it("a part with commits of its own keeps its branch and head when the plan's bra
   const { L, b, bBranch, bFork, repo, M0, PART_B, builder } = await setup(name, true);
   expect((await claim(name, b, builder)).status).toBe(200);
   expect(repo.tip(bBranch)).toBe(PART_B);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: M0, head: PART_B });
+  expect(await L.item(b)).toMatchObject({ workspace: bFork, base: M0, head: PART_B });
   expect(await moves(L, b)).toEqual([]);
 });
 
@@ -206,7 +206,7 @@ it("a part whose branch a failed move left missing is branched again at the plan
   repo.point(bBranch, null);
   expect((await claim(name, b, builder)).status).toBe(200);
   expect(repo.tip(bBranch)).toBe(MA);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA });
+  expect(await L.item(b)).toMatchObject({ workspace: bFork, base: MA, head: MA });
 });
 
 it("a part first dispatched, and one claimed again while the plan's branch has not moved, is branched once at the plan's head", async () => {
@@ -234,8 +234,8 @@ it("a move that moved the branch but failed to record the new base is finished b
   const next = actorOf(await L.item(b));
   expect((await claim(name, b, next)).status).toBe(200);
   expect(repo.tip(bBranch)).toBe(MA);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: next, state: "claimed" });
-  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: M0, base: MA, acting: builder }]);
+  expect(await L.item(b)).toMatchObject({ workspace: bFork, base: MA, head: MA, owner: next, state: "claimed" });
+  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ workspace: bFork, from: M0, base: MA, acting: builder }]);
 });
 
 // A push that lands on the part's branch after the claim has read it and
@@ -267,7 +267,7 @@ exec "${real}" "$@"
   } finally { rmSync(bin, { recursive: true, force: true }); }
   expect(res.status, await res.clone().text()).toBe(200);
   expect(repo.tip(bBranch)).toBe(PUSHED);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: M0, owner: builder, state: "claimed" });
+  expect(await L.item(b)).toMatchObject({ workspace: bFork, base: M0, owner: builder, state: "claimed" });
   expect(await moves(L, b)).toEqual([]);
 });
 
@@ -297,7 +297,7 @@ async function ordinary(name: string) {
   expect((await claim(name, id, PLANNER)).status).toBe(200);
   const branch = `t/${id.slice(1)}`;
   const fork = `${name}/${branch}`;
-  expect(await L.item(id)).toMatchObject({ fork, base: M0, head: M0 });
+  expect(await L.item(id)).toMatchObject({ workspace: fork, base: M0, head: M0 });
   return { L, id, branch, fork, repo, M0 };
 }
 
@@ -311,8 +311,8 @@ it("a task claimed and released with no commits, claimed again after main moved,
   await L.noteMainHead(MA);
   expect((await claim(name, id, PLANNER)).status).toBe(200);
   expect(repo.tip(branch)).toBe(MA);
-  expect(await L.item(id)).toMatchObject({ fork, base: MA, head: MA, owner: PLANNER, state: "claimed" });
-  expect((await moves(L, id)).map((e) => e.data)).toEqual([{ fork, from: M0, base: MA, acting: PLANNER }]);
+  expect(await L.item(id)).toMatchObject({ workspace: fork, base: MA, head: MA, owner: PLANNER, state: "claimed" });
+  expect((await moves(L, id)).map((e) => e.data)).toEqual([{ workspace: fork, from: M0, base: MA, acting: PLANNER }]);
 });
 
 it("a task with commits of its own keeps its branch when main has moved", async () => {

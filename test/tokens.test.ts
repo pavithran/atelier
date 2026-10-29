@@ -56,10 +56,11 @@ test("expiry is exclusive and revocation takes effect immediately", () => {
 
 test("route policy grants workflow operations and defaults to refusing", () => {
   const task = ["projects", "p", "items", "t1"];
-  for (const verb of ["claim", "read-token", "push", "evidence", "review", "submit", "handoff", "release", "block", "unblock"]) {
+  for (const verb of ["claim", "push", "evidence", "review", "submit", "handoff", "release", "block", "unblock"]) {
     assert.equal(agentRoute("POST", [...task, verb]), true, verb);
   }
-  for (const verb of ["accept", "merged", "landing", "abandon", "dispatch", "undispatch", "edit", "future"]) {
+  // The old token routes went with the forks (Atelier 2.0, task 13).
+  for (const verb of ["accept", "merged", "landing", "abandon", "dispatch", "undispatch", "edit", "future", "read-token", "base-token", "owner-port-token"]) {
     assert.equal(agentRoute("POST", [...task, verb]), false, verb);
   }
   for (const method of ["GET", "POST", "PUT", "DELETE"]) {
@@ -68,8 +69,8 @@ test("route policy grants workflow operations and defaults to refusing", () => {
   assert.equal(agentRoute("POST", ["projects", "p", "items"]), false);
   assert.equal(agentRoute("PUT", ["projects", "p"]), false);
   assert.equal(agentRoute("DELETE", ["projects", "p"]), false);
-  assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "write" }), false);
-  assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "read" }), true);
+  assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "read" }), false);
+  assert.equal(agentRoute("POST", ["projects", "p", "git-token"], { kind: "read" }), true);
   for (const path of [["config"], ["projects"], ["inbox"], ["queue"], ["projects", "p"], ["projects", "p", "baseline-head"], [...task], [...task, "brief"], [...task, "diff"]]) assert.equal(agentRoute("GET", path), true, path.join("/"));
   // t768 removed the container check and its routes.
   assert.equal(agentRoute("POST", [...task, "sandbox"]), false);

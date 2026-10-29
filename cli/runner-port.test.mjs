@@ -27,7 +27,7 @@ const LIB = 'a\nb\nc\nd\ne\nf\ng\nh\n';
 const LIB_ON_MAIN = 'a\nd\ne\nh\n', MOVED_ON_MAIN = 'b\nc\nd\ne\nf\ng\n';
 
 // A repository with the base, main's move on branch main, and the task's
-// edit of lib.txt on branch task, forked from the base. Answers a function
+// edit of lib.txt on branch task, branched from the base. Answers a function
 // that commits a head on the task branch holding main merged (ours, so the
 // merge's tree is exactly the files given) and checks the port there.
 function repo(t, taskFiles) {

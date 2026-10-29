@@ -42,7 +42,7 @@ async function landable(name: string, offered: string[], offerAgeHours = 0) {
   await index().registerProject(record);
   const { id } = await L.newItem("Land without a reviewer", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim(id, BUILDER);
-  await L.setFork(id, `${name}--${id}`, BASE, BUILDER);
+  await L.setWorkspace(id, `${name}--${id}`, BASE, BUILDER);
   await L.recordPush(id, BUILDER, HEAD, HEAD);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: HEAD, changedPaths: ["src/a.ts"], by: "owner", at: AT });
   await L.submit(id, BUILDER);

@@ -10,7 +10,7 @@ let seq = 0;
 const ev = (hoursAgo: number, actor: string, kind: string, data: Record<string, unknown> = {}, itemId: string | null = "t1") =>
   ({ seq: 1_000_000 - Math.round(hoursAgo * 1000) + (++seq), itemId, at: new Date(NOW.getTime() - hoursAgo * 3600_000).toISOString(), actor, kind, data });
 const item = (id: string, state: string, over: Record<string, unknown> = {}) =>
-  ({ id, title: `Task ${id}`, state, scope: [], owner: null, fork: null, base: null, head: null, acceptedHead: null, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), lastPushAt: null, ...over }) as never;
+  ({ id, title: `Task ${id}`, state, scope: [], owner: null, workspace: null, base: null, head: null, acceptedHead: null, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), lastPushAt: null, ...over }) as never;
 const project = { name: "p", title: "P", repo: "p", policy: { checks: [], protected: [] }, createdAt: NOW.toISOString() };
 
 test("the window is the last fourteen days in the owner's zone, oldest first", () => {
@@ -34,7 +34,7 @@ test("a pulse counts agents' moves per day by family as the Flow graph does: the
   const events = [
     ev(1, OWNER, "item.created"),                                        // quiet
     ev(6, "claude-code/opus-5.5", "item.claimed"),
-    ev(5, "claude-code/opus-5.5", "fork.created"),                       // quiet
+    ev(5, "claude-code/opus-5.5", "workspace.created"),                       // quiet
     ev(4, "claude-code/opus-5.5", "push.observed", { head: "a" }),
     ev(3, "atelier/sandbox", "evidence.observed", { claim: "npm test", passed: true, where: "sandbox" }), // Atelier's own: no one's move
     ev(26, "zcode/glm-5.3", "review.approved"),                          // yesterday

@@ -64,7 +64,7 @@ function workspaceReason(dir, name, id, item, cwd, main) {
     const ignoredPaths = git(dir, ["status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=normal"]).split("\0")
       .filter((l) => l.startsWith("!! ")).map((l) => l.slice(3));
     const ignored = unkeptIgnored(ignoredPaths).filter((path) => holdsFile(join(dir, path)));
-    // The heads Atelier recorded: the fork's last head and the accepted head
+    // The heads Atelier recorded: the branch's last head and the accepted head
     // of a merge. Every commit the workspace can reach, by a ref or the
     // reflog, is under one of them or else in main; only the tips of what
     // lies outside the record need asking of main.

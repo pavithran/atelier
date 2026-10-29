@@ -24,15 +24,13 @@ const VALIDATION = [
     "bad_runner", "bad_runner_token", "bad_scope", "bad_served", "bad_session", "bad_single_family",
     "bad_status", "bad_step", "bad_stopped", "bad_summary", "bad_time", "bad_title", "bad_to", "bad_triage", "bad_usage",
     "bad_verdict", "block_reason", "block_until", "confirm_server", "defect_found_in", "defect_note",
-    "override_reason", "project_mismatch", "release_current_name", "release_name_too_long", "repo_reserved",
+    "override_reason", "project_mismatch", "release_current_name", "release_name_too_long",
     "too_large", "too_long", "too_many_events", "unregistered_acting",
 ];
 // Exempt codes that validate input without a bad_ or too_ name.
-const VALIDATION_OTHER = new Set(["acting_owner_only", "ambiguous_acting", "block_reason", "block_until", "confirm_server", "defect_found_in", "defect_note", "override_reason", "project_mismatch", "release_current_name", "release_name_too_long", "repo_reserved", "unregistered_acting"]);
+const VALIDATION_OTHER = new Set(["acting_owner_only", "ambiguous_acting", "block_reason", "block_until", "confirm_server", "defect_found_in", "defect_note", "override_reason", "project_mismatch", "release_current_name", "release_name_too_long", "unregistered_acting"]);
 const GUARDED_ROUTE = {
-  artifacts_unavailable: "Git hosting step: retry is the same command",
   assignment_changed: "models assign: the decision it replaces changed",
-  branches_repo_mismatch: "branch push: the branches repository is fixed",
   check_applies: "check record: the reason is the detail",
   deployment_unverified: "ship deployment check route",
   empty: "push and refresh routes: a repository with no commits",
@@ -41,13 +39,11 @@ const GUARDED_ROUTE = {
   not_found: "unknown route or item path on this server",
   not_rolled_back: "integration-failed and refreshed-failed: the rollback reason is the fix",
   owner_assignment: "internal claim bookkeeping, not reachable by a command",
-  repo_foreign: "project init: the repository exists under another purpose",
   repo_taken: "project init and branch routes: the repository belongs to another project",
   request_reused: "models assign: a new request id",
   restore_partial: "ledger restore: the detail names the bookmarks that undo it",
   restore_unavailable: "ledger restore: storage did not take the bookmark",
   revert_part: "revert: names the plan to revert",
-  revoke_failed: "workspace token renewal: retry is the same command",
   runner_token_required: "GET /runners/me: needs a runner token",
   sandbox_removed: "removed container-check route",
   server_updating: "any route during a server update: retry is the same command",
@@ -78,7 +74,7 @@ const STRICT = [
   "wrong_agent", "wrong_model", "wrong_runner", "not_submitted", "not_accepted", "accepted", "not_landable", "not_integrable",
   "integrated", "landing", "landing_lease", "stale_landing", "lease_lost", "no_lease",
   "main_moved", "main_unread", "merge_open", "merge_not_on_main", "merge_unconfirmed", "not_a_merge", "no_merge_commit",
-  "not_merged", "unverified_merge", "conflicts_with_main", "history_rewritten", "nothing_pushed", "no_head", "no_fork",
+  "not_merged", "unverified_merge", "conflicts_with_main", "history_rewritten", "nothing_pushed", "no_head", "no_workspace",
   "fork_changed", "workspace_changed", "branch_not_pushed", "branch_busy", "not_ready", "blocked", "stale_default_branch",
   "second_parent_differs", "ancestry_unverified", "landed", "stale_run", "stale_criteria", "stale_request", "not_independent",
   "self_review", "no_criteria", "not_open", "overlap", "no_approval", "not_approved", "acceptance_changed", "secret",

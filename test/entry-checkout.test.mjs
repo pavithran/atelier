@@ -73,7 +73,7 @@ test("a command finds this checkout registered behind entries with no usable pat
     await withConfig({ none: {}, empty: { path: "" }, number: { path: 7 }, demo: { path: checkout } }, async (configDir) => {
       const r = await run(["notes-remote"], configDir, checkout);
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /^demo: notes stay local and in Artifacts\./);
+      assert.match(r.stdout, /^demo: notes stay local and in the repository\./);
     });
   } finally {
     rmSync(checkout, { recursive: true, force: true });
@@ -108,12 +108,10 @@ test("a command that needs the named entry's checkout refuses an unusable path b
     assert.doesNotMatch(r.stderr, /paths\[0\]|fetch failed|ECONNREFUSED|ENOTFOUND/, argv.join(" "));
   };
   try {
-    // sync, pull and notes-remote declare no server capabilities, so they
+    // pull and notes-remote declare no server capabilities, so they
     // reach their refusal with no server configured at all.
     await withConfig(projects, async (configDir) => {
       for (const [name, argv] of [
-        ["none", ["sync", "--project", "none"]],
-        ["empty", ["sync", "--project", "empty"]],
         ["none", ["pull", "--project", "none"]],
         ["none", ["notes-remote", "origin", "--project", "none"]],
       ]) refuses(await run(argv, configDir, dir), name, argv);
@@ -125,8 +123,8 @@ test("a command that needs the named entry's checkout refuses an unusable path b
       writeFileSync(join(configDir, "config.json"), JSON.stringify({ server: url, projects }));
       for (const [name, argv] of [
         ["none", ["merge", "t9", "--project", "none"]],
-        ["none", ["branch", "push", "wip/x", "--project", "none"]],
-        ["empty", ["branch", "push", "wip/x", "--project", "empty"]],
+        ["none", ["branch", "push", "dev/x", "--project", "none"]],
+        ["empty", ["branch", "push", "dev/x", "--project", "empty"]],
         ["none", ["record-merge", "t9", "--merge", sha, "--review", `h/m=approve@${sha}`, "--project", "none"]],
       ]) refuses(await run(argv, configDir, dir), name, argv);
     } finally {
@@ -144,7 +142,7 @@ test("a command that works without a checkout still works for an entry with no p
     try {
       const r = await run(["notes-remote", "--off", "--project", "demo"], configDir, dir);
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /demo: provenance notes stay local and in Artifacts\./);
+      assert.match(r.stdout, /demo: provenance notes stay local and in the repository\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

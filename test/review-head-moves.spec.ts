@@ -61,7 +61,7 @@ async function passes(L: L, id: string, head: string) {
 // the gate needs an independent review of it.
 async function submittedAt(L: L, id: string, head: string) {
   await L.claim(id, OPUS, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L.recordPush(id, OPUS, head, head);
   await passes(L, id, head);
   await L.submit(id, OPUS);

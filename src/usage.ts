@@ -155,7 +155,7 @@ task with exactly one holder. Never edit the project checkout directly.
    cannot reproduce names it in the task, and the project declares a remote
    smoke check run before and after deploy. In fast mode a required criteria
    review is skipped: the build goes ahead with the criteria as written, and
-   claims with a fork like any build (the fork-less fast build was removed).
+   claims its task like any build (the fast build that claimed none was removed).
 2. Commit your changes, then run \`atelier done "summary"\` in that workspace.
    It pushes, runs required checks and submits only after they pass. Relay
    its final line to the developer.
@@ -182,8 +182,8 @@ ${OWNER_LANDING}
 \`atelier land ID --queue\` queues the landing for a runner that lists the land job and holds the registered checkout.
 \`atelier land ID\` no longer waits for a review: it asks for one, records the land request (\`--quote TEXT\` names who asked), and the land job runs once the gate counts an approval; \`--no-wait\` records the request and returns.
 The stage tick queues a land job for an accepted task, or any task in fast mode, that stays landable 5 minutes, and tells when it cannot.
-Land retries a recorded commit the fork cannot yet serve for up to 5 minutes, printing a line per wait, then stops with the elapsed time.
-A fork not ready in 30 minutes is replaced twice under new names; if the last stalls too, the task shows in \`atelier stuck\` and \`atelier status\`: release it with \`atelier release ID\`, then claim it again with \`atelier start ID\`, which makes a fresh fork and keeps the task's history.
+Land retries a recorded commit the server cannot yet serve for up to 5 minutes, printing a line per wait, then stops with the elapsed time.
+A branch not ready in 30 minutes is replaced twice under new names; if the last stalls too, the task shows in \`atelier stuck\` and \`atelier status\`: release it with \`atelier release ID\`, then claim it again with \`atelier start ID\`, which makes a fresh branch and keeps the task's history.
 A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in \`atelier stuck\`, to reroute with \`atelier review-request ID --reviewer H/M\` or withdraw with \`atelier review-withdraw ID --reason TEXT\`.
 
 For each session the developer runs in the registered checkout:

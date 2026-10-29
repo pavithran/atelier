@@ -319,7 +319,7 @@ export function commandFor(entry, { model, briefFile, workspace, planFile, diffF
 
 // A role's instructions, as the runner passes them to the harness: the
 // project's `.atelier/prompts/ROLE.md` when the workspace (a clone of the
-// fork) holds one, else the default text `atelier guide --role ROLE` prints.
+// branch) holds one, else the default text `atelier guide --role ROLE` prints.
 // The override travels with the project's code, so the agent reads exactly
 // what the owner's checkout would print for the role. Returned without a
 // trailing newline, so the caller joins it to the brief with a single blank
@@ -958,7 +958,7 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
   }
 }
 
-// A review job clones the part's fork read-only with an Artifacts read token,
+// A review job clones the part's branch read-only with a read grant,
 // which git sends as an Authorization header through its environment, as the
 // CLI's auth() does, never in an argument.
 function gitAuth(token, base = process.env) {
@@ -1082,7 +1082,7 @@ export async function rescueWork(cwd, git, log, now = new Date()) {
 // A builder that ends validation_blocked with its work uncommitted (t557)
 // used to have the claim released as "no new commit", and the next run
 // started from the old head without it: four runs lost their work so on
-// 2026-10-12. The runner now commits that work in progress on the fork under
+// 2026-10-12. The runner now commits that work in progress on the branch under
 // the builder's commit identity, with the builder's Agent line and the
 // trailer below, pushes it unsubmitted and releases the claim. The trailer
 // is how a later run, on any machine, knows its head is that unverified work
@@ -1141,7 +1141,7 @@ export const workInProgressSection = (head, actor) => [
 ].join("\n");
 
 // A merge-main job's build (docs/orchestrator.md, section 5): a part's
-// workspace forks from the plan's branch, a task's is its own fork of main,
+// workspace branches from the plan's branch, a task's is its own branch of main,
 // and after claiming the runner fetches the current baseline branch
 // through a read token — the plan item's base for a part (the baseline: the
 // token the refresh job reads main with), the task's own for a task, whose
@@ -1190,7 +1190,7 @@ export async function startMergeMain(assignment, workspace, io) {
 // A part sent back because its integration conflicted with the plan's
 // branch (docs/orchestrator.md, section 5): its dispatch names the plan
 // branch's head (`planHead`), and before the harness runs the runner reads
-// it through the part's own base token, which reads the plan item's fork,
+// it through the part's own base token, which reads the plan item's branch,
 // and merges it as startMergeMain merges main, with the same three outcomes.
 // With `merge` false, as when a merge-main part's merge of main is still in
 // progress, it is fetched and not merged: "skipped".
@@ -1907,7 +1907,7 @@ export async function runTask(assignment, config, name, io) {
     }
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
-    await claimFork(io, ["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
     claimed = true;
     advance({ type: "claim" });
     before = await io.head(workspace, { cleanup: true });
@@ -2175,7 +2175,7 @@ export async function runTask(assignment, config, name, io) {
       const named = `files the harness left uncommitted after its commits and one follow-up turn: ${leftovers.map((f) => f.path).join(", ")}`;
       state = { ...state, leftovers: leftovers.map((f) => f.path), detail: `${state.reason}; ${named}`.slice(0, 2000), reason: `${state.reason}; ${named}` };
     }
-    state = { ...state, claimedFork: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
+    state = { ...state, claimedTask: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
     // The final record adds the head, the start and the reason as information.
     if (failedNow && claimed && !error.providerLimit) {
       await markFailure({ reason: state.reason });
@@ -2186,10 +2186,7 @@ export async function runTask(assignment, config, name, io) {
     if (already && !already.complete && state.reason === "harness made no new commit") state = { ...state, detail: `${state.reason}: ${already.why}` };
     if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
     if (error.providerLimit) state = { ...state, providerLimit: error.providerLimit, taskFailure: false };
-    if (!claimed && error.notReady != null) {
-      state = { ...state, notReady: error.notReady, taskFailure: false };
-      io.log(`fork not ready: ${error.notReady}`);
-    } else if (!claimed && error.skipped) {
+    if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
       io.log(`skipped: ${error.message}`);
     } else if (!claimed && error.claimRefused) {
@@ -2210,7 +2207,7 @@ export async function runTask(assignment, config, name, io) {
       io.log("claim preserved: the failure marker or the head could not be recorded");
     } else if (claimed && (exitOutcome?.release || (state.head && item.kind === "part")) && state.taskFailure) {
       // A part whose finish failed is released, not held (docs/orchestrator.md,
-      // section 3): the fork keeps the commits, and the plan's tick sends the
+      // section 3): the branch keeps the commits, and the plan's tick sends the
       // part back with the failing output in its next brief.
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, "", workspace)], workspace);
@@ -2372,7 +2369,7 @@ export function runFacts(task, state, { dir = null, now = Date.now, host = hostn
 // A runner that gives a task up (t584) lets go of the claim, so the core-file
 // hold on other dispatches lifts at once and the developer's inbox, status and
 // stuck report carry the task (the note starts with GAVE_UP). It pushes what it
-// committed first, so the work is on the fork, not only on this Mac. Whatever
+// committed first, so the work is on the branch, not only on this Mac. Whatever
 // fails, the release is still tried: a hold with nobody working is worse than
 // work left in a workspace, and the note says if the push failed. A harness
 // that failed leaves its marker in the workspace, so a runner that claims the
@@ -2563,7 +2560,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
     io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
     // Claim the request; the server returns the part, the brief's inputs and a
-    // read token for the fork, so the part can be cloned read-only.
+    // read token for the branch, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
     // failed review need not wait for its five-minute lease to expire.
     // A pre-review job's claim that bound this gate review hands it over
@@ -2599,7 +2596,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     await (io.prepareReview ?? prepareReviewDependencies)(workspace, io.workspacePath(project, item.id));
     const compare = await reviewBase(io, workspace, claimed, { project });
     if (io.stopped()) throw new Error("interrupted");
-    if (compare.fallback) io.log(`review diff from the fork point: ${project}/${item.id} at ${claimed.head.slice(0, 12)}: ${compare.fallback}`);
+    if (compare.fallback) io.log(`review diff from the branch point: ${project}/${item.id} at ${claimed.head.slice(0, 12)}: ${compare.fallback}`);
     // A merge-main job's merge is reviewed by what it resolved (mergeReview);
     // every other head by the diff from `compare`.
     const merged = claimed.landed ? null : await mergeReview(io, workspace, claimed);
@@ -2852,7 +2849,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
 // The merge commit a post-merge review reads (t591), fetched into the review
 // clone from where it lives. A task landed in fast mode is merged on the
 // developer's own main (recorded with atelier record-merge), and the merge reaches the
-// project's baseline only when the developer publishes main; the task's fork
+// project's baseline only when the developer publishes main; the task's branch
 // never holds it. The clone the claim names may therefore lack it, and the
 // checkout failed with "fatal: unable to read tree (<merge>)". When the
 // clone lacks it, the baseline is read through its read token (the
@@ -3351,15 +3348,15 @@ export async function verifyBlockers(io, ctx, blockers) {
 // The commit a review diffs from: the merge base of the reviewed head and the
 // branch the item merges into, which the claim names with a read token (the
 // plan's integration branch for a part, the project's main otherwise). A
-// task that merged main after it forked holds main's newer commits, and a
-// diff from its fork point would show them as the task's own; the merge
+// task that merged main after it branched holds main's newer commits, and a
+// diff from its branch point would show them as the task's own; the merge
 // base leaves them out, as git merge-base HEAD main does in
 // bin/orchestrate/review.sh. When the branch cannot be fetched or shares no
-// history with the head, the diff runs from the fork point the claim records
-// and the reason is returned, for the brief to say so. A fork point the clone
+// history with the head, the diff runs from the branch point the claim records
+// and the reason is returned, for the brief to say so. A branch point the clone
 // cannot read is no fallback: the review stops here, before any harness
 // starts, with an error that names the job and the operation that failed,
-// so the notice (a fork-point diff is in use) and the terminal error (there
+// so the notice (a branch-point diff is in use) and the terminal error (there
 // is no diff to give) are told apart in the log (t173).
 // `job` is { project }, for the names in those two messages.
 export async function reviewBase(io, workspace, claimed, job = {}) {
@@ -3400,7 +3397,7 @@ export async function reviewBase(io, workspace, claimed, job = {}) {
     try { readable = await io.hasCommit(workspace, base); } catch { readable = false; }
   }
   if (!readable) {
-    throw new Error(`review of ${job.project ?? "?"}/${claimed.item.id} at ${String(claimed.head).slice(0, 12)} cannot start, with target branch ${target.branch}: ${operation} failed (${failure}) and the fork point ${base ? String(base).slice(0, 12) : "(none recorded)"} cannot be read in the clone`);
+    throw new Error(`review of ${job.project ?? "?"}/${claimed.item.id} at ${String(claimed.head).slice(0, 12)} cannot start, with target branch ${target.branch}: ${operation} failed (${failure}) and the branch point ${base ? String(base).slice(0, 12) : "(none recorded)"} cannot be read in the clone`);
   }
   return { from: base, fallback: `${operation} on ${target.branch} failed (${failure})` };
 }
@@ -3434,7 +3431,7 @@ export function mergeMainJob(claimed) {
 // A merge-main job's head is a merge of main into the part or task: its first
 // parent is the builder's previous head and its second is main. Diffed from
 // the branch the item merges into, as other reviews are (reviewBase), such a
-// head shows all of main's work since the item forked, often more than a
+// head shows all of main's work since the item branched, often more than a
 // reviewer can read or a harness can be handed. It is reviewed instead by what
 // the merge resolved, `git show --remerge-diff HEAD` (how the committed merge
 // differs from the merge git makes on its own, conflict markers included),
@@ -3484,7 +3481,7 @@ export async function runIntegrate(assignment, config, name, io) {
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // The branch goes back to its head before the merge, in the workspace and,
-  // through atelier push --rollback, on the fork and in the ledger.
+  // through atelier push --rollback, on the branch and in the ledger.
   const rollback = async () => {
     await io.rollback(workspace, before);
     await io.cli(["push", item.id, ...at, "--rollback"], workspace);
@@ -3504,9 +3501,9 @@ export async function runIntegrate(assignment, config, name, io) {
         !partId || !/^t[0-9]+$/.test(partId) || !/^[a-f0-9]{40,64}$/.test(partHead ?? "")) {
       throw Object.assign(new Error("the queue returned an invalid integrate assignment"), { skipped: true });
     }
-    await claimFork(io, ["claim", item.id, ...at, "--runner", name]);
+    await io.cli(["claim", item.id, ...at, "--runner", name]);
     claimed = true;
-    // The merge starts from the branch as the fork holds it, so a merge whose
+    // The merge starts from the branch as the branch holds it, so a merge whose
     // push failed in an earlier run is not carried into this one.
     await io.resetToRemote(workspace);
     before = await io.head(workspace);
@@ -3550,8 +3547,7 @@ export async function runIntegrate(assignment, config, name, io) {
     // A claim the server refuses (the owner's token where the integrator's
     // own is required, say) holds nothing to release and is not the job's
     // failure; the loop's refused set keeps this head, as for a build.
-    if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
-    else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
+    if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
     else io.log(`failed: ${error.message}`);
     // A merge pushed but neither integrated nor reported goes back off the
     // branch, so the next run starts from the plan's integrated head.
@@ -3561,7 +3557,7 @@ export async function runIntegrate(assignment, config, name, io) {
     }
     // Any error after the claim gives the plan item back, so the job can run again.
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, claimedFork: claimed, ...(error.notReady != null ? { notReady: error.notReady } : {}), ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, claimedTask: claimed, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -3573,7 +3569,7 @@ export function checkFailures(output) {
 
 // The refresh job (docs/orchestrator.md, section 5): the integrator merges
 // main's head, the one the dispatch names, into the plan's branch, so later
-// parts fork from a branch that holds main's later work and later
+// parts branch from a branch that holds main's later work and later
 // integrations build on it. It runs as the integrate job does: claim the
 // plan item, merge with --no-ff, push with atelier push, run the plan's
 // checks, and post refreshed with the merge commit. A branch that already
@@ -3602,7 +3598,7 @@ export async function runRefresh(assignment, config, name, io) {
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // As in runIntegrate: back to the head before the merge, in the workspace
-  // and, through atelier push --rollback, on the fork and in the ledger.
+  // and, through atelier push --rollback, on the branch and in the ledger.
   const rollback = async () => {
     await io.rollback(workspace, before);
     await io.cli(["push", item.id, ...at, "--rollback"], workspace);
@@ -3634,9 +3630,9 @@ export async function runRefresh(assignment, config, name, io) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id) || !/^[a-f0-9]{40,64}$/.test(mainHead ?? "")) {
       throw Object.assign(new Error("the queue returned an invalid refresh assignment"), { skipped: true });
     }
-    await claimFork(io, ["claim", item.id, ...at, "--runner", name]);
+    await io.cli(["claim", item.id, ...at, "--runner", name]);
     claimed = true;
-    // As in runIntegrate: the merge starts from the branch as the fork holds it.
+    // As in runIntegrate: the merge starts from the branch as the branch holds it.
     await io.resetToRemote(workspace);
     before = await io.head(workspace);
     const base = JSON.parse(await io.cli(["base-token", item.id, ...at]));
@@ -3675,8 +3671,7 @@ export async function runRefresh(assignment, config, name, io) {
     return { phase: "refreshed" };
   } catch (error) {
     // As in runIntegrate: a refused claim is the caller's, not the job's.
-    if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
-    else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
+    if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
     else io.log(`failed: ${error.message}`);
     // A merge pushed but neither recorded nor reported goes back off the branch.
     if (pushed && !released) {
@@ -3684,7 +3679,7 @@ export async function runRefresh(assignment, config, name, io) {
       catch (rollbackError) { io.log(`rollback failed: ${rollbackError.message}`); }
     }
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, claimedFork: claimed, ...(error.notReady != null ? { notReady: error.notReady } : {}), ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, claimedTask: claimed, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -3725,12 +3720,12 @@ export function skipRetryPolls(misses) {
 // (t273): it is no task failure and no infrastructure failure, so the loop
 // keeps serving the item's jobs.
 export function failureCount(count, state) {
-  if (state.providerLimit || state.notReady != null) return count;
+  if (state.providerLimit) return count;
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? 1 : 0);
 }
 
 export function infrastructureFailureCount(count, state) {
-  if (state.providerLimit || state.notReady != null) return count;
+  if (state.providerLimit) return count;
   if (state.terminalState) return count;
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
@@ -3835,50 +3830,9 @@ export function exitSignature(exit) {
 
 export function backoffAfter(entry, state, poll) {
   if (state.phase !== "failed") return undefined;
-  if (state.taskFailure || state.recorded || state.claimRefused || state.skipped || state.providerLimit || state.terminalState || state.notReady != null) return entry;
+  if (state.taskFailure || state.recorded || state.claimRefused || state.skipped || state.providerLimit || state.terminalState) return entry;
   const count = (entry?.count ?? 0) + 1;
   return { count, due: poll + backoffPolls(count) };
-}
-
-// A claim the server answered not_ready: the task's fork is still being
-// prepared. The runner tries again with a growing wait and charges neither
-// the build cap nor the infrastructure cap, and stops NOT_READY_LIMIT_MS
-// after the first not_ready answer. The CLI ends a 503 with "not_ready:
-// DETAIL" (the "atelier: " prefix is its own). Returns the detail, or null
-// for any other message.
-export const NOT_READY_LIMIT_MS = 10 * 60_000;
-export const notReadyDetail = (message) => /^(?:atelier: )?not_ready: ?([\s\S]*)$/m.exec(String(message ?? ""))?.[1].trim() ?? null;
-// The claim of a task's fork, for every job that makes one (a build, a
-// merge-main part, a plan, an integration, a refresh): a not_ready answer is
-// tagged on the error, so the job reports a wait, not a failure, and
-// releases nothing, since nothing was claimed.
-export async function claimFork(io, argv) {
-  try { return await io.cli(argv); }
-  catch (claimError) {
-    const detail = notReadyDetail(claimError.message);
-    if (detail !== null) throw Object.assign(claimError, { notReady: detail });
-    throw claimError;
-  }
-}
-export const notReadyPolls = (tries) => Math.min(2 ** (tries - 1), 8);
-// The entry kept for a task after a run: the first answer's time, the tries,
-// the poll it is tried again at, and whether the limit has passed. The first
-// answer's time is kept until a run claims the fork (or the task is
-// dispatched again, which is another key): a failure that is not a not_ready
-// answer and claimed nothing, such as a network timeout between two not_ready
-// answers, leaves the entry as it was, so the ten minutes are not restarted.
-export function notReadyAfter(entry, state, nowMs, poll) {
-  if (state.phase === "failed" && state.notReady == null && !state.claimedFork) return entry;
-  if (state.phase !== "failed" || state.notReady == null) return undefined;
-  const since = entry?.since ?? nowMs, tries = (entry?.tries ?? 0) + 1;
-  return { since, tries, due: poll + notReadyPolls(tries), detail: state.notReady, expired: nowMs - since >= NOT_READY_LIMIT_MS };
-}
-export const notReadyKey = taskKey;
-// What the developer is told when the limit passes: the repository (named in
-// the server's detail, else the project) and the remedy.
-export function notReadyGiveUp(task, entry) {
-  const repository = /^(\S+) is still being prepared/.exec(entry.detail ?? "")?.[1] ?? task.project;
-  return `${task.project}/${task.item.id}: the fork ${repository} was still not ready 10 minutes after its first not_ready answer (${entry.tries} tries); this runner stops trying. Remedy: wait for Artifacts to finish preparing ${repository} (or delete the fork and claim again), then dispatch ${task.item.id} again or restart this runner.`;
 }
 
 // A claim that lost the race to a hold (the server's 409 held, t540): the
@@ -3904,7 +3858,7 @@ export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? 
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   // A review's, a criteria review's and a pre-review's same-exit count is
@@ -3912,9 +3866,6 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   // restarts and across the requests each try makes.
   const shared = task.item.sameExit;
   if (SAME_EXIT_JOBS.has(task.item.dispatch?.job) && shared?.count >= SAME_EXIT_LIMIT) return `Passed by: its harness exited the same way ${shared.count} times in a row, as the server counts them across runners; it is left for another model. It is tried again at a new head.`;
-  const preparing = notReady.get(notReadyKey(task));
-  if (preparing && (preparing.expired || nowMs - preparing.since >= NOT_READY_LIMIT_MS)) return `Skipped: ${notReadyGiveUp(task, preparing)}`;
-  if (preparing && poll < preparing.due) return `Passed by: its fork is still being prepared (not_ready, ${preparing.tries} ${preparing.tries === 1 ? "try" : "tries"}); it is tried again in ${preparing.due - poll} poll${preparing.due - poll === 1 ? "" : "s"}.`;
   const refusedRun = refusedRuns.get(failureKey(task));
   if (refusedRun && nowMs < refusedRun.until) return `Passed by: the harness refused it ${refusedRun.count} time${refusedRun.count === 1 ? "" : "s"} in a row; it is claimed again in ${Math.ceil((refusedRun.until - nowMs) / 1000)} seconds.`;
   const waiting = backoff.get(backoffKey(task));
@@ -3988,10 +3939,10 @@ export function noteSkipHeads(task, { failures, infrastructureFailures, gaveUpTa
 // and a restarted runner reads it back at start (restoreMemory), so a stop is
 // not forgotten by a restart. Each list keeps its newest MEMORY_MAX entries.
 // `reasons` says each task's stop in words, for the owner's listing. The
-// waits that count polls (backoff, not_ready) are kept by their count and
-// start counting again from zero.
+// wait that counts polls (backoff) is kept by its count and starts counting
+// again from zero.
 export const MEMORY_MAX = 200;
-export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map(), pauses = {} }) {
+export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), pauses = {} }) {
   const newest = (items) => [...items].slice(-MEMORY_MAX);
   const counted = (map) => newest([...map].filter(([, n]) => n > 0)).map(([key, count]) => ({ key, count }));
   const reasons = new Map();
@@ -4010,7 +3961,6 @@ export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFai
     skipHeads: newest(skipHeads).map(([key, heads]) => ({ key, heads: [...heads] })),
     reasons: newest(reasons).map(([task, why]) => ({ task, why })),
     backoff: newest([...backoff].map(([key, entry]) => [key, entry.count])).map(([key, count]) => ({ key, count })),
-    notReady: newest(notReady).map(([key, e]) => ({ key, since: e.since, tries: e.tries, detail: e.detail ?? "", expired: !!e.expired })),
     pauses: Object.values(pauses).map(({ harness, reason, resetAt, since, fallback }) => ({ harness, reason, resetAt, since, fallback: !!fallback })),
   };
 }
@@ -4018,9 +3968,9 @@ export function runnerMemory({ refused, gaveUpTasks, failures, infrastructureFai
 // Puts a memory the server held back into the maps (runnerMemory's inverse);
 // anything of another shape is left out. The waits count polls, which start
 // again from zero, so a backoff is due again as many polls on as its count
-// asks and a fork still being prepared keeps the time its first answer came.
+// asks.
 // Returns how many entries it restored.
-export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map() }) {
+export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map() }) {
   if (!memory || typeof memory !== "object") return 0;
   const named = (list) => (Array.isArray(list) ? list : []).filter((e) => e && typeof e.key === "string");
   let restored = 0;
@@ -4030,17 +3980,16 @@ export function restoreMemory(memory, { refused, gaveUpTasks, failures, infrastr
   for (const { key, count } of named(memory.infrastructure)) if (Number.isInteger(count)) { infrastructureFailures.set(key, count); restored++; }
   for (const { key, heads } of named(memory.skipHeads)) if (Array.isArray(heads)) { skipHeads.set(key, new Set(heads)); restored++; }
   for (const { key, count } of named(memory.backoff)) if (Number.isInteger(count) && count > 0) { backoff.set(key, { count, due: backoffPolls(count) }); restored++; }
-  for (const { key, since, tries, detail, expired } of named(memory.notReady)) if (Number.isFinite(since) && Number.isInteger(tries)) { notReady.set(key, { since, tries, detail: detail ?? "", expired: !!expired, due: notReadyPolls(tries) }); restored++; }
   return restored;
 }
 
 // Drops what the runner remembers of a task, "project/id" (atelier runner
 // forget-skip): every key is a JSON list that starts with the project and the
 // task id. Returns how many entries it dropped.
-export function forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map(), notReady = new Map() }) {
+export function forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff = new Map() }) {
   const named = (key) => { try { const [project, id] = JSON.parse(key); return `${project}/${id}`; } catch { return null; } };
   let dropped = 0;
-  for (const collection of [refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady]) {
+  for (const collection of [refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff]) {
     for (const entry of [...collection]) {
       const key = Array.isArray(entry) ? entry[0] : entry;
       if (named(key) === task) { collection.delete(key); dropped++; }
@@ -4099,7 +4048,7 @@ export async function runPlanTask(assignment, config, name, io) {
     workspace = io.workspacePath(project, item.id);
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
-    await claimFork(io, ["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
     claimed = true;
     io.log("claimed");
     if (io.stopped()) throw new Error("interrupted");
@@ -4156,14 +4105,12 @@ export async function runPlanTask(assignment, config, name, io) {
     state = { phase: "failed", reason: error.message };
     state.taskFailure = taskFailure && !error.infrastructure && !error.providerLimit && !io.stopped();
     if (error.providerLimit) state.providerLimit = error.providerLimit;
-    state.claimedFork = claimed;
-    if (!claimed && error.notReady != null) { state.notReady = error.notReady; state.taskFailure = false; }
+    state.claimedTask = claimed;
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
     if (error.detail) state.detail = error.detail;
     if (error.output) state.output = error.output;
-    if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
-    else if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
+    if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
     else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
     else io.log(`failed: ${state.reason}`);
   } finally {
@@ -4171,7 +4118,7 @@ export async function runPlanTask(assignment, config, name, io) {
     // itself, and a refused or missing one counts an attempt only once the
     // claim is given back. A claim whose fate is unknown (the claim step
     // failed without a refusal) is released too, as runTask releases it.
-    if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped && state.notReady == null))) {
+    if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped))) {
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.phase === "failed" ? automaticNote(state.reason) : automaticNote("plan job done")], workspace, { providerLimit: !!state.providerLimit });
         io.log(state.phase === "failed" ? "released: the plan job is back in the queue" : "released: the plan job is done");
@@ -4425,7 +4372,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), skipHeads = new Map();
+  const refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), skipHeads = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4433,7 +4380,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // MISSING_RECHECK_MS; a CLI wired without it keeps them until restart.
   // What the runner remembers of the tasks it passes by goes with every poll
   // and heartbeat, and is read back at start (runnerMemory, G5).
-  const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady, pauses: limits.pauses }) });
+  const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, pauses: limits.pauses }) });
   // The running build's progress line (G21, cli/progress.mjs) goes with every
   // poll and heartbeat while a build runs, and once more when it has ended.
   const progress = progressTracker({ now });
@@ -4529,7 +4476,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // A task the developer had this runner forget (atelier runner forget-skip).
     for (const task of Array.isArray(state?.forget) ? state.forget : []) {
       if (typeof task !== "string") continue;
-      const dropped = forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady });
+      const dropped = forgetTask(task, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff });
       if (dropped) line(`forgot what it remembered of ${task} (${dropped} entr${dropped === 1 ? "y" : "ies"}); it is tried again`);
     }
     for (const p of Array.isArray(state?.pauses) ? state.pauses : []) {
@@ -4663,7 +4610,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
     // after the reset (excludeScratch).
     reset: async (cwd) => { await resetTo(cwd, "HEAD"); excludeScratch(cwd); },
-    // The integrate and refresh jobs' reset: to the fork's copy of the branch
+    // The integrate and refresh jobs' reset: to the branch's copy of the branch
     // the claim names (atelier.branch), which the claim has just fetched.
     resetToRemote: async (cwd) => {
       const branch = (await checked(["git", "config", "--local", "atelier.branch"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild)).trim();
@@ -4951,7 +4898,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       const result = servedProjects(config.projects, mine);
       served = result.projects;
       // The stops the server kept of the last process (G5): a restart loses none.
-      const restored = restoreMemory(mine?.memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady });
+      const restored = restoreMemory(mine?.memory, { refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff });
       syncPauses(mine?.pauses ? mine : await readServerState());
       if (restored) line(`restored ${restored} remembered stop${restored === 1 ? "" : "s"} (skips, refusals, failure counts) from the server`);
       // The offer says the same projects, so routing never picks this runner
@@ -5088,7 +5035,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         for (const task of ordered) {
           if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
         }
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0) && !(task.item.dispatch?.job === "land" && landStopped.get(taskKey(task)) === landJobKey(task)))) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -5162,11 +5109,6 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }
-          const waitingFork = notReadyAfter(notReady.get(notReadyKey(task)), state, now(), polls);
-          if (waitingFork) {
-            notReady.set(notReadyKey(task), waitingFork);
-            if (waitingFork.expired) io.log(notReadyGiveUp(task, waitingFork));
-          } else notReady.delete(notReadyKey(task));
           const key = failureKey(task), count = failureCount(failures.get(key) ?? 0, state);
           failures.set(key, count);
           if (count === 2) io.log(`${task.project}/${task.item.id} needs the developer's attention after 2 failures; skipped for this process`);

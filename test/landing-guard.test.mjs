@@ -27,8 +27,8 @@ function isolated(p) {
   return { ...env, HOME: join(p, 'home'), GIT_CONFIG_GLOBAL: join(p, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
 }
 
-// The owner's checkout, its baseline, and a task's fork with the accepted
-// head, served by a fake ledger. `setup` shapes the checkout before its first
+// The owner's checkout, its baseline, and the task's branch t/1 of that one
+// repository with the accepted head, served by a fake ledger. `setup` shapes the checkout before its first
 // commit; `change` makes the accepted head in the task's workspace. Every
 // hook or script a test plants appends a line to `log`, outside the checkout,
 // so `ran()` says what ran.
@@ -58,14 +58,14 @@ async function landFixture(t, { setup = () => {}, change, controlPlane = false, 
   const base = git(checkout, 'rev-parse', 'HEAD');
 
   // A bare clone runs none of the checkout's hooks.
-  const baseline = join(p, 'baseline.git'), fork = join(p, 'fork.git'), ws = join(p, 'workspace');
+  const baseline = join(p, 'baseline.git'), ws = join(p, 'workspace');
   git(p, 'clone', '-q', '--bare', checkout, baseline);
-  git(p, 'clone', '-q', '--bare', baseline, fork);
-  git(p, 'clone', '-q', fork, ws);
+  git(p, 'clone', '-q', baseline, ws);
+  git(ws, 'checkout', '-q', '-b', 't/1');
   change({ ...tools, ws });
   git(ws, 'add', '-A');
   git(ws, 'commit', '-q', '-m', 'Task t1\n\nAgent: codex/test');
-  git(ws, 'push', '-q', 'origin', 'HEAD:main');
+  git(ws, 'push', '-q', 'origin', 'HEAD:refs/heads/t/1');
   const head = git(ws, 'rev-parse', 'HEAD');
 
   const box = { state: 'accepted', failLanding: failLandingOnce, requests: [] };
@@ -80,8 +80,8 @@ async function landFixture(t, { setup = () => {}, change, controlPlane = false, 
     let answer = {};
     if (path === '/api/projects/proj' && req.method === 'GET') answer = { project: { name: 'proj', policy: { protected: PROTECTED, eligible: [], refuseOverlap: false } }, items: [], events: [] };
     else if (path === '/api/projects/proj/items/t1') answer = { item, policy: { sandboxOnly, checks: observed.length ? ['npm test'] : [], protected: [], commitIdentity: { name: 'Owner', email: 'owner@example.invalid', agentEmails: [] } }, gate: { ready: true, blockers: [], changeClass: 'coordinated' }, evidence: observed.map((o, i) => ({ claim: 'npm test', grade: 'observed', head, by: 'codex/test', at: `2026-10-06T00:00:0${i}Z`, passed: true, where: 'runner', ...o })), reviews: [], acceptanceProtected: PROTECTED, events: [{ kind: 'item.claimed', actor: 'codex/test', at: '2026-10-06T00:00:00Z', data: {} }] };
-    else if (path.endsWith('/baseline-token')) answer = { remote: baseline, token: 'fixture', defaultBranch: 'main' };
-    else if (path.endsWith('/read-token')) answer = { remote: fork, token: 'fixture', defaultBranch: 'main', head, base };
+    else if (path.endsWith('/git-token')) answer = { kind: body.kind, remote: baseline, token: 'fixture', expiresAt: '2999-01-01T00:00:00.000Z', defaultBranch: 'main', repository: 'server', ...(body.item ? { branch: 't/1', into: 'main', head, base } : {}) };
+    else if (path.endsWith('/landing-lease')) answer = { lease: null };
     else if (path.endsWith('/landing') && body.cancel !== true && box.failLanding) {
       box.failLanding = false;
       res.writeHead(503, { 'content-type': 'application/json' });

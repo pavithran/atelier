@@ -10,8 +10,8 @@
 //
 // The tick acts on no judgment of its own (PAVI, 2026-10-28: Atelier is a
 // tool for an intelligent model orchestrator). It reroutes no dispatch,
-// re-points no review request, releases no review claim and replaces no
-// fork: each of those was a trigger, and each is now a fact the model reads
+// re-points no review request and releases no review claim: each of those
+// was a trigger, and each is now a fact the model reads
 // (`atelier show`, `atelier events`, the queue) and acts on by command. The
 // one action left is the developer's standing instruction to queue landable
 // tasks (decideLandQueue, src/standing.ts).
@@ -19,17 +19,11 @@
 import { servesProject, type SeenOffer } from "./dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
 import { LIMITS } from "./limits.ts";
-import { FORK_REPLACE_MS, stageEnteredAt, stageOverrun, type Item, type StageClock, type TaskStage } from "./rules.ts";
-
-export { FORK_REPLACE_MS };
+import { stageEnteredAt, stageOverrun, type Item, type StageClock, type TaskStage } from "./rules.ts";
 
 // The stage events read back. stage.told and stage.retried are no longer
-// written (G6) but older records hold them; stage.rerouted is a claim's fork
-// replacement now.
+// written (G6), nor stage.rerouted, but older records hold them.
 export const STAGE_EVENT_KINDS = ["stage.stuck", "stage.told", "stage.cleared", "stage.rerouted", "stage.retried", "stage.land-queued"] as const;
-// The stage name a claim's fork replacement is keyed by (fork code, until
-// task 13 removes it); it is not a TaskStage.
-export const PREPARING = "preparing";
 // The stage the review tier's unclaimed request is keyed by; it is not a TaskStage.
 export const REVIEW_TIER_STAGE = "checked-tier";
 export interface StageKey { item: string; stage: TaskStage; head: string }
@@ -140,24 +134,6 @@ export function decideLandQueue(i: LandQueueInput): LandQueueVerdict {
     return { acts: true, queue: "main-moved", note: "main moved; queued the landing again" };
   }
   return { acts: true, note: "the landing is already queued" };
-}
-
-// A fork the tick replaces or tells of: preparing since `since`, with no fork
-// or head of the task's own recorded, past FORK_REPLACE_MS, or the limit a
-// claim judges a cut-off fork request by (t286). A recorded head
-// that is only a main commit (the commit the task was based on, or main's
-// head) is no head: a run released without a push leaves one (t263).
-export function forkStalled(prep: { since: string | null }, item: { fork?: string | null; head?: string | null; base?: string | null }, now: Date, main?: string | null, limitMs = FORK_REPLACE_MS): boolean {
-  if (!prep.since || item.fork) return false;
-  if (item.head && item.head !== item.base && item.head !== main) return false;
-  return now.getTime() - Date.parse(prep.since) > limitMs;
-}
-
-// The name of the replacement for a fork: the same name with a numbered
-// suffix, so no repository is touched and the old one stays as it is.
-export function replacementFork(fork: string): string {
-  const m = /^(.*)-r(\d+)$/.exec(fork);
-  return m ? `${m[1]}-r${Number(m[2]) + 1}` : `${fork}-r2`;
 }
 
 // Whether `since` is more than `limitMs` before `now`: a review claim that

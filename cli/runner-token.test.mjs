@@ -70,7 +70,7 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   mkdirSync(workspace);
   mkdirSync(gitDir);
   const config = join(dir, "runner.json");
-  const token = "runner-flow-secret", baseToken = "main-read-secret", mainHead = "f".repeat(40), forkPoint = "e".repeat(40);
+  const token = "runner-flow-secret", baseToken = "main-read-secret", mainHead = "f".repeat(40), branchPoint = "e".repeat(40);
   // Not Codex: a Codex build is refused unless its command grants the checks
   // full access (codexBuildRefusal, 3dc757f), and this stub harness is no such command.
   writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["gpt-6-astra"], env: ["LEAK_ALIAS"], command: ["stub-harness", "{model}", "{brief_file}", "{workspace}", "{plan_file}"] }], jobs: ["build", "plan"] }));
@@ -110,10 +110,10 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
           assert.deepEqual(headers, [`Authorization: Bearer ${baseToken}`, "1000", "120"]);
         } else assert.deepEqual(headers, [], "only the fetch carries the read token");
         assert.ok(!argv.includes(token) && !argv.includes(baseToken), "no credential is a git argument");
-        // A workspace whose fork predates main's head: main is not yet in
+        // A workspace whose branch predates main's head: main is not yet in
         // HEAD, so the landing's merge runs; everything else holds.
         if (argv[1] === "merge-base" && argv[2] === "--is-ancestor") return { code: argv[3] === "FETCH_HEAD" ? 1 : 0, output: "", stderr: "" };
-        if (argv[1] === "merge-base") return { code: 0, output: `${forkPoint}\n`, stderr: "" };
+        if (argv[1] === "merge-base") return { code: 0, output: `${branchPoint}\n`, stderr: "" };
         if (argv[1] === "rev-list") return { code: 0, output: argv.includes("--first-parent") ? `${mainHead}\n` : "", stderr: "" };
         if (argv[1] === "diff-tree") assert.equal(options.env.GIT_CONFIG_COUNT, "0", "the comparison reads the trees with git's diff output pinned (DETECTOR_ENV)");
         if (argv[1] === "rev-parse" && argv.includes("--absolute-git-dir")) return { code: 0, output: `${gitDir}\n`, stderr: "" };
@@ -142,7 +142,7 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   // validation_blocked run committed), then the leftover-files check after the harness (t365: unstaged and staged
   // changes, untracked files), then the landing.s merge (fetch, main.s head, whether HEAD holds it; the
   // moved-code comparison: the build's head, the merge base, main's and the
-  // build's trees, the git dir its log goes to; the fork point and the
+  // build's trees, the git dir its log goes to; the branch point and the
   // commits from main; the merge pipeline's (t463): its drivers' settings
   // read, written and read back in the common Git dir, the two heads, the
   // no-ff merge and the Git dir it looks for a merge in; the route-level comparison, the
@@ -158,7 +158,7 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
 // The CLI half of the step above, as the runner's child runs it: with
 // ATELIER_RUNNER_TOKEN and ATELIER_RUNNER_NAME set and no owner token,
 // `atelier baseline-token` sends the runner credential, asks the project's
-// baseline-token route for read scope and reads the project's policy, and
+// git-token route for a read grant and reads the project's policy, and
 // prints the token the server minted with the regenerate command beside
 // it, so the runner can fetch main with the one and regenerate with the
 // other. No item route is called: the item's base-token answers a runner
@@ -174,9 +174,10 @@ test("the direct CLI reads the baseline token and the regenerate command with th
       if (url === "https://one.test/api/config") return Response.json({ runner: "home:studio", tokenId: "id" });
       if (options.headers["x-atelier-actor"] !== "claude-code/gpt-6-astra") throw new Error("wrong actor");
       if (url === "https://one.test/api/projects/demo" && options.method === "GET") return Response.json({ project: { name: "demo", policy: { checks: [], regenerate: "node cli/regenerate.mjs" } }, items: [], events: [] });
-      if (url !== "https://one.test/api/projects/demo/baseline-token" || options.method !== "POST") throw new Error("unexpected route " + url);
-      if (JSON.parse(options.body).scope !== "read") throw new Error("wrong baseline-token request");
-      return Response.json({ remote: "https://git.test/demo.git", token: "main-read-secret", tokenId: "up-1", expiresAt: "2026-10-11T00:00:00.000Z", defaultBranch: "main" });
+      if (url !== "https://one.test/api/projects/demo/git-token" || options.method !== "POST") throw new Error("unexpected route " + url);
+      const asked = JSON.parse(options.body);
+      if (asked.kind !== "read" || asked.item !== undefined) throw new Error("wrong git-token request");
+      return Response.json({ kind: "read", remote: "https://git.test/demo.git", token: "main-read-secret", expiresAt: "2026-10-11T00:00:00.000Z", defaultBranch: "main", repository: "server" });
     };
     await import(${JSON.stringify(cli)});
   `;

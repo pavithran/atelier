@@ -177,38 +177,16 @@ test("an overdue tick is ahead of usage and token-expiry warnings, in status and
   assert.equal(withOverdueTick("text", []), "text");
 });
 
-// t245: a stalled fork, which a claim replaces until task 13 removes forks.
-import { forkStalled, olderThan, recordedKeys, replacementFork, FORK_REPLACE_MS } from "../src/stage-tick.ts";
+import { olderThan, recordedKeys } from "../src/stage-tick.ts";
 
 // G6: the tick reroutes no dispatch and re-points no review request, so
 // decideReroute, decideReviewReroute and costTier are gone; what they decided
 // is a stage.stuck note now (test/tick-facts.test.mjs).
 test("the reroute and re-point deciders are gone from the tick", async () => {
   const tick = await import("../src/stage-tick.ts") as Record<string, unknown>;
-  for (const gone of ["decideReroute", "decideReviewReroute", "costTier", "LAND_REQUEUES_FOR_MAIN"]) assert.equal(tick[gone], undefined, gone);
+  for (const gone of ["decideReroute", "decideReviewReroute", "costTier", "LAND_REQUEUES_FOR_MAIN", "forkStalled", "replacementFork", "PREPARING"]) assert.equal(tick[gone], undefined, gone);
   const rules = await import("../src/rules.ts") as Record<string, unknown>;
-  for (const gone of ["tickCanAct", "STAGE_TICK_MS", "STAGE_TICK_STALE_MS"]) assert.equal(rules[gone], undefined, gone);
-});
-
-test("a fork is stalled past 30 minutes with no fork or head recorded", () => {
-  assert.equal(FORK_REPLACE_MS, 30 * MIN);
-  assert.equal(forkStalled({ since: T0 }, {}, at(30 * MIN)), false);
-  assert.equal(forkStalled({ since: T0 }, {}, at(30 * MIN + 1)), true);
-  assert.equal(forkStalled({ since: T0 }, { head: "abc" }, at(HOUR)), false);
-  assert.equal(forkStalled({ since: T0 }, { fork: "f" }, at(HOUR)), false);
-  assert.equal(forkStalled({ since: null }, {}, at(HOUR)), false);
-});
-
-test("a recorded head that is only a main commit does not block a replacement fork", () => {
-  assert.equal(forkStalled({ since: T0 }, { head: "m1", base: "m1" }, at(HOUR)), true);
-  assert.equal(forkStalled({ since: T0 }, { head: "m2", base: "m1" }, at(HOUR), "m2"), true);
-  assert.equal(forkStalled({ since: T0 }, { head: "own", base: "m1" }, at(HOUR), "m2"), false);
-  assert.equal(forkStalled({ since: T0 }, { head: "own" }, at(HOUR), null), false);
-});
-
-test("a replacement fork has a new name each time, and keeps the old one's prefix", () => {
-  assert.equal(replacementFork("p--t1"), "p--t1-r2");
-  assert.equal(replacementFork("p--t1-r2"), "p--t1-r3");
+  for (const gone of ["tickCanAct", "STAGE_TICK_MS", "STAGE_TICK_STALE_MS", "FORK_STUCK_MS", "FORK_REPLACE_MS", "FORK_REQUEST_MS", "FORK_REPLACEMENTS", "forkPreparationView"]) assert.equal(rules[gone], undefined, gone);
 });
 
 test("records which keys an event kind was written for", () => {

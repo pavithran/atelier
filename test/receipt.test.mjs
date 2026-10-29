@@ -45,7 +45,7 @@ test("the receipt prints the whole story in the order the ledger recorded it", (
   assert.deepEqual(stamps, ["2026-10-07 20:27 UTC", "2026-10-07 20:27 UTC", "2026-10-07 20:54 UTC", "2026-10-07 20:54 UTC", "2026-10-07 20:56 UTC", "2026-10-07 20:56 UTC", "2026-10-07 21:02 UTC", "2026-10-07 21:21 UTC", "2026-10-07 21:24 UTC", "2026-10-07 21:28 UTC", "2026-10-07 21:28 UTC"]);
   assert.match(lines[2], /created by pavi$/);
   assert.match(lines[3], /claimed by claude-code\/opus-5\.5$/);
-  assert.match(lines[4], /head aaaaaaaa pushed by claude-code\/opus-5\.5, observed in Artifacts$/);
+  assert.match(lines[4], /head aaaaaaaa pushed by claude-code\/opus-5\.5, observed in the repository$/);
   assert.match(lines[5], /check failed, observed in a Cloudflare container: npm test at aaaaaaaa, merged with main 5af22431/);
   assert.match(lines[6], /check passed, observed in a clean clone: npm test at aaaaaaaa$/);
   assert.match(lines[7], /submitted by claude-code\/opus-5\.5 at aaaaaaaa: Merged with main at 51c0dd47; the required checks pass\.$/);

@@ -19,7 +19,7 @@ async function landing(name: string) {
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const agent = "claude-code/opus-5.5";
-  await L.newItem("Land", [], "owner"); await L.claim("t1", agent); await L.setFork("t1", `${name}--t1`, H0, agent);
+  await L.newItem("Land", [], "owner"); await L.claim("t1", agent); await L.setWorkspace("t1", `${name}--t1`, H0, agent);
   await L.recordPush("t1", agent, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["README.md"] } as never);
   await L.submit("t1", agent); await L.accept("t1", "owner", H1); await L.beginLanding("t1", "owner", H1);
@@ -38,14 +38,14 @@ function baseline(length: number, mergeAt?: number) {
       },
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 // G18: a write with the developer token names the model acting.
-function cancel(name: string, ARTIFACTS: Artifacts) {
+function cancel(name: string, REPOS: Repos) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/landing`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
-  }), { ...testEnv, ARTIFACTS } as typeof env);
+  }), { ...testEnv, REPOS } as typeof env);
 }
 
 it("a merge 1,200 commits deep in the baseline's history cannot be cancelled", async () => {

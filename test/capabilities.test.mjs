@@ -148,7 +148,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["abandon", "accept", "block", "board", "branch", "claim", "clear-secret", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "import-tasks", "init", "integrated", "integration-failed", "land", "ledger", "merge", "migrate", "mode", "models", "new", "plan", "projects", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "unblock", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["abandon", "accept", "block", "board", "branch", "claim", "clear-secret", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "import-tasks", "init", "integrated", "integration-failed", "land", "ledger", "merge", "migrate", "mode", "models", "new", "plan", "projects", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "unblock", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
@@ -158,8 +158,8 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "items.context.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
-  // branch mints the developer's branches token and records each push (t641).
-  assert.deepEqual(COMMAND_CAPABILITIES.branch, ["projects.developer-branches.v1"]);
+  // branch pushes the developer's dev/ branches and records each push (t641).
+  assert.deepEqual(COMMAND_CAPABILITIES.branch, ["projects.developer-branches.v2"]);
   // ledger bookmarks, restores, dumps and imports the project's Ledger (t342).
   assert.deepEqual(COMMAND_CAPABILITIES.ledger, ["projects.ledger-backup.v1"]);
   // migrate carries a task to its branch on the Studio, and projects
@@ -195,9 +195,9 @@ test("each command that relies on a named capability declares it in its module",
     const declared = [...new Set([...(spec.capabilities ?? []), ...Object.values(spec.subcommands ?? {}).flatMap((s) => s.capabilities ?? [])])];
     assert.deepEqual(COMMAND_CAPABILITIES[spec.name] ?? [], declared, spec.name);
   }
-  assert.deepEqual(COMMAND_CAPABILITIES.push, ["items.owner-port.v1"]);
-  // land exempts --release-lease; push checks only when porting as the owner.
-  assert.deepEqual(COMMAND_MODULES.filter(({ spec }) => spec.capabilityCheck === "handler").map(({ spec }) => spec.name), ["land", "push"]);
+  // land exempts --release-lease; push requires nothing since the owner port went.
+  assert.equal(COMMAND_CAPABILITIES.push, undefined);
+  assert.deepEqual(COMMAND_MODULES.filter(({ spec }) => spec.capabilityCheck === "handler").map(({ spec }) => spec.name), ["land"]);
 });
 
 test("a subcommand's capabilities are asked only when that subcommand runs", () => {

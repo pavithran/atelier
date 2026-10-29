@@ -1,13 +1,13 @@
 // atelier update. Its forms, flags and help are declared in src/usage/commands/update.ts.
 import { classify as classifyConflicts, describeConflicts, installMergeConfig, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
-import { I, actor, call, count, die, git, holds, itemArg, project, requireWorkspace, short, workspaceForkBranch, workspaceGit, wsConfig } from "../atelier.mjs";
+import { I, actor, baseReadGrant, call, count, die, git, holds, itemArg, project, requireWorkspace, short, workspaceGit, wsConfig } from "../atelier.mjs";
 
 // Agents: bring the workspace up to date with what has merged since the
-// fork. The fork's own branch comes first: a workspace that lacks commits
-// another holder pushed there (a re-claim after a handoff, a retry on
-// another machine) takes them before its own commits move, since the
-// rebase onto the baseline replays only what HEAD holds, and the push
-// --force that follows would then drop the rest from the fork. A rebase
+// task's branch started. The task's own branch comes first: a workspace that
+// lacks commits another holder pushed there (a re-claim after a handoff, a
+// retry on another machine) takes them before its own commits move, since
+// the rebase onto the baseline replays only what HEAD holds, and the push
+// --force that follows would then drop the rest from the branch. A rebase
 // that stops leaves git's own state to finish; update run again carries on
 // from there.
 //
@@ -23,7 +23,7 @@ import { I, actor, call, count, die, git, holds, itemArg, project, requireWorksp
 export default async function updateCommand() {
   const name = project(), id = itemArg(), as = await actor();
   requireWorkspace("update", name, id, as);
-  const branch = wsConfig("branch") ?? await workspaceForkBranch(name, id, as) ?? "main";
+  const branch = wsConfig("branch");
   const remote = `refs/remotes/origin/${branch}`;
   const cwd = process.cwd();
   installMergeConfig(cwd, { git });
@@ -33,22 +33,22 @@ export default async function updateCommand() {
   if (git(["rev-parse", "--verify", "--quiet", remote], { allowFail: true }).status === 0 && !holds(remote, "HEAD")) {
     const missing = git(["log", "--oneline", `HEAD..${remote}`]);
     const n = count(missing.split("\n").filter(Boolean).length, "commit");
-    const what = `${id}'s fork holds ${n} this workspace lacks:\n${missing}\n`;
-    if (await mergedThrough(cwd, remote, { what, message: `Merge ${id}'s fork at ${short(git(["rev-parse", remote]))}`, next: "Push with: atelier push" })) {
-      console.log(`${id}: this workspace merged the ${n} the fork held that it lacked:\n${missing}`);
+    const what = `${id}'s branch holds ${n} this workspace lacks:\n${missing}\n`;
+    if (await mergedThrough(cwd, remote, { what, message: `Merge ${id}'s branch at ${short(git(["rev-parse", remote]))}`, next: "Push with: atelier push" })) {
+      console.log(`${id}: this workspace merged the ${n} the branch held that it lacked:\n${missing}`);
     } else {
       const r = git(["rebase", "--quiet", remote], { allowFail: true });
       if (r.status !== 0) die(`${what}Rebasing this workspace's commits onto them did not complete:\n${(r.stderr || r.stdout).trim()}\nFinish that (resolve conflicts and git rebase --continue; or commit or set aside uncommitted changes), then run atelier update again.`);
       rebased = true;
-      console.log(`${id}: this workspace's commits now sit on the ${n} the fork held that it lacked:\n${missing}`);
+      console.log(`${id}: this workspace's commits now sit on the ${n} the branch held that it lacked:\n${missing}`);
     }
   }
-  // On the Node server the baseline is a branch of origin itself (atelier.base-branch,
-  // Atelier 2.0, task 5), fetched with the workspace's own credential: one remote.
+  // The baseline is a branch of origin itself (atelier.base-branch, Atelier
+  // 2.0, task 5), fetched with the workspace's own credential: one remote.
   const baseBranch = wsConfig("base-branch");
   if (baseBranch) await workspaceGit(name, id, as, ["fetch", "--quiet", "origin", baseBranch]);
   else {
-    const t = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
+    const t = await baseReadGrant(name, id, as);
     git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
   }
   const baseline = short(git(["rev-parse", "FETCH_HEAD"]));
@@ -63,7 +63,7 @@ export default async function updateCommand() {
     console.log(`${id} merged baseline ${baseline} through the merge pipeline, which regenerated its outputs. Push with: atelier push${rebased ? " --force" : ""}`);
     return;
   }
-  // After the rebase the fork no longer holds the head Atelier recorded,
+  // After the rebase the branch no longer holds the head Atelier recorded,
   // so the push needs --force, whose lease refuses to overwrite anything
   // pushed since (see push). Both ends of the rebase name that one command.
   const next = "Push with: atelier push --force";

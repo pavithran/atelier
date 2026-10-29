@@ -14,7 +14,7 @@ const dispatch = (model: string) => ({ to: "home" as const, agent: "codex", mode
 
 export function item(id: string, state: Item["state"], over: Partial<Item> = {}, n = Number(id.replace(/\D/g, ""))): Item {
   return {
-    id, title: `Task ${id}`, state, owner: null, scope: [], fork: null, base: null, head: null, acceptedHead: null,
+    id, title: `Task ${id}`, state, owner: null, scope: [], workspace: null, base: null, head: null, acceptedHead: null,
     createdAt: at(n), updatedAt: at(n), lastPushAt: null, ...over,
   };
 }

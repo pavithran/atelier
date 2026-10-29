@@ -1,30 +1,28 @@
-// The ARTIFACTS binding on the Node server (Atelier 2.0, task 4; design
-// section 4.2): `get(name)` answers a baseline repository name, the one
+// The REPOS binding on the Node server (Atelier 2.0, task 4; design section
+// 4.2): `get(name)` answers a project's repository name, the one
 // repoName(key) makes (src/rules.ts), with a reader over that project's bare
-// repository at REPOS/KEY.git (src/git/reader.mjs). A name no project owns,
-// as an Artifacts fork's is, is NOT_FOUND, as in Artifacts. The write-side calls refuse with `not_supported`.
+// repository at REPOS/KEY.git (src/git/reader.mjs). A name no project owns
+// is NOT_FOUND. Nothing writes through it.
 //
-// A task's workspace on the Node server is a branch of the project's
-// repository (task 5), recorded as the item's fork under the name
-// KEY/t/N (or KEY/plan/N for a plan): `get` answers it with a reader of that
-// repository whose head is the branch, so every read of a fork (its head,
-// its history, the scan, the diff) reads the branch. An Artifacts name never
-// holds a slash, so the two cannot be confused.
+// A task's workspace is a branch of the project's repository (task 5),
+// recorded as the item's workspace under the name KEY/t/N (or KEY/plan/N
+// for a plan): `get` answers it with a reader of that repository whose head
+// is the branch, so every read of a workspace (its head, its history, the
+// scan, the diff) reads the branch. A repository name never holds a slash,
+// so the two cannot be confused.
 import { existsSync, readdirSync } from "node:fs";
-import { notSupported } from "../runtime/namespace.mjs";
 import { join } from "node:path";
 import { repoDir } from "./repos.mjs";
 import { TASK_BRANCH } from "./branches.mjs";
-import { artifactsError, openReader } from "./reader.mjs";
+import { repoError, openReader } from "./reader.mjs";
 
-export class LocalArtifacts {
+export class LocalRepos {
   #reposDir;
   #open = new Set();
   #closed = false;
 
   constructor({ reposDir }) {
     this.#reposDir = reposDir;
-    for (const what of ["create", "import", "delete", "list"]) this[what] = async () => { throw notSupported(`ARTIFACTS.${what}`); };
   }
 
   // The project key whose baseline repository is called `name`, or null.
@@ -52,10 +50,10 @@ export class LocalArtifacts {
   }
 
   async get(name) {
-    if (this.#closed) throw artifactsError("INTERNAL_ERROR", "the repositories are closed");
+    if (this.#closed) throw repoError("INTERNAL_ERROR", "the repositories are closed");
     const branch = typeof name === "string" ? this.#branchOf(name) : null;
     const key = branch || typeof name !== "string" ? null : await this.#keyOf(name);
-    if (!key && !branch) throw artifactsError("NOT_FOUND", `repository not found: ${String(name).slice(0, 80)}`);
+    if (!key && !branch) throw repoError("NOT_FOUND", `repository not found: ${String(name).slice(0, 80)}`);
     const reader = openReader(branch?.dir ?? repoDir(this.#reposDir, key), { name, head: branch?.head, onDispose: () => this.#open.delete(reader) });
     this.#open.add(reader);
     return reader;

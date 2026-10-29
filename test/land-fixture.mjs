@@ -17,8 +17,8 @@ export const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: 
 
 export function root(t) { const p = mkdtempSync(join(tmpdir(), "atelier-landcmd-")); t.after(() => rmSync(p, { recursive: true, force: true })); return p; }
 
-// The owner's checkout, the baseline, and each task's fork and workspace,
-// served by a stand-in ledger that answers from `box`: the items' states, the
+// The owner's checkout, the server's one repository (main and each task's
+// branch t/N), and each task's workspace, served by a stand-in ledger that answers from `box`: the items' states, the
 // landing lease, the server's version (route level and commit), whether the
 // gate needs a review (the reviewer approves, or rejects when `approve` is
 // false, on the first poll after the request; a request naming a reviewer
@@ -39,7 +39,7 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
   git(seed, "add", "."); git(seed, "commit", "-m", "Initial");
   git(p, "clone", "--bare", seed, baseline); git(p, "clone", baseline, checkout);
   for (const dir of [checkout]) { git(dir, "config", "user.name", "Fixture"); git(dir, "config", "user.email", "fixture@example.invalid"); }
-  const forkHead = (id) => { try { return git(p, "--git-dir", join(p, `fork-${id}.git`), "rev-parse", "main"); } catch { return null; } };
+  const forkHead = (id) => { try { return git(p, "--git-dir", baseline, "rev-parse", `refs/heads/t/${id.slice(1)}`); } catch { return null; } };
   // `review.approveAfter` is how many polls of the task pass before the
   // reviewer answers (never, when null); `review.claimed` makes the request
   // claimed as soon as it is made, as a review.claimed event. `items` and `queue` answer
@@ -52,16 +52,17 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     // landing's failure summary reads the failed checks from it.
     evidence: { t1: [], t2: [] }, evidenceId: 0,
   };
-  // The tasks fork from the baseline before main moves, so a landing has
-  // main's commits to merge; each has a workspace in the cache's layout.
+  // The tasks branch from main before it moves, so a landing has main's
+  // commits to merge; each has a workspace in the cache's layout, on its
+  // branch t/N of the one repository.
   for (const id of ["t1", "t2"]) {
-    const fork = join(p, `fork-${id}.git`), workspace = join(cache, "work", "proj", id);
-    git(p, "clone", "--bare", baseline, fork); mkdirSync(dirname(workspace), { recursive: true }); git(p, "clone", fork, workspace);
+    const branch = `t/${id.slice(1)}`, workspace = join(cache, "work", "proj", id);
+    mkdirSync(dirname(workspace), { recursive: true }); git(p, "clone", baseline, workspace); git(workspace, "checkout", "-q", "-b", branch);
     for (const dir of [workspace]) { git(dir, "config", "user.name", "Fixture"); git(dir, "config", "user.email", "fixture@example.invalid"); }
     // A claim records its write token's expiry (t275); these are far off, so
     // no landing here refreshes them.
-    for (const [key, value] of Object.entries({ project: "proj", item: id, actor: "codex/test", branch: "main", "write-token-expires-at": "2999-01-01T00:00:00.000Z" })) git(workspace, "config", `atelier.${key}`, value);
-    writeFileSync(join(workspace, "work.txt"), taskChange); git(workspace, "add", "."); git(workspace, "commit", "-m", `Task ${id}`); git(workspace, "push", "-q", "origin", "main");
+    for (const [key, value] of Object.entries({ project: "proj", item: id, actor: "codex/test", branch, "base-branch": "main", "write-token-expires-at": "2999-01-01T00:00:00.000Z" })) git(workspace, "config", `atelier.${key}`, value);
+    writeFileSync(join(workspace, "work.txt"), taskChange); git(workspace, "add", "."); git(workspace, "commit", "-m", `Task ${id}`); git(workspace, "push", "-q", "origin", branch);
     box.states[id] = "submitted";
   }
   // A commit on main after the tasks forked, so a landing has main to merge.
@@ -201,9 +202,13 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     } else if (url === "/api/projects/proj/items") answer = box.items;
     else if (url === "/api/queue") answer = box.queue;
     else if (url === "/api/runners") answer = box.runners;
-    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") answer = { remote: baseline, token: "fixture", defaultBranch: "main" };
-    else if (url.endsWith("/claim")) answer = { item: detail(item).item, workspace: { remote: join(p, `fork-${item}.git`), token: "fixture", defaultBranch: "main", expiresAt: "2999-01-01T00:00:00.000Z" } };
-    else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
+    else if (url === "/api/projects/proj/git-token") {
+      // One repository holds main and every task's branch; a grant names the
+      // task's branch and what it merges into where the body names the task.
+      const grant = { kind: body.kind, remote: baseline, token: "fixture", expiresAt: "2999-01-01T00:00:00.000Z", defaultBranch: "main", repository: "server" };
+      answer = body.item ? { ...grant, branch: `t/${body.item.slice(1)}`, into: "main", head: forkHead(body.item), base: git(baseline, "rev-parse", "main") } : grant;
+    }
+    else if (url.endsWith("/claim")) answer = { item: detail(item).item, workspace: { remote: baseline, token: "fixture", branch: `t/${item.slice(1)}`, defaultBranch: "main", expiresAt: "2999-01-01T00:00:00.000Z" }, baseline: { defaultBranch: "main" } };
     else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
     else if (url.endsWith("/evidence")) {
       if (item) (box.evidence[item] ??= []).push({ itemId: item, claim: body.claim, grade: body.kind === "check" ? "observed" : "reported", head: body.head, passed: body.kind === "check" ? body.passed === true : null, by: "codex/test", at: new Date().toISOString(), where: "runner", changedPaths: body.changedPaths ?? null, outputTail: body.outputTail ?? "", id: ++box.evidenceId });
@@ -263,7 +268,7 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
   };
-  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, workspaceMerge, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
+  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), forkHead, mainCommit, box, run, workspaceMerge, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
   return fx;
 }
 
@@ -302,7 +307,7 @@ export function declareGenerated(dir, side, { command = ["sh", "-c", "cat in/*.t
   writeFileSync(join(dir, "in", `${side}.txt`), `${side}\n`);
   writeFileSync(join(dir, "gen-fixtures.txt"), `${side}\n`);
   for (const [file, text] of Object.entries(also)) writeFileSync(join(dir, file), text);
-  git(dir, "add", "."); git(dir, "commit", "-m", `${side} adds an input and regenerates`); git(dir, "push", "-q", "origin", "main");
+  git(dir, "add", "."); git(dir, "commit", "-m", `${side} adds an input and regenerates`); git(dir, "push", "-q", "origin", "HEAD");
 }
 
 // t463: the merge steps the CLI posts are kept, with what varies from run to
@@ -329,7 +334,7 @@ export function sameMergeStep(name, body) {
 // side of a landing's merge.
 export const raiseRouteLevel = (dir, level, message) => {
   writeFileSync(join(dir, "src", "route-level.ts"), `export const ROUTE_LEVEL = ${level};\n`);
-  git(dir, "add", "."); git(dir, "commit", "-m", message); git(dir, "push", "-q", "origin", "main");
+  git(dir, "add", "."); git(dir, "commit", "-m", message); git(dir, "push", "-q", "origin", "HEAD");
 };
 
 // Waits until `ready()` holds, polling, or fails after `ms`.

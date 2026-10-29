@@ -28,11 +28,14 @@
 //            and takes the task's lock as "task" does when no push holds it.
 // Since task 6 every method that writes an item's head or acceptance takes
 // the task's lock too (never "planned"): a landing grant counts only while
-// its task is accepted at its head.
+// its task is accepted at its head. Since task 13 so does every method that
+// takes, renews, records, settles or releases a task refresh's lease: a
+// refresh grant counts only while that lease stands.
 export const GRANT_LOCKS = {
-  claim: "task", unclaim: "task", recordToken: "task", recordRunnerGit: "task", recordOwnerPortToken: "task",
+  claim: "task", unclaim: "task", recordToken: "task",
   release: "task", handoff: "task", abandon: "task", dispatch: "task", merged: "task", recordMerge: "task", landedFast: "task",
-  accept: "task", setBlockedBy: "task", recordPush: "task", observePush: "task", editItem: "task", addReview: "task", setFork: "task", moveFork: "task", taskRefreshed: "task",
+  accept: "task", setBlockedBy: "task", recordPush: "task", observePush: "task", editItem: "task", addReview: "task", setWorkspace: "task", moveWorkspace: "task", taskRefreshed: "task",
+  leaseRefresh: "task", recordRefreshToken: "task", renewRefreshLease: "task", releaseRefreshLease: "task", refreshChecked: "task", taskRefreshFailed: "task",
   beginProjectLanding: "lease", renewProjectLanding: "lease", cancelProjectLanding: "lease",
   hookPush: "push",
   submit: "planned", addEvidence: "planned",

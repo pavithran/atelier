@@ -91,7 +91,7 @@ test("sizeRefusalReason states the limit, the size and the fix", () => {
 test("a size refusal is a stuck entry naming the fix, until the review is asked for again", async () => {
   const { stuckReport, reportLimits } = await import("../src/stuck/report.ts");
   const at = "2026-10-23T10:00:00.000Z";
-  const item = { id: "t14", title: "t14", scope: ["src/**"], state: "submitted", owner: null, fork: null, base: null, head: "abc", acceptedHead: null, createdAt: at, updatedAt: at, lastPushAt: null, dispatch: null };
+  const item = { id: "t14", title: "t14", scope: ["src/**"], state: "submitted", owner: null, workspace: null, base: null, head: "abc", acceptedHead: null, createdAt: at, updatedAt: at, lastPushAt: null, dispatch: null };
   const note = sizeRefusalReason("codex/gpt-6-astra", { limit: 1048576, actual: 7052528 }, 10);
   const event = (seq, kind, data = {}) => ({ seq, itemId: "t14", actor: "codex/gpt-6-astra", kind, data, at, proved: false });
   const report = (events) => stuckReport("llm-basics", "https://a.test", new Date("2026-10-23T11:00:00.000Z"), reportLimits(), { items: [item], events, lease: null, workflows: [], reviews: [] }, [], [], []).entries.filter((e) => e.kind === "review-input-size");

@@ -89,7 +89,7 @@ function artifactsOf(repos: Record<string, { log: string[]; trees: Record<string
         [Symbol.dispose]() {},
       };
     },
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 test("the preview against main counts main's new commits and finds a conflict", async () => {
@@ -139,7 +139,7 @@ test("the conflict rule agrees with git's merge on edits, insertions and deletio
   for (const [name, base, ours, theirs, git] of cases) assert.equal(linesConflict(L(base), L(ours), L(theirs)), git, name);
 });
 
-test("main's moves are counted along its first-parent line, a merge once, as Artifacts lists it", () => {
+test("main's moves are counted along its first-parent line, a merge once, as Repos lists it", () => {
   // Artifacts' log is main's first-parent line: M merged a task of five commits into C.
   const log = [{ hash: "M", parents: ["C", "T5"] }, { hash: "C", parents: ["B"] }, { hash: "B", parents: ["A"] }, { hash: "A", parents: [] }];
   assert.deepEqual(commitsSince(log, "B", false), { ahead: 2, capped: false });

@@ -141,7 +141,7 @@ it("a same-family post-merge review is refused for a merge that did not land fas
   await L.setProject({ name: "fast-family", repo: "fast-family--baseline", policy: { ...policy, protected: ["src/**"] }, createdAt: AT }, "owner");
   const item = await L.newItem("Gated", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim(item.id, OPUS);
-  await L.setFork(item.id, `fast-family--${item.id}`, "0".repeat(40), OPUS);
+  await L.setWorkspace(item.id, `fast-family--${item.id}`, "0".repeat(40), OPUS);
   await L.recordPush(item.id, OPUS, C1, C1);
   await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: C1, passed: true, by: "owner", at: AT, changedPaths: ["src/a/x.ts"] });
   await L.submit(item.id, OPUS);
@@ -177,7 +177,7 @@ it("a rejected post-merge review of a fast landing files no fix task, and full m
 async function mergedInFastMode(L: Awaited<ReturnType<typeof project>>, title: string, commit: string, mergeCommit: string) {
   const item = await L.newItem(title, ["src/**"], "owner", { accept: ["Works"] });
   await L.claim(item.id, OPUS);
-  await L.setFork(item.id, `${item.id}--fork`, START, OPUS);
+  await L.setWorkspace(item.id, `${item.id}--fork`, START, OPUS);
   await L.recordPush(item.id, OPUS, commit, commit);
   await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: commit, passed: true, by: "owner", at: AT, changedPaths: ["src/a/x.ts"] });
   await L.submit(item.id, OPUS);

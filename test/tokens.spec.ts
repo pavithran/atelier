@@ -243,7 +243,7 @@ it("an agent claims, pushes, records checks, hands off and reviews as itself", a
   expect((await post("handoff", { to: "claude-code/opus-5.5" })).status).toBe(200);
   expect((await post("review", { head, criteria: NO_CRITERIA, approve: true, note: "Reviewed" })).status).toBe(200);
   const events = await L(name).events("t1") as unknown as { actor: string; proved?: true; kind: string }[];
-  for (const kind of ["item.claimed", "fork.created", "push.observed", "evidence.observed", "item.submitted", "item.handoff", "review.approved"]) {
+  for (const kind of ["item.claimed", "workspace.created", "push.observed", "evidence.observed", "item.submitted", "item.handoff", "review.approved"]) {
     expect(events.find((e) => e.kind === kind)).toMatchObject({ actor: ACTOR, proved: true });
   }
 });

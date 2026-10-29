@@ -71,7 +71,7 @@ const observed = (itemId: string, head: string): Evidence => ({
 async function readyPart(L: L, plan = doc(part("a"))) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, plan);
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -80,7 +80,7 @@ async function readyPart(L: L, plan = doc(part("a"))) {
   const builder = `${(await L.item(partId)).dispatch!.agent}/${(await L.item(partId)).dispatch!.model}`;
   const head = "a".repeat(40);
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, head, head);
   await L.addEvidence(observed(partId, head));
   await L.submit(partId, builder);

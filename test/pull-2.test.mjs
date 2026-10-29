@@ -1,18 +1,16 @@
 // Part 2 of 3 of the tests that were in pull.test.mjs, split so no file runs for more than about a minute (t771).
-// atelier pull (t644), and the refusals of sync, wrap and merge while
-// a checkout's main does not hold the baseline's. Two Macs share a project's
-// baseline: each test makes their checkouts with atelier clone, each Mac with
-// its own Atelier config and cache, against a stand-in server whose
-// baseline-token answer names a bare repository, on disk or served over HTTP
-// behind a token check (test/helpers/git-http.mjs). All of it lives under
-// os.tmpdir().
+// atelier pull (t644), and the refusals of merge while a checkout's main does
+// not hold the baseline's. Two Macs share a project's repository: each test
+// makes their checkouts with atelier clone, each Mac with its own Atelier
+// config and cache, against a stand-in server whose git-token answer names a
+// bare repository, on disk or served over HTTP behind a token check
+// (test/helpers/git-http.mjs). All of it lives under os.tmpdir().
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadPairs } from "../cli/fresh.mjs";
-import { setup, commitElsewhere, commitIn, mac, run, cloneOn, refusal, cli, serve, TOKEN, IDENTITY } from "./pull-shared.mjs";
+import { setup, commitElsewhere, commitIn, mac, run, cloneOn, refusal } from "./pull-shared.mjs";
 
 test("pull pins the checkout's git identity to the project's when it is unset or differs, and prints nothing when it matches (t755)", async (t) => {
   // Finding: llm-basics, 2026-10-17, a commit in the registered checkout took
@@ -68,72 +66,9 @@ test("pull runs no hook the baseline carries, in a fast-forward or a merge, even
   assert.ok(!existsSync(marker), existsSync(marker) ? readFileSync(marker, "utf8") : "");
 });
 
-
-test("a conflicting pull of a fresh baseline says how to merge by hand so that sync can carry the result", async (t) => {
-  const f = setup(t, { fresh: true });
-  const a = mac(f, "a"), b = mac(f, "b");
-  const dirA = await cloneOn(t, f, a), dirB = await cloneOn(t, f, b);
-  commitIn(f, dirA, "file.txt", "version A\n");
-  assert.equal((await run(t, f, a, ["sync", "--project", "demo"])).code, 0);
-  const target = f.git(f.bare, "rev-parse", "main");
-  const local = commitIn(f, dirB, "file.txt", "version B\n");
-  const r = await run(t, f, b, ["pull", "--project", "demo"]);
-  assert.notEqual(r.code, 0);
-  assert.ok(r.output.includes(`Merge it by hand: git checkout -B main ${target}, then git merge ${local}, resolve the conflicts and commit (the baseline's side comes first, as atelier sync needs); then run atelier pull --project demo again.`), r.output);
-  assert.equal(f.git(dirB, "rev-parse", "HEAD"), local);
-  // Main does not hold the baseline's head, so it stays unpaired, and sync
-  // still names pull (review of t644, finding 3).
-  assert.equal(loadPairs(f.git(dirB, "rev-parse", "--absolute-git-dir"), "demo")[target], undefined);
-  const syncRefused = await run(t, f, b, ["sync", "--project", "demo"]);
-  assert.notEqual(syncRefused.code, 0);
-  assert.match(syncRefused.output, refusal(target, "atelier sync --project demo"));
-  // Following it, then pulling and syncing, carries the resolution.
-  f.git(dirB, "checkout", "-q", "-B", "main", target);
-  try { f.git(dirB, "merge", "-q", local); } catch { /* the conflict */ }
-  writeFileSync(join(dirB, "file.txt"), "version A and B\n");
-  f.git(dirB, "commit", "-q", "-am", "resolved");
-  const pull = await run(t, f, b, ["pull", "--project", "demo"]);
-  assert.equal(pull.code, 0, pull.output);
-  assert.match(pull.output, /already holds the baseline's main/);
-  const sync = await run(t, f, b, ["sync", "--project", "demo"]);
-  assert.equal(sync.code, 0, sync.output);
-  assert.equal(f.git(f.bare, "show", "main:file.txt"), "version A and B");
-});
-
-
-// Review of t644, finding 2: a full-history project's sync returned before it
-// read the baseline, so a checkout another Mac had moved past could act on its
-// older state. Since t149 sync sends no policy at all, but it still refuses a
-// stale checkout first, and a current one is told to use atelier init.
-test("sync of a full-history project is refused while main is behind the baseline, and sends no policy afterwards", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  mkdirSync(join(dir, "docs", "control-plane"), { recursive: true });
-  writeFileSync(join(dir, "docs", "control-plane", "execution-policy.v1.json"), JSON.stringify({ protected_path_patterns: ["src/**"] }));
-  commitIn(f, dir, "docs/control-plane/execution-policy.v1.json", JSON.stringify({ protected_path_patterns: ["src/**"] }));
-  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
-  const refused = await run(t, f, a, ["sync", "--project", "demo"]);
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.output, refusal(theirs, "atelier sync --project demo"));
-  assert.deepEqual(refused.seen.map((s) => s.route), ["POST /api/projects/demo/baseline-token"], "nothing but the read token is asked for");
-  assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
-  const current = await run(t, f, a, ["sync", "--project", "demo"]);
-  assert.equal(current.code, 0, current.output);
-  assert.ok(!current.seen.some((s) => s.route.startsWith("PUT ")), "no policy is sent once main holds the baseline");
-  // The commits go to the whole-history baseline the way atelier init sends them (t242).
-  assert.equal(f.git(f.bare, "rev-parse", "main"), f.git(dir, "rev-parse", "HEAD"));
-  assert.match(current.output, /baseline now holds main/);
-  const again = await run(t, f, a, ["sync", "--project", "demo"]);
-  assert.equal(again.code, 0, again.output);
-  assert.match(again.output, /baseline already holds main/);
-  assert.ok(!again.seen.some((s) => s.body?.scope === "write"), "an up-to-date baseline asks for no write token");
-});
-
-
 // Review of t644, finding 4: a replacement ref can give a commit a parent it
 // does not have. Pull and the guards read the objects themselves.
-test("pull and wrap read the real history: a replacement ref does not make main hold the baseline", async (t) => {
+test("pull reads the real history: a replacement ref does not make main hold the baseline", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
   const dir = await cloneOn(t, f, a);
@@ -143,9 +78,6 @@ test("pull and wrap read the real history: a replacement ref does not make main 
   // The local commit claims the baseline's head as its parent.
   f.git(dir, "replace", "--graft", local, theirs);
   assert.equal(f.git(dir, "merge-base", "--is-ancestor", theirs, "HEAD"), "", "Git, with the replacement, says main holds it");
-  const wrap = await run(t, f, a, ["wrap", "Mine", "--no-check", "--project", "demo"], { cwd: dir });
-  assert.notEqual(wrap.code, 0);
-  assert.match(wrap.output, refusal(theirs, "atelier wrap"));
   const pull = await run(t, f, a, ["pull", "--project", "demo"]);
   assert.equal(pull.code, 0, pull.output);
   assert.match(pull.output, /brought 1 commit from the baseline's main and merged them with 1 local commit/);
@@ -170,7 +102,7 @@ test("pull refuses a checkout with a grafts file or a shallow history, and chang
   const shallow = await run(t, f, a, ["pull", "--project", "demo"]);
   assert.notEqual(shallow.code, 0);
   assert.match(shallow.output, /the checkout has a shallow history.*git fetch --unshallow.*Nothing was pulled\./);
-  for (const r of [grafts, shallow]) assert.ok(!r.seen.some((s) => s.route.endsWith("/baseline-token")), "no token is asked for");
+  for (const r of [grafts, shallow]) assert.ok(!r.seen.some((s) => s.route.endsWith("/git-token")), "no token is asked for");
   assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
 });
 
@@ -204,12 +136,6 @@ test("a graft file GIT_GRAFT_FILE names does not make main hold the baseline, fo
   writeFileSync(graft, `${local} ${theirs}\n`);
   const env = { GIT_GRAFT_FILE: graft };
   assert.equal(execFileSync("git", ["merge-base", "--is-ancestor", theirs, "HEAD"], { cwd: dir, env: { ...f.env, ...env } }).toString(), "", "Git, with the graft, says main holds it");
-  const wrap = await run(t, f, a, ["wrap", "Mine", "--no-check", "--project", "demo"], { cwd: dir, env });
-  assert.notEqual(wrap.code, 0);
-  assert.match(wrap.output, refusal(theirs, "atelier wrap"));
-  const sync = await run(t, f, a, ["sync", "--project", "demo"], { env });
-  assert.notEqual(sync.code, 0);
-  assert.match(sync.output, refusal(theirs, "atelier sync --project demo"));
   f.accepted = theirs;
   const merged = await run(t, f, a, ["merge", "t2", "--project", "demo"], { env });
   assert.notEqual(merged.code, 0);

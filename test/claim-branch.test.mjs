@@ -97,7 +97,7 @@ test("atelier claim makes t/N in well under 10 seconds; the workspace has one re
   const branch = `t/${id.slice(1)}`;
   assert.equal(await tip(`refs/heads/${branch}`), main, "the branch starts at the project branch's tip");
   const item = await L().item(id);
-  assert.equal(item.fork, `demo/${branch}`);
+  assert.equal(item.workspace, `demo/${branch}`);
   assert.equal(item.base, main);
   assert.match(await L().tokenId(id), /^git:[0-9a-f]{64}$/);
   const dir = workspace(id);
@@ -148,8 +148,8 @@ test("a check's clean clone and atelier diff read t/N alone and the project's br
   await git(dir, "add", "c.txt");
   await git(dir, "commit", "-q", "-m", "add c");
   assert.equal((await cli(["push", id, "--as", BUILDER, "--project", "demo"], { token: agentToken, cwd: dir })).code, 0);
-  // read-token answers a read grant and the branch to clone alone.
-  const read = await api("POST", `/projects/demo/items/${id}/read-token`, {}, agentToken, BUILDER);
+  // A read grant naming the task answers the branch to clone alone.
+  const read = await api("POST", "/projects/demo/git-token", { kind: "read", item: id }, agentToken, BUILDER);
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.branch, `t/${id.slice(1)}`);
   assert.equal(read.body.remote, remote());
@@ -159,9 +159,7 @@ test("a check's clean clone and atelier diff read t/N alone and the project's br
   const pushRefused = await tryGit(copy, ...withToken(read.body.token), "push", remote(), `HEAD:refs/heads/t/${id.slice(1)}`);
   assert.notEqual(pushRefused.code, 0, "a read grant pushes nothing");
   assert.match(pushRefused.stderr, /this credential reads only|403/);
-  const baseToken = await api("POST", `/projects/demo/items/${id}/base-token`, { scope: "read" }, agentToken, BUILDER);
-  assert.equal(baseToken.body.defaultBranch, "main");
-  assert.equal(baseToken.body.remote, remote());
+  assert.equal(read.body.into, "main");
 
   const checked = await cli(["check", id, "--as", BUILDER, "--project", "demo"], { token: agentToken, cwd: dir });
   assert.equal(checked.code, 0, `${checked.stdout}\n${checked.stderr}`);
@@ -260,6 +258,70 @@ test("the claim carries the prose standard with its text, kept beside the worksp
   assert.ok(copy.sha256, JSON.stringify(copy));
   assert.equal(readFileSync(join(dir, ".scratch", "prose-standard.md"), "utf8"), STYLE);
   assert.equal(await git(dir, "status", "--porcelain"), "", "the copy is not a change to commit");
+});
+
+// The task refresh (t462) on the Node server: the refresh lease's answer
+// carries a refresh grant, which writes the task's branch beside its holder's
+// grant while the lease stands, writes nothing else, and stops once the lease
+// is given back.
+test("a refresh lease's grant pushes t/N while the lease stands, writes nothing else, and stops when the lease is given back", async () => {
+  const id = await newTask("Refreshed on its branch");
+  assert.equal((await cli(["claim", id, "--as", BUILDER, "--project", "demo"], { token: agentToken })).code, 0);
+  const dir = workspace(id);
+  writeFileSync(join(dir, "r.txt"), "refresh me\n");
+  await git(dir, "add", "r.txt");
+  await git(dir, "commit", "-q", "-m", "work to refresh");
+  assert.equal((await cli(["push", id, "--as", BUILDER, "--project", "demo"], { token: agentToken, cwd: dir })).code, 0);
+  const head = await git(dir, "rev-parse", "HEAD");
+  // Accepted at its head with main moved on, the task's refresh is queued.
+  await L().addEvidence({ itemId: id, claim: "git status", grade: "observed", head, passed: true, by: BUILDER, at: new Date().toISOString(), changedPaths: ["r.txt"] });
+  await L().submit(id, BUILDER);
+  await L().accept(id, "owner");
+  await L().noteMainHead("a".repeat(40));
+  const integrator = (await api("POST", "/tokens", { actor: "atelier/integrator", projects: ["demo"] })).body.token;
+  const leased = await api("POST", `/projects/demo/items/${id}/refresh-lease`, { job: "refresh" }, integrator, "atelier/integrator");
+  assert.equal(leased.status, 200, JSON.stringify(leased.body));
+  const branch = `t/${id.slice(1)}`;
+  assert.equal(leased.body.workspace.branch, branch);
+  assert.equal(leased.body.workspace.remote, remote());
+  assert.match(await L().tokenId(id), /^git:/, "the holder's grant stays the item's write token");
+  // A clone of the workspace, which carries no credential of its own.
+  const grant = leased.body.workspace.token, copy = join(root, `refresh-${id}`);
+  await git(root, "clone", "-q", dir, copy);
+  await git(copy, "commit", "-q", "--allow-empty", "-m", "the refresh");
+  const refreshed = await tryGit(copy, ...withToken(grant), "push", remote(), `HEAD:refs/heads/${branch}`);
+  assert.equal(refreshed.code, 0, refreshed.stderr);
+  assert.equal(await tip(`refs/heads/${branch}`), await git(copy, "rev-parse", "HEAD"));
+  const elsewhere = await tryGit(copy, ...withToken(grant), "push", remote(), "HEAD:refs/heads/main");
+  assert.notEqual(elsewhere.code, 0, "a refresh grant writes the task's branch alone");
+  assert.match(elsewhere.stderr, /this credential writes t\/\d+ only/);
+  const released = await api("POST", `/projects/demo/items/${id}/refresh-lease`, { release: leased.body.lease.id, reason: "step refresh; given back" }, integrator, "atelier/integrator");
+  assert.equal(released.status, 200, JSON.stringify(released.body));
+  assert.equal(released.body.released, true);
+  await git(copy, "commit", "-q", "--allow-empty", "-m", "after the lease");
+  const late = await tryGit(copy, ...withToken(grant), "push", remote(), `HEAD:refs/heads/${branch}`);
+  assert.notEqual(late.code, 0, "the grant stops with its lease");
+});
+
+// The developer's branches (t641) are dev/NAME in the project's repository:
+// the push goes with the server token through the hook, which lets that
+// token write dev/*, the server records it once the repository holds the
+// commit, and an agent's credential reaches none of the branch routes.
+test("atelier branch pushes dev/NAME to the project's repository with the server token, records it, and refuses an agent", async () => {
+  await git(checkout, "switch", "-q", "-c", "dev/idea");
+  writeFileSync(join(checkout, "idea.txt"), "an idea\n");
+  await git(checkout, "add", "idea.txt");
+  await git(checkout, "commit", "-q", "-m", "Draft the idea");
+  const commit = await git(checkout, "rev-parse", "HEAD");
+  const pushed = await cli(["branch", "push", "--project", "demo"], { cwd: checkout });
+  await git(checkout, "switch", "-q", "main");
+  assert.equal(pushed.code, 0, `${pushed.stdout}\n${pushed.stderr}`);
+  assert.equal(await tip("refs/heads/dev/idea"), commit);
+  assert.notEqual(await tip("refs/heads/main"), commit, "main is untouched");
+  const listed = await api("GET", "/projects/demo/branches");
+  assert.deepEqual(listed.body.branches.map((b) => [b.name, b.commit]), [["dev/idea", commit]]);
+  assert.equal(listed.body.prefix, "dev/");
+  assert.equal((await api("POST", "/projects/demo/branches/token", { scope: "read" }, agentToken, BUILDER)).status, 403);
 });
 
 test("the CLI accepts plain http to a tailnet address and still refuses plain http elsewhere", () => {

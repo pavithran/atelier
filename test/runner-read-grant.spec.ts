@@ -3,15 +3,15 @@ import { env, server } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
-// A build's runner merges current main before it submits (t435) and reads
-// main through the project's baseline token: POST /projects/NAME/baseline-token
-// with scope read answers a runner token for any project it serves, where an
-// item's base-token answers a runner only for the job it holds (assertRunnerJob
-// in src/ledger.ts), so a part's runner cannot read main through its plan
-// item's, which is another's job. The write scope stays the owner's. Every
-// credential here is a dummy. On the Node server (task 2) the read token is
-// a read grant for the project's repository, and the write scope answers the
-// remote with no token: the developer writes with the server token itself.
+// A build's runner merges current main before it submits (t435), and a
+// check or review reads the task's branch and the branch it merges into: each
+// through a read grant, POST /projects/NAME/git-token { kind: "read" }, which
+// a runner token may ask for in any project it serves. With an item named,
+// the answer also names the item's branch (null before its first claim), the
+// branch it merges into, and its recorded head and base; the grant reads
+// every branch of the project's repository either way. The old baseline-token,
+// read-token and base-token routes are gone (Atelier 2.0, task 13). Every
+// credential here is a dummy.
 
 const OWNER = "baseline-token-owner", ACTOR = "codex/gpt-6-astra";
 let serial = 0;
@@ -47,30 +47,33 @@ async function setup() {
   return { name, api, request };
 }
 
-it("a runner token reads the project's baseline token for reading, which names the repository and its branch", async () => {
+it("a runner token reads a read grant for the project, which names the repository and its branch", async () => {
   const t = await setup();
-  const baseline = await t.api("POST", `/projects/${t.name}/baseline-token`, { scope: "read" });
-  expect(baseline.status, await baseline.clone().text()).toBe(200);
-  const body = await baseline.json() as { remote: string; defaultBranch: string; token: string; repository: string };
-  expect(body).toMatchObject({ remote: expect.stringContaining(`/git/${t.name}.git`), defaultBranch: "main", repository: "server" });
+  const read = await t.api("POST", `/projects/${t.name}/git-token`, { kind: "read" });
+  expect(read.status, await read.clone().text()).toBe(200);
+  const body = await read.json() as { remote: string; defaultBranch: string; token: string; repository: string; branch?: unknown };
+  expect(body).toMatchObject({ kind: "read", remote: expect.stringContaining(`/git/${t.name}.git`), defaultBranch: "main", repository: "server" });
   expect(body.token).toMatch(/^atl_[0-9a-f]{64}$/);
+  expect(body.branch).toBeUndefined();
 });
 
-it("the write scope stays the owner's, and a project the token does not serve is refused", async () => {
+it("with an item named, the read grant names its branch, the branch it merges into, and its head and base", async () => {
   const t = await setup();
-  const write = await t.api("POST", `/projects/${t.name}/baseline-token`, { scope: "write" });
-  expect(write.status).toBe(403);
-  expect(await write.text()).not.toContain("atl_");
-  expect((await t.api("POST", "/projects/other/baseline-token", { scope: "read" })).status).toBe(403);
-  // The owner reads either scope; on the Node server the write scope names the remote and holds no token.
-  const owner = await t.request("POST", `/projects/${t.name}/baseline-token`, OWNER, "owner", { scope: "write" });
-  expect(owner.status).toBe(200);
-  expect(await owner.json()).toMatchObject({ token: null, repository: "server" });
+  const claimed = await (await t.api("POST", `/projects/${t.name}/git-token`, { kind: "read", item: "t1" })).json() as Record<string, unknown>;
+  expect(claimed).toMatchObject({ kind: "read", defaultBranch: "main", branch: "t/1", into: "main" });
+  expect(claimed.head).toMatch(/^[0-9a-f]{40}$/);
+  expect(claimed.base).toBe(claimed.head);
+  // A task never claimed has no branch yet; it still merges into main.
+  const open = await (await t.api("POST", `/projects/${t.name}/git-token`, { kind: "read", item: "t2" })).json() as Record<string, unknown>;
+  expect(open).toMatchObject({ branch: null, into: "main", head: null, base: null });
+  expect((await t.api("POST", `/projects/${t.name}/git-token`, { kind: "read", item: "x1" })).status).toBe(400);
 });
 
-it("an item's base token answers the runner only for the job it holds, so another item's is refused where the baseline is not", async () => {
+it("a project the token does not serve is refused, and the old token routes are gone", async () => {
   const t = await setup();
-  expect((await t.api("POST", `/projects/${t.name}/items/t1/base-token`, { scope: "read" })).status).toBe(200);
-  expect((await t.api("POST", `/projects/${t.name}/items/t2/base-token`, { scope: "read" })).status).toBe(403);
-  expect((await t.api("POST", `/projects/${t.name}/baseline-token`, { scope: "read" })).status).toBe(200);
+  expect((await t.api("POST", "/projects/other/git-token", { kind: "read" })).status).toBe(403);
+  for (const path of [`/projects/${t.name}/baseline-token`, `/projects/${t.name}/items/t1/read-token`, `/projects/${t.name}/items/t1/base-token`]) {
+    const owner = await t.request("POST", path, OWNER, "owner", { scope: "read" });
+    expect(owner.status, path).toBe(404);
+  }
 });

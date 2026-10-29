@@ -21,7 +21,7 @@ async function setup(name: string, configured = true, accepted = true) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   for (const head of [B, "d".repeat(40)]) {
     const id = (await L.newItem("Landing", [], "owner")).id;
-    await L.claim(id, builder); await L.setFork(id, `${name}--${id}`, A, builder); await L.recordPush(id, builder, head, head);
+    await L.claim(id, builder); await L.setWorkspace(id, `${name}--${id}`, A, builder); await L.recordPush(id, builder, head, head);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: builder, at: new Date().toISOString(), changedPaths: ["old.txt"] });
     await L.submit(id, builder); if (accepted) await L.accept(id, "owner", head);
   }
@@ -38,11 +38,11 @@ async function setup(name: string, configured = true, accepted = true) {
       createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "later" }),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   // G18: a write as the developer names the model acting (an actor that is a harness/model names itself).
   const call = (method: string, path: string, body?: unknown, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: token, ARTIFACTS: artifacts } as typeof env);
+  }), { ...env, ATELIER_TOKEN: token, REPOS: artifacts } as typeof env);
   const action = async (action: string, extra = {}, actor = "owner") => {
     const run = await L.postMergeRun("t1");
     return call("POST", "/post-merge/t1", { run: run?.id, action, ...extra }, actor);

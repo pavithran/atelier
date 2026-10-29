@@ -81,7 +81,7 @@ const review = async (L, id, by, head, approve = true, proved = true) =>
 const recorded = async (L, id) => (await L.events(id, 500)).filter((e) => e.kind === "item.merge_recorded");
 
 before(async () => {
-  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { REPOS: artifacts } });
   assert.equal((await api("PUT", "/projects/open", { checks: ["npm test"], protected: ["src/**"] })).status, 200);
   assert.equal((await api("PUT", "/projects/strict", { checks: ["npm test"], protected: ["src/**"], noOverride: true })).status, 200);
   assert.equal((await api("PUT", "/projects/fastp", { checks: ["npm test"], protected: ["src/**"] })).status, 200);

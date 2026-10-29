@@ -8,13 +8,13 @@ import { stopLine } from "../../src/check-limit.ts";
 import { appliesText, preparationBinding, refusalOf, refusalText, reusableResult } from "../../src/checks.ts";
 import { affectedCommand, selectTests } from "../../src/affected-tests.ts";
 import { writeFileSync } from "node:fs";
-import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, git, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, git, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, taskReadGrant, workspacePath, workspaceTokens } from "../atelier.mjs";
 
 export const SANDBOX_GONE = "atelier: this project's policy names the container check mode (sandboxOnly), which Atelier no longer has; running the checks here, in a clean clone on this machine. The next atelier init writes the policy without it.\n";
 const FLAKE_NOTE = "failed once, then passed on a rerun at the same head";
 
 // Observed evidence: run each required check (or the given command) in a
-// clean clone of exactly the head Artifacts holds, and record the result.
+// clean clone of exactly the head the server holds, and record the result.
 export default async function checkCommand() {
   const name = project(), id = itemArg(), as = await actor();
   const d = await call("GET", I(name, id), undefined, as);
@@ -26,32 +26,32 @@ export default async function checkCommand() {
   // A command that is never read-only is not run, here or anywhere.
   const refused = [...(d.policy.prepare ? [d.policy.prepare.command] : []), ...cmds].flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
   if (refused.length) die(`${refused.join(".\n")}.${args.rest?.length ? "" : `\nNothing was run. Ask ${OWNER_NAME} to replace the check with atelier init --check.`}`);
-  const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
+  const ws = await taskReadGrant(name, id, as);
   if (!ws.head) die("nothing pushed yet");
-  // The base a part is measured against is its plan's fork, not the baseline
-  // (docs/orchestrator.md, section 5).
-  const base = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
-  const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name, ws.branch ?? null);
+  // The base a part is measured against is its plan's branch, not the
+  // project's (docs/orchestrator.md, section 5); one read grant reads both.
+  const base = { remote: ws.remote, token: ws.token, defaultBranch: ws.into };
+  const { dir, changed, againstMain } = cleanClone(ws.remote, ws.token, ws.head, base, name, ws.branch);
   // The clone goes however this command ends: below once the checks are
   // recorded, or on the way out when a step ends the command first.
   const cleanup = () => removeClone(dir);
   // The merge base of the head with main, which the changed paths are measured
   // from: one of the bindings a result is reused under (t232).
   const mergeBase = againstMain ? git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }) : null;
-  const forkBase = mergeBase?.status === 0 ? mergeBase.stdout.trim() : "";
+  const branchBase = mergeBase?.status === 0 ? mergeBase.stdout.trim() : "";
   // The evidence as it stood when this command began; the loop below reads
   // its own replies under the same name.
   const evidenceBefore = d.evidence ?? [];
   process.once("exit", cleanup);
   const policy = d.policy;
   // What a check could print and this command would then upload: the API
-  // token, the read tokens for the fork and the baseline, and the write
+  // token, the read tokens for the branch and the baseline, and the write
   // token in the workspace's Git settings.
   const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
   let failed = 0, recorded, mainHead, provenance = "";
   // What a command's earlier result must be bound to for this run to reuse it.
   // --fresh reuses nothing.
-  const bindingOf = (cmd) => ({ project: name, task: id, head: ws.head, base: forkBase, mainHead: mainHead ?? null, mode: mainHead ? "merged" : "ordinary", where: "runner", command: cmd, preparation: preparationBinding(policy.prepare) });
+  const bindingOf = (cmd) => ({ project: name, task: id, head: ws.head, base: branchBase, mainHead: mainHead ?? null, mode: mainHead ? "merged" : "ordinary", where: "runner", command: cmd, preparation: preparationBinding(policy.prepare) });
   // G20: the full-suite check a task runs as its affected tests, when the
   // project declares them; a result of a selection is never reused, and is
   // not offered for reuse, since another selection may differ.
@@ -70,7 +70,7 @@ export default async function checkCommand() {
       // A run stopped at the check limit says so (G7): not a failed test.
       ...(r.stopped ? { stopped: r.stopped } : {}),
       ...(mainHead ? { merged: true, mainHead } : {}),
-      ...(cmd === affected?.check ? {} : { reuse: { base: forkBase, preparation: preparationBinding(policy.prepare) } }),
+      ...(cmd === affected?.check ? {} : { reuse: { base: branchBase, preparation: preparationBinding(policy.prepare) } }),
     };
   };
   const sequence = releaseSequence({ project: name, task: id, actor: as });
@@ -148,7 +148,7 @@ export default async function checkCommand() {
         r = await runCheck(run, dir, secrets, sequence.next(), undefined, policy);
         flake = r.passed;
       }
-      // The Worker measures the changed paths from Artifacts and ignores this
+      // The Worker measures the changed paths from the repository and ignores this
       // list, which is sent only so a deployment without that measurement
       // still records one. The list printed below is the one the Worker
       // recorded, which is the one the gate reads; this clone's is shown only

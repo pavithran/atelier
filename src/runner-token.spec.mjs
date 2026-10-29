@@ -137,7 +137,7 @@ it("denies every owner, review and integration operation with identity and no se
   const forbidden = [
     ["POST", "/tokens"], ["DELETE", `/tokens/${t.token.id}`], ["GET", "/tokens"],
     ["PUT", `/projects/${t.name}`], ["DELETE", `/projects/${t.name}`],
-    ["POST", `/projects/${t.name}/decisions`], ["POST", `/projects/${t.name}/baseline-token`, { scope: "write" }],
+    ["POST", `/projects/${t.name}/decisions`], ["POST", `/projects/${t.name}/git-token`, { kind: "landing", item: "t1", head: "a".repeat(40) }],
     ...["accept", "merge", "override", "criteria", "decide", "dispatch", "handoff", "review", "review-claim", "integrated", "refreshed", "landing", "block", "unblock"].map((verb) => ["POST", `${t.base}/${verb}`]),
     ["PATCH", t.base], ["POST", `${t.base}/plan/approve`], ["GET", "/home"], ["GET", "/queue"], ["GET", "/projects"], ["GET", `/projects/${t.name}/standing`],
     ["POST", "/models/x/status"], ["POST", "/usage/codex"],
@@ -186,9 +186,9 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
   const t = await setup();
   await t.claim();
   for (const path of [`/projects/${t.name}`, `${t.base}`, `${t.base}/brief`, `/projects/${t.name}/decisions`]) expect((await t.api("GET", path)).status).toBe(200);
-  for (const verb of ["read-token", "base-token"]) expect((await t.api("POST", `${t.base}/${verb}`, {})).status).toBe(200);
-  // The project's baseline token, which a build's runner reads main through
-  // before it submits (t435), is covered in test/runner-baseline-token.spec.ts.
+  // A read grant naming the task's branch and the branch it merges into; the
+  // rest of the read grant is covered in test/runner-read-grant.spec.ts.
+  expect((await t.api("POST", `/projects/${t.name}/git-token`, { kind: "read", item: "t1" })).status).toBe(200);
   expect((await t.poll()).status).toBe(200);
   expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
   expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: (await t.L.item("t1")).head, passed: true })).status).toBe(200);
@@ -279,7 +279,8 @@ it("replacement credentials resume the same runner's held work, and report grant
   const resumed = await t.request("POST", "/queue", replacement.token, ACTOR, t.offer);
   expect((await resumed.json()).some((job) => job.item.id === "t1")).toBe(true);
   expect((await t.request("POST", `${t.base}/claim`, replacement.token, ACTOR, {})).status).toBe(200);
-  expect(await t.L.runnerGit(await sha256(first.workspace.token))).toBeNull();
+  // The resumed claim's grant replaced the first one's as the task's write token.
+  expect(await t.L.tokenId("t1")).not.toBe(`git:${await sha256(first.workspace.token)}`);
 });
 
 it("concurrent different runners cannot both acquire the same dispatched job", async () => {

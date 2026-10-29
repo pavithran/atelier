@@ -41,7 +41,7 @@ async function world(name, policy = {}) {
     const id = (await L.newItem(title, ["src/**"], "owner", { accept: ["It works"] })).id;
     await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
     await L.claim(id, OPUS, RUNNER);
-    await L.setFork(id, `fork-${id}`, H0, OPUS);
+    await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
     await L.recordPush(id, OPUS, h, h);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: h, passed: true, by: OPUS, at: iso(Date.now()), changedPaths: paths });
     await L.submit(id, OPUS);
@@ -161,7 +161,7 @@ test("a plan names its planner and every part's route; the plan tick asks only a
     await assert.rejects(L.newPlan("Ship the feature", ["src/**"], "owner", null, POOL), (e) => { assert.match(e.message, /planner_needed\|The plan names no planner, and Atelier picks none\./); return true; });
     const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, POOL);
     await L.claim(item.id, OPUS, RUNNER);
-    await L.setFork(item.id, `fork-${item.id}`, H0, OPUS);
+    await L.setWorkspace(item.id, `fork-${item.id}`, H0, OPUS);
     const part = (key) => ({ key, title: `Part ${key}`, kind: "build", taskKind: "feature", scope: [`src/${key}/**`], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" });
     const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a")] });
     assert.ok(post.valid, JSON.stringify(post.errors));
@@ -180,7 +180,7 @@ test("a plan names its planner and every part's route; the plan tick asks only a
     // The named reviewer, Opus, has since become a contributor (it claims the
     // part by handoff here): the tick asks nobody else in its place.
     await L.claim(pid, GPT, RUNNER);
-    await L.setFork(pid, `fork-${pid}`, H0, GPT);
+    await L.setWorkspace(pid, `fork-${pid}`, H0, GPT);
     await L.recordPush(pid, GPT, head(5), head(5));
     await L.addEvidence({ itemId: pid, claim: "npm test", grade: "observed", head: head(5), passed: true, by: GPT, at: iso(Date.now()), changedPaths: ["src/a/x.ts"] });
     await L.handoff(pid, GPT, OPUS, "take it");
@@ -253,13 +253,13 @@ test("a plan part's routed review that lapses, is released or gets no verdict is
   try {
     const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, POOL);
     await L.claim(item.id, OPUS, RUNNER);
-    await L.setFork(item.id, `fork-${item.id}`, H0, OPUS);
+    await L.setWorkspace(item.id, `fork-${item.id}`, H0, OPUS);
     const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [{ key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" }] });
     await L.release(item.id, OPUS, "proposed");
     const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, await offers(), { a: { builder: GPT, reviewer: ARGON } });
     const pid = parts[0].id;
     await L.claim(pid, GPT, RUNNER);
-    await L.setFork(pid, `fork-${pid}`, H0, GPT);
+    await L.setWorkspace(pid, `fork-${pid}`, H0, GPT);
     await L.recordPush(pid, GPT, head(5), head(5));
     await L.addEvidence({ itemId: pid, claim: "npm test", grade: "observed", head: head(5), passed: true, by: GPT, at: iso(Date.now()), changedPaths: ["src/a/x.ts"] });
     await L.submit(pid, GPT);

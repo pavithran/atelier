@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 5, slot: 10,
       form: "read-token ID",
-      about: "Reads a token for the task's own fork, with its head and base, for a job that clones it outside a task or a review.",
+      about: "Reads a read grant for the task's own branch, with its head and base, for a job that clones it outside a task or a review.",
     },
   ],
   flags: {},

@@ -48,7 +48,7 @@ async function project(name: string, protect: string[] = []) {
 async function reviewedAndAccepted(name: string): Promise<string> {
   const { id } = await L(name).newItem("Fix the parser", ["docs/**"], "owner");
   await L(name).claim(id, OPUS);
-  await L(name).setFork(id, `${name}--${id}`, H0, OPUS);
+  await L(name).setWorkspace(id, `${name}--${id}`, H0, OPUS);
   await L(name).recordPush(id, OPUS, H1, H1);
   await L(name).submit(id, OPUS);
   await L(name).addReview({ itemId: id, by: GLM, head: H1, criteria: NO_CRITERIA, approve: false, note: "no", at: new Date().toISOString(), findings: [
@@ -123,7 +123,7 @@ it("an override of a missing review keeps the acting model beside the owner", as
   await project(name, ["AGENTS.md"]);
   await L(name).newItem("Rewrite the agent instructions", [], "owner");
   await L(name).claim("t1", OPUS);
-  await L(name).setFork("t1", `${name}--t1`, H0, OPUS);
+  await L(name).setWorkspace("t1", `${name}--t1`, H0, OPUS);
   await L(name).recordPush("t1", OPUS, H1, H1);
   await L(name).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L(name).submit("t1", OPUS);
@@ -227,7 +227,7 @@ it("through the Ledger, confirmed then fixed agree, and a re-review's different 
   await project(name);
   const { id } = await L(name).newItem("Fix the parser", ["docs/**"], "owner");
   await L(name).claim(id, OPUS);
-  await L(name).setFork(id, `${name}--${id}`, H0, OPUS);
+  await L(name).setWorkspace(id, `${name}--${id}`, H0, OPUS);
   await L(name).recordPush(id, OPUS, H1, H1);
   await L(name).submit(id, OPUS);
   const review = (at: string, text: string) => L(name).addReview({ itemId: id, by: GLM, head: H1, criteria: NO_CRITERIA, approve: false, note: "no", at, findings: [{ file: "a.ts", line: 1, severity: "blocking", text }] });

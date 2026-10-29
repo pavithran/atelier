@@ -1,7 +1,10 @@
 // atelier base-token. Its forms, flags and help are declared in src/usage/commands/base-token.ts.
-import { I, actor, call, itemArg, project } from "../atelier.mjs";
+import { actor, baseReadGrant, itemArg, project } from "../atelier.mjs";
 
+// A read grant naming the branch the task merges into as defaultBranch
+// (POST git-token, kind read).
 export default async function baseTokenCommand() {
   const name = project(), id = itemArg(), as = await actor();
-  console.log(JSON.stringify(await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as)));
+  const g = await baseReadGrant(name, id, as);
+  console.log(JSON.stringify({ remote: g.remote, token: g.token, defaultBranch: g.defaultBranch }));
 }

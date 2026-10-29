@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { errorFields, errorLine, retryableByRuntime, transientByArtifacts, withRetry } from "../src/transient.ts";
+import { errorFields, errorLine, retryableByRuntime } from "../src/transient.ts";
 
 test("a failed request's log line names the error's code and message, then its stack", () => {
   const err = Object.assign(new Error("fork limit reached"), { code: "RESOURCE_EXHAUSTED" });
@@ -21,34 +21,4 @@ test("a Durable Object error marked retryable or overloaded is one a retry may c
   assert.equal(retryableByRuntime(Object.assign(new Error("busy"), { overloaded: true })), true);
   assert.equal(retryableByRuntime(new Error("bug")), false);
   assert.equal(retryableByRuntime(undefined), false);
-});
-
-test("a step is retried with growing backoff until it succeeds", async () => {
-  const waits: number[] = [];
-  let calls = 0;
-  const out = await withRetry(async () => { if (++calls < 3) throw new Error("blip"); return "ok"; }, { baseMs: 100, sleep: async (ms) => { waits.push(ms); } });
-  assert.equal(out, "ok");
-  assert.equal(calls, 3);
-  assert.equal(waits.length, 2);
-  // Each wait lies between half and all of its ceiling, which doubles.
-  assert.ok(waits[0] >= 50 && waits[0] <= 100, `first wait ${waits[0]}`);
-  assert.ok(waits[1] >= 100 && waits[1] <= 200, `second wait ${waits[1]}`);
-});
-
-test("a step stops at its attempts, and a permanent failure is not retried", async () => {
-  let calls = 0;
-  await assert.rejects(withRetry(async () => { calls++; throw new Error("down"); }, { attempts: 3, sleep: async () => {} }), /down/);
-  assert.equal(calls, 3);
-  calls = 0;
-  await assert.rejects(withRetry(async () => { calls++; throw new Error("ALREADY_EXISTS"); }, { permanent: (e) => /ALREADY/.test(String(e)), sleep: async () => {} }), /ALREADY_EXISTS/);
-  assert.equal(calls, 1);
-});
-
-test("t761: transientByArtifacts names the codes that pass and not the ones a retry cannot cure", () => {
-  const coded = (code: string, message = "") => Object.assign(new Error(message), { code });
-  for (const code of ["UNAVAILABLE", "INTERNAL_ERROR", "DEADLINE_EXCEEDED", "FORK_IN_PROGRESS"]) assert.equal(transientByArtifacts(coded(code)), true, code);
-  assert.equal(transientByArtifacts(new Error("fork in progress")), true);
-  for (const code of ["NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED"]) assert.equal(transientByArtifacts(coded(code, "nope")), false, code);
-  assert.equal(transientByArtifacts(new TypeError("x is undefined")), false);
-  assert.equal(transientByArtifacts(null), false);
 });

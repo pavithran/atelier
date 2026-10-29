@@ -39,7 +39,7 @@ export function designEnv(base: Env, seeded: Seeded): Env {
   return {
     ...base,
     LEDGER: withUnavailable(base.LEDGER, UNAVAILABLE_PROJECT),
-    ARTIFACTS: seeded.git.binding(),
+    REPOS: seeded.git.binding(),
     ATELIER_TOKEN: TOKEN,
     CF_ACCESS_ISS: ISS,
     CF_ACCESS_AUD: AUD,
@@ -124,7 +124,7 @@ export function pageStates(s: Seeded): PageState[] {
     task(lc("stale"), "stale", 200, "Working", "Claimed, nothing pushed for two days"),
     task(lc("blocked"), "blocked", 200, "Blocked", "Blocked by its holder"),
     task(lc("failed"), "failed", 200, "Failed", "Submitted with a failing check"),
-    task(lc("ready"), "unreadable", 200, "could not be read from Artifacts", "Ready to accept; the diff cannot be read"),
+    task(lc("ready"), "unreadable", 200, "could not be read from the repository", "Ready to accept; the diff cannot be read"),
     task(s.byShape["ledger-core"].ready![1], "ready", 200, "Ready to accept", "Ready to accept, diff shown"),
     task(lc("protected"), "protected", 200, "independent review", "Protected path: review required"),
     task(lc("sentBack"), "sent-back", 200, "Changes requested", "Checks passed, then sent back (the t435 shape)"),
@@ -134,7 +134,7 @@ export function pageStates(s: Seeded): PageState[] {
     task(lc("abandoned"), "abandoned", 200, "Task closed", "Closed without merging"),
     { id: "task-not-found", path: "/p/ledger-core/t9999", audience: "owner", status: 404, marker: "t9999", state: "A task id that does not exist" },
     { id: "fork-code", path: `/p/ledger-core/${lc("working")}/code`, audience: "owner", status: 200, marker: "README.md", state: "A task's workspace, browsed" },
-    { id: "fork-none", path: `/p/ledger-core/${lc("open")}/code`, audience: "owner", status: 404, marker: "has no fork yet", state: "Browsing a task with no workspace" },
+    { id: "fork-none", path: `/p/ledger-core/${lc("open")}/code`, audience: "owner", status: 404, marker: "has no branch yet", state: "Browsing a task with no workspace" },
   ];
 }
 

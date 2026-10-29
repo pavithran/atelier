@@ -104,7 +104,7 @@ function fakeArtifacts(name: string, branch: () => string, opts: Opts) {
       readBlob: async (h: string) => (blobs[h] !== undefined && !missing(h) ? new Blob([blobs[h]]) : null),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   return { binding, counts };
 }
 
@@ -115,7 +115,7 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
   await L.newItem("Wire the keys", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}/t/1`, H0, A);
+  await L.setWorkspace("t1", `${name}/t/1`, H0, A);
   return L;
 }
 
@@ -148,7 +148,7 @@ it("a push event whose scan fails is retried with the gate blocked, and the rede
   const L = await setup(name);
   let failing = true;
   const { binding, counts } = fakeArtifacts(name, () => H1, { byRef: () => true, shows: () => H1, faults: { tree: () => failing } });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const q = queue(bindings, name, H1);
   // The head is recorded with its scan pending; the scan's failure leaves it
@@ -190,7 +190,7 @@ it("a reader that shows another commit than the recorded head leaves the scan pe
   // when the branch moved between the head read and the diff read.
   let byRef = false;
   const { binding } = fakeArtifacts(name, () => H1, { byRef: () => byRef, shows: () => H2, faults: {} });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 });
   expect(res.status).toBe(200);
@@ -226,7 +226,7 @@ it("a push whose scan fails answers with the scan pending; pushing again at the 
   const L = await setup(name);
   let failing = true;
   const { binding } = fakeArtifacts(name, () => H1, { byRef: () => true, shows: () => H1, faults: { tree: () => failing } });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const first = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 });
   expect(first.status).toBe(200);
@@ -249,7 +249,7 @@ it("a push with none of the patterns answers scanned and clean, and records no f
   const L = await setup(name);
   // The branch stands at H5, whose commits never held a key pattern.
   const { binding } = fakeArtifacts(name, () => H5, { byRef: () => true, shows: () => H5, faults: {} });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H5 });
   expect(res.status).toBe(200);
@@ -273,7 +273,7 @@ it("a result for a head the fork has moved past is dropped, and the newer head's
   // H1 is pushed and its scan fails, so it is recorded with its scan pending.
   let branch = H1, failing = true;
   const { binding } = fakeArtifacts(name, () => branch, { byRef: () => true, shows: () => branch, faults: { tree: () => failing } });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   expect((await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 })).status).toBe(200);
   expect(await L.item("t1")).toMatchObject({ head: H1, secretScan: H1 });
@@ -304,7 +304,7 @@ it("a flag the owner cleared stays cleared when a later push keeps the same line
   const L = await setup(name);
   let branch = H1;
   const { binding } = fakeArtifacts(name, () => branch, { byRef: () => true, shows: () => branch, faults: {} });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   expect((await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 })).status).toBe(200);
   expect((await L.item("t1")).secret).toMatchObject([{ file: "keys.ts", line: 1, commit: H1, head: H1 }]);
@@ -339,7 +339,7 @@ it("a blob the head names and no repository holds leaves the scan pending and th
   const L = await setup(name);
   const missing = new Set([B1]);
   const { binding } = fakeArtifacts(name, () => H1, { byRef: () => true, shows: () => H1, faults: { missing } });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 });
   expect(res.status).toBe(200);
@@ -369,7 +369,7 @@ it("a tree the head names and no repository holds leaves the scan pending and th
   const L = await setup(name);
   const missing = new Set([T1]);
   const { binding } = fakeArtifacts(name, () => H1, { byRef: () => true, shows: () => H1, faults: { missing } });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 });
   expect(res.status).toBe(200);
@@ -393,7 +393,7 @@ it("a key one commit added and a later commit removed is flagged at the head, na
   // H2's tree holds no key, but its parent H1 added one: the push to GitHub
   // sends H1, so the gate refuses H2 as the privacy scan would.
   const { binding } = fakeArtifacts(name, () => H2, { byRef: () => true, shows: () => H2, faults: {} });
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H2 });
   expect(res.status).toBe(200);
@@ -418,7 +418,7 @@ it("a merge of main is scanned against each parent, as the push scan reads it, s
   const clean = "secret-merge-main";
   await setup(clean);
   const a = fakeArtifacts(clean, () => H6, { byRef: () => true, shows: () => H6, faults: {}, main: () => M1 });
-  const callA = api({ ...testEnv, ARTIFACTS: a.binding } as typeof env);
+  const callA = api({ ...testEnv, REPOS: a.binding } as typeof env);
   const merged = (await (await callA("POST", `/projects/${clean}/items/t1/push`, A, { head: H6 })).json()) as Item;
   expect(merged).toMatchObject({ head: H6 });
   expect(merged.secretScan).toBeUndefined();
@@ -428,7 +428,7 @@ it("a merge of main is scanned against each parent, as the push scan reads it, s
   const evil = "secret-merge-evil";
   await setup(evil);
   const b = fakeArtifacts(evil, () => H7, { byRef: () => true, shows: () => H7, faults: {}, main: () => M1 });
-  const callB = api({ ...testEnv, ARTIFACTS: b.binding } as typeof env);
+  const callB = api({ ...testEnv, REPOS: b.binding } as typeof env);
   const flagged = (await (await callB("POST", `/projects/${evil}/items/t1/push`, A, { head: H7 })).json()) as Item;
   expect(flagged.secret).toEqual([
     expect.objectContaining({ file: "evil.ts", line: 1, commit: H7, head: H7 }),
@@ -439,7 +439,7 @@ it("a merge of main is scanned against each parent, as the push scan reads it, s
   const allowed = "secret-merge-allowed";
   await setup(allowed);
   const c = fakeArtifacts(allowed, () => H8, { byRef: () => true, shows: () => H8, faults: {}, main: () => M1 });
-  const callC = api({ ...testEnv, ARTIFACTS: c.binding } as typeof env);
+  const callC = api({ ...testEnv, REPOS: c.binding } as typeof env);
   const passed = (await (await callC("POST", `/projects/${allowed}/items/t1/push`, A, { head: H8 })).json()) as Item;
   expect(passed).toMatchObject({ head: H8 });
   expect(passed.secretScan).toBeUndefined();

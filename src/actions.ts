@@ -1,7 +1,7 @@
 // Protected actions. A deploy, a device install, a paid model run, a Photos
 // writeback, or another kind a project's own ship files name, runs only with
 // the project owner's approval for one exact revision of the project's main
-// line: a commit the baseline in Artifacts holds, which is the main line as
+// line: a commit the baseline in the repository holds, which is the main line as
 // Atelier sees it. An approval is recorded as an event, listed, withdrawn by
 // the owner, used by exactly one run (one approval, one run) and refused for
 // any other revision or kind. `atelier ship` (cli/ship.mjs) uses approvals
@@ -200,11 +200,11 @@ export function consumeAction(store: ActionStore, actor: string, body: Record<st
   const kind = typeof body.kind === "string" && KIND.test(body.kind) ? body.kind : null;
   const commit = typeof body.commit === "string" && REVISION.test(body.commit) ? body.commit : null;
   if (!kind || !commit) throw new RuleError("bad_request", "name the kind and the full revision the action runs at", 400);
-  const forKind = rows(store.sql).filter((a) => a.kind === kind);
-  const match = forKind.find((a) => a.commit === commit && approvalStatus(a, now) === "active");
+  const ofKind = rows(store.sql).filter((a) => a.kind === kind);
+  const match = ofKind.find((a) => a.commit === commit && approvalStatus(a, now) === "active");
   if (!match) {
-    const elsewhere = forKind.filter((a) => a.commit !== commit && approvalStatus(a, now) === "active").map((a) => `${a.id} at ${short(a.commit)}`);
-    const lapsed = forKind.filter((a) => a.commit === commit).at(-1);
+    const elsewhere = ofKind.filter((a) => a.commit !== commit && approvalStatus(a, now) === "active").map((a) => `${a.id} at ${short(a.commit)}`);
+    const lapsed = ofKind.filter((a) => a.commit === commit).at(-1);
     const why = [
       elsewhere.length ? `${kind} is approved only at another revision (${elsewhere.join(", ")})` : "",
       lapsed ? `${lapsed.id} for it is ${approvalStatus(lapsed, now)}` : "",

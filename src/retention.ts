@@ -17,7 +17,7 @@ import { changedPaths, mergeBase, pairReader, type Reader } from "./diff.ts";
 import { MANIFEST_PATH, parseManifest } from "./merge-declarations.ts";
 import type { RetentionFacts, RetentionRead } from "./rules.ts";
 
-type Repo = Pick<ArtifactsRepo, "log" | "readTree" | "readBlob">;
+type Repo = Pick<GitRepo, "log" | "readTree" | "readBlob">;
 
 const HISTORY = 1000;
 const PATHS_MAX = 5000;
@@ -69,19 +69,19 @@ function strict(r: Reader): Reader {
   };
 }
 
-export async function readRetention(fork: Repo, baseline: Repo, oldHead: string, newHead: string): Promise<RetentionRead> {
+export async function readRetention(work: Repo, baseline: Repo, oldHead: string, newHead: string): Promise<RetentionRead> {
   const unread = (why: string): RetentionRead => ({ unread: why });
   try {
-    const [head] = await fork.log({ ref: newHead, limit: 1 });
+    const [head] = await work.log({ ref: newHead, limit: 1 });
     if (!head || head.hash !== newHead || !head.treeHash) return unread("the new head's commit could not be read");
     const parents = head.parents ?? [];
     const facts: RetentionFacts = { oldHead, newHead, parents, main: null, base: null, task: [], incoming: [], moved: [], offMain: [], outputs: [] };
     if (parents.length !== 2 || parents[0] !== oldHead) return facts;
     const main = parents[1];
     // Main's commit must be in the baseline's own history, not only a commit
-    // the fork holds: a fork's second parent is the agent's to choose.
+    // the branch holds: a branch's second parent is the agent's to choose.
     const [mainLog, top, workspace] = await Promise.all([
-      baseline.log({ ref: main, limit: HISTORY }), baseline.log({ limit: HISTORY }), fork.log({ ref: oldHead, limit: HISTORY }),
+      baseline.log({ ref: main, limit: HISTORY }), baseline.log({ limit: HISTORY }), work.log({ ref: oldHead, limit: HISTORY }),
     ]);
     const merged = mainLog[0];
     if (!merged || merged.hash !== main || !merged.treeHash) return unread("main's commit is not in the baseline");
@@ -91,7 +91,7 @@ export async function readRetention(fork: Repo, baseline: Repo, oldHead: string,
     const base = mergeBase(workspace, mainLog.map((c) => c.hash));
     const baseCommit = base ? mainLog.find((c) => c.hash === base) : undefined;
     if (!base || !baseCommit?.treeHash) return unread("no commit of main's history is held by the approved head within the history read");
-    const reader = strict(pairReader(fork as ArtifactsRepo, baseline as ArtifactsRepo));
+    const reader = strict(pairReader(work as GitRepo, baseline as GitRepo));
     const diff = (a: string, b: string) => changedPaths(reader, a, b, PATHS_MAX);
     const [task, incoming, moved, offMain] = await Promise.all([
       diff(baseCommit.treeHash, approved.treeHash), diff(baseCommit.treeHash, merged.treeHash),

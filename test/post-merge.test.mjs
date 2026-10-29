@@ -166,7 +166,7 @@ test("executor persists the attempt before clone, uses pinned checkout, installs
   const calls = [], commands = [];
   const request = async (method, path, body) => {
     calls.push(body?.action ?? method);
-    if (path.endsWith("baseline-token")) return { remote: "https://baseline.test/git", token: "secret" };
+    if (path.endsWith("git-token")) return { kind: "read", remote: "https://baseline.test/git", token: "secret" };
     if (body?.action === "start") startAttempt(r, "1", at);
     if (body?.action === "finish") finishAttempt(r, body.attempt, body.passed, body.output, at);
     return { run: structuredClone(r) };
@@ -199,7 +199,7 @@ for (const status of [0, 7]) {
     r.after = head; preparePostMerge(r, []);
     const posts = [], executions = [], directories = new Set();
     const request = async (method, path, body) => {
-      if (path.endsWith("baseline-token")) return { remote: source.dir, token: "fixture" };
+      if (path.endsWith("git-token")) return { kind: "read", remote: source.dir, token: "fixture" };
       if (body) posts.push(body);
       if (body?.action === "start") startAttempt(r, `attempt-${posts.length}`, at);
       if (body?.action === "finish") finishAttempt(r, body.attempt, body.passed, body.output, at);
@@ -235,7 +235,7 @@ test("post-merge deploy and its npm setup retain the smaller capture limit", asy
   preparePostMerge(r, []);
   const commands = [];
   const request = async (method, path, body) => {
-    if (path.endsWith("baseline-token")) return { remote: "https://baseline.test/git", token: "fixture" };
+    if (path.endsWith("git-token")) return { kind: "read", remote: "https://baseline.test/git", token: "fixture" };
     if (body?.action === "start") startAttempt(r, "1", at);
     if (body?.action === "finish") finishAttempt(r, body.attempt, body.passed, body.output, at, { commit: b, routeLevel: 21 }, body.commandOutcome);
     return { run: structuredClone(r) };

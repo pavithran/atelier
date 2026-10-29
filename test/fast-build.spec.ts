@@ -39,7 +39,7 @@ async function setup() {
     revokeToken: async () => true,
     [Symbol.dispose]() {},
   }) };
-  const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as unknown as typeof env;
+  const bindings = { ...env, ATELIER_TOKEN: OWNER, REPOS: artifacts } as unknown as typeof env;
   // G18: a write with the developer token names the model acting; the runner's token is exempt.
   const request = (method: string, path: string, token = OWNER, actor: string | null = "owner", body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}), ...(token === OWNER ? { "x-atelier-acting": ACTOR } : {}) },
@@ -100,6 +100,6 @@ it("in fast mode the claim makes the task's branch like any build, and asks Arti
   expect(claimed.status, await claimed.clone().text()).toBe(200);
   expect(t.forks).toEqual([]);
   expect(t.tokens).toEqual([]);
-  expect(await t.L.item("t1")).toMatchObject({ state: "claimed", owner: ACTOR, fork: `${t.name}/t/1` });
+  expect(await t.L.item("t1")).toMatchObject({ state: "claimed", owner: ACTOR, workspace: `${t.name}/t/1` });
   expect(await claimed.json()).toMatchObject({ workspace: { remote: expect.stringContaining(`/git/${t.name}.git`), branch: "t/1", token: expect.any(String) } });
 });

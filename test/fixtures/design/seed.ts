@@ -148,7 +148,7 @@ export async function seed(env: Env): Promise<Seeded> {
     await l.claim(id, holder);
     const base = git.heads.get(plan.name)!;
     const fork = `${plan.name}--${id}`;
-    await l.setFork(id, fork, base, holder);
+    await l.setWorkspace(id, fork, base, holder);
     const tree = new Map(files.get(plan.name)!);
     const touch = opts.touch ?? FILES[i % 6];
     tree.set(touch, `${tree.get(touch)}// ${id}: ${shape}\n`);

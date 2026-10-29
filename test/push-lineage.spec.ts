@@ -5,8 +5,8 @@ import type { LedgerEvent } from "../src/ledger.ts";
 import { parseRuleError } from "../src/rules.ts";
 
 // A push whose head no longer holds the head the Ledger recorded has
-// rewritten the fork's history: the commits recorded before are off the
-// branch. The Worker reads the fork's history to tell; the Ledger refuses
+// rewritten the branch's history: the commits recorded before are off the
+// branch. The Worker reads the branch's history to tell; the Ledger refuses
 // such a push unless it declares the rebase `atelier update` made, by naming
 // the recorded head, and records that rewrite with the head it replaced. A
 // push seen through the queue that does the same leaves the head where it
@@ -26,7 +26,7 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Keep every push", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}/t/1`, H0, A);
+  await L.setWorkspace("t1", `${name}/t/1`, H0, A);
   return L;
 }
 
@@ -42,7 +42,7 @@ const events = async (L: Awaited<ReturnType<typeof setup>>) => (await L.events("
 
 // A fork whose branch stands at head(), holding the commits `graph`
 // describes, each hash mapped to its parents in Git order. log lists the
-// first-parent chain from a ref, as Artifacts does; readCommit reads one
+// first-parent chain from a ref, as Repos does; readCommit reads one
 // commit. The counts say which the Worker needed.
 function artifacts(head: () => string, graph: Record<string, string[]>) {
   const reads = { log: 0, commits: 0 };
@@ -58,7 +58,7 @@ function artifacts(head: () => string, graph: Record<string, string[]>) {
       readCommit: async (h: string) => { reads.commits++; return graph[h] ? { hash: h, parents: graph[h] } : null; },
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   return { reads, binding };
 }
 
@@ -85,7 +85,7 @@ it("a push seen on the fork that does not hold the recorded head leaves the head
   const L = await setup("lineage-observe");
   await L.recordPush("t1", A, H1, H1);
   expect(await L.observePush("t1", H2, H1, false)).toMatchObject({ head: H1, state: "claimed" });
-  expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: H2, recorded: H1, source: "artifacts", reason: "history_rewritten" });
+  expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: H2, recorded: H1, source: "event", reason: "history_rewritten" });
   expect((await events(L)).some((e) => e.kind === "push.observed" && e.data.head === H2)).toBe(false);
   // The same sighting delivered again is noted once; another head is noted on its own.
   await L.observePush("t1", H2, H1, false);
@@ -95,7 +95,7 @@ it("a push seen on the fork that does not hold the recorded head leaves the head
   expect(await L.observePush("t1", H2, H1, true)).toMatchObject({ head: H2 });
 });
 
-it("the push route reads the fork's history: a fast-forward passes, a rewrite needs the declaration, a merge's second parent counts", async () => {
+it("the push route reads the branch's history: a fast-forward passes, a rewrite needs the declaration, a merge's second parent counts", async () => {
   const name = "lineage-route";
   const L = await setup(name);
   // H1 and H2 on H0 in a line; H3 on H0 alone, as a rebase leaves it; M a
@@ -103,7 +103,7 @@ it("the push route reads the fork's history: a fast-forward passes, a rewrite ne
   const graph: Record<string, string[]> = { [H0]: [], [H1]: [H0], [H2]: [H1], [H3]: [H0], [X]: [H0], [Y]: [H3], [M]: [X, Y] };
   let head = H1;
   const { reads, binding } = artifacts(() => head, graph);
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   expect((await push(name, { head: H1 }, bindings)).status).toBe(200);
   head = H2;
   expect((await push(name, { head: H2 }, bindings)).status).toBe(200);
@@ -153,7 +153,7 @@ it("the walk continues past a log page: a recorded head deeper than one page, or
   const tip = line(graph, "a", 1105, H0);
   let head = hash("a", 5);
   const { reads, binding } = artifacts(() => head, graph);
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   expect((await push(name, { head }, bindings)).status).toBe(200);
   head = tip;
   reads.log = 0;
@@ -188,7 +188,7 @@ it("a search that stops at its budget is refused as unverified, not as a rewrite
   const graph: Record<string, string[]> = { [H0]: [], [H1]: [H0] };
   let head = H1;
   const { reads, binding } = artifacts(() => head, graph);
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   expect((await push(name, { head: H1 }, bindings)).status).toBe(200);
   // A history of 10,050 commits that never reaches H1: the search stops at ten thousand.
   const tip = line(graph, "a", 10_050, null);
@@ -219,7 +219,7 @@ it("a search that stops at its budget is refused as unverified, not as a rewrite
 it("the Ledger tells a search that stopped short from a rewrite: its own refusal, or a declared rebase marked unconfirmed", async () => {
   const L = await setup("lineage-unverified");
   await L.recordPush("t1", A, H1, H1);
-  await refusal(L.recordPush("t1", A, H2, H2, false, { holdsRecorded: null, searched: 10_000, rebasedFrom: null }), "ancestry_unverified", /could not verify ancestry within 10000 commits of the fork's history: 11111111, the head it recorded/);
+  await refusal(L.recordPush("t1", A, H2, H2, false, { holdsRecorded: null, searched: 10_000, rebasedFrom: null }), "ancestry_unverified", /could not verify ancestry within 10000 commits of the branch's history: 11111111, the head it recorded/);
   await refusal(L.recordPush("t1", A, H2, H2, false, { holdsRecorded: null, searched: 10_000, rebasedFrom: H0 }), "ancestry_unverified", /push with atelier push --force/);
   expect((await L.item("t1")).head).toBe(H1);
   expect((await events(L)).some((e) => e.kind === "push.observed" && e.data.head === H2)).toBe(false);
@@ -240,12 +240,12 @@ it("a push event whose head does not hold the recorded one leaves the head and n
   await L.recordPush("t1", A, H1, H1);
   const graph: Record<string, string[]> = { [H0]: [], [H1]: [H0], [H3]: [H0] };
   const { binding } = artifacts(() => H3, graph);
-  const send = () => observePushed({ ...env, ARTIFACTS: binding } as typeof env, { project: name, ref: "refs/heads/t/1", after: H3 });
+  const send = () => observePushed({ ...env, REPOS: binding } as typeof env, { project: name, ref: "refs/heads/t/1", after: H3 });
   expect(await send()).toMatchObject({ observed: false, item: "t1", head: H3 });
   expect((await L.item("t1")).head).toBe(H1);
   expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: H3, recorded: H1 });
   // The CLI's own call, declaring the head it rebased from, records the push; the event seen again changes nothing.
-  expect((await push(name, { head: H3, rebasedFrom: H1 }, { ...testEnv, ARTIFACTS: binding } as typeof env)).status).toBe(200);
+  expect((await push(name, { head: H3, rebasedFrom: H1 }, { ...testEnv, REPOS: binding } as typeof env)).status).toBe(200);
   expect((await L.item("t1")).head).toBe(H3);
   expect(await send()).toMatchObject({ observed: true, item: "t1", head: H3 });
   expect((await events(L)).filter((e) => e.kind === "push.unrecorded")).toHaveLength(1);

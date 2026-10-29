@@ -19,7 +19,7 @@ const CLAIMED = "2026-10-10T20:51:00.000Z";
 const NOW = Date.parse("2026-10-12T01:51:00.000Z"); // about 29 hours later
 const iso = (ms: number) => new Date(ms).toISOString();
 const item = (id: string, over: Partial<Item> = {}): Item => ({
-  id, title: id, scope: ["src/dispatch/rules.ts"], state: "open", owner: null, fork: null, base: null, head: null,
+  id, title: id, scope: ["src/dispatch/rules.ts"], state: "open", owner: null, workspace: null, base: null, head: null,
   acceptedHead: null, createdAt: CLAIMED, updatedAt: CLAIMED, lastPushAt: null, dispatch: makeDispatch({}, "owner", CLAIMED), ...over,
 });
 const claim = (runner: string | null) => item("t463", { state: "claimed", owner: "opencode/glm-5.3-flash", runner });

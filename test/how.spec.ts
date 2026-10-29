@@ -165,7 +165,7 @@ it("lists every rule, and every contents link has its section", async () => {
   const { body } = await page();
   for (const rule of RULES) expect(body).toContain(`<h3>${escapeText(rule.title)}</h3>`);
   const links = [...body.matchAll(/<a href="#([a-z-]+)"/g)].map((m) => m[1]);
-  expect(links).toEqual(["terms", "where-it-runs", "the-loop", "claim", "fork", "prove", "review", "land", "proven-reviewed-recorded", "the-orchestrator", "using-atelier-well", "commands"]);
+  expect(links).toEqual(["terms", "where-it-runs", "the-loop", "claim", "branch", "prove", "review", "land", "proven-reviewed-recorded", "the-orchestrator", "using-atelier-well", "commands"]);
   for (const id of links) expect(body).toContain(`<section id="${id}" class="how-section">`);
 });
 

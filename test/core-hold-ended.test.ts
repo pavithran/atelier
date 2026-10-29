@@ -13,7 +13,7 @@ const RUNNER = "home:studio";
 const HEAD = "a".repeat(40);
 const core = ["cli/runner.mjs"];
 const item = (id: string, over: Partial<Item> = {}): Item => ({
-  id, title: id, scope: ["cli/runner.mjs"], state: "open", owner: null, fork: null, base: null, head: null,
+  id, title: id, scope: ["cli/runner.mjs"], state: "open", owner: null, workspace: null, base: null, head: null,
   acceptedHead: null, createdAt: AT, updatedAt: AT, lastPushAt: null, dispatch: makeDispatch({}, "owner", AT), ...over,
 });
 const holder = item("t313", { state: "claimed", owner: "claude-code/opus-5.5", runner: RUNNER, head: HEAD });

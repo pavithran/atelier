@@ -5,9 +5,10 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { foldPath } from '../src/rules.ts';
+import { taskReadGrant } from './read-grant.mjs';
 
 // The workspace's Git config key naming the head a landing could not push
-// because the fork refused the workspace token (t317).
+// because the server refused the workspace token (t317).
 export const LAND_UNPUSHED = 'atelier.land-unpushed';
 
 // The landing's push (G2, design section 4.7): the merge commit to the
@@ -39,7 +40,7 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
   const local = existsSync(join(dir, '.git'))
     ? git(['rev-parse', '--verify', 'HEAD'], { cwd: dir, allowFail: true }).stdout?.trim() : null;
   const descends = !!local && local !== head && git(['merge-base', '--is-ancestor', head, local], { cwd: dir, allowFail: true }).status === 0;
-  // The merge of main a landing made and could not push, the fork refusing
+  // The merge of main a landing made and could not push, the branch refusing
   // the workspace token (t317), is that landing's own work: the next landing
   // goes on from it and pushes it, renewing the token.
   const unpushed = descends && git(['config', '--local', LAND_UNPUSHED], { cwd: dir, allowFail: true }).stdout?.trim() === local;
@@ -48,7 +49,7 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
     return key === 'actor' ? !!value : value === (key === 'project' ? name : id);
   });
   if (configured) {
-    if (unpushed) print(`${id}'s workspace holds ${local.slice(0, 8)}, the merge an earlier landing made and could not push because the fork refused the workspace token; this landing goes on from it.`);
+    if (unpushed) print(`${id}'s workspace holds ${local.slice(0, 8)}, the merge an earlier landing made and could not push because the server refused the workspace token; this landing goes on from it.`);
     return false;
   }
   // A workspace that descends from the recorded head holds work the ledger
@@ -68,12 +69,12 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
   const staging = mkdtempSync(`${dir}.prepare-`);
   let backup = null;
   try {
-    const read = await request('POST', `${itemPath}/read-token`, { scope: 'read' });
+    const read = await taskReadGrant(request, name, id);
     // Do not allow credentials embedded in a URL to reach saved config.
-    if (!read.remote || /[\r\n\0]/.test(read.remote) || /:\/\/[^/]*@/.test(read.remote)) throw new Error('invalid fork remote');
+    if (!read.remote || /[\r\n\0]/.test(read.remote) || /:\/\/[^/]*@/.test(read.remote)) throw new Error('invalid remote');
     git(['init', '--quiet', staging]);
-    // Artifacts can briefly fail to serve a commit it holds (t220, t225,
-    // t226), so the fetch is retried with a growing wait for FETCH_LIMIT_MS.
+    // A fetch can fail for a moment (t220, t225, t226), so it is retried
+    // with a growing wait for FETCH_LIMIT_MS.
     const now = io.now ?? Date.now, sleep = io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
     const began = now();
     for (let wait = FETCH_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, FETCH_MAX_WAIT_MS)) {
@@ -92,12 +93,14 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
         await sleep(pause);
       }
     }
-    const branch = read.defaultBranch ?? p.branch;
+    // The task's branch (t/N), which push writes, and the branch it merges
+    // into, which its baseline is fetched from.
+    const branch = read.branch;
     git(['checkout', '--quiet', '-b', branch, head], { cwd: staging });
     git(['remote', 'add', 'origin', read.remote], { cwd: staging });
     const actor = detail.item.owner || io.owner;
     if (!actor) throw new Error(`${id} has no actor for the prepared workspace`);
-    const config = { 'atelier.project': name, 'atelier.item': id, 'atelier.actor': actor, 'atelier.branch': branch,
+    const config = { 'atelier.project': name, 'atelier.item': id, 'atelier.actor': actor, 'atelier.branch': branch, 'atelier.base-branch': read.into,
       'atelier.prepare': JSON.stringify(detail.policy?.prepare ?? null) };
     const identity = detail.policy?.commitIdentity;
     for (const key of ['name', 'email']) {

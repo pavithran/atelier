@@ -36,7 +36,7 @@ export function fakeArtifacts() {
   });
   const artifacts = strict("binding", {
     get: async (repo: string) => strict(`repo.${repo}`, repoApi(repo)),
-  }) as unknown as Artifacts;
+  }) as unknown as Repos;
   const live = (id: string) => !tokens.get(id)!.revoked;
   const writes = (repo: string) => [...tokens.values()].filter((t) => t.repo === repo && t.scope === "write").map((t) => t.id);
   return { artifacts, state, live, writes };
@@ -82,8 +82,8 @@ export function expectNoStrayArtifactsAccess() {
 // binding throws "needs to be run remotely" on first use).
 export function bindingsWith<E extends object>(env: E, artifacts: unknown, extra: Record<string, unknown> = {}): E {
   const copy: Record<string, unknown> = {};
-  for (const key of Object.keys(env)) if (key !== "ARTIFACTS") copy[key] = (env as Record<string, unknown>)[key];
-  return { ...copy, ...extra, ARTIFACTS: guardedBinding(artifacts) } as E;
+  for (const key of Object.keys(env)) if (key !== "REPOS") copy[key] = (env as Record<string, unknown>)[key];
+  return { ...copy, ...extra, REPOS: guardedBinding(artifacts) } as E;
 }
 
 // A repository's commit list as claims read it (headOf): one commit, so a

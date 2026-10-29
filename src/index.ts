@@ -1,7 +1,6 @@
 import { stuckBatchRequests } from "./notify.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
-import { runnerGitRequest } from "./runner-git.ts";
 import { readRetention } from "./retention.ts";
 import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, VALIDATION_BLOCKED, type OwnerDirection } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
@@ -16,7 +15,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
 import { parseAffectedTests } from "./affected-tests.ts";
-import { checkRemote, forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { checkRemote, agentLine, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
@@ -68,7 +67,7 @@ import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
-import { errorLine, RETRY_AFTER, FORK_WAIT_ATTEMPTS, forkWait, retryableByRuntime, transientByArtifacts, withRetry } from "./transient.ts";
+import { errorLine, RETRY_AFTER, retryableByRuntime } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
 
 export { Ledger };
@@ -177,7 +176,7 @@ async function loginPage(env: Env, error?: string, status = 200): Promise<Respon
 // meaning, and the format, which changes when the reading does.
 async function importedFor(env: Env, project: ProjectRecord, cutoff: number | null): Promise<ImportedHistory | null> {
   try {
-    using repo = await env.ARTIFACTS.get(project.repo);
+    using repo = await env.REPOS.get(project.repo);
     const head = (await repo.log({ limit: 1 }))[0];
     if (!head) return null;
     const key = new Request(`https://atelier.internal/imported/v${IMPORTED_FORMAT}/${encodeURIComponent(project.repo)}/${head.hash}/${cutoff ?? "all"}`);
@@ -230,25 +229,14 @@ async function standingOf(env: Env, key: string): Promise<Standing> {
   // The fast-mode line atelier status --project prints names the post-merge
   // reviews still owed (t331), as GET mode's line does.
   const line = read.mode ? await L.statusModeLine({ mode: "fast", line: read.mode }).catch(() => null) : null;
-  const standing = line ? { ...read, mode: line } : read;
-  // The task forks Artifacts is still preparing, with their age and next
-  // action (t18), only while there are any; `atelier status --project` prints them.
-  const preparing = Object.entries(await L.forkPreparations().catch(() => ({}))).map(([id, view]) => ({ id, ...view }));
-  return preparing.length ? { ...standing, preparing } : standing;
-}
-
-// The project's tasks, each with the preparation of its fork where the fork is
-// still being prepared (t18); the other rows are as they were.
-async function itemsWithPreparation(L: ReturnType<typeof ledger>) {
-  const [items, preparing] = await Promise.all([L.items(), L.forkPreparations().catch(() => ({}) as Record<string, ForkPreparationView>)]);
-  return items.map((i) => (preparing[i.id] ? { ...i, preparing: preparing[i.id] } : i));
+  return line ? { ...read, mode: line } : read;
 }
 
 // Where each accepted task stands against the main head the Ledger last
-// recorded (t60), read from each task's fork (src/accepted-main.ts).
+// recorded (t60), read from each task's branch (src/accepted-main.ts).
 async function acceptedOf(env: Env, L: ReturnType<typeof ledger>): Promise<AcceptedAgainstMain[]> {
   const [items, main] = await Promise.all([L.items(), L.observedMain()]);
-  return readAccepted(items, main, async (fork, head, at) => (await holdsCommit(env, fork, head, at, PREDICT_BUDGET)).holds);
+  return readAccepted(items, main, async (workspace, head, at) => (await holdsCommit(env, workspace, head, at, PREDICT_BUDGET)).holds);
 }
 
 // The runner offers as the index recorded them, or null when they could not
@@ -270,10 +258,9 @@ function ownerName(env: Env): string | null {
   return (env as unknown as Settings).OWNER_NAME || null;
 }
 
-// The Git host the Node server gives as env.GIT (src/git/host.mjs); absent
-// on the Workers deploy.
+// The Git host the Node server gives as env.GIT (src/git/host.mjs).
 type GitHost = {
-  mint(grant: { project: string; kind: "task" | "read" | "plan" | "landing"; task?: string; actor: string; generation?: number; accepted?: string; lease?: string }): { id: string; token: string; hash: string; expiresAt: string };
+  mint(grant: { project: string; kind: "task" | "read" | "plan" | "landing" | "refresh"; task?: string; actor: string; generation?: number; accepted?: string; lease?: string }): { id: string; token: string; hash: string; expiresAt: string };
   revoke(id: string): boolean;
   createRepo(args: { key: string; branch: string }): Promise<{ created: boolean }>;
   claimBranch(args: { key: string; projectBranch: string; branch: string; from: string }): Promise<{ base: string | null; head: string | null; created: boolean }>;
@@ -292,8 +279,10 @@ type GitHost = {
 type HostMove = { error?: undefined; branch: string; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number }
   | { error: string; detail: string; before?: string | null; remoteHead?: string; hits?: SecretHit[] };
 
-function gitHost(env: Env): GitHost | null {
-  return (env as unknown as { GIT?: GitHost }).GIT ?? null;
+function gitHost(env: Env): GitHost {
+  const git = (env as unknown as { GIT?: GitHost }).GIT;
+  if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories", 404, "run Atelier on the Node server (atelier serve)");
+  return git;
 }
 
 // The remote of a project's repository on the Node server: at the tailnet or
@@ -318,14 +307,14 @@ function startBranch(item: { kind?: string | null; plan?: string | null }, proje
 }
 
 // A Git grant minted for a request made with an agent or runner token is
-// recorded against that token, as an Artifacts token is (mintFor, t598),
-// so revoking the token revokes the grant. A grant that cannot be recorded
+// recorded against that token (t598), so revoking the token revokes the
+// grant. A grant that cannot be recorded
 // is revoked at once and never returned.
 async function keepGitGrant(c: Ctx, git: GitHost, key: string, g: { id: string; expiresAt: string }): Promise<void> {
   if (!c.token) return;
   let kept: boolean;
   try {
-    kept = await index(c.env).recordArtifactsToken(c.token.id, `git:${key}`, `grant:${g.id}`, g.expiresAt);
+    kept = await index(c.env).recordGrant(c.token.id, `git:${key}`, `grant:${g.id}`, g.expiresAt);
   } catch (err) {
     git.revoke(g.id);
     throw err;
@@ -851,50 +840,15 @@ function codeOf(err: unknown): string {
   return `${e?.code ?? ""} ${e?.message ?? ""}`;
 }
 
-// Across the binding an ArtifactsError can arrive with its code missing and
-// only its message ("repo already exists: name"), so both are matched.
-const ALREADY_EXISTS = /ALREADY_EXISTS|already exists/i;
-const IN_PROGRESS = /IN_PROGRESS|in progress|not ready/i;
-
-// A repository's HEAD. A passing Artifacts failure is waited out by
-// artifactsStep. A fresh fork can briefly report FORK_IN_PROGRESS; that is
-// waited for longer, in steps of forkWait, since the CLI does not retry a 503
-// and a claim should not fail for it. A repository that is not there is
-// thrown as it is.
+// A repository's HEAD: the tip of the project's branch, or of a task's
+// branch for its workspace name (src/git/local-repos.mjs). A repository that
+// is not there is thrown as it is.
 async function headOf(env: Env, repo: string): Promise<string | null> {
-  for (let attempt = 0; attempt < FORK_WAIT_ATTEMPTS; attempt++) {
-    try {
-      return await artifactsStep(`read the head of ${repo}`, async () => {
-        using r = await env.ARTIFACTS.get(repo);
-        const [top] = await r.log({ limit: 1 });
-        return top?.hash ?? null;
-      }, (err) => NOT_FOUND.test(codeOf(err)) || IN_PROGRESS.test(codeOf(err)));
-    } catch (err) {
-      if (!IN_PROGRESS.test(codeOf(err))) throw err;
-      await new Promise((ok) => setTimeout(ok, forkWait(attempt)));
-    }
-  }
-  throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503, "wait a few seconds, then run the same command again");
+  using r = await env.REPOS.get(repo);
+  const [top] = await r.log({ limit: 1 });
+  return top?.hash ?? null;
 }
-
-// One step of a request against Artifacts, retried with backoff when it
-// fails for a reason a retry may cure (t349): a hundred claims at once each
-// fork and mint, and Artifacts can refuse some of them for a moment. A
-// RuleError, or a failure `permanent` names, is thrown at once. A step that
-// still fails is logged with its code and message and answered as a 503,
-// which tells the caller to retry after RETRY_AFTER seconds.
-async function artifactsStep<T>(step: string, fn: () => Promise<T>, permanent: (err: unknown) => boolean = () => false): Promise<T> {
-  const settled = (err: unknown) => !!parseRuleError(err) || permanent(err);
-  try {
-    return await withRetry(fn, { permanent: settled, onRetry: (err, attempt) => console.warn(errorLine(`${step} (attempt ${attempt}, retrying)`, err)) });
-  } catch (err) {
-    if (settled(err)) throw err;
-    console.error(errorLine(step, err));
-    throw new RuleError("artifacts_unavailable", `Artifacts could not ${step} just now; nothing was given out, so try again`, 503);
-  }
-}
-
-// Whether the commit `from` holds `target` in its history. Artifacts lists
+// Whether the commit `from` holds `target` in its history. The repository lists
 // a first-parent chain up to a thousand commits at a time, so every chain is
 // read that way: the head's own, carried past each page from the last
 // commit's first parent, and the chain behind each further parent a merge
@@ -909,7 +863,7 @@ async function artifactsStep<T>(step: string, fn: () => Promise<T>, permanent: (
 const HISTORY_COMMITS = 10_000, HISTORY_READS = 100, HISTORY_PAGE = 1000;
 async function holdsCommit(env: Env, repo: string, from: string, target: string, budget = { commits: HISTORY_COMMITS, reads: HISTORY_READS }): Promise<{ holds: boolean | null; searched: number }> {
   if (from === target) return { holds: true, searched: 0 };
-  using r = await env.ARTIFACTS.get(repo);
+  using r = await env.REPOS.get(repo);
   const seen = new Set<string>();
   const starts = [from];
   let reads = 0;
@@ -937,19 +891,19 @@ async function holdsCommit(env: Env, repo: string, from: string, target: string,
   return { holds: false, searched: seen.size };
 }
 
-// What the Worker found in the fork's history for a push: whether the head
+// What the Worker found in the branch's history for a push: whether the head
 // it sees holds the head the Ledger recorded (null when the search stopped
 // at its budget first, with the number of commits it examined), and the
 // head the caller says `atelier update` rebased from, when it says so.
-async function pushLineage(env: Env, fork: string, observed: string, recorded: string | null, declared: unknown): Promise<PushLineage> {
-  const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, fork, observed, recorded);
+async function pushLineage(env: Env, workspace: string, observed: string, recorded: string | null, declared: unknown): Promise<PushLineage> {
+  const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, workspace, observed, recorded);
   const rebasedFrom = typeof declared === "string" && /^[a-f0-9]{40,64}$/.test(declared) ? declared : null;
   return { holdsRecorded: holds, searched, rebasedFrom };
 }
 
 // The commits a push brought, each with the actor its final "Agent:
 // harness/model" line names (agentLine), for the Ledger to record those by
-// another actor than the holder (recordPush). It reads the fork's
+// another actor than the holder (recordPush). It reads the branch's
 // first-parent line from the new head back to the head recorded before it,
 // or to the item's base, and stops at any commit on the first-parent line of
 // the repository the item is measured against, so commits a merge or a
@@ -961,14 +915,14 @@ const PUSH_AUTHORS_MAX = 200;
 // task has no approval standing that a merge could carry, so a push reads no
 // history it has no use for. Whatever fails to read is an `unread` answer,
 // which carries nothing.
-async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: string; kind?: string | null; plan?: string | null; fork: string | null; head: string | null }, newHead: string, oldHead = item.head): Promise<RetentionRead | null> {
-  if (item.kind || !item.fork || !oldHead || oldHead === newHead) return null;
+async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: string; kind?: string | null; plan?: string | null; workspace: string | null; head: string | null }, newHead: string, oldHead = item.head): Promise<RetentionRead | null> {
+  if (item.kind || !item.workspace || !oldHead || oldHead === newHead) return null;
   try {
     if (!(await L.retainable(item.id, oldHead))) return null;
     const repo = (await L.project()).repo;
-    using fork = await env.ARTIFACTS.get(item.fork);
-    using baseline = await env.ARTIFACTS.get(await baseRepo(env, L, item, repo));
-    return await readRetention(fork, baseline, oldHead, newHead);
+    using workspace = await env.REPOS.get(item.workspace);
+    using baseline = await env.REPOS.get(await baseRepo(env, L, item, repo));
+    return await readRetention(workspace, baseline, oldHead, newHead);
   } catch (err) {
     console.error(errorLine(`retention read of ${item.id}`, err));
     return { unread: "the repositories could not be read" };
@@ -982,33 +936,33 @@ async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: s
 // task's history holds, so main merged into the task is not counted as its
 // own. Null when the history or the trees cannot be read within one page of
 // each line: the overlap rule then judges the task on its scope.
-async function changedSinceBase(env: Env, fork: string, head: string, againstRepo: string): Promise<string[] | null> {
+async function changedSinceBase(env: Env, workspace: string, head: string, againstRepo: string): Promise<string[] | null> {
   try {
-    using r = await env.ARTIFACTS.get(fork);
-    using against = await env.ARTIFACTS.get(againstRepo);
-    const [work, main]: ArtifactsCommitMetadata[][] = await Promise.all([r.log({ ref: head, limit: HISTORY_PAGE }), against.log({ limit: HISTORY_PAGE })]);
+    using r = await env.REPOS.get(workspace);
+    using against = await env.REPOS.get(againstRepo);
+    const [work, main]: GitCommit[][] = await Promise.all([r.log({ ref: head, limit: HISTORY_PAGE }), against.log({ limit: HISTORY_PAGE })]);
     const base = mergeBase(work, main.map((c) => c.hash));
     const tip = work.find((c) => c.hash === head), from = main.find((c) => c.hash === base);
     if (!tip || !from) return null;
     return await changedPaths(pairReader(r, against), from.treeHash, tip.treeHash);
   } catch (err) {
-    console.error(errorLine(`changed files of ${fork}`, err));
+    console.error(errorLine(`changed files of ${workspace}`, err));
     return null;
   }
 }
 
-async function pushedAuthors(env: Env, fork: string, observed: string, item: { head: string | null; base: string | null }, againstRepo: string): Promise<PushAuthor[]> {
+async function pushedAuthors(env: Env, workspace: string, observed: string, item: { head: string | null; base: string | null }, againstRepo: string): Promise<PushAuthor[]> {
   if (observed === item.head) return [];
-  using r = await env.ARTIFACTS.get(fork);
-  using against = await env.ARTIFACTS.get(againstRepo);
+  using r = await env.REPOS.get(workspace);
+  using against = await env.REPOS.get(againstRepo);
   const stop = new Set((await against.log({ limit: HISTORY_PAGE })).map((c) => c.hash));
   for (const h of [item.head, item.base]) if (h) stop.add(h);
   const authors: PushAuthor[] = [];
   let next: string | undefined = observed, read = 0;
   while (next && !stop.has(next) && read < PUSH_AUTHORS_MAX) {
-    const commits: ArtifactsCommitMetadata[] = await r.log({ ref: next, limit: 50 });
-    const page: Map<string, ArtifactsCommitMetadata> = new Map(commits.map((c) => [c.hash, c] as const));
-    let c: ArtifactsCommitMetadata | undefined = page.get(next);
+    const commits: GitCommit[] = await r.log({ ref: next, limit: 50 });
+    const page: Map<string, GitCommit> = new Map(commits.map((c) => [c.hash, c] as const));
+    let c: GitCommit | undefined = page.get(next);
     if (!c) break;
     // Follow first parents through the page; a parent the page does not hold starts the next read.
     while (c && !stop.has(c.hash) && read < PUSH_AUTHORS_MAX) {
@@ -1022,21 +976,12 @@ async function pushedAuthors(env: Env, fork: string, observed: string, item: { h
   return authors;
 }
 
-// The branch Atelier reads in a project's baseline and in every fork of it:
-// the one init registered. headOf reads a repository's HEAD, and a fork
-// copies the baseline's HEAD, which init created naming that branch. A
-// fork's own repository info is never asked: Artifacts can report a branch
-// there that HEAD does not name, and a fork of a master baseline reports
-// main. A record without a branch falls back to the baseline's info, which
-// init set when it created the baseline. Reading it is a step against
-// Artifacts like any other on a claim (artifactsStep, t349): a transient
-// failure is retried, then answered as a 503.
+// The project's branch: the one init registered. A record without a branch,
+// as a 1.0 record may be, falls back to the repository's HEAD.
 async function projectBranch(env: Env, p: ProjectRecord): Promise<string> {
   if (p.branch) return p.branch;
-  return artifactsStep(`read the branch of ${p.repo}`, async () => {
-    using base = await env.ARTIFACTS.get(p.repo);
-    return (await base.info()).defaultBranch;
-  }, (err) => NOT_FOUND.test(codeOf(err)));
+  using base = await env.REPOS.get(p.repo);
+  return (await base.info()).defaultBranch;
 }
 
 // A branch name as init sends it: one Git would accept for a branch (the
@@ -1145,133 +1090,30 @@ function singleFamilyArg(value: unknown): PoolFamily | null {
   return family;
 }
 
-// A token for one repository. `branch` is the project's branch, from
-// projectBranch, returned with the token so the caller pushes and fetches
-// the branch Atelier reads.
-// A transient failure is retried (artifactsStep). A token whose answer was
-// lost stays unrecorded and unreturned, so its plaintext reaches no one,
-// as a caller's own retry would leave it.
-async function mint(env: Env, repo: string, scope: "read" | "write", branch: string, ttl = scope === "write" ? WRITE_TTL : READ_TTL) {
-  return artifactsStep(`make a ${scope} token for ${repo}`, async () => {
-    using r = await env.ARTIFACTS.get(repo);
-    const info = await r.info();
-    const t = await r.createToken(scope, ttl);
-    return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
-  }, (err) => NOT_FOUND.test(codeOf(err)));
-}
 const NOT_FOUND = /NOT_FOUND|not found/i;
 
-// A token minted for a request made with an agent token is recorded against
-// it, so revoking the agent token revokes it too (t598). A token that cannot
-// be recorded, because the agent token was revoked meanwhile or the record
-// failed, is revoked at once and never returned.
-async function mintFor(c: Ctx, repo: string, scope: "read" | "write", branch: string, ttl?: number) {
-  const t = await mint(c.env, repo, scope, branch, ttl);
-  if (!c.token) return t;
-  let kept: boolean;
-  try {
-    kept = await index(c.env).recordArtifactsToken(c.token.id, repo, t.tokenId, t.expiresAt);
-  } catch (err) {
-    await revoke(c.env, repo, t.tokenId).catch((e) => console.error(errorLine(`revoke an unrecorded token for ${repo}`, e)));
-    throw err;
-  }
-  if (!kept) {
-    await revoke(c.env, repo, t.tokenId);
-    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git token was issued", 401, "ask the developer for a new token, then run atelier login");
-  }
-  return t;
-}
-
-// Revokes in Artifacts every token an agent token's requests minted. A row is
-// forgotten only once its token is revoked, so a failure (a 503 from revoke)
-// leaves the rest recorded and a second DELETE finishes the work.
-async function revokeAgentArtifacts(env: Env, agentId: string) {
+// Revokes every Git grant an agent token's requests were given
+// (keepGitGrant). A row is forgotten only once its grant is revoked, so a
+// failure leaves the rest recorded and a second DELETE finishes the work.
+async function revokeAgentGrants(env: Env, agentId: string) {
   const I = index(env);
-  for (const { repo, tokenId } of await I.agentArtifactsTokens(agentId)) {
-    await revoke(env, repo, tokenId);
-    await I.forgetArtifactsToken(agentId, tokenId);
+  for (const { tokenId } of await I.agentGrants(agentId)) {
+    await revoke(env, tokenId);
+    await I.forgetGrant(agentId, tokenId);
   }
 }
-
-// Whether a repository exists; one still being forked counts.
-async function repoExists(env: Env, repo: string): Promise<boolean> {
-  return artifactsStep(`look up ${repo}`, async () => {
-    try {
-      using r = await env.ARTIFACTS.get(repo);
-      await r.info();
-      return true;
-    } catch (err) {
-      if (NOT_FOUND.test(codeOf(err))) return false;
-      if (IN_PROGRESS.test(codeOf(err))) return true;
-      throw err;
-    }
-  });
-}
-
-// A repository found already under the name Atelier would make it with is
-// taken only when its description is the one Atelier gives it for that
-// purpose (baselineMark, taskForkMark, branchesMark in src/rules.ts): an
-// earlier attempt's, whose answer was lost (t349). One made for anything
-// else, such as another project's branches repository or baseline, is
-// refused before any token is minted for it (the reviews of t641).
-async function assertMadeAs(env: Env, repo: string, mark: string | ((description: string | null) => boolean), purpose: string): Promise<void> {
-  await headOf(env, repo);
-  const description = await artifactsStep(`read ${repo}`, async () => {
-    using r = await env.ARTIFACTS.get(repo);
-    return (await r.info()).description;
-  });
-  if (typeof mark === "string" ? description !== mark : !mark(description)) throw new RuleError("repo_foreign", `${repo} already exists and was not made as ${purpose}; nothing was given out for it`, 409);
-}
-
-// A task fork's provenance: the description Atelier gives a fork now
-// (taskForkMark), or the one it gave before t641, "PROJECT ID: TITLE",
-// when PROJECT is one of this project's names and ID this task's. The
-// title is not compared: it may have been edited since the fork was made.
-// Without the older form, a claim retried after the deploy that brought
-// t641 could never take the fork its own earlier attempt made (Astra's
-// third review of t641, finding 2).
-function madeAsTaskFork(description: string | null, fork: string, names: string[], id: string): boolean {
-  if (description === taskForkMark(fork)) return true;
-  return typeof description === "string" && names.some((n) => description.startsWith(`${n} ${id}: `));
-}
-
-// The developer's branches repository (t641), made on the first push as a
-// fork of the baseline's branch, so a branch push sends only what main does
-// not already hold. The repository the Ledger recorded is taken as it
-// stands. Any other repository under that name is taken only when its
-// description is the one this function gives the fork for this project's
-// key, which is a fork an earlier attempt made before the record was
-// written; a repository made otherwise is refused, and no token is minted
-// for it (Astra's review of t641, finding 1). One still being made is
-// waited for (headOf).
-async function developerBranchesRepo(env: Env, L: ReturnType<typeof ledger>, actor: string, key: string, baseline: string, repo: string, project: string): Promise<void> {
-  if (await L.branchesRepo() !== repo) {
-    if (!await repoExists(env, repo)) {
-      await artifactsStep(`fork ${baseline} as ${repo}`, async () => {
-        using base = await env.ARTIFACTS.get(baseline);
-        await base.fork(repo, { description: branchesMark(key), defaultBranchOnly: true });
-      }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
-        if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
-      });
-    }
-    await assertMadeAs(env, repo, branchesMark(key), `${project}'s branches repository`);
-    await L.recordBranchesRepo(actor, repo);
-  }
-  await headOf(env, repo);
-}
-
-// The repository an item forks from and is measured against (docs/orchestrator.md,
-// section 5): a part's is its plan's fork, the integration branch, and any
+// The repository an item branches from and is measured against (docs/orchestrator.md,
+// section 5): a part's is its plan's branch, the integration branch, and any
 // other item's is the baseline.
 async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: string | null; plan?: string | null }, baselineRepo: string): Promise<string> {
-  const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
-  return baseRepoOf(item, baselineRepo, planFork);
+  const planWorkspace = item.kind === "part" && item.plan ? (await L.item(item.plan)).workspace : null;
+  return baseRepoOf(item, baselineRepo, planWorkspace);
 }
 
 // The push's secret scan (t332), run for the head the Ledger recorded with a
 // scan pending: every commit the task adds up to that exact commit, each
 // against each of its parents, down to the history of the repository the
-// item is measured against or the commit its fork started at (t295), read by
+// item is measured against or the commit its branch started at (t295), read by
 // commit id (scanCommit), and its findings recorded against that head alone
 // (setSecret, which drops them if the head has moved on). A scan that cannot
 // be read throws, and the pending mark
@@ -1280,10 +1122,10 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
 // other than the one scanned. Returns the item as the scan left it, or as it
 // stands when no scan is pending for its head.
 async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item): Promise<Item> {
-  if (!item.fork || !item.head || item.secretScan !== item.head) return item;
+  if (!item.workspace || !item.head || item.secretScan !== item.head) return item;
   const head = item.head;
   const p = await L.project();
-  const scan = await scanCommit(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head, item.base);
+  const scan = await scanCommit(env.REPOS, await baseRepo(env, L, item, p.repo), item.workspace, head, item.base);
   if (scan.head !== head) throw new Error(`secret scan: ${item.id}'s scan read ${scan.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
 }
@@ -1318,7 +1160,6 @@ async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): 
   const { env, body, actor } = c;
   requireOwner(env, actor);
   const git = gitHost(env);
-  if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories, so a project's repository cannot move to it", 404, "move the project to the Studio server");
   const project = ref.name;
   const p = await L.project();
   // A record from before records named the branch has none, and before the
@@ -1396,7 +1237,6 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
   const { env, body, actor } = c;
   requireOwner(env, actor);
   const git = gitHost(env);
-  if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories, so no task moves to it", 404, "migrate tasks on the Studio server");
   const p = await L.project();
   const main = await projectBranch(env, p);
   const item = await L.item(id);
@@ -1404,9 +1244,9 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
   const fork = `${ref.key}/${branch}`;
   const command = `atelier migrate ${id} --project ${ref.name}`;
   const holder = item.owner ? `the holder runs atelier claim ${id} --as ${item.owner}` : `the next builder runs atelier claim ${id} --as H/M`;
-  if (item.fork === fork) return json({ item, branch, head: item.head, migrated: false, remote: gitRemote(c, ref.name), next: holder });
+  if (item.workspace === fork) return json({ item, branch, head: item.head, migrated: false, remote: gitRemote(c, ref.name), next: holder });
   assertNotTerminal(item);
-  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace on Artifacts, so nothing moves; its claim here makes ${branch}`, 409, `run atelier claim ${id} --as H/M`);
+  if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace on Artifacts, so nothing moves; its claim here makes ${branch}`, 409, `run atelier claim ${id} --as H/M`);
   const head = item.head ?? item.base;
   if (!head) throw new RuleError("no_head", `${id} records no head or base, so there is nothing to carry`, 409, `only the developer can: release ${id} with atelier release ${id}, so its next claim starts it here`);
   const { remote, token } = sourceOf(body, command);
@@ -1422,7 +1262,7 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
     throw new RuleError("fetch_failed", detail, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
   }
   let moved: Item;
-  try { moved = await L.migrateFork(id, fork, actor, { from: item.fork, head, tip: done.tip, remote: shownRemote(remote) }); }
+  try { moved = await L.migrateFork(id, fork, actor, { from: item.workspace, head, tip: done.tip, remote: shownRemote(remote) }); }
   catch (error) {
     if (done.carried) await git.dropBranch({ key: ref.key, projectBranch: main, branch, task: id, at: head });
     throw error;
@@ -1436,7 +1276,6 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
 // never undoing the merge; `atelier projects move-host P --push-back` retries.
 async function pushBackAfterMerge(env: Env, L: ReturnType<typeof ledger>, key: string, p: ProjectRecord, actor: string): Promise<Record<string, unknown> | null> {
   const git = gitHost(env);
-  if (!git) return null;
   let r;
   try { r = await git.pushBack({ key, branch: await projectBranch(env, p) }); }
   catch (error) { r = { remote: git.wayBackOf(key)?.remote ?? "", error: "push_failed", detail: String((error as Error)?.message ?? error).slice(0, 300) }; }
@@ -1450,14 +1289,13 @@ async function pushBackAfterMerge(env: Env, L: ReturnType<typeof ledger>, key: s
 // after L.claim recorded it: the task's branch, t/N (plan/N for a plan), is
 // made in the project's repository at the tip of the branch it starts from
 // (the project's, or a part's plan branch) unless it exists, and recorded as
-// the item's fork (KEY/t/N, which src/git/artifacts.mjs reads as the branch)
-// with that tip as its base. A branch already recorded that holds nothing of
-// its own is moved to the tip its start has reached since, as moveEmptyFork
-// re-forked an empty fork. The task grant is minted and recorded as the
-// item's write token, which rotates the old one; a runner's claim gets the
-// same grant as its workspace token. No Artifacts call is made. A failure
+// the item's workspace (KEY/t/N, which src/git/local-repos.mjs reads as the
+// branch) with that tip as its base. A branch already recorded that holds
+// nothing of its own is moved to the tip its start has reached since. The
+// task grant is minted and recorded as the item's write token, which rotates
+// the old one; a runner's claim gets the same grant as its workspace token. A failure
 // gives up a claim this call took; a holder claiming again keeps the item.
-type GitClaim = { key: string; project: string; id: string; actor: string; item: Item; needsFork: boolean; generation: number; replaces: string | null; heldBefore: boolean };
+type GitClaim = { key: string; project: string; id: string; actor: string; item: Item; generation: number; replaces: string | null; heldBefore: boolean };
 async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t: GitClaim) {
   const { key, id, actor, item, generation } = t;
   const proved = !!c.token;
@@ -1467,22 +1305,22 @@ async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t:
   const p = await L.project();
   const main = await projectBranch(c.env, p);
   const branch = itemBranch(item), from = startBranch(item, main);
-  const fork = `${key}/${branch}`;
+  const workspace = `${key}/${branch}`;
   try {
     // A workspace recorded on an Artifacts fork is moved to this server by
     // the migration, not by a claim.
-    if (item.fork && item.fork !== fork) {
-      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
+    if (item.workspace && item.workspace !== workspace) {
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.workspace}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
     }
     const made = await git.claimBranch({ key, projectBranch: main, branch, from });
     if (!made.head) {
       throw new RuleError("empty_branch", `${from} has no commits on this server yet, so ${id} has nothing to start from`, 409,
         from === main ? `only the developer can: run atelier init in ${p.name}'s checkout, which pushes ${main}` : `claim ${item.plan} first, then run atelier claim ${id} --as ${actor}`);
     }
-    if (!item.fork) await L.setFork(id, fork, made.head, actor, proved, generation);
+    if (!item.workspace) await L.setWorkspace(id, workspace, made.head, actor, proved, generation);
     else if (item.kind !== "plan" && (!item.head || item.head === item.base)) {
       const to = await git.moveEmptyBranch({ key, projectBranch: main, branch, from, base: item.base });
-      if (to && to !== item.base) await L.moveFork(id, actor, fork, item.base, to, proved);
+      if (to && to !== item.base) await L.moveWorkspace(id, actor, workspace, item.base, to, proved);
     }
   } catch (err) {
     await giveUp(err);
@@ -1511,174 +1349,14 @@ async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t:
   };
 }
 
-// A part whose fork holds nothing beyond the commit it forked from starts
-// from its plan branch's head when that branch has moved since, so its
-// builder sees every part integrated since (docs/orchestrator.md, section 5).
-// An ordinary task likewise starts from main's head (t462): a task claimed
-// and released without commits is branchless, which the task refresh leaves
-// alone because its next claim starts it from main as main is then
-// (src/refresh/standing.ts), and this is that start. A plan is never moved.
-// Artifacts cannot move a repository's branch, so the fork is deleted and
-// forked again from the plan's fork, or the baseline, under the same name, which keeps the
-// workspace's remote, and the Ledger records the new head as the part's base
-// and head. A fork with a head of its own, in the Ledger or in Artifacts, is
-// left as it is; a fork found missing, which a move that did not finish
-// leaves, is forked again. A move that forked again but failed to record it
-// leaves a fork whose head is a later commit of the plan's branch than the
-// recorded base: that head is on the plan's branch and holds the base, so
-// the fork holds nothing of its own, and the move is finished, by recording
-// it when it is the branch's head and by forking again otherwise. A head
-// the search cannot place on the plan's branch within MOVE_BUDGET is taken
-// for the builder's own and kept. The fork's head is read again before
-// each attempt to delete it, and a head that changed in between, as a push
-// would, is kept. True when the fork was moved: the repository and every token it had
-// are gone. A move that only records the head returns false: the fork and
-// its tokens stand.
-const MOVE_BUDGET = { commits: 500, reads: 5 };
-async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean, generation: number): Promise<boolean> {
-  if (item.kind === "plan" || (item.kind === "part" && !item.plan) || !item.fork) return false;
-  if (item.head && item.head !== item.base) return false;
-  // The branch the fork starts from: the plan's, for a part; main, for a task.
-  const planFork = item.kind === "part" ? (await L.item(item.plan!)).fork : project.repo;
-  if (!planFork) return false;
-  const fork = item.fork;
-  // Every read and change against Artifacts here is a step a transient
-  // failure retries, then answers as a 503 (artifactsStep, t349).
-  // Main's head that cannot be read leaves a task's claim on its fork as it
-  // stands, as a refresh would wait: the claim is not failed for it.
-  const planHead = item.kind === "part"
-    ? await headOf(env, planFork)
-    : await mainHeadOf(env, L);
-  if (!planHead || planHead === item.base) return false;
-  // A read of this task's fork that finds it still being prepared is reported
-  // as a claim of a new fork is (reportNotReady, t18); the plan's fork and
-  // main are other repositories, and answer not_ready as they did.
-  const onFork = <T>(read: () => Promise<T>): Promise<T> => read().catch((err) => reportNotReady(L, { id: item.id, name: fork, actor, generation, proved }, err));
-  const forkHead = () => onFork(async () => {
-    const head = await headOf(env, fork);
-    await L.forkReady(item.id);
-    return head;
-  }).catch((err) => {
-    if (!NOT_FOUND.test(codeOf(err))) throw err;
-    return null;
-  });
-  const holds = (from: string, target: string) => artifactsStep(`read the history of ${planFork}`, () => holdsCommit(env, planFork, from, target, MOVE_BUDGET));
-  const observed = await forkHead();
-  if (observed && observed !== item.base) {
-    const onBranch = (await holds(planHead, observed)).holds === true
-      && (!item.base || (await holds(observed, item.base)).holds === true);
-    if (!onBranch) return false;
-    if (observed === planHead) {
-      await L.moveFork(item.id, actor, fork, item.base, observed, proved);
-      return false;
-    }
-  }
-  // Each attempt at the delete reads the fork's head first, so a push made
-  // while an earlier attempt failed and waited, with a token still live, is
-  // kept rather than deleted. A delete or a fork whose answer was lost is
-  // found done by its retry: the fork already gone, or already made again
-  // under its name. A fork that is gone counts as deleted; one that stands
-  // with a head other than `observed` is kept, and nothing is moved.
-  const deleted = await onFork(() => artifactsStep(`delete ${fork}`, async () => {
-    const now = await headOf(env, fork).catch((err) => {
-      if (!NOT_FOUND.test(codeOf(err))) throw err;
-      return undefined;
-    });
-    if (now === undefined) return true;
-    if (now !== observed) return false;
-    await env.ARTIFACTS.delete(fork);
-    return true;
-  }, (err) => NOT_FOUND.test(codeOf(err)))).catch((err) => {
-    if (!NOT_FOUND.test(codeOf(err))) throw err;
-    return true;
-  });
-  if (!deleted) return false;
-  const remade = await artifactsStep(`fork ${planFork} as ${fork}`, async () => {
-    using plan = await env.ARTIFACTS.get(planFork);
-    await plan.fork(fork, { description: taskForkMark(fork), defaultBranchOnly: true });
-    return true;
-  }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
-    if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
-    return false;
-  });
-  // A fork found under the name is taken only as this move's own (t641).
-  if (!remade) await onFork(() => assertMadeAs(env, fork, (d) => madeAsTaskFork(d, fork, [project.name], item.id), `${project.name} ${item.id}'s fork`));
-  const base = await onFork(() => headOf(env, fork));
-  if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
-  await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
-  return true;
-}
-
-// A task's fork: made from `from` under the item's name, or taken when an
-// earlier attempt made it (t349), and its head read, which waits for a fork
-// Artifacts is still preparing. Only an earlier attempt's fork is taken: a
-// repository made for anything else under this name is refused before any
-// token is made for it (the reviews of t641).
-//
-// A fork that does not become ready within the request is reported (t18, from
-// 2026-10-11, when every claim of one task for half an hour answered not_ready
-// and nothing told the developer the fork was stuck). The Ledger remembers the
-// first not_ready across retries and releases, the answer says how long the
-// fork has been preparing and what to do next, and after FORK_STUCK_MS a
-// fork.stuck event names the repository and the remedy. Atelier deletes no
-// fork. A claim that is no longer held when the answer comes records nothing.
-//
-// A fork whose request was cut off before Artifacts answered, as a claim that
-// timed out after 60 s left three in miqra on 2026-10-25, could stay
-// preparing for good (t286). The Ledger notes each request until its answer
-// comes; a claim that finds the fork unready with a request unanswered past
-// FORK_REQUEST_MS, or the fork preparing past FORK_REPLACE_MS, moves the task
-// to a fork under a new name and makes that one in the same claim
-// (Ledger.replaceUnreadyFork). Returns the name of the fork made and its head.
-type TaskFork = { id: string; name: string; from: string; project: string; names: string[]; actor: string; generation: number; proved: boolean };
-async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork, replaced = false): Promise<{ name: string; head: string | null }> {
-  try {
-    const noted = await L.forkRequested(t.id, t.name, t.actor, t.generation);
-    const made = await artifactsStep(`fork ${t.from} as ${t.name}`, async () => {
-      using base = await env.ARTIFACTS.get(t.from);
-      await base.fork(t.name, { description: taskForkMark(t.name), defaultBranchOnly: true });
-      return true;
-    }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
-      if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
-      return false;
-    });
-    // A claim that finds the fork already there drops the note it made just
-    // now, so an answered fork is not taken for one whose request was cut off.
-    if (made || noted) await L.forkAnswered(t.id, t.name);
-    // A fork found under the name is taken only as this task's own (t641).
-    if (!made) await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
-    return { name: t.name, head: await headOf(env, t.name) };
-  } catch (err) {
-    if (!replaced && parseRuleError(err)?.code === "not_ready") {
-      const to = await L.replaceUnreadyFork(t.id, t.name, t.actor, t.generation);
-      if (to) return readyTaskFork(env, L, { ...t, name: to }, true);
-    }
-    return reportNotReady(L, t, err);
-  }
-}
-
-// A not_ready answer for the task's fork, as the claim gives it: the Ledger
-// remembers when the fork was first seen unready, the answer says how long it
-// has been and what to do next, and a fork stuck past the limit is recorded
-// once as an event (t18). Any other failure, and a claim no longer held, are
-// thrown as they came. Both ways of reading a task's fork on a claim use it:
-// a new fork (readyTaskFork) and a fork moved to a branch that has advanced
-// (moveEmptyFork).
-async function reportNotReady(L: ReturnType<typeof ledger>, t: { id: string; name: string; actor: string; generation: number; proved: boolean }, err: unknown): Promise<never> {
-  if (parseRuleError(err)?.code !== "not_ready") throw err;
-  const view = await L.forkNotReady(t.id, t.name, t.actor, t.generation, t.proved);
-  if (!view) throw err;
-  throw new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503, "wait a few seconds, then run the same command again");
-}
-
 // Main's head as the baseline holds it now, for the Ledger, which cannot read
-// Artifacts; null when the baseline cannot be read, so a view still renders.
+// the repository; null when the project's branch cannot be read, so a view still renders.
 async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<string | null> {
   try { return await headOf(env, (await L.project()).repo); } catch { return null; }
 }
 
 // A task's refresh as its leaseholder reports it (t462): with a head, the
-// merge it pushed, verified on the fork — the fork's head, with the head the
+// merge it pushed, verified on the branch — the branch's head, with the head the
 // lease found as its first parent and the lease's main head as its second —
 // and the Agent line its message ends with, which the Ledger matches to who
 // made it; with none, the finding that the task's head already holds main,
@@ -1689,23 +1367,23 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
   const hash = /^[a-f0-9]{40,64}$/;
   if (!hash.test(mainHead) || !hash.test(expectedHead) || (head !== null && !hash.test(head))) throw new RuleError("bad_head", "mainHead, expectedHead and head must be full commit hashes", 400);
   const item = await L.item(id);
-  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+  if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
   let agent: string | null = null;
   if (head) {
-    using repo = await env.ARTIFACTS.get(item.fork);
+    using repo = await env.REPOS.get(item.workspace);
     const log = await repo.log({ limit: 20 });
     const commit = log.find((c) => c.hash === head);
     const reasons = [
-      ...(log[0]?.hash !== head ? [`${head.slice(0, 8)} is not the fork's head${log[0] ? ` (${log[0].hash.slice(0, 8)} is)` : ""}`] : []),
+      ...(log[0]?.hash !== head ? [`${head.slice(0, 8)} is not the branch's head${log[0] ? ` (${log[0].hash.slice(0, 8)} is)` : ""}`] : []),
       ...(!commit ? [] : commit.parents?.length !== 2 || commit.parents[0] !== expectedHead || commit.parents[1] !== mainHead
         ? [`${head.slice(0, 8)}'s parents are ${(commit.parents ?? []).map((p) => p.slice(0, 8)).join(", ") || "none"}, not the task's head ${expectedHead.slice(0, 8)} then main's ${mainHead.slice(0, 8)}`] : []),
     ];
     if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
     agent = agentLine(commit?.message ?? "");
   } else {
-    const top = await headOf(env, item.fork);
-    const held = top === expectedHead && (await holdsCommit(env, item.fork, expectedHead, mainHead)).holds === true;
-    if (!held) throw new RuleError("unverified_merge", `${id}'s fork is not at ${expectedHead.slice(0, 8)} holding main's head ${mainHead.slice(0, 8)}, and no merge was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
+    const top = await headOf(env, item.workspace);
+    const held = top === expectedHead && (await holdsCommit(env, item.workspace, expectedHead, mainHead)).holds === true;
+    if (!held) throw new RuleError("unverified_merge", `${id}'s branch is not at ${expectedHead.slice(0, 8)} holding main's head ${mainHead.slice(0, 8)}, and no merge was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
   }
   const transformations = Array.isArray(body.transformations) ? body.transformations.filter((t: unknown): t is string => typeof t === "string").map((t: string) => t.slice(0, 40)) : [];
   const patch = (v: unknown) => (typeof v === "string" && hash.test(v) ? v : null);
@@ -1713,7 +1391,7 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
   // Ledger judges it, with the resolver the lease names.
   const retention = head && (item.head === expectedHead || item.head === head) ? await retentionOf(env, L, item, head, expectedHead) : null;
   const r = await L.taskRefreshed(id, actor, { lease: String(body.lease ?? ""), mainHead, expectedHead, head, agent, diffBefore: patch(body.diffBefore), diffAfter: patch(body.diffAfter), transformations, retention }, true);
-  if (r.revoke) await revoke(env, item.fork, r.revoke);
+  if (r.revoke) await revoke(env, r.revoke);
   return r;
 }
 
@@ -1724,22 +1402,22 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
 // The merge base is the newest plan-branch commit the part's head holds: a
 // part head that holds the branch's head merges cleanly; otherwise the base
 // is the plan head the part's last rework merged (`planHead`), when the part
-// head holds it, else the commit the part forked from. The history search is
+// head holds it, else the commit the part branched from. The history search is
 // bounded by PREDICT_BUDGET, and a search that stops at it falls back to the
-// fork point.
+// branch point.
 const PREDICT_BUDGET = { commits: 500, reads: 5 };
-async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; fork: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
+async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; workspace: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
   const key = plan.dispatch?.part, head = plan.dispatch?.head;
-  if (!key || !plan.fork || !head) return null;
+  if (!key || !plan.workspace || !head) return null;
   const { part, planHead } = await L.integrationTarget(plan.id, key);
-  if (!part.fork || !part.head || !part.base) return null;
-  const partFork = part.fork, partHead = part.head;
+  if (!part.workspace || !part.head || !part.base) return null;
+  const partWorkspace = part.workspace, partHead = part.head;
   try {
-    using planRepo = await env.ARTIFACTS.get(plan.fork);
-    using partRepo = await env.ARTIFACTS.get(partFork);
+    using planRepo = await env.REPOS.get(plan.workspace);
+    using partRepo = await env.REPOS.get(partWorkspace);
     const [planTop] = await planRepo.log({ limit: 1 });
     if (!planTop) return null;
-    const holds = (target: string) => holdsCommit(env, partFork, partHead, target, PREDICT_BUDGET);
+    const holds = (target: string) => holdsCommit(env, partWorkspace, partHead, target, PREDICT_BUDGET);
     const top = await holds(planTop.hash);
     if (top.holds === true) return null;
     const base = mergeBaseFor(top.holds, planHead, part.base, planHead && planHead !== part.base ? (await holds(planHead)).holds : null);
@@ -1752,44 +1430,14 @@ async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { i
   }
 }
 
-// What Artifacts says of a token it no longer honours: the token, or the
-// repository it was for, is not found, or the token has expired or was
-// already revoked.
-const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
-
-// Revokes a write token before its holder loses the item. It succeeds when
-// Artifacts revokes the token, answers that it holds no such token
-// (revokeToken resolves false), or fails with TOKEN_GONE. Any other failure
-// throws a 503, and the caller, which has changed nothing yet, fails with
-// it: the holder keeps the item, the token stays recorded, and a retry
-// revokes it.
-async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  // A Git credential of the Node server (`git:HASH`) is live only while the
-  // Ledger records it; the change of record is its revocation.
-  if (!tokenId || tokenId.startsWith("runner:") || tokenId.startsWith("git:")) return;
-  // A grant recorded against an agent token (keepGitGrant) is revoked in the
-  // grant store.
-  // It waits for the pushes made with the grant, so none ends after this.
-  if (tokenId.startsWith("grant:")) { await gitHost(env)?.revokeAfterPushes(tokenId.slice("grant:".length)); return; }
-  // A write token is recorded only once its fork exists (the claim route
-  // sets the fork, then mints and records the token), so a token with no
-  // repository means the caller read the fork before a claim made both. It
-  // is refused, never passed over, or the token would stay live off the record (t653).
-  if (!repo) throw new RuleError("workspace_changed", "the task was claimed while this was asked, so its new workspace token was not revoked and nothing was changed; try again", 409, "run the same command again");
-  const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
-  try {
-    // A transient failure is retried first (t349); revoking twice is harmless.
-    await withRetry(async () => {
-      using r = await env.ARTIFACTS.get(repo);
-      await r.revokeToken(tokenId);
-    }, { permanent: gone, onRetry: (err, attempt) => console.warn(errorLine(`revoke a write token for ${repo} (attempt ${attempt}, retrying)`, err)) });
-  } catch (err) {
-    if (gone(err)) return;
-    console.error(errorLine(`revoke a write token for ${repo}`, err));
-    throw new RuleError("revoke_failed", "the workspace's write token could not be revoked, so nothing was changed; try again", 503);
-  }
+// Revokes a Git grant recorded against an agent token (keepGitGrant) in the
+// grant store, waiting for the pushes made with it, so none ends after this.
+// A task's write token (`git:HASH`) is live only while the Ledger records
+// it, so the change of record is its revocation; a runner's, or a token an
+// imported 1.0 record still names, has nothing here to revoke.
+async function revoke(env: Env, tokenId: string | null) {
+  if (tokenId?.startsWith("grant:")) await gitHost(env).revokeAfterPushes(tokenId.slice("grant:".length));
 }
-
 // A list of strings from a request body: a project's checks, protected paths
 // and eligible agents, an item's scope. Absent is the empty list. Otherwise
 // it must be an array whose every entry is a string with something in it; a
@@ -1833,7 +1481,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The token stops working first, so no new Git token is minted for it
       // while its recorded ones are revoked (t598).
       const revoked = await I.revokeAgentToken(parts[1]);
-      if (revoked) await revokeAgentArtifacts(env, parts[1]);
+      if (revoked) await revokeAgentGrants(env, parts[1]);
       return json({ revoked });
     }
     throw new RuleError("not_found", "no such route", 404);
@@ -2244,13 +1892,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "move-host" && parts.length === 3 && m === "POST") return await moveHost(c, ref, L);
   if (parts[2] === "git-token" && parts.length === 3 && m === "POST") {
     const git = gitHost(env);
-    if (!git) throw new RuleError("not_found", "this server hosts no Git repositories", 404);
     const p = await L.project();
     const branch = await projectBranch(env, p);
     const remote = gitRemote(c, project);
     if (body.kind === "read") {
       const g = await gitRead(c, git, ref.key, project, actor, branch);
-      return json({ kind: "read", ...g });
+      if (body.item === undefined || body.item === null) return json({ kind: "read", ...g, repository: "server" });
+      // With a task named, what its readers clone: its own branch (null
+      // before its first claim makes it) with its recorded head and base, and
+      // the branch it merges into, the plan's for a part and the project's
+      // otherwise, as `into`.
+      const id = String(body.item);
+      if (!/^t[0-9]+$/.test(id)) throw new RuleError("bad_item", "name the task as tN", 400);
+      const item = await L.item(id);
+      return json({ kind: "read", ...g, repository: "server", branch: item.workspace ? itemBranch(item) : null, into: startBranch(item, branch), head: item.head, base: item.base });
     }
     if (body.kind !== "task" && body.kind !== "landing") throw new RuleError("bad_kind", "kind is read, task or landing", 400);
     const id = String(body.item ?? "");
@@ -2288,8 +1943,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
     // A task whose work is still on its Artifacts fork has no branch here
     // yet; a grant now would let a push make t/N apart from that work.
-    if (item.fork && item.fork !== `${ref.key}/${itemBranch(item)}`) {
-      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration, so no credential was issued`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
+    if (item.workspace && item.workspace !== `${ref.key}/${itemBranch(item)}`) {
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.workspace}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration, so no credential was issued`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
     }
     // recordToken waits for the pushes in flight on the task (src/runtime/ledger-locks.mjs).
     const slot = await L.tokenSlot(id);
@@ -2413,24 +2068,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // developer's checkout and sends with the path, so a claim can carry it
     // to a builder with no checkout (the lessons audit's amendment to task 5).
     const proseText = has("proseStandardText") ? proseStandardTextArg(body.proseStandardText) : undefined;
-    const git = gitHost(env);
-    if (git) {
-      // On the Node server the project's repository is a bare repository the
-      // server hosts (design section 4.3), made here with its HEAD on the
-      // project's branch; the developer pushes it with the server token.
-      const existing = known ? (await L.project().catch(() => null))?.branch ?? null : null;
-      if (!existing) init.branch ??= "main";
-      await git.createRepo({ key: ref.key, branch: branch ?? existing ?? "main" });
-    } else try {
-      await env.ARTIFACTS.create(repo, { description: baselineMark(project), setDefaultBranch: branch ?? "main" });
-      // A baseline created without a branch named was created on main.
-      init.branch ??= "main";
-    } catch (err) {
-      if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
-      // A project new here takes a repository already under its baseline's
-      // name only when an earlier init of it made that repository (t641).
-      if (!known) await assertMadeAs(env, repo, baselineMark(project), `${project}'s baseline`);
-    }
+    // The project's repository is a bare repository the server hosts
+    // (design section 4.3), made here with its HEAD on the project's branch;
+    // the developer pushes it with the server token.
+    const existing = known ? (await L.project().catch(() => null))?.branch ?? null : null;
+    if (!existing) init.branch ??= "main";
+    await gitHost(env).createRepo({ key: ref.key, branch: branch ?? existing ?? "main" });
     const record = await L.initProject(init, actor);
     // The text goes with the path it was read from: a path given without
     // text, a cleared standard and a reset each forget the text kept before.
@@ -2453,10 +2096,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
       install: async (snapshot) => { await L.poolChanged(models, snapshot); const standard = await standardReviewers(env); await L.setStandardReviewers(standard.admissions, standard.version); },
     });
-    // The developer's push of the project's branch: on the Node server to
-    // the repository's remote with the server token, so no token is minted.
-    if (git) return json({ project: record, baseline: { remote: gitRemote(c, project), defaultBranch: await projectBranch(env, record) } });
-    return json({ project: record, baseline: await mintFor(c, repo, "write", await projectBranch(env, record)) });
+    // The developer's push of the project's branch goes to the repository's
+    // remote with the server token, so no token is minted.
+    return json({ project: record, baseline: { remote: gitRemote(c, project), defaultBranch: await projectBranch(env, record) } });
   }
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
@@ -2481,7 +2123,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Runner clients need policy/configuration here, not unrelated tasks or
     // their history. Job detail routes below enforce the claim binding.
     if (c.token?.runner) return json({ project: await L.project(), items: [], events: [] });
-    return json({ project: await L.project(), items: await itemsWithPreparation(L), events: await L.events(undefined, 50) });
+    return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
   }
   // The owner gives the project a new name. The index decides and refuses a
   // clash; the project's own record follows. If that second write did not
@@ -2638,7 +2280,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409, `run atelier land ${item} --post-merge status`);
     if (body.action === "prepare") {
       if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409, `run atelier merge ${item}, then record the merge`);
-      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      using repo = await env.REPOS.get((await L.project()).repo);
       const before = await repo.readCommit(run.before), after = await repo.readCommit(run.after);
       if (!before || !after) throw new RuleError("missing_history", "post-merge diff history is unavailable", 409);
       const paths = await changedPaths(repoReader(repo), before.treeHash, after.treeHash);
@@ -2649,7 +2291,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (step?.class === "deploy" && ((body.action === "finish" && body.passed === true) || (body.action === "reconcile" && body.resolution === "completed"))) {
       // Observe independently of the executor's command result. No owner
       // credential is sent to the version endpoint and redirects are refused.
-      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      using repo = await env.REPOS.get((await L.project()).repo);
       const commit = await repo.readCommit(run.after!);
       if (!commit) throw new RuleError("missing_history", "deployment source unavailable", 409);
       const node = await walk(repoReader(repo), commit.treeHash, ["src", "route-level.ts"]);
@@ -2669,75 +2311,51 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
   }
-  if (parts[2] === "baseline-token" && m === "POST") {
-    const scope = body.scope === "write" ? "write" : "read";
-    if (scope === "write") requireOwner(env, actor);
-    const p = await L.project();
-    // On the Node server a read is a read grant; the developer writes the
-    // project's branch with the server token itself (docs/branches.md).
-    const git = gitHost(env);
-    // `repository: "server"` says the repository is the baseline, which only
-    // a landing moves: sync and wrap read it (Atelier 2.0, task 11).
-    if (git && scope === "read") return json({ ...(await gitRead(c, git, ref.key, project, actor, await projectBranch(env, p))), repository: "server" });
-    if (git) return json({ remote: gitRemote(c, project), token: null, defaultBranch: await projectBranch(env, p), repository: "server" });
-    return json(await mintFor(c, p.repo, scope, await projectBranch(env, p)));
-  }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
-  // in progress carried between the developer's Macs, in a repository of
-  // the project's own beside the baseline. Every route is the developer's:
-  // agentRoute and runnerRoute give an agent or runner token none of them,
-  // and requireOwner refuses any other actor the developer's token names.
-  // POST branches/token { scope } mints a token for that repository alone,
-  // never for the baseline, making the repository on the first write from
-  // the baseline's branch; POST branches { name, commit, host } records a
-  // push, once the repository holds that commit on that branch; GET lists
-  // the recorded branches, newest push first.
+  // in progress carried between the developer's Macs, as dev/NAME in the
+  // project's repository (design section 4.3), which the hook lets only the
+  // server token write. Every route is the developer's: agentRoute and
+  // runnerRoute give an agent or runner token none of them, and requireOwner
+  // refuses any other actor the developer's token names. POST
+  // branches/token { scope } answers the repository's remote: a write goes
+  // with the server token, so none is minted, and a read with a read grant;
+  // POST branches { name, commit, host } records a push, once the repository
+  // holds that commit on that branch; GET lists the recorded branches, newest
+  // push first.
   if (parts[2] === "branches") {
     requireOwner(env, actor);
     const p = await L.project();
-    const repo = await branchesRepoName(ref.key);
-    // A baseline registered under that name before the prefix was reserved
-    // would be shared with it: refused rather than handed out.
-    const clash = (await index(env).projects()).find((q) => q.repo === repo);
-    if (clash) throw new RuleError("repo_taken", `${repo} is the baseline of ${clash.name}, so ${p.name} cannot keep its branches there; nothing was minted`, 409);
-    const made = await L.branchesRepo() === repo;
-    if (parts.length === 3 && m === "GET") return json({ repo, prefix: DEVELOPER_BRANCH_PREFIX, branches: await L.developerBranches() });
+    if (parts.length === 3 && m === "GET") return json({ prefix: DEVELOPER_BRANCH_PREFIX, branches: await L.developerBranches() });
     if (parts.length === 4 && parts[3] === "token" && m === "POST") {
-      const scope = body.scope === "write" ? "write" : "read";
-      if (scope === "write") await developerBranchesRepo(env, L, actor, ref.key, p.repo, repo, p.name);
-      else if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404, "run atelier branch push NAME");
-      const minted = await mintFor(c, repo, scope, await projectBranch(env, p));
-      return json({ ...minted, repo, prefix: DEVELOPER_BRANCH_PREFIX });
+      const branch = await projectBranch(env, p);
+      if (body.scope !== "write") return json({ ...(await gitRead(c, gitHost(env), ref.key, project, actor, branch)), prefix: DEVELOPER_BRANCH_PREFIX });
+      return json({ remote: gitRemote(c, project), token: null, defaultBranch: branch, prefix: DEVELOPER_BRANCH_PREFIX });
     }
     if (parts.length === 3 && m === "POST") {
       const branch = await projectBranch(env, p);
       const name = developerBranch(body.name, branch);
       if (name !== body.name) throw new RuleError("bad_branch", `name the branch in full, as ${name}`, 400);
       const host = branchHost(body.host);
-      if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404, "run atelier branch push NAME");
       const commit = String(body.commit ?? "");
       if (!/^[0-9a-f]{40}$/.test(commit)) throw new RuleError("bad_commit", "commit must be a 40-character commit id", 400);
-      const readTop = () => artifactsStep(`read ${name} in ${repo}`, async () => {
-        using r = await env.ARTIFACTS.get(repo);
-        return (await r.log({ ref: name, limit: 1 }))[0] ?? null;
-      }, (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
-        if (NOT_FOUND.test(codeOf(err))) return null;
-        throw err;
-      });
+      const readTop = async () => {
+        using r = await env.REPOS.get(p.repo);
+        return (await r.log({ ref: `refs/heads/${name}`, limit: 1 }))[0] ?? null;
+      };
       // Compare-and-set (t641): the branch's record is read, then its tip
-      // in the branches repository, and the push is recorded only if the
+      // in the repository, and the push is recorded only if the
       // record is still the one read. A record another Mac wrote in between
       // sends this round again, which then finds that Mac's commit as the
       // tip and answers branch_moved; an older push never replaces it. The
-      // reads of the tip are the Worker's, outside the Ledger, so one that
-      // fails answers 503 and records nothing.
+      // reads of the tip are the server's, outside the Ledger, so one that
+      // fails records nothing.
       for (let round = 1; ; round++) {
         const expected = await L.developerBranch(name);
         const top = await readTop();
         if (!top || top.hash !== commit) {
-          if (round === 1 && !(expected && top && expected.commit === top.hash)) throw new RuleError("branch_not_pushed", `${repo} holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409, `atelier branch push ${name}`);
+          if (round === 1 && !(expected && top && expected.commit === top.hash)) throw new RuleError("branch_not_pushed", `${p.name}'s repository holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409, `atelier branch push ${name}`);
           const from = expected && top && expected.commit === top.hash ? ` from ${expected.host}` : "";
-          return json({ error: "branch_moved", detail: `another Mac pushed ${name} since: the branches repository holds ${top ? top.hash.slice(0, 8) : "no such branch"}${from}, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`, tip: top?.hash ?? null, current: expected }, 409);
+          return json({ error: "branch_moved", detail: `another Mac pushed ${name} since: the repository holds ${top ? top.hash.slice(0, 8) : "no such branch"}${from}, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`, tip: top?.hash ?? null, current: expected }, 409);
         }
         const subject = top.message.split("\n")[0].slice(0, 200);
         const committedAt = Number.isFinite(top.committedAt) ? new Date(top.committedAt * 1000).toISOString() : null;
@@ -2841,7 +2459,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
     return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields), 201);
   }
-  if (parts.length === 3 && m === "GET") return json(await itemsWithPreparation(L));
+  if (parts.length === 3 && m === "GET") return json(await L.items());
 
   const id = parts[3];
   const verb = parts[4];
@@ -2866,8 +2484,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "sandbox") throw sandboxRemoved();
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
-    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
-    return json(await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, (await L.project()).repo), item.fork));
+    if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+    return json(await itemDiff(env.REPOS, await baseRepo(env, L, item, (await L.project()).repo), item.workspace));
   }
   // A whole check log or review diff kept in R2 (src/large.ts), served by the
   // sha256 that names it. The key is rebuilt from the project and item the
@@ -2908,91 +2526,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409, `wait for the builder to push the fix, then run atelier show ${id}`);
         }
       }
-      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
+      const { item, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
       try {
-        const git = gitHost(env);
-        if (git) return json(await claimOnGit(c, git, L, { key: ref.key, project, id, actor, item, needsFork, generation, replaces, heldBefore: before.owner === actor }));
-        const p = await L.project();
-        let fork = item.fork, moved = false;
-        if (needsFork) {
-          // Forks are named after the key, like the baseline, whatever the project is called now,
-          // unless the stage tick replaced a stalled one under a new name (t245).
-          const usual = (await L.forkNameFor(id)) ?? repoName(ref.key, id);
-          try {
-            // A part forks from its plan's fork at its current head, not from the
-            // baseline (docs/orchestrator.md, section 5).
-            const from = await baseRepo(env, L, item, p.repo);
-            // A fork already there under the item's name is one an earlier
-            // attempt made, in this call or in a claim that failed after it
-            // (t349): no fork is recorded for the item, so no token was ever
-            // made for it, and it is taken as this claim's fork. One that stays
-            // unready is reported (t18).
-            // The fork made may be under a new name, when the one under `usual` was unready (t286).
-            const { name, head } = await readyTaskFork(env, L, { id, name: usual, from, project: p.name, names: [...new Set([p.name, ...ref.names])], actor, generation, proved: !!c.token });
-            fork = name;
-            await L.setFork(id, name, head, actor, !!c.token, generation);
-          } catch (err) {
-            // A give-up that fails is logged, and the claim's own failure is
-            // answered: the claimer still holds an item with no fork, which its
-            // retry forks (t349).
-            await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
-            throw err;
-          }
-        } else {
-          // A part or task with nothing of its own starts again from the plan's
-          // branch, or main.
-          // A failed move gives up a claim this call took; a holder claiming
-          // again keeps the item and can retry.
-          try {
-            moved = await moveEmptyFork(env, L, item, p, actor, !!c.token, generation);
-          } catch (err) {
-            if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
-            throw err;
-          }
-        }
-        // Re-claiming rotates the token: one live write token per item, ever.
-        // If the old one cannot be revoked, the claim fails before a new one
-        // is minted, and the old one stays recorded. L.claim above is the
-        // claim's check, and it has already refused anyone who may not claim
-        // the item, so a refused claim revokes nothing: only the holder
-        // re-claiming, or the claimer of an item nobody holds, gets here, and
-        // `replaces` is the token this claim takes over.
-        // The workspace and the baseline are both given the project's branch:
-        // the fork's HEAD names it, and headOf reads HEAD. A moved fork took
-        // its tokens with the repository it replaced.
-        if (!moved) await revoke(env, fork, replaces);
-        const branch = await projectBranch(env, p);
-        if (c.token?.runner) {
-          const secret = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
-          const hash = await sha256(secret);
-          if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
-            throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409, `run atelier claim ${id} --as ${actor}`);
-          }
-          const b = await mintFor(c, p.repo, "read", branch);
-          return json({ item: await L.item(id), workspace: {
-            remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
-            expiresAt: c.token.expiresAt, defaultBranch: branch,
-          }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
-          // A runner's claim sets the same identity as any other (t451).
-          commitIdentity: p.policy.commitIdentity ?? null });
-        }
-        const w = await mintFor(c, fork!, "write", branch);
-        // The Ledger records the token only if this claim still stands (see
-        // recordToken). If it does not, the token is revoked and never
-        // returned, so its plaintext reaches no one.
-        if (!await L.recordToken(id, actor, generation, replaces, w.tokenId)) {
-          await revoke(env, fork, w.tokenId);
-          throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409, `run atelier claim ${id} --as ${actor}`);
-        }
-        const b = await mintFor(c, p.repo, "read", branch);
-        return json({
-          item: await L.item(id),
-          workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
-          baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
-          // What the claim writes into the workspace's Git config, on whatever
-          // machine it runs (t451); null when the project names none yet.
-          commitIdentity: p.policy.commitIdentity ?? null,
-        });
+        return json(await claimOnGit(c, gitHost(env), L, { key: ref.key, project, id, actor, item, generation, replaces, heldBefore: before.owner === actor }));
       } catch (err) {
         // A holder asking again for the claim it already has is never answered
         // "internal" (t705): the claim stands, so the answer says what failed and
@@ -3003,61 +2539,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("claim_failed", `${id} is still claimed by ${actor}, but the server could not finish renewing its workspace token and logged why. The old token may already be revoked and a new one may not have reached you, so the workspace's token may not work. Run atelier claim ${id} again, or atelier start ${id} --as ${actor}, which issues a new token`, 503, `run atelier claim ${id} --as ${actor} to renew it`);
       }
     }
-    // The fork-less fast build was removed (t228): a build claims with a fork
-    // in fast mode too. A runner older than that still calls these two, and
-    // the refusal names the claim; the runner reads not_fast_build and
-    // claims with a fork. Nothing is recorded.
+    // The fast build was removed (t228): a build claims its task in fast
+    // mode too. A runner older than that still calls these two, and the
+    // refusal names the claim. Nothing is recorded.
     case "fast-take":
     case "fast-ready":
-      throw new RuleError("not_fast_build", `${id} is not built fast: the fork-less fast build was removed; claim ${id} with a fork (atelier claim)`, 409, `run atelier claim ${id} --as HARNESS/MODEL`);
-    case "owner-port-token": {
-      requireOwner(env, actor);
-      const { item, generation, replaces } = await L.reserveOwnerPort(id, actor);
-      await revoke(env, item.fork, replaces);
-      const t = await mintFor(c, item.fork!, "write", await projectBranch(env, await L.project()), 300);
-      try {
-        if (!await L.recordOwnerPortToken(id, actor, generation, replaces, t.tokenId, t.expiresAt)) {
-          throw new RuleError("claim_superseded", `${id} changed while the port token was made; no token was issued`, 409, `run atelier claim ${id} --as ${actor}`);
-        }
-      } catch (error) {
-        await revoke(env, item.fork, t.tokenId);
-        throw error;
-      }
-      return json({ remote: t.remote, token: t.token, expiresAt: t.expiresAt, defaultBranch: t.defaultBranch });
-    }
-    case "read-token": {
-      const item = await L.item(id);
-      if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
-      // On the Node server a read grant for the project's repository, with
-      // the task's branch to clone alone (`branch`).
-      const git = gitHost(env);
-      if (git) {
-        const branch = itemBranch(item);
-        const t = await gitRead(c, git, ref.key, project, actor, await projectBranch(env, await L.project()));
-        return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, branch, head: item.head, base: item.base });
-      }
-      const t = await mintFor(c, item.fork, "read", await projectBranch(env, await L.project()));
-      return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
-    }
-    case "base-token": {
-      // A read token for the repository an item is measured against: the
-      // plan's fork for a part, the baseline otherwise. The part's holder
-      // reads it to run checks and diffs against the integration branch.
-      if (body.scope === "write") throw new RuleError("read_only", "a base token is read-only", 403, "ask for a write token: run atelier claim ID --as H/M");
-      const item = await L.item(id);
-      const p = await L.project();
-      // On the Node server a read grant for the project's repository, naming
-      // the branch to fetch: the plan's branch for a part, the project's
-      // otherwise.
-      const git = gitHost(env);
-      if (git) {
-        const t = await gitRead(c, git, ref.key, project, actor, startBranch(item, await projectBranch(env, p)));
-        return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch });
-      }
-      const repo = await baseRepo(env, L, item, p.repo);
-      const t = await mintFor(c, repo, "read", await projectBranch(env, p));
-      return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch });
-    }
+      throw new RuleError("not_fast_build", `${id} is not built fast: the fast build was removed; claim ${id} (atelier claim)`, 409, `run atelier claim ${id} --as HARNESS/MODEL`);
     case "push": {
       // The head the workspace says it pushed is recorded beside the one
       // Atelier reads when the two differ, so it must be a commit hash:
@@ -3067,18 +2554,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("bad_head", "head must be the full commit hash the workspace pushed, as git rev-parse HEAD prints it", 400);
       }
       const item = await L.item(id);
-      if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
-      const observed = await headOf(env, item.fork);
+      if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+      const observed = await headOf(env, item.workspace);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      const lineage = await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom);
+      const lineage = await pushLineage(env, item.workspace, observed, item.head, body.rebasedFrom);
       // A rewrite the push does not declare is refused by the Ledger, so no
       // more history is read for it.
       const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
-      const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
+      const authors = refused ? [] : await pushedAuthors(env, item.workspace, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
       const retention = refused ? null : await retentionOf(env, L, item, observed);
       const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true, retention);
       // The files the task changed at the recorded head, for the overlap rule (G13).
-      if (recorded.head === observed && !refused) await L.recordChangedFiles(id, observed, await changedSinceBase(env, item.fork, observed, await baseRepo(env, L, item, (await L.project()).repo)));
+      if (recorded.head === observed && !refused) await L.recordChangedFiles(id, observed, await changedSinceBase(env, item.workspace, observed, await baseRepo(env, L, item, (await L.project()).repo)));
       // The push scan (t332): the added lines at the recorded head are read
       // for key patterns, and the flag records only file and line, never the
       // value. The head was recorded with its scan pending, so a scan that
@@ -3106,7 +2593,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A merged check ran on the merge of the head with a main head the
       // caller names; it needs a workspace to be measured against.
       const merged = check && body.merged === true;
-      if (merged && !item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+      if (merged && !item.workspace) throw new RuleError("no_workspace", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
       // A claim (a check's command or a report's text) and a check's output
       // are stored as sent, so each over its limit is refused, not cut.
       const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
@@ -3137,23 +2624,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const refused = check ? refusalOf(e.claim) : null;
       if (refused) throw new RuleError("not_read_only", `${refusalText(e.claim, refused)}.`, 409, "check only with commands that read; run atelier check");
       // An observed check counts only against the head Atelier itself reads
-      // from Artifacts, and records the paths Atelier measures there. The
+      // from the repository, and records the paths Atelier measures there. The
       // gate decides whether a change is protected from those paths, and the
       // caller is often the item's own agent, so body.changedPaths is never
       // read. The result itself (body.passed) is the caller's word, shown as
       // run on the caller's machine. Each row names main's head as Atelier reads
       // it now; a merged check is bound to the main head it merged with,
       // which must be a commit on main's line, and measures no paths.
-      if (check && item.fork) {
+      if (check && item.workspace) {
         const p = await L.project();
-        const measured = await measureWorkspace(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+        const measured = await measureWorkspace(env.REPOS, await baseRepo(env, L, item, p.repo), item.workspace);
         if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again", 409, "run atelier push, then atelier check");
         e.changedPaths = merged ? null : measured.changedPaths;
         if (measured.main) e.mainHead = measured.main;
         if (merged) {
           const mainHead = String(body.mainHead ?? "");
           if (mainHead !== measured.main) {
-            using baseline = await env.ARTIFACTS.get(p.repo);
+            using baseline = await env.REPOS.get(p.repo);
             if (!/^[a-f0-9]{40,64}$/.test(mainHead) || !(await baseline.log({ limit: 1000 })).some((x) => x.hash === mainHead)) {
               throw new RuleError("unknown_main", `${mainHead.slice(0, 8) || "the main head given"} is not a commit on main; run atelier check --merged again`, 409, "run atelier sync, then atelier check --merged");
             }
@@ -3166,13 +2653,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // applicable, with no result, only when the paths Atelier measured
       // here show it.
       if (check && body.notApplicable === true) {
-        const why = appliesReason((await L.project()).policy, e.claim, item.fork ? e.changedPaths ?? null : null);
+        const why = appliesReason((await L.project()).policy, e.claim, item.workspace ? e.changedPaths ?? null : null);
         if (why) throw new RuleError("check_applies", why, 409);
         e.passed = null;
         e.notApplicable = true;
       }
       // The bindings a later `atelier check` reads to reuse a passing result (t232).
-      if (check && item.fork && !e.notApplicable) {
+      if (check && item.workspace && !e.notApplicable) {
         const reuse = receiptBinding(body.reuse, { project: (await L.project()).name, task: id, head: e.head, mainHead: e.mainHead ?? null, merged, command: e.claim });
         if (reuse) (e as Evidence & { reuse?: unknown }).reuse = reuse;
       }
@@ -3232,7 +2719,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const oldToken = await L.tokenId(id);
       if (body.agent && body.model) await L.poolChanged(await index(env).models());
       const before = await L.checkDispatch(id, actor, body);
-      if (before.owner) await revoke(env, before.fork, oldToken);
+      if (before.owner) await revoke(env, oldToken);
       // What chose the builder is kept on the dispatch: the suggestion's
       // reasons, or, for a builder the developer named, each build
       // assignment bearing on the task skipped for it (gpt-6-astra's seventh
@@ -3293,7 +2780,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // validates its merge commit and claimed request together in the Ledger.
       if (item.state !== "merged") {
         assertRevision(item, String(body.head ?? ""));
-        if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
+        if (item.workspace && await headOf(env, item.workspace) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
       }
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
@@ -3327,40 +2814,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runner, and the brief carries it instead of the diff's text. The
       // reviewer reads the whole diff in the clone as ever (.scratch/, t244).
       const diffRef = await storedReviewDiff(env, L, claim, ref.key, actor, !!c.token);
-      // The review job clones the part read-only, so the claim also carries a
-      // read token for the fork, as the read-token route mints one. It also
-      // carries a read token for the branch the item merges into (the plan's
-      // integration branch for a part, the baseline's for any other item, as
-      // base-token chooses), so the job can diff from the merge base of the
-      // head and that branch rather than from the fork point, which a merge
-      // of main into the task leaves behind (t230).
-      if (claim.item.fork || claim.item.state === "merged") {
-        const p = await L.project();
-        const branch = await projectBranch(env, p);
+      // The review job clones the task read-only, so the claim also carries a
+      // read grant, which reads both its branch (or, once landed, the branch
+      // it landed on) and the branch it merges into (the plan's integration
+      // branch for a part, the project's for any other item), so the job can
+      // diff from the merge base of the head and that branch rather than from
+      // the branch point, which a merge of main into the task leaves behind (t230).
+      if (claim.item.workspace || claim.item.state === "merged") {
+        const branch = await projectBranch(env, await L.project());
         const landed = landingOf(claim.item, claim.events);
-        // On the Node server one read grant reads both: the task's branch (or,
-        // once landed, the branch it landed on) and the branch it merges into.
-        const git = gitHost(env);
-        if (git) {
-          const into = startBranch(claim.item, branch);
-          const r = await gitRead(c, git, ref.key, project, actor, branch);
-          return json({
-            ...claim,
-            ...(landed ? { landed } : {}),
-            ...(diffRef ? { diffRef } : {}),
-            readToken: { remote: r.remote, token: r.token, defaultBranch: branch, branch: landed ? (landed.onPlanBranch ? into : branch) : itemBranch(claim.item) },
-            target: { remote: r.remote, token: r.token, branch: into },
-          });
-        }
-        const repo = landed?.onPlanBranch ? await baseRepo(env, L, claim.item, p.repo) : p.repo;
-        const t = await mintFor(c, landed ? repo : claim.item.fork!, "read", branch);
-        const b = await mintFor(c, await baseRepo(env, L, claim.item, p.repo), "read", branch);
+        const into = startBranch(claim.item, branch);
+        const r = await gitRead(c, gitHost(env), ref.key, project, actor, branch);
         return json({
           ...claim,
           ...(landed ? { landed } : {}),
           ...(diffRef ? { diffRef } : {}),
-          readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
-          target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
+          readToken: { remote: r.remote, token: r.token, defaultBranch: branch, branch: landed ? (landed.onPlanBranch ? into : branch) : itemBranch(claim.item) },
+          target: { remote: r.remote, token: r.token, branch: into },
         });
       }
       return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
@@ -3493,15 +2963,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const partKey = String(body.part ?? "");
       const mergeCommit = String(body.mergeCommit ?? "");
       const { plan, part, integrationHead, mainHead } = await L.integrationTarget(id, partKey);
-      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
+      if (!plan.workspace) throw new RuleError("no_workspace", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
       if (!part.head) throw new RuleError("no_head", `part ${partKey} has no verified head`, 409, `run atelier plan show ${id}`);
-      using repo = await env.ARTIFACTS.get(plan.fork);
+      using repo = await env.REPOS.get(plan.workspace);
       const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
       const reasons = verifyIntegration({ log, integrationHead: integrationHead ?? plan.base ?? "", partHead: part.head, mergeCommit });
       if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409, `run atelier plan show ${id}`);
       // A merge-main part's integration puts its main head on the plan's
       // branch when the merge commit holds it, which is read from the branch.
-      const holdsMain = mainHead ? (await holdsCommit(env, plan.fork, mergeCommit, mainHead)).holds === true : false;
+      const holdsMain = mainHead ? (await holdsCommit(env, plan.workspace, mergeCommit, mainHead)).holds === true : false;
       // The integration may let the tick dispatch a part that depends on it,
       // and the tick refreshes the branch first when main has moved, so main's
       // head is read now for it to compare.
@@ -3529,14 +2999,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // A task refresh's lease (t462, src/refresh/): the integrator's for a
       // task-refresh job, a resolver's for a task-resolve job. The answer
-      // carries a write token for the task's fork, the one live beside its
-      // holder's, revoked when the lease settles or, lapsed, when the next
-      // lease is taken; and a read token for main. A runner-scoped credential gets
-      // no write token for a fork it does not hold, so it takes neither job.
+      // carries a refresh grant, which writes the task's branch beside its
+      // holder's grant while the lease stands (src/git/host.mjs), revoked
+      // when the lease settles or, lapsed, when the next lease is taken; and
+      // a read grant for the project's branch. A runner-scoped credential gets
+      // no grant for a task it does not hold, so it takes neither job.
       if (c.token?.runner) throw runnerDenied(c.token);
       // The leaseholder renews its lease through a long run, or gives it
       // back with no outcome (a provider's usage limit, a failure before any
-      // report), and the lease's token is revoked.
+      // report), and the lease's grant is revoked.
       if (typeof body.renew === "string") return json({ lease: await L.renewRefreshLease(id, actor, body.renew) });
       // A leaseholder whose report went unanswered reads the task's head as
       // recorded now; its push is never taken back.
@@ -3545,23 +3016,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // with a reason (Ledger.releaseRefreshLease).
       if (typeof body.release === "string") {
         const { revoke: token, ...released } = await L.releaseRefreshLease(id, actor, body.release, String(body.reason ?? ""), body.providerLimit === true);
-        if (token) await revoke(env, released.item.fork, token);
+        if (token) await revoke(env, token);
         return json(released);
       }
       const job = body.job === "resolve" ? "resolve" as const : "refresh" as const;
       const { revoke: lapsed, ...leased } = await L.leaseRefresh(id, actor, typeof body.runner === "string" ? body.runner.slice(0, 80) : null, job);
-      if (lapsed) await revoke(env, leased.item.fork, lapsed);
+      if (lapsed) await revoke(env, lapsed);
+      const git = gitHost(env);
       const p = await L.project();
       const branch = await projectBranch(env, p);
-      const w = await mintFor(c, leased.item.fork!, "write", branch);
-      if (!await L.recordRefreshToken(id, leased.lease.id, w.tokenId)) {
-        await revoke(env, leased.item.fork, w.tokenId);
-        throw new RuleError("lease_lost", `${id}'s refresh lease changed while its token was made; no token was issued`, 409, `run atelier refresh-lease ${id} again`);
+      const g = git.mint({ project: ref.key, kind: "refresh", task: id, actor, lease: leased.lease.id });
+      await keepGitGrant(c, git, ref.key, g);
+      if (!await L.recordRefreshToken(id, leased.lease.id, `grant:${g.id}`)) {
+        await revoke(env, `grant:${g.id}`);
+        throw new RuleError("lease_lost", `${id}'s refresh lease changed while its grant was made; no grant was issued`, 409, `run atelier refresh-lease ${id} again`);
       }
-      const b = await mintFor(c, p.repo, "read", branch);
+      const r = await gitRead(c, git, ref.key, project, actor, branch);
+      const remote = gitRemote(c, project);
       return json({
-        ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
-        baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        ...leased, workspace: { remote, branch: itemBranch(leased.item), token: g.token, expiresAt: g.expiresAt, defaultBranch: branch },
+        baseline: { remote, token: r.token, defaultBranch: branch },
         regenerate: p.policy.regenerate ?? null, checks: p.policy.checks, commitIdentity: p.policy.commitIdentity ?? null,
         // Named in a resolver's brief (t675), which commits.
         proseStandard: p.policy.proseStandard ?? null,
@@ -3577,7 +3051,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (isRunnerRequest(c)) notFacts(body.reason, "reason");
       // The refreshed head's required checks ran, by the leaseholder (t462).
       const r = await L.refreshChecked(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), passed: body.passed === true, reason: String(body.reason ?? "") });
-      if (r.revoke) await revoke(env, (await L.item(id)).fork, r.revoke);
+      if (r.revoke) await revoke(env, r.revoke);
       return json(r);
     }
     case "refreshed": {
@@ -3589,15 +3063,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const mainHead = String(body.mainHead ?? "");
       const mergeCommit = body.mergeCommit === undefined || body.mergeCommit === null ? null : String(body.mergeCommit);
       const { plan, integrationHead } = await L.refreshTarget(id);
-      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
+      if (!plan.workspace) throw new RuleError("no_workspace", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
       if (mergeCommit) {
-        using repo = await env.ARTIFACTS.get(plan.fork);
+        using repo = await env.REPOS.get(plan.workspace);
         const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
         const reasons = verifyRefresh({ log, integrationHead: integrationHead ?? plan.base ?? "", mainHead, mergeCommit });
         if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
       } else {
-        const top = await headOf(env, plan.fork);
-        const held = top && /^[a-f0-9]{40,64}$/.test(mainHead) ? (await holdsCommit(env, plan.fork, top, mainHead)).holds : false;
+        const top = await headOf(env, plan.workspace);
+        const held = top && /^[a-f0-9]{40,64}$/.test(mainHead) ? (await holdsCommit(env, plan.workspace, top, mainHead)).holds : false;
         if (held !== true) throw new RuleError("unverified_merge", `the plan's branch does not hold main's head ${mainHead.slice(0, 8)}, and no merge commit was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
       }
       return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
@@ -3610,7 +3084,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // the task moved under it.
       if (body.lease !== undefined) {
         const r = await L.taskRefreshFailed(id, actor, { lease: String(body.lease), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), outcome: String(body.outcome ?? ""), reason: String(body.reason ?? ""), report: body.report }, await index(env).runnerOffers());
-        if (r.revoke) await revoke(env, (await L.item(id)).fork, r.revoke);
+        if (r.revoke) await revoke(env, r.revoke);
         return json(r);
       }
       // The integrator reports a refresh that conflicted or failed the plan's
@@ -3621,8 +3095,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
       }
       const { plan, integrationHead } = await L.refreshTarget(id);
-      if (plan.fork && /^[a-f0-9]{40,64}$/.test(mainHead)) {
-        using repo = await env.ARTIFACTS.get(plan.fork);
+      if (plan.workspace && /^[a-f0-9]{40,64}$/.test(mainHead)) {
+        using repo = await env.REPOS.get(plan.workspace);
         const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", mainHead);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
@@ -3643,8 +3117,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
       }
       const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
-      if (plan.fork && part.head) {
-        using repo = await env.ARTIFACTS.get(plan.fork);
+      if (plan.workspace && part.head) {
+        using repo = await env.REPOS.get(plan.workspace);
         const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", part.head);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
@@ -3669,7 +3143,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const oldToken = await L.tokenId(id);
       await L.checkHandoff(id, actor, to, note);
       const before = await L.item(id);
-      await revoke(env, before.fork, oldToken);
+      await revoke(env, oldToken);
       const item = await L.handoff(id, actor, to, note, !!c.token, oldToken);
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
@@ -3697,7 +3171,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const oldToken = await L.tokenId(id);
       await L.checkRelease(id, actor, note);
       const before = await L.item(id);
-      await revoke(env, before.fork, oldToken);
+      await revoke(env, oldToken);
       // Only a runner credential can exempt this release from plan attempts;
       // neither an actor nor a free-text note establishes infrastructure failure.
       const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true, automatic && !words);
@@ -3749,7 +3223,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // head among its parents; otherwise it is refused. A record made once
       // stands when made again (L.merged).
       if (item.state !== "merged") {
-        const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await artifactsStep(`read ${merge.slice(0, 12)}`, async () => { using r = await env.ARTIFACTS.get(p.repo); return await r.readCommit(merge); }) : null;
+        const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await (async () => { using r = await env.REPOS.get(p.repo); return await r.readCommit(merge); })() : null;
         const top = commit ? await headOf(env, p.repo) : null;
         const held = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
         if (held === null) throw new RuleError("merge_unconfirmed", `the project's branch could not be read far enough to find ${merge.slice(0, 12)}, so the merge is not recorded`, 409, `run atelier merge ${id} again`);
@@ -3758,7 +3232,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const merged = await L.merged(id, actor, merge, true, item.acceptedHead);
       // One use: the task's landing grant goes once its push is recorded.
-      await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
+      await gitHost(env).revokeLanding({ key: ref.key, task: id });
       const wayBack = await pushBackAfterMerge(env, L, ref.key, p, actor);
       const postMerge = await L.postMergeRun(id);
       return json({ ...merged, ...(postMerge ? { postMerge } : {}), ...(wayBack ? { wayBack } : {}) });
@@ -3773,7 +3247,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const p = await L.project();
       const before = await L.item(id);
-      // A fork's head starts at its base; only a head pushed since is the task's own.
+      // A branch's head starts at its base; only a head pushed since is the task's own.
       const pushed = before.head && before.head !== before.base ? before.head : null;
       // A paired merge was checked by the CLI against one head; the record
       // is of that head only, never one chosen here (t726 round 1).
@@ -3786,7 +3260,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const merge = paired ?? (typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null);
       let parents: string[] | null = null, holds: boolean | null = false, tip: string | null = null;
       if (merge) {
-        using baseline = await env.ARTIFACTS.get(p.repo);
+        using baseline = await env.REPOS.get(p.repo);
         const found = await baseline.readCommit(merge);
         parents = found ? found.parents : null;
         const top = found ? await headOf(env, p.repo) : null;
@@ -3794,16 +3268,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         tip = top;
       }
       // As abandon and release do: check, revoke the workspace token, then
-      // record. The fork and token are read together after the baseline
+      // record. The branch and token are read together after the baseline
       // reads, so a claim made meanwhile is the one revoked, and the record
       // is refused if either changes after that read. A revocation that
       // fails changes nothing, and the retry revokes again.
       await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
       const workspace = await L.workspaceOf(id);
-      await revoke(env, workspace.fork, workspace.token);
+      await revoke(env, workspace.token);
       const recorded = await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace);
       // A landing grant still live for the task ends with its merge recorded.
-      await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
+      await gitHost(env).revokeLanding({ key: ref.key, task: id });
       const wayBack = await pushBackAfterMerge(env, L, ref.key, p, actor);
       return json(wayBack ? { ...recorded, wayBack } : recorded);
     }
@@ -3848,7 +3322,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const oldToken = await L.tokenId(id);
       await L.checkAbandon(id, actor, note, deliveredBy);
       const before = await L.item(id);
-      await revoke(env, before.fork, oldToken);
+      await revoke(env, oldToken);
       const item = await L.abandon(id, actor, note, oldToken, deliveredBy, direction);
       return json(item);
     }
@@ -3949,7 +3423,7 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       // branch (docs/orchestrator.md, section 5), or, with `resolve`, adds
       // the merge-main part for it, built by `to` when named. Main's head is
       // read from the baseline, and whether the branch already holds it from
-      // the plan's fork.
+      // the plan's branch.
       if (body.resolve !== undefined && typeof body.resolve !== "boolean") throw new RuleError("bad_resolve", "resolve must be true or false", 400);
       if (body.to !== undefined && body.resolve !== true) throw new RuleError("bad_to", "to names the builder of the part plan refresh --resolve adds; give it with resolve", 400);
       const p = await L.project();
@@ -3957,14 +3431,14 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       if (!main) throw new RuleError("empty", "the baseline has no commits", 409);
       await L.noteMainHead(main);
       const plan = await L.item(id);
-      const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
-      const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
+      const top = plan.kind === "plan" && plan.workspace ? await headOf(env, plan.workspace) : null;
+      const holds = top ? (await holdsCommit(env, plan.workspace!, top, main)).holds === true : false;
       // A plan submitted or accepted goes back to building first, which ends
       // the integrator's hold: as for a release, the refresh is checked, the
       // integrator's write token revoked, and only then the change made.
       const reopening = await L.checkPlanRefresh(id, actor, main, holds, body.resolve === true, body.to);
       const oldToken = reopening ? await L.tokenId(id) : undefined;
-      if (reopening) await revoke(env, plan.fork, oldToken ?? null);
+      if (reopening) await revoke(env, oldToken ?? null);
       // The runner offers the Worker read come with the resolve, for the
       // merge-main part's routing as approval routes it.
       if (body.resolve === true) await L.planResolve(id, actor, main, holds, body.to, await index(env).runnerOffers(), oldToken);
@@ -3975,7 +3449,7 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
     }
     case "stop": {
       const targets = await L.stopTargets(id, actor);
-      for (const t of targets) await revoke(env, t.fork, t.tokenId);
+      for (const t of targets) await revoke(env, t.tokenId);
       await L.stopPlan(id, actor, note, Object.fromEntries(targets.map((t) => [t.id, t.tokenId])));
       return json(await L.planView(id));
     }
@@ -3983,7 +3457,7 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
   throw new RuleError("not_found", "no such route", 404);
 }
 
-// A diff is shown when Artifacts can produce one; the page still renders when it cannot.
+// A diff is shown when the repository can be read; the page still renders when it cannot.
 const MODEL_EVENTS = 1000;
 
 // Every event of a project, read a page at a time, newest page first.
@@ -4310,7 +3784,7 @@ async function modelTrends(env: Env, named: readonly string[], pool: readonly Mo
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
-// /p/P/tN/{code,log,commit,history}/… reads task tN's fork. Null when the
+// /p/P/tN/{code,log,commit,history}/… reads task tN's branch. Null when the
 // path is not a browsing path, so the task page keeps /p/P/tN. `parts` is
 // the path after the project, which `ref` has resolved.
 const VIEWS = new Set(["code", "log", "commit", "history"]);
@@ -4323,12 +3797,12 @@ async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Pro
   if (!VIEWS.has(view ?? "")) return null;
   const L = ledger(env, ref.key);
   const p = await L.project();
-  const repoName = item ? (await L.item(item)).fork : p.repo;
-  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(ref.name)}/${encodeURIComponent(item!)}`, ownerName(env)), 404);
+  const repoName = item ? (await L.item(item)).workspace : p.repo;
+  if (!repoName) return html(renderError(`${item} has no branch yet, so there is nothing to browse.`, `/p/${encodeURIComponent(ref.name)}/${encodeURIComponent(item!)}`, ownerName(env)), 404);
   const atParam = url.searchParams.get("at");
   const at = atParam && HASH.test(atParam) ? atParam : null;
   const w: Where = { project: p, item, at };
-  using repo = await env.ARTIFACTS.get(repoName);
+  using repo = await env.REPOS.get(repoName);
   const s = repoSource(repo);
   const notFound = (what: string) => html(renderError(`${what} is not in this repository.`, codeHref({ ...w, at: null }, []), ownerName(env)), 404);
   if (view === "commit") {
@@ -4371,28 +3845,28 @@ async function diffFor(env: Env, L: ReturnType<typeof ledger>, baselineRepo: str
   const landing = landingOf(item, events);
   if (landing) {
     try {
-      return await mergedDiff(env.ARTIFACTS, landing.onPlanBranch ? await baseRepo(env, L, item, baselineRepo) : baselineRepo, item.fork, landing);
+      return await mergedDiff(env.REPOS, landing.onPlanBranch ? await baseRepo(env, L, item, baselineRepo) : baselineRepo, item.workspace, landing);
     } catch (err) {
       console.error("merged diff unavailable", err);
       return "unavailable";
     }
   }
-  const fork = item.fork;
-  if (!fork) return null;
+  const workspace = item.workspace;
+  if (!workspace) return null;
   let diff: ItemDiff | null;
   try {
-    diff = await itemDiff(env.ARTIFACTS, baselineRepo, fork);
+    diff = await itemDiff(env.REPOS, baselineRepo, workspace);
   } catch (err) {
     console.error("diff unavailable", err);
     return "unavailable";
   }
   // The diff is against main's head. The merge preview, read beside it, works
-  // from the fork point the workspace's own history presents and says how far
+  // from the branch point the workspace's own history presents and says how far
   // main has moved; when it cannot be read the diff is still shown, and the
   // page says the preview is missing.
   if (diff?.files.length) {
     try {
-      diff.main = await previewAgainstMain(env.ARTIFACTS, baselineRepo, fork);
+      diff.main = await previewAgainstMain(env.REPOS, baselineRepo, workspace);
     } catch (err) {
       console.error("merge preview unavailable", err);
       diff.main = null;
@@ -4402,7 +3876,7 @@ async function diffFor(env: Env, L: ReturnType<typeof ledger>, baselineRepo: str
 }
 
 // A review's diff, kept in R2 by reference (t284): when the change, read from
-// Artifacts as the item's own diff, is too large for a review brief to carry
+// the repository as the item's own diff, is too large for a review brief to carry
 // — the 888 KB diff that broke a review on 2026-10-07 — it is stored whole
 // and the claim names the reference, so a brief and the ledger hold a key
 // instead of megabytes. Nothing is stored when the diff cannot be read, when
@@ -4413,13 +3887,13 @@ async function storedReviewDiff(
   env: Env, L: ReturnType<typeof ledger>, claim: ReviewClaim, projectKey: string, actor: string, proved: boolean,
 ) {
   const item = claim.item;
-  if (!item.fork) return null;
+  if (!item.workspace) return null;
   try {
     const p = await L.project();
     const landed = landingOf(item, claim.events);
     const diff = landed
-      ? await mergedDiff(env.ARTIFACTS, landed.onPlanBranch ? await baseRepo(env, L, item, p.repo) : p.repo, item.fork, landed)
-      : await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+      ? await mergedDiff(env.REPOS, landed.onPlanBranch ? await baseRepo(env, L, item, p.repo) : p.repo, item.workspace, landed)
+      : await itemDiff(env.REPOS, await baseRepo(env, L, item, p.repo), item.workspace);
     if (!diff) return null;
     const text = renderDiffText(item.id, diff);
     if (text.length <= DIFF_INLINE_MAX) return null;
@@ -4548,29 +4022,29 @@ async function onMainLine(env: Env, repo: string, commit: string): Promise<boole
 }
 
 // A plan is accepted only where its branch would merge with main as main is
-// now, previewed from the plan's fork as the merge preview reads a task's
+// now, previewed from the plan's branch as the merge preview reads a task's
 // workspace (previewAgainstMain). A conflict would stop atelier merge after
 // the acceptance, so the owner is told to take main into the branch first,
 // with plan refresh. A branch whose history holds main's head (holdsCommit,
 // which follows every merge parent) merges as a fast-forward or cleanly and
 // is accepted without a preview; the preview itself follows merges' further
 // parents too (mergedHistory in src/preview/merge.ts), so main taken in by
-// an integrated merge-main part is its fork point (t274). A preview that
+// an integrated merge-main part is its branch point (t274). A preview that
 // cannot be read holds nothing back: atelier merge still stops on a
 // conflict, and withdraws the acceptance then.
 async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<void> {
   const item = await L.item(id);
-  if (item.kind !== "plan" || !item.fork) return;
+  if (item.kind !== "plan" || !item.workspace) return;
   const { repo } = await L.project();
   try {
-    const [main, head] = await Promise.all([headOf(env, repo), headOf(env, item.fork)]);
-    if (main && head && (await holdsCommit(env, item.fork, head, main)).holds) return;
+    const [main, head] = await Promise.all([headOf(env, repo), headOf(env, item.workspace)]);
+    if (main && head && (await holdsCommit(env, item.workspace, head, main)).holds) return;
   } catch (err) {
     console.error("plan history unavailable", err);
   }
   let preview: Awaited<ReturnType<typeof previewAgainstMain>>;
   try {
-    preview = await previewAgainstMain(env.ARTIFACTS, repo, item.fork);
+    preview = await previewAgainstMain(env.REPOS, repo, item.workspace);
   } catch (err) {
     console.error("plan merge preview unavailable", err);
     return;
@@ -4586,7 +4060,7 @@ const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
-  if (item.fork && await headOf(env,item.fork) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
+  if (item.workspace && await headOf(env,item.workspace) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
 }
 
 // ── UI ─────────────────────────────────────────────────────────────────────
@@ -4680,20 +4154,14 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // the Ledger clears the id read here only if it is still the one recorded.
       const oldToken = await L.tokenId(id);
       // As on the API routes: a change of owner is checked, the holder's
-      // write token revoked, and only then the change made. The workspace is
-      // read after the token id, not taken from `before`: a token is recorded
-      // only once its workspace exists, so the workspace read here is the
-      // one the token was made for, even if a claim made both after `before`
-      // was read. With `before.fork` that token would go unrevoked, and the
-      // change would then take it off the record while it still works.
+      // write token revoked, and only then the change made.
       const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
       if (moving) {
         if (verb === "dispatch") await L.checkDispatch(id, owner, { to: formNames.to, agent: formNames.agent, model: formNames.model, note });
         else if (verb === "abandon") await L.checkAbandon(id, owner, note);
         else if (verb === "release") await L.checkRelease(id, owner, note);
         else await L.checkHandoff(id, owner, String(formNames.to ?? ""), note);
-        const { fork } = await L.item(id);
-        await revoke(env, fork, oldToken);
+        await revoke(env, oldToken);
       }
       if (verb === "dispatch") await L.dispatch(id, owner, { to: formNames.to, agent: formNames.agent, model: formNames.model, note }, oldToken, await namedBuilderReasons(env, ref.key, { agent: formNames.agent || undefined, model: formNames.model || undefined }, owner));
       else if (verb === "undispatch") await L.undispatch(id, owner);
@@ -4774,12 +4242,6 @@ function failed(err: unknown, req: Request, url: URL, pathname: string, env: Env
   if (retryableByRuntime(err)) {
     const detail = "Atelier was briefly unable to reach its records; try again";
     return url.pathname.startsWith("/api/") ? json({ error: "unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
-  }
-  // Artifacts failing for a moment, on a route that did not wrap the call in
-  // artifactsStep: the same answer, so the caller retries (t761).
-  if (transientByArtifacts(err)) {
-    const detail = "Artifacts was briefly unable to answer; nothing was given out, so try again";
-    return url.pathname.startsWith("/api/") ? json({ error: "artifacts_unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
   }
   return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", back, who),500);
 }
@@ -5018,7 +4480,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
       }
       case "ship": {
         // The approval form binds to the baseline's head as read now; the page
-        // still draws when Artifacts cannot be read, without the form.
+        // still draws when the repository cannot be read, without the form.
         const head = await headOf(env, p.repo).catch(() => null);
         return html(renderProjectShip(p, renderActions(p.name, await L.actionApprovals(), await L.actionRuns(10), head), ownerName(env)));
       }
@@ -5078,13 +4540,13 @@ const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles",
 
 // A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
 // task 8; design section 4.4): what queue() did for a push event from
-// Artifacts, for one push and with no queue behind it. The hook POSTs
+// the repository, for one push and with no queue behind it. The hook POSTs
 // { project, ref, before, after, grant } to the loopback internal listener
 // with the per-process secret (src/git/host.mjs) and waits for this answer;
 // a failure is logged there and the ref stays moved, so the next `atelier
 // push` records the head (the push route reads the branch itself).
 // The branch is read again here (headOf), never taken from the hook's word,
-// and observed as the Artifacts event was: a head that does not hold the
+// and observed as a push event was: a head that does not hold the
 // recorded one is noted (push.unrecorded), not taken as progress; one that
 // does is recorded with the authors its commits name and the retention a
 // merge of main may carry, and the hook's own secret scan becomes its scan
@@ -5092,7 +4554,7 @@ const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles",
 // from the server's own grant record), so the push is recorded as that
 // holder's, as `atelier push` would record it a moment later (recordPush);
 // a push recordPush refuses (a rewrite not declared, a holder no longer
-// holding) is observed as an Artifacts event was (observePush). A push to
+// holding) is observed as a push event was (observePush). A push to
 // any other ref, or to the branch of a task that is closed or no longer its
 // workspace, records nothing.
 export type PushedNotice = { project: string; ref: string; before?: string; after?: string; actor?: string };
@@ -5103,15 +4565,15 @@ export async function observePushed(env: Env, notice: PushedNotice): Promise<{ o
   if (!project) return { observed: false, reason: `no project ${notice.project}` };
   const key = project.key ?? project.name;
   const L = ledgerOf(env, project);
-  const fork = `${key}/${branch}`;
-  const itemId = await L.itemIdOfFork(fork);
+  const workspace = `${key}/${branch}`;
+  const itemId = await L.itemIdOfWorkspace(workspace);
   const item = itemId ? await L.item(itemId) : undefined;
   if (!item) return { observed: false, reason: `no task's workspace is ${branch}` };
   if (["merged", "abandoned"].includes(item.state)) return { observed: false, item: item.id, reason: `${item.id} is ${item.state}` };
-  const current = await headOf(env, fork);
+  const current = await headOf(env, workspace);
   if (!current) return { observed: false, item: item.id, head: null, reason: `${branch} has no commits` };
-  const { holdsRecorded } = await pushLineage(env, fork, current, item.head, null);
-  const authors = holdsRecorded ? await pushedAuthors(env, fork, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
+  const { holdsRecorded } = await pushLineage(env, workspace, current, item.head, null);
+  const authors = holdsRecorded ? await pushedAuthors(env, workspace, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
   const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
   let recorded: Item = await L.hookPush(item.id, notice.actor ?? null, current, notice.after ?? null, holdsRecorded, authors, retention);
   if (recorded.head === current) recorded = await scanRecorded(env, L, recorded);
@@ -5126,7 +4588,6 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS, waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined });
       // The front door and the old /showcase lead to the projects list at
       // /home, answered before the sign-in check; a visitor who is not signed
       // in meets the sign-in there, as at any owner page (t758).

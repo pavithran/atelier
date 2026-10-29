@@ -12,7 +12,7 @@ const H1 = "a".repeat(40);
 const T = "2026-10-06T12:00:00.000Z";
 const item = (over: Partial<Item> = {}): Item => ({
   id: "t1", title: "Edit", scope: [], state: "submitted", owner: "claude-code/opus-5.5",
-  fork: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null, createdAt: T, updatedAt: T, lastPushAt: T, ...over,
+  workspace: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null, createdAt: T, updatedAt: T, lastPushAt: T, ...over,
 });
 const policy: ProjectPolicy = {
   checks: ["npm test", "xcodebuild build"],

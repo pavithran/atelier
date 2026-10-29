@@ -16,7 +16,7 @@ import { join, resolve } from "node:path";
 
 const cli = resolve("cli/atelier.mjs");
 const actor = "codex/test";
-const API = "api-secret-6f1d2c9e8b7a", WRITE = "write-secret-3a4b5c6d7e8f", READ = "read-secret-0a9b8c7d6e5f", BASE = "base-secret-1f2e3d4c5b6a";
+const API = "api-secret-6f1d2c9e8b7a", WRITE = "write-secret-3a4b5c6d7e8f", READ = "read-secret-0a9b8c7d6e5f";
 // A second header the workspace's Git settings hold in a file .git/config
 // includes, where the CLI finds it only by following the include.
 const INCLUDED = "included-secret-4c3b2a1f0e";
@@ -36,6 +36,8 @@ async function fixture(t, check) {
   execFileSync("git", ["init", "-q", "-b", "main", source]);
   git(source, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "Initial");
   execFileSync("git", ["clone", "-q", "--bare", source, remote]);
+  // The one repository holds the project's branch and the task's (t/1), as the server's does.
+  execFileSync("git", ["-C", remote, "branch", "t/1", "main"]);
   const head = git(source, "rev-parse", "HEAD");
   const item = { id: "t1", title: "Edit", scope: [], owner: actor, state: "claimed", head };
   const evidence = [];
@@ -44,9 +46,8 @@ async function fixture(t, check) {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
     let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: [command] } };
-    if (path.endsWith("/claim")) data = { item, workspace: { token: WRITE, remote, defaultBranch: "main", expiresAt: "tomorrow" } };
-    if (path.endsWith("/read-token")) data = { remote, token: READ, head, defaultBranch: "main" };
-    if (path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: BASE, head, defaultBranch: "main" };
+    if (path.endsWith("/claim")) data = { item, workspace: { token: WRITE, remote, branch: "t/1", defaultBranch: "main", expiresAt: "tomorrow" } };
+    if (path.endsWith("/git-token")) data = { kind: "read", remote, token: READ, expiresAt: "tomorrow", defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head, base: head };
     if (path.endsWith("/evidence")) evidence.push(JSON.parse(raw));
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
@@ -70,7 +71,7 @@ async function fixture(t, check) {
 // every token Atelier knows, standing in for a check that reads them from the
 // Keychain or another file.
 function leakyCheck(root, workspace, exit) {
-  writeFileSync(join(root, "tokens.txt"), `${API}\n${WRITE}\n${READ}\n${BASE}\n`);
+  writeFileSync(join(root, "tokens.txt"), `${API}\n${WRITE}\n${READ}\n`);
   return `printenv; git config --file '${workspace}/.git/config' --includes --get-regexp extraheader; cat '${join(root, "tokens.txt")}'; exit ${exit}`;
 }
 
@@ -99,7 +100,7 @@ for (const exit of [0, 1]) test(`a ${exit ? "failing" : "passing"} local check s
 
     // Atelier's own secrets, printed by the check, are redacted in what is
     // uploaded and in what the terminal shows.
-    for (const secret of [API, WRITE, READ, BASE, INCLUDED]) {
+    for (const secret of [API, WRITE, READ, INCLUDED]) {
       assert.ok(!tail.includes(secret), `${secret} is not in the evidence`);
       assert.ok(!r.stdout.includes(secret) && !r.stderr.includes(secret), `${secret} is not printed`);
     }

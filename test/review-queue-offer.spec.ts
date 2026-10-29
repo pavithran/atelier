@@ -34,7 +34,7 @@ async function asked(name: string, reviewers: string[]) {
     const { id } = await L.newItem(`Task ${n}`, [`src/t${n}/**`], "owner", { accept: ["It works"] });
     const head = String(n + 1).repeat(40);
     await L.claim(id, OPUS, RUNNER);
-    await L.setFork(id, `fork-${id}`, "0".repeat(40), OPUS);
+    await L.setWorkspace(id, `fork-${id}`, "0".repeat(40), OPUS);
     await L.recordPush(id, OPUS, head, head);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: [`src/t${n}/x.ts`] } satisfies Evidence);
     await L.submit(id, OPUS);

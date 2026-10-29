@@ -7,14 +7,14 @@ import { acceptedAgainstMain, acceptedState, NEXT_MARK } from "../src/rules.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
 import { usageShortages } from "../src/rules.ts";
-import { AREAS_REMOVED, FORK_STUCK_MS, forkAgeText, forkPreparationView, itemFields } from "../src/rules.ts";
+import { AREAS_REMOVED, itemFields } from "../src/rules.ts";
 import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateFolderMatches, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import { acceptancePolicy, mergeContext, mergePolicyDecision, policyChanges } from "../src/rules.ts";
 import { blockUntil, blockExpired, expiredBlocks } from "../src/rules.ts";
 import {
-  ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, approvalsNeeded, protectedRuleGroups, measuredPaths, changeClass, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, foldPath, harnessRefusal, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  pushActors, assertHandoffTarget, assertReviewAllowed, approvalsNeeded, protectedRuleGroups, measuredPaths, changeClass, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  assertClaimAllowed, assertCriteriaAllowed, assertEligible, branchHost, checkFiles, developerBranch, foldPath, harnessRefusal, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   riskClass, riskNeed, parseRiskReviews, retainableApprovals, retentionVerdict,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, reviewNotes, openNotes, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
@@ -28,7 +28,7 @@ const T = "2026-10-03T12:00:00.000Z";
 function item(over: Partial<Item> = {}): Item {
   return {
     id: "t1", title: "Fix it", scope: ["src/**"], state: "submitted", owner: "claude-code/opus-5.5",
-    fork: "proj--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
+    workspace: "proj--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
     createdAt: T, updatedAt: T, lastPushAt: T, ...over,
   };
 }
@@ -208,7 +208,6 @@ test("inbox flags live items whose scopes overlap", () => {
 
 test("repo names are safe and stable", () => {
   assert.equal(repoName("ikon weblog"), "ikon-weblog");
-  assert.equal(repoName("HQPe-Control", "t12"), "hqpe-control--t12");
   assert.throws(() => repoName("---"), /cannot make a repo name/);
 });
 
@@ -449,13 +448,6 @@ test("decisions reject stale revisions and retain the latest review from each re
   assert.equal(gate(item(),policy,[pass()],[no,yes]).ready,true);
   assert.equal(decisionFor(item({state:'merged'}),policy,[],[]).action,'none');
   assert.equal(decisionFor(item(),policy,[pass({passed:false})],[]).title,'Checks need attention');
-});
-
-test("push notices admit only valid branch updates in the configured namespace", async () => {
-  const {pushNotice}=await import('../src/rules.ts');
-  const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'project--t1'},payload:{ref:'refs/heads/main',after:H1}};
-  assert.deepEqual(pushNotice(notice),{repo:'project--t1',ref:'refs/heads/main',after:H1});
-  for(const bad of [null,{}, {...notice,type:'other'}, {...notice,source:{...notice.source,namespace:'other'}},{...notice,payload:{ref:'refs/tags/v1',after:H1}},{...notice,payload:{ref:'refs/heads/main',after:'0'.repeat(40)}}])assert.equal(pushNotice(bad),null);
 });
 
 test("actor names allow a :profile suffix on the model, never on the harness", () => {
@@ -1049,15 +1041,6 @@ test("review leases expire at five server-clock minutes; renewal cadence is thir
   assert.equal(reviewLeaseExpired("invalid", start), true);
 });
 
-test("only the project owner can port to an open unclaimed task", () => {
-  assert.equal(ownerPortAllowed(item({ state: "open", owner: null }), "person", "person"), true);
-  assert.equal(ownerPortAllowed(item({ state: "open", owner: null }), "builder", "person"), false);
-  assert.equal(ownerPortAllowed(item({ state: "open", owner: "builder" }), "person", "person"), false);
-  for (const state of ["claimed", "submitted", "accepted", "integrated", "merged", "abandoned", "blocked"] as const) {
-    assert.equal(ownerPortAllowed(item({ state, owner: null }), "person", "person"), false);
-  }
-});
-
 // ── modes (t585) ─────────────────────────────────────────────────────────────
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
@@ -1291,41 +1274,26 @@ test("the stored last restart is read back, and anything unreadable is none", ()
   assert.equal(parseLedgerRestart(JSON.stringify({ at: "soon" })), null);
 });
 
-// t641: the developer's branches. A name is taken under wip/ or refused;
+// t641: the developer's branches. A name is taken under dev/ or refused;
 // main, the project's branch, a task's id, a full ref and a name under
 // another prefix are refused rather than renamed, which is what keeps
 // `atelier branch push main` from ever naming main.
-test("a developer branch is a name under wip/, and main, a task's id and any other prefix are refused", () => {
-  assert.equal(developerBranch("idea"), "wip/idea");
-  assert.equal(developerBranch("wip/idea"), "wip/idea");
-  assert.equal(developerBranch("wip/mac/draft-2.1_x"), "wip/mac/draft-2.1_x");
-  for (const name of ["main", "master", "HEAD", "t641", "trunk", "refs/heads/main", "refs/heads/wip/x", "feature/x", "wip/", "wip//x", "wip/x/", "wip/../main", "wip/x..y", "wip/.hidden", "wip/x.lock", "wip/x.", "wip/a b", "wip/x:y", "wip/x~1", "wip/-x", "", "wip/" + "a".repeat(200)]) {
+test("a developer branch is a name under dev/, and main, a task's id and any other prefix are refused", () => {
+  assert.equal(developerBranch("idea"), "dev/idea");
+  assert.equal(developerBranch("dev/idea"), "dev/idea");
+  assert.equal(developerBranch("dev/mac/draft-2.1_x"), "dev/mac/draft-2.1_x");
+  for (const name of ["main", "master", "HEAD", "t641", "trunk", "refs/heads/main", "refs/heads/dev/x", "feature/x", "dev/", "dev//x", "dev/x/", "dev/../main", "dev/x..y", "dev/.hidden", "dev/x.lock", "dev/x.", "dev/a b", "dev/x:y", "dev/x~1", "dev/-x", "", "dev/" + "a".repeat(200)]) {
     assert.throws(() => developerBranch(name, "trunk"), (e: unknown) => e instanceof RuleError && e.code === "bad_branch", name);
   }
   assert.throws(() => developerBranch(undefined), RuleError);
   // Only the project's own branch name is reserved beyond main, master and HEAD.
-  assert.equal(developerBranch("trunk"), "wip/trunk");
+  assert.equal(developerBranch("trunk"), "dev/trunk");
 });
 
 test("the Mac a branch was pushed from is one short line, without .local", () => {
   assert.equal(branchHost("Pavis-MacBook-Pro.local"), "Pavis-MacBook-Pro");
   assert.equal(branchHost(" studio "), "studio");
   for (const host of ["", "  ", "a\nb", "x".repeat(101), 5, null]) assert.throws(() => branchHost(host), RuleError);
-});
-
-// The reviews of t641: a branches repository's name has a fixed form from a
-// hash of the key, of the same length whatever the key, which every new
-// baseline is refused and no task fork (KEY--tN) can have.
-test("a branches repository is named devbr- and 32 hex digits of the key's hash, a form no baseline may take", async () => {
-  const demo = await branchesRepoName("demo");
-  assert.match(demo, /^devbr-[0-9a-f]{32}$/);
-  assert.equal(await branchesRepoName("demo"), demo);
-  assert.notEqual(await branchesRepoName("Demo"), demo);
-  assert.match(await branchesRepoName("k".repeat(63)), /^devbr-[0-9a-f]{32}$/);
-  // Argon's collision: project branches's fork of t1 is not project t1's branches.
-  assert.notEqual(repoName("branches", "t1"), await branchesRepoName("t1"));
-  assert.throws(() => assertBaselineName(demo), (e: unknown) => e instanceof RuleError && e.code === "repo_reserved");
-  for (const repo of ["demo", "demo--branches", "branches", "branches--t1", "devbr-", "devbr-xyz", `${demo}x`]) assert.doesNotThrow(() => assertBaselineName(repo), repo);
 });
 
 // Private files (t645).
@@ -2014,7 +1982,7 @@ test("acceptedState: no recorded main head, or a search that could not answer, i
 test("readAccepted: a fork that cannot be read is unknown while the others are read, and tasks past the cap are unknown without a read", async () => {
   const { ACCEPTED_READS, readAccepted } = await import("../src/accepted-main.ts");
   const main = "b".repeat(40);
-  const mk = (n: number, fork: string | null = `f${n}`) => ({ id: `t${n}`, title: "x", state: "accepted" as const, fork, acceptedHead: H1 });
+  const mk = (n: number, workspace: string | null = `f${n}`) => ({ id: `t${n}`, title: "x", state: "accepted" as const, workspace, acceptedHead: H1 });
   const asked: string[] = [];
   const holds = async (fork: string) => { asked.push(fork); if (fork === "f2") throw new Error("fork unreadable"); return fork === "f3" ? null : fork !== "f4"; };
   const out = await readAccepted([mk(1), mk(2), mk(3), mk(4), mk(5, null)], main, holds);
@@ -2147,52 +2115,12 @@ test("the merge context names the checks observed passing at the accepted revisi
 });
 
 
-// t18, the finding of 2026-10-11 (t496): a task fork stuck in preparing
-// answered not_ready for half an hour and nothing said what to do. The view
-// says how long it has waited and what next; Atelier deletes no fork.
-{
-  const SINCE = "2026-10-20T12:00:00.000Z";
-  const at = (ms: number) => Date.parse(SINCE) + ms;
-  const prep = { fork: "demo--t1", since: SINCE, reportedAt: null };
-  const open = { id: "t1", fork: null, head: null };
-
-  test("a fork preparing for less than the limit is waited for, and says how long and what next", () => {
-    const v = forkPreparationView(prep, open, at(FORK_STUCK_MS - 1));
-    assert.equal(v.action, "wait");
-    assert.equal(v.ageMs, FORK_STUCK_MS - 1);
-    assert.match(v.next, /claim t1 again/);
-  });
-
-  test("a fork unready at the limit is stuck, and a later claim replaces it with nothing deleted by hand (t286)", () => {
-    const v = forkPreparationView(prep, open, at(FORK_STUCK_MS));
-    assert.equal(v.action, "stuck");
-    assert.match(v.next, /Atelier deletes no fork/);
-    assert.match(v.next, /once it has been preparing 30 minutes, the next claim of t1 makes a fork under a new name, at most 2 times; nothing needs deleting by hand/);
-  });
-
-  test("a stuck fork of a task with a recorded fork or head is not offered for deletion", () => {
-    for (const [name, i] of [["fork recorded", { ...open, fork: "demo--t1" }], ["head recorded", { ...open, head: H1 }]] as const) {
-      const v = forkPreparationView(prep, i, at(FORK_STUCK_MS * 2));
-      assert.equal(v.action, "stuck", name);
-      assert.match(v.next, /may hold the task's commits: do not delete it/, name);
-      assert.doesNotMatch(v.next, /by hand/, name);
-    }
-  });
-
-  test("an age is said in whole minutes, and under one minute as such", () => {
-    assert.equal(forkAgeText(30_000), "less than a minute");
-    assert.equal(forkAgeText(60_000), "1 minute");
-    assert.equal(forkAgeText(61 * 60_000), "61 minutes");
-    assert.equal(forkAgeText(-5), "less than a minute");
-  });
-}
-
 // stageOf: one stage per task, the first that holds.
 const stageEv = (seq: number, kind: string, data: Record<string, unknown> = {}) => ({ seq, kind, data, at: T, actor: "claude-code/sonnet-5.5" });
 const READY = { commit: H1, base: H2, builder: "claude-code/sonnet-5.5", runner: "mac-mini", workspace: "/work/t1" };
 
 test("stageOf takes the first stage that holds, from filed up to shipped", () => {
-  const bare = item({ state: "open", owner: null, head: null, fork: null });
+  const bare = item({ state: "open", owner: null, head: null, workspace: null });
   assert.equal(stageOf(bare).stage, "filed");
   assert.equal(stageOf({ ...bare, accept: ["c1"], criteriaReviews: 1 }).stage, "agreed");
   assert.equal(stageOf({ ...bare, dispatch: { agent: "claude-code", model: "sonnet-5.5" } as Item["dispatch"] }).stage, "queued");

@@ -84,7 +84,7 @@ const observed = (itemId: string, head: string): Evidence => ({
 async function submitPart(L: L, id: string, head: string) {
   const actor = `${(await L.item(id)).dispatch!.agent}/${(await L.item(id)).dispatch!.model}`;
   await L.claim(id, actor, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, actor);
+  await L.setWorkspace(id, `fork-${id}`, H0, actor);
   await L.recordPush(id, actor, head, head);
   await L.addEvidence(observed(id, head));
   await L.submit(id, actor);
@@ -396,7 +396,7 @@ it("a part with no eligible reviewer left is not blocked: the need is recorded w
   // family in the pool, so every family has contributed.
   const head = "a".repeat(40);
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, head, head, false, { holdsRecorded: true, rebasedFrom: null }, others.map((actor, n) => ({ commit: String(n).repeat(40), actor })));
   await L.addEvidence(observed(partId, head));
   await L.submit(partId, builder);
@@ -554,7 +554,7 @@ async function blockedForReviewer(L: L) {
   const others = [OPUS, GPT, GLM].filter((a) => a !== builder);
   const head = "a".repeat(40);
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, head, head, false, { holdsRecorded: true, rebasedFrom: null }, others.map((actor, n) => ({ commit: String(n).repeat(40), actor })));
   await L.addEvidence(observed(partId, head));
   await L.submit(partId, builder);
@@ -655,7 +655,7 @@ it("the review claim route names the plan's branch as a part's merge target", as
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const { id, partId } = await approved(L);
-  await L.setFork(id, "plan-fork", H0, "owner");
+  await L.setWorkspace(id, "plan-fork", H0, "owner");
   await submitPart(L, partId, "a".repeat(40));
   const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${partId}/review-claim`, {
     method: "POST",
@@ -1301,7 +1301,7 @@ async function overriddenMerge(project: string) {
   const item = await L.newItem("Override landed", ["src/**"], "owner", { accept: ["Keeps data"] });
   const head = "d".repeat(40), merge = "e".repeat(40);
   await L.claim(item.id, OPUS);
-  await L.setFork(item.id, `${project}--${item.id}`, H0, OPUS);
+  await L.setWorkspace(item.id, `${project}--${item.id}`, H0, OPUS);
   await L.recordPush(item.id, OPUS, head, head);
   await L.addEvidence(observed(item.id, head));
   await L.submit(item.id, OPUS);
@@ -1395,7 +1395,7 @@ it.each([true, false])("the HTTP post-merge review records a verdict (approve=%s
   await index.registerProject(await L.project());
   for (const model of POOL) await index.putModel(model);
   const headReads: string[] = [];
-  const ARTIFACTS = {
+  const REPOS = {
     get: async (repo: string) => ({
       // The original workspace is gone; a post-merge verdict must never
       // depend on its live head (or the baseline's current head).
@@ -1404,10 +1404,10 @@ it.each([true, false])("the HTTP post-merge review records a verdict (approve=%s
       readCommit: async () => null,
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   const call = (verb: string, actor: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/${verb}`, {
     method: "POST", headers: { authorization: ["Bearer", "post-merge-token"].join(" "), "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "x-atelier-runner": "home:studio", "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: "post-merge-token", ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: "post-merge-token", REPOS } as typeof env);
   const requested = await call("review-request", "owner", { reviewer: GPT, wanted: true });
   expect(requested.status).toBe(200);
   expect(await requested.json()).toMatchObject({ head: merge, reviewer: GPT, requested: true });
@@ -1475,7 +1475,7 @@ it("a merged task with no historical path measurements or scope still gets its a
   const item = await L.newItem("Historical task", [], "owner");
   const head = "d".repeat(40), merge = "e".repeat(40);
   await L.claim(item.id, OPUS);
-  await L.setFork(item.id, "historical-fork", H0, OPUS);
+  await L.setWorkspace(item.id, "historical-fork", H0, OPUS);
   await L.recordPush(item.id, OPUS, head, head);
   await L.addEvidence(observed(item.id, head));
   await L.submit(item.id, OPUS);
@@ -1505,7 +1505,7 @@ it("carries ad-hoc observed checks at the head into the plan's request and the c
   const head = "a".repeat(40);
   const actor = `${(await L.item(partId)).dispatch!.agent}/${(await L.item(partId)).dispatch!.model}`;
   await L.claim(partId, actor, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, actor);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, actor);
   const earlier = "b".repeat(40);
   await L.recordPush(partId, actor, earlier, earlier);
   await L.addEvidence({ ...observed(partId, earlier), claim: "npm run verify:stale", passed: false });

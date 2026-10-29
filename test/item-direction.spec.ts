@@ -132,7 +132,7 @@ it("clear-secret takes the developer's words and keeps them against each clearan
   const L = await project(name);
   await L.newItem("Bring a secret in", ["src/**"], "owner");
   await L.claim("t1", OPUS);
-  await L.setFork("t1", `${name}--t1`, H0, OPUS);
+  await L.setWorkspace("t1", `${name}--t1`, H0, OPUS);
   await L.recordPush("t1", OPUS, H1, H1);
   const line = `const key = "${FAKE_KEY}";`;
   await L.setSecret("t1", "atelier/events", H1, [{ file: "src/keys.ts", line: 3, fingerprint: await fingerprint(line) }]);

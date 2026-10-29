@@ -93,7 +93,7 @@ it("a released name taken by a new project shares no history with the project th
   await tick(7);
   expect((await call("POST", "/projects/ep-d/rename", { to: "ep-d-old", releaseName: true })).status).toBe(200);
   const artifacts = { create: async () => {}, get: async () => ({ fork: async () => {}, log: async () => [{ hash: "0".repeat(40), parents: [] }], info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }), createToken: async () => ({ plaintext: "t", id: "i", expiresAt: "soon" }), revokeToken: async () => {}, [Symbol.dispose]() {} }) };
-  expect((await call("PUT", "/projects/ep-d", { title: "New D" }, { ...testEnv, ARTIFACTS: artifacts } as unknown as typeof env)).status).toBe(200);
+  expect((await call("PUT", "/projects/ep-d", { title: "New D" }, { ...testEnv, REPOS: artifacts } as unknown as typeof env)).status).toBe(200);
   const key = (await I().resolveProject("ep-d")).key;
   expect(key).not.toBe("ep-d");
   const fresh = await claimed(key, "New stuck work");

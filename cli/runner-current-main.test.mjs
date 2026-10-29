@@ -1,5 +1,5 @@
 // A build job merges current main before it submits (t435,
-// prepareBuildSubmission): a first build or a fix after findings whose fork
+// prepareBuildSubmission): a first build or a fix after findings whose branch
 // predates main's head is submitted merged, the submission records the main
 // commit merged, a conflicting merge goes back to the same harness in the
 // same run, the project's regenerate command runs as the landing's merge
@@ -162,7 +162,7 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
 
 const finishSummary = (f) => f.calls.find((args) => args[0] === 'finish').slice(-2);
 
-for (const rework of [false, true]) test(`a ${rework ? 'fix after findings' : 'first build'} whose fork predates main's head submits merged with main`, async (t) => {
+for (const rework of [false, true]) test(`a ${rework ? 'fix after findings' : 'first build'} whose branch predates main's head submits merged with main`, async (t) => {
   const f = fixture(t, { rework });
   const state = await runTask(f.job, config, 'home', f.io);
   assert.equal(state.phase, 'submitted', JSON.stringify(state));

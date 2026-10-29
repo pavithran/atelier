@@ -14,7 +14,7 @@ import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 const cli = resolve("cli/atelier.mjs");
 
 const TIMES = { createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-10-05T09:30:00.000Z", lastPushAt: null };
-const item = (id, title, scope, state, owner = "codex/test") => ({ id, title, scope, state, owner, head: null, acceptedHead: null, base: null, fork: null, dispatch: null, ...TIMES });
+const item = (id, title, scope, state, owner = "codex/test") => ({ id, title, scope, state, owner, head: null, acceptedHead: null, base: null, workspace: null, dispatch: null, ...TIMES });
 const ITEMS = [
   item("t12", "Fix the parser", ["src/parser/**"], "claimed"),
   item("t14", "Rename the lexer", ["src/lexer/**"], "merged"),

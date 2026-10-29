@@ -6,6 +6,7 @@ import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { guardedPush } from "./private-guard.mjs";
+import { readGrant } from "./read-grant.mjs";
 
 // No shell quoting is involved in publication: the owner approves a URL,
 // one ref and a privacy policy, not a shell program that could bypass it.
@@ -92,7 +93,7 @@ export async function executePostMerge({ request, name, id, env = process.env, p
       return result.stdout;
     };
     try {
-      const base = await request("POST", `/projects/${encodeURIComponent(name)}/baseline-token`, { scope: "read" });
+      const base = await readGrant(request, name);
       await git(["-c", "core.hooksPath=/dev/null", "clone", "--no-checkout", "--no-local", base.remote, dir], { token: base.token });
       await git(["-c", "core.hooksPath=/dev/null", "checkout", "--detach", run.after], { cwd: dir });
       if ((await git(["rev-parse", "HEAD"], { cwd: dir })).trim() !== run.after) throw new Error("clone does not hold the pinned merge");

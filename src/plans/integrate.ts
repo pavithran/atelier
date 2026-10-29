@@ -1,5 +1,5 @@
 // Integration rules for a plan's parts, as pure functions. A plan item's
-// fork is its integration branch: each part is merged into it with
+// branch is its integration branch: each part is merged into it with
 // `git merge --no-ff`, the plan's checks run there, and once every part is
 // in, the owner merges the whole branch into main (docs/orchestrator.md,
 // section 5). These functions decide when a part may be merged, whether the
@@ -10,7 +10,7 @@
 //
 // The integration head is the plan branch's head as the Ledger last recorded
 // it: the merge commit of its latest recorded integration (or of a refresh
-// that merged main in), or the commit the plan forked from when there is
+// that merged main in), or the commit the plan branched from when there is
 // neither. An integration is recorded only when its merge commit's first
 // parent is the integration head, so the recorded heads form one first-parent
 // line, and a branch whose head is the integration head holds nothing beyond
@@ -37,7 +37,7 @@ export type PartState = ItemState | "integrated";
 export const INTEGRABLE_FROM: readonly PartState[] = ["submitted"];
 
 // A dependency has landed when it is integrated or merged. Integrated puts its
-// changes on the plan's branch, which dependents fork from; merged is what an
+// changes on the plan's branch, which dependents branch from; merged is what an
 // integrated part becomes when its plan lands on main, so it has landed too.
 export const LANDED: readonly PartState[] = ["integrated", "merged"];
 
@@ -52,7 +52,7 @@ export interface Part {
   key: string;                       // its key in the approved plan
   dependsOn: readonly string[];      // the keys of the parts it depends on
   state: PartState;
-  head: string | null;               // the last head Atelier verified in the part's fork
+  head: string | null;               // the last head Atelier verified in the part's branch
   owner: string | null;
   pushActors?: readonly string[];    // holders and recorded push contributors
   integration?: Integration | null;  // recorded when the part became integrated
@@ -70,7 +70,7 @@ export interface Integration {
   criteria?: string;
 }
 
-// One commit of a log, as Artifacts and `git log --format='%H %P'` list it.
+// One commit of a log, as Repos and `git log --format='%H %P'` list it.
 export interface LogCommit {
   hash: string;
   parents: readonly string[];
@@ -80,14 +80,14 @@ const HASH = /^[a-f0-9]{40,64}$/;
 const short = (hash: string) => hash.slice(0, 8);
 const named = (part: Pick<Part, "key" | "id">) => `part ${part.key} (${part.id})`;
 
-// The repository an item forks from and is measured against (docs/orchestrator.md,
-// section 5): a part forks from its plan's fork, the integration branch, at
+// The repository an item branches from and is measured against (docs/orchestrator.md,
+// section 5): a part branches from its plan's branch, the integration branch, at
 // its current head, and is measured against that branch rather than the
 // baseline, so it never reports its dependencies' files as its own. A plan or
-// an ordinary task forks from the baseline. `planFork` is the plan item's
-// fork, read by the caller.
-export function baseRepoOf(item: { kind?: string | null }, baselineRepo: string, planFork: string | null): string {
-  return item.kind === "part" && planFork ? planFork : baselineRepo;
+// an ordinary task branches from the baseline. `planBranch` is the plan item's
+// branch, read by the caller.
+export function baseRepoOf(item: { kind?: string | null }, baselineRepo: string, planWorkspace: string | null): string {
+  return item.kind === "part" && planWorkspace ? planWorkspace : baselineRepo;
 }
 
 // The reviews that let a part's head into the plan. Reviews count as gate()
@@ -200,7 +200,7 @@ export interface RefreshClaim {
 // of an integration: the merge commit is on the plan branch's first-parent
 // line, its first parent is the integration head and its second is the main
 // head the refresh was dispatched for, and it has exactly those two parents.
-// Recorded, it becomes the integration head that later parts fork from and
+// Recorded, it becomes the integration head that later parts branch from and
 // later integrations sit on. Returns the reasons it fails; empty when it holds.
 export function verifyRefresh(claim: RefreshClaim): string[] {
   const { log, integrationHead, mainHead, mergeCommit } = claim;
@@ -263,7 +263,7 @@ export function rollbackFor(log: readonly LogCommit[], integrationHead: string, 
 }
 
 export interface PlanGateInput {
-  plan: Item;                      // the plan item; its fork is the integration branch
+  plan: Item;                      // the plan item; its workspace is the integration branch
   parts: readonly Part[];          // every part of the plan, in plan order
   integrationHead: string | null;  // as the Ledger recorded it; null when it recorded none
   policy: ProjectPolicy;
@@ -328,7 +328,7 @@ export function planGate(input: PlanGateInput): Gate {
 // The merge base predictConflict measures from: the plan-branch head the
 // part's last rework merged, when the part's head holds it and the plan
 // branch's top is not known to be held (not held, or the bounded search ran
-// out), else the part's fork point.
+// out), else the part's branch point.
 export function mergeBaseFor(topHeld: boolean | null, planHead: string | null | undefined, partBase: string, planHeadHeld: boolean | null): string {
   return topHeld !== true && planHead && planHead !== partBase && planHeadHeld === true ? planHead : partBase;
 }

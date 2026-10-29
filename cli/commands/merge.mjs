@@ -17,7 +17,7 @@ import { describeConflicts, indexBeyond, mergeThrough, previewMerge, readManifes
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { CACHE, I, OWNER, P, actingHeaders, actor, apiToken, args, at, call, cfg, cleanClone, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, redact, removeClone, request, runCheck, saveConfig, server, short } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, apiToken, args, at, call, cfg, cleanClone, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, readGrant, redact, removeClone, request, runCheck, saveConfig, server, short } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 import { holdCheckout, stayHeld } from "../checkout-hold.mjs";
 
@@ -112,7 +112,7 @@ export default async function mergeCommand() {
       // fetched here and read by Git.
       let baselineHead = null;
       if (local || (ours && head)) {
-        const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
+        const base = await readGrant(name, null, OWNER);
         git(["fetch", "--quiet", base.remote, p.branch], { cwd, token: base.token });
         baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
       }
@@ -259,17 +259,14 @@ export default async function mergeCommand() {
     if (warning) console.error(warning);
     if (git(["status","--porcelain"],{cwd})) await fail("the registered checkout has uncommitted changes; preserve them before retrying");
     if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) await fail(`check out ${p.branch} in ${cwd} first`);
-    let base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
-    // The Node server mints no write token for the project's branch (task 6):
-    // the merge reads it with a read grant, and pushes with a landing grant
-    // minted to the holder of the landing lease just before the push
-    // (landingCredential). The developer's server token is never a Git
+    // The server mints no write token for the project's branch (task 6): the
+    // merge reads it with a read grant, which reads the task's branch too, and
+    // pushes with a landing grant minted to the holder of the landing lease
+    // just before the push. The developer's server token is never a Git
     // credential here.
-    const nodeGit=!base.token;
-    if(nodeGit)base=await call("POST",`${P(name)}/baseline-token`,{scope:'read'},OWNER);
+    const base=await readGrant(name,null,OWNER), ws=base;
     git(['fetch','--quiet',base.remote,p.branch],{cwd,token:base.token});
     const baselineHead=git(['rev-parse','FETCH_HEAD'],{cwd});
-    const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
     git(['fetch','--quiet',ws.remote,item.acceptedHead],{cwd,token:ws.token});
     const fetched=git(['rev-parse','FETCH_HEAD'],{cwd});
     if (fetched!==item.acceptedHead) await fail(`fetched revision differs from the approval: fetched ${fetched}, approved ${item.acceptedHead}`);
@@ -289,8 +286,8 @@ export default async function mergeCommand() {
     // commit it holds, which atelier update moves past the recorded base. With
     // neither, every path that differs from the baseline: more than the
     // revision's own, so the comparison errs toward refusing.
-    const forkPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
-    const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base ?? baselineHead;
+    const branchPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
+    const since = branchPoint.status === 0 && branchPoint.stdout.trim() ? branchPoint.stdout.trim() : item.base ?? baselineHead;
     const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
     const decision = mergePolicyDecision(acceptedPolicy, nowPolicy, paths, args['policy-changed-ok'] === true, context);
     if (decision.refusal) await fail(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
@@ -435,11 +432,11 @@ export default async function mergeCommand() {
     // A refusal ends the command here with the server's reason; the local
     // merge commit is kept for reconciliation.
     await stayHeld(checkoutLease); // G9: and so does the publishing
-    // A merge by hand on the Node server takes the project's landing lease
-    // itself, since a landing grant goes only to its holder; atelier land
-    // holds it already for its merge child. One taken here is let go when
-    // the merge ends (the finally below).
-    if(nodeGit&&!lander&&!tookLease){
+    // A merge by hand takes the project's landing lease itself, since a
+    // landing grant goes only to its holder; atelier land holds it already
+    // for its merge child. One taken here is let go when the merge ends (the
+    // finally below).
+    if(!lander&&!tookLease){
       const held=(await request('GET',`${P(name)}/landing-lease`,undefined,OWNER).catch(()=>null))?.lease;
       try { await request('POST',`${P(name)}/landing-lease`,{item:id},OWNER); }
       catch (error) { await fail(error.message,{},error.code); }
@@ -447,15 +444,12 @@ export default async function mergeCommand() {
     }
     try { await request('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER); }
     catch (error) { await fail(error.message,{},error.code); }
-    // The credential the merge and the notes are pushed with: on the Node
-    // server a landing grant for this task at its accepted head (task 6),
-    // which the hook holds to rule 4 and scans with the task's clearances;
-    // elsewhere the baseline's write token.
-    let pushToken=base.token;
-    if(nodeGit){
-      try { pushToken=(await request('POST',`${P(name)}/git-token`,{kind:'landing',item:id,head:item.acceptedHead},OWNER)).token; }
-      catch (error) { await fail(error.message,{},error.code); }
-    }
+    // The credential the merge and the notes are pushed with: a landing
+    // grant for this task at its accepted head (task 6), which the hook
+    // holds to rule 4 and scans with the task's clearances.
+    let pushToken;
+    try { pushToken=(await request('POST',`${P(name)}/git-token`,{kind:'landing',item:id,head:item.acceptedHead},OWNER)).token; }
+    catch (error) { await fail(error.message,{},error.code); }
     const hide=(text)=>[base.token,pushToken].filter(Boolean).reduce((t,secret)=>t.split(secret).join('[redacted]'),String(text??''));
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
     const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily,checkedTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead,mergeCommit)});

@@ -91,7 +91,7 @@ async function land(L: L, id: string, head: string) {
   const d = (await L.item(id)).dispatch!;
   const actor = `${d.agent}/${d.model}`;
   await L.claim(id, actor, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, actor);
+  await L.setWorkspace(id, `fork-${id}`, H0, actor);
   await L.recordPush(id, actor, head, head);
   await L.addEvidence(observed(id, head));
   await L.submit(id, actor);
@@ -402,7 +402,7 @@ it("parts never appear as accept, assess, failing, scope or stale entries, and o
   const actor = `${d.agent}/${d.model}`;
   const head = "a".repeat(40);
   await L.claim(parts.a, actor, RUNNER);
-  await L.setFork(parts.a, "fork-a", H0, actor);
+  await L.setWorkspace(parts.a, "fork-a", H0, actor);
   await L.recordPush(parts.a, actor, head, head);
   await L.submit(parts.a, actor);
   // A failing check and a path outside the part's scope: a task would show failing and scope.
@@ -493,14 +493,14 @@ it("a tick that fails is undone and logged, and the change that ran it stands", 
 it("a submitted part's criteria change needs a fresh review before it integrates; an integrated part's criteria stay as they are", async () => {
   const L = await setup("plan-criteria");
   const { id: planId, hash } = await proposed(L);
-  await L.setFork(planId, `fork-${planId}`, H0, "owner");
+  await L.setWorkspace(planId, `fork-${planId}`, H0, "owner");
   const { parts } = await L.approvePlan(planId, "owner", hash, false, POOL, [], routes(doc(part("a"))));
   const partId = parts[0].id;
   const d = (await L.item(partId)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   const head = "a".repeat(40);
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, head, head);
   await L.addEvidence(observed(partId, head));
   await L.submit(partId, builder);

@@ -61,11 +61,11 @@ async function workspace(t, { read }) {
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "gitconfig"), GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@x.test", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@x.test" };
   writeFileSync(join(root, "gitconfig"), "");
   const git = (...a) => execFileSync("git", a, { cwd: dir, env, encoding: "utf8" });
-  execFileSync("git", ["init", "-q", "-b", "task", dir], { env });
+  execFileSync("git", ["init", "-q", "-b", "t/389", dir], { env });
   writeFileSync(join(dir, "f"), "x");
   git("add", "."); git("commit", "-qm", "work");
-  git("remote", "add", "origin", `${origin}/git/fork.git`);
-  for (const [k, v] of [["project", "demo"], ["item", "t389"], ["actor", HOLDER], ["branch", "task"]]) git("config", `atelier.${k}`, v);
+  git("remote", "add", "origin", `${origin}/git/repo.git`);
+  for (const [k, v] of [["project", "demo"], ["item", "t389"], ["actor", HOLDER], ["branch", "t/389"], ["base-branch", "main"]]) git("config", `atelier.${k}`, v);
   const run = (argv) => new Promise((done) => {
     const child = spawn(process.execPath, [cli, ...argv], { cwd: dir, env: { ...env, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "plain-token", ATELIER_SERVER: origin, ATELIER_ACTOR: HOLDER } });
     let output = "";

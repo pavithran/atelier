@@ -25,7 +25,7 @@ async function project(name: string) {
 async function judged(name: string, scope: string[], findings: Finding[], verdicts: string[]): Promise<string> {
   const { id } = await L(name).newItem("Past work", scope, "owner");
   await L(name).claim(id, OPUS);
-  await L(name).setFork(id, `${name}--${id}`, H0, OPUS);
+  await L(name).setWorkspace(id, `${name}--${id}`, H0, OPUS);
   await L(name).recordPush(id, OPUS, H1, H1);
   await L(name).submit(id, OPUS);
   await L(name).addReview({ itemId: id, by: GPT, head: H1, criteria: NO_CRITERIA, approve: false, note: "no", at: new Date().toISOString(), findings });

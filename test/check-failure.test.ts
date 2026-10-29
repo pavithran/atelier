@@ -24,7 +24,7 @@ const ev = (over: Partial<Evidence> = {}): Evidence => {
   return { itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: false, by: "codex/test", at: at(n), changedPaths: ["src/a.ts"], where: "runner", outputTail: "", id: n, ...over };
 };
 const item = (over: Partial<Item> = {}): Item => ({
-  id: "t1", title: "Fix the thing", scope: ["src/**"], state: "submitted", owner: "codex/test", fork: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
+  id: "t1", title: "Fix the thing", scope: ["src/**"], state: "submitted", owner: "codex/test", workspace: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
   createdAt: at(0), updatedAt: at(0), lastPushAt: at(0), ...over,
 });
 const ref = (over: Partial<LargeRef> = {}): LargeRef => ({ key: "logs/p/t1/" + "c".repeat(64), bytes: 12_000, sha256: "c".repeat(64), ...over });

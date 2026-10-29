@@ -35,7 +35,7 @@ test("a review runner's lease call keeps the CLI process alive and reaches the s
     },
     "POST review-claim": {
       request: 7, head: H1, plan: null, events: [], owner: "owner",
-      item: { id: "t21", title: "Review rules", base: H0, scope: ["src/**"], fork: "p--t21", head: H1 },
+      item: { id: "t21", title: "Review rules", base: H0, scope: ["src/**"], workspace: "p--t21", head: H1 },
       need: { needed: true, reason: "a protected change", head: H1, kind: "review", basis: "task", changeClass: "protected", changedPaths: ["src/a.ts"], outOfScope: [], checks: [], round: 1 },
       // A clone that cannot succeed: the runner must then release its claim.
       readToken: { remote: "http://127.0.0.1:9/nowhere", token: "read-token", defaultBranch: "main" },

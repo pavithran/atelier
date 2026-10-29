@@ -117,7 +117,7 @@ it("a landing that names no reviewer is refused with the candidates, the named o
   const submitted = async (title: string, head: string, paths: string[]) => {
     const id = (await L.newItem(title, [], "owner")).id;
     await L.claim(id, OPUS, RUNNER);
-    await L.setFork(id, `fork-${id}`, H0, OPUS);
+    await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
     await L.recordPush(id, OPUS, head, head);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: paths } satisfies Evidence);
     await L.submit(id, OPUS);

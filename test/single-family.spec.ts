@@ -52,7 +52,7 @@ async function submitted(project: string) {
   const d = (await L.item(id)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   await L.claim(id, builder, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, builder);
+  await L.setWorkspace(id, `fork-${id}`, H0, builder);
   await L.recordPush(id, builder, HEAD, HEAD);
   const e: Evidence = { itemId: id, claim: "npm test", grade: "observed", head: HEAD, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a/x.ts"] };
   await L.addEvidence(e);

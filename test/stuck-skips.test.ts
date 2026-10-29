@@ -9,7 +9,7 @@ const T0 = "2026-10-25T08:00:00.000Z";
 const NOW = new Date("2026-10-25T12:00:00.000Z");
 const H1 = "a".repeat(40), H2 = "b".repeat(40);
 const dispatch = { to: "x", agent: "codex", model: "m", job: "build", note: "go", at: T0 };
-const item = (over: Partial<Item> = {}): Item => ({ id: "t264", title: "T", scope: ["src/**"], state: "open", owner: null, fork: null, base: "0".repeat(40), head: H1, acceptedHead: null, createdAt: T0, updatedAt: T0, lastPushAt: null, dispatch, ...over }) as Item;
+const item = (over: Partial<Item> = {}): Item => ({ id: "t264", title: "T", scope: ["src/**"], state: "open", owner: null, workspace: null, base: "0".repeat(40), head: H1, acceptedHead: null, createdAt: T0, updatedAt: T0, lastPushAt: null, dispatch, ...over }) as Item;
 const skip = (over: Partial<RunSkip> = {}): RunSkip & { item: string } => ({ item: "t264", runner: "r1", actor: "codex/m", kind: "failures", failures: 2, note: "tests failed", dispatchAt: T0, head: H1, updatedAt: T0, at: "2026-10-25T09:00:00.000Z", ...over });
 const offers = ["r1", "r2"].map((runner) => ({ runner, at: "2026-10-25T11:59:00.000Z", started: T0 })) as never[];
 const report = (items: Item[], runSkips: (RunSkip & { item: string })[], seen = offers) =>

@@ -15,6 +15,9 @@ import { ensureRepo, repoDir } from "./repos.mjs";
 import { branchTip, createBranch, holds, moveBranch, setHead } from "./branches.mjs";
 import { WayBack, carryBranch, dropBranch, mirrorBranch, pushBack } from "./move.mjs";
 
+// The grants that write a task's or plan's own branch: a task's holder's, a
+// plan's, and the leaseholder's of a task refresh (t462).
+const BRANCH_KINDS = new Set(["task", "plan", "refresh"]);
 export const GRANT_LIVE = "/internal/grant-live";
 // The post-receive hook's POST (design section 4.4; Atelier 2.0, task 8).
 export const PUSHED = "/internal/pushed";
@@ -99,7 +102,7 @@ export class GitHost {
     wants.push([`project:${grant.key}`, "r"]);
     // A landing push holds its task's lock too (task 6), so a change to the
     // landing lease or to the task's acceptance waits for it.
-    if (grant.task && (grant.kind === "task" || grant.kind === "plan" || grant.kind === "landing")) wants.push([`task:${grant.key}/${grant.task}`, "w"]);
+    if (grant.task && (BRANCH_KINDS.has(grant.kind) || grant.kind === "landing")) wants.push([`task:${grant.key}/${grant.task}`, "w"]);
     let release;
     try { release = await this.locks.acquireAll(wants, { signal }); }
     catch { return null; }
@@ -110,7 +113,7 @@ export class GitHost {
     // post-receive hook makes (Ledger.hookPush, scope "push" in
     // src/runtime/ledger-locks.mjs) runs under that same lock, which it
     // could not take again without waiting for the push that waits for it.
-    if (grant.task && (grant.kind === "task" || grant.kind === "plan")) {
+    if (grant.task && BRANCH_KINDS.has(grant.kind)) {
       const at = `${grant.key}/${grant.task}`;
       this.pushing.set(at, (this.pushing.get(at) ?? 0) + 1);
       let done = false;
@@ -145,6 +148,12 @@ export class GitHost {
     const item = await L.item(g.task).catch(() => null);
     return !!item && !["merged", "abandoned", "integrated"].includes(item.state) && item.owner === g.actor;
   }
+  // Whether a refresh grant still writes (t462): the task's Ledger records
+  // it as the grant of its live refresh lease, held by the grant's actor,
+  // and the task is open to work.
+  async stillRefreshing(key, g) {
+    return await this.ledger(key).refreshGrantLive(g.task, g.lease, g.actor, `grant:${g.id}`).catch(() => false) === true;
+  }
   // Whether a landing grant still writes (task 6): its task is still
   // accepted at the head the grant names, and the holding of the project's
   // live landing lease the grant was minted under still stands, for that
@@ -171,6 +180,7 @@ export class GitHost {
     const g = this.grants.findById(id);
     if (!g) return false;
     if (g.kind === "task" || g.kind === "plan") return this.stillHeld(g.project, g);
+    if (g.kind === "refresh") return this.stillRefreshing(g.project, g);
     if (g.kind === "landing") {
       if (!await this.stillLanding(g.project, g)) return false;
       return update?.branch === true ? this.grants.consumeBranch(g.id, String(update.sha ?? "")) : true;
@@ -207,7 +217,7 @@ export class GitHost {
     const g = typeof id === "string" ? this.grants.findById(id) : null;
     if (!g || g.project !== project) return { observed: false, reason: "the push's grant is not live for this project" };
     const n = /^t(\d+)$/.exec(g.task ?? "")?.[1];
-    const own = g.kind === "task" ? `refs/heads/t/${n}` : g.kind === "plan" ? `refs/heads/plan/${n}` : null;
+    const own = g.kind === "task" || g.kind === "refresh" ? `refs/heads/t/${n}` : g.kind === "plan" ? `refs/heads/plan/${n}` : null;
     if (!n || ref !== own) return { observed: false, reason: `${ref} is not a task's branch pushed with its own grant` };
     const scan = this.inflight.get(g.id);
     if (scan && !scan.recorded) {
@@ -330,7 +340,7 @@ export class GitHost {
   }
   // A claimed branch that holds nothing of its own, its head the recorded
   // base or a commit `from` already holds, moved to the tip `from` has
-  // reached since (moveEmptyFork's successor). Answers the new head, or null
+  // reached since (as a claim does). Answers the new head, or null
   // when nothing moved: `from` has not moved, or the branch holds a commit of
   // its own, or a push moved it meanwhile.
   async moveEmptyBranch({ key, projectBranch, branch, from, base }) {
@@ -364,6 +374,7 @@ export class GitHost {
     // Beside the record, the task itself: a grant writes only for a task
     // still open to work and still held by the actor it was minted to.
     if ((g.kind === "task" || g.kind === "plan") && !await this.stillHeld(key, g)) return null;
+    if (g.kind === "refresh" && !await this.stillRefreshing(key, g)) return null;
     if (g.kind === "landing" && !await this.stillLanding(key, g)) return null;
     return { id: g.id, project: key, key, kind: g.kind, task: g.task, actor: g.actor, branch, accepted: g.accepted };
   }
@@ -381,7 +392,7 @@ export class GitHost {
   // its item (hookScanned); a push to the project's branch or dev/* has no
   // item to record it on, and the hook's refusal is the whole answer.
   async recordScan(grant, report) {
-    if (grant.kind !== "task" && grant.kind !== "plan") return;
+    if (!BRANCH_KINDS.has(grant.kind)) return;
     await this.ledger(grant.key).hookScanned(grant.task, report.head, report.hits, report.unscanned, report.refused === true);
   }
   handle(req, res) {

@@ -2,11 +2,9 @@
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
 import { fixture, snapshot, remote, cli } from "./cli-sessions-shared.mjs";
 
 // No test reads this Mac's own iCloud folder (t645).
@@ -115,8 +113,8 @@ test("wrap pushes each remote, continues after failure, files found tasks and th
   assert.deepEqual(note.pushes, [{ remote: "a", passed: true }, { remote: "broken", passed: false }, { remote: "z", passed: true }]);
   assert.deepEqual(note.found, ["t1", "t2"]);
   assert.deepEqual(f.requests().filter((r) => r.path.endsWith("/items")).map((r) => JSON.parse(r.body).title), ["Tool defect", "Lesson: Keep evidence"]);
-  // The note and the baseline were recorded before the command failed, and the relay line names the remote.
-  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+  // The note was recorded before the command failed, wrap sent nothing to the baseline, and the relay line names the remote.
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head);
   assert.match(r.stdout, /Relay: session closed with a failed push to broken\./);
   assert.match(r.stdout, /Remote broken: failed\./);
 });
@@ -206,7 +204,7 @@ for (const status of [0, 7]) {
   });
 }
 
-test("wrap gives the owner's remotes a normal push with LFS uploads, and Atelier's baseline still skips them", (t) => {
+test("wrap gives the owner's remotes a normal push with LFS uploads", (t) => {
   const f = fixture(t);
   remote(f, "origin");
   const seen = recordPushes(f);
@@ -215,29 +213,7 @@ test("wrap gives the owner's remotes a normal push with LFS uploads, and Atelier
   assert.equal(r.status, 0, r.stderr);
   const pushes = seen();
   assert.deepEqual(pushes.filter(([to]) => to === "origin"), [["origin", "unset"]], "the owner's remote saw no GIT_LFS_SKIP_PUSH");
-  const atelier = pushes.filter(([to]) => to === f.baseline);
-  assert.ok(atelier.length > 0, "the baseline was pushed to");
-  assert.ok(atelier.every(([, skip]) => skip === "1"), "every push to Atelier skips the upload");
-});
-
-test("wrap reuses sync for a fresh-history baseline", (t) => {
-  const f = fixture(t), branch = f.git("branch", "--show-current");
-  const runGit = (args, options) => execFileSync("git", args, { cwd: options.cwd, input: options.input, encoding: "utf8" }).trim();
-  const built = buildHistory(runGit, f.checkout, f.head, f.head);
-  savePairs(join(f.checkout, ".git"), "demo", built.pairs);
-  const fresh = join(f.dir, "fresh.git");
-  f.git("init", "--bare", fresh);
-  f.git("push", fresh, `${built.head}:refs/heads/${branch}`);
-  // The fake server returns the baseline path from the fixture.
-  rmSync(f.baseline, { recursive: true });
-  f.git("clone", "--bare", fresh, f.baseline);
-  writeFileSync(join(f.dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", projects: { demo: { path: f.checkout, branch, fresh: true } } }));
-  const r = f.run("wrap", "Carry", "--no-check");
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /carried 1 commit/);
-  const base = f.git("--git-dir", f.baseline, "rev-parse", `refs/heads/${branch}`);
-  assert.equal(loadPairs(join(f.checkout, ".git"), "demo")[base], f.git("rev-parse", "HEAD"));
-  assert.equal(f.git("rev-parse", `${base}^{tree}`), f.git("rev-parse", "HEAD^{tree}"));
+  assert.deepEqual(pushes.filter(([to]) => to === f.baseline), [], "nothing is pushed to the baseline");
 });
 
 test("wrap cannot force a divergent remote even when its push refspec requests force", (t) => {
@@ -313,7 +289,6 @@ test("wrap stages no private file: a linked one is ignored, and one forced into 
   const ok = f.run("wrap", "Private", "--no-check");
   assert.equal(ok.status, 0, ok.stderr);
   assert.deepEqual(f.git("ls-tree", "-r", "--name-only", "HEAD").split("\n"), ["STATE.md", "loose.txt"]);
-  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
 });
 
 
@@ -326,7 +301,6 @@ test("wrap, with and without --push, never pushes a commit holding a private fil
   const leak = f.git("rev-parse", "HEAD").slice(0, 12);
   const wrapped = f.run("wrap", "Push", "--push", "--no-check");
   assert.notEqual(wrapped.status, 0, wrapped.stdout);
-  assert.match(wrapped.stderr, new RegExp(`Publishing .* to demo's baseline would carry private files: PROJECT\\.md in ${leak}\\. .*Nothing was pushed\\.`));
   assert.match(wrapped.stdout, new RegExp(`Not pushed to origin: .* would carry private files: PROJECT\\.md in ${leak}`));
   assert.equal(f.git("--git-dir", origin, "for-each-ref", "refs/heads"), "", "the checkout remote got nothing");
   assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head, "nor did the baseline");
@@ -354,7 +328,6 @@ test("wrap refuses when the list of private files cannot be read and this Mac ke
   writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
   const ok = f.run("wrap", "Work", "--no-check");
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
 });
 
 
@@ -373,30 +346,4 @@ test("wrap refuses a private file a .gitignore un-ignores, and stages nothing", 
   assert.match(r.stderr, /wrap will not commit private files: PROJECT\.md\./);
   assert.equal(f.git("rev-parse", "HEAD"), head);
   assert.equal(f.git("diff", "--cached", "--name-only"), "");
-});
-
-
-// Astra's thirteenth review of t645: a push read the branch, then pushed it
-// by name, so a commit made between the scan and the push went unread.
-test("wrap pushes the baseline the commit it scanned, not one made on the branch while it pushed", async (t) => {
-  const f = fixture(t);
-  privateFiles(t, f);
-  f.clean();
-  writeFileSync(join(f.checkout, "work.txt"), "w\n");
-  f.git("add", "work.txt");
-  f.git("commit", "-qm", "work");
-  const scanned = f.git("rev-parse", "HEAD");
-  const hold = join(mkdtempSync(join(tmpdir(), "atelier-pin-")), "hold");
-  t.after(() => rmSync(dirname(hold), { recursive: true, force: true }));
-  const proc = f.spawnWith({ ATELIER_TEST_HOLD: hold, ATELIER_TEST_HOLD_STAGE: "push" }, "wrap", "Work", "--no-check");
-  const closed = new Promise((ok) => proc.on("close", ok));
-  const end = Date.now() + 15_000;
-  while (!existsSync(`${hold}.read`)) { if (Date.now() > end) throw new Error("wrap never reached its push"); await new Promise((r) => setTimeout(r, 10)); }
-  // Between the scan and the push, a commit holding the private file.
-  f.git("add", "-f", "PROJECT.md");
-  f.git("commit", "-qm", "by hand, after the scan");
-  writeFileSync(`${hold}.go`, "");
-  assert.equal(await closed, 0);
-  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), scanned, "the baseline holds the commit that was scanned");
-  assert.doesNotMatch(f.git("--git-dir", f.baseline, "log", "--all", "--name-only", "--format="), /PROJECT\.md/);
 });

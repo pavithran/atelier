@@ -68,7 +68,7 @@ export interface PlanView {
   preview: PartRoute[] | null;    // before approval: the routing an approval would fix now
   integration: { integrationHead: string | null };  // the plan branch's integration head; null when none is recorded
   // How the branch stands against main: the main head it last took (from a
-  // refresh, or the commit the plan forked from), main's head now as read or
+  // refresh, or the commit the plan branched from), main's head now as read or
   // last observed, the latest refresh, and whether the integrator holds it.
   refresh?: { taken: string | null; main: string | null; last: PlanRefresh | null; running: boolean };
   notes?: GoalNote[];             // the goal's open notes: non-blocking review findings (t203), none filed as tasks
@@ -252,7 +252,7 @@ export function planText(v: PlanView, project: string, now = new Date()): string
   if (fallen) lines.push("", fallen);
   if (v.approval) {
     const head = v.integration.integrationHead;
-    lines.push("", head ? `Integration branch at ${head.slice(0, 8)}.` : "No part is integrated yet; the integration branch still sits at the commit the plan forked from.");
+    lines.push("", head ? `Integration branch at ${head.slice(0, 8)}.` : "No part is integrated yet; the integration branch still sits at the commit the plan branched from.");
     lines.push(...refreshLines(v, flag));
   }
   lines.push(...noteLines(v));
@@ -280,7 +280,7 @@ function refreshLines(v: PlanView, flag: string): string[] {
   const again = `atelier plan refresh ${v.item.id} ${flag}`;
   const last = r.last;
   const inFlight = last?.state === "dispatched";
-  if (!r.taken) lines.push(r.main ? `Main is at ${s(r.main)}; the commit the branch forked from is not recorded.` : "");
+  if (!r.taken) lines.push(r.main ? `Main is at ${s(r.main)}; the commit the branch started from is not recorded.` : "");
   else if (!r.main) lines.push(`The branch last took main at ${s(r.taken)}; main's head is not known yet.`);
   else if (r.main === r.taken) lines.push(`The branch holds main's head ${s(r.main)}.`);
   else {

@@ -75,7 +75,7 @@ test("a 1.0 dump imports into a fresh Node server and is migrated: projects, ite
   const items = await Promise.all(["t1", "t2", "t3", "t4", "t5"].map((id) => ledger("relic").item(id)));
   assert.deepEqual(items.map((i) => i.state), ["merged", "claimed", "submitted", "open", "abandoned"]);
   assert.equal(items[1].owner, "claude-code/opus-5.5");
-  assert.equal(items[1].fork, "relic-t2", "an Artifacts fork, until atelier migrate carries it");
+  assert.equal(items[1].workspace, "relic-t2", "an Artifacts fork, until atelier migrate carries it");
   assert.equal(items[1].head, c.fork);
   assert.equal(items[1].base, c.main);
   assert.deepEqual(items[0].accept, ["a.txt holds one line"]);
@@ -157,7 +157,7 @@ test("an import whose stored rows fall short of the manifest is not finished, an
   // And the import can begin again, and finish.
   const again = await cli(["ledger", "import", "--file", dumpFile("short.json", dump), "--project", "short"]);
   assert.equal(again.code, 0, `${again.stdout}\n${again.stderr}`);
-  assert.equal((await ledger("short").item("t2")).fork, "relic-t2");
+  assert.equal((await ledger("short").item("t2")).workspace, "relic-t2");
 });
 
 test("a dump's rows that differ from the checksum the source answered are refused, by the CLI before anything is sent and by the server at finish", async () => {

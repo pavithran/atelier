@@ -11,48 +11,48 @@ import { join, resolve } from "node:path";
 // task's head merged with main as it is now, in a temporary merge commit in
 // the clean clone, and records the result bound to both revisions. These
 // tests run the real CLI against a fake ledger on 127.0.0.1, with a baseline
-// that has moved since the task forked. Every credential here is a dummy.
+// that has moved since the task's branch started. Every credential here is a dummy.
 
 const cli = resolve("cli/atelier.mjs");
 const actor = "codex/test";
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).trim();
 
 // `mainChange` and `taskChange` write each side's commit; `onMain` builds the
-// task's commit on top of main's newer commit instead of the fork point.
+// task's commit on top of main's newer commit instead of the start point.
 async function fixture(t, { mainChange, taskChange, onMain = false, check, prepare, onEvidence, limits = {} }) {
   const root = mkdtempSync(join(tmpdir(), "atelier-merged-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const identity = (cwd) => { git(cwd, "config", "user.name", "Test"); git(cwd, "config", "user.email", "test@example.invalid"); };
-  // The project checkout, at the fork point.
+  // The project checkout, at the start point.
   const source = join(root, "source");
   execFileSync("git", ["init", "-q", "-b", "main", source]);
   identity(source);
   writeFileSync(join(source, "STATE.md"), "line one\nline two\n");
   git(source, "add", ".");
   git(source, "commit", "-qm", "Initial");
-  const forkPoint = git(source, "rev-parse", "HEAD");
-  // The task's fork, taken at the fork point.
-  const fork = join(root, "fork.git");
-  execFileSync("git", ["clone", "-q", "--bare", source, fork]);
-  // Main moves on in the checkout, and the baseline follows.
+  const startPoint = git(source, "rev-parse", "HEAD");
+  // The one repository holds the project's branch and the task's (t/1), taken at the start point.
+  const repo = join(root, "repo.git");
+  execFileSync("git", ["clone", "-q", "--bare", source, repo]);
+  git(repo, "branch", "t/1", "main");
+  // Main moves on in the checkout, and the repository follows.
   mainChange(source);
   git(source, "add", "-A");
   git(source, "commit", "-qm", "Main moved");
   const mainHead = git(source, "rev-parse", "HEAD");
-  const baseline = join(root, "baseline.git");
-  execFileSync("git", ["clone", "-q", "--bare", source, baseline]);
-  // The task's work, pushed to its fork.
+  git(source, "push", "-q", repo, "main");
+  // The task's work, pushed to its branch.
   const work = join(root, "work");
-  execFileSync("git", ["clone", "-q", fork, work]);
+  execFileSync("git", ["clone", "-q", "--branch", "t/1", repo, work]);
   identity(work);
-  if (onMain) { git(work, "fetch", "-q", baseline, "main"); git(work, "reset", "-q", "--hard", "FETCH_HEAD"); }
+  if (onMain) { git(work, "fetch", "-q", repo, "main"); git(work, "reset", "-q", "--hard", "FETCH_HEAD"); }
   taskChange(work);
   git(work, "add", "-A");
   git(work, "commit", "-qm", "Task work");
-  git(work, "push", "-q", fork, "main");
+  git(work, "push", "-q", repo, "HEAD:refs/heads/t/1");
   const head = git(work, "rev-parse", "HEAD");
 
-  const item = { id: "t1", title: "Task", scope: [], owner: actor, state: "claimed", head, acceptedHead: null, base: forkPoint, fork: "proj--t1" };
+  const item = { id: "t1", title: "Task", scope: [], owner: actor, state: "claimed", head, acceptedHead: null, base: startPoint };
   const posts = [];
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -62,10 +62,7 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check, prepa
       if (path.endsWith("/evidence")) onEvidence?.(JSON.parse(raw));
     }
     let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: Array.isArray(check) ? check : [check], prepare, protected: [], ...limits }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
-    if (path.endsWith("/read-token")) data = { remote: fork, token: "fake-fork-token", head, defaultBranch: "main" };
-    if (path.endsWith("/baseline-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
-    // A task with no plan is measured against the baseline, so its base token names it.
-    if (path.endsWith("/base-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
+    if (path.endsWith("/git-token")) data = { kind: "read", remote: repo, token: "fake-read-token", expiresAt: "tomorrow", defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head, base: startPoint };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });
@@ -81,7 +78,7 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check, prepa
     return { status, stdout, stderr };
   }
   const evidence = () => posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body);
-  return { run, evidence, posts, head, mainHead, forkPoint, baseline, fork, root };
+  return { run, evidence, posts, head, mainHead, startPoint, repo, root };
 }
 
 const addFile = (name) => (cwd) => writeFileSync(join(cwd, name), `${name}\n`);
@@ -96,9 +93,9 @@ test("check --merged runs the checks on the head merged with main's head, and re
   assert.match(r.stdout, new RegExp(`^PASS  ${bothFiles.replace(/[&]/g, "\\&")}  @ ${f.head.slice(0, 8)} merged with main ${f.mainHead.slice(0, 8)}$`, "m"));
   assert.match(r.stdout, /Recorded on the merge with main at/);
   assert.deepEqual(f.evidence().map((e) => [e.kind, e.claim, e.head, e.passed, e.merged, e.mainHead]), [["check", bothFiles, f.head, true, true, f.mainHead]]);
-  // The fork and the baseline hold what they held: the merge commit went nowhere.
-  assert.equal(git(f.fork, "rev-parse", "main"), f.head);
-  assert.equal(git(f.baseline, "rev-parse", "main"), f.mainHead);
+  // The task's branch and main hold what they held: the merge commit went nowhere.
+  assert.equal(git(f.repo, "rev-parse", "refs/heads/t/1"), f.head);
+  assert.equal(git(f.repo, "rev-parse", "main"), f.mainHead);
   // Without --merged the same check runs on the head alone, where main's file is missing, and the evidence names no merge.
   const plain = await f.run(["check", "t1", "--project", "proj"]);
   assert.equal(plain.status, 2, plain.stdout + plain.stderr);
@@ -172,7 +169,7 @@ test("preparation runs once in the merged tree before multiple checks, and runs 
 
 test("preparation failure reports its command, status and bounded redacted output without check evidence", async (t) => {
   if (!canInspectSlots(t)) return;
-  const command = "printf 'fake-fork-token'; exit 7";
+  const command = "printf 'fake-read-token'; exit 7";
   const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), prepare: { command, inputs: ["STATE.md"], outputs: ["ready"] }, check: "true" });
   const r = await f.run(["check", "t1", "--project", "proj"]);
   assert.equal(r.status, 2);
@@ -180,7 +177,7 @@ test("preparation failure reports its command, status and bounded redacted outpu
   assert.match(r.stderr, /last 4000 characters, redacted/);
   // The failure report redacts both the command and its output.
   const report = r.stderr.slice(r.stderr.indexOf("Preparation"));
-  assert.ok(!report.includes("fake-fork-token"));
+  assert.ok(!report.includes("fake-read-token"));
   assert.match(report, /\[redacted\]/);
   assert.deepEqual(f.evidence(), []);
   const log = /full redacted failed-check log: (.+)/.exec(r.stderr)?.[1];
@@ -230,7 +227,7 @@ test("t176 both failed attempts retain evidence and private logs before retry", 
   t.after(() => rmSync(observed, { recursive: true, force: true }));
   const marker = join(observed, "posted");
   let posts = 0;
-  const command = `if test -f attempted; then test -f '${marker}' || { echo evidence-not-posted; exit 9; }; fi; touch attempted; printf 'fake-fork-token pre-test error'; exit 7`;
+  const command = `if test -f attempted; then test -f '${marker}' || { echo evidence-not-posted; exit 9; }; fi; touch attempted; printf 'fake-read-token pre-test error'; exit 7`;
   const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), check: command, onEvidence: () => { posts++; writeFileSync(marker, "posted"); } });
   const result = await f.run(["check", "t1", "--project", "proj"]);
   assert.equal(result.status, 2);

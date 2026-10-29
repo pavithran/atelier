@@ -23,7 +23,7 @@ import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch
 import { openStuck } from "../src/stuck/view.ts";
 import { tickLine } from "../src/stage-tick.ts";
 import { stripVTControlCharacters } from "node:util";
-import { directionText, expiredBlocks, forkAgeText, mergedByOverride, stageOf } from "../src/rules.ts";
+import { directionText, expiredBlocks, mergedByOverride, stageOf } from "../src/rules.ts";
 import { LIMITS } from "../src/limits.ts";
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
@@ -103,14 +103,8 @@ export function taskLink(server, project, id) {
 // show, with the times a machine reader such as Observatory draws on.
 export function itemJson(i) {
   return { id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head,
-    createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
-    // A fork Artifacts is still preparing (t18), only while there is one.
-    ...(i.preparing ? { preparing: i.preparing } : {}) };
+    createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt };
 }
-
-// What the server says of a task fork that is not ready yet (t18): which
-// repository, for how long, and what happens next.
-export const preparingLine = (p) => `${flatText(p.fork)} has been preparing for ${forkAgeText(p.ageMs)}. ${flatText(p.next)}`;
 
 // The queue as JSON: each project with its notices, its items each carrying
 // its times, the project's overlapping pairs of tasks, each pair once and
@@ -173,7 +167,7 @@ export function localTaskLine(t) {
   if (t.error) return `${t.id}  its workspace cannot be read: ${t.error}`;
   const said = [];
   if (t.uncommitted) said.push(`${t.uncommitted} ${t.uncommitted === 1 ? "path" : "paths"} with uncommitted changes`);
-  if (t.unpushed) said.push(`${t.unpushed} ${t.unpushed === 1 ? "commit" : "commits"} not pushed to its fork`);
+  if (t.unpushed) said.push(`${t.unpushed} ${t.unpushed === 1 ? "commit" : "commits"} not pushed to its branch`);
   if (t.unpushed === null) said.push("its unpushed commits cannot be counted");
   if (t.merging) said.push(`a merge is in progress${t.conflicts?.length ? `, in conflict: ${t.conflicts.join(", ")}` : ""}`);
   if (t.commitMessage) said.push("COMMIT_MSG.txt waiting to be committed");
@@ -434,11 +428,6 @@ export function formatStatus(views, waiting = {}) {
     if (working.length) {
       lines.push("  In progress");
       for (const i of working) lines.push(`    ${i.id}  ${i.state}  held by ${i.owner ?? "nobody"}  ${i.title}`);
-    }
-    const preparing = items.filter((i) => i.preparing && i.state !== "merged" && i.state !== "abandoned");
-    if (preparing.length) {
-      lines.push("  Waiting for a fork");
-      for (const i of preparing) lines.push(`    ${i.id}  ${preparingLine(i.preparing)}`);
     }
     // How many merges went in on the owner's override of the independent
     // review, wherever the project has merged anything, then each under it

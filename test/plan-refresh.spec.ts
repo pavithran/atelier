@@ -74,7 +74,7 @@ const observed = (itemId: string, head: string, key: string): Evidence => ({
 async function readyPlan(L: L) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -88,7 +88,7 @@ async function submitApproved(L: L, partId: string, head: string, key: string) {
   const d = (await L.item(partId)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, head, head);
   await L.addEvidence(observed(partId, head, key));
   await L.submit(partId, builder);
@@ -148,7 +148,7 @@ it("with main unmoved the tick dispatches the dependent part at once, with no re
 async function landedPlan(L: L) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -184,7 +184,7 @@ it("a part landed on main by itself does not move the record, so the plan is not
   const L = await setup("refresh-part-landed");
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -194,7 +194,7 @@ it("a part landed on main by itself does not move the record, so the plan is not
   const d = (await L.item(a)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   await L.claim(a, builder, RUNNER);
-  await L.setFork(a, `fork-${a}`, H0, builder);
+  await L.setWorkspace(a, `fork-${a}`, H0, builder);
   await L.recordPush(a, builder, PART_A, PART_A);
   await L.addEvidence(observed(a, PART_A, "a"));
   await L.submit(a, builder);
@@ -293,7 +293,7 @@ it("a submitted plan refreshed by its owner goes back to building first", async 
   const L = await setup("refresh-submitted");
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -311,7 +311,7 @@ it("a submitted plan refreshed by its owner goes back to building first", async 
 // ── the routes, through the Worker ───────────────────────────────────────
 
 // A stand-in Artifacts: each repository a first-parent log, newest first.
-function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>): Artifacts {
+function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>): Repos {
   return {
     get: async (name: string) => ({
       log: async ({ ref, limit = 50 }: { ref?: string; limit?: number } = {}) => {
@@ -321,15 +321,15 @@ function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>)
       },
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 // G18: an owner-token write names the acting model.
-function call(name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts, method = "POST") {
+function call(name: string, path: string, actor: string, body: unknown, REPOS: Repos, method = "POST") {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${path}`, {
     method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS } as typeof env);
 }
 const errorOf = async (res: Response) => ((await res.json()) as { error: string }).error;
 

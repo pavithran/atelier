@@ -31,7 +31,7 @@ const events = async (L: L, id: string) => (await L.events(id)) as unknown as Le
 
 // A fork at `head` whose commits `graph` describes (hash: parents and
 // message), and a baseline whose first-parent line is `mainLine`. log lists
-// the first-parent chain from a ref, as Artifacts does.
+// the first-parent chain from a ref, as Repos does.
 function artifacts(head: () => string, graph: Record<string, { parents: string[]; message: string }> = {}, mainLine: string[] = [H0]) {
   const chain = (from: string) => {
     const out: { hash: string; parents: string[]; message: string }[] = [];
@@ -46,7 +46,7 @@ function artifacts(head: () => string, graph: Record<string, { parents: string[]
       readCommit: async (h: string) => (graph[h] ? { hash: h, ...graph[h] } : null),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 // A project whose src/** is protected, with t1 claimed by Opus in its fork.
@@ -57,7 +57,7 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Change the gate", [], "owner");
   await L.claim("t1", OPUS);
-  await L.setFork("t1", `${name}--t1`, H0, OPUS);
+  await L.setWorkspace("t1", `${name}--t1`, H0, OPUS);
   return L;
 }
 
@@ -72,9 +72,9 @@ async function submitted(L: L, head = H1) {
 const review = (by: string, head = H1): Review => ({ itemId: "t1", by, head, criteria: NO_CRITERIA, approve: true, note: "Looks right.", at: new Date().toISOString() });
 
 // Since G18 a write by the "owner" actor on the developer token names the acting model (the session, OPUS here).
-const call = (name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/${path}`, {
+const call = (name: string, path: string, actor: string, body: unknown, REPOS: Repos) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/${path}`, {
   method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
-}), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+}), { ...env, ATELIER_TOKEN: TOKEN, REPOS } as typeof env);
 
 it("an approval the owner token recorded in a model's name is not the independent review, and the gate says so", async () => {
   const name = "provenance-owner-token";
@@ -160,11 +160,11 @@ it("a pushed commit whose Agent line names another actor than the holder makes i
     [M1]: { parents: [H0], message: "Main moved\n\nAgent: zcode/glm-5.3" },
   };
   let head = H1;
-  const ARTIFACTS = artifacts(() => head, graph, [M1, H0]);
-  expect((await call(name, "push", OPUS, { head: H1 }, ARTIFACTS)).status).toBe(200);
+  const REPOS = artifacts(() => head, graph, [M1, H0]);
+  expect((await call(name, "push", OPUS, { head: H1 }, REPOS)).status).toBe(200);
   expect((await L.item("t1")).pushActors).toEqual([OPUS]);
   head = H2;
-  expect((await call(name, "push", OPUS, { head: H2 }, ARTIFACTS)).status).toBe(200);
+  expect((await call(name, "push", OPUS, { head: H2 }, REPOS)).status).toBe(200);
   expect((await L.item("t1")).pushActors).toEqual([OPUS, GEMINI]);
   expect((await events(L, "t1")).find((e) => e.kind === "push.observed" && e.data.head === H2)?.data).toMatchObject({ head: H2, authors: [{ commit: H2, actor: GEMINI }] });
   // Gemini is now a contributor: its own approval is refused, and the gate

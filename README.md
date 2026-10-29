@@ -34,12 +34,12 @@ at a time, granted atomically by the project's Durable Object when an agent
 runs `atelier start`, so a second claimant is refused. A task changes holder only
 by a recorded handoff, which revokes the old token.
 
-### Fork
+### Branch
 
-**Every task its own fork.** The project's main branch is copied into an
-Artifacts repository, the *baseline*. Each task works in a fork of the
-baseline, its *workspace*, and its holder has the only write token for it,
-so multiple agents work concurrently without touching each other's files.
+**Every task its own branch.** Each project is one Git repository on the
+Atelier server. Each task works on a branch of it, `t/N`, its *workspace*,
+and its holder has the only write grant for it, so multiple agents work
+concurrently without touching each other's files.
 
 ### Prove
 

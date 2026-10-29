@@ -193,7 +193,7 @@ function standIn(state) {
     if (path === "/api/projects/demo" && req.method === "GET") return send(200, { project: { policy: { checks: state.checks ?? [], ...(state.identity ? { commitIdentity: state.identity } : {}), ...(state.affectedTests ? { affectedTests: state.affectedTests } : {}) } }, items: [] });
     if (path === "/api/projects/demo/sessions" && req.method === "GET") return send(200, []);
     if (path === "/api/projects/demo/sessions" && req.method === "POST") return send(201, { actor: "owner", at: new Date().toISOString(), data: body });
-    if (path === "/api/projects/demo/baseline-token") return send(200, { remote: state.baseline, token: "t", defaultBranch: "main" });
+    if (path === "/api/projects/demo/git-token") return send(200, { kind: "read", remote: state.baseline, token: "t", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repository: "server" });
     send(404, { error: "not_found", detail: `the stand-in has no ${req.method} ${path}` });
   });
 }

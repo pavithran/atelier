@@ -41,8 +41,8 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
     createToken: async (_scope: string, ttl: number) => { minted.push(repo); return { id: `tok-${minted.length}`, plaintext: `read-${repo}`, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }; },
     revokeToken: async () => true,
     [Symbol.dispose]() {},
-  }) } as unknown as Artifacts;
-  const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as typeof env;
+  }) } as unknown as Repos;
+  const bindings = { ...env, ATELIER_TOKEN: OWNER, REPOS: artifacts } as typeof env;
   // G18: a write with the developer token names the model acting; the agent token is exempt.
   const request = (method: string, path: string, token: string, actor: string, body?: unknown, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": OPUS } : {}), ...headers },
@@ -145,7 +145,7 @@ async function fastMerged(name: string) {
   // Built by Opus, accepted and merged in fast mode without atelier land.
   const item = await L.newItem("Built fast", ["src/**"], "owner", { accept: ["The page measures right"] });
   await L.claim(item.id, OPUS);
-  await L.setFork(item.id, `${name}--${item.id}`, BASE, OPUS);
+  await L.setWorkspace(item.id, `${name}--${item.id}`, BASE, OPUS);
   await L.recordPush(item.id, OPUS, C1, C1);
   await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: C1, passed: true, by: "owner", at: AT, changedPaths: ["src/a.ts"] });
   await L.submit(item.id, OPUS);
@@ -161,8 +161,8 @@ async function fastMerged(name: string) {
     createToken: async (_scope: string, ttl: number) => ({ id: "tok", plaintext: `read-${repo}`, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }),
     revokeToken: async () => true,
     [Symbol.dispose]() {},
-  }) } as unknown as Artifacts;
-  const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as typeof env;
+  }) } as unknown as Repos;
+  const bindings = { ...env, ATELIER_TOKEN: OWNER, REPOS: artifacts } as typeof env;
   // G18: a write with the developer token names the model acting; the agent token is exempt.
   const request = (method: string, path: string, token: string, actor: string, body?: unknown, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": OPUS } : {}), ...headers },

@@ -52,8 +52,8 @@ it("names the main a recorded merge observed, for a project with SOURCE_PROJECT 
     readCommit: async (h: string) => [{ hash: TIP, parents: [MERGE] }, { hash: MERGE, parents: [BASE, HEAD] }].find((c) => c.hash === h) ?? null,
     log: async () => [{ hash: TIP, parents: [MERGE], treeHash: "0".repeat(40) }, { hash: MERGE, parents: [BASE, HEAD], treeHash: "0".repeat(40) }, { hash: BASE, parents: [], treeHash: "0".repeat(40) }],
     [Symbol.dispose]() {},
-  }) } as unknown as Artifacts;
-  const e = { ...env, ATELIER_TOKEN: "t", ARTIFACTS: artifacts, SOURCE_PROJECT: "recorded" } as typeof env;
+  }) } as unknown as Repos;
+  const e = { ...env, ATELIER_TOKEN: "t", REPOS: artifacts, SOURCE_PROJECT: "recorded" } as typeof env;
   const r = await worker.fetch(new Request(`https://atelier.test/api/projects/recorded/items/${item.id}/record-merge`, { method: "POST", headers: { authorization: "Bearer t", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify({ mergeCommit: MERGE, head: HEAD, reviews: [{ by: "codex/gpt-6-astra", verdict: "approve", head: HEAD }] }) }), e);
   expect(r.status, await r.clone().text()).toBe(200);
   expect(await (await worker.fetch(new Request("https://atelier.test/api/version"), { ...e, DEPLOYED_MAIN: DEPLOYED } as typeof env)).json()).toMatchObject({ main: TIP });

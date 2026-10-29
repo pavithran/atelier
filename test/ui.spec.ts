@@ -12,7 +12,7 @@ const project:ProjectRecord={name:'example',repo:'example',policy:{checks:['npm 
 // The waiting rule's placement for one project, at the fixtures' time, with no runner offers.
 const place=(items:any[],entries:Partial<InboxEntry>[],name='example')=>attentionFor(name,items as never,entries.map((x)=>({project:name,title:'',reason:'r',weight:1,...x})) as never,[],new Date(time));
 // A server behind Access, whose task page offers the override forms (t371).
-function detail():Detail{return{ownerActor:'pavi',ownerFactor:'access',item:{id:'t1',title:'<script>unsafe title</script>',state:'submitted',owner:'codex/gpt-6',scope:['src/**'],fork:'example--t1',base:'b'.repeat(40),head,acceptedHead:null,lastPushAt:time,updatedAt:time,createdAt:time},policy:project.policy,evidence:[{itemId:'t1',claim:'npm test',grade:'observed',head,passed:true,by:'codex/gpt-6',at:time,changedPaths:['src/a.ts']}],reviews:[],gate:{ready:false,needsAssessor:true,blockers:['Protected'],outOfScope:[]},events:[]};}
+function detail():Detail{return{ownerActor:'pavi',ownerFactor:'access',item:{id:'t1',title:'<script>unsafe title</script>',state:'submitted',owner:'codex/gpt-6',scope:['src/**'],workspace:'example--t1',base:'b'.repeat(40),head,acceptedHead:null,lastPushAt:time,updatedAt:time,createdAt:time},policy:project.policy,evidence:[{itemId:'t1',claim:'npm test',grade:'observed',head,passed:true,by:'codex/gpt-6',at:time,changedPaths:['src/a.ts']}],reviews:[],gate:{ready:false,needsAssessor:true,blockers:['Protected'],outOfScope:[]},events:[]};}
 it('review puts revision-bound actions before the diff and escapes untrusted task text',()=>{
  const html=renderItem(project,detail(),'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
  expect(html).toContain('&lt;script&gt;unsafe title&lt;/script&gt;');expect(html).not.toContain('<script>unsafe');
@@ -63,26 +63,26 @@ it('the task page shows the five steps with the current one marked, read from th
  const steps=(html:string)=>{const ol=html.slice(html.indexOf('<ol class="task-steps"'),html.indexOf('</ol>',html.indexOf('<ol class="task-steps"')));return [...ol.matchAll(/<li class="(\w+)"( aria-current="step")?><b>(\w+)<\/b>/g)].map((m)=>`${m[3]}:${m[1]}${m[2]?'*':''}`);};
  const at=(patch:Partial<Detail['item']>,evidence?:Detail['evidence'])=>{const d=detail();Object.assign(d.item,patch);if(evidence)d.evidence=evidence;return steps(renderItem(project,d,'PAVI',null));};
  const failed=[{...detail().evidence[0],passed:false}];
- expect(at({state:'open',owner:null,fork:null,head:null})).toEqual(['Claim:current*','Fork:todo','Prove:todo','Review:todo','Land:todo']);
- expect(at({state:'claimed',head:null})).toEqual(['Claim:done','Fork:current*','Prove:todo','Review:todo','Land:todo']);
- // A fresh fork records its base as its head (Ledger.setFork): Fork stays current until a push moves the head off the base.
- expect(at({state:'claimed',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Fork:current*','Prove:todo','Review:todo','Land:todo']);
- expect(at({state:'abandoned',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Fork:todo','Prove:todo','Review:todo','Land:todo']);
- expect(at({state:'claimed'})).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
+ expect(at({state:'open',owner:null,workspace:null,head:null})).toEqual(['Claim:current*','Branch:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'claimed',head:null})).toEqual(['Claim:done','Branch:current*','Prove:todo','Review:todo','Land:todo']);
+ // A fresh fork records its base as its head (Ledger.setWorkspace): Fork stays current until a push moves the head off the base.
+ expect(at({state:'claimed',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Branch:current*','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'abandoned',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Branch:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'claimed'})).toEqual(['Claim:done','Branch:done','Prove:current*','Review:todo','Land:todo']);
  // Submitted with a failing check is still proving; with every required check observed passing, it is in review.
- expect(at({state:'submitted'},failed)).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
- expect(at({state:'submitted'},[])).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
- expect(at({state:'submitted'})).toEqual(['Claim:done','Fork:done','Prove:done','Review:current*','Land:todo']);
- expect(at({state:'accepted',acceptedHead:head})).toEqual(['Claim:done','Fork:done','Prove:done','Review:done','Land:current*']);
- expect(at({state:'merged',acceptedHead:head})).toEqual(['Claim:done','Fork:done','Prove:done','Review:done','Land:done']);
+ expect(at({state:'submitted'},failed)).toEqual(['Claim:done','Branch:done','Prove:current*','Review:todo','Land:todo']);
+ expect(at({state:'submitted'},[])).toEqual(['Claim:done','Branch:done','Prove:current*','Review:todo','Land:todo']);
+ expect(at({state:'submitted'})).toEqual(['Claim:done','Branch:done','Prove:done','Review:current*','Land:todo']);
+ expect(at({state:'accepted',acceptedHead:head})).toEqual(['Claim:done','Branch:done','Prove:done','Review:done','Land:current*']);
+ expect(at({state:'merged',acceptedHead:head})).toEqual(['Claim:done','Branch:done','Prove:done','Review:done','Land:done']);
  // A blocked task stays at the step it was blocked from; a closed one keeps what it reached and marks none.
  const blocked=detail();blocked.item.state='blocked';blocked.item.blocked={by:'pavi',at:time,reason:'waiting',from:'submitted'};
  const blockedHtml=renderItem(project,blocked,'PAVI',null);
- expect(steps(blockedHtml)).toEqual(['Claim:done','Fork:done','Prove:done','Review:current*','Land:todo']);
+ expect(steps(blockedHtml)).toEqual(['Claim:done','Branch:done','Prove:done','Review:current*','Land:todo']);
  expect(blockedHtml).toContain('<span>Blocked here</span>');
  const closed=detail();closed.item.state='abandoned';closed.item.head=null;
  const closedHtml=renderItem(project,closed,'PAVI',null);
- expect(steps(closedHtml)).toEqual(['Claim:done','Fork:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(steps(closedHtml)).toEqual(['Claim:done','Branch:todo','Prove:todo','Review:todo','Land:todo']);
  expect(closedHtml).toContain('Closed without landing');
  expect(closedHtml).not.toContain('aria-current="step"');
  // Labels only: the commands and routes on the page keep their names.
@@ -341,7 +341,7 @@ it('pages call a project by its title and link it by its name',()=>{
  const s=buildStory('cloudflare-git',[],[],'pavi',false,'Atelier');
  expect(s.title).toBe('Atelier');
  // A bench of the titled project: the lane names it by title, not by name.
- const benchItem={id:'t1',title:'Fix the lane',scope:[],state:'claimed' as const,owner:'codex/gpt-6',fork:'cloudflare-git--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
+ const benchItem={id:'t1',title:'Fix the lane',scope:[],state:'claimed' as const,owner:'codex/gpt-6',workspace:'cloudflare-git--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
  const floor=buildFloor([{project:titled,items:[benchItem],events:[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.claimed',data:{}}]}],new Date(time));
  const studio=renderStudio(floor,'PAVI',new Date(time),false,[titled]);
  expect(studio).toContain('<p class="meta">&lt;Atelier&gt;');
@@ -531,7 +531,7 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
  const L=env.LEDGER.get(env.LEDGER.idFromName('project:browsed'));
  await L.setProject(record,'owner');
  await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
- await L.newItem('Work',[],'owner');await L.claim('t1','codex/gpt-6');await L.setFork('t1','browsed--t1','0'.repeat(40),'codex/gpt-6');
+ await L.newItem('Work',[],'owner');await L.claim('t1','codex/gpt-6');await L.setWorkspace('t1','browsed--t1','0'.repeat(40),'codex/gpt-6');
  const C='c'.repeat(40),T='d'.repeat(40),B='b'.repeat(40),X='e'.repeat(40);
  const asked:string[]=[];
  const repo=(name:string)=>({
@@ -542,8 +542,8 @@ it('browsing routes read only the baseline or that task fork, and say plainly wh
   readBlob:async(h:string)=>h===B?new Blob(['hello\n']):h===X?new Blob(['#!/bin/sh\n']):null,
   [Symbol.dispose](){},
  });
- const ARTIFACTS={get:async(name:string)=>{asked.push(name);return repo(name)}} as unknown as Artifacts;
- const bindings={...env,ARTIFACTS,ATELIER_TOKEN:TOKEN} as typeof env;
+ const REPOS={get:async(name:string)=>{asked.push(name);return repo(name)}} as unknown as Repos;
+ const bindings={...env,REPOS,ATELIER_TOKEN:TOKEN} as typeof env;
  const get=(path:string,signed=true)=>worker.fetch(new Request(`https://atelier.test${path}`,{headers:signed?{cookie:signedIn}:{},redirect:'manual'}),bindings);
  expect((await get('/p/browsed/code',false)).status).toBe(303);
  const base=await get('/p/browsed/code');
@@ -759,7 +759,7 @@ it('the merge preview says plainly whether a task would merge into main, and esc
  expect(renderMainPreview({head:'h',ahead:0,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:0,theirs:1}})).toContain('Main has not moved');
  const clean=renderMainPreview({head:'h',ahead:3,aheadCapped:false,merge:{clean:true,conflicts:[],both:['x.ts'],ours:4,theirs:1}});
  expect(clean).toContain('Merges cleanly');
- expect(clean).toContain('3 commits along its first-parent line since this task forked (a merge counts once), changing 4 paths; both sides changed 1 path, and the changes do not overlap');
+ expect(clean).toContain('3 commits along its first-parent line since this task branched (a merge counts once), changing 4 paths; both sides changed 1 path, and the changes do not overlap');
  const bad=renderMainPreview({head:'h',ahead:1000,aheadCapped:true,merge:{clean:false,conflicts:[{path:'<b>.ts',reason:'both sides changed the same lines'}],both:['<b>.ts'],ours:1,theirs:1}});
  expect(bad).toContain('1 conflict');
  expect(bad).toContain('at least 1,000 commits');
@@ -814,7 +814,7 @@ async function standingFixture(over:Partial<{approval:string}>={}){
  const {buildStanding,renderProject,renderProjectSettings,renderProjectTasks}=await import('../src/ui');
  const p:ProjectRecord={...project,title:'Stand <ing>',policy:{...project.policy,...(over.approval?{approval:over.approval,eligible:['claude'],refuseOverlap:true}:{})}};
  const at=(m:number)=>`2026-10-04T10:${String(m).padStart(2,'0')}:00.000Z`;
- const base={fork:null,base:null,head:null,acceptedHead:null,createdAt:at(0),updatedAt:at(30),lastPushAt:null,scope:[]};
+ const base={workspace:null,base:null,head:null,acceptedHead:null,createdAt:at(0),updatedAt:at(30),lastPushAt:null,scope:[]};
  const items=[
   {...base,id:'t1',title:'Held <b>task</b>',state:'claimed',owner:'claude-code/opus-5.5'},
   {...base,id:'t2',title:'Ready task',state:'submitted',owner:'codex/gpt-6',head},
@@ -1230,7 +1230,7 @@ it('History is a timeline of merges by day, each naming the model that held the 
 
 // ── Studio lanes in Flow's language, stripes by family, and the sign-in page ──
 it('a Studio lane is banded and threaded in each holder\'s family colour, with the marks and a breathing head',()=>{
- const base={id:'t1',title:'Lane',scope:[],state:'claimed' as const,owner:'opencode/glm-5.3-flash',fork:'example--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
+ const base={id:'t1',title:'Lane',scope:[],state:'claimed' as const,owner:'opencode/glm-5.3-flash',workspace:'example--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
  const at=(m:number)=>`2026-10-03T12:${String(m).padStart(2,'0')}:00.000Z`;
  const events=[
   {seq:1,itemId:'t1',at:at(0),actor:'codex/gpt-6',kind:'item.claimed',data:{}},
@@ -1448,7 +1448,7 @@ it('Tasks is one list of every task with state, holder and time; the Overview ta
 
 it('a task with nothing pushed shows its scope and the dispatch box, not a review shape',()=>{
  const d=detail();
- d.item={...d.item,state:'open',owner:null,head:null,base:null,fork:null,lastPushAt:null};
+ d.item={...d.item,state:'open',owner:null,head:null,base:null,workspace:null,lastPushAt:null};
  const html=renderItem(project,d,'PAVI',null);
  expect(html).toContain('Send to an agent');
  expect(html).toContain('aria-label="Scope"');
@@ -1525,8 +1525,8 @@ it('a merged task shows its change as it landed, with no merge preview or confli
  expect(html).toContain('src/a.ts');
  expect(html).not.toContain('Merging now would stop at');expect(html).not.toContain('both changed');
  expect(html).not.toContain('differ from main');
- const ff=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false,merged:{commit:head,from:'fork-point'}});
- expect(ff).toContain("the task's fork point");expect(ff).not.toContain('No workspace yet');
+ const ff=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false,merged:{commit:head,from:'branch-point'}});
+ expect(ff).toContain("the task's branch point");expect(ff).not.toContain('No workspace yet');
 });
 
 

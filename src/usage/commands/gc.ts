@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Local", line: 1, slot: 10,
       form: "gc [--project NAME] [--dry-run | --apply]",
-      about: "Previews the local workspace and check clones that are safe to remove; `--apply` removes them. It never touches Artifacts or the project checkout.",
+      about: "Previews the local workspace and check clones that are safe to remove; `--apply` removes them. It never touches the repository or the project checkout.",
     },
   ],
   flags: { "dry-run": true, apply: true },

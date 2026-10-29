@@ -53,7 +53,7 @@ function kinds(events: unknown): string[] {
 async function claimed(L: ReturnType<typeof ledger>, fork: string) {
   await L.newItem("Bring a secret in by accident", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", fork, H0, A);
+  await L.setWorkspace("t1", fork, H0, A);
   await L.recordPush("t1", A, H1, H1);
 }
 
@@ -154,7 +154,7 @@ it("a push recorded with its scan pending blocks until that head's own scan comp
   const L = await setup("secret-pending");
   await L.newItem("Bring a secret in by accident", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "secret-pending--t1", H0, A);
+  await L.setWorkspace("t1", "secret-pending--t1", H0, A);
   // The Worker records the head with its scan pending, in the same write.
   const pushed = await L.recordPush("t1", A, H1, H1, false, undefined, [], true);
   expect(pushed).toMatchObject({ head: H1, secretScan: H1 });

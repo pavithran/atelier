@@ -1,6 +1,6 @@
 // atelier clone PROJECT [DIR] (t643): a project's checkout on another Mac,
 // made from its baseline. Each test runs the CLI against a stand-in server
-// whose baseline-token answer names a bare repository on disk, so the clone,
+// whose git-token answer names a bare repository on disk, so the clone,
 // its credentials, its notes and its registration are real Git and a real
 // config.json, all under os.tmpdir().
 import { test } from "node:test";
@@ -10,14 +10,13 @@ import { createServer } from "node:http";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildHistory, loadPairs } from "../cli/fresh.mjs";
 import { serveGit } from "./helpers/git-http.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 const TOKEN = "base-secret-clone-7c6b5a4d";
 const IDENTITY = { name: "Demo Owner", email: "owner@example.test", agentEmails: [] };
 
-function setup(t, { fresh = false, hooks = false } = {}) {
+function setup(t, { hooks = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-clone-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "gitconfig"), "");
@@ -41,12 +40,7 @@ function setup(t, { fresh = false, hooks = false } = {}) {
     git(source, "commit", "-q", "-m", `commit ${n}`);
   }
   git(root, "init", "-q", "--bare", "-b", "main", bare);
-  if (fresh) {
-    // A baseline with part of the history, as init --history-since builds it.
-    const fgit = (args, opts = {}) => execFileSync("git", args, { cwd: opts.cwd, encoding: "utf8", env }).trim();
-    const built = buildHistory(fgit, source, git(source, "rev-parse", "HEAD~1"), git(source, "rev-parse", "HEAD"));
-    git(source, "push", "-q", bare, `${built.head}:refs/heads/main`);
-  } else git(source, "push", "-q", bare, "main");
+  git(source, "push", "-q", bare, "main");
   const head = git(bare, "rev-parse", "main");
   // A receipt note on the baseline's head, as atelier merge pushes it.
   const scratch = join(root, "scratch");
@@ -71,9 +65,9 @@ async function serve(t, f) {
       let status = 200, body;
       if (req.url === "/api/projects") body = [{ name: "demo", title: "Demo" }];
       else if (req.method === "GET" && req.url === "/api/projects/demo") body = { project: { name: "demo", title: "Demo", repo: "demo", policy: { protected: ["AGENTS.md", "src/rules.ts"], commitIdentity: IDENTITY } }, items: [], events: [] };
-      else if (req.method === "POST" && req.url === "/api/projects/demo/baseline-token") body = f.http
-        ? { remote: `${f.url}/git/baseline.git`, token: f.http.mint(), tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" }
-        : { remote: f.bare, token: TOKEN, tokenId: "tok1", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" };
+      else if (req.method === "POST" && req.url === "/api/projects/demo/git-token") body = f.http
+        ? { kind: "read", remote: `${f.url}/git/baseline.git`, token: f.http.mint(), expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repository: "server" }
+        : { kind: "read", remote: f.bare, token: TOKEN, expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repository: "server" };
       else if (req.url === "/api/projects/demo/baseline-head") body = { head: f.git(f.bare, "rev-parse", "main") };
       else if (req.url === "/api/projects/demo/standing") body = { project: { name: "demo", title: "Demo", repo: "demo" }, generatedAt: "2026-10-13T10:00:00.000Z", live: [], waiting: [], queued: [], merged: [], handoffs: [], controlPlane: null, checks: [], partial: [] };
       else if (req.url === "/api/projects/demo/landing-lease") body = { lease: null };
@@ -111,8 +105,8 @@ test("clone makes a checkout of the baseline's main with its history and receipt
   const r = await run(t, f, ["clone", "demo", dir]);
   assert.equal(r.code, 0, r.output);
   assert.ok(!r.output.includes(TOKEN), "the token is never printed");
-  // The developer's credential, minted as sync mints it.
-  assert.deepEqual(r.seen.find((s) => s.route === "POST /api/projects/demo/baseline-token")?.body, { scope: "write" });
+  // The developer's credential: a read grant for the project's repository.
+  assert.deepEqual(r.seen.find((s) => s.route === "POST /api/projects/demo/git-token")?.body, { kind: "read" });
   // Full history of main, checked out.
   assert.equal(f.git(dir, "rev-parse", "HEAD"), f.head);
   assert.equal(f.git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "main");
@@ -122,7 +116,7 @@ test("clone makes a checkout of the baseline's main with its history and receipt
   assert.equal(f.git(dir, "notes", "--ref=atelier", "show", "HEAD"), "Atelier receipt for t1");
   assert.match(f.git(dir, "log", "-1"), /Atelier receipt for t1/);
   // origin is the baseline. The checkout keeps no token: each Atelier
-  // command that reaches the baseline mints its own, as sync and merge do.
+  // command that reaches the baseline mints its own, as pull and merge do.
   assert.equal(f.git(dir, "remote", "get-url", "origin"), f.bare);
   const gitDir = f.git(dir, "rev-parse", "--absolute-git-dir");
   assert.ok(!existsSync(join(gitDir, "atelier-credentials")));
@@ -169,7 +163,7 @@ test("clone refuses a folder that is not empty and leaves it as it was", async (
   assert.notEqual(r.code, 0);
   assert.match(r.output, /is not empty/);
   assert.deepEqual(readdirSync(dir), ["notes.txt"]);
-  assert.ok(!r.seen.some((s) => s.route.includes("baseline-token")), "no credential is minted");
+  assert.ok(!r.seen.some((s) => s.route.includes("git-token")), "no credential is minted");
   assert.deepEqual(r.config.projects, {});
 });
 
@@ -193,21 +187,6 @@ test("clone refuses without a login and creates nothing", async (t) => {
   assert.equal(r.seen.length, 0, "nothing is asked of the server");
   assert.ok(!existsSync(dir));
   assert.deepEqual(r.config.projects, {});
-});
-
-test("clone of a fresh baseline registers it as fresh, every commit paired with itself, and status reads it in step", async (t) => {
-  const f = setup(t, { fresh: true });
-  const dir = join(f.root, "demo");
-  const r = await run(t, f, ["clone", "demo", dir]);
-  assert.equal(r.code, 0, r.output);
-  assert.equal(r.config.projects.demo.fresh, true);
-  const commits = f.git(dir, "rev-list", "HEAD").split("\n");
-  assert.equal(commits.length, 2);
-  const pairs = loadPairs(f.git(dir, "rev-parse", "--absolute-git-dir"), "demo");
-  assert.deepEqual(pairs, Object.fromEntries(commits.map((c) => [c, c])));
-  const s = await run(t, f, ["status", "--project", "demo"], { projects: r.config.projects });
-  assert.equal(s.code, 0, s.output);
-  assert.match(s.output, new RegExp(`Checkout: in step\\. main @ ${f.head.slice(0, 8)} is the commit the baseline's head`));
 });
 
 test("clone does not take over another checkout's registration unless --replace says so", async (t) => {
@@ -236,33 +215,6 @@ test("clone is not blocked by a registered path that is not a usable string, or 
     assert.equal(r.config.projects.demo.path, dir);
     assert.doesNotMatch(r.output, /replaces/);
   }
-});
-
-// Astra's review of t643, finding 1: a header stored in the checkout outlived
-// the token it carried, and Git sends a stored URL-scoped header in place
-// of the one sync and merge pass for the token they mint, so once the
-// clone's token expired every later baseline operation was refused.
-test("a clone followed by a sync after the clone's token has expired reaches the baseline with the token sync mints", async (t) => {
-  const f = setup(t, { fresh: true });
-  let n = 0;
-  f.http = { valid: new Set(), sent: [], mint() { const token = `base-secret-http-${++n}`; this.valid = new Set([token]); return token; } };
-  const dir = join(f.root, "demo");
-  const r = await run(t, f, ["clone", "demo", dir]);
-  assert.equal(r.code, 0, r.output);
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), f.head);
-  // The clone's token is now expired: minting another revokes it.
-  writeFileSync(join(dir, "new.txt"), "made on this Mac\n");
-  f.git(dir, "add", ".");
-  f.git(dir, "commit", "-q", "-m", "made on this Mac");
-  f.http.sent.length = 0;
-  const s = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
-  assert.equal(s.code, 0, s.output);
-  assert.match(s.output, /carried 1 commit to the baseline/);
-  assert.equal(f.git(f.bare, "rev-parse", "main^{tree}"), f.git(dir, "rev-parse", "HEAD^{tree}"));
-  // Every request carried the one current token, and nothing older.
-  assert.ok(f.http.sent.length);
-  for (const tokens of f.http.sent) assert.deepEqual(tokens, ["base-secret-http-2"]);
-  assert.ok(!/authorization|base-secret/i.test(f.git(dir, "config", "--list")));
 });
 
 // Astra's review of t643, finding 2: the clone ran Git with hooks on and the
@@ -322,32 +274,6 @@ test("clone --private-home records the folder that keeps the private files and t
   assert.equal(r.config.projects.demo.privateHome, keep);
 });
 
-test("sync never carries a private file to the baseline, even one committed by hand past the exclude", async (t) => {
-  const f = setup(t, { fresh: true });
-  icloudFolder(f);
-  const dir = join(f.root, "demo");
-  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"] } } });
-  assert.equal(r.code, 0, r.output);
-  const before = f.git(f.bare, "rev-parse", "main");
-  // The file, ignored as a developer would, then forced past the exclude.
-  writeFileSync(join(dir, ".git", "info", "exclude"), "PROJECT.md\n");
-  writeFileSync(join(dir, "PROJECT.md"), "the plan\n");
-  f.git(dir, "add", "-f", "PROJECT.md");
-  f.git(dir, "commit", "-q", "-m", "oops");
-  const s = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
-  assert.notEqual(s.code, 0, s.output);
-  assert.match(s.output, /Carrying main to demo's baseline would carry private files: PROJECT\.md in [0-9a-f]{12}\. .*Nothing was pushed\./);
-  assert.equal(f.git(f.bare, "rev-parse", "main"), before);
-  // Taken out of the history, the rest is carried.
-  f.git(dir, "reset", "-q", "--hard", "HEAD~1");
-  writeFileSync(join(dir, "code.txt"), "public\n");
-  f.git(dir, "add", "-A");
-  f.git(dir, "commit", "-q", "-m", "code");
-  const ok = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
-  assert.equal(ok.code, 0, ok.output);
-  assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt");
-});
-
 // The list of private files lives beside them in iCloud, so a second Mac,
 // whose config names nothing yet, links them with the clone alone.
 test("a Mac with a fresh config keeps a copy of the list .atelier-private holds with the clone alone, a bad line left out", async (t) => {
@@ -362,38 +288,6 @@ test("a Mac with a fresh config keeps a copy of the list .atelier-private holds 
   assert.equal(r.config.projects.demo.private, undefined, "nothing had to be named on this Mac");
   // A copy of the list is kept, so the guards hold when iCloud cannot give it (Astra's review of t645, finding 4).
   assert.deepEqual(r.config.projects.demo.privateFromList, ["PROJECT.md", "notes/plan.md"]);
-});
-
-// Astra's third review of t645, finding 2: sync scanned the checkout's
-// commits but pushed rebuilt ones, and the rebuild read commits through
-// replacement refs, so a replacement holding a private file was pushed
-// unscanned. The rebuild now reads the real commits and the scan reads what
-// is pushed.
-test("sync pushes what it scanned: a replacement ref cannot slip a private file into the rebuilt commits", async (t) => {
-  const f = setup(t, { fresh: true });
-  const dir = join(f.root, "demo");
-  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"] } } });
-  assert.equal(r.code, 0, r.output);
-  writeFileSync(join(dir, "code.txt"), "public\n");
-  f.git(dir, "add", "code.txt");
-  f.git(dir, "commit", "-q", "-m", "code");
-  const real = f.git(dir, "rev-parse", "HEAD");
-  // A stand-in for that commit whose tree holds PROJECT.md, put in its place.
-  writeFileSync(join(dir, "PROJECT.md"), "the plan\n");
-  f.git(dir, "add", "-f", "PROJECT.md");
-  const tree = f.git(dir, "write-tree");
-  f.git(dir, "reset", "-q", "PROJECT.md");
-  rmSync(join(dir, "PROJECT.md"));
-  const fake = f.git(dir, "commit-tree", tree, "-p", `${real}^`, "-m", "code");
-  writeFileSync(join(dir, "more.txt"), "more\n");
-  f.git(dir, "add", "more.txt");
-  f.git(dir, "commit", "-q", "-m", "more");
-  f.git(dir, "replace", real, fake);
-  assert.equal(f.git(dir, "status", "--porcelain"), "");
-  const s = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
-  assert.equal(s.code, 0, s.output);
-  assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt\nmore.txt");
-  assert.doesNotMatch(f.git(f.bare, "log", "--all", "--name-only", "--format="), /PROJECT\.md/);
 });
 
 // Argon's seventeenth review of t645, finding 2: a clone whose project list

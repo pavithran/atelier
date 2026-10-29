@@ -76,7 +76,7 @@ globalThis.fetch = async (url, options) => {
   appendFileSync(${JSON.stringify(join(dir, "requests.jsonl"))}, JSON.stringify({ method: options.method, path, body: options.body }) + "\\n");
   let result;
   if (options.method === "POST") {
-    if (path.endsWith("/baseline-token")) result = { token: "fake", remote: ${JSON.stringify(baseline)} };
+    if (path.endsWith("/git-token")) result = { kind: "read", token: "fake", remote: ${JSON.stringify(baseline)}, expiresAt: "2999-01-01T00:00:00.000Z", defaultBranch: ${JSON.stringify(git("branch", "--show-current"))}, repository: "server" };
     else if (path.endsWith("/items")) result = { id: "t" + (++taskCount) };
     else if (path !== "/api/projects/demo/sessions") throw Error("unexpected write");
     else result = { actor: "owner", at: "2026-10-05T12:00:00Z", data: JSON.parse(options.body) };

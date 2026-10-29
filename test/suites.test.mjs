@@ -78,7 +78,7 @@ test("the repository's own discovery covers every tracked test file, cli/ includ
   assert.deepEqual(missing, []);
   const result = await plan();
   assert.deepEqual(rejections(result), []);
-  for (const file of ["cli/runner-git.test.mjs", "cli/runner-merge-target.test.mjs", "cli/runner-token.test.mjs", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs", "test/routes.spec.ts"]) assert.ok(result.byRunner.node.includes(file), file);
+  for (const file of ["cli/runner-merge-target.test.mjs", "cli/runner-token.test.mjs", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs", "test/routes.spec.ts"]) assert.ok(result.byRunner.node.includes(file), file);
 });
 
 test("both naming conventions discover all eight extensions, rejecting unsupported and stray specs", async (t) => {

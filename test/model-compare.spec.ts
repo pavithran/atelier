@@ -52,7 +52,7 @@ async function seed() {
   await index().registerProject(record);
   const { id } = await L().newItem(PRIVATE.title, ["src/lease.ts"], "owner", { accept: ["The lease holds"] });
   await L().claim(id, OPUS, { runner: "home:studio", kind: "home" });
-  await L().setFork(id, `fork-${id}`, H0, OPUS);
+  await L().setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L().recordPush(id, OPUS, HEAD, HEAD);
   await L().addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: HEAD, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/lease.ts"] });
   await L().submit(id, OPUS);

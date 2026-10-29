@@ -49,7 +49,7 @@ async function setup(project: string, p: ProjectPolicy = policy) {
   // this unavailable read with a changing in-memory repository below.
   await runInDurableObject(L as unknown as DurableObjectStub<Ledger>, async (instance: Ledger) => {
     const internal = instance as unknown as { env: typeof env };
-    internal.env = { ...internal.env, ARTIFACTS: {
+    internal.env = { ...internal.env, REPOS: {
       async get() { throw new Error("baseline unavailable in this test"); },
     } } as unknown as typeof env;
   });
@@ -66,7 +66,7 @@ async function submitted(L: L, h: string): Promise<string> {
   const id = (await L.newItem(`Task ${h.slice(-2)}`, [], "owner", { accept: ["It works"] })).id;
   await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   await L.claim(id, OPUS, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L.recordPush(id, OPUS, h, h);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: h, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/a.ts"] } satisfies Evidence);
   await L.submit(id, OPUS);
@@ -627,7 +627,7 @@ it("the routes bind the claim to the baseline's head and judge the verdict again
       };
     },
   };
-  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as unknown as typeof env;
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN, REPOS: artifacts } as unknown as typeof env;
   const call = (token: string, actor: string, path: string, body: unknown, runner?: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}${path}`, {
     method: "POST", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json", ...(runner ? { "x-atelier-runner": runner } : {}) }, body: JSON.stringify(body),
   }), bindings);
@@ -701,7 +701,7 @@ for (const workflow of [false, true]) for (const outcome of ["passed", "conflict
       const internal = instance as unknown as { env: typeof env };
       const original = internal.env;
       let reads = 0;
-      internal.env = { ...original, ARTIFACTS: {
+      internal.env = { ...original, REPOS: {
         async get(name: string) {
           expect(name).toBe((await instance.project()).repo);
           return {

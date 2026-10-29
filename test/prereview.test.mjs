@@ -173,7 +173,7 @@ const assignment = (head) => ({ project: "demo", item: { id: "t2", head, request
 function prereviewClaim(r, extra = {}) {
   return {
     request: prereviewRequest(5), head: r.head, need: null, plan: null, events: [], owner: "owner", reviewBar: null, singleFamily: null, tier: false, decisions: [],
-    item: { id: "t2", title: "Fair queue", accept: ["Waiters keep their place"], fork: "demo--t2", head: r.head },
+    item: { id: "t2", title: "Fair queue", accept: ["Waiters keep their place"], workspace: "demo--t2", head: r.head },
     evidence: { runs: [{ itemId: "t2", claim: "npm test", grade: "observed", head: r.head, passed: true, by: "claude-code/opus-5.5", at: iso(now) }], required: ["npm test"] },
     criteria: SHA("b"),
     readToken: { remote: r.fork, token: "read", defaultBranch: "main" },

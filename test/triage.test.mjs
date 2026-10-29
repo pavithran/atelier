@@ -76,8 +76,7 @@ function landing(t, { submitted = false, args = {}, answers = [allMet()], criter
       const reviews = requestedAt && review.approveBy ? [{ head: HEAD, by: review.approveBy, approve: true, at: new Date(Date.parse(requestedAt) + 1000).toISOString() }] : [];
       return { item: item(), policy, events: recorded, reviews };
     }
-    if (path === `${itemPath}/base-token`) return { remote: "https://base.invalid/main.git", token: "read", defaultBranch: "main" };
-    if (path === `${itemPath}/read-token`) return { remote: "https://fork.invalid/t1.git", token: "read", defaultBranch: "main" };
+    if (path === "/projects/proj/git-token") return { kind: "read", remote: "https://base.invalid/main.git", token: "read", expiresAt: "2999-01-01T00:00:00.000Z", defaultBranch: "main", repository: "server", ...(body?.item ? { branch: "t/1", into: "main" } : {}) };
     if (path === `${itemPath}/land`) {
       if (landFails(body)) throw Object.assign(new Error("not_project_owner: only the project owner records a landing's steps"), { status: 403 });
       recorded.push({ kind: `land.${body.step}`, seq: recorded.length + 1, data: body });

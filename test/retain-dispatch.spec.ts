@@ -20,7 +20,7 @@ const artifacts = {
     revokeToken: async (id: string) => { revoked.push(id); return true; },
     [Symbol.dispose]() {},
   }),
-} as unknown as Artifacts;
+} as unknown as Repos;
 
 // G18: a write with the developer token names the model acting, and once the
 // pool has entries it must be one of them, so each test names one it seeds.
@@ -30,7 +30,7 @@ function call(method: string, path: string, body?: unknown) {
     method,
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": acting, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS: artifacts } as typeof env);
 }
 
 it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, and is refused once a runner has claimed it", async () => {
@@ -41,7 +41,7 @@ it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, 
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const live = await L.newItem("Live work", ["src/**"], "owner");
   await L.claim(live.id, A);
-  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
+  await L.setWorkspace(live.id, `${name}--${live.id}`, H0, A);
 
   const make = async () => ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
   const dispatchOf = async (id: string, body: unknown) => {
@@ -90,11 +90,11 @@ it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, 
 
   // Already-owned work follows ordinary redispatch, even with the legacy
   // retain hint. Its workspace survives and its owner is released.
-  await L.setFork(claimed, `${name}--${claimed}`, H0, "opencode/glm-5.3-flash");
+  await L.setWorkspace(claimed, `${name}--${claimed}`, H0, "opencode/glm-5.3-flash");
   const requeued = await dispatchOf(claimed, { retain: true, overlapOk: true, release: true, agent: "codex", model: "gpt-6-astra" });
   expect(requeued.status).toBe(200);
   expect(requeued.body.dispatch).toMatchObject({ agent: "codex", model: "gpt-6-astra", overlapOk: true });
-  expect(await L.item(claimed)).toMatchObject({ state: "open", owner: null, fork: `${name}--${claimed}` });
+  expect(await L.item(claimed)).toMatchObject({ state: "open", owner: null, workspace: `${name}--${claimed}` });
 });
 
 // The builder given in a retained dispatch's place goes through the owner's
@@ -250,7 +250,7 @@ it("does not report a released hold for a first dispatch even with overlapping c
 it("retains a merge-main payload and permits explicit field replacements", async () => {
   const { L, item, path } = await setup("retain-job");
   await L.claim(item.id, "codex/shared");
-  await L.setFork(item.id, "retain-job--t2", "a".repeat(40), "codex/shared");
+  await L.setWorkspace(item.id, "retain-job--t2", "a".repeat(40), "codex/shared");
   await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: "b".repeat(40), release: true });
   const before = (await L.item(item.id)).dispatch!;
   // A model cleared alone would leave the runner to choose (G17): refused.
@@ -268,7 +268,7 @@ it("validates merged dispatch before releasing or revoking, and never bypasses r
   const { L, record, item, live, path } = await setup("retain-refused");
   await L.dispatch(item.id, "owner", original);
   const mint = await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
-  await L.setFork(item.id, "retain-refused--t2", "a".repeat(40), "codex/shared");
+  await L.setWorkspace(item.id, "retain-refused--t2", "a".repeat(40), "codex/shared");
   await L.recordToken(item.id, "codex/shared", mint.generation, mint.replaces, "retain-token");
   const before = await L.item(item.id);
   const invalid = await call("POST", path, { overlapOk: true, agent: "codex", model: "invalid model", release: true });
@@ -294,7 +294,7 @@ for (const state of ["held", "submitted"] as const) {
   it(`a ${state} task redispatched with --overlap-ok and a note is a build, not the earlier merge-main job`, async () => {
     const { L, item, path } = await setup(`retain-rework-${state}`, []);
     await L.claim(item.id, "codex/shared");
-    await L.setFork(item.id, `retain-rework-${state}--t2`, "a".repeat(40), "codex/shared");
+    await L.setWorkspace(item.id, `retain-rework-${state}--t2`, "a".repeat(40), "codex/shared");
     await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: MAIN_HEAD, release: true });
     await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
     if (state === "submitted") { await L.recordPush(item.id, "codex/shared", "c".repeat(40), "c".repeat(40)); await L.submit(item.id, "codex/shared"); }
@@ -315,7 +315,7 @@ for (const state of ["held", "submitted"] as const) {
 it("the hold-only release of a waiting merge-main dispatch keeps merge-main and its place", async () => {
   const { L, item, path } = await setup("retain-hold-merge-main");
   await L.claim(item.id, "codex/shared");
-  await L.setFork(item.id, "retain-hold-merge-main--t2", "a".repeat(40), "codex/shared");
+  await L.setWorkspace(item.id, "retain-hold-merge-main--t2", "a".repeat(40), "codex/shared");
   await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: MAIN_HEAD, release: true });
   const before = (await L.item(item.id)).dispatch!;
   const res = await call("POST", path, { overlapOk: true, retain: true, retainAt: before.at });
@@ -330,7 +330,7 @@ it("the hold-only release of a waiting merge-main dispatch keeps merge-main and 
 it("a held task's rework dispatch refused as a fresh build is refused before its token is revoked", async () => {
   const { L, record, item, path } = await setup("retain-preflight", []);
   const mint = await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
-  await L.setFork(item.id, "retain-preflight--t2", "a".repeat(40), "codex/shared");
+  await L.setWorkspace(item.id, "retain-preflight--t2", "a".repeat(40), "codex/shared");
   await L.recordToken(item.id, "codex/shared", mint.generation, mint.replaces, "preflight-token");
   await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: MAIN_HEAD, release: true });
   await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
@@ -353,7 +353,7 @@ for (const state of ["held", "submitted"] as const) {
     const { L, item, path } = await setup(`retain-suggest-${state}`, []);
     await L.dispatch(item.id, "owner", original);
     await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
-    await L.setFork(item.id, `retain-suggest-${state}--t2`, "a".repeat(40), "codex/shared");
+    await L.setWorkspace(item.id, `retain-suggest-${state}--t2`, "a".repeat(40), "codex/shared");
     if (state === "submitted") { await L.recordPush(item.id, "codex/shared", "c".repeat(40), "c".repeat(40)); await L.submit(item.id, "codex/shared"); }
     const before = await L.item(item.id);
     const res = await call("POST", path, { overlapOk: true, release: true, suggest: true, note: "address the review" });

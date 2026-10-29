@@ -92,7 +92,7 @@ for (const [standing, change] of held) {
       if (path === "claim renewal") await L.claim(id, ACTOR);
       if (path === "merge-main claim") {
         await L.claim(id, ACTOR);
-        await L.setFork(id, "task-fork", "a".repeat(40), ACTOR);
+        await L.setWorkspace(id, "task-fork", "a".repeat(40), ACTOR);
         await L.dispatch(id, "owner", { ...dispatch, job: "merge-main", head: "a".repeat(40), release: true });
       }
       if (path === "plan parts") {

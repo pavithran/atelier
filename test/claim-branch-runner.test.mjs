@@ -84,7 +84,7 @@ execFileSync("git", ["commit", "-q", "-m", "build: the stub's change"], { cwd: w
   assert.equal(r.code, 0, said);
   const item = await L().item(id);
   const branch = `t/${id.slice(1)}`;
-  assert.equal(item.fork, `demo/${branch}`);
+  assert.equal(item.workspace, `demo/${branch}`);
   assert.ok(item.head && item.head !== item.base, said);
   assert.equal(await tip(`refs/heads/${branch}`), item.head, "the runner's push landed on t/N");
   assert.equal(item.state, "submitted", said);

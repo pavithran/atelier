@@ -131,7 +131,7 @@ test("a criteria review whose harness refuses its input for its size records the
 test("runReview puts the claim's criteria reviews and resolutions in the review brief", async () => {
   const H0 = "0".repeat(40), H1 = "a".repeat(40);
   const claim = {
-    item: { id: "t21", title: "Faster search", base: H0, scope: ["src/**"], fork: "p--t21", head: H1, accept: ["Search answers within 200 ms"] },
+    item: { id: "t21", title: "Faster search", base: H0, scope: ["src/**"], workspace: "p--t21", head: H1, accept: ["Search answers within 200 ms"] },
     head: H1,
     need: { needed: true, reason: "protected", head: H1, kind: "review", basis: "protected", changeClass: "protected", changedPaths: ["src/search.ts"], outOfScope: [], checks: [], round: 1, previous: [], previousReviewer: null, lapsed: [] },
     plan: null, events: [], owner: "owner",
@@ -188,7 +188,7 @@ test("runCriteriaReview posts the CHECK lines as checks after deploy, and a malf
 test("runReview lets the code reviewer defer a criterion the claim's criteria review flagged, and refuses deferral of any other", async () => {
   const H0 = "0".repeat(40), H1 = "a".repeat(40);
   const claimWith = (checks) => ({
-    item: { id: "t21", title: "Banner", base: H0, scope: ["src/**"], fork: "p--t21", head: H1, accept: ["Search answers within 200 ms", "A signed-in user sees the banner"] },
+    item: { id: "t21", title: "Banner", base: H0, scope: ["src/**"], workspace: "p--t21", head: H1, accept: ["Search answers within 200 ms", "A signed-in user sees the banner"] },
     head: H1,
     need: { needed: true, reason: "protected", head: H1, kind: "review", basis: "protected", changeClass: "protected", changedPaths: ["src/search.ts"], outOfScope: [], checks: [], round: 1, previous: [], previousReviewer: null, lapsed: [] },
     plan: null, events: [], owner: "owner",

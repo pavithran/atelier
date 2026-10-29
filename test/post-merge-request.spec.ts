@@ -50,7 +50,7 @@ function api(method: string, path: string, actor: string, body?: unknown) {
 async function accepted(L: ReturnType<typeof ledger>, title: string) {
   const item = await L.newItem(title, ["src/**"], "owner", { accept: ["Works"] });
   await L.claim(item.id, OPUS);
-  await L.setFork(item.id, `${item.id}--fork`, START, OPUS);
+  await L.setWorkspace(item.id, `${item.id}--fork`, START, OPUS);
   await L.recordPush(item.id, OPUS, C1, C1);
   await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: C1, passed: true, by: "owner", at: AT, changedPaths: ["src/a.ts"] });
   await L.submit(item.id, OPUS);
@@ -78,7 +78,7 @@ it("a fast-mode task recorded with record-merge gets its post-merge review reque
   const item = await L.newItem("Merged outside Atelier", ["src/**"], "owner", { accept: ["Works"] });
   const { generation } = await L.claim(item.id, OPUS);
   await L.recordToken(item.id, OPUS, generation, null, "tok-1");
-  await L.setFork(item.id, `${item.id}--fork`, START, OPUS);
+  await L.setWorkspace(item.id, `${item.id}--fork`, START, OPUS);
   await L.recordPush(item.id, OPUS, C1, C1);
   const body = { mergeCommit: M1, commit: C1, reviews: [{ by: GPT, verdict: "approve", head: C1 }] };
   await L.recordMerge(item.id, "owner", body, { parents: [P1, C1], holds: true, tip: M1 }, await L.workspaceOf(item.id));

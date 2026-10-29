@@ -53,7 +53,7 @@ async function landable(name: string, builder: string, astra: ModelEntry) {
   await index().registerProject(record);
   const { id } = await L.newItem("Land without a reviewer", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim(id, builder);
-  await L.setFork(id, `${name}--${id}`, BASE, builder);
+  await L.setWorkspace(id, `${name}--${id}`, BASE, builder);
   await L.recordPush(id, builder, HEAD, HEAD);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: HEAD, changedPaths: ["src/a.ts"], by: "owner", at: AT });
   await L.submit(id, builder);

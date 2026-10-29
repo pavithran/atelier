@@ -20,7 +20,7 @@ import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, definingOf, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
-import type { ForkPreparationView, ProjectMode } from "./rules";
+import type { ProjectMode } from "./rules";
 import { fenceText, prereviewLines, type PrereviewFence, type PrereviewView } from "./dispatch/prereview.ts";
 import { drawImported } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
@@ -358,7 +358,7 @@ function whereChip(where: "sandbox" | "runner" | undefined): string {
 export function renderLogin(error?: string): string {
   return publicPage({
     title: "Sign in · Atelier",
-    description: `Sign in to Atelier, a Git platform for multiple coding agents, built on Cloudflare: claim, fork, prove, review, land. ${TAKEAWAYS}`,
+    description: `Sign in to Atelier, a Git platform for multiple coding agents, built on Cloudflare: claim, branch, prove, review, land. ${TAKEAWAYS}`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
     mainClass: "login-page",
@@ -722,7 +722,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
   // The five steps of src/how-data.ts, each said for this owner and counted.
   const said: Record<Verb, [text: string, count: string]> = {
     Claim: [`${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope. One agent claims it, and a second claim is refused.`, `${plural(t.planned, "task")} planned, ${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`],
-    Fork: [`The task gets its own fork in Cloudflare Artifacts, and nobody else can write there. The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`],
+    Branch: [`The task gets its own branch in Cloudflare the repository, and nobody else can write there. The agent commits and pushes to its branch, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`],
     Prove: ["The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`],
     Review: [`Changes to protected files need an approval from a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`],
     Land: [`${cap(who)} ${who === "You" ? "accept" : "accepts"} one revision on the diff, the evidence and the reviews. It merges into main on ${yours} machine, one merge at a time, with its whole history attached as a git note.`, `${plural(t.accepts, "acceptance")}, ${t.merges} merged`],
@@ -1085,7 +1085,7 @@ function reliabilityRow(r: ModelReliability, who: string): string {
     causeList("Defects traced to its work", r.defects),
     causeList("Its approvals a defect contradicted", r.contradicted),
     causeList("Findings adjudicated", r.findingVerdicts),
-    causeList("Main folded into its forks", r.integrations),
+    causeList("Main folded into its branches", r.integrations),
     causeList("Runs reported", r.runCauses),
   ].join("");
   return `<tr><th scope="row"><code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")} · ${e(plural(r.projects.length, "project"))}</span></th>
@@ -1403,8 +1403,6 @@ export interface Standing {
   // An override on the developer's direction (t629) carries their words and the acting model.
   overrides: { id: string; title: string; at: string; reason: string; quote?: string; acting?: string }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
-  // Task forks Artifacts is still preparing (t18), present only while there are any.
-  preparing?: ({ id: string } & ForkPreparationView)[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
   // The project's model policy (t394): single-family mode naming the
   // company, or a recorded return to cross-family review; null when never
@@ -1704,7 +1702,7 @@ export function projectTabs(p: ProjectRecord, active: string, crumb?: string): s
 
 // The page of a project's area an address names, for the row of a page
 // whose body drew none: `rest` is the path after /p/NAME, decoded. A task's
-// pages, its fork's browsing included, are under Tasks with its id.
+// pages, its branch's browsing included, are under Tasks with its id.
 const PAGE_AT: Record<string, string> = { tasks: "Tasks", plans: "Plans", flow: "Flow", ship: "Ship", settings: "Settings", showcase: "Showcase", code: "Code", log: "Log", commit: "Code", history: "Code" };
 export function projectPageAt(rest: string[]): { active: string; crumb?: string } {
   const [first] = rest;
@@ -2032,8 +2030,8 @@ function taskText(item: Item): string {
 export type StepState = "done" | "current" | "todo";
 export interface TaskProgress { steps: { verb: Verb; line: string; state: StepState }[]; note: string | null }
 
-export function taskProgress(item: Pick<Item, "state" | "head" | "base" | "fork" | "blocked">, checks: { grade: string; passed: boolean | null }[]): TaskProgress {
-  // A fresh fork records its base as its head (Ledger.setFork), so the work
+export function taskProgress(item: Pick<Item, "state" | "head" | "base" | "workspace" | "blocked">, checks: { grade: string; passed: boolean | null }[]): TaskProgress {
+  // A fresh branch records its base as its head (Ledger.setWorkspace), so the work
   // is pushed only once the head has moved off the base.
   const pushed = item.head !== null && item.head !== item.base;
   // Every required check observed passing at the head; with none required, a pushed head is proven.
@@ -2047,7 +2045,7 @@ export function taskProgress(item: Pick<Item, "state" | "head" | "base" | "fork"
       case "merged": return STEPS.length;
       case "blocked": return reached(item.blocked?.from ?? "claimed");
       // Closed without landing: the steps its record shows it passed.
-      case "abandoned": return !pushed ? (item.fork ? 1 : 0) : proven ? 3 : 2;
+      case "abandoned": return !pushed ? (item.workspace ? 1 : 0) : proven ? 3 : 2;
     }
   };
   const at = reached(item.state);
@@ -2061,7 +2059,7 @@ export function taskProgress(item: Pick<Item, "state" | "head" | "base" | "fork"
 
 function progressBlock(item: Item, checks: { grade: string; passed: boolean | null }[]): string {
   const { steps, note } = taskProgress(item, checks);
-  return `<ol class="task-steps" aria-label="Progress: claim, fork, prove, review, land">${steps.map((s) =>
+  return `<ol class="task-steps" aria-label="Progress: claim, branch, prove, review, land">${steps.map((s) =>
     `<li class="${s.state}"${s.state === "current" ? ' aria-current="step"' : ""}><b>${e(s.verb)}</b><span>${s.state === "current" ? (item.state === "blocked" ? "Blocked here" : "Now") : s.state === "done" ? "Done" : e(s.line)}</span></li>`).join("")}</ol>
   ${note && item.state !== "blocked" ? `<p class="meta task-steps-note">${e(note)}</p>` : ""}`;
 }
@@ -2117,7 +2115,7 @@ function fastReadyBlock(d: Detail): string {
   if (d.item.state === "merged" || d.item.state === "abandoned") return "";
   const ready = standingFastReady(definingOf(d));
   if (!ready) return "";
-  return `<div class="fast-ready"><p><strong>Ready to merge at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the developer merges it and records the merge.</p>
+  return `<div class="fast-ready"><p><strong>Ready to merge at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No branch was made; the developer merges it and records the merge.</p>
   <p class="meta"><code>${e(recordMergeCommand(d.item.id, ready.commit))}</code></p></div>`;
 }
 
@@ -2589,8 +2587,8 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         <button class="danger">Close task without merging</button></form>`
     : "";
   const technical = `<dl>
-    <dt>Workspace</dt><dd><code>${e(item.fork ?? "Not created")}</code></dd>
-    <dt>Forked at</dt><dd><code>${short(item.base)}</code></dd>
+    <dt>Workspace</dt><dd><code>${e(item.workspace ?? "Not created")}</code></dd>
+    <dt>Started at</dt><dd><code>${short(item.base)}</code></dd>
     <dt>Scope</dt><dd>${item.scope.map(e).join(", ") || "Unrestricted"}</dd>
     <dt>Last push</dt><dd>${when(item.lastPushAt)}</dd>
   </dl>`;
@@ -2688,7 +2686,7 @@ ${submissionRounds(d)}
 
   return `${header}
 ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
-<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
+<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.workspace ? `<a href="${href("p", p.name, item.id, "code")}">Browse the branch</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}</p>
@@ -2763,21 +2761,21 @@ export function renderFile(f: FileChange, open: boolean): string {
 }
 
 function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string | null, merged?: MergedCheckView): string {
-  if (diff === "unavailable") return `<p class="empty">The diff could not be read from Artifacts just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
+  if (diff === "unavailable") return `<p class="empty">The diff could not be read from the repository just now. <code>atelier diff</code> shows it from a clean clone.</p>`;
   if (!diff) return `<p class="empty">No workspace yet, so nothing to compare.</p>`;
   if (diff.merged) return renderMergedDiff(diff, diff.merged);
   if (!diff.files.length) return `<p class="empty">No changes: the workspace at <span class="mono">${short(diff.head)}</span> holds the same tree as main at <span class="mono">${short(diff.base)}</span>.</p>`;
   const added = diff.files.reduce((n, f) => n + f.added, 0);
   const removed = diff.files.reduce((n, f) => n + f.removed, 0);
   const moved = recordedHead && recordedHead !== diff.head
-    ? `<p>${tag("Unrecorded", "ask")} Artifacts holds <span class="mono">${short(diff.head)}</span>, newer than the recorded head <span class="mono">${short(recordedHead)}</span>; the holder has pushed without running <code>atelier push</code>.</p>`
+    ? `<p>${tag("Unrecorded", "ask")} The task's branch holds <span class="mono">${short(diff.head)}</span>, newer than the recorded head <span class="mono">${short(recordedHead)}</span>; the holder has pushed without running <code>atelier push</code>.</p>`
     : "";
   // The diff is against main as it is now, so a workspace behind main shows
   // main's newer changes too, as reversals; the preview beneath says how far
   // main has moved, and the note says what that means for the list.
   const summary = `${diff.files.length}${diff.truncated ? "+" : ""} file${diff.files.length === 1 ? "" : "s"} differ from main at <span class="mono">${short(diff.base)}</span>, +${added} −${removed}, at the workspace's <span class="mono">${short(diff.head)}</span>.`;
   const behind = diff.main && diff.main.ahead > 0
-    ? ` Paths main changed since this task forked, and the workspace has not taken, are listed here as the workspace's changes until <code>atelier update</code> brings them in.`
+    ? ` Paths main changed since this task branched, and the workspace has not taken, are listed here as the workspace's changes until <code>atelier update</code> brings them in.`
     : "";
   return `${moved}<p class="meta">${summary}${behind}${diff.truncated ? " Only the first files are listed; <code>atelier diff</code> shows the rest." : ""}</p>
 ${renderMainPreview(diff.main, merged)}
@@ -2790,7 +2788,7 @@ ${diff.files.map((f) => renderFile(f, diff.files.length <= 8)).join("")}`;
 function renderMergedDiff(diff: ItemDiff, m: Landed): string {
   const against = m.from === "first-parent"
     ? `its first parent <span class="mono">${short(diff.base)}</span>`
-    : `the task's fork point <span class="mono">${short(diff.base)}</span>`;
+    : `the task's branch point <span class="mono">${short(diff.base)}</span>`;
   if (!diff.files.length) return `<p class="empty">Merged at <span class="mono">${short(m.commit)}</span>, which holds the same tree as ${against}.</p>`;
   const added = diff.files.reduce((n, f) => n + f.added, 0);
   const removed = diff.files.reduce((n, f) => n + f.removed, 0);
@@ -2806,8 +2804,8 @@ export function renderMainPreview(m: MainPreview | null | undefined, merged?: Me
   if (m === undefined) return "";
   if (m === null) return `<p class="meta">Whether this merges cleanly into main could not be read just now.</p>`;
   const plural = (n: number, w: string) => `${n.toLocaleString("en")} ${w}${n === 1 ? "" : "s"}`;
-  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date")} Main has not moved since this task forked; it merges as it is.</p>${renderMergedChecks(merged, m, false)}`;
-  const moved = `Main has moved ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} along its first-parent line since this task forked (a merge counts once), changing ${plural(m.merge.ours, "path")}`;
+  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date")} Main has not moved since this task branched; it merges as it is.</p>${renderMergedChecks(merged, m, false)}`;
+  const moved = `Main has moved ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} along its first-parent line since this task branched (a merge counts once), changing ${plural(m.merge.ours, "path")}`;
   // Declared generated outputs (bin/merge-manifest.json, t463) are never
   // conflicts: the merge pipeline regenerates them once the sources merge.
   const regenerable = m.merge.regenerable ?? [];

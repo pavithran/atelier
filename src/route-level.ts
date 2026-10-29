@@ -117,7 +117,7 @@ export const DIRECTION = "projects.developer-direction.v1";
 export const ITEM_DIRECTION = "items.developer-direction.v1";
 // The developer's branches (t641): a server without them keeps no branches
 // repository, and the refusal says nothing was pushed or fetched.
-export const BRANCHES = "projects.developer-branches.v1";
+export const BRANCHES = "projects.developer-branches.v2";
 export function capabilityFallback(missing: readonly string[]): string {
   if (missing.includes(ITEM_DIRECTION)) return "Until then, the developer blocks, unblocks, abandons or clears the flag on the task's page, and the command runs again without --quote";
   if (missing.includes(DIRECTION)) return "Until then, the developer gives the permission on the project's Settings page (Allow fast mode from the command line) or the task's page (Allow an override from the command line), and the command runs again without --quote";

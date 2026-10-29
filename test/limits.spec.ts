@@ -32,13 +32,13 @@ function artifacts(revoked: string[]) {
       revokeToken: async (id: string) => { revoked.push(id); return true; },
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 // Owner-token writes name the acting model (G18).
 const ACTING = "claude-code/opus-5.5";
-function caller(name: string, ARTIFACTS?: Artifacts) {
-  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ...(ARTIFACTS ? { ARTIFACTS } : {}) } as typeof env;
+function caller(name: string, REPOS?: Repos) {
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ...(REPOS ? { REPOS } : {}) } as typeof env;
   return (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
@@ -68,9 +68,9 @@ it("a review, handoff, release or abandonment note over 2000 characters is refus
   const L = await project(name);
   await L.newItem("Noted at length", [], "owner");
   const { generation } = await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  expect(await L.recordToken("t1", A, generation, null, "write-token-1")).toBe(true);
+  expect(await L.recordToken("t1", A, generation, null, "git:write-token-1")).toBe(true);
   const revoked: string[] = [];
   const as = caller(name, artifacts(revoked));
   const holder = as(await issue(name, A), null), reviewer = as(await issue(name, B), null), owner = as(TOKEN, "owner");
@@ -94,7 +94,8 @@ it("a review, handoff, release or abandonment note over 2000 characters is refus
   expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: false, note: exact })).status).toBe(200);
   expect((await L.reviewsFor("t1"))[0].note).toBe(exact);
   expect((await holder("POST", "/items/t1/release", { note: exact })).status).toBe(200);
-  expect(revoked).toEqual(["write-token-1"]);
+  // The release clears the write token's record, which is its revocation.
+  expect(await L.tokenId("t1")).toBeNull();
   const released = ((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "item.released");
   expect(released?.data.note).toBe(exact);
 });
@@ -124,7 +125,7 @@ it("a summary over 600 characters is refused, and a push names its head as a com
   const L = await project(name);
   await L.newItem("Summed up", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   const agent = caller(name, artifacts([]))(await issue(name, A), null);
 
   // The head a push reports is stored beside the one Atelier reads when they differ, so only a hash is taken.

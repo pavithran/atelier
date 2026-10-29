@@ -72,7 +72,7 @@ it("a revert links both records and must earn fresh checks and independent revie
   await refusal(L.newItem("", [], A, { revertOf: "t1" }), "not_merged", /not merged/);
   expect(await L.items()).toHaveLength(1);
   await L.claim("t1", A);
-  await L.setFork("t1", "revert--t1", H0, A);
+  await L.setWorkspace("t1", "revert--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
@@ -87,7 +87,7 @@ it("a revert links both records and must earn fresh checks and independent revie
   expect(await L.events("t2")).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "item.reverts", data: { itemId: "t1", mergeCommit: H2 } })]));
   await refusal(L.editItem("t2", "owner", { revertOf: "t1" }), "bad_field", /only when creating/);
   await L.claim("t2", A);
-  await L.setFork("t2", "revert--t2", H2, A);
+  await L.setWorkspace("t2", "revert--t2", H2, A);
   await L.recordPush("t2", A, H0, H0);
   await L.submit("t2", A);
   await refusal(L.accept("t2", "owner"), "not_ready", /./);
@@ -139,8 +139,8 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   expect(item).toMatchObject({ id: "t1", state: "open", owner: null });
 
   const claimed = await L.claim("t1", A);
-  expect(claimed).toMatchObject({ item: { state: "claimed", owner: A }, needsFork: true });
-  await L.setFork("t1", "lifecycle--t1", H0, A);
+  expect(claimed).toMatchObject({ item: { state: "claimed", owner: A } });
+  await L.setWorkspace("t1", "lifecycle--t1", H0, A);
 
   await refusal(L.submit("t1", A), "nothing_pushed", /push work before submitting/);
   await L.recordPush("t1", A, H1, H1);
@@ -158,7 +158,7 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   expect(await L.owners()).toEqual([]);
   expect(kinds(await L.events("t1"))).toEqual([
     "item.merged", "item.accepted", "item.submitted", "evidence.observed", "push.observed",
-    "fork.created", "item.claimed", "item.created",
+    "workspace.created", "item.claimed", "item.created",
   ]);
 });
 
@@ -169,9 +169,9 @@ it("a fresh fork is at Fork, and a push that moves the head brings it to Prove",
   await L.newItem("Show the steps", ["src/**"], "owner");
   await L.claim("t1", A);
   const at = async () => taskProgress(await L.item("t1"), []).steps.find((s) => s.state === "current")?.verb;
-  await L.setFork("t1", "progress--t1", H0, A);
+  await L.setWorkspace("t1", "progress--t1", H0, A);
   expect(await L.item("t1")).toMatchObject({ base: H0, head: H0 });
-  expect(await at()).toBe("Fork");
+  expect(await at()).toBe("Branch");
   await L.recordPush("t1", A, H1, H1);
   expect(await at()).toBe("Prove");
 });
@@ -183,7 +183,7 @@ it("the inbox reminds the owner of a merged revision whose declared protected ac
   const L = await setup("ship-inbox", { ...policy, shipKinds: ["deploy"] });
   await L.newItem("Deliver the site", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "ship-inbox--t1", H0, A);
+  await L.setWorkspace("t1", "ship-inbox--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["src/a.ts"]));
   await L.submit("t1", A);
@@ -201,7 +201,7 @@ it("the inbox reminds the owner of a merged revision whose declared protected ac
   const quiet = await setup("ship-quiet", policy);
   await quiet.newItem("No delivery declared", ["src/**"], "owner");
   await quiet.claim("t1", A);
-  await quiet.setFork("t1", "ship-quiet--t1", H0, A);
+  await quiet.setWorkspace("t1", "ship-quiet--t1", H0, A);
   await quiet.recordPush("t1", A, H1, H1);
   await quiet.addEvidence(observed("t1", H1, ["src/a.ts"]));
   await quiet.submit("t1", A);
@@ -214,7 +214,7 @@ it("a protected path is accepted only after an independent approval", async () =
   const L = await setup("protected");
   await L.newItem("Touch a protected path", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "protected--t1", H0, A);
+  await L.setWorkspace("t1", "protected--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["src/ledger.ts", "AGENTS.md"]));
   await L.submit("t1", A);
@@ -242,7 +242,7 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   const L = await setup("override");
   await L.newItem("Touch a protected path", ["src/**", "AGENTS.md"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "override--t1", H0, A);
+  await L.setWorkspace("t1", "override--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await L.submit("t1", A);
@@ -327,7 +327,7 @@ it("decision 2026-10-09: availableReviewer asks the review tier first for a prot
   const L = await setup("available-reviewer-tier", { ...policy, protected: ["AGENTS.md"], reviewTier: ["codex/gpt-6-astra"] });
   await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
   await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
-  await L.setFork("t1", "available-reviewer-tier--t1", H0, A);
+  await L.setWorkspace("t1", "available-reviewer-tier--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await L.submit("t1", A);
@@ -348,7 +348,7 @@ it("decision 2026-10-09: the inbox names the reviewer a land would use for an as
   const L = await setup("inbox-reviewer");
   await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
   await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
-  await L.setFork("t1", "inbox-reviewer--t1", H0, A);
+  await L.setWorkspace("t1", "inbox-reviewer--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await L.submit("t1", A);
@@ -373,7 +373,7 @@ it("the holder under another letter case, profile or registered name cannot revi
   const L = await setup("same-model-names");
   await L.newItem("Touch a protected path", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "same-model-names--t1", H0, A);
+  await L.setWorkspace("t1", "same-model-names--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await L.submit("t1", A);
@@ -414,22 +414,22 @@ it("exactly one owner: claims are serialised and scoped, and a stored eligible l
 it("a failed fork unclaims the item, and a re-claim does not fork again", async () => {
   const L = await setup("fork-failed");
   await L.newItem("One", ["src/**"], "owner");
-  expect(await L.claim("t1", A)).toMatchObject({ needsFork: true });
+  expect(await L.claim("t1", A)).toMatchObject({ item: { workspace: null } });
 
   await L.unclaim("t1", A, "fork: repository quota exceeded");
   expect(await L.item("t1")).toMatchObject({ state: "open", owner: null });
 
   await L.claim("t1", B);
-  await L.setFork("t1", "fork-failed--t1", H0, B);
-  expect(await L.claim("t1", B)).toMatchObject({ needsFork: false });
-  expect(kinds(await L.events("t1"))).toEqual(["fork.created", "item.claimed", "item.claim_failed", "item.claimed", "item.created"]);
+  await L.setWorkspace("t1", "fork-failed--t1", H0, B);
+  expect(await L.claim("t1", B)).toMatchObject({ item: { workspace: "fork-failed--t1" } });
+  expect(kinds(await L.events("t1"))).toEqual(["workspace.created", "item.claimed", "item.claim_failed", "item.claimed", "item.created"]);
 });
 
 it("evidence and reviews are refused at a stale head", async () => {
   const L = await setup("stale-head");
   await L.newItem("One", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "stale-head--t1", H0, A);
+  await L.setWorkspace("t1", "stale-head--t1", H0, A);
 
   await L.addEvidence(observed("t1", H0));
   await L.recordPush("t1", A, H1, H1);
@@ -448,7 +448,7 @@ it("ownership moves by handoff, ends by release or abandonment", async () => {
   const L = await setup("handoff", eligible);
   await L.newItem("One", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "handoff--t1", H0, A);
+  await L.setWorkspace("t1", "handoff--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
 
   const moved = await L.handoff("t1", A, B, "off to a second opinion");
@@ -470,7 +470,7 @@ it("the owner returns accepted work to a builder without losing reviews or accep
     const L = await setup(`accepted-rework-${action}`);
     await L.newItem("Conflicted", ["src/**"], "owner");
     await L.claim("t1", A);
-    await L.setFork("t1", `accepted-rework-${action}--t1`, H0, A);
+    await L.setWorkspace("t1", `accepted-rework-${action}--t1`, H0, A);
     await L.recordPush("t1", A, H1, H1);
     await L.addEvidence(observed("t1", H1));
     await L.addReview(review("t1", B, H1, true, "Reviewed before conflict"));
@@ -491,7 +491,7 @@ it("the owner returns accepted work to a builder without losing reviews or accep
     await L.cancelLanding("t1", "owner");
     await L.checkHandoff("t1", "owner", B, "Resolve main conflict");
     const moved = await move();
-    expect(moved).toMatchObject({ state: action === "handoff" ? "claimed" : "open", owner: action === "handoff" ? B : null, head: H1, acceptedHead: null, fork: `accepted-rework-${action}--t1` });
+    expect(moved).toMatchObject({ state: action === "handoff" ? "claimed" : "open", owner: action === "handoff" ? B : null, head: H1, acceptedHead: null, workspace: `accepted-rework-${action}--t1` });
     expect(await L.reviewsFor("t1")).toEqual(reviews);
     const events = await L.events("t1") as unknown as LedgerEvent[];
     expect(events).toEqual(expect.arrayContaining(history));
@@ -517,7 +517,7 @@ it("a task is closed as delivered by a merged task, which the event records", as
   expect(await L.item("t2")).toMatchObject({ state: "open" });
 
   await L.claim("t1", A);
-  await L.setFork("t1", "delivered-by--t1", H0, A);
+  await L.setWorkspace("t1", "delivered-by--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["src/ledger.ts"]));
   await L.submit("t1", A);
@@ -545,7 +545,7 @@ it("the owners view reports live items without titles, scopes or paths", async (
   const L = await setup("owners-view");
   await L.newItem("A title with detail in it", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "owners-view--t1", H0, A);
+  await L.setWorkspace("t1", "owners-view--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
 
   const owners = await L.owners();
@@ -556,7 +556,7 @@ it("the owners view reports live items without titles, scopes or paths", async (
 
 it("acceptance is bound to the expected revision and a push event invalidates approval", async () => {
   const L=await setup('revision-bound');
-  await L.newItem('Review this revision',['src/**'],'owner'); await L.claim('t1',A); await L.setFork('t1','revision--t1',H0,A);
+  await L.newItem('Review this revision',['src/**'],'owner'); await L.claim('t1',A); await L.setWorkspace('t1','revision--t1',H0,A);
   await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A);
   await refusal(L.accept('t1','owner',H2),'stale_head',/changed since/);
   await L.accept('t1','owner',H1);
@@ -568,7 +568,7 @@ it("acceptance is bound to the expected revision and a push event invalidates ap
 
 it("completed tasks cannot be reopened by push, submit, release, or review", async () => {
   const L=await setup('closed-state');
-  await L.newItem('Close safely',[],'owner'); await L.claim('t1',A); await L.setFork('t1','closed--t1',H0,A);
+  await L.newItem('Close safely',[],'owner'); await L.claim('t1',A); await L.setWorkspace('t1','closed--t1',H0,A);
   await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A); await L.accept('t1','owner',H1);
   await refusal(L.merged('t1','owner','merge',false),'unverified_merge',/not on the baseline/);
   await L.merged('t1','owner','merge',true); await L.merged('t1','owner','merge',true);
@@ -583,7 +583,7 @@ it("completed tasks cannot be reopened by push, submit, release, or review", asy
 
 it("HTTP approval rejects missing and stale revisions before reading Artifacts", async () => {
   const {default:worker}=await import('../src/index');
-  const L=await setup('http-review');await L.newItem('Bound form',[],'owner');await L.claim('t1',A);await L.setFork('t1','http--t1',H0,A);await L.recordPush('t1',A,H1,H1);
+  const L=await setup('http-review');await L.newItem('Bound form',[],'owner');await L.claim('t1',A);await L.setWorkspace('t1','http--t1',H0,A);await L.recordPush('t1',A,H1,H1);
   const bindings={...env,ATELIER_TOKEN:'fixture-token'};
   for(const head of ['',H2]) {
     const form=new URLSearchParams({head,note:'test'});
@@ -601,13 +601,13 @@ it("HTTP approval rejects missing and stale revisions before reading Artifacts",
 // and ignores a duplicate or a ref that is no task's branch.
 it("push notices read the authoritative branch head and ignore duplicate or unrelated pushes", async () => {
   const {observePushed}=await import('../src/index');
-  const L=await setup('events-project');await L.newItem('Observe pushes',[],'owner');await L.claim('t1',A);await L.setFork('t1','events-project/t/1',H0,A);
+  const L=await setup('events-project');await L.newItem('Observe pushes',[],'owner');await L.claim('t1',A);await L.setWorkspace('t1','events-project/t/1',H0,A);
   const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
   await index.registerProject({name:'events-project',repo:'events-project',policy,createdAt:new Date().toISOString()});
   // The branch's history as the observer reads it: H2 on top of H0, the base.
   let reads=0;
-  const artifacts={get:async()=>({info:async()=>({defaultBranch:'main'}),log:async()=>{reads++;return[{hash:H2,parents:[H0]},{hash:H0,parents:[]}]},[Symbol.dispose](){}})} as unknown as Artifacts;
-  const bound={...env,ARTIFACTS:artifacts};
+  const artifacts={get:async()=>({info:async()=>({defaultBranch:'main'}),log:async()=>{reads++;return[{hash:H2,parents:[H0]},{hash:H0,parents:[]}]},[Symbol.dispose](){}})} as unknown as Repos;
+  const bound={...env,REPOS:artifacts};
   const notice={project:'events-project',ref:'refs/heads/t/1',after:H1};
   expect(await observePushed(bound,notice)).toMatchObject({observed:true,item:'t1',head:H2});
   const readsAfterFirst=reads;
@@ -628,7 +628,7 @@ it("t371: a permission for an override is spent by one override, lapses with the
   const L = await setup("override-permission");
   await L.newItem("Touch a protected path", ["src/**", "AGENTS.md"], "owner", { accept: ["Keeps the prompts"] });
   await L.claim("t1", A);
-  await L.setFork("t1", "override-permission--t1", H0, A);
+  await L.setWorkspace("t1", "override-permission--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   // Not submitted yet: nothing to allow.
@@ -651,7 +651,7 @@ it("t371: a permission for an override is spent by one override, lapses with the
   // Where another family has approved there is nothing to allow an override of.
   await L.newItem("Touch another protected path", ["AGENTS.md"], "owner");
   await L.claim("t2", A);
-  await L.setFork("t2", "override-permission--t2", H0, A);
+  await L.setWorkspace("t2", "override-permission--t2", H0, A);
   await L.recordPush("t2", A, H1, H1);
   await L.addEvidence(observed("t2", H1, ["AGENTS.md"]));
   await L.submit("t2", A);
@@ -662,7 +662,7 @@ it("t371: a permission for an override is spent by one override, lapses with the
   const F = await setup("override-forbidden", { ...policy, noOverride: true });
   await F.newItem("Touch a protected path", ["AGENTS.md"], "owner");
   await F.claim("t1", A);
-  await F.setFork("t1", "override-forbidden--t1", H0, A);
+  await F.setWorkspace("t1", "override-forbidden--t1", H0, A);
   await F.recordPush("t1", A, H1, H1);
   await F.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await F.submit("t1", A);
@@ -686,7 +686,7 @@ it("t371: an override recorded earlier is ignored once the project forbids overr
   const L = await setup("override-then-forbidden");
   await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "override-then-forbidden--t1", H0, A);
+  await L.setWorkspace("t1", "override-then-forbidden--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await L.submit("t1", A);
@@ -716,10 +716,10 @@ it("t371: an override recorded earlier is ignored once the project forbids overr
 
 it("HTTP review and acceptance preserve the displayed revision through successful form posts",async()=>{
  const {default:worker}=await import('../src/index');
- const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setFork('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
- const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Artifacts;
+ const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setWorkspace('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
+ const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Repos;
  // A server whose owner factor is the confirmation secret (t371); every form here carries it.
- const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token',OVERRIDE_SECRET:'fixture-word'};
+ const bindings={...env,REPOS:artifacts,ATELIER_TOKEN:'fixture-token',OVERRIDE_SECRET:'fixture-word'};
  const post=(action:string,note:string,headers:Record<string,string>={authorization:'Bearer fixture-token'})=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{...headers,origin:'https://atelier.test'},body:new URLSearchParams({head:H1,criteria:NO_CRITERIA,note,confirmation:'fixture-word'})}),bindings);
  // The owner's approval is recorded at the displayed revision, but it is not
  // the independent review AGENTS.md needs, so Accept is refused; the
@@ -833,7 +833,7 @@ it("the owner can dispatch a held task, which releases its holder and queues it 
   const L = await setup("dispatch-held");
   const item = await L.newItem("Rework me", ["docs/**"], "owner");
   await L.claim(item.id, A);
-  await L.setFork(item.id, "dispatch-held--t1", H0, A);
+  await L.setWorkspace(item.id, "dispatch-held--t1", H0, A);
   await L.recordPush(item.id, A, H1, null);
   await L.submit(item.id, A);
   await L.addReview(review(item.id, B, H1, false));
@@ -844,9 +844,8 @@ it("the owner can dispatch a held task, which releases its holder and queues it 
   expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.released", "item.dispatched"]));
   // A runner claims it again and finds the earlier commits.
-  const { item: again, needsFork } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  const { item: again } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
   expect(again).toMatchObject({ state: "claimed", head: H1 });
-  expect(needsFork).toBe(false);
 });
 
 it("a merge-main dispatch sends a conflicted landing back to its builder, and needs a workspace to merge into", async () => {
@@ -854,14 +853,14 @@ it("a merge-main dispatch sends a conflicted landing back to its builder, and ne
   const M = "5".repeat(40);
   // No workspace yet: nothing for a builder to merge main into.
   const bare = await L.newItem("Never built", ["docs/**"], "owner");
-  await refusal(L.dispatch(bare.id, "owner", { job: "merge-main", head: M, agent: "codex", model: "gpt-5.5" }), "no_fork", /has no workspace yet, so there is nothing for its builder to merge main into/);
+  await refusal(L.dispatch(bare.id, "owner", { job: "merge-main", head: M, agent: "codex", model: "gpt-5.5" }), "no_workspace", /has no workspace yet, so there is nothing for its builder to merge main into/);
   await refusal(L.dispatch(bare.id, "owner", { job: "plan" }), "bad_dispatch", /only merge-main is dispatched by hand/);
 
   // A submitted task whose landing conflicted: the holder is released and
   // the merge-main job queued in its place, keeping the workspace.
   const item = await L.newItem("Landed on a conflict", ["docs/**"], "owner");
   await L.claim(item.id, A);
-  await L.setFork(item.id, "dispatch-merge-main--t2", H0, A);
+  await L.setWorkspace(item.id, "dispatch-merge-main--t2", H0, A);
   await L.recordPush(item.id, A, H1, null);
   await L.submit(item.id, A);
   const queued = await L.dispatch(item.id, "owner", { job: "merge-main", head: M, agent: "opencode", model: "glm-5.3-flash" });
@@ -948,7 +947,7 @@ it("held jobs are the dispatched claims the named runner holds, alone", async ()
   const actor = "opencode/glm-5.3-flash";
   const studio = { runner: "home:studio", kind: "home" as const };
   await L.claim(item.id, actor, studio);
-  await L.setFork(item.id, "held-jobs--t1", H0, actor);
+  await L.setWorkspace(item.id, "held-jobs--t1", H0, actor);
   expect((await L.heldJobs("home:studio")).map((i) => i.id)).toEqual([item.id]);
   // The hold matches without case, as claim compares it; another runner holds nothing.
   expect((await L.heldJobs("HOME:STUDIO")).map((i) => i.id)).toEqual([item.id]);
@@ -967,7 +966,7 @@ it("a submit records the summary in its event, cleaned, refuses one over its lim
   const L = await setup("summary");
   await L.newItem("Summarise", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "summary--t1", H0, A);
+  await L.setWorkspace("t1", "summary--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   const submitted = async () => ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.submitted");
   // Over 600 characters once cleaned, the summary is refused and nothing is submitted.
@@ -999,7 +998,7 @@ it("the submit route passes an optional summary to the Ledger", async () => {
   const L = await setup("summary-route");
   await L.newItem("Via the route", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "summary-route--t1", H0, A);
+  await L.setWorkspace("t1", "summary-route--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   const { default: worker } = await import("../src/index.ts");
   const res = await worker.fetch(new Request("https://atelier.test/api/projects/summary-route/items/t1/submit", {
@@ -1087,7 +1086,7 @@ it("a push to an accepted task withdraws the acceptance, and only its owner can 
   const L = await setup("reopen");
   await L.newItem("Conflicts on merge", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "reopen--t1", H0, A);
+  await L.setWorkspace("t1", "reopen--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["README.md"]));
   await L.submit("t1", A);
@@ -1105,7 +1104,7 @@ it("a merge holds a landing lease: no push over the revision being merged, and t
   const L = await setup("landing");
   await L.newItem("Land me", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "landing--t1", H0, A);
+  await L.setWorkspace("t1", "landing--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["README.md"]));
   await L.submit("t1", A);
@@ -1137,7 +1136,7 @@ it("abandon is refused while a merge holds the landing lease, so a published mer
   const L = await setup("abandon-landing");
   await L.newItem("Land me", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "abandon-landing--t1", H0, A);
+  await L.setWorkspace("t1", "abandon-landing--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["README.md"]));
   await L.submit("t1", A);
@@ -1151,7 +1150,7 @@ it("abandon is refused while a merge holds the landing lease, so a published mer
   // Once a landing is cancelled, the task can be abandoned.
   await L.newItem("Cancel, then abandon", [], "owner");
   await L.claim("t2", A);
-  await L.setFork("t2", "abandon-landing--t2", H0, A);
+  await L.setWorkspace("t2", "abandon-landing--t2", H0, A);
   await L.recordPush("t2", A, H1, H1);
   await L.addEvidence(observed("t2", H1, ["README.md"]));
   await L.submit("t2", A);
@@ -1195,7 +1194,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
 
       expect(L.newItem("One clock", [], "owner")).toMatchObject({ createdAt: stamped("t1").updatedAt });
       L.claim("t1", A); stamped("t1");
-      L.setFork("t1", "one-clock--t1", H0, A); stamped("t1");
+      L.setWorkspace("t1", "one-clock--t1", H0, A); stamped("t1");
       L.recordPush("t1", A, H1, H1);
       expect(stamped("t1").lastPushAt).toBe(L.item("t1").updatedAt);
       L.submit("t1", A, "First go"); stamped("t1");
@@ -1222,7 +1221,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
 
       L.newItem("Seen by the queue", [], "owner");
       L.claim("t3", A);
-      L.setFork("t3", "one-clock--t3", H0, A);
+      L.setWorkspace("t3", "one-clock--t3", H0, A);
       L.observePush("t3", H1, H0);
       expect(stamped("t3").lastPushAt).toBe(L.item("t3").updatedAt);
       L.unclaim("t3", A, "the fork failed"); stamped("t3");
@@ -1230,7 +1229,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
       // An override and the acceptance it allows are one change: both events, and the override, carry its time.
       L.newItem("Protected", [], "owner");
       L.claim("t4", A);
-      L.setFork("t4", "one-clock--t4", H0, A);
+      L.setWorkspace("t4", "one-clock--t4", H0, A);
       L.recordPush("t4", A, H1, H1);
       L.addEvidence(observed("t4", H1, ["AGENTS.md"]));
       L.submit("t4", A);
@@ -1299,7 +1298,7 @@ it("stored agents and execution persist across init and gate no claim, handoff, 
   // Would have caught: codex, which the stored agents give no executor role, refused a claim and a handoff, and glm, no assessor role, a review.
   await L.claim("t1", B);
   await L.handoff("t1", B, A, "handoff");
-  await L.setFork("t1", "governed--t1", H0, A);
+  await L.setWorkspace("t1", "governed--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
@@ -1317,7 +1316,7 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   const L = await setup("acceptance-policy");
   await L.newItem("Policy snapshot", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "acceptance-policy--t1", H0, A);
+  await L.setWorkspace("t1", "acceptance-policy--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
@@ -1376,12 +1375,12 @@ it("a blocked task keeps its owner and fork, refuses every move but abandon, and
   const L = await setup("blocked");
   const t1 = (await L.newItem("Wire the keys", ["src/**"], "owner")).id;
   await L.claim(t1, A);
-  await L.setFork(t1, "blocked--t1", H0, A);
+  await L.setWorkspace(t1, "blocked--t1", H0, A);
   await L.recordPush(t1, A, H1, null);
   await refusal(L.block(t1, B, "not mine"), "not_owner", /does not hold t1/);
   await refusal(L.block(t1, A, "   "), "block_reason", /a block needs a reason/);
   const blocked = await L.block(t1, A, " waiting on the API key\u0007");
-  expect(blocked).toMatchObject({ state: "blocked", owner: A, fork: "blocked--t1", head: H1, blocked: { reason: "waiting on the API key", by: A, from: "claimed" } });
+  expect(blocked).toMatchObject({ state: "blocked", owner: A, workspace: "blocked--t1", head: H1, blocked: { reason: "waiting on the API key", by: A, from: "claimed" } });
   expect((await L.owners()).map((o) => [o.item, o.state, o.owner])).toEqual([[t1, "blocked", A]]);
 
   // Every move answers with the reason and the way on; abandon alone still works, below.
@@ -1525,7 +1524,7 @@ it("a task sent back for rework gets the rejecting review's findings in its job 
   const L = await setup("dispatch-held-brief");
   const item = await L.newItem("Rework me", ["docs/**"], "owner");
   await L.claim(item.id, A);
-  await L.setFork(item.id, "dispatch-held-brief--t1", H0, A);
+  await L.setWorkspace(item.id, "dispatch-held-brief--t1", H0, A);
   await L.recordPush(item.id, A, H1, null);
   await L.submit(item.id, A);
   await L.addReview({ ...review(item.id, B, H1, false, "the guard is missing"), findings: [
@@ -1557,7 +1556,7 @@ const TWO = ["Nested lists parse", "Errors name the line"];
 async function submittedWith(L: Awaited<ReturnType<typeof setup>>, accept: string[] | undefined, id = "t1") {
   await L.newItem("Parse nested lists", [], "owner", accept === undefined ? {} : { accept });
   await L.claim(id, A);
-  await L.setFork(id, `fork-${id}`, H0, A);
+  await L.setWorkspace(id, `fork-${id}`, H0, A);
   await L.recordPush(id, A, H1, H1);
   await L.addEvidence(observed(id, H1, ["AGENTS.md"]));
   await L.submit(id, A);
@@ -1706,7 +1705,7 @@ it("reviews recorded before reviews were bound stay as history, unstamped, and n
     for (const [id, accept] of [["t1", undefined], ["t2", ONE]] as const) {
       L.newItem("Legacy", [], "owner", accept ? { accept: [...accept] } : {});
       L.claim(id, A);
-      L.setFork(id, `fork-${id}`, H0, A);
+      L.setWorkspace(id, `fork-${id}`, H0, A);
       L.recordPush(id, A, H1, H1);
       L.addEvidence(observed(id, H1, ["AGENTS.md"]));
       L.submit(id, A);
@@ -1814,7 +1813,7 @@ it("requests and reviews made before reviews were bound stop counting as already
     L.initProject({ name: "criteria-tier-legacy", repo: "criteria-tier-legacy", reset: false, checks: ["npm test"], protected: ["AGENTS.md"], reviewTier: [GLM] }, "owner");
     L.newItem("Legacy", [], "owner", { accept: [...ONE] });
     L.claim("t1", A);
-    L.setFork("t1", "fork-t1", H0, A);
+    L.setWorkspace("t1", "fork-t1", H0, A);
     L.recordPush("t1", A, H1, H1);
     L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
     L.submit("t1", A);
@@ -1923,7 +1922,7 @@ it("accept with a developer quote overrules an environment-only rejection and re
   const L = await setup("environment-rejection-override");
   await L.newItem("Review environment", ["AGENTS.md"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "env--t1", H0, A);
+  await L.setWorkspace("t1", "env--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await L.submit("t1", A);

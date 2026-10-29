@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 export const REAL_GIT = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
-export const WRITE = "write-secret-5e4d3c2b1a", WRITE2 = "write-secret-2-9f8e7d6c", READ = "read-secret-1a2b3c4d5e", BASE = "base-secret-6f7a8b9c0d", LEGACY = "legacy-secret-0d9c8b7a6f";
+export const WRITE = "write-secret-5e4d3c2b1a", WRITE2 = "write-secret-2-9f8e7d6c", READ = "read-secret-1a2b3c4d5e", LEGACY = "legacy-secret-0d9c8b7a6f";
 export const isolated = (root) => ({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "gitconfig") });
 export const real = (cwd, ...args) => execFileSync(REAL_GIT, args, { cwd, encoding: "utf8" }).trim();
 export async function fixture(t) {
@@ -20,8 +20,10 @@ export async function fixture(t) {
   real(source, "config", "user.name", "Test Owner");
   real(source, "config", "user.email", "owner@example.test");
   real(source, "commit", "-q", "--allow-empty", "-m", "Initial");
-  for (const name of ["fork.git", "base.git"]) execFileSync(REAL_GIT, ["clone", "-q", "--bare", source, join(repos, name)]);
-  const forkHead = () => real(join(repos, "fork.git"), "rev-parse", "HEAD");
+  // One repository holds the project's branch and the task's (t/1), as the server's does.
+  execFileSync(REAL_GIT, ["clone", "-q", "--bare", source, join(repos, "repo.git")]);
+  real(join(repos, "repo.git"), "branch", "t/1", "main");
+  const branchHead = () => real(join(repos, "repo.git"), "rev-parse", "refs/heads/t/1");
 
   // The shim: a shell script so its path may hold spaces, running a Node
   // script that logs the call and then hands it to the real git.
@@ -36,7 +38,7 @@ process.exit(r.status ?? 1);
   writeFileSync(join(bin, "git"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(root, "shim.cjs"))} "$@"\n`);
   chmodSync(join(bin, "git"), 0o755);
 
-  const valid = { "fork.git": new Set([WRITE, READ]), "base.git": new Set([BASE]) };
+  const valid = { "repo.git": new Set([WRITE, READ]) };
   const seen = [], claim = { token: WRITE, expiresAt: "tomorrow", owner: actor }, refuse = { status: 401 };
   const item = { id: "t1", title: "Edit", scope: [], owner: actor, state: "claimed" };
   const claims = [];
@@ -48,12 +50,11 @@ process.exit(r.status ?? 1);
     item.owner = claim.owner;
     if (req.url.endsWith("/claim")) claims.push(req.method);
     const origin = `http://127.0.0.1:${server.address().port}`;
-    let data = { item: { ...item, head: forkHead() }, gate: { ready: true, blockers: [] }, policy: { checks: ["true"] } };
+    let data = { item: { ...item, head: branchHead() }, gate: { ready: true, blockers: [] }, policy: { checks: ["true"] } };
     if (req.url === "/api/version") data = { capabilities: SERVER_CAPABILITIES };
-    if (req.url.endsWith("/claim")) data = { item, workspace: { token: claim.token, remote: `${origin}/fork.git`, defaultBranch: "main", expiresAt: claim.expiresAt } };
-    if (req.url.endsWith("/push")) data = { ...item, head: forkHead() };
-    if (req.url.endsWith("/read-token")) data = { remote: `${origin}/fork.git`, token: READ, head: forkHead(), defaultBranch: "main" };
-    if (req.url.endsWith("/baseline-token") || req.url.endsWith("/base-token")) data = { remote: `${origin}/base.git`, token: BASE, head: forkHead(), defaultBranch: "main" };
+    if (req.url.endsWith("/claim")) data = { item, workspace: { token: claim.token, remote: `${origin}/repo.git`, branch: "t/1", defaultBranch: "main", expiresAt: claim.expiresAt }  };
+    if (req.url.endsWith("/push")) data = { ...item, head: branchHead() };
+    if (req.url.endsWith("/git-token")) data = { kind: "read", remote: `${origin}/repo.git`, token: READ, expiresAt: "tomorrow", defaultBranch: "main", branch: "t/1", into: "main", head: branchHead(), base: branchHead() };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });
@@ -71,7 +72,7 @@ process.exit(r.status ?? 1);
     return { status, output };
   }
   const calls = () => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  return { root, source, workspace: join(root, "cache", "work", "proj", "t1"), valid, seen, claim, claims, refuse, api, run, calls, forkUrl: `http://127.0.0.1:${server.address().port}/fork.git` };
+  return { root, source, workspace: join(root, "cache", "work", "proj", "t1"), valid, seen, claim, claims, refuse, api, run, calls, repoUrl: `http://127.0.0.1:${server.address().port}/repo.git` };
 }
 export async function started(t) {
   const f = await fixture(t);
@@ -79,7 +80,7 @@ export async function started(t) {
   assert.equal(start.status, 0, start.output);
   return f;
 }
-export const lapse = (f) => { f.claim.token = WRITE2; f.valid["fork.git"] = new Set([WRITE2, READ]); f.claim.expiresAt = "2999-01-01T00:00:00.000Z"; };
+export const lapse = (f) => { f.claim.token = WRITE2; f.valid["repo.git"] = new Set([WRITE2, READ]); f.claim.expiresAt = "2999-01-01T00:00:00.000Z"; };
 export const cli = resolve("cli/atelier.mjs");
 export const actor = "codex/test";
 export function serveGit(req, res, repos, valid, seen, refuse = { status: 401 }) {

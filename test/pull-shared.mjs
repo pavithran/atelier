@@ -5,10 +5,9 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildHistory } from "../cli/fresh.mjs";
 import { serveGit } from "./helpers/git-http.mjs";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
-export function setup(t, { fresh = false, http = false } = {}) {
+export function setup(t, { http = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-pull-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "gitconfig"), "");
@@ -23,19 +22,13 @@ export function setup(t, { fresh = false, http = false } = {}) {
     git(source, "commit", "-q", "-m", `commit ${n}`);
   }
   git(root, "init", "-q", "--bare", "-b", "main", bare);
-  let built = null;
-  if (fresh) {
-    // A baseline with part of the history, as init --history-since builds it.
-    const fgit = (args, opts = {}) => execFileSync("git", args, { cwd: opts.cwd, encoding: "utf8", env }).trim();
-    built = buildHistory(fgit, source, git(source, "rev-parse", "HEAD~1"), git(source, "rev-parse", "HEAD"));
-    git(source, "push", "-q", bare, `${built.head}:refs/heads/main`);
-  } else git(source, "push", "-q", bare, "main");
+  git(source, "push", "-q", bare, "main");
   // A receipt note on the baseline's head, as atelier merge pushes it.
   const other = join(root, "other");
   git(root, "clone", "-q", bare, other);
   git(other, "notes", "--ref=atelier", "add", "-m", "Atelier receipt for t1", git(bare, "rev-parse", "main"));
   git(other, "push", "-q", "origin", "refs/notes/atelier:refs/notes/atelier");
-  const f = { root, env, git, bare, source, built, other, seen: [] };
+  const f = { root, env, git, bare, source, other, seen: [] };
   if (http) {
     let n = 0;
     f.http = { valid: new Set(), sent: [], mint() { const token = `base-secret-http-${++n}`; this.valid = new Set([token]); return token; } };
@@ -99,15 +92,14 @@ export async function serve(t, f) {
       if (req.url === "/api/version") body = { capabilities: SERVER_CAPABILITIES };
       else if (req.url === "/api/projects") body = [{ name: "demo", title: "Demo" }];
       else if (req.method === "GET" && req.url === "/api/projects/demo") body = { project: { name: "demo", title: "Demo", repo: "demo", policy: { protected: [], ...(f.noIdentity ? {} : { commitIdentity: IDENTITY }) } }, items: [], events: [] };
-      else if (req.method === "POST" && req.url === "/api/projects/demo/baseline-token") body = f.http
-        ? { remote: `${f.url}/git/baseline.git`, token: f.http.mint(), tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" }
-        : { remote: f.bare, token: TOKEN, tokenId: "tok1", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" };
+      else if (req.method === "POST" && req.url === "/api/projects/demo/git-token") body = f.http
+        ? { kind: "read", remote: `${f.url}/git/baseline.git`, token: f.http.mint(), expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repository: "server", ...(raw && JSON.parse(raw).item ? { branch: "t/2", into: "main" } : {}) }
+        : { kind: "read", remote: f.bare, token: TOKEN, expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repository: "server", ...(raw && JSON.parse(raw).item ? { branch: "t/2", into: "main" } : {}) };
       else if (req.method === "GET" && req.url === "/api/projects/demo/mode") body = { mode: "fast", line: "demo is in fast mode", reason: "a test", ready: [], landed: [] };
       else if (req.method === "PUT" && req.url === "/api/projects/demo") body = { ok: true };
       else if (req.method === "GET" && req.url === "/api/projects/demo/sessions") body = [];
       else if (req.method === "POST" && req.url === "/api/projects/demo/sessions") body = { actor: "owner", at: "2026-10-18T00:00:00.000Z", data: JSON.parse(raw) };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t2") body = { item: { id: "t2", title: "Two", state: "accepted", head: f.accepted, acceptedHead: f.accepted, owner: "codex/test" }, policy: { commitIdentity: IDENTITY, checks: [], protected: [] }, events: [], evidence: [], reviews: [], gate: {} };
-      else if (req.method === "POST" && req.url === "/api/projects/demo/items/t2/read-token") body = { remote: f.bare, token: TOKEN };
       // The checkout lease merge takes and releases (G9), always free here.
       else if (req.method === "POST" && req.url === "/api/projects/demo/checkout-lease") body = {};
       else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }

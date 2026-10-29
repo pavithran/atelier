@@ -21,7 +21,7 @@ function setup(L: Ledger, name: string) {
   L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() }, "owner");
   L.newItem("Decision waiting", ["src/**"], "owner");
   L.claim("t1", A);
-  L.setFork("t1", `${name}--t1`, H0, A);
+  L.setWorkspace("t1", `${name}--t1`, H0, A);
   L.recordPush("t1", A, H1, H1);
 }
 function evidence(L: Ledger, head = H1) {
@@ -113,11 +113,11 @@ it("a review that clears a rejection notifies through the review route", async (
       await submit(L, "notify-review");
       expect(send).not.toHaveBeenCalled();
       const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
-      const ARTIFACTS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
+      const REPOS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Repos;
       const response = await worker.fetch(new Request("https://atelier.test/api/projects/notify-review/items/t1/review", {
         method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
         body: JSON.stringify({ head: H1, criteria: NO_CRITERIA, approve: true }),
-      }), { ...env, LEDGER, ARTIFACTS, ATELIER_TOKEN: "test-token" } as typeof env);
+      }), { ...env, LEDGER, REPOS, ATELIER_TOKEN: "test-token" } as typeof env);
       expect(response.status).toBe(200);
       expect(send).toHaveBeenCalledTimes(1);
     } finally { send.mockRestore(); }
@@ -145,11 +145,11 @@ it("local check results notify through the evidence route", async () => {
       await submit(L, "notify-local");
       expect(send).not.toHaveBeenCalled();
       const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
-      const ARTIFACTS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
+      const REPOS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Repos;
       const response = await worker.fetch(new Request("https://atelier.test/api/projects/notify-local/items/t1/evidence", {
         method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": A, "content-type": "application/json" },
         body: JSON.stringify({ kind: "check", head: H1, claim: "npm test", passed: true, changedPaths: ["src/a.ts"] }),
-      }), { ...env, LEDGER, ARTIFACTS, ATELIER_TOKEN: "test-token" } as typeof env);
+      }), { ...env, LEDGER, REPOS, ATELIER_TOKEN: "test-token" } as typeof env);
       expect(response.status).toBe(200);
       expect(send).toHaveBeenCalledTimes(1);
     } finally { send.mockRestore(); }

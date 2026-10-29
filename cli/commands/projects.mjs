@@ -91,7 +91,7 @@ export default async function projectsCommand() {
         ? `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped${settings.length ? ` (it held: ${settings.join(", ")})` : ""}, its private files joined to ${r.to}'s.`
         : `The local config entry ${r.from} is now ${r.to}.`;
     }
-    console.log(`${r.from} is now ${r.to} on ${server()}. Its Ledger, baseline ${r.project.repo} and every fork stay where they are. ${local}`);
+    console.log(`${r.from} is now ${r.to} on ${server()}. Its Ledger, baseline ${r.project.repo} and every branch stay where they are. ${local}`);
     if (release && r.released !== r.from) {
       // A server from before t774 ignores the field: the project was renamed and still answers to the old name.
       console.error(`${r.from} was renamed, but this server did not release the name (it predates --release-name), so ${r.from} still reaches the project. Update the server before creating a project under ${r.from}.`);
@@ -117,5 +117,5 @@ export default async function projectsCommand() {
     delete cfg.projects[name];
     saveConfig(cfg);
   }
-  console.log(`${name} removed from the project index and local config.${dropped} The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the developer.`);
+  console.log(`${name} removed from the project index and local config.${dropped} The project's repository and its Ledger data are retained. Deleting a repository requires a separate, deliberate action by the developer.`);
 }

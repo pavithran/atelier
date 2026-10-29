@@ -202,7 +202,7 @@ it("approve routes a reviewer only to a model a live runner offers for the revie
   expect(after.parts[0].route?.reviewer?.actor).toBe("claude-code/opus-5.5");
 });
 
-it("the owner approves by hash, reroutes and retries a part, and a stop revokes the write tokens of what it closes", async () => {
+it("the owner approves by hash, reroutes and retries a part, and a stop clears the write tokens of what it closes", async () => {
   const name = "plan-routes-approve";
   const id = await started(name);
   const L = ledger(name);
@@ -234,17 +234,14 @@ it("the owner approves by hash, reroutes and retries a part, and a stop revokes 
 
   // Part a is claimed and holds a write token; the plan item holds none.
   const claim = await L.claim(a.id, "zcode/glm-5.3", RUNNER);
-  await L.setFork(a.id, `${name}--${a.id}`, H0, "zcode/glm-5.3");
-  expect(await L.recordToken(a.id, "zcode/glm-5.3", claim.generation, claim.replaces, "token-a")).toBe(true);
-  const revoked: [string, string][] = [];
-  const ARTIFACTS = {
-    get: async (repo: string) => ({ revokeToken: async (tokenId: string) => { revoked.push([repo, tokenId]); return true; }, [Symbol.dispose]() {} }),
-  } as unknown as Artifacts;
-  const stopped = await call("POST", `/projects/${name}/items/${id}/plan/stop`, "owner", { note: "changed course" }, TOKEN, { ...testEnv, ARTIFACTS } as typeof env);
+  await L.setWorkspace(a.id, `${name}--${a.id}`, H0, "zcode/glm-5.3");
+  expect(await L.recordToken(a.id, "zcode/glm-5.3", claim.generation, claim.replaces, "git:token-a")).toBe(true);
+  const stopped = await call("POST", `/projects/${name}/items/${id}/plan/stop`, "owner", { note: "changed course" }, TOKEN, testEnv);
   expect(stopped.status).toBe(200);
   const after = await stopped.json() as PlanView;
   expect([after.item.state, ...after.parts.map((p) => p.state)]).toEqual(["abandoned", "abandoned", "abandoned"]);
-  expect(revoked).toEqual([[`${name}--${a.id}`, "token-a"]]);
+  // The part's task grant counts only while the Ledger records it, so
+  // clearing the record revokes it.
   expect(await L.tokenId(a.id)).toBeNull();
 });
 
@@ -314,7 +311,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
 
   // Part a lands, and b's brief shows it as it landed, with its head.
   const H1 = "1".repeat(40);
-  await L.setFork(a.id, `${name}--${a.id}`, H0, actor);
+  await L.setWorkspace(a.id, `${name}--${a.id}`, H0, actor);
   await L.recordPush(a.id, actor, H1, H1);
   await L.addEvidence({ itemId: a.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: actor, at: new Date().toISOString(), changedPaths: ["src/a/one.ts"] });
   await L.submit(a.id, actor);
@@ -332,7 +329,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   // its builder (the rework transition); the next brief is rework, quoting
   // both the findings and the failing check's output.
   const H2 = "2".repeat(40);
-  await L.setFork(b.id, `${name}--${b.id}`, H1, actorB);
+  await L.setWorkspace(b.id, `${name}--${b.id}`, H1, actorB);
   await L.recordPush(b.id, actorB, H2, H2);
   await L.addEvidence({ itemId: b.id, claim: "npm test", grade: "observed", head: H2, passed: false, by: actorB, at: new Date().toISOString(), changedPaths: ["src/b/one.ts"], outputTail: "3 tests failed in src/b/one.ts" });
   // The reviewer is a model other than b's builder.

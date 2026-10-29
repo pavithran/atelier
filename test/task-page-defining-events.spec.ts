@@ -99,12 +99,12 @@ it("an item with few events is drawn from the same events as before", async () =
 const TOKEN = "defining-pages-owner";
 const spy = () => {
   const opened: string[] = [], read: string[] = [];
-  const ARTIFACTS = { async get(name: string) { opened.push(name); return { readCommit: async (h: string) => { read.push(h); return null; }, [Symbol.dispose]() {} }; } };
-  return { opened, read, env: { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as unknown as typeof env };
+  const REPOS = { async get(name: string) { opened.push(name); return { readCommit: async (h: string) => { read.push(h); return null; }, [Symbol.dispose]() {} }; } };
+  return { opened, read, env: { ...env, ATELIER_TOKEN: TOKEN, REPOS } as unknown as typeof env };
 };
 const get = async (path: string, bindings: typeof env, cookie: string) => (await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie } }), bindings)).text();
 // What each page says of a diff it could not read.
-const UNREAD = { task: "The diff could not be read from Artifacts just now", decisions: "Could not be read just now" };
+const UNREAD = { task: "The diff could not be read from the repository just now", decisions: "Could not be read just now" };
 
 it("the task page and the decisions page diff a merged task from its merge beyond the window", async () => {
   const name = "defining-pages-merged";

@@ -146,7 +146,7 @@ test("a merge-main job whose harness hits a limit while resolving conflicts is r
 
 const H0 = "0".repeat(40), H1 = "a".repeat(40);
 const claimed = {
-  item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], fork: "p--t21", head: H1 }, head: H1,
+  item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], workspace: "p--t21", head: H1 }, head: H1,
   need: { needed: true, reason: "every part is reviewed", head: H1, kind: "review", basis: "part", changeClass: "coordinated", changedPaths: ["src/review/needed.ts"], outOfScope: [], checks: [{ claim: "npm test", grade: "observed", passed: true, where: "sandbox" }], round: 1, previous: [], previousReviewer: null, lapsed: [] },
   plan: { goal: "Automatic cross-family review", part: { key: "rules", title: "Review rules", kind: "build", taskKind: "feature", scope: ["src/review/**"], dependsOn: [], provides: [], uses: [], brief: "Write the rules.", acceptance: ["Tests pass"], tests: [], size: "S" } },
   events: [], owner: "owner", readToken: { remote: "https://artifacts.example/p--t21", token: "read-token", defaultBranch: "main" },
