@@ -90,10 +90,10 @@ import { baseReadGrant, taskReadGrant } from "./read-grant.mjs";
 // caught by hand), and the number then names the routes of either side
 // alone while the merged CLI calls both. Wherever the workspace's HEAD
 // holds main the landing therefore compares src/route-level.ts at the
-// task's fork point, at the task's head before the merge and at main's
+// task's branch point, at the task's head before the merge and at main's
 // head — after its own merge, and on a rerun whose conflicted merge the
 // owner resolved by hand, which finds main already merged and would else
-// skip the comparison — and where each side raised it from the fork
+// skip the comparison — and where each side raised it from the branch
 // point, raises the merged level to main's plus the task's own raise,
 // commits that as its own commit and says to deploy before the next
 // landing, so each number keeps naming the routes of the CLI that
@@ -1378,7 +1378,7 @@ export async function landStep(io, record, kind, argv, cwd, data = {}) {
   const quiet = kind === "accept" ? { write() {} } : undefined;
   const run = () => (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env, out: quiet, err: quiet });
   let r = await run();
-  // The merge step's fetch can fail on the server's side (an Artifacts 5xx)
+  // The merge step's fetch can fail on the server's side (a 5xx)
   // or answer a revision other than the approved one. The accept is already
   // held and the merge resumes from its journal, so the landing runs the
   // merge again rather than hand it back: a 5xx up to three more times, a
@@ -1388,7 +1388,7 @@ export async function landStep(io, record, kind, argv, cwd, data = {}) {
     while (!r.passed) {
       const text = r.output ?? "";
       if (/fetched revision differs from the approval/.test(text) && mismatch < 1) mismatch++;
-      else if (/\b(HTTP |status |error: )?5\d\d\b/.test(text) && /fetch|Artifacts|HTTP/i.test(text) && server < 3) { server++; await (io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))))(1000 * server); }
+      else if (/\b(HTTP |status |error: )?5\d\d\b/.test(text) && /fetch|HTTP/i.test(text) && server < 3) { server++; await (io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))))(1000 * server); }
       else break;
       r = await run();
     }
@@ -1589,8 +1589,8 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
     // before Git merges anything (t471); a runner's merge goes on and
     // hands them to the builder (moved.port).
     movedNote = await compareMoved(io, { dir, id, name, record, moved, t0, mainHead });
-    const forkPoint = await git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
-    fromMain = (await git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir })).split("\n").filter(Boolean);
+    const branchPoint = await git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
+    fromMain = (await git(["rev-list", "--max-count=200", `${branchPoint}..FETCH_HEAD`], { cwd: dir })).split("\n").filter(Boolean);
     // The merge goes through the pipeline (cli/merge-pipeline.mjs): record
     // files unite by key, and outputs the project declares as generated are
     // regenerated once every source has merged, never resolved by hand or
@@ -1686,11 +1686,11 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
     mergedIn = r.state === "merged";
     print(`Merged main at ${short(mainHead)} into ${id}'s workspace (${fromMain.length} commit${fromMain.length === 1 ? "" : "s"} from main).`);
   }
-  // Where main and the task each raised the route level from the fork
+  // Where main and the task each raised the route level from the branch
   // point, the merge was clean at the number they share — both sides
   // wrote the same line — so the merged tree carries both sides' routes
   // under a number that names either side's alone (t248). The merged
-  // level is compared at the fork point, at the task's head before the
+  // level is compared at the branch point, at the task's head before the
   // merge and at main's head, and raised to main's plus the task's own
   // raise, its own commit, so the number the merged CLI reports keeps
   // meaning the routes it calls. The comparison runs wherever the
@@ -1723,9 +1723,9 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
   while (stepped < line.length && await holdsMain(line[stepped])) stepped++;
   const taskHead = stepped > 0 && stepped < line.length ? line[stepped] : null;
   const based = taskHead ? await git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
-  const forkPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
-  if (taskHead && forkPoint && forkPoint !== mainHead) {
-    const baseLevel = await levelAt(forkPoint), taskLevel = await levelAt(taskHead), mainLevel = await levelAt(mainHead), mergedLevel = await levelAt("HEAD");
+  const branchPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
+  if (taskHead && branchPoint && branchPoint !== mainHead) {
+    const baseLevel = await levelAt(branchPoint), taskLevel = await levelAt(taskHead), mainLevel = await levelAt(mainHead), mergedLevel = await levelAt("HEAD");
     if (baseLevel !== null && taskLevel > baseLevel && mainLevel > baseLevel && mergedLevel !== null) {
       const rightLevel = mainLevel + (taskLevel - baseLevel);
       if (mergedLevel < rightLevel) {
@@ -1735,7 +1735,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
         // level (t584): when neither side added a declaration that carries
         // one, the numbers say nothing about the capabilities, and the merge
         // stands as it is.
-        const levelAdded = async (rev) => /^\+.*\blevel\s*:/m.test((await git(["diff", "-U0", forkPoint, rev, "--", "src/capability-declarations.ts"], { cwd: dir, allowFail: true })).stdout ?? "");
+        const levelAdded = async (rev) => /^\+.*\blevel\s*:/m.test((await git(["diff", "-U0", branchPoint, rev, "--", "src/capability-declarations.ts"], { cwd: dir, allowFail: true })).stdout ?? "");
         if (named && !(await levelAdded(taskHead)) && !(await levelAdded(mainHead))) {
           print(`main and ${id} each raised the route level from ${baseLevel}, and neither added a capability declaration with a level, so the merged level ${mergedLevel} stands.`);
         } else {

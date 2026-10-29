@@ -167,7 +167,7 @@ export function localTaskLine(t) {
   if (t.error) return `${t.id}  its workspace cannot be read: ${t.error}`;
   const said = [];
   if (t.uncommitted) said.push(`${t.uncommitted} ${t.uncommitted === 1 ? "path" : "paths"} with uncommitted changes`);
-  if (t.unpushed) said.push(`${t.unpushed} ${t.unpushed === 1 ? "commit" : "commits"} not pushed to its fork`);
+  if (t.unpushed) said.push(`${t.unpushed} ${t.unpushed === 1 ? "commit" : "commits"} not pushed to its branch`);
   if (t.unpushed === null) said.push("its unpushed commits cannot be counted");
   if (t.merging) said.push(`a merge is in progress${t.conflicts?.length ? `, in conflict: ${t.conflicts.join(", ")}` : ""}`);
   if (t.commitMessage) said.push("COMMIT_MSG.txt waiting to be committed");

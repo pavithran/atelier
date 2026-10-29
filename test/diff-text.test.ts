@@ -29,7 +29,7 @@ const diff: ItemDiff = {
 
 test("renderDiffText: git's shape, with a header naming the item, base and head", () => {
   const text = renderDiffText("t41", diff);
-  assert.equal(text.split("\n")[0], `# diff of t41 from ${H0} (base) to ${H2} (head), as Atelier read it from Artifacts`);
+  assert.equal(text.split("\n")[0], `# diff of t41 from ${H0} (base) to ${H2} (head), as Atelier read it from the repository`);
   assert.deepEqual(text.split("\n").slice(1, 9), [
     "diff --git a/src/review/needed.ts b/src/review/needed.ts",
     "@@ -3,2 +3,2 @@",
@@ -55,5 +55,5 @@ test("renderDiffText: says when more changed files are not listed", () => {
 
 test("renderDiffText: a change with no files is the header alone", () => {
   const text = renderDiffText("t41", { base: H0, head: H2, files: [], truncated: false });
-  assert.equal(text, `# diff of t41 from ${H0} (base) to ${H2} (head), as Atelier read it from Artifacts`);
+  assert.equal(text, `# diff of t41 from ${H0} (base) to ${H2} (head), as Atelier read it from the repository`);
 });

@@ -29,7 +29,7 @@ async function rejectedPart(name: string, file: string) {
   await L.setProject(record, "owner");
   const { item } = await L.newPlan("Ship it", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship it", parts: [part] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -38,7 +38,7 @@ async function rejectedPart(name: string, file: string) {
   const d = (await L.item(partId)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, HEAD, HEAD);
   const ev: Evidence = { itemId: partId, claim: "npm test", grade: "observed", head: HEAD, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a/x.ts"] };
   await L.addEvidence(ev);

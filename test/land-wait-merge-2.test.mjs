@@ -142,7 +142,7 @@ test("a conflict stops the landing at merge-main with the files named, nothing p
   assert.match(r.output, /atelier dispatch t1 --job merge-main/);
   // Nothing was pushed or merged, the workspace is as it was, and the
   // checkout holds no merge of its own.
-  assert.equal(f.forkHead("t1"), before.fork);
+  assert.equal(f.forkHead("t1"), before.workspace);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
   assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.baseline);

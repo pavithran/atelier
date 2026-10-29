@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { joinMainMerges } from "../cli/workspace-fork.mjs";
+import { joinMainMerges } from "../cli/workspace-branch.mjs";
 
 // A claim that finds the fork and the workspace diverged joins the fork's
 // commits when they only merge main (t264's lander pushed one), and leaves

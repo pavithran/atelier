@@ -25,7 +25,7 @@ function owner(actor: string, ownerActor: string): void {
   if (actor !== ownerActor) throw new RuleError("not_project_owner", "only the developer approves, withdraws or runs a protected action", 403, "only the developer can: atelier approve ACTION --head SHA");
 }
 
-// The checks come before Artifacts is read, so a refusal for the actor or the
+// The checks come before the repository is read, so a refusal for the actor or the
 // request's shape costs no read and names its own reason.
 async function approve(L: LedgerStub, body: Record<string, unknown>, actor: string, ownerActor: string, onMainLine: MainLine, acting: string | null = null) {
   owner(actor, ownerActor);

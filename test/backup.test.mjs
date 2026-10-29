@@ -179,7 +179,7 @@ test("a backup of a server under writes restores into fresh directories with the
   const hooks = join(root, "no-hooks");
   mkdirSync(hooks);
   const dataDir = join(root, "data"), reposDir = join(root, "repos");
-  const server = await startServer({ env: "staging", dataDir, reposDir, hooksDir: hooks, host: "127.0.0.1", secretsDir: serverSecrets, bindings: { ARTIFACTS: artifacts } });
+  const server = await startServer({ env: "staging", dataDir, reposDir, hooksDir: hooks, host: "127.0.0.1", secretsDir: serverSecrets, bindings: { REPOS: artifacts } });
   const stub = await s3stub();
   const keys = generateIdentity();
   const keyFile = join(root, "backup.key");
@@ -370,7 +370,7 @@ test("a backup of a server under writes restores into fresh directories with the
     // The restored server against the live one: the project, every restored
     // item and event the same as the source's at the backup's moment, and as
     // many as the manifest counted; the refs those of the bundle.
-    restored = await startServer({ env: "staging", dataDir: newData, reposDir: newRepos, hooksDir: hooks, host: "127.0.0.1", secretsDir: serverSecrets, bindings: { ARTIFACTS: artifacts } });
+    restored = await startServer({ env: "staging", dataDir: newData, reposDir: newRepos, hooksDir: hooks, host: "127.0.0.1", secretsDir: serverSecrets, bindings: { REPOS: artifacts } });
     const [src, dst] = await Promise.all([api(server, "GET", "/projects/demo"), api(restored, "GET", "/projects/demo")].map(async (p) => (await p).json()));
     assert.deepEqual(dst.project, src.project);
     const want = manifest.projects[key];

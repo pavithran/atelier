@@ -71,7 +71,7 @@ it("100 simultaneous claims of 100 tasks all succeed, one holder, one branch and
   const items = await L.items();
   for (let i = 0; i < 100; i++) {
     const item = items.find((it) => it.id === `t${i + 1}`)!;
-    expect({ owner: item.owner, state: item.state, fork: item.fork, base: item.base }).toEqual({ owner: actors[i], state: "claimed", fork: `${name}/t/${i + 1}`, base: sha });
+    expect({ owner: item.owner, state: item.state, workspace: item.workspace, base: item.base }).toEqual({ owner: actors[i], state: "claimed", workspace: `${name}/t/${i + 1}`, base: sha });
     expect(await liveGrants(name, item.id)).toEqual([await L.tokenId(item.id)]);
   }
 }, 60_000);
@@ -115,7 +115,7 @@ it("a claim on a project whose main has no commit answers 409 empty_branch, leav
   const res = await callers[0]("POST", claim("t1"));
   expect(res.status).toBe(409);
   expect(((await res.json()) as { error: string }).error).toBe("empty_branch");
-  expect(await L.item("t1")).toMatchObject({ owner: null, state: "open", fork: null });
+  expect(await L.item("t1")).toMatchObject({ owner: null, state: "open", workspace: null });
   expect(await liveGrants(name, "t1")).toEqual([]);
 });
 
@@ -143,12 +143,12 @@ it("t496: an abandoned dispatched task stays closed on every poll and retry", as
   expect(await liveGrants(name, "t1")).toEqual([]);
 }, 30_000);
 
-// ── what still reads env.ARTIFACTS, and the catch-all (t761, t339) ─────────
+// ── what still reads env.REPOS, and the catch-all (t761, t339) ─────────
 
 afterEach(() => vi.restoreAllMocks());
 
 const H0 = "0".repeat(40);
-const artifactsError = (code: string, message: string) => Object.assign(new Error(message), { code });
+const repoError = (code: string, message: string) => Object.assign(new Error(message), { code });
 // `get` fails the nth repository handle asked for, before any call on it;
 // `inProgress` makes each repository's first reads answer FORK_IN_PROGRESS.
 type Faults = { get?: (n: number) => boolean; inProgress: number };
@@ -157,19 +157,19 @@ function fakeArtifacts(faults: Faults) {
   let gets = 0;
   const artifacts = {
     get: async (repo: string) => {
-      if (faults.get?.(++gets)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
-      const known = () => { const r = repos.get(repo); if (!r) throw artifactsError("NOT_FOUND", `repo not found: ${repo}`); return r; };
+      if (faults.get?.(++gets)) throw repoError("UNAVAILABLE", "repository service unavailable");
+      const known = () => { const r = repos.get(repo); if (!r) throw repoError("NOT_FOUND", `repo not found: ${repo}`); return r; };
       return {
         log: async () => {
           const r = known();
-          if (r.reads++ < faults.inProgress) throw artifactsError("FORK_IN_PROGRESS", "fork in progress");
+          if (r.reads++ < faults.inProgress) throw repoError("FORK_IN_PROGRESS", "fork in progress");
           return [{ hash: H0 }];
         },
         info: async () => { known(); return { remote: `https://git.test/${repo}.git`, defaultBranch: "main", description: null }; },
         [Symbol.dispose]() {},
       };
     },
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   return { artifacts, repos };
 }
 
@@ -184,7 +184,7 @@ async function artifactsProject(name: string, faults: Faults, hold = true) {
   return fa;
 }
 
-const get = (artifacts: Artifacts, path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
+const get = (artifacts: Repos, path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), { ...env, ATELIER_TOKEN: TOKEN, REPOS: artifacts } as typeof env);
 
 it("a request that fails for an unforeseen reason logs the error's code and message, not only its stack", async () => {
   const errors: string[] = [];

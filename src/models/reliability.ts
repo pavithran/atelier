@@ -78,7 +78,7 @@ export interface KindMeasures {
   checkMismatches: number;    // reported checks an observed check contradicted at the same head
   outOfScope: number;         // submissions whose changed paths ran outside the task's scope
   runs: Record<RunOutcome, number>;
-  integrations: number;       // pushes that folded a moved main into the task's fork
+  integrations: number;       // pushes that folded a moved main into the task's branch
 }
 
 // The raw accumulation of one kind of work, filled as the events are replayed
@@ -146,7 +146,7 @@ export interface ModelReliability {
   // Builder honesty.
   checkMismatches: number;        // reported checks an observed check contradicted at the same head
   outOfScope: number;             // submissions whose changed paths ran outside the task's scope
-  // Integration cost: pushes that folded a moved main into the task's fork.
+  // Integration cost: pushes that folded a moved main into the task's branch.
   integrations: Cause[];          // who pushed each, with the task
   // The same measures by kind of work, for the comparison table.
   kinds: KindMeasures[];
@@ -390,7 +390,7 @@ function replay(
         pushed.add(item);
         recordTiming(claim.model, k, "claimToPush", seconds(claim.at, event.at));
       }
-      // A push that folded a moved main into the fork, as `atelier update`
+      // A push that folded a moved main into the branch, as `atelier update`
       // rebases onto the baseline: the integration cost of the task.
       if (str(data.rebasedFrom)) {
         const pusher = agentOnly(holder?.serving ?? lastBuilder.get(item));

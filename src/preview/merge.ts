@@ -1,5 +1,5 @@
 // Would this task merge cleanly into main as it is now? A three-way
-// comparison, read only: the fork point (base), main's current head (ours)
+// comparison, read only: the branch point (base), main's current head (ours)
 // and the task's head (theirs). A path changed on one side only merges; a
 // path changed the same way on both sides merges; a path changed differently
 // on both sides merges only when the changes touch separate lines of the
@@ -25,7 +25,7 @@ export interface Mergeability {
   both: string[];               // paths both sides changed, conflicting or not
   regenerable?: string[];       // declared generated outputs the merge regenerates (not conflicts)
   generators?: string[];        // the generators that would regenerate them
-  ours: number;                 // paths changed on main since the fork point
+  ours: number;                 // paths changed on main since the work point
   theirs: number;               // paths the task changed
 }
 
@@ -270,30 +270,30 @@ export function overlaps(tasks: { id: string; paths: string[] }[]): { a: string;
 }
 
 // Where a task stands against main as it is now: how far main has moved since
-// the task's fork point, and whether the task would merge. Artifacts lists
+// the task's branch point, and whether the task would merge. The repository lists
 // main's first-parent line only, so a merged task counts once, as its merge.
 //
-// The fork point is the newest commit on main's first-parent line that the
+// The branch point is the newest commit on main's first-parent line that the
 // workspace's history holds (mergedHistory, mergeBase). The agent shapes
 // that history, so this preview is advisory: it says what git would do
-// with the history the fork presents. What the task changes is measured
+// with the history the branch presents. What the task changes is measured
 // elsewhere, against main's head (see againstMain in src/diff.ts), and this
 // preview never feeds the gate.
 export interface MainPreview {
   head: string;                 // main's head now
-  ahead: number;                // commits on main's first-parent line since the fork point
-  aheadCapped: boolean;         // the fork point is older than the log read; `ahead` is a floor
+  ahead: number;                // commits on main's first-parent line since the work point
+  aheadCapped: boolean;         // the work point is older than the log read; `ahead` is a floor
   merge: Mergeability;
 }
 
 const MAIN_LOG = 1000;
-const FORK_LOG = 500;
+const WORK_LOG = 500;
 
-// The commits in main's log that the fork point cannot reach. Artifacts gives
+// The commits in main's log that the branch point cannot reach. The repository gives
 // the first-parent line, so each merge counts once and the commits it brought
-// in are not counted. When the log was cut short and the fork point is not in
-// it, the count is a floor. When the whole log was read and the fork point is
-// not in it, the fork point is not on main and there is no count.
+// in are not counted. When the log was cut short and the branch point is not in
+// it, the count is a floor. When the whole log was read and the branch point is
+// not in it, the branch point is not on main and there is no count.
 export function commitsSince(log: { hash: string; parents?: string[] }[], base: string, cut: boolean): { ahead: number | null; capped: boolean } {
   const byHash = new Map(log.map((c) => [c.hash, c]));
   if (!byHash.has(base)) return cut ? { ahead: log.length, capped: true } : { ahead: null, capped: false };
@@ -308,7 +308,7 @@ export function commitsSince(log: { hash: string; parents?: string[] }[], base: 
   return { ahead: log.length - reached.size, capped: false };
 }
 
-// The workspace's history as the fork point is looked for in it: the
+// The workspace's history as the branch point is looked for in it: the
 // first-parent line read from its head, and behind each further parent a
 // merge on it names, the first-parent chain from that parent, read the same
 // way and in turn. A plan's branch takes main two merges deep: the
@@ -316,13 +316,13 @@ export function commitsSince(log: { hash: string; parents?: string[] }[], base: 
 // is a merge whose second parent is main (t274), so main's newer commits are
 // found only behind a merge's second parent. A chain stops at a commit main's
 // first-parent line has, since what lies behind it is older main, and at a
-// commit already read; the reads stop at FORK_READS chains or FORK_COMMITS
+// commit already read; the reads stop at WORK_READS chains or WORK_COMMITS
 // commits, with what was found by then.
-const FORK_READS = 20, FORK_COMMITS = 5000;
+const WORK_READS = 20, WORK_COMMITS = 5000;
 type Logged = { hash: string; parents?: string[] };
-async function mergedHistory(fork: ArtifactsRepo, forkLog: Logged[], mainLog: Logged[]): Promise<Logged[]> {
+async function mergedHistory(work: GitRepo, workLog: Logged[], mainLog: Logged[]): Promise<Logged[]> {
   const main = new Set(mainLog.map((c) => c.hash));
-  const out: Logged[] = [...forkLog];
+  const out: Logged[] = [...workLog];
   const seen = new Set<string>();
   const starts: string[] = [];
   const walk = (page: Logged[]) => {
@@ -333,33 +333,33 @@ async function mergedHistory(fork: ArtifactsRepo, forkLog: Logged[], mainLog: Lo
       for (const p of (c.parents ?? []).slice(1)) if (!main.has(p) && !seen.has(p)) starts.push(p);
     }
   };
-  walk(forkLog);
-  for (let reads = 0; starts.length && reads < FORK_READS && seen.size < FORK_COMMITS; reads++) {
+  walk(workLog);
+  for (let reads = 0; starts.length && reads < WORK_READS && seen.size < WORK_COMMITS; reads++) {
     const start = starts.shift()!;
     if (seen.has(start)) { reads--; continue; }
-    const page = await fork.log({ ref: start, limit: FORK_LOG });
+    const page = await work.log({ ref: start, limit: WORK_LOG });
     out.push(...page);
     walk(page);
   }
   return out;
 }
 
-// Null when either repository is empty, or when the fork's history meets
-// none of main's first-parent line within the logs read: there is then no fork
+// Null when either repository is empty, or when the branch's history meets
+// none of main's first-parent line within the logs read: there is then no branch
 // point to preview from, and the page says the preview could not be read.
-export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<MainPreview | null> {
-  using baseline = await artifacts.get(baselineRepo);
-  using fork = await artifacts.get(workspaceRepo);
-  const [log, forkLog] = await Promise.all([baseline.log({ limit: MAIN_LOG }), fork.log({ limit: FORK_LOG })]);
-  const head = log[0], theirs = forkLog[0];
+export async function previewAgainstMain(repos: Repos, baselineRepo: string, workspaceRepo: string): Promise<MainPreview | null> {
+  using baseline = await repos.get(baselineRepo);
+  using work = await repos.get(workspaceRepo);
+  const [log, workLog] = await Promise.all([baseline.log({ limit: MAIN_LOG }), work.log({ limit: WORK_LOG })]);
+  const head = log[0], theirs = workLog[0];
   if (!head || !theirs) return null;
-  const base = mergeBase(await mergedHistory(fork, forkLog, log), log.map((c) => c.hash));
+  const base = mergeBase(await mergedHistory(work, workLog, log), log.map((c) => c.hash));
   if (!base) return null;
   const baseTree = log.find((c) => c.hash === base)!.treeHash;
   const { ahead, capped } = commitsSince(log, base, log.length >= MAIN_LOG);
   if (ahead === null) return null;
   const merge = head.hash === base
     ? { clean: true, conflicts: [], both: [], ours: 0, theirs: 0 }
-    : await mergeability(repoReader(baseline), repoReader(fork), baseTree, head.treeHash, theirs.treeHash);
+    : await mergeability(repoReader(baseline), repoReader(work), baseTree, head.treeHash, theirs.treeHash);
   return { head: head.hash, ahead, aheadCapped: capped, merge };
 }

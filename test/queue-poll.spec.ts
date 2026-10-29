@@ -78,7 +78,7 @@ it("queued reads the waiting tasks, their push actors and their core-file holds 
   // A live item holding the core file, and one merged that holds nothing.
   const live = await L.newItem("Live work", ["src/**"], "owner");
   await L.claim(live.id, A);
-  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
+  await L.setWorkspace(live.id, `${name}--${live.id}`, H0, A);
   // Dispatched tasks: one the live item holds, one elsewhere, and one that
   // was claimed, pushed to and released, so it carries push actors.
   const held = await L.newItem("Core edit", ["src/ledger.ts"], "owner");
@@ -86,7 +86,7 @@ it("queued reads the waiting tasks, their push actors and their core-file holds 
   const pushed = await L.newItem("Pushed then released", ["docs/a.md"], "owner");
   for (const id of [held.id, free.id, pushed.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   await L.claim(pushed.id, "opencode/glm-5.3", { runner: "home:studio", kind: "home" });
-  await L.setFork(pushed.id, `${name}--${pushed.id}`, H0, "opencode/glm-5.3");
+  await L.setWorkspace(pushed.id, `${name}--${pushed.id}`, H0, "opencode/glm-5.3");
   await L.recordPush(pushed.id, "opencode/glm-5.3", H1, H1);
   await L.release(pushed.id, "opencode/glm-5.3", "handing back");
 
@@ -123,7 +123,7 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   // would itself be refused (t405), so the overlap arises only this way.
   for (const id of [held.id, refused.id, free.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   await L.claim(live.id, A);
-  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
+  await L.setWorkspace(live.id, `${name}--${live.id}`, H0, A);
   // A live runner offers opencode, and has failed the free task twice; a
   // fourth task names a model no live runner offers.
   const now = new Date().toISOString();

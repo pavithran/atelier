@@ -22,7 +22,7 @@ const blocker: Finding = { file: "src/a.ts", line: 3, severity: "blocking", text
 
 const item = (over: Partial<Item> = {}): Item => ({
   id: "t21", title: "Rows", scope: ["src/**"], state: "submitted", owner: BUILDER,
-  fork: "p--t21", base: H0, head: H1, acceptedHead: null, pushActors: [BUILDER],
+  workspace: "p--t21", base: H0, head: H1, acceptedHead: null, pushActors: [BUILDER],
   createdAt: T, updatedAt: T, lastPushAt: T, ...over,
 });
 const policy: ProjectPolicy = { checks: ["npm test"], protected: [] };

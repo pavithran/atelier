@@ -53,13 +53,13 @@ test("a clean landing is reviewed without the lease, then takes it to merge the 
   assert.equal(r.status, 0, r.output);
   // Nothing was merged into the workspace or pushed to the task's branch (G2).
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
-  assert.equal(f.forkHead("t1"), before.fork);
+  assert.equal(f.forkHead("t1"), before.workspace);
   // The registered checkout and the baseline hold the merge commit: main's
   // tip as its first parent, the reviewed head as its second, and the
   // regenerated fixtures in its own tree.
   const merged = git(f.checkout, "rev-parse", "HEAD");
   const parents = git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ");
-  assert.equal(parents[1], before.checkout); assert.equal(parents[2], before.fork);
+  assert.equal(parents[1], before.checkout); assert.equal(parents[2], before.workspace);
   assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), merged);
   assert.equal(git(f.checkout, "show", "HEAD:gen-fixtures.txt"), "generated");
   assert.equal(f.box.states.t1, "merged");
@@ -78,7 +78,7 @@ test("a clean landing is reviewed without the lease, then takes it to merge the 
   assert.ok(firstLease > recordedAt(f, "review"), "the lease was asked for before the review was decided");
   const events = f.posts("/land");
   for (const e of events) assert.ok(Number.isFinite(e.body.ms) && e.body.ms >= 0, `${e.body.step} records no duration`);
-  assert.equal(events.find((e) => e.body.step === "start").body.head, before.fork);
+  assert.equal(events.find((e) => e.body.step === "start").body.head, before.workspace);
   assert.equal(events.find((e) => e.body.step === "merge-main").body.mainHead, before.checkout);
   assert.equal(events.find((e) => e.body.step === "regenerate").body.changed, true);
   assert.equal(events.find((e) => e.body.step === "review").body.verdict, "approve");

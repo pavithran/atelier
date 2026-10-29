@@ -340,7 +340,7 @@ export class GitHost {
   }
   // A claimed branch that holds nothing of its own, its head the recorded
   // base or a commit `from` already holds, moved to the tip `from` has
-  // reached since (moveEmptyFork's successor). Answers the new head, or null
+  // reached since (as a claim does). Answers the new head, or null
   // when nothing moved: `from` has not moved, or the branch holds a commit of
   // its own, or a push moved it meanwhile.
   async moveEmptyBranch({ key, projectBranch, branch, from, base }) {

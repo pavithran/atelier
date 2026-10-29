@@ -27,7 +27,7 @@ const artifacts = {
     };
   },
 };
-const testEnv = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as unknown as typeof env;
+const testEnv = { ...env, ATELIER_TOKEN: TOKEN, REPOS: artifacts } as unknown as typeof env;
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
 async function project(name: string) {
@@ -157,7 +157,7 @@ it("the Ship tab approves at the head it read, lists approvals and withdraws, fr
 
 it("the Ship tab still draws, without the form, when the main line cannot be read", async () => {
   await project("actions-dark");
-  const dark = { ...testEnv, ARTIFACTS: { async get() { throw new Error("unreachable"); } } } as unknown as typeof env;
+  const dark = { ...testEnv, REPOS: { async get() { throw new Error("unreachable"); } } } as unknown as typeof env;
   const cookie = await signIn(TOKEN, dark);
   const res = await worker.fetch(new Request("https://atelier.test/p/actions-dark/ship", { headers: { cookie } }), dark);
   expect(res.status).toBe(200);

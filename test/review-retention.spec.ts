@@ -47,7 +47,7 @@ async function approved(L: L, title: string, by: string | null = GPT, to: "submi
   const { id } = await L.newItem(title, ["src/**"], "owner");
   await L.claim(id, holder);
   // Task 8: a push is told by the post-receive hook for the branch t/N, so the workspace is that branch.
-  await L.setFork(id, `${(await L.project()).name}/${id.replace("t", "t/")}`, H0, holder);
+  await L.setWorkspace(id, `${(await L.project()).name}/${id.replace("t", "t/")}`, H0, holder);
   await L.recordPush(id, holder, head, head);
   await L.addEvidence(passed(id, head));
   await L.submit(id, holder);
@@ -213,8 +213,8 @@ it("a carried approval counts only while its reviewer is authorized and independ
 // Ledger records the head, so these run a push, a push the post-receive hook
 // tells (observePushed, task 8) and a refresh through their routes over trees
 // that can overlap or not.
-const told = (name: string, id: string, after: string, ARTIFACTS: Artifacts) =>
-  observePushed({ ...env, ARTIFACTS } as typeof env, { project: name, ref: `refs/heads/${id.replace("t", "t/")}`, after });
+const told = (name: string, id: string, after: string, REPOS: Repos) =>
+  observePushed({ ...env, REPOS } as typeof env, { project: name, ref: `refs/heads/${id.replace("t", "t/")}`, after });
 
 const TOKEN = "review-retention-token";
 
@@ -227,22 +227,22 @@ function repos(name: string, overlap: boolean, agent = INTEGRATOR) {
   const m = w.commit("m", overlap ? { ...base, "src/a.ts": "a\nmain's line\n" } : { ...base, "docs/b.md": "b changed\n" }, [b0]);
   const o = w.commit("o", { ...base, "src/a.ts": overlap ? "task's line\na\n" : "a changed\n" }, [b0]);
   const n = w.commit("n", overlap ? { ...base, "src/a.ts": "task's line\na\nmain's line\n" } : { "src/a.ts": "a changed\n", "docs/b.md": "b changed\n" }, [o, m], `Merge main\n\nAgent: ${agent}`);
-  const ARTIFACTS = { get: async (repo: string) => Object.assign(repo === `${name}--baseline` ? w.repo(m) : w.repo(n), { [Symbol.dispose]() {} }) } as unknown as Artifacts;
-  return { o, m, n, ARTIFACTS };
+  const REPOS = { get: async (repo: string) => Object.assign(repo === `${name}--baseline` ? w.repo(m) : w.repo(n), { [Symbol.dispose]() {} }) } as unknown as Repos;
+  return { o, m, n, REPOS };
 }
 // Since G18 a write by a reserved actor (the integrator) on the developer token names the acting model.
-const call = (name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts) =>
+const call = (name: string, path: string, actor: string, body: unknown, REPOS: Repos) =>
   worker.fetch(new Request(`https://atelier.test/api/projects/${name}/${path}`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === INTEGRATOR ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS } as typeof env);
 
 for (const overlap of [false, true]) {
   it(`the push route reads the merge and ${overlap ? "asks for review when main changed the task's file" : "carries the approval when main left the task's files alone"}`, async () => {
     const name = `rr-route-push-${overlap}`;
     const L = await setup(name);
-    const { o, m, n, ARTIFACTS } = repos(name, overlap);
+    const { o, m, n, REPOS } = repos(name, overlap);
     const id = await approved(L, "Pushed through the route", GPT, "submitted", o);
-    const res = await call(name, `items/${id}/push`, OPUS, { head: n }, ARTIFACTS);
+    const res = await call(name, `items/${id}/push`, OPUS, { head: n }, REPOS);
     expect(res.status, await res.clone().text()).toBe(200);
     expect((await L.item(id)).head).toBe(n);
     const carried = await retainedAt(L, id, n);
@@ -261,9 +261,9 @@ for (const overlap of [false, true]) {
     const L = ledger(name);
     await L.setProject(record, "owner");
     await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
-    const { o, n, ARTIFACTS } = repos(name, overlap);
+    const { o, n, REPOS } = repos(name, overlap);
     const id = await approved(L, "Seen on the fork", GPT, "submitted", o);
-    expect(await told(name, id, n, ARTIFACTS)).toMatchObject({ observed: true, item: id, head: n });
+    expect(await told(name, id, n, REPOS)).toMatchObject({ observed: true, item: id, head: n });
     expect((await L.item(id)).head).toBe(n);
     expect(await retainedAt(L, id, n)).toHaveLength(overlap ? 0 : 1);
   });
@@ -271,11 +271,11 @@ for (const overlap of [false, true]) {
   it(`the refreshed route reads the merge the leaseholder pushed (${overlap ? "overlap" : "disjoint"})`, async () => {
     const name = `rr-route-refresh-${overlap}`;
     const L = await setup(name);
-    const { o, m, n, ARTIFACTS } = repos(name, overlap);
+    const { o, m, n, REPOS } = repos(name, overlap);
     const id = await approved(L, "Refreshed through the route", GPT, "submitted", o);
     await L.noteMainHead(m);
     const lease = (await L.leaseRefresh(id, INTEGRATOR, "home:studio", "refresh")).lease;
-    const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n }, ARTIFACTS);
+    const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n }, REPOS);
     expect(res.status, await res.clone().text()).toBe(200);
     expect(await retainedAt(L, id, n)).toHaveLength(overlap ? 0 : 1);
     expect(String((await events(L, id)).find((e) => e.kind === "item.refreshed")?.data.review)).toMatch(overlap ? /main changed src\/a\.ts/ : /approvals given before it stand/);
@@ -285,14 +285,14 @@ for (const overlap of [false, true]) {
 it("a repository that cannot be opened for the read carries nothing, and the refresh is still recorded", async () => {
   const name = "rr-route-down";
   const L = await setup(name);
-  const { o, m, n, ARTIFACTS: ok } = repos(name, false);
+  const { o, m, n, REPOS: ok } = repos(name, false);
   const id = await approved(L, "Down", GPT, "submitted", o);
   // The route's own read of the fork opens the first repository; the retention read opens the next two.
   let opened = 0;
-  const ARTIFACTS = { get: async (repo: string) => { if (++opened > 2) throw new Error("Artifacts is down"); return ok.get(repo); } } as unknown as Artifacts;
+  const REPOS = { get: async (repo: string) => { if (++opened > 2) throw new Error("Artifacts is down"); return ok.get(repo); } } as unknown as Repos;
   await L.noteMainHead(m);
   const lease = (await L.leaseRefresh(id, INTEGRATOR, "home:studio", "refresh")).lease;
-  const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n }, ARTIFACTS);
+  const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n }, REPOS);
   expect(res.status, await res.clone().text()).toBe(200);
   expect((await L.item(id)).head).toBe(n);
   expect(await retainedAt(L, id, n)).toEqual([]);
@@ -305,16 +305,16 @@ it("a push the hook told, recorded before the refresh report leaves the refresh 
   const L = ledger(name);
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
-  const { o, m, n, ARTIFACTS } = repos(name, false);
+  const { o, m, n, REPOS } = repos(name, false);
   const id = await approved(L, "Event first", GPT, "submitted", o);
   await L.noteMainHead(m);
   const lease = (await L.leaseRefresh(id, INTEGRATOR, "home:studio", "refresh")).lease;
   await L.refreshPushing(id, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n });
-  await told(name, id, n, ARTIFACTS);
+  await told(name, id, n, REPOS);
   // The head is recorded by the event, but a refresh lease is held, so the report decides.
   expect((await L.item(id)).head).toBe(n);
   expect(await retainedAt(L, id, n)).toEqual([]);
-  const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n }, ARTIFACTS);
+  const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n }, REPOS);
   expect(res.status, await res.clone().text()).toBe(200);
   expect(await retainedAt(L, id, n)).toHaveLength(1);
   expect(String((await events(L, id)).find((e) => e.kind === "item.refreshed")?.data.review)).toMatch(/approvals given before it stand/);
@@ -359,7 +359,7 @@ it("a merge a resolver made, who is also the task's holder, carries nothing when
   const L = ledger(name);
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
-  const { o, m, n, ARTIFACTS } = repos(name, false, GPT);
+  const { o, m, n, REPOS } = repos(name, false, GPT);
   const id = await approved(L, "Holder resolves", GEMINI, "submitted", o, GPT);
   await L.noteMainHead(m);
   const first = (await L.leaseRefresh(id, INTEGRATOR, null, "refresh")).lease;
@@ -367,10 +367,10 @@ it("a merge a resolver made, who is also the task's holder, carries nothing when
   const lease = (await L.leaseRefresh(id, GPT, "home:gpt", "resolve")).lease;
   const body = { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n };
   await L.refreshPushing(id, GPT, body);
-  await told(name, id, n, ARTIFACTS);
+  await told(name, id, n, REPOS);
   expect((await L.item(id)).head).toBe(n);
   expect(await retainedAt(L, id, n)).toEqual([]);
-  const res = await call(name, `items/${id}/refreshed`, GPT, body, ARTIFACTS);
+  const res = await call(name, `items/${id}/refreshed`, GPT, body, REPOS);
   expect(res.status, await res.clone().text()).toBe(200);
   expect(await retainedAt(L, id, n)).toEqual([]);
   expect((await events(L, id)).find((e) => e.kind === "review.not_retained")?.data.reason).toMatch(/codex\/gpt-6-astra resolved conflicts in the merge/);
@@ -385,16 +385,16 @@ it("a reviewer who has judged the new head before the refresh report keeps that 
   const L = ledger(name);
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
-  const { o, m, n, ARTIFACTS } = repos(name, false);
+  const { o, m, n, REPOS } = repos(name, false);
   const id = await approved(L, "Rejected in between", GPT, "submitted", o);
   await L.noteMainHead(m);
   const lease = (await L.leaseRefresh(id, INTEGRATOR, "home:studio", "refresh")).lease;
   const body = { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n };
   await L.refreshPushing(id, INTEGRATOR, body);
-  await told(name, id, n, ARTIFACTS);
+  await told(name, id, n, REPOS);
   await L.addReview({ itemId: id, by: GPT, head: n, criteria: await L.criteria(id), approve: false, note: "The merge broke it.", at: at() }, undefined, true);
   await L.addEvidence(passed(id, n));
-  const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, body, ARTIFACTS);
+  const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, body, REPOS);
   expect(res.status, await res.clone().text()).toBe(200);
   expect(await retainedAt(L, id, n)).toEqual([]);
   const standing = (await reviewsOf(L, id)).filter((r) => r.head === n);

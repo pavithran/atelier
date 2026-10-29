@@ -286,8 +286,8 @@ export default async function mergeCommand() {
     // commit it holds, which atelier update moves past the recorded base. With
     // neither, every path that differs from the baseline: more than the
     // revision's own, so the comparison errs toward refusing.
-    const forkPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
-    const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base ?? baselineHead;
+    const branchPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
+    const since = branchPoint.status === 0 && branchPoint.stdout.trim() ? branchPoint.stdout.trim() : item.base ?? baselineHead;
     const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
     const decision = mergePolicyDecision(acceptedPolicy, nowPolicy, paths, args['policy-changed-ok'] === true, context);
     if (decision.refusal) await fail(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);

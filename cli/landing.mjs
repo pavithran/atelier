@@ -8,7 +8,7 @@ import { foldPath } from '../src/rules.ts';
 import { taskReadGrant } from './read-grant.mjs';
 
 // The workspace's Git config key naming the head a landing could not push
-// because the fork refused the workspace token (t317).
+// because the server refused the workspace token (t317).
 export const LAND_UNPUSHED = 'atelier.land-unpushed';
 
 // The landing's push (G2, design section 4.7): the merge commit to the
@@ -40,7 +40,7 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
   const local = existsSync(join(dir, '.git'))
     ? git(['rev-parse', '--verify', 'HEAD'], { cwd: dir, allowFail: true }).stdout?.trim() : null;
   const descends = !!local && local !== head && git(['merge-base', '--is-ancestor', head, local], { cwd: dir, allowFail: true }).status === 0;
-  // The merge of main a landing made and could not push, the fork refusing
+  // The merge of main a landing made and could not push, the branch refusing
   // the workspace token (t317), is that landing's own work: the next landing
   // goes on from it and pushes it, renewing the token.
   const unpushed = descends && git(['config', '--local', LAND_UNPUSHED], { cwd: dir, allowFail: true }).stdout?.trim() === local;
@@ -49,7 +49,7 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
     return key === 'actor' ? !!value : value === (key === 'project' ? name : id);
   });
   if (configured) {
-    if (unpushed) print(`${id}'s workspace holds ${local.slice(0, 8)}, the merge an earlier landing made and could not push because the fork refused the workspace token; this landing goes on from it.`);
+    if (unpushed) print(`${id}'s workspace holds ${local.slice(0, 8)}, the merge an earlier landing made and could not push because the server refused the workspace token; this landing goes on from it.`);
     return false;
   }
   // A workspace that descends from the recorded head holds work the ledger

@@ -12,7 +12,7 @@ import { refreshReview } from "./review.ts";
 import { parseRuleError, sameActor } from "../rules.ts";
 
 const H = (c) => c.repeat(40);
-const base = { id: "t7", state: "submitted", owner: "claude-code/opus-5.5", fork: "f-t7", base: H("0"), head: H("1"), kind: undefined, dispatch: null, blocked: null };
+const base = { id: "t7", state: "submitted", owner: "claude-code/opus-5.5", workspace: "f-t7", base: H("0"), head: H("1"), kind: undefined, dispatch: null, blocked: null };
 const idle = { landing: false, reviewing: false };
 const code = (fn) => { try { fn(); } catch (e) { return parseRuleError(e)?.code; } return null; };
 
@@ -22,7 +22,7 @@ test("submitted, accepted and released tasks with a branch are eligible; termina
   for (const state of ["merged", "abandoned", "integrated"]) assert.equal(refreshStanding({ ...base, state }, idle).kind, "terminal");
   assert.equal(refreshStanding({ ...base, kind: "part" }, idle).kind, "plan");
   assert.equal(refreshStanding({ ...base, kind: "plan" }, idle).kind, "plan");
-  assert.equal(refreshStanding({ ...base, fork: null }, idle).kind, "branchless");
+  assert.equal(refreshStanding({ ...base, workspace: null }, idle).kind, "branchless");
   assert.equal(refreshStanding({ ...base, head: H("0") }, idle).kind, "branchless");
   assert.match(refreshStanding({ ...base, head: null }, idle).reason, /starts it from main/);
   for (const k of ["terminal", "plan", "branchless"]) assert.equal(queued({ kind: k, reason: "" }), false);

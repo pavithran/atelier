@@ -68,7 +68,7 @@ const observed = (itemId: string, head: string): Evidence => ({
 async function submittedPlan(L: L) {
   const { item } = await L.newPlan("Ship the feature", ["docs/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
@@ -77,7 +77,7 @@ async function submittedPlan(L: L) {
   const d = (await L.item(a)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
   await L.claim(a, builder, RUNNER);
-  await L.setFork(a, `fork-${a}`, H0, builder);
+  await L.setWorkspace(a, `fork-${a}`, H0, builder);
   await L.recordPush(a, builder, PART_A, PART_A);
   await L.addEvidence(observed(a, PART_A));
   await L.submit(a, builder);
@@ -97,7 +97,7 @@ async function submittedPlan(L: L) {
 // repository read from its head along first parents, each tree the files of
 // the commit it is named after.
 type Commit = { parents: string[]; files: Record<string, string> };
-function artifacts(commits: Record<string, Commit>, heads: Record<string, string>): Artifacts {
+function artifacts(commits: Record<string, Commit>, heads: Record<string, string>): Repos {
   const meta = (hash: string) => ({ hash, treeHash: `tree:${hash}`, parents: commits[hash].parents, message: "", author: { name: "", email: "" }, committer: { name: "", email: "" }, authoredAt: 0, committedAt: 0 });
   return {
     get: async (name: string) => ({
@@ -115,14 +115,14 @@ function artifacts(commits: Record<string, Commit>, heads: Record<string, string
       revokeToken: async () => true,
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 // G18: an owner-token write names the acting model.
-function call(name: string, path: string, body: unknown, ARTIFACTS: Artifacts) {
+function call(name: string, path: string, body: unknown, REPOS: Repos) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${path}`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS } as typeof env);
 }
 const errorOf = async (res: Response) => (await res.json()) as { error: string; detail: string };
 
@@ -253,7 +253,7 @@ it("a plan building with parts left is not told to submit after a refresh", asyn
   const L = await setup("reopen-building");
   const { item } = await L.newPlan("Ship the feature", ["docs/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");

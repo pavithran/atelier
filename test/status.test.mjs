@@ -313,7 +313,7 @@ test("On this Mac gives each workspace one line, and a task with no workspace he
   assert.equal(r.code, 0, r.output);
   assert.ok(r.output.includes("\nOn this Mac:\n"), r.output);
   assert.ok(r.output.includes("  t1  1 path with uncommitted changes\n"), r.output);
-  assert.ok(r.output.includes("  t2  1 commit not pushed to its fork\n"), r.output);
+  assert.ok(r.output.includes("  t2  1 commit not pushed to its branch\n"), r.output);
   assert.ok(r.output.includes("  t3  1 path with uncommitted changes; a merge is in progress, in conflict: a.txt\n"), r.output);
   assert.ok(r.output.includes("  t4  1 path with uncommitted changes; COMMIT_MSG.txt waiting to be committed\n"), r.output);
   assert.ok(r.output.includes("  t5  clean, pushed\n"), r.output);

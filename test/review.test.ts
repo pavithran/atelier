@@ -25,7 +25,7 @@ const GLM = "zcode/glm-5.3";
 
 const item = (over: Partial<Item> = {}): Item => ({
   id: "t21", title: "Review rules", scope: ["src/review/**"], state: "submitted", owner: GLM,
-  fork: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [GLM],
+  workspace: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [GLM],
   createdAt: T, updatedAt: T, lastPushAt: T, ...over,
 });
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"] };

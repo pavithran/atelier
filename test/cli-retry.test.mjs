@@ -170,7 +170,7 @@ async function world(t) {
     info: async () => ({ remote: "https://git.test/x.git", defaultBranch: "main" }),
     createToken: async (scope) => ({ id: "tok1", plaintext: "art_dummy", scope, expiresAt: new Date(Date.now() + 3600e3).toISOString() }),
     revokeToken: async () => true, [Symbol.dispose]() {} }) };
-  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { REPOS: artifacts } });
   t.after(() => server.close());
   const send = (method, path, body) => fetch(`${server.url}/api${path}`, { method, body: body && JSON.stringify(body), headers: { authorization: `Bearer ${owner}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" } });
   assert.equal((await send("PUT", "/projects/demo", {})).status, 200);

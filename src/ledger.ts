@@ -194,7 +194,7 @@ export interface ReviewClaim {
   // The review's diff, kept in R2 by reference when the change is too large
   // for a brief to carry (t284): the claim route stores it and names it here,
   // and the brief says where the whole diff is instead of holding it. Null
-  // when nothing was stored — the diff was small, or Artifacts could not be
+  // when nothing was stored — the diff was small, or the repository could not be
   // read, or the bucket behind the LARGE binding does not exist yet.
   diffRef?: LargeRef | null;
   // The binding of the acceptance criteria this claim's brief carries: the
@@ -292,7 +292,7 @@ export interface ProjectRecord {
   title?: string;         // what people read; the name when absent
   repo: string;
   // The branch init registered: the checkout's branch, which init also made
-  // the baseline's default branch. Every fork copies the baseline's HEAD, so
+  // the baseline's default branch. Every branch copies the baseline's HEAD, so
   // this is the branch a task's workspace pushes to and Atelier reads.
   // Absent when no init has named one; the baseline's info stands in then.
   branch?: string;
@@ -720,10 +720,10 @@ function mayAssess(actor: string, policy: ProjectPolicy, owner: string): boolean
   }
 }
 
-// What the Worker found in a fork's history for a push (see recordPush):
+// What the Worker found in a branch's history for a push (see recordPush):
 // whether the head it sees holds the head recorded before it, and the head
 // the caller says `atelier update` rebased from, or null when it said nothing.
-// What the Worker found in a fork's history for a push. holdsRecorded is
+// What the Worker found in a branch's history for a push. holdsRecorded is
 // null when its search stopped at its budget before finding the recorded
 // head or reaching the end of the history; searched is how many commits it
 // examined by then.
@@ -3317,7 +3317,7 @@ export class Ledger extends DurableObject<Env> {
   // runner token or under an owner's or agent's credential with or without a
   // runner name, logs the item as claimed or its runner as adopted (claim,
   // below), and the log outlives the claim. A claim from before the dispatch,
-  // such as the one that seeded the fork, did not supersede the offer.
+  // such as the one that seeded the branch, did not supersede the offer.
   private claimedSince(id: string, since: string): boolean {
     return this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND at >= ? AND kind IN ('item.claimed', 'item.runner_adopted') LIMIT 1`, id, since).toArray().length > 0;
   }
@@ -3397,7 +3397,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
-      // an actor name, and the second must not take over the first's fork.
+      // an actor name, and the second must not take over the first's branch.
       // Runner names are lowercased when parsed, and a hold recorded before
       // that may not be, so the same runner is compared without case.
       const held = item.runner ?? null, asking = runner?.runner ?? null;
@@ -3464,7 +3464,7 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
-  // Minting a token waits on Artifacts, and meanwhile the item can be handed
+  // Minting a token waits on the repository, and meanwhile the item can be handed
   // off, released, abandoned or claimed again. So the token a claim minted is
   // recorded only while that claim still stands: the claimer owns the item,
   // no later claim or change of owner has taken a newer generation, and the
@@ -3630,12 +3630,12 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A merge-main job merges main into the task's workspace, so a task with
-  // none — never claimed, or claimed without a fork — has nothing for its
+  // none — never claimed, or claimed without a branch — has nothing for its
   // builder to resolve (t243). Checked wherever the dispatch is validated,
   // before a holder's token is revoked for it.
   private assertMergeMainWorkspace(item: Item, d: Dispatch): void {
-    if (d.job === "merge-main" && !item.fork) {
-      throw new RuleError("no_fork", `${item.id} has no workspace yet, so there is nothing for its builder to merge main into`, 409, `run atelier claim ${item.id} --as HARNESS/MODEL to make its workspace`);
+    if (d.job === "merge-main" && !item.workspace) {
+      throw new RuleError("no_workspace", `${item.id} has no workspace yet, so there is nothing for its builder to merge main into`, 409, `run atelier claim ${item.id} --as HARNESS/MODEL to make its workspace`);
     }
   }
 
@@ -4037,7 +4037,7 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
-  // Restore only the reservation that changed ownership. A late fork failure
+  // Restore only the reservation that changed ownership. A late branch failure
   // cannot undo closure, a handoff, or another claim (including the same actor).
   unclaim(id: string, actor: string, reason: string, proved = false, generation?: number): void {
     const item = this.item(id);
@@ -4056,23 +4056,23 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
 
-  // The claim route records the fork it made once Artifacts has made it, an
+  // The claim route records the branch it made once the repository has made it, an
   // await after the claim. By then the task may have been merged, abandoned
-  // or claimed again (t653, gpt-6-astra: a fork recorded after record-merge
-  // replaced the merged task's head with the fork's base), so the fork is
+  // or claimed again (t653, gpt-6-astra: a branch recorded after record-merge
+  // replaced the merged task's head with the branch's base), so the branch is
   // never recorded on a merged or abandoned task, and, under the claim's
   // generation the claim route names, only while that claim still holds it.
-  // Tests that set up a plan's fork without a claim name no generation.
-  setFork(id: string, fork: string, base: string | null, actor: string, proved = false, generation?: number): void {
+  // Tests that set up a plan's branch without a claim name no generation.
+  setWorkspace(id: string, workspace: string, base: string | null, actor: string, proved = false, generation?: number): void {
     const at = new Date().toISOString();
     const item = this.item(id);
     const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
     if (item.state === "merged" || item.state === "abandoned" || (generation !== undefined && (item.owner !== actor || row.claim_gen !== generation))) {
-      throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
+      throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its workspace is not recorded; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
     }
-    this.update(id, { fork, base, head: base }, at);
-    this.log(id, actor, "fork.created", { fork, base }, at, proved);
-    // A plan forks from the baseline, so its base is main's head as it
+    this.update(id, { fork: workspace, base, head: base }, at);
+    this.log(id, actor, "workspace.created", { workspace, base }, at, proved);
+    // A plan branches from the baseline, so its base is main's head as it
     // stands now.
     if (base && this.item(id).kind === "plan") this.setMainHead(base, at);
   }
@@ -4084,15 +4084,15 @@ export class Ledger extends DurableObject<Env> {
   // changes: the holder, its claim, the base, the head and any acceptance
   // stand. The write token, an Artifacts token, writes nothing here; the
   // holder's next claim mints a Git grant in its place. Refused for a closed
-  // task, a task with no fork, or one whose head moved since the caller read
-  // it. A task already on `fork` is answered as it stands.
+  // task, a task with no branch, or one whose head moved since the caller read
+  // it. A task already on `branch` is answered as it stands.
   migrateFork(id: string, fork: string, actor: string, carried: { from: string; head: string; tip: string | null; remote: string }): Item {
     const item = this.item(id);
-    if (item.fork === fork) return item;
+    if (item.workspace === fork) return item;
     if (item.state === "merged" || item.state === "abandoned" || item.state === "integrated") {
       throw new RuleError("task_closed", `${id} is ${item.state}; a closed task's work is in its project's history, so nothing moves`, 409, `run atelier show ${id}`);
     }
-    if (!item.fork || item.fork !== carried.from) throw new RuleError("fork_changed", `${id}'s workspace is ${item.fork ?? "not made yet"}, not ${carried.from}, so nothing was moved`, 409, `run atelier migrate ${id} again`);
+    if (!item.workspace || item.workspace !== carried.from) throw new RuleError("fork_changed", `${id}'s workspace is ${item.workspace ?? "not made yet"}, not ${carried.from}, so nothing was moved`, 409, `run atelier migrate ${id} again`);
     if ((item.head ?? item.base) !== carried.head) throw new RuleError("head_moved", `${id}'s head moved to ${String(item.head ?? item.base).slice(0, 12)} while ${carried.head.slice(0, 12)} was carried, so nothing was moved`, 409, `run atelier migrate ${id} again`);
     const at = new Date().toISOString();
     this.update(id, { fork }, at);
@@ -4154,31 +4154,31 @@ export class Ledger extends DurableObject<Env> {
     return { cleared: fresh.length };
   }
 
-  // A part's fork forked again from its plan's branch at `base`, or a
-  // task's from main's (t462), as the claim route does for a fork that
-  // holds nothing beyond the commit it forked from (docs/orchestrator.md,
-  // section 5). The Ledger takes it only from the holder, for the fork and
+  // A part's branch branched again from its plan's branch at `base`, or a
+  // task's from main's (t462), as the claim route does for a branch that
+  // holds nothing beyond the commit it branched from (docs/orchestrator.md,
+  // section 5). The Ledger takes it only from the holder, for the branch and
   // base the Worker read, and while no head of its own is recorded; the new
-  // base is its head. A plan's fork is never moved.
-  moveFork(id: string, actor: string, fork: string, from: string | null, base: string, proved = false): void {
+  // base is its head. A plan's branch is never moved.
+  moveWorkspace(id: string, actor: string, workspace: string, from: string | null, base: string, proved = false): void {
     const at = new Date().toISOString();
     const item = this.item(id);
-    if (item.kind === "plan" || item.owner !== actor || item.fork !== fork || item.base !== from || (item.head && item.head !== item.base)) {
-      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
+    if (item.kind === "plan" || item.owner !== actor || item.workspace !== workspace || item.base !== from || (item.head && item.head !== item.base)) {
+      throw new RuleError("workspace_moved", `${id}'s workspace changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
     }
     this.update(id, { base, head: base }, at);
-    this.log(id, actor, "fork.moved", { fork, from, base }, at, proved);
+    this.log(id, actor, "workspace.moved", { workspace, from, base }, at, proved);
   }
 
-  // The worker has already read the fork's head from Artifacts; what is logged
+  // The worker has already read the branch's head from the repository; what is logged
   // here is what Atelier saw, not what the agent said it pushed.
   // An accepted task can still take a new revision, as when its merge
   // conflicts and the owner rebases: the push withdraws the acceptance, and
   // the task is back in progress until it is checked and submitted again.
   //
-  // A head that does not hold the recorded one has rewritten the fork's
+  // A head that does not hold the recorded one has rewritten the branch's
   // history: the commits recorded before it are off the branch. That is
-  // what `atelier update` does on purpose, rebasing every commit the fork
+  // what `atelier update` does on purpose, rebasing every commit the branch
   // held onto the moved baseline, and `atelier push --force` then declares
   // the head it rebased from, after checking with git that each of those
   // commits survives by patch. The Ledger has no repository to repeat that
@@ -4187,7 +4187,7 @@ export class Ledger extends DurableObject<Env> {
   // workspace that rebased from any other head, or declared nothing, is
   // refused and the recorded head stays. The declared rewrite is recorded
   // with the head it replaced, so the item's history shows both. `lineage`
-  // is what the Worker found in the fork; a caller that has not looked
+  // is what the Worker found in the branch; a caller that has not looked
   // (the Ledger's own tests, which run without a repository) passes nothing
   // and is trusted.
   //
@@ -4201,7 +4201,7 @@ export class Ledger extends DurableObject<Env> {
   // undeclared, while a head that holds the recorded one has it a few
   // commits back on a chain the search reads first, well within the budget.
   //
-  // `authors` are the pushed commits the Worker read from the fork, each
+  // `authors` are the pushed commits the Worker read from the branch, each
   // with the actor its final "Agent: harness/model" line names. Those that
   // name another actor than the holder are recorded with the push, which
   // makes each a contributor (pushActors) and credits its commit to it in
@@ -4225,7 +4225,7 @@ export class Ledger extends DurableObject<Env> {
     const unverified = rewritten && lineage.holdsRecorded === null;
     if (rewritten && lineage.rebasedFrom !== item.head) {
       if (unverified) {
-        throw new RuleError("ancestry_unverified", `${id}'s workspace is at ${observedHead.slice(0, 8)}, and Atelier could not verify ancestry within ${lineage.searched ?? 0} commits of the fork's history: ${item.head!.slice(0, 8)}, the head it recorded, is not among them, and the rest was not read. The recorded head stays. If atelier update rebased this workspace, push with atelier push --force, which declares the rebase`, 409, "if atelier update rebased this workspace, run atelier push --force");
+        throw new RuleError("ancestry_unverified", `${id}'s workspace is at ${observedHead.slice(0, 8)}, and Atelier could not verify ancestry within ${lineage.searched ?? 0} commits of the branch's history: ${item.head!.slice(0, 8)}, the head it recorded, is not among them, and the rest was not read. The recorded head stays. If atelier update rebased this workspace, push with atelier push --force, which declares the rebase`, 409, "if atelier update rebased this workspace, run atelier push --force");
       }
       throw new RuleError("history_rewritten", `${id}'s workspace is at ${observedHead.slice(0, 8)}, which does not hold ${item.head!.slice(0, 8)}, the head Atelier recorded: the commits pushed before are no longer on its branch. Put them back under your commits (git fetch origin, then rebase or merge), then push again; after atelier update, push with atelier push --force`, 409, "run git fetch origin and rebase or merge, then atelier push; after atelier update, atelier push --force");
     }
@@ -4257,7 +4257,7 @@ export class Ledger extends DurableObject<Env> {
 
   // How many approvals stand at the task's head that a merge of main could
   // carry to a new one (retainableApprovals): the Worker reads the merge from
-  // Artifacts only when there is one to carry.
+  // the repository only when there is one to carry.
   retainable(id: string, head?: string): number {
     const item = this.item(id);
     if (item.kind || item.state === "merged" || item.state === "abandoned" || !item.head) return 0;
@@ -4318,7 +4318,7 @@ export class Ledger extends DurableObject<Env> {
     return { kept: approvals.length, why: verdict.why };
   }
 
-  // A push seen on the fork whose head does not hold the recorded one came
+  // A push seen on the branch whose head does not hold the recorded one came
   // from outside `atelier push`: a raw force push, or the git half of an
   // `atelier push --force` whose declaration has not arrived yet. The head
   // stays where it was, and the event names both commits, so the owner sees
@@ -4329,14 +4329,14 @@ export class Ledger extends DurableObject<Env> {
   // reason saying so. The queue delivers an event at least once, so the
   // same sighting is noted once. `scan` is as recordPush takes it: the head
   // recorded is written with its secret scan pending. `source` is where the
-  // sighting came from: "artifacts" (a push event) or "hook" (the
+  // sighting came from: "event" (a push event, as the Ledger's own tests send) or "hook" (the
   // post-receive POST on the Node server, Atelier 2.0 task 8), whose head
   // the pre-receive hook scanned before the ref moved, so its report becomes
   // the scan record, as recordPush takes it.
-  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false, retention: RetentionRead | null = null, source: "artifacts" | "hook" = "artifacts"): Item {
+  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false, retention: RetentionRead | null = null, source: "event" | "hook" = "event"): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
-    // While the accepted revision is landing, a push to the fork does not
+    // While the accepted revision is landing, a push to the branch does not
     // change what is merged; it is left for after the merge.
     if (item.state === "accepted" && this.landing(id)) return item;
     if (item.head && !holdsRecorded) {
@@ -4948,7 +4948,7 @@ export class Ledger extends DurableObject<Env> {
     return item;
   }
 
-  // Ownership moves; the work does not fork. The new owner inherits the same
+  // Ownership moves; the work does not branch. The new owner inherits the same
   // workspace repo. The caller has revoked the old owner's write token,
   // `token`, and the change is made only if that is still the token recorded
   // (see dropToken).
@@ -5700,7 +5700,7 @@ export class Ledger extends DurableObject<Env> {
     if (pool && offers && liveOffers(offers, now).some((o) => servesProject(o) && (o.jobs ?? []).includes(PREREVIEW_JOB))
       && prereviewCandidates(lease, !!lease && this.landingLive(lease, now.toISOString()), this.projectLandingQueue(), now.getTime()).length) {
       try {
-        using repo = await this.env.ARTIFACTS.get(this.project().repo);
+        using repo = await this.env.REPOS.get(this.project().repo);
         const [top] = await repo.log({ limit: 1 });
         if (top && /^[a-f0-9]{40,64}$/.test(top.hash)) this.setMainHead(top.hash, new Date().toISOString());
       } catch { /* a baseline read cannot fail the landing; claims and verdicts revalidate main */ }
@@ -5763,7 +5763,7 @@ export class Ledger extends DurableObject<Env> {
     this.keepOffers(offers);
     // Main as the baseline holds it now, which the request is bound to.
     try {
-      using repo = await this.env.ARTIFACTS.get(this.project().repo);
+      using repo = await this.env.REPOS.get(this.project().repo);
       const [top] = await repo.log({ limit: 1 });
       if (top && /^[a-f0-9]{40,64}$/.test(top.hash)) this.setMainHead(top.hash, new Date().toISOString());
     } catch { /* claims and verdicts revalidate main */ }
@@ -6916,23 +6916,23 @@ export class Ledger extends DurableObject<Env> {
 
   // The task's workspace and its write token, read together, so the token
   // revoked is revoked in the repository it was made for (t653, gpt-6-astra:
-  // a claim made while the baseline was read gave a token whose fork a
+  // a claim made while the baseline was read gave a token whose branch a
   // snapshot taken earlier did not name).
-  workspaceOf(id: string): { fork: string | null; token: string | null } {
+  workspaceOf(id: string): { workspace: string | null; token: string | null } {
     const row = this.sql.exec(`SELECT fork, token_id FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("not_found", `no item ${id}`, 404);
-    return { fork: (row.fork as string | null) ?? null, token: (row.token_id as string | null) ?? null };
+    return { workspace: (row.fork as string | null) ?? null, token: (row.token_id as string | null) ?? null };
   }
 
   // `workspace` is what workspaceOf answered before the route revoked its
-  // token: the record is refused if the fork or the token has changed since,
+  // token: the record is refused if the branch or the token has changed since,
   // so no token the route did not revoke is taken off the record.
-  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null; tip?: string | null }, workspace: { fork: string | null; token: string | null }): { item: Item; record: RecordedMerge } {
+  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null; tip?: string | null }, workspace: { workspace: string | null; token: string | null }): { item: Item; record: RecordedMerge } {
     const at = new Date().toISOString();
     const { item, record, repeat } = this.recordMergeAllowed(id, actor, body, baseline, at);
     if (repeat) return { item, record: repeat };
     const now = this.workspaceOf(id);
-    if (now.fork !== workspace.fork || now.token !== workspace.token) {
+    if (now.workspace !== workspace.workspace || now.token !== workspace.token) {
       throw new RuleError("workspace_changed", `${id} was claimed again while the merge was checked, and its workspace or token changed; record it again`, 409, `run atelier record-merge ${id} again`);
     }
     this.ctx.storage.transactionSync(() => {
@@ -7019,7 +7019,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // ── fast-build reports ────────────────────────────────────────────────────
-  // The fork-less fast build was removed (t228), and the server writes no
+  // The fast build that claimed no task was removed (t228), and the server writes no
   // item.fast_taken or item.fast_ready. Recorded ones still replay.
 
   // Every open task's standing fast-build report, oldest first: what atelier
@@ -7319,10 +7319,10 @@ export class Ledger extends DurableObject<Env> {
     catch { return { items, inbox: null }; }
   }
 
-  // The id of the first task whose fork is this repository, or null: the
+  // The id of the first task whose branch is this repository, or null: the
   // push notice names a repository, and asking for the whole ledger to find
   // its task read every item's history in every project on every push.
-  itemIdOfFork(repo: string): string | null {
+  itemIdOfWorkspace(repo: string): string | null {
     const row = this.sql.exec(`SELECT id FROM items WHERE fork = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER) LIMIT 1`, repo).toArray()[0];
     return row ? row.id as string : null;
   }
@@ -7833,12 +7833,12 @@ export class Ledger extends DurableObject<Env> {
   // What stopping a plan closes: the plan item and every part not merged or
   // abandoned, each with its workspace and the write token recorded for it.
   // The route revokes those tokens, then asks for the stop with their ids.
-  stopTargets(id: string, actor: string): { id: string; fork: string | null; tokenId: string | null }[] {
+  stopTargets(id: string, actor: string): { id: string; workspace: string | null; tokenId: string | null }[] {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer stops a plan", 403, `only the developer can: atelier plan stop ${id}`);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409, "run atelier ls to pick another task");
     const open = this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned");
-    return [item, ...open].map((i) => ({ id: i.id, fork: i.fork, tokenId: this.tokenId(i.id) }));
+    return [item, ...open].map((i) => ({ id: i.id, workspace: i.workspace, tokenId: this.tokenId(i.id) }));
   }
 
   // The owner stops a plan: its open parts and the plan item are abandoned
@@ -8262,7 +8262,7 @@ export class Ledger extends DurableObject<Env> {
       else chosen = chosen.slice(0, room);
     }
     this.setBlocked(id, record, blocked);
-    // Refresh (docs/orchestrator.md, section 5): a part forks from the plan's
+    // Refresh (docs/orchestrator.md, section 5): a part branches from the plan's
     // branch, so before one is dispatched a branch that does not hold main's
     // head takes it. While that refresh is in flight, or waits for an
     // integration to free the plan item, no part is dispatched.
@@ -8679,7 +8679,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The diff a claimed review is of, kept in R2 by reference (t284): the
-  // claim route computes the change from Artifacts and stores it when it is
+  // claim route computes the change from the repository and stores it when it is
   // too large for a brief, and this records the reference in the event log,
   // beside the claim it answers, so the ledger names what the reviewer was
   // given without carrying it.
@@ -10104,7 +10104,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // ── integration (docs/orchestrator.md, section 5) ────────────────────────
-  // A plan item's fork is its integration branch. Parts are merged onto it by
+  // A plan item's branch is its integration branch. Parts are merged onto it by
   // the reserved integrator, which reports `integrated` or `integration-failed`;
   // the Worker verifies the merge commit against the branch's log before the
   // Ledger records the integration.
@@ -10127,7 +10127,7 @@ export class Ledger extends DurableObject<Env> {
   // Dispatches the plan item's integrate job for the next part ready to
   // integrate, one at a time: the plan item has exactly one owner, so the
   // integrations are serialized. The mergeability pre-check runs in the
-  // Worker, not here, because the Ledger cannot read Artifacts.
+  // Worker, not here, because the Ledger cannot read the repository.
   private integrateDispatch(id: string, plan: Item, parts: Item[], at: string): void {
     if (plan.owner || plan.state !== "open" || plan.dispatch) return;
     const policy = this.project().policy;
@@ -10224,8 +10224,8 @@ export class Ledger extends DurableObject<Env> {
   // ── refresh (docs/orchestrator.md, section 5) ────────────────────────────
   // A plan's branch takes main's later work through a refresh: the
   // integrator merges main's head into the branch, and the merge becomes the
-  // integration head. The Ledger cannot read Artifacts, so it keeps main's
-  // head as last observed: by a merge it recorded, a plan's fork, or the
+  // integration head. The Ledger cannot read the repository, so it keeps main's
+  // head as last observed: by a merge it recorded, a plan's branch, or the
   // Worker reading the baseline (noteMainHead). Each observation is true when
   // made, so the latest stands.
 
@@ -10359,7 +10359,7 @@ export class Ledger extends DurableObject<Env> {
 
   // Records a verified refresh: main's head is what the branch holds now,
   // and the merge commit, when there is one, is the integration head that
-  // later parts fork from and later integrations sit on. With no merge
+  // later parts branch from and later integrations sit on. With no merge
   // commit the branch already held main's head and the integration head
   // stays. The refresh job clears. The Worker has verified the merge
   // against the plan branch's log and passes `verified: true`.
@@ -10886,7 +10886,7 @@ export class Ledger extends DurableObject<Env> {
   // recorded head is not given back, since its head is already reported.
   // The owner alone may release an announced push nobody reconciled, once
   // its lease has lapsed and the push's window has passed, saying why: the
-  // landing fence then ends, the refresh is queued again, and what the fork
+  // landing fence then ends, the refresh is queued again, and what the branch
   // holds is the owner's to check (releasePushFence).
   releaseRefreshLease(id: string, actor: string, leaseId: string, reason: string, providerLimit = false): { item: Item; released: boolean; revoke: string | null } {
     const at = new Date().toISOString();
@@ -10912,7 +10912,7 @@ export class Ledger extends DurableObject<Env> {
     if (!why) throw new RuleError("reason_required", `say why ${item.id}'s announced push is released: --reason TEXT`, 400, "add --reason TEXT and run the command again");
     if (leaseLive(lease, now) || Date.parse(pushing.until) > now) {
       const until = new Date(Math.max(Date.parse(lease.until), Date.parse(pushing.until))).toISOString();
-      throw new RuleError("refresh_leased", `${lease.by} may still be pushing ${pushing.head.slice(0, 8)} to ${item.id}'s fork; its lease and push window end at ${until}, and the push may be released after that`, 409, "wait for the lease to end, then run atelier refreshes");
+      throw new RuleError("refresh_leased", `${lease.by} may still be pushing ${pushing.head.slice(0, 8)} to ${item.id}'s branch; its lease and push window end at ${until}, and the push may be released after that`, 409, "wait for the lease to end, then run atelier refreshes");
     }
     this.saveRefreshTarget(item.id, afterSettle(target, lease, "superseded", at));
     this.log(item.id, this.owner, "refresh.push_released", { lease: lease.id, head: pushing.head, announcedBy: pushing.by ?? lease.by, mainHead: lease.mainHead, from: lease.expectedHead, reason: why }, at);
@@ -10920,7 +10920,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The leaseholder is about to push `head`, the refreshed merge, to the
-  // task's fork. Taken only while the task is still at the head the lease
+  // task's branch. Taken only while the task is still at the head the lease
   // found and may be refreshed; until the push is reconciled no landing of
   // the task begins (assertNoRefreshPush), so a landing never starts under
   // a push it would then be overtaken by, nor a push under a landing.
@@ -10945,7 +10945,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Called where a landing begins: refused while a refresh's announced push
-  // to the task's fork is not reconciled, however long that takes, saying
+  // to the task's branch is not reconciled, however long that takes, saying
   // who announced it, when its lease lapses and the integrator reconciles
   // it, and the owner's command that releases it.
   private assertNoRefreshPush(id: string): void {
@@ -10957,8 +10957,8 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  // A verified refresh (the Worker read the merge on the fork: its parents
-  // are the head the lease found and main's head, and it is the fork's head)
+  // A verified refresh (the Worker read the merge on the branch: its parents
+  // are the head the lease found and main's head, and it is the branch's head)
   // or, with no head, the Worker's finding that the task's head already
   // holds main. The task's head becomes the merge as a push would make it;
   // an accepted task goes back to submitted, since its acceptance named
@@ -10972,7 +10972,7 @@ export class Ledger extends DurableObject<Env> {
     const key = resultKey(id, report.expectedHead, report.mainHead);
     const recorded = this.refreshResultOf(key);
     if (recorded && recorded.by === actor && (recorded.head ?? null) === (report.head ?? null)) return { item: this.item(id), result: recorded, replay: true };
-    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the task's fork", 409, `run atelier refresh-lease ${id} --job refresh to start again`);
+    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the task's branch", 409, `run atelier refresh-lease ${id} --job refresh to start again`);
     const at = new Date().toISOString();
     const item = this.item(id);
     const target = this.refreshTargetOf(id)!;
@@ -10997,7 +10997,7 @@ export class Ledger extends DurableObject<Env> {
     if (!report.agent || !sameActor(report.agent, maker)) {
       throw new RuleError("bad_agent", `the refreshed merge's Agent line names ${report.agent ?? "nobody"}, not ${maker}, who made it`, 409);
     }
-    // The fork's head may have been recorded already, from the push event
+    // The branch's head may have been recorded already, from the push event
     // (observePush); any other head is a push the lease did not make.
     if (item.head !== report.expectedHead && item.head !== report.head) {
       throw new RuleError("head_moved", `${id} moved to ${(item.head ?? "").slice(0, 8)} under the refresh; the refresh is not recorded`, 409, `run atelier refresh-lease ${id} --job refresh to start again`);
@@ -11057,7 +11057,7 @@ export class Ledger extends DurableObject<Env> {
   // conflicts all mechanical (a resolver is chosen, or the refresh waits for
   // one, saying why), or not (the conflict goes back to the builder with
   // the merge base, both heads, the paths and the hunks); or the task moved
-  // under the lease, or its push was refused because the fork moved
+  // under the lease, or its push was refused because the branch moved
   // (superseded: queued again from the new head). A repeated report answers
   // the recorded outcome.
   taskRefreshFailed(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; outcome: string; reason: string; report?: unknown }, offers: readonly SeenOffer[] | null = null): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
@@ -11171,7 +11171,7 @@ export class Ledger extends DurableObject<Env> {
     // claim reserving its generation sets it afterwards (assignOwner).
     const set = [...keys.map((k) => `${k} = ?`), ...(owning ? [generation, "claim_pending = NULL"] : [])].join(", ");
     // Every change of an item's head is written here (a push, a push seen on
-    // the fork, a landing's merge of main pushed, a fork made or moved), so
+    // the branch, a landing's merge of main pushed, a branch made or moved), so
     // the review requests at the head it leaves are closed here, once, for
     // every path (t300).
     const from = "head" in fields ? (this.sql.exec(`SELECT head FROM items WHERE id = ?`, id).toArray()[0]?.head as string | null | undefined) ?? null : null;
@@ -11737,7 +11737,8 @@ function toItem(r: Row): Item {
     scope: JSON.parse(r.scope as string),
     state: r.state as ItemState,
     owner: (r.owner as string | null) ?? null,
-    fork: (r.fork as string | null) ?? null,
+    // The item's workspace, KEY/t/N, kept in the 1.0 schema's fork column.
+    workspace: (r.fork as string | null) ?? null,
     base: (r.base as string | null) ?? null,
     head: (r.head as string | null) ?? null,
     acceptedHead: (r.accepted_head as string | null) ?? null,

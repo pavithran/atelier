@@ -1,9 +1,9 @@
-// A baseline served over HTTP as Artifacts serves one, for tests whose
+// A baseline served over HTTP as Repos serves one, for tests whose
 // credentials matter (clone, pull): f.root holds the bare repositories, and
 // f.http = { valid: Set of tokens, sent: [] } records every request's tokens.
 import { spawn } from "node:child_process";
 
-// git http-backend behind a check of the Authorization header, as Artifacts
+// git http-backend behind a check of the Authorization header, as Repos
 // serves a baseline: a request is served only when every Authorization
 // header it carries holds a token in `valid`, and at least one does.
 export function serveGit(req, res, f) {

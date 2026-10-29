@@ -269,7 +269,7 @@ function artifactsOf(repos: Record<string, { log: Commit[]; trees: Record<string
         [Symbol.dispose]() {},
       };
     },
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 test("a merge that makes an older main commit the fork point cannot hide a reverted protected file", async () => {
@@ -354,7 +354,7 @@ test("a fast-forwarded task's diff runs from its fork point, and an unreadable m
     fork: { log: [], trees: {} },
   });
   const diff = await mergedDiff(A, "main", null, { commit: "W2", head: "W2", base: "old", onPlanBranch: false });
-  assert.deepEqual(diff.merged, { commit: "W2", from: "fork-point" });
+  assert.deepEqual(diff.merged, { commit: "W2", from: "branch-point" });
   assert.equal(diff.base, "old");
   assert.deepEqual(diff.files.map((f) => [f.path, f.status]), [["a.ts", "modified"], ["b.ts", "added"]]);
   await assert.rejects(mergedDiff(A, "main", null, { commit: "gone", head: "W2", base: "old", onPlanBranch: false }));

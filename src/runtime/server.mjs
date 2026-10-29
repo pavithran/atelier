@@ -1,10 +1,9 @@
 // The Atelier server under Node (Atelier 2.0, task 1; design section 4.2):
 // one process serving `src/index.ts`'s `fetch` over Node's `http`, with the
 // Ledger Durable Objects as SQLite files under the environment's data
-// directory (src/runtime/namespace.mjs). Artifacts reads the bare
-// repositories and `large` is files (src/git/artifacts.mjs, large.mjs); the
-// Artifacts writes refuse with `not_supported` until the tasks that replace
-// them land. The landing Workflow is gone (task 6). The Worker's crons are
+// directory (src/runtime/namespace.mjs). REPOS reads the bare repositories
+// and `large` is files (src/git/local-repos.mjs, large.mjs). The landing
+// Workflow is gone (task 6). The Worker's crons are
 // timers here and its push queue the post-receive hook's POST (task 8).
 //
 // Settings come from three places, later ones winning: defaults for the
@@ -21,7 +20,7 @@ import { Namespace } from "./namespace.mjs";
 import { GitHost, INTERNAL_ROUTES } from "../git/host.mjs";
 import { Timers, realClock } from "./timers.mjs";
 import { ledgerLocks } from "./ledger-locks.mjs";
-import { LocalArtifacts } from "../git/artifacts.mjs";
+import { LocalRepos } from "../git/local-repos.mjs";
 import { LocalLarge } from "./large.mjs";
 
 export const SETTINGS = [
@@ -103,8 +102,7 @@ async function send(res, response, head) {
 // Starts a server for one environment. dataDir: where its Ledgers live
 // (created mode 700). Resolves once it listens, to { url, port, env,
 // namespace, close }.
-// `bindings` replaces ARTIFACTS or LARGE with a
-// test's own until the tasks that replace them land.
+// `bindings` replaces REPOS or LARGE with a test's own.
 // reposDir holds the bare repositories (default DATA/repos), hooksDir the
 // hooks they name (default the checkout's hooks/).
 // `timers` runs the Worker's three crons on timers (src/runtime/timers.mjs):
@@ -120,11 +118,11 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const { LIMITS } = await import("../limits.ts");
   globalThis.caches ??= { default: { match: async () => undefined, put: async () => undefined, delete: async () => false } };
   const repos = resolve(reposDir ?? join(dir, "repos"));
-  const artifacts = new LocalArtifacts({ reposDir: repos });
+  const repoReaders = new LocalRepos({ reposDir: repos });
   // DISK: the free space of the volume the data directory is on, which
   // `atelier situation` reports (G4).
   const disk = { read: () => { const s = statfsSync(dir); return { path: dir, freeBytes: s.bavail * s.bsize, totalBytes: s.blocks * s.bsize }; } };
-  const bindings = { ARTIFACTS: artifacts, LARGE: new LocalLarge(join(dir, "large")), DISK: disk, ...given };
+  const bindings = { REPOS: repoReaders, LARGE: new LocalLarge(join(dir, "large")), DISK: disk, ...given };
   const workerEnv = {};
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
   const git = new GitHost({ dataDir: dir, reposDir: repos, hooksDir, namespace, settings: workerEnv });
@@ -217,7 +215,7 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
     await new Promise((ok) => { internal.close(() => ok()); internal.closeAllConnections(); });
     await namespace.close();
     git.close();
-    artifacts.close();
+    repoReaders.close();
   })();
   return { url, port: bound, env, namespace, git, close, settings: workerEnv, timers: ticking };
 }

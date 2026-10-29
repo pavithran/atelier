@@ -317,17 +317,17 @@ it("behind Access, the owner's Access sign-in confirms an override, and the reco
     await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
     await L.newItem("Rewrite the agent instructions", [], "owner");
     await L.claim("t1", A);
-    await L.setFork("t1", `${name}--t1`, H0, A);
+    await L.setWorkspace("t1", `${name}--t1`, H0, A);
     await L.recordPush("t1", A, H1, H1);
     await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
     await L.submit("t1", A);
     // The fork's log, enough for the forms' check that the revision shown is the one pushed.
     const log = [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }];
-    const ARTIFACTS = { get: async () => ({
+    const REPOS = { get: async () => ({
       log: async (o: { limit?: number } = {}) => log.slice(0, o.limit ?? 50), readCommit: async (h: string) => log.find((c) => c.hash === h) ?? null,
       readTree: async () => null, readBlob: async () => null, info: async () => ({ remote: "https://git.test/r.git", defaultBranch: "main" }), [Symbol.dispose]() {},
-    }) } as unknown as typeof env.ARTIFACTS;
-    const on = { ...bindings, ARTIFACTS } as typeof env;
+    }) } as unknown as typeof env.REPOS;
+    const on = { ...bindings, REPOS } as typeof env;
     const jwt = await assertion();
     const cookie = await signIn(TOKEN, on, { "cf-access-jwt-assertion": jwt });
     // The API's refusal (the owner-token write names its acting model, G18) names the Access sign-in as the factor this server takes.

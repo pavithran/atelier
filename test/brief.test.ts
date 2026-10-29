@@ -12,7 +12,7 @@ const OWNER = "pavi";
 
 const item = (over: Partial<Item> = {}): Item => ({
   id: "t21", title: "Fix the thing.", scope: ["src/**"], state: "submitted", owner: "claude-code/opus-5.5",
-  fork: "p--t21", base: "0".repeat(40), head: H1, acceptedHead: null,
+  workspace: "p--t21", base: "0".repeat(40), head: H1, acceptedHead: null,
   createdAt: T, updatedAt: T, lastPushAt: T, ...over,
 });
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"] };

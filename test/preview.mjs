@@ -43,7 +43,7 @@ const at = (minAgo) => new Date(now.getTime() - minAgo * 60_000).toISOString();
 const policy = { checks: ["npm ci && npm test", "npm run types && npm run typecheck"], protected: ["src/rules.ts", "src/ledger.ts", "src/index.ts"] };
 const project = { name: "atelier", repo: "atelier", policy, createdAt: at(900) };
 const make = (id, title, state, owner, head = HEAD) => ({
-  id, title, state, scope: ["src/**"], owner, fork: `atelier--${id}`, base: BASE, head,
+  id, title, state, scope: ["src/**"], owner, workspace: `atelier--${id}`, base: BASE, head,
   acceptedHead: state === "accepted" || state === "merged" ? head : null, lastPushAt: at(4), updatedAt: at(4), createdAt: at(300),
 });
 const items = [

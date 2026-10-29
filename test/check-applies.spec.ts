@@ -41,7 +41,7 @@ function store(name: string, changed: string) {
       createToken: async () => ({ plaintext: "t", id: "i", expiresAt: "x" }),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 const POLICY = { checks: ["npm test", "xcodebuild build"], checkPaths: [{ command: "xcodebuild build", paths: ["App/**", "project.yml"] }], protected: [] };
@@ -53,7 +53,7 @@ async function pushed(name: string, policy: object = POLICY) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
   await L.newItem("Work", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   return L;
 }
@@ -63,7 +63,7 @@ type Detail = { evidence: Record<string, unknown>[]; gate: { ready: boolean; blo
 it("a check is recorded as not applicable only where the measured paths show it, and the gate then does not wait for it", async () => {
   const name = "applies-docs";
   const L = await pushed(name);
-  const call = api({ ...testEnv, ARTIFACTS: store(name, "docs/a.md") } as typeof env);
+  const call = api({ ...testEnv, REPOS: store(name, "docs/a.md") } as typeof env);
   // The change touches docs/a.md: the build does not apply; npm test applies to every change.
   const everywhere = await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "npm test", head: H1, notApplicable: true });
   expect(everywhere.status).toBe(409);
@@ -87,7 +87,7 @@ it("a check is recorded as not applicable only where the measured paths show it,
 it("a check whose paths the change touches cannot be recorded as not applicable, whatever the caller says", async () => {
   const name = "applies-app";
   const L = await pushed(name);
-  const call = api({ ...testEnv, ARTIFACTS: store(name, "App/View.swift") } as typeof env);
+  const call = api({ ...testEnv, REPOS: store(name, "App/View.swift") } as typeof env);
   const res = await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "xcodebuild build", head: H1, notApplicable: true, changedPaths: ["docs/a.md"] });
   expect(res.status).toBe(409);
   expect(await res.json()).toEqual({ error: "check_applies", detail: "`xcodebuild build` applies to this change, which touches App/View.swift; run it" });
@@ -98,7 +98,7 @@ it("a check whose paths the change touches cannot be recorded as not applicable,
 
 it("init records the paths a check applies to, for registered checks only, and the standing shows them", async () => {
   const name = "applies-init";
-  const call = api({ ...testEnv, ARTIFACTS: store(name, "docs/a.md") } as typeof env);
+  const call = api({ ...testEnv, REPOS: store(name, "docs/a.md") } as typeof env);
   const stray = await call("PUT", `/projects/${name}`, "owner", { checks: ["npm test"], checkPaths: [{ command: "make test", paths: ["src/**"] }] });
   expect(stray.status).toBe(400);
   expect(await stray.json()).toMatchObject({ error: "bad_check_paths" });

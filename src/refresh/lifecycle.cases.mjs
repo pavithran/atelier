@@ -18,7 +18,7 @@ async function setup() {
   await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() }, "owner");
   const { id } = await L.newItem("Recover refresh", ["src/**"], "owner");
   await L.claim(id, builder);
-  await L.setFork(id, `${name}-fork`, B, builder);
+  await L.setWorkspace(id, `${name}-branch`, B, builder);
   await L.recordPush(id, builder, H, H);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H, passed: true, by: builder, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
   await L.submit(id, builder);
@@ -86,7 +86,7 @@ it("an expired pre-push lease cannot announce a late push; an unsettled announce
   await expire(L, id);
   await L.renewRefreshLease(id, actor, next.id);
   await refusal(L.beginProjectLanding(id, "owner"), /refresh_pushing/);
-  await L.taskRefreshFailed(id, actor, { ...report(next), outcome: "superseded", reason: "bounded push settled without changing the fork" });
+  await L.taskRefreshFailed(id, actor, { ...report(next), outcome: "superseded", reason: "bounded push settled without changing the branch" });
   await L.beginProjectLanding(id, "owner");
 });
 
@@ -130,9 +130,9 @@ it("the owner alone releases a lapsed, unreconciled push, with a reason, and the
   await refusal(L.releaseRefreshLease(id, "owner", lease.id, "  "), /reason_required/);
   await refusal(L.releaseRefreshLease(id, builder, lease.id, "stuck"), /not_leaseholder/);
   await refusal(L.releaseRefreshLease(id, actor, lease.id, "stuck"), /reconciled/);
-  expect(await L.releaseRefreshLease(id, "owner", lease.id, "resolver retired; fork checked by hand")).toMatchObject({ released: true });
+  expect(await L.releaseRefreshLease(id, "owner", lease.id, "resolver retired; branch checked by hand")).toMatchObject({ released: true });
   const released = (await L.events(id)).find((e) => e.kind === "refresh.push_released");
-  expect(released.data).toMatchObject({ head: R, announcedBy: actor, reason: "resolver retired; fork checked by hand" });
+  expect(released.data).toMatchObject({ head: R, announcedBy: actor, reason: "resolver retired; branch checked by hand" });
   expect((await L.refreshQueue()).find((v) => v.item === id).target).toMatchObject({ state: "queued", lease: null });
   await L.beginProjectLanding(id, "owner");
 });

@@ -27,7 +27,7 @@ async function submitted(project: string, changedPaths: string[]) {
   const id = (await L.newItem("Core change", [], "owner")).id;
   const head = "a".repeat(40);
   await L.claim(id, OPUS, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L.recordPush(id, OPUS, head, head);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths } satisfies Evidence);
   await L.submit(id, OPUS);

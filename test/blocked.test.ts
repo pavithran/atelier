@@ -25,7 +25,7 @@ const block = { reason: "waiting on the API key", by: A, at: T, from: "claimed" 
 function item(over: Partial<Item> = {}): Item {
   return {
     id: "t5", title: "Wire the keys", scope: ["src/**"], state: "blocked", owner: A,
-    fork: "p--t5", base: "0".repeat(40), head: H1, acceptedHead: null,
+    workspace: "p--t5", base: "0".repeat(40), head: H1, acceptedHead: null,
     createdAt: T, updatedAt: T, lastPushAt: T, blocked: block, ...over,
   };
 }

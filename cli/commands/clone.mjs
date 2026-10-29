@@ -70,7 +70,7 @@ export default async function cloneCommand() {
   // which git log shows beside the commits they describe.
   const notes = git(["ls-remote", base.remote, "refs/notes/atelier"], { cwd: dir, token: base.token });
   if (notes) git(["fetch", "--quiet", base.remote, "refs/notes/atelier:refs/notes/atelier"], { cwd: dir, token: base.token });
-  // The files, without the token. Artifacts holds Git LFS pointers alone,
+  // The files, without the token. The repository holds Git LFS pointers alone,
   // so they are kept as pointers, as every clone of a baseline keeps them.
   git(["reset", "--quiet", "--hard", "HEAD"], { cwd: dir, env: { GIT_LFS_SKIP_SMUDGE: "1" } });
   git(["config", "--local", "notes.displayRef", "refs/notes/atelier"], { cwd: dir });

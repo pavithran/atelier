@@ -53,7 +53,7 @@ async function seed() {
   for (let i = 0; i < 5; i++) {
     const { id } = await L().newItem(`Lease rework ${i}`, ["src/lease.ts"], "owner", { accept: ["The lease holds"] });
     await L().claim(id, OPUS, { runner: "home:studio", kind: "home" });
-    await L().setFork(id, `fork-${id}`, H0, OPUS);
+    await L().setWorkspace(id, `fork-${id}`, H0, OPUS);
     await L().recordPush(id, OPUS, HEAD, HEAD);
     await L().addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: HEAD, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/lease.ts"] });
     await L().submit(id, OPUS);
@@ -66,7 +66,7 @@ async function seed() {
   // test later makes it an alias of gpt-6-astra.
   const { id } = await L().newItem("Lease rework 5", ["src/lease.ts"], "owner", { accept: ["The lease holds"] });
   await L().claim(id, OPUS, { runner: "home:studio", kind: "home" });
-  await L().setFork(id, `fork-${id}`, H0, OPUS);
+  await L().setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L().recordPush(id, OPUS, HEAD, HEAD);
   await L().submit(id, OPUS);
   await L().addReview({ itemId: id, criteria: await L().criteria(id), by: FAST, head: HEAD, approve: false, note: "race", at: new Date().toISOString(), findings: [{ file: "src/lease.ts", line: 3, severity: "blocking", text: "the lease can be taken twice" }] });

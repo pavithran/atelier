@@ -44,7 +44,7 @@ async function serve(extra = {}) {
   mkdirSync(secrets, { mode: 0o700 });
   writeFileSync(join(secrets, "ATELIER_TOKEN"), OWNER, { mode: 0o600 });
   writeFileSync(join(secrets, "OVERRIDE_SECRET"), OVERRIDE, { mode: 0o600 });
-  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts }, ...extra });
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { REPOS: artifacts }, ...extra });
   return { root, server };
 }
 

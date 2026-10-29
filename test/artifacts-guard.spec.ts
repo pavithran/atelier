@@ -7,8 +7,8 @@ import { bindingsWith, expectNoStrayArtifactsAccess, strayArtifactsAccesses } fr
 afterEach(() => { expectNoStrayArtifactsAccess(); });
 
 it("records a member the fake lacks even when the caller swallows the throw", async () => {
-  const b = bindingsWith({}, { get: async () => ({ log: async () => [] }) }) as unknown as { ARTIFACTS: { get(r: string): Promise<Record<string, () => unknown>> } };
-  const repo = await b.ARTIFACTS.get("r");
+  const b = bindingsWith({}, { get: async () => ({ log: async () => [] }) }) as unknown as { REPOS: { get(r: string): Promise<Record<string, () => unknown>> } };
+  const repo = await b.REPOS.get("r");
   await repo.log();
   expect(strayArtifactsAccesses()).toEqual([]);
   try { repo.createToken(); } catch { /* swallowed, as mainHeadOf does */ }

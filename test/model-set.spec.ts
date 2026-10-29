@@ -125,7 +125,7 @@ async function submitted(name: string) {
   await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() }, "owner");
   const { id } = await L.newItem("Small task", [], "owner");
   await L.claim(id, BUILDER);
-  await L.setFork(id, `fork-${id}`, H0, BUILDER);
+  await L.setWorkspace(id, `fork-${id}`, H0, BUILDER);
   await L.recordPush(id, BUILDER, H1, H1);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit(id, BUILDER);
@@ -376,14 +376,14 @@ const artifacts = {
     createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
     [Symbol.dispose]() {},
   }),
-} as unknown as typeof env.ARTIFACTS;
+} as unknown as typeof env.REPOS;
 
 function callWithArtifacts(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+  }), { ...testEnv, REPOS: artifacts } as typeof env);
 }
 
 const LUNA = "codex/gpt-6-luna";

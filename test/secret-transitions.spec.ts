@@ -124,7 +124,7 @@ function fakeArtifacts(name: string, base: Record<string, Side>, head: Record<st
       readBlob: async (h: string) => (missing.has(h) || !blobs.has(h) ? null : new Blob([blobs.get(h)!])),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   return { binding, blobs };
 }
 
@@ -135,7 +135,7 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
   await L.newItem("Change one path", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   return L;
 }
 
@@ -152,7 +152,7 @@ async function pushed(row: Row, i: number, missing?: Set<string>) {
   const name = `secret-transition-${i}`;
   const L = await setup(name);
   const { binding, blobs } = fakeArtifacts(name, row.base, row.head, missing);
-  const bindings = { ...testEnv, ARTIFACTS: binding } as typeof env;
+  const bindings = { ...testEnv, REPOS: binding } as typeof env;
   const call = api(bindings);
   const res = await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 });
   expect(res.status).toBe(200);

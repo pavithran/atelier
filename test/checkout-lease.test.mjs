@@ -50,7 +50,7 @@ async function serve(t, root = scratch(t, "atelier-checkout-server-")) {
     writeFileSync(join(secrets, "OVERRIDE_SECRET"), "override-secret-4f1c9e", { mode: 0o600 });
   }
   const artifacts = { create: async () => ({ name: "demo" }), get: async () => ({ info: async () => ({ remote: "https://git.test/demo.git", defaultBranch: "main" }), createToken: async (scope) => ({ id: "tok1", plaintext: "art_dummy", scope, expiresAt: new Date(Date.now() + 3600e3).toISOString() }), revokeToken: async () => true, [Symbol.dispose]() {} }) };
-  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { REPOS: artifacts } });
   let closed = false;
   const close = async () => { if (!closed) { closed = true; await server.close(); } };
   t.after(close);

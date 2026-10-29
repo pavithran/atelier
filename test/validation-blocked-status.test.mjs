@@ -14,7 +14,7 @@ const NOTE = `${VALIDATION_BLOCKED}npm test could not run: listen EPERM 127.0.0.
 // The task as Ledger.release leaves it after the holder's marked release.
 const item = {
   id: "t5", title: "Wire the keys", scope: ["src/**"], state: "blocked", owner: A, runner: "home:studio",
-  fork: "demo--t5", base: "0".repeat(40), head: "a".repeat(40), acceptedHead: null,
+  workspace: "demo--t5", base: "0".repeat(40), head: "a".repeat(40), acceptedHead: null,
   createdAt: T, updatedAt: T, lastPushAt: T, dispatch: { at: T, to: "home" },
   blocked: { reason: validationBlockReason(NOTE), by: A, at: T, from: "claimed" },
 };

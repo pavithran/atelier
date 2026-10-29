@@ -128,7 +128,7 @@ export function buildImported(commits: ImportedCommit[], cutoff: number | null, 
   };
 }
 
-// How many commits are read, in pages of 1,000 (the most Artifacts' log
+// How many commits are read, in pages of 1,000 (the most the repository's log
 // returns at once); a longer history is drawn from its most recent part.
 export const IMPORT_LIMIT = 3000;
 

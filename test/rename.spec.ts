@@ -100,8 +100,8 @@ it("an agent token limited to the old name writes through either name, and new b
   expect(((await viaOld.json()) as { item: { owner: string } }).item.owner).toBe("codex/gpt-6-astra");
   expect((await agent("POST", "/projects/new-b/items/t2/claim", issued.token, {})).status).toBe(200);
   for (const id of ["t1", "t2"]) execFileSync("git", ["rev-parse", "--verify", `refs/heads/t/${id.slice(1)}`], { cwd: dir, encoding: "utf8" });
-  expect((await L("old-b").item("t1")).fork).toBe("old-b/t/1");
-  expect((await L("old-b").item("t2")).fork).toBe("old-b/t/2");
+  expect((await L("old-b").item("t1")).workspace).toBe("old-b/t/1");
+  expect((await L("old-b").item("t2")).workspace).toBe("old-b/t/2");
   expect((await L("old-b").item("t2")).base).toBe(sha);
   // The token's listing shows the project once, under its new name.
   expect(((await (await agent("GET", "/projects")).json()) as { name: string }[]).map((p) => p.name)).toEqual(["new-b"]);

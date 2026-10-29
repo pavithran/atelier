@@ -15,7 +15,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
 import { parseAffectedTests } from "./affected-tests.ts";
-import { checkRemote, agentLine, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { checkRemote, agentLine, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
@@ -176,7 +176,7 @@ async function loginPage(env: Env, error?: string, status = 200): Promise<Respon
 // meaning, and the format, which changes when the reading does.
 async function importedFor(env: Env, project: ProjectRecord, cutoff: number | null): Promise<ImportedHistory | null> {
   try {
-    using repo = await env.ARTIFACTS.get(project.repo);
+    using repo = await env.REPOS.get(project.repo);
     const head = (await repo.log({ limit: 1 }))[0];
     if (!head) return null;
     const key = new Request(`https://atelier.internal/imported/v${IMPORTED_FORMAT}/${encodeURIComponent(project.repo)}/${head.hash}/${cutoff ?? "all"}`);
@@ -233,10 +233,10 @@ async function standingOf(env: Env, key: string): Promise<Standing> {
 }
 
 // Where each accepted task stands against the main head the Ledger last
-// recorded (t60), read from each task's fork (src/accepted-main.ts).
+// recorded (t60), read from each task's branch (src/accepted-main.ts).
 async function acceptedOf(env: Env, L: ReturnType<typeof ledger>): Promise<AcceptedAgainstMain[]> {
   const [items, main] = await Promise.all([L.items(), L.observedMain()]);
-  return readAccepted(items, main, async (fork, head, at) => (await holdsCommit(env, fork, head, at, PREDICT_BUDGET)).holds);
+  return readAccepted(items, main, async (workspace, head, at) => (await holdsCommit(env, workspace, head, at, PREDICT_BUDGET)).holds);
 }
 
 // The runner offers as the index recorded them, or null when they could not
@@ -841,14 +841,14 @@ function codeOf(err: unknown): string {
 }
 
 // A repository's HEAD: the tip of the project's branch, or of a task's
-// branch for its workspace name (src/git/artifacts.mjs). A repository that
+// branch for its workspace name (src/git/local-repos.mjs). A repository that
 // is not there is thrown as it is.
 async function headOf(env: Env, repo: string): Promise<string | null> {
-  using r = await env.ARTIFACTS.get(repo);
+  using r = await env.REPOS.get(repo);
   const [top] = await r.log({ limit: 1 });
   return top?.hash ?? null;
 }
-// Whether the commit `from` holds `target` in its history. Artifacts lists
+// Whether the commit `from` holds `target` in its history. The repository lists
 // a first-parent chain up to a thousand commits at a time, so every chain is
 // read that way: the head's own, carried past each page from the last
 // commit's first parent, and the chain behind each further parent a merge
@@ -863,7 +863,7 @@ async function headOf(env: Env, repo: string): Promise<string | null> {
 const HISTORY_COMMITS = 10_000, HISTORY_READS = 100, HISTORY_PAGE = 1000;
 async function holdsCommit(env: Env, repo: string, from: string, target: string, budget = { commits: HISTORY_COMMITS, reads: HISTORY_READS }): Promise<{ holds: boolean | null; searched: number }> {
   if (from === target) return { holds: true, searched: 0 };
-  using r = await env.ARTIFACTS.get(repo);
+  using r = await env.REPOS.get(repo);
   const seen = new Set<string>();
   const starts = [from];
   let reads = 0;
@@ -891,19 +891,19 @@ async function holdsCommit(env: Env, repo: string, from: string, target: string,
   return { holds: false, searched: seen.size };
 }
 
-// What the Worker found in the fork's history for a push: whether the head
+// What the Worker found in the branch's history for a push: whether the head
 // it sees holds the head the Ledger recorded (null when the search stopped
 // at its budget first, with the number of commits it examined), and the
 // head the caller says `atelier update` rebased from, when it says so.
-async function pushLineage(env: Env, fork: string, observed: string, recorded: string | null, declared: unknown): Promise<PushLineage> {
-  const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, fork, observed, recorded);
+async function pushLineage(env: Env, workspace: string, observed: string, recorded: string | null, declared: unknown): Promise<PushLineage> {
+  const { holds, searched } = !recorded || observed === recorded ? { holds: true, searched: 0 } : await holdsCommit(env, workspace, observed, recorded);
   const rebasedFrom = typeof declared === "string" && /^[a-f0-9]{40,64}$/.test(declared) ? declared : null;
   return { holdsRecorded: holds, searched, rebasedFrom };
 }
 
 // The commits a push brought, each with the actor its final "Agent:
 // harness/model" line names (agentLine), for the Ledger to record those by
-// another actor than the holder (recordPush). It reads the fork's
+// another actor than the holder (recordPush). It reads the branch's
 // first-parent line from the new head back to the head recorded before it,
 // or to the item's base, and stops at any commit on the first-parent line of
 // the repository the item is measured against, so commits a merge or a
@@ -915,14 +915,14 @@ const PUSH_AUTHORS_MAX = 200;
 // task has no approval standing that a merge could carry, so a push reads no
 // history it has no use for. Whatever fails to read is an `unread` answer,
 // which carries nothing.
-async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: string; kind?: string | null; plan?: string | null; fork: string | null; head: string | null }, newHead: string, oldHead = item.head): Promise<RetentionRead | null> {
-  if (item.kind || !item.fork || !oldHead || oldHead === newHead) return null;
+async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: string; kind?: string | null; plan?: string | null; workspace: string | null; head: string | null }, newHead: string, oldHead = item.head): Promise<RetentionRead | null> {
+  if (item.kind || !item.workspace || !oldHead || oldHead === newHead) return null;
   try {
     if (!(await L.retainable(item.id, oldHead))) return null;
     const repo = (await L.project()).repo;
-    using fork = await env.ARTIFACTS.get(item.fork);
-    using baseline = await env.ARTIFACTS.get(await baseRepo(env, L, item, repo));
-    return await readRetention(fork, baseline, oldHead, newHead);
+    using workspace = await env.REPOS.get(item.workspace);
+    using baseline = await env.REPOS.get(await baseRepo(env, L, item, repo));
+    return await readRetention(workspace, baseline, oldHead, newHead);
   } catch (err) {
     console.error(errorLine(`retention read of ${item.id}`, err));
     return { unread: "the repositories could not be read" };
@@ -936,33 +936,33 @@ async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: s
 // task's history holds, so main merged into the task is not counted as its
 // own. Null when the history or the trees cannot be read within one page of
 // each line: the overlap rule then judges the task on its scope.
-async function changedSinceBase(env: Env, fork: string, head: string, againstRepo: string): Promise<string[] | null> {
+async function changedSinceBase(env: Env, workspace: string, head: string, againstRepo: string): Promise<string[] | null> {
   try {
-    using r = await env.ARTIFACTS.get(fork);
-    using against = await env.ARTIFACTS.get(againstRepo);
-    const [work, main]: ArtifactsCommitMetadata[][] = await Promise.all([r.log({ ref: head, limit: HISTORY_PAGE }), against.log({ limit: HISTORY_PAGE })]);
+    using r = await env.REPOS.get(workspace);
+    using against = await env.REPOS.get(againstRepo);
+    const [work, main]: GitCommit[][] = await Promise.all([r.log({ ref: head, limit: HISTORY_PAGE }), against.log({ limit: HISTORY_PAGE })]);
     const base = mergeBase(work, main.map((c) => c.hash));
     const tip = work.find((c) => c.hash === head), from = main.find((c) => c.hash === base);
     if (!tip || !from) return null;
     return await changedPaths(pairReader(r, against), from.treeHash, tip.treeHash);
   } catch (err) {
-    console.error(errorLine(`changed files of ${fork}`, err));
+    console.error(errorLine(`changed files of ${workspace}`, err));
     return null;
   }
 }
 
-async function pushedAuthors(env: Env, fork: string, observed: string, item: { head: string | null; base: string | null }, againstRepo: string): Promise<PushAuthor[]> {
+async function pushedAuthors(env: Env, workspace: string, observed: string, item: { head: string | null; base: string | null }, againstRepo: string): Promise<PushAuthor[]> {
   if (observed === item.head) return [];
-  using r = await env.ARTIFACTS.get(fork);
-  using against = await env.ARTIFACTS.get(againstRepo);
+  using r = await env.REPOS.get(workspace);
+  using against = await env.REPOS.get(againstRepo);
   const stop = new Set((await against.log({ limit: HISTORY_PAGE })).map((c) => c.hash));
   for (const h of [item.head, item.base]) if (h) stop.add(h);
   const authors: PushAuthor[] = [];
   let next: string | undefined = observed, read = 0;
   while (next && !stop.has(next) && read < PUSH_AUTHORS_MAX) {
-    const commits: ArtifactsCommitMetadata[] = await r.log({ ref: next, limit: 50 });
-    const page: Map<string, ArtifactsCommitMetadata> = new Map(commits.map((c) => [c.hash, c] as const));
-    let c: ArtifactsCommitMetadata | undefined = page.get(next);
+    const commits: GitCommit[] = await r.log({ ref: next, limit: 50 });
+    const page: Map<string, GitCommit> = new Map(commits.map((c) => [c.hash, c] as const));
+    let c: GitCommit | undefined = page.get(next);
     if (!c) break;
     // Follow first parents through the page; a parent the page does not hold starts the next read.
     while (c && !stop.has(c.hash) && read < PUSH_AUTHORS_MAX) {
@@ -980,7 +980,7 @@ async function pushedAuthors(env: Env, fork: string, observed: string, item: { h
 // as a 1.0 record may be, falls back to the repository's HEAD.
 async function projectBranch(env: Env, p: ProjectRecord): Promise<string> {
   if (p.branch) return p.branch;
-  using base = await env.ARTIFACTS.get(p.repo);
+  using base = await env.REPOS.get(p.repo);
   return (await base.info()).defaultBranch;
 }
 
@@ -1102,18 +1102,18 @@ async function revokeAgentGrants(env: Env, agentId: string) {
     await I.forgetGrant(agentId, tokenId);
   }
 }
-// The repository an item forks from and is measured against (docs/orchestrator.md,
-// section 5): a part's is its plan's fork, the integration branch, and any
+// The repository an item branches from and is measured against (docs/orchestrator.md,
+// section 5): a part's is its plan's branch, the integration branch, and any
 // other item's is the baseline.
 async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: string | null; plan?: string | null }, baselineRepo: string): Promise<string> {
-  const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
-  return baseRepoOf(item, baselineRepo, planFork);
+  const planWorkspace = item.kind === "part" && item.plan ? (await L.item(item.plan)).workspace : null;
+  return baseRepoOf(item, baselineRepo, planWorkspace);
 }
 
 // The push's secret scan (t332), run for the head the Ledger recorded with a
 // scan pending: every commit the task adds up to that exact commit, each
 // against each of its parents, down to the history of the repository the
-// item is measured against or the commit its fork started at (t295), read by
+// item is measured against or the commit its branch started at (t295), read by
 // commit id (scanCommit), and its findings recorded against that head alone
 // (setSecret, which drops them if the head has moved on). A scan that cannot
 // be read throws, and the pending mark
@@ -1122,10 +1122,10 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
 // other than the one scanned. Returns the item as the scan left it, or as it
 // stands when no scan is pending for its head.
 async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item): Promise<Item> {
-  if (!item.fork || !item.head || item.secretScan !== item.head) return item;
+  if (!item.workspace || !item.head || item.secretScan !== item.head) return item;
   const head = item.head;
   const p = await L.project();
-  const scan = await scanCommit(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head, item.base);
+  const scan = await scanCommit(env.REPOS, await baseRepo(env, L, item, p.repo), item.workspace, head, item.base);
   if (scan.head !== head) throw new Error(`secret scan: ${item.id}'s scan read ${scan.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
 }
@@ -1244,9 +1244,9 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
   const fork = `${ref.key}/${branch}`;
   const command = `atelier migrate ${id} --project ${ref.name}`;
   const holder = item.owner ? `the holder runs atelier claim ${id} --as ${item.owner}` : `the next builder runs atelier claim ${id} --as H/M`;
-  if (item.fork === fork) return json({ item, branch, head: item.head, migrated: false, remote: gitRemote(c, ref.name), next: holder });
+  if (item.workspace === fork) return json({ item, branch, head: item.head, migrated: false, remote: gitRemote(c, ref.name), next: holder });
   assertNotTerminal(item);
-  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace on Artifacts, so nothing moves; its claim here makes ${branch}`, 409, `run atelier claim ${id} --as H/M`);
+  if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace on Artifacts, so nothing moves; its claim here makes ${branch}`, 409, `run atelier claim ${id} --as H/M`);
   const head = item.head ?? item.base;
   if (!head) throw new RuleError("no_head", `${id} records no head or base, so there is nothing to carry`, 409, `only the developer can: release ${id} with atelier release ${id}, so its next claim starts it here`);
   const { remote, token } = sourceOf(body, command);
@@ -1262,7 +1262,7 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
     throw new RuleError("fetch_failed", detail, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
   }
   let moved: Item;
-  try { moved = await L.migrateFork(id, fork, actor, { from: item.fork, head, tip: done.tip, remote: shownRemote(remote) }); }
+  try { moved = await L.migrateFork(id, fork, actor, { from: item.workspace, head, tip: done.tip, remote: shownRemote(remote) }); }
   catch (error) {
     if (done.carried) await git.dropBranch({ key: ref.key, projectBranch: main, branch, task: id, at: head });
     throw error;
@@ -1289,12 +1289,11 @@ async function pushBackAfterMerge(env: Env, L: ReturnType<typeof ledger>, key: s
 // after L.claim recorded it: the task's branch, t/N (plan/N for a plan), is
 // made in the project's repository at the tip of the branch it starts from
 // (the project's, or a part's plan branch) unless it exists, and recorded as
-// the item's fork (KEY/t/N, which src/git/artifacts.mjs reads as the branch)
-// with that tip as its base. A branch already recorded that holds nothing of
-// its own is moved to the tip its start has reached since, as moveEmptyFork
-// re-forked an empty fork. The task grant is minted and recorded as the
-// item's write token, which rotates the old one; a runner's claim gets the
-// same grant as its workspace token. No Artifacts call is made. A failure
+// the item's workspace (KEY/t/N, which src/git/local-repos.mjs reads as the
+// branch) with that tip as its base. A branch already recorded that holds
+// nothing of its own is moved to the tip its start has reached since. The
+// task grant is minted and recorded as the item's write token, which rotates
+// the old one; a runner's claim gets the same grant as its workspace token. A failure
 // gives up a claim this call took; a holder claiming again keeps the item.
 type GitClaim = { key: string; project: string; id: string; actor: string; item: Item; generation: number; replaces: string | null; heldBefore: boolean };
 async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t: GitClaim) {
@@ -1306,22 +1305,22 @@ async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t:
   const p = await L.project();
   const main = await projectBranch(c.env, p);
   const branch = itemBranch(item), from = startBranch(item, main);
-  const fork = `${key}/${branch}`;
+  const workspace = `${key}/${branch}`;
   try {
     // A workspace recorded on an Artifacts fork is moved to this server by
     // the migration, not by a claim.
-    if (item.fork && item.fork !== fork) {
-      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
+    if (item.workspace && item.workspace !== workspace) {
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.workspace}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
     }
     const made = await git.claimBranch({ key, projectBranch: main, branch, from });
     if (!made.head) {
       throw new RuleError("empty_branch", `${from} has no commits on this server yet, so ${id} has nothing to start from`, 409,
         from === main ? `only the developer can: run atelier init in ${p.name}'s checkout, which pushes ${main}` : `claim ${item.plan} first, then run atelier claim ${id} --as ${actor}`);
     }
-    if (!item.fork) await L.setFork(id, fork, made.head, actor, proved, generation);
+    if (!item.workspace) await L.setWorkspace(id, workspace, made.head, actor, proved, generation);
     else if (item.kind !== "plan" && (!item.head || item.head === item.base)) {
       const to = await git.moveEmptyBranch({ key, projectBranch: main, branch, from, base: item.base });
-      if (to && to !== item.base) await L.moveFork(id, actor, fork, item.base, to, proved);
+      if (to && to !== item.base) await L.moveWorkspace(id, actor, workspace, item.base, to, proved);
     }
   } catch (err) {
     await giveUp(err);
@@ -1351,13 +1350,13 @@ async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t:
 }
 
 // Main's head as the baseline holds it now, for the Ledger, which cannot read
-// Artifacts; null when the baseline cannot be read, so a view still renders.
+// the repository; null when the project's branch cannot be read, so a view still renders.
 async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<string | null> {
   try { return await headOf(env, (await L.project()).repo); } catch { return null; }
 }
 
 // A task's refresh as its leaseholder reports it (t462): with a head, the
-// merge it pushed, verified on the fork — the fork's head, with the head the
+// merge it pushed, verified on the branch — the branch's head, with the head the
 // lease found as its first parent and the lease's main head as its second —
 // and the Agent line its message ends with, which the Ledger matches to who
 // made it; with none, the finding that the task's head already holds main,
@@ -1368,23 +1367,23 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
   const hash = /^[a-f0-9]{40,64}$/;
   if (!hash.test(mainHead) || !hash.test(expectedHead) || (head !== null && !hash.test(head))) throw new RuleError("bad_head", "mainHead, expectedHead and head must be full commit hashes", 400);
   const item = await L.item(id);
-  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+  if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
   let agent: string | null = null;
   if (head) {
-    using repo = await env.ARTIFACTS.get(item.fork);
+    using repo = await env.REPOS.get(item.workspace);
     const log = await repo.log({ limit: 20 });
     const commit = log.find((c) => c.hash === head);
     const reasons = [
-      ...(log[0]?.hash !== head ? [`${head.slice(0, 8)} is not the fork's head${log[0] ? ` (${log[0].hash.slice(0, 8)} is)` : ""}`] : []),
+      ...(log[0]?.hash !== head ? [`${head.slice(0, 8)} is not the branch's head${log[0] ? ` (${log[0].hash.slice(0, 8)} is)` : ""}`] : []),
       ...(!commit ? [] : commit.parents?.length !== 2 || commit.parents[0] !== expectedHead || commit.parents[1] !== mainHead
         ? [`${head.slice(0, 8)}'s parents are ${(commit.parents ?? []).map((p) => p.slice(0, 8)).join(", ") || "none"}, not the task's head ${expectedHead.slice(0, 8)} then main's ${mainHead.slice(0, 8)}`] : []),
     ];
     if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
     agent = agentLine(commit?.message ?? "");
   } else {
-    const top = await headOf(env, item.fork);
-    const held = top === expectedHead && (await holdsCommit(env, item.fork, expectedHead, mainHead)).holds === true;
-    if (!held) throw new RuleError("unverified_merge", `${id}'s fork is not at ${expectedHead.slice(0, 8)} holding main's head ${mainHead.slice(0, 8)}, and no merge was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
+    const top = await headOf(env, item.workspace);
+    const held = top === expectedHead && (await holdsCommit(env, item.workspace, expectedHead, mainHead)).holds === true;
+    if (!held) throw new RuleError("unverified_merge", `${id}'s branch is not at ${expectedHead.slice(0, 8)} holding main's head ${mainHead.slice(0, 8)}, and no merge was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
   }
   const transformations = Array.isArray(body.transformations) ? body.transformations.filter((t: unknown): t is string => typeof t === "string").map((t: string) => t.slice(0, 40)) : [];
   const patch = (v: unknown) => (typeof v === "string" && hash.test(v) ? v : null);
@@ -1403,22 +1402,22 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
 // The merge base is the newest plan-branch commit the part's head holds: a
 // part head that holds the branch's head merges cleanly; otherwise the base
 // is the plan head the part's last rework merged (`planHead`), when the part
-// head holds it, else the commit the part forked from. The history search is
+// head holds it, else the commit the part branched from. The history search is
 // bounded by PREDICT_BUDGET, and a search that stops at it falls back to the
-// fork point.
+// branch point.
 const PREDICT_BUDGET = { commits: 500, reads: 5 };
-async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; fork: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
+async function predictConflict(env: Env, L: ReturnType<typeof ledger>, plan: { id: string; workspace: string | null; dispatch?: { part?: string; head?: string } | null }): Promise<string | null> {
   const key = plan.dispatch?.part, head = plan.dispatch?.head;
-  if (!key || !plan.fork || !head) return null;
+  if (!key || !plan.workspace || !head) return null;
   const { part, planHead } = await L.integrationTarget(plan.id, key);
-  if (!part.fork || !part.head || !part.base) return null;
-  const partFork = part.fork, partHead = part.head;
+  if (!part.workspace || !part.head || !part.base) return null;
+  const partWorkspace = part.workspace, partHead = part.head;
   try {
-    using planRepo = await env.ARTIFACTS.get(plan.fork);
-    using partRepo = await env.ARTIFACTS.get(partFork);
+    using planRepo = await env.REPOS.get(plan.workspace);
+    using partRepo = await env.REPOS.get(partWorkspace);
     const [planTop] = await planRepo.log({ limit: 1 });
     if (!planTop) return null;
-    const holds = (target: string) => holdsCommit(env, partFork, partHead, target, PREDICT_BUDGET);
+    const holds = (target: string) => holdsCommit(env, partWorkspace, partHead, target, PREDICT_BUDGET);
     const top = await holds(planTop.hash);
     if (top.holds === true) return null;
     const base = mergeBaseFor(top.holds, planHead, part.base, planHead && planHead !== part.base ? (await holds(planHead)).holds : null);
@@ -1906,7 +1905,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const id = String(body.item);
       if (!/^t[0-9]+$/.test(id)) throw new RuleError("bad_item", "name the task as tN", 400);
       const item = await L.item(id);
-      return json({ kind: "read", ...g, repository: "server", branch: item.fork ? itemBranch(item) : null, into: startBranch(item, branch), head: item.head, base: item.base });
+      return json({ kind: "read", ...g, repository: "server", branch: item.workspace ? itemBranch(item) : null, into: startBranch(item, branch), head: item.head, base: item.base });
     }
     if (body.kind !== "task" && body.kind !== "landing") throw new RuleError("bad_kind", "kind is read, task or landing", 400);
     const id = String(body.item ?? "");
@@ -1944,8 +1943,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
     // A task whose work is still on its Artifacts fork has no branch here
     // yet; a grant now would let a push make t/N apart from that work.
-    if (item.fork && item.fork !== `${ref.key}/${itemBranch(item)}`) {
-      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration, so no credential was issued`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
+    if (item.workspace && item.workspace !== `${ref.key}/${itemBranch(item)}`) {
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.workspace}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration, so no credential was issued`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
     }
     // recordToken waits for the pushes in flight on the task (src/runtime/ledger-locks.mjs).
     const slot = await L.tokenSlot(id);
@@ -2281,7 +2280,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409, `run atelier land ${item} --post-merge status`);
     if (body.action === "prepare") {
       if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409, `run atelier merge ${item}, then record the merge`);
-      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      using repo = await env.REPOS.get((await L.project()).repo);
       const before = await repo.readCommit(run.before), after = await repo.readCommit(run.after);
       if (!before || !after) throw new RuleError("missing_history", "post-merge diff history is unavailable", 409);
       const paths = await changedPaths(repoReader(repo), before.treeHash, after.treeHash);
@@ -2292,7 +2291,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (step?.class === "deploy" && ((body.action === "finish" && body.passed === true) || (body.action === "reconcile" && body.resolution === "completed"))) {
       // Observe independently of the executor's command result. No owner
       // credential is sent to the version endpoint and redirects are refused.
-      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      using repo = await env.REPOS.get((await L.project()).repo);
       const commit = await repo.readCommit(run.after!);
       if (!commit) throw new RuleError("missing_history", "deployment source unavailable", 409);
       const node = await walk(repoReader(repo), commit.treeHash, ["src", "route-level.ts"]);
@@ -2340,7 +2339,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = String(body.commit ?? "");
       if (!/^[0-9a-f]{40}$/.test(commit)) throw new RuleError("bad_commit", "commit must be a 40-character commit id", 400);
       const readTop = async () => {
-        using r = await env.ARTIFACTS.get(p.repo);
+        using r = await env.REPOS.get(p.repo);
         return (await r.log({ ref: `refs/heads/${name}`, limit: 1 }))[0] ?? null;
       };
       // Compare-and-set (t641): the branch's record is read, then its tip
@@ -2485,8 +2484,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "sandbox") throw sandboxRemoved();
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
-    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
-    return json(await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, (await L.project()).repo), item.fork));
+    if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+    return json(await itemDiff(env.REPOS, await baseRepo(env, L, item, (await L.project()).repo), item.workspace));
   }
   // A whole check log or review diff kept in R2 (src/large.ts), served by the
   // sha256 that names it. The key is rebuilt from the project and item the
@@ -2555,18 +2554,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("bad_head", "head must be the full commit hash the workspace pushed, as git rev-parse HEAD prints it", 400);
       }
       const item = await L.item(id);
-      if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
-      const observed = await headOf(env, item.fork);
+      if (!item.workspace) throw new RuleError("no_workspace", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+      const observed = await headOf(env, item.workspace);
       if (!observed) throw new RuleError("empty", "the workspace has no commits");
-      const lineage = await pushLineage(env, item.fork, observed, item.head, body.rebasedFrom);
+      const lineage = await pushLineage(env, item.workspace, observed, item.head, body.rebasedFrom);
       // A rewrite the push does not declare is refused by the Ledger, so no
       // more history is read for it.
       const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
-      const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
+      const authors = refused ? [] : await pushedAuthors(env, item.workspace, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
       const retention = refused ? null : await retentionOf(env, L, item, observed);
       const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true, retention);
       // The files the task changed at the recorded head, for the overlap rule (G13).
-      if (recorded.head === observed && !refused) await L.recordChangedFiles(id, observed, await changedSinceBase(env, item.fork, observed, await baseRepo(env, L, item, (await L.project()).repo)));
+      if (recorded.head === observed && !refused) await L.recordChangedFiles(id, observed, await changedSinceBase(env, item.workspace, observed, await baseRepo(env, L, item, (await L.project()).repo)));
       // The push scan (t332): the added lines at the recorded head are read
       // for key patterns, and the flag records only file and line, never the
       // value. The head was recorded with its scan pending, so a scan that
@@ -2594,7 +2593,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A merged check ran on the merge of the head with a main head the
       // caller names; it needs a workspace to be measured against.
       const merged = check && body.merged === true;
-      if (merged && !item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
+      if (merged && !item.workspace) throw new RuleError("no_workspace", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
       // A claim (a check's command or a report's text) and a check's output
       // are stored as sent, so each over its limit is refused, not cut.
       const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
@@ -2625,23 +2624,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const refused = check ? refusalOf(e.claim) : null;
       if (refused) throw new RuleError("not_read_only", `${refusalText(e.claim, refused)}.`, 409, "check only with commands that read; run atelier check");
       // An observed check counts only against the head Atelier itself reads
-      // from Artifacts, and records the paths Atelier measures there. The
+      // from the repository, and records the paths Atelier measures there. The
       // gate decides whether a change is protected from those paths, and the
       // caller is often the item's own agent, so body.changedPaths is never
       // read. The result itself (body.passed) is the caller's word, shown as
       // run on the caller's machine. Each row names main's head as Atelier reads
       // it now; a merged check is bound to the main head it merged with,
       // which must be a commit on main's line, and measures no paths.
-      if (check && item.fork) {
+      if (check && item.workspace) {
         const p = await L.project();
-        const measured = await measureWorkspace(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+        const measured = await measureWorkspace(env.REPOS, await baseRepo(env, L, item, p.repo), item.workspace);
         if (e.head !== measured.head) throw new RuleError("stale_head", "the workspace has moved since this check ran; push, then check again", 409, "run atelier push, then atelier check");
         e.changedPaths = merged ? null : measured.changedPaths;
         if (measured.main) e.mainHead = measured.main;
         if (merged) {
           const mainHead = String(body.mainHead ?? "");
           if (mainHead !== measured.main) {
-            using baseline = await env.ARTIFACTS.get(p.repo);
+            using baseline = await env.REPOS.get(p.repo);
             if (!/^[a-f0-9]{40,64}$/.test(mainHead) || !(await baseline.log({ limit: 1000 })).some((x) => x.hash === mainHead)) {
               throw new RuleError("unknown_main", `${mainHead.slice(0, 8) || "the main head given"} is not a commit on main; run atelier check --merged again`, 409, "run atelier sync, then atelier check --merged");
             }
@@ -2654,13 +2653,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // applicable, with no result, only when the paths Atelier measured
       // here show it.
       if (check && body.notApplicable === true) {
-        const why = appliesReason((await L.project()).policy, e.claim, item.fork ? e.changedPaths ?? null : null);
+        const why = appliesReason((await L.project()).policy, e.claim, item.workspace ? e.changedPaths ?? null : null);
         if (why) throw new RuleError("check_applies", why, 409);
         e.passed = null;
         e.notApplicable = true;
       }
       // The bindings a later `atelier check` reads to reuse a passing result (t232).
-      if (check && item.fork && !e.notApplicable) {
+      if (check && item.workspace && !e.notApplicable) {
         const reuse = receiptBinding(body.reuse, { project: (await L.project()).name, task: id, head: e.head, mainHead: e.mainHead ?? null, merged, command: e.claim });
         if (reuse) (e as Evidence & { reuse?: unknown }).reuse = reuse;
       }
@@ -2781,7 +2780,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // validates its merge commit and claimed request together in the Ledger.
       if (item.state !== "merged") {
         assertRevision(item, String(body.head ?? ""));
-        if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
+        if (item.workspace && await headOf(env, item.workspace) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
       }
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
@@ -2821,7 +2820,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // branch for a part, the project's for any other item), so the job can
       // diff from the merge base of the head and that branch rather than from
       // the branch point, which a merge of main into the task leaves behind (t230).
-      if (claim.item.fork || claim.item.state === "merged") {
+      if (claim.item.workspace || claim.item.state === "merged") {
         const branch = await projectBranch(env, await L.project());
         const landed = landingOf(claim.item, claim.events);
         const into = startBranch(claim.item, branch);
@@ -2964,15 +2963,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const partKey = String(body.part ?? "");
       const mergeCommit = String(body.mergeCommit ?? "");
       const { plan, part, integrationHead, mainHead } = await L.integrationTarget(id, partKey);
-      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
+      if (!plan.workspace) throw new RuleError("no_workspace", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
       if (!part.head) throw new RuleError("no_head", `part ${partKey} has no verified head`, 409, `run atelier plan show ${id}`);
-      using repo = await env.ARTIFACTS.get(plan.fork);
+      using repo = await env.REPOS.get(plan.workspace);
       const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
       const reasons = verifyIntegration({ log, integrationHead: integrationHead ?? plan.base ?? "", partHead: part.head, mergeCommit });
       if (reasons.length) throw new RuleError("unverified_merge", `the integration does not hold: ${reasons.join("; ")}`, 409, `run atelier plan show ${id}`);
       // A merge-main part's integration puts its main head on the plan's
       // branch when the merge commit holds it, which is read from the branch.
-      const holdsMain = mainHead ? (await holdsCommit(env, plan.fork, mergeCommit, mainHead)).holds === true : false;
+      const holdsMain = mainHead ? (await holdsCommit(env, plan.workspace, mergeCommit, mainHead)).holds === true : false;
       // The integration may let the tick dispatch a part that depends on it,
       // and the tick refreshes the branch first when main has moved, so main's
       // head is read now for it to compare.
@@ -3064,15 +3063,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const mainHead = String(body.mainHead ?? "");
       const mergeCommit = body.mergeCommit === undefined || body.mergeCommit === null ? null : String(body.mergeCommit);
       const { plan, integrationHead } = await L.refreshTarget(id);
-      if (!plan.fork) throw new RuleError("no_fork", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
+      if (!plan.workspace) throw new RuleError("no_workspace", `${id} has no integration branch`, 409, `run atelier plan show ${id}`);
       if (mergeCommit) {
-        using repo = await env.ARTIFACTS.get(plan.fork);
+        using repo = await env.REPOS.get(plan.workspace);
         const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
         const reasons = verifyRefresh({ log, integrationHead: integrationHead ?? plan.base ?? "", mainHead, mergeCommit });
         if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
       } else {
-        const top = await headOf(env, plan.fork);
-        const held = top && /^[a-f0-9]{40,64}$/.test(mainHead) ? (await holdsCommit(env, plan.fork, top, mainHead)).holds : false;
+        const top = await headOf(env, plan.workspace);
+        const held = top && /^[a-f0-9]{40,64}$/.test(mainHead) ? (await holdsCommit(env, plan.workspace, top, mainHead)).holds : false;
         if (held !== true) throw new RuleError("unverified_merge", `the plan's branch does not hold main's head ${mainHead.slice(0, 8)}, and no merge commit was reported`, 409, `merge main into the plan's branch, then run atelier plan refresh ${id}`);
       }
       return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
@@ -3096,8 +3095,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
       }
       const { plan, integrationHead } = await L.refreshTarget(id);
-      if (plan.fork && /^[a-f0-9]{40,64}$/.test(mainHead)) {
-        using repo = await env.ARTIFACTS.get(plan.fork);
+      if (plan.workspace && /^[a-f0-9]{40,64}$/.test(mainHead)) {
+        using repo = await env.REPOS.get(plan.workspace);
         const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", mainHead);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
@@ -3118,8 +3117,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("bad_kind", `kind must be one of ${BUILDER_INTEGRATION_FAILURES.join(", ")}, or left out`, 400);
       }
       const { plan, part, integrationHead } = await L.integrationTarget(id, partKey);
-      if (plan.fork && part.head) {
-        using repo = await env.ARTIFACTS.get(plan.fork);
+      if (plan.workspace && part.head) {
+        using repo = await env.REPOS.get(plan.workspace);
         const log: LogCommit[] = (await repo.log({ limit: 1000 })).map((c) => ({ hash: c.hash, parents: c.parents }));
         const rollback = rollbackFor(log, integrationHead ?? plan.base ?? "", part.head);
         if (rollback.action === "refuse") throw new RuleError("not_rolled_back", rollback.reason, 409);
@@ -3224,7 +3223,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // head among its parents; otherwise it is refused. A record made once
       // stands when made again (L.merged).
       if (item.state !== "merged") {
-        const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await (async () => { using r = await env.ARTIFACTS.get(p.repo); return await r.readCommit(merge); })() : null;
+        const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await (async () => { using r = await env.REPOS.get(p.repo); return await r.readCommit(merge); })() : null;
         const top = commit ? await headOf(env, p.repo) : null;
         const held = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
         if (held === null) throw new RuleError("merge_unconfirmed", `the project's branch could not be read far enough to find ${merge.slice(0, 12)}, so the merge is not recorded`, 409, `run atelier merge ${id} again`);
@@ -3248,7 +3247,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const p = await L.project();
       const before = await L.item(id);
-      // A fork's head starts at its base; only a head pushed since is the task's own.
+      // A branch's head starts at its base; only a head pushed since is the task's own.
       const pushed = before.head && before.head !== before.base ? before.head : null;
       // A paired merge was checked by the CLI against one head; the record
       // is of that head only, never one chosen here (t726 round 1).
@@ -3261,7 +3260,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const merge = paired ?? (typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null);
       let parents: string[] | null = null, holds: boolean | null = false, tip: string | null = null;
       if (merge) {
-        using baseline = await env.ARTIFACTS.get(p.repo);
+        using baseline = await env.REPOS.get(p.repo);
         const found = await baseline.readCommit(merge);
         parents = found ? found.parents : null;
         const top = found ? await headOf(env, p.repo) : null;
@@ -3269,7 +3268,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         tip = top;
       }
       // As abandon and release do: check, revoke the workspace token, then
-      // record. The fork and token are read together after the baseline
+      // record. The branch and token are read together after the baseline
       // reads, so a claim made meanwhile is the one revoked, and the record
       // is refused if either changes after that read. A revocation that
       // fails changes nothing, and the retry revokes again.
@@ -3424,7 +3423,7 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       // branch (docs/orchestrator.md, section 5), or, with `resolve`, adds
       // the merge-main part for it, built by `to` when named. Main's head is
       // read from the baseline, and whether the branch already holds it from
-      // the plan's fork.
+      // the plan's branch.
       if (body.resolve !== undefined && typeof body.resolve !== "boolean") throw new RuleError("bad_resolve", "resolve must be true or false", 400);
       if (body.to !== undefined && body.resolve !== true) throw new RuleError("bad_to", "to names the builder of the part plan refresh --resolve adds; give it with resolve", 400);
       const p = await L.project();
@@ -3432,8 +3431,8 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       if (!main) throw new RuleError("empty", "the baseline has no commits", 409);
       await L.noteMainHead(main);
       const plan = await L.item(id);
-      const top = plan.kind === "plan" && plan.fork ? await headOf(env, plan.fork) : null;
-      const holds = top ? (await holdsCommit(env, plan.fork!, top, main)).holds === true : false;
+      const top = plan.kind === "plan" && plan.workspace ? await headOf(env, plan.workspace) : null;
+      const holds = top ? (await holdsCommit(env, plan.workspace!, top, main)).holds === true : false;
       // A plan submitted or accepted goes back to building first, which ends
       // the integrator's hold: as for a release, the refresh is checked, the
       // integrator's write token revoked, and only then the change made.
@@ -3458,7 +3457,7 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
   throw new RuleError("not_found", "no such route", 404);
 }
 
-// A diff is shown when Artifacts can produce one; the page still renders when it cannot.
+// A diff is shown when the repository can be read; the page still renders when it cannot.
 const MODEL_EVENTS = 1000;
 
 // Every event of a project, read a page at a time, newest page first.
@@ -3785,7 +3784,7 @@ async function modelTrends(env: Env, named: readonly string[], pool: readonly Mo
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
-// /p/P/tN/{code,log,commit,history}/… reads task tN's fork. Null when the
+// /p/P/tN/{code,log,commit,history}/… reads task tN's branch. Null when the
 // path is not a browsing path, so the task page keeps /p/P/tN. `parts` is
 // the path after the project, which `ref` has resolved.
 const VIEWS = new Set(["code", "log", "commit", "history"]);
@@ -3798,12 +3797,12 @@ async function browse(env: Env, url: URL, ref: ProjectRef, parts: string[]): Pro
   if (!VIEWS.has(view ?? "")) return null;
   const L = ledger(env, ref.key);
   const p = await L.project();
-  const repoName = item ? (await L.item(item)).fork : p.repo;
-  if (!repoName) return html(renderError(`${item} has no fork yet, so there is nothing to browse.`, `/p/${encodeURIComponent(ref.name)}/${encodeURIComponent(item!)}`, ownerName(env)), 404);
+  const repoName = item ? (await L.item(item)).workspace : p.repo;
+  if (!repoName) return html(renderError(`${item} has no branch yet, so there is nothing to browse.`, `/p/${encodeURIComponent(ref.name)}/${encodeURIComponent(item!)}`, ownerName(env)), 404);
   const atParam = url.searchParams.get("at");
   const at = atParam && HASH.test(atParam) ? atParam : null;
   const w: Where = { project: p, item, at };
-  using repo = await env.ARTIFACTS.get(repoName);
+  using repo = await env.REPOS.get(repoName);
   const s = repoSource(repo);
   const notFound = (what: string) => html(renderError(`${what} is not in this repository.`, codeHref({ ...w, at: null }, []), ownerName(env)), 404);
   if (view === "commit") {
@@ -3846,28 +3845,28 @@ async function diffFor(env: Env, L: ReturnType<typeof ledger>, baselineRepo: str
   const landing = landingOf(item, events);
   if (landing) {
     try {
-      return await mergedDiff(env.ARTIFACTS, landing.onPlanBranch ? await baseRepo(env, L, item, baselineRepo) : baselineRepo, item.fork, landing);
+      return await mergedDiff(env.REPOS, landing.onPlanBranch ? await baseRepo(env, L, item, baselineRepo) : baselineRepo, item.workspace, landing);
     } catch (err) {
       console.error("merged diff unavailable", err);
       return "unavailable";
     }
   }
-  const fork = item.fork;
-  if (!fork) return null;
+  const workspace = item.workspace;
+  if (!workspace) return null;
   let diff: ItemDiff | null;
   try {
-    diff = await itemDiff(env.ARTIFACTS, baselineRepo, fork);
+    diff = await itemDiff(env.REPOS, baselineRepo, workspace);
   } catch (err) {
     console.error("diff unavailable", err);
     return "unavailable";
   }
   // The diff is against main's head. The merge preview, read beside it, works
-  // from the fork point the workspace's own history presents and says how far
+  // from the branch point the workspace's own history presents and says how far
   // main has moved; when it cannot be read the diff is still shown, and the
   // page says the preview is missing.
   if (diff?.files.length) {
     try {
-      diff.main = await previewAgainstMain(env.ARTIFACTS, baselineRepo, fork);
+      diff.main = await previewAgainstMain(env.REPOS, baselineRepo, workspace);
     } catch (err) {
       console.error("merge preview unavailable", err);
       diff.main = null;
@@ -3877,7 +3876,7 @@ async function diffFor(env: Env, L: ReturnType<typeof ledger>, baselineRepo: str
 }
 
 // A review's diff, kept in R2 by reference (t284): when the change, read from
-// Artifacts as the item's own diff, is too large for a review brief to carry
+// the repository as the item's own diff, is too large for a review brief to carry
 // — the 888 KB diff that broke a review on 2026-10-07 — it is stored whole
 // and the claim names the reference, so a brief and the ledger hold a key
 // instead of megabytes. Nothing is stored when the diff cannot be read, when
@@ -3888,13 +3887,13 @@ async function storedReviewDiff(
   env: Env, L: ReturnType<typeof ledger>, claim: ReviewClaim, projectKey: string, actor: string, proved: boolean,
 ) {
   const item = claim.item;
-  if (!item.fork) return null;
+  if (!item.workspace) return null;
   try {
     const p = await L.project();
     const landed = landingOf(item, claim.events);
     const diff = landed
-      ? await mergedDiff(env.ARTIFACTS, landed.onPlanBranch ? await baseRepo(env, L, item, p.repo) : p.repo, item.fork, landed)
-      : await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+      ? await mergedDiff(env.REPOS, landed.onPlanBranch ? await baseRepo(env, L, item, p.repo) : p.repo, item.workspace, landed)
+      : await itemDiff(env.REPOS, await baseRepo(env, L, item, p.repo), item.workspace);
     if (!diff) return null;
     const text = renderDiffText(item.id, diff);
     if (text.length <= DIFF_INLINE_MAX) return null;
@@ -4023,29 +4022,29 @@ async function onMainLine(env: Env, repo: string, commit: string): Promise<boole
 }
 
 // A plan is accepted only where its branch would merge with main as main is
-// now, previewed from the plan's fork as the merge preview reads a task's
+// now, previewed from the plan's branch as the merge preview reads a task's
 // workspace (previewAgainstMain). A conflict would stop atelier merge after
 // the acceptance, so the owner is told to take main into the branch first,
 // with plan refresh. A branch whose history holds main's head (holdsCommit,
 // which follows every merge parent) merges as a fast-forward or cleanly and
 // is accepted without a preview; the preview itself follows merges' further
 // parents too (mergedHistory in src/preview/merge.ts), so main taken in by
-// an integrated merge-main part is its fork point (t274). A preview that
+// an integrated merge-main part is its branch point (t274). A preview that
 // cannot be read holds nothing back: atelier merge still stops on a
 // conflict, and withdraws the acceptance then.
 async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<void> {
   const item = await L.item(id);
-  if (item.kind !== "plan" || !item.fork) return;
+  if (item.kind !== "plan" || !item.workspace) return;
   const { repo } = await L.project();
   try {
-    const [main, head] = await Promise.all([headOf(env, repo), headOf(env, item.fork)]);
-    if (main && head && (await holdsCommit(env, item.fork, head, main)).holds) return;
+    const [main, head] = await Promise.all([headOf(env, repo), headOf(env, item.workspace)]);
+    if (main && head && (await holdsCommit(env, item.workspace, head, main)).holds) return;
   } catch (err) {
     console.error("plan history unavailable", err);
   }
   let preview: Awaited<ReturnType<typeof previewAgainstMain>>;
   try {
-    preview = await previewAgainstMain(env.ARTIFACTS, repo, item.fork);
+    preview = await previewAgainstMain(env.REPOS, repo, item.workspace);
   } catch (err) {
     console.error("plan merge preview unavailable", err);
     return;
@@ -4061,7 +4060,7 @@ const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
-  if (item.fork && await headOf(env,item.fork) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
+  if (item.workspace && await headOf(env,item.workspace) !== expected) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
 }
 
 // ── UI ─────────────────────────────────────────────────────────────────────
@@ -4481,7 +4480,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
       }
       case "ship": {
         // The approval form binds to the baseline's head as read now; the page
-        // still draws when Artifacts cannot be read, without the form.
+        // still draws when the repository cannot be read, without the form.
         const head = await headOf(env, p.repo).catch(() => null);
         return html(renderProjectShip(p, renderActions(p.name, await L.actionApprovals(), await L.actionRuns(10), head), ownerName(env)));
       }
@@ -4541,13 +4540,13 @@ const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles",
 
 // A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
 // task 8; design section 4.4): what queue() did for a push event from
-// Artifacts, for one push and with no queue behind it. The hook POSTs
+// the repository, for one push and with no queue behind it. The hook POSTs
 // { project, ref, before, after, grant } to the loopback internal listener
 // with the per-process secret (src/git/host.mjs) and waits for this answer;
 // a failure is logged there and the ref stays moved, so the next `atelier
 // push` records the head (the push route reads the branch itself).
 // The branch is read again here (headOf), never taken from the hook's word,
-// and observed as the Artifacts event was: a head that does not hold the
+// and observed as a push event was: a head that does not hold the
 // recorded one is noted (push.unrecorded), not taken as progress; one that
 // does is recorded with the authors its commits name and the retention a
 // merge of main may carry, and the hook's own secret scan becomes its scan
@@ -4555,7 +4554,7 @@ const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles",
 // from the server's own grant record), so the push is recorded as that
 // holder's, as `atelier push` would record it a moment later (recordPush);
 // a push recordPush refuses (a rewrite not declared, a holder no longer
-// holding) is observed as an Artifacts event was (observePush). A push to
+// holding) is observed as a push event was (observePush). A push to
 // any other ref, or to the branch of a task that is closed or no longer its
 // workspace, records nothing.
 export type PushedNotice = { project: string; ref: string; before?: string; after?: string; actor?: string };
@@ -4566,15 +4565,15 @@ export async function observePushed(env: Env, notice: PushedNotice): Promise<{ o
   if (!project) return { observed: false, reason: `no project ${notice.project}` };
   const key = project.key ?? project.name;
   const L = ledgerOf(env, project);
-  const fork = `${key}/${branch}`;
-  const itemId = await L.itemIdOfFork(fork);
+  const workspace = `${key}/${branch}`;
+  const itemId = await L.itemIdOfWorkspace(workspace);
   const item = itemId ? await L.item(itemId) : undefined;
   if (!item) return { observed: false, reason: `no task's workspace is ${branch}` };
   if (["merged", "abandoned"].includes(item.state)) return { observed: false, item: item.id, reason: `${item.id} is ${item.state}` };
-  const current = await headOf(env, fork);
+  const current = await headOf(env, workspace);
   if (!current) return { observed: false, item: item.id, head: null, reason: `${branch} has no commits` };
-  const { holdsRecorded } = await pushLineage(env, fork, current, item.head, null);
-  const authors = holdsRecorded ? await pushedAuthors(env, fork, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
+  const { holdsRecorded } = await pushLineage(env, workspace, current, item.head, null);
+  const authors = holdsRecorded ? await pushedAuthors(env, workspace, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
   const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
   let recorded: Item = await L.hookPush(item.id, notice.actor ?? null, current, notice.after ?? null, holdsRecorded, authors, retention);
   if (recorded.head === current) recorded = await scanRecorded(env, L, recorded);

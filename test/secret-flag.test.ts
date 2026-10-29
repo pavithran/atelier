@@ -16,7 +16,7 @@ const flag: SecretFlag = { file: "src/keys.ts", line: 12, fingerprint: "f".repea
 function item(over: Partial<Item> = {}): Item {
   return {
     id: "t5", title: "Wire the keys", scope: ["src/**"], state: "submitted", owner: A,
-    fork: "p--t5", base: "0".repeat(40), head: H1, acceptedHead: null,
+    workspace: "p--t5", base: "0".repeat(40), head: H1, acceptedHead: null,
     createdAt: T, updatedAt: T, lastPushAt: T, ...over,
   };
 }

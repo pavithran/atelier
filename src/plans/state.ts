@@ -97,11 +97,11 @@ export interface PlanRecord {
   completedAt?: string;                // when every part had merged
   // The plan branch's integration head (docs/orchestrator.md, section 5): the
   // merge commit of its latest recorded integration or refresh, or null when
-  // none is recorded (the branch then sits at the commit the plan forked from).
+  // none is recorded (the branch then sits at the commit the plan branched from).
   integrationHead?: string | null;
   // The main head the branch last took: the one its latest recorded refresh
   // merged in, or found already held. Absent until a refresh is recorded;
-  // the branch then holds main as it stood when the plan forked (the plan
+  // the branch then holds main as it stood when the plan branched (the plan
   // item's base).
   mainTaken?: string | null;
   // The plan's latest refresh, dispatched, recorded or failed.
@@ -130,7 +130,7 @@ export interface AddedPart {
 }
 
 // One refresh of a plan's branch (docs/orchestrator.md, section 5): the
-// integrator merges main's head into the branch, so later parts fork from
+// integrator merges main's head into the branch, so later parts branch from
 // it and later integrations build on it. `by` is the owner, who ran
 // atelier plan refresh, or the orchestrator, whose tick dispatched it.
 export interface PlanRefresh {
@@ -145,7 +145,7 @@ export interface PlanRefresh {
 }
 
 // The main head a plan's branch holds: its latest recorded refresh's, or
-// else the commit the plan forked from.
+// else the commit the plan branched from.
 export function mainTakenOf(record: PlanRecord, plan: Pick<Item, "base">): string | null {
   return record.mainTaken ?? plan.base ?? null;
 }
@@ -174,7 +174,7 @@ export function refreshDecision(input: { main: string | null; taken: string | nu
 // A refresh that conflicts leaves main where the plan's branch cannot take it
 // without a model resolving the conflict, and the plan's own merge to main
 // would meet the same conflict. The Ledger adds a merge-main part for that
-// main head: its builder's workspace forks from the plan's branch, the runner
+// main head: its builder's workspace branches from the plan's branch, the runner
 // merges main into it and leaves the conflicts for the builder to resolve,
 // and its integration puts main on the plan's branch.
 
@@ -214,7 +214,7 @@ export function mergeMainPart(mainHead: string, scope: readonly string[]): PlanP
     key: mergeMainKey(mainHead),
     title: `Merge main at ${short} into the plan's branch`,
     kind: "build", taskKind: "refactor", scope: [...scope], dependsOn: [], provides: [], uses: [],
-    brief: `Main at ${mainHead} conflicts with the plan's branch. The runner merges it into this part's workspace, which forks from the plan's branch, and leaves the conflicts in place. Resolve each so that both sides' behaviour and both sides' claims hold, then commit the merge.`,
+    brief: `Main at ${mainHead} conflicts with the plan's branch. The runner merges it into this part's workspace, which branches from the plan's branch, and leaves the conflicts in place. Resolve each so that both sides' behaviour and both sides' claims hold, then commit the merge.`,
     acceptance: [
       `The head is a merge that has main at ${short} as a parent, or descends from one.`,
       "No conflict markers remain in any file.",

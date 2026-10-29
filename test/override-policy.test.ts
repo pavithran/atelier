@@ -22,7 +22,7 @@ const forbidding: ProjectPolicy = { ...policy, noOverride: true };
 
 function item(over: Partial<Item> = {}): Item {
   return {
-    id: "t1", title: "Rewrite the agent instructions", scope: [], state: "submitted", owner: "claude-code/opus-5.5", fork: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
+    id: "t1", title: "Rewrite the agent instructions", scope: [], state: "submitted", owner: "claude-code/opus-5.5", workspace: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
     createdAt: T, updatedAt: T, lastPushAt: T, ...over,
   };
 }

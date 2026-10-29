@@ -49,7 +49,7 @@ it("evidence keeps a whole log's reference beside its tail, and the event names 
   const L = await setup("large-evidence");
   await L.newItem("Keep the whole log", ["src/**"], "owner");
   await L.claim("t1", "claude-code/opus-5.5");
-  await L.setFork("t1", "large-evidence--t1", H0, "claude-code/opus-5.5");
+  await L.setWorkspace("t1", "large-evidence--t1", H0, "claude-code/opus-5.5");
   await L.recordPush("t1", "claude-code/opus-5.5", H1, H1);
   const whole = "x".repeat(6000);
   const ref = (await putLarge(env.LARGE, "logs", "large-evidence", "t1", whole))!;
@@ -69,7 +69,7 @@ it("a stored review diff is recorded in the ledger by reference, and refused for
   const L = await setup("large-diff");
   await L.newItem("Review it", ["src/**"], "owner");
   await L.claim("t1", "claude-code/opus-5.5");
-  await L.setFork("t1", "large-diff--t1", H0, "claude-code/opus-5.5");
+  await L.setWorkspace("t1", "large-diff--t1", H0, "claude-code/opus-5.5");
   await L.recordPush("t1", "claude-code/opus-5.5", H1, H1);
   const ref = (await putLarge(env.LARGE, "diffs", "large-diff", "t1", "diff --git a/x b/x\n+1\n".repeat(20_000)))!;
   await L.reviewDiffStored("t1", "zcode/glm-5.3", H1, ref);

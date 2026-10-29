@@ -13,7 +13,7 @@ export type Lane = "owner" | "agent" | "reviewer";
 // The life of a task in five verbs, the words the app, the README, the docs
 // and the video share. They are labels only: the commands keep their names
 // (`start`, `push`, `check`, `review`, `land`, `merge`).
-export type Verb = "Claim" | "Fork" | "Prove" | "Review" | "Land";
+export type Verb = "Claim" | "Branch" | "Prove" | "Review" | "Land";
 
 export interface Verbed {
   verb: Verb;
@@ -25,8 +25,8 @@ export interface Verbed {
 
 export const STEPS: Verbed[] = [
   { verb: "Claim", line: "One holder per task.", about: "An agent claims an open task with `atelier start`. The project's Durable Object grants it atomically, so a second claimant is refused." },
-  { verb: "Fork", line: "Every task its own fork.", about: "The claim forks the baseline into a workspace for that task alone, with one write token for its holder. The agent commits and pushes there, never to the project." },
-  { verb: "Prove", line: "The checks run on the exact head.", about: "`atelier check` runs the required checks on a clean clone of exactly the head Atelier reads from Artifacts, on the machine that asks, and only those Observed results count; what an agent says it ran is shown and never counted." },
+  { verb: "Branch", line: "Every task its own branch.", about: "The claim branches the baseline into a workspace for that task alone, with one write token for its holder. The agent commits and pushes there, never to the project." },
+  { verb: "Prove", line: "The checks run on the exact head.", about: "`atelier check` runs the required checks on a clean clone of exactly the head Atelier reads from the repository, on the machine that asks, and only those Observed results count; what an agent says it ran is shown and never counted." },
   { verb: "Review", line: "Another company reviews, or in single-family mode another model.", about: "A change to a protected path needs an approval from a model of another family than every contributor by default; a project set to single-family mode takes a different model of its one company from every contributor, and says so wherever the review shows. No agent reviews its own work." },
   { verb: "Land", line: "One merge at a time, with a receipt.", about: "The developer accepts one exact head through the gate and it merges, one merge per project at a time under the landing lease, with the task's record attached as a git note." },
 ];
@@ -63,13 +63,13 @@ export const LOOP: Step[] = [
   },
   {
     name: "Workspace", lane: "agent", command: "push", moves: "a push",
-    records: ["Own fork made;", "head read from", "Artifacts, not", "as reported"],
-    detail: "The Worker forks the baseline into a repository for the task and mints an eight-hour write token for the claimant alone. The agent works in a clone outside the project checkout, commits, and runs `atelier push`. Atelier reads the head from Artifacts and records that head; when the agent named a different one, the ledger records the mismatch.",
+    records: ["Own branch made;", "head read from", "the branch, not", "as reported"],
+    detail: "The server makes the task's branch t/N at the project branch's tip and mints a write grant for that branch, for the claimant alone. The agent works in a clone outside the project checkout, commits, and runs `atelier push`. Atelier reads the head from the branch and records that head; when the agent named a different one, the ledger records the mismatch.",
   },
   {
     name: "Checks", lane: "agent", command: "check", moves: "a check result",
     records: ["Observed result", "at that head:", "pass or fail"],
-    detail: "`atelier check` clones the workspace afresh at that head on the machine that runs it, runs each required check and posts each result. Atelier records a result as Observed only when it names the head Atelier reads from Artifacts, with the paths the change touches, which the Worker measures itself. `--merged` runs them on the would-be merge, the head merged with main as it is now, and the result stands beside the merge preview, bound to both revisions. `atelier report` adds a Reported claim. `atelier submit` marks the task ready, and `atelier done \"summary\"` runs push, check and submit in order.",
+    detail: "`atelier check` clones the workspace afresh at that head on the machine that runs it, runs each required check and posts each result. Atelier records a result as Observed only when it names the head Atelier reads from the repository, with the paths the change touches, which the Worker measures itself. `--merged` runs them on the would-be merge, the head merged with main as it is now, and the result stands beside the merge preview, bound to both revisions. `atelier report` adds a Reported claim. `atelier submit` marks the task ready, and `atelier done \"summary\"` runs push, check and submit in order.",
   },
   {
     name: "Review", lane: "reviewer", command: "review", moves: "a review", conditional: true,
@@ -92,16 +92,16 @@ export const LOOP_RETURN = "a later push moves the head: back to step 4";
 
 export const LOOP_CAPTION = "The loop from task to merge. The developer, an agent and a reviewer act in the three upper lanes. Each step sends one thing to Atelier, named on its arrow, and the lowest lane shows what Atelier records. The review is dashed because only some changes require one. A push after step 4 moves the head, so checks, reviews and acceptance start again.";
 
-export const LOOP_LABEL = "The loop from task to merge in seven steps across four lanes. The developer creates a task. An agent claims it, pushes work to its own fork, and runs checks that Atelier records as Observed at that head. A reviewer reviews when the change requires it. The developer accepts the exact head and merges it, and Atelier records the merge commit found on the baseline. A later push returns the task to the checks.";
+export const LOOP_LABEL = "The loop from task to merge in seven steps across four lanes. The developer creates a task. An agent claims it, pushes work to its own branch, and runs checks that Atelier records as Observed at that head. A reviewer reviews when the change requires it. The developer accepts the exact head and merges it, and Atelier records the merge commit found on the baseline. A later push returns the task to the checks.";
 
 export interface Term { term: string; meaning: string }
 
 export const TERMS: Term[] = [
   { term: "Task", meaning: "One piece of work: a title, a scope of the paths it intends to touch and, once claimed, a holder. The API reference calls it an item." },
-  { term: "Baseline", meaning: "Atelier's copy of the project's branch, the one `atelier init` registered (often `main`), held in an Artifacts repository." },
-  { term: "Workspace", meaning: "A task's own fork of the baseline, also an Artifacts repository. Only the task's holder has a write token for it." },
+  { term: "Baseline", meaning: "Atelier's copy of the project's branch, the one `atelier init` registered (often `main`), held in the project's repository on the server." },
+  { term: "Workspace", meaning: "A task's own branch, t/N, in the project's repository. Only the task's holder has a write grant for it." },
   { term: "Head", meaning: "The latest commit in a workspace. Results, reviews and acceptance each name the head they apply to." },
-  { term: "Observed", meaning: "A required check's result, recorded against the head Atelier read from Artifacts, from a run on a clean clone of that head, on the machine that ran it." },
+  { term: "Observed", meaning: "A required check's result, recorded against the head Atelier read from the repository, from a run on a clean clone of that head, on the machine that ran it." },
   { term: "Reported", meaning: "A statement an agent made about its own work. It is shown and never counted." },
   { term: "Pending", meaning: "A required check with no Observed result at the current head." },
   { term: "Gate", meaning: "The function that decides whether a task can be accepted and lists what still blocks it: `gate` in `src/rules.ts`." },
@@ -128,26 +128,26 @@ export const RULES: Rule[] = [
     where: [{ file: "src/rules.ts", symbol: "assertClaimable" }, { file: "src/rules.ts", symbol: "assertOwner" }],
   },
   {
-    title: "Separate forks for agents", verb: "Fork",
-    enforced: "A claim forks the baseline into a repository for that task, and the claimant's write token covers that repository alone. Only the developer token can obtain a write token for the baseline; an agent token is refused.",
+    title: "Separate branches for agents", verb: "Branch",
+    enforced: "A claim branches the baseline into a repository for that task, and the claimant's write token covers that repository alone. Only the developer token can obtain a write token for the baseline; an agent token is refused.",
     why: "A wrong or abandoned change in one workspace cannot touch the baseline or another task's work.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }],
   },
   {
-    title: "One write token per workspace", verb: "Fork",
+    title: "One write token per workspace", verb: "Branch",
     enforced: "A claim revokes the workspace's earlier write token before it mints a new one, so only one is live. The token lasts eight hours, and a handoff, a release or an abandonment revokes it.",
     why: "An agent that has handed work on or given it up must not be able to keep pushing to it.",
     where: [{ file: "src/index.ts", symbol: "revoke" }],
   },
   {
     title: "Observed evidence only", verb: "Prove",
-    enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds, on the caller's machine, and posts the result as a check. Atelier refuses a result that names any head but the one it reads from Artifacts, and measures the paths the change touches itself; the pass or fail of a local run is the word of the machine that ran it. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
+    enforced: "`atelier check` runs each required check on a clean clone of the head the repository holds, on the caller's machine, and posts the result as a check. Atelier refuses a result that names any head but the one it reads from the repository, and measures the paths the change touches itself; the pass or fail of a local run is the word of the machine that ran it. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
     why: "An agent's own statement that its tests pass is not evidence; the developer needs results taken from a clean clone of the head, though a local Observed result is posted by the machine that ran it and is that machine's word.",
     where: [{ file: "src/rules.ts", symbol: "evidenceAt" }, { file: "src/rules.ts", symbol: "gate" }, { file: "src/rules.ts", symbol: "mergedBlockers" }],
   },
   {
     title: "Evidence bound to a head", verb: "Prove",
-    enforced: "A result, a review and an acceptance each name the head they apply to. Atelier refuses a result or a review for any head but the task's current one, reads the head from Artifacts instead of taking the agent's word for it, and withdraws acceptance when a push moves the head.",
+    enforced: "A result, a review and an acceptance each name the head they apply to. Atelier refuses a result or a review for any head but the task's current one, reads the head from the repository instead of taking the agent's word for it, and withdraws acceptance when a push moves the head.",
     why: "An approval of one revision must not authorise another, and a pass at one revision says nothing about the next.",
     where: [{ file: "src/rules.ts", symbol: "assertRevision" }, { file: "src/ledger.ts", symbol: "recordPush" }],
   },
@@ -177,7 +177,7 @@ export const RULES: Rule[] = [
   },
   {
     title: "Waiting work stays merged with main", verb: "Land",
-    enforced: "When main advances, every unfinished task outside a plan with commits of its own (open after a release, submitted or accepted) is queued to take main's new head, one target per task, a newer head replacing an older one and the same head again changing nothing; a task with no commits of its own starts from main when claimed, and a finished one is dropped. A refresh waits, saying why, while a builder holds the task, it is blocked, a runner is about to rebuild it, a review of its head is under way, or it is landing. The integrator merges in a workspace of its own under a lease naming the head it found, says before it pushes (no landing begins meanwhile), pushes without force, and the Worker verifies the merge on the fork: its head, with that head and main's as its parents, and an Agent line naming who made it. The task's head moves as a push would move it; an acceptance never carries to the new head, which needs its checks again. An approval carries too, once, only when the merge changes none of the task's files, is made by no resolver and no one but the holder, and takes main's content exactly (the Worker reads both repositories to decide, and any doubt, an unreadable merge included, is a full review); the carried approval is a record of its own beside the original, and the gate counts it as any review. A push of the same merge by a landing carries it the same way. A conflict whose every hunk is one of the documented mechanical transformations goes to a configured frontier resolver of another family than every reviewer whose approval stands, recorded among the contributors, and the runner verifies its files against the transformations before it commits; with none eligible the refresh waits, saying why. Any other conflict goes back to the builder with the merge base, both heads, the paths and the hunks, and so, before any merge, does an edit the task made in code main moved to another file, which Git would merge cleanly into the file left behind. A refresh never claims, accepts or lands the task.",
+    enforced: "When main advances, every unfinished task outside a plan with commits of its own (open after a release, submitted or accepted) is queued to take main's new head, one target per task, a newer head replacing an older one and the same head again changing nothing; a task with no commits of its own starts from main when claimed, and a finished one is dropped. A refresh waits, saying why, while a builder holds the task, it is blocked, a runner is about to rebuild it, a review of its head is under way, or it is landing. The integrator merges in a workspace of its own under a lease naming the head it found, says before it pushes (no landing begins meanwhile), pushes without force, and the Worker verifies the merge on the branch: its head, with that head and main's as its parents, and an Agent line naming who made it. The task's head moves as a push would move it; an acceptance never carries to the new head, which needs its checks again. An approval carries too, once, only when the merge changes none of the task's files, is made by no resolver and no one but the holder, and takes main's content exactly (the Worker reads both repositories to decide, and any doubt, an unreadable merge included, is a full review); the carried approval is a record of its own beside the original, and the gate counts it as any review. A push of the same merge by a landing carries it the same way. A conflict whose every hunk is one of the documented mechanical transformations goes to a configured frontier resolver of another family than every reviewer whose approval stands, recorded among the contributors, and the runner verifies its files against the transformations before it commits; with none eligible the refresh waits, saying why. Any other conflict goes back to the builder with the merge base, both heads, the paths and the hunks, and so, before any merge, does an edit the task made in code main moved to another file, which Git would merge cleanly into the file left behind. A refresh never claims, accepts or lands the task.",
     why: "A task that waits for review or landing would otherwise meet every conflict main made meanwhile at its landing, where it stops the queue.",
     where: [{ file: "src/refresh/standing.ts", symbol: "refreshStanding" }, { file: "src/refresh/queue.ts", symbol: "enqueue" }, { file: "src/refresh/mechanical.ts", symbol: "TRANSFORMATIONS" }, { file: "src/refresh/resolver.ts", symbol: "pickResolver" }, { file: "src/ledger.ts", symbol: "taskRefreshed" }, { file: "src/retention.ts", symbol: "readRetention" }, { file: "src/rules.ts", symbol: "retentionVerdict" }, { file: "cli/task-refresh.mjs", symbol: "runTaskRefresh" }, { file: "src/moved-code.ts", symbol: "detectMovedEditsAsync" }],
   },
@@ -193,7 +193,7 @@ export const RULES: Rule[] = [
 export const LIMITS: string[] = [
   "Agent tokens prove identity. The developer token may name any actor, a reviewer included: a review it records in a model's name counts as that model's (for a protected change, only when it answers a review request that model claimed for that head), so independence of review holds against agents, not against whoever holds that token, which stays with the developer's tools. A workspace write token is separate and controls only Git pushes.",
   "A local check runs on the caller's machine, which posts its pass or fail. Atelier verifies the head and measures the changed paths, but a caller allowed to post check results, the task's own agent included, could post a pass that was never run, so a local Observed result rests on the command having run the check. Atelier has no check it runs itself: the container check was removed (t768).",
-  "The merge happens on the developer's machine. Artifacts can be read through its binding but written only by a git push with a write token, so Atelier merges in git in the developer's checkout and pushes the result.",
+  "The merge happens on the developer's machine. The repository can be read through its binding but written only by a git push with a write token, so Atelier merges in git in the developer's checkout and pushes the result.",
 ];
 
 // The owner's guide, docs/using-atelier.md, in fewer words. Each point

@@ -73,7 +73,7 @@ export class FakeGit {
   }
 
   // The binding: get(name) answers a repository handle the pages can read.
-  binding(): Artifacts {
+  binding(): Repos {
     const git = this;
     return {
       get: async (name: string) => {
@@ -94,6 +94,6 @@ export class FakeGit {
         };
       },
       create: async () => ({}),
-    } as unknown as Artifacts;
+    } as unknown as Repos;
   }
 }

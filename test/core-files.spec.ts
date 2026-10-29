@@ -24,7 +24,7 @@ const artifacts = {
     createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
     [Symbol.dispose]() {},
   }),
-} as unknown as Artifacts;
+} as unknown as Repos;
 
 // A write on the owner token names the acting model (G18).
 function call(method: string, path: string, body?: unknown) {
@@ -32,7 +32,7 @@ function call(method: string, path: string, body?: unknown) {
     method,
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+  }), { ...testEnv, REPOS: artifacts } as typeof env);
 }
 
 async function project(name: string, coreFiles: string[]) {
@@ -74,7 +74,7 @@ it("the queue holds core overlaps during building and landing, but offers them w
   const L = await project(name, ["src/ledger.ts"]);
   const live = await L.newItem("Live work", ["src/**"], "owner");
   await L.claim(live.id, A);
-  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
+  await L.setWorkspace(live.id, `${name}--${live.id}`, H0, A);
   const create = async (title: string, scope: string[]) => ((await (await call("POST", `/projects/${name}/items`, { title, scope })).json()) as { id: string }).id;
   const core = await create("Core edit", ["src/ledger.ts"]);
   const elsewhere = await create("Non-core overlap", ["src/index.ts"]);

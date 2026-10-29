@@ -61,7 +61,7 @@ test("the planner's brief names the prose standard", async () => {
   assert.equal((await plannerBrief({ ...input, proseStandard: null })).hash, (await plannerBrief(input)).hash);
 });
 
-const item = { id: "t21", title: "Review rules", scope: ["src/review/**"], state: "submitted", owner: GLM, fork: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [GLM], createdAt: T, updatedAt: T, lastPushAt: T };
+const item = { id: "t21", title: "Review rules", scope: ["src/review/**"], state: "submitted", owner: GLM, workspace: "p--t21", base: H0, head: H2, acceptedHead: null, pushActors: [GLM], createdAt: T, updatedAt: T, lastPushAt: T };
 const need = reviewNeeded({
   item, part: true, policy: { checks: ["npm test"], protected: [] }, owner: "owner", reviews: [], now: new Date(T),
   evidence: [{ itemId: "t21", claim: "npm test", grade: "observed", head: H2, passed: true, by: "atelier/sandbox", at: T, changedPaths: ["src/review/x.ts"], where: "sandbox" }],

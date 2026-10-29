@@ -1,13 +1,11 @@
-// The read side of the Artifacts repo API over one bare repository (Atelier
-// 2.0, task 4; design section 4.2): the calls src/diff.ts and the modules
-// beside it make (info, log, readCommit, readTree, readBlob, readFile),
-// answered from Git itself. Objects come through one `git cat-file --batch`
-// process, started on the first read and killed on dispose; the history comes
-// from `git rev-list`. The write-side calls refuse with `not_supported`.
+// A reader over one bare repository (Atelier 2.0, task 4; design section
+// 4.2): the calls src/diff.ts and the modules beside it make (info, log,
+// readCommit, readTree, readBlob, readFile), answered from Git itself.
+// Objects come through one `git cat-file --batch` process, started on the
+// first read and killed on dispose; the history comes from `git rev-list`.
 import { execFile, spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
-import { notSupported } from "../runtime/namespace.mjs";
 
 const HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const LOG_DEFAULT = 50;
@@ -16,19 +14,19 @@ const TYPES = { html: "text/html", css: "text/css", js: "text/javascript", json:
 
 const NUMERIC = { NOT_FOUND: 10000, INVALID_INPUT: 10001, INTERNAL_ERROR: 10002 };
 
-// An error shaped as the binding's: a `code` the callers test.
-export function artifactsError(code, message) {
-  return Object.assign(new Error(message), { name: "ArtifactsError", code, numericCode: NUMERIC[code] ?? 0 });
+// An error with a `code` the callers test.
+export function repoError(code, message) {
+  return Object.assign(new Error(message), { name: "RepoError", code, numericCode: NUMERIC[code] ?? 0 });
 }
 
 function checkHash(hash) {
-  if (typeof hash !== "string" || !HASH.test(hash)) throw artifactsError("INVALID_INPUT", `not an object id: ${String(hash).slice(0, 80)}`);
+  if (typeof hash !== "string" || !HASH.test(hash)) throw repoError("INVALID_INPUT", `not an object id: ${String(hash).slice(0, 80)}`);
 }
 
 // One `git cat-file --batch` process. Requests are answered in order, so they
 // are queued; a missing object answers null.
 // The most a single object read buffers; a larger one fails with
-// MEMORY_LIMIT, as Artifacts declares.
+// MEMORY_LIMIT.
 export const OBJECT_MAX = 64 * 1024 * 1024;
 const HEADER = /^([0-9a-f]{40}|[0-9a-f]{64}) (blob|tree|commit|tag) (\d+)$/;
 
@@ -108,12 +106,12 @@ class Batch {
       const m = HEADER.exec(line);
       if (!m) {
         if (line.endsWith(" missing") || line.endsWith(" ambiguous")) return null;
-        throw artifactsError("INTERNAL_ERROR", `git cat-file answered ${line.slice(0, 80)}`);
+        throw repoError("INTERNAL_ERROR", `git cat-file answered ${line.slice(0, 80)}`);
       }
       const size = Number(m[3]);
       if (size > OBJECT_MAX) {
         await this.#skip(size + 1);
-        throw artifactsError("MEMORY_LIMIT", `object ${m[1].slice(0, 12)} is ${size} bytes, over the ${OBJECT_MAX} read limit`);
+        throw repoError("MEMORY_LIMIT", `object ${m[1].slice(0, 12)} is ${size} bytes, over the ${OBJECT_MAX} read limit`);
       }
       const bytes = await this.#bytes(size + 1);
       return { type: m[2], oid: m[1], bytes: bytes.subarray(0, size) };
@@ -173,7 +171,7 @@ export function parseTree(bytes, width) {
   const out = [];
   for (let at = 0; at < bytes.length;) {
     const sp = bytes.indexOf(32, at), nul = bytes.indexOf(0, sp);
-    if (sp < 0 || nul < 0 || nul + width >= bytes.length) throw artifactsError("INTERNAL_ERROR", "not a valid tree");
+    if (sp < 0 || nul < 0 || nul + width >= bytes.length) throw repoError("INTERNAL_ERROR", "not a valid tree");
     const mode = bytes.toString("latin1", at, sp);
     out.push({ name: bytes.toString("utf8", sp + 1, nul), mode, hash: bytes.toString("hex", nul + 1, nul + 1 + width), type: entryType(mode) });
     at = nul + 1 + width;
@@ -191,7 +189,7 @@ function revList(dir, args) {
       if (!err) return ok(stdout.split("\n").filter(Boolean));
       // A ref that does not resolve is an empty history.
       if (err.code === 128) return ok([]);
-      fail(artifactsError("INTERNAL_ERROR", `git rev-list failed: ${String(err.message).slice(0, 200)}`));
+      fail(repoError("INTERNAL_ERROR", `git rev-list failed: ${String(err.message).slice(0, 200)}`));
     });
   });
 }
@@ -200,29 +198,28 @@ function revList(dir, args) {
 // disposed, so its owner stops tracking it.
 // env: the environment its Git runs with; the pre-receive hook passes its
 // own, which names the push's quarantined objects.
-// head: the ref a log with no ref reads, HEAD unless named; a task's branch
-// read as its fork was (src/git/artifacts.mjs) names refs/heads/t/N.
+// head: the ref a log with no ref reads, HEAD unless named; a task's
+// workspace (src/git/local-repos.mjs) names refs/heads/t/N.
 export function openReader(dir, { name = basename(dir, ".git"), onDispose, env, head: headRef = "HEAD" } = {}) {
   let batch = null, disposed = false;
   const objects = () => {
-    if (disposed) throw artifactsError("INTERNAL_ERROR", "the repository reader was disposed");
+    if (disposed) throw repoError("INTERNAL_ERROR", "the repository reader was disposed");
     return batch ??= new Batch(dir, env);
   };
   const width = (oid) => oid.length / 2;
-  const refuse = (what) => async () => { throw notSupported(`ARTIFACTS.${what}`); };
 
   async function readCommit(hash) {
     checkHash(hash);
     const o = await objects().read(hash);
     if (!o) return null;
-    if (o.type !== "commit") throw artifactsError("INTERNAL_ERROR", "not a valid commit");
+    if (o.type !== "commit") throw repoError("INTERNAL_ERROR", "not a valid commit");
     return parseCommit(o.oid, o.bytes);
   }
 
   return {
     async info() {
       const [head, made] = await Promise.all([readFile(`${dir}/HEAD`, "utf8").catch(() => ""), stat(dir).catch(() => null)]);
-      if (!made) throw artifactsError("NOT_FOUND", `repository not found: ${name}`);
+      if (!made) throw repoError("NOT_FOUND", `repository not found: ${name}`);
       return {
         id: name, name, description: null,
         defaultBranch: /^ref: refs\/heads\/(.+)$/m.exec(head)?.[1] ?? "main",
@@ -248,7 +245,7 @@ export function openReader(dir, { name = basename(dir, ".git"), onDispose, env, 
       checkHash(hash);
       const o = await objects().read(hash);
       if (!o) return null;
-      if (o.type !== "tree") throw artifactsError("INTERNAL_ERROR", "not a valid tree");
+      if (o.type !== "tree") throw repoError("INTERNAL_ERROR", "not a valid tree");
       return parseTree(o.bytes, width(o.oid));
     },
 
@@ -259,16 +256,11 @@ export function openReader(dir, { name = basename(dir, ".git"), onDispose, env, 
     },
 
     async readFile({ ref, path } = {}) {
-      if (!ref || !path) throw artifactsError("INVALID_INPUT", "ref and path are required");
+      if (!ref || !path) throw repoError("INVALID_INPUT", "ref and path are required");
       if (/^-|[\0\n]/.test(ref) || /[\0\n]/.test(path)) return null;
       const o = await objects().read(`${ref}:${path}`);
       return o?.type === "blob" ? new Blob([o.bytes], { type: typeOf(path) }) : null;
     },
-
-    createToken: refuse("createToken"),
-    listTokens: refuse("listTokens"),
-    revokeToken: refuse("revokeToken"),
-    fork: refuse("fork"),
 
     [Symbol.dispose]() {
       if (disposed) return;

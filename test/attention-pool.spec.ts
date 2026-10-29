@@ -31,7 +31,7 @@ it("a protected change with no qualifying reviewer waits on the owner in every v
   await I().registerProject(record);
   await L(NAME).newItem("Touch a protected path", ["AGENTS.md"], "owner");
   await L(NAME).claim("t1", A);
-  await L(NAME).setFork("t1", `${NAME}--t1`, H0, A);
+  await L(NAME).setWorkspace("t1", `${NAME}--t1`, H0, A);
   await L(NAME).recordPush("t1", A, H1, H1);
   await L(NAME).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L(NAME).submit("t1", A);

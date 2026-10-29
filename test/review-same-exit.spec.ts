@@ -42,7 +42,7 @@ it("a review released for a harness exit ends as a recorded fact: no stop, no re
   await I().registerProject(record);
   const { id } = await L(key).newItem("Review me", ["src/**"], "owner", { accept: ["Works"] });
   await L(key).claim(id, BUILDER);
-  await L(key).setFork(id, `${key}--${id}`, BASE, BUILDER);
+  await L(key).setWorkspace(id, `${key}--${id}`, BASE, BUILDER);
   await L(key).recordPush(id, BUILDER, HEAD, HEAD);
   await L(key).addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: HEAD, changedPaths: ["src/a.ts"], by: "owner", at: AT });
   await L(key).submit(id, BUILDER);

@@ -74,7 +74,7 @@ function filesUnder(dir) {
 const consoleError = console.error;
 before(async () => {
   console.error = (...args) => { errors.push(args.join(" ")); consoleError(...args); };
-  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { REPOS: artifacts } });
   base = server.url.replace("localhost", "127.0.0.1");
   assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
   for (let i = 1; i <= 5; i++) assert.equal((await api("POST", "/projects/demo/items", { title: `Task ${i}` })).status, 201);

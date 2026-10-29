@@ -126,7 +126,7 @@ export function takeLease(target: RefreshTarget, input: { job: RefreshJob; actor
   // An announced push survives a lost report, even if observePush has
   // already moved the ledger head or a newer main target has arrived. Its
   // announcer may reconcile it, and so may the integrator, whatever job
-  // announced it: reconciling only reads the fork and records the head, so
+  // announced it: reconciling only reads the branch and records the head, so
   // a resolver no runner offers any more never leaves the task fenced.
   if (target.state === "leased" && lapsed?.pushing) {
     const own = job === lapsed.job && input.same(lapsed.by, actor);

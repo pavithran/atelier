@@ -84,7 +84,7 @@ it("the queue offers a runner the claim its dead run left held, to it alone", as
   const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-held"));
   const actor = `opencode/${model}`;
   await L.claim(created.id, actor, { runner: "home:mbp", kind: "home" });
-  await L.setFork(created.id, "routes-held--t1", "0".repeat(40), actor);
+  await L.setWorkspace(created.id, "routes-held--t1", "0".repeat(40), actor);
 
   const offered = (body: unknown) => call("POST", "/queue", "owner", body).then((r) => r.json());
   const mine = await offered({ runner: "home:mbp", agents: [{ agent: "opencode", models: [model] }] }) as { project: string; item: { id: string; state: string; owner: string }; actor: string }[];
@@ -110,28 +110,28 @@ it("a merge-main dispatch names main's head from the baseline, and needs one whe
 
   // A stand-in Artifacts: the baseline's HEAD is main's head (headOf reads
   // the first log entry); a repository it does not know answers nothing.
-  const artifacts = (head: string | null): Artifacts => ({
+  const artifacts = (head: string | null): Repos => ({
     get: async () => ({
       log: async () => (head ? [{ hash: head }] : []),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts);
-  const post = (body: unknown, art: Artifacts) =>
+  } as unknown as Repos);
+  const post = (body: unknown, art: Repos) =>
     worker.fetch(new Request(`https://atelier.test/api${path}`, {
       method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
       body: JSON.stringify(body),
-    }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: art } as typeof env);
+    }), { ...env, ATELIER_TOKEN: TOKEN, REPOS: art } as typeof env);
 
   // The task has no workspace yet: main's head is read first, and a baseline
   // that answers nothing refuses the headless form asking for one.
   const unreadable = await post({ job: "merge-main", agent: "claude-code", model: "opus-5.5" }, artifacts(null));
   expect([unreadable.status, ((await unreadable.json()) as { error: string }).error]).toEqual([503, "bad_head"]);
   const bare = await post({ job: "merge-main", head: M, agent: "claude-code", model: "opus-5.5" }, artifacts(M));
-  expect([bare.status, ((await bare.json()) as { error: string }).error]).toEqual([409, "no_fork"]);
+  expect([bare.status, ((await bare.json()) as { error: string }).error]).toEqual([409, "no_workspace"]);
 
   const ledger = env.LEDGER.get(env.LEDGER.idFromName("project:routes-merge-main"));
   await ledger.claim(created.id, "claude-code/opus-5.5", null, true);
-  await ledger.setFork(created.id, "routes-merge-main--fork", H0, "claude-code/opus-5.5");
+  await ledger.setWorkspace(created.id, "routes-merge-main--fork", H0, "claude-code/opus-5.5");
   await ledger.release(created.id, "claude-code/opus-5.5", "built");
   // With no head named, the route reads main's head from the baseline and
   // the dispatch carries it, ready for a runner that offers the job.
@@ -193,7 +193,7 @@ it("the diff route measures the workspace against main's head, so a crafted merg
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Crafted merge", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, "old", A);
+  await L.setWorkspace("t1", `${name}--t1`, "old", A);
   // Main moved AGENTS.md from v1 to v2. The head M is a merge whose first
   // parent is old, with AGENTS.md back at v1; the fork holds none of main's
   // newer objects, so main's tree is read from the baseline.
@@ -202,7 +202,7 @@ it("the diff route measures the workspace against main's head, so a crafted merg
     [name]: { log: [{ hash: "new", treeHash: "new", parents: ["old"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, new: { "AGENTS.md": "rules v2\n", "a.ts": "a\n" } } },
     [`${name}--t1`]: { log: [{ hash: "M", treeHash: "M", parents: ["old", "W"] }, { hash: "old", treeHash: "old", parents: [] }], trees: { old, M: { "AGENTS.md": "rules v1\n", "a.ts": "a2\n" } } },
   };
-  const ARTIFACTS = {
+  const REPOS = {
     get: async (repo: string) => {
       const r = repos[repo];
       return {
@@ -213,10 +213,10 @@ it("the diff route measures the workspace against main's head, so a crafted merg
         [Symbol.dispose]() {},
       };
     },
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/diff`, {
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" },
-  }), { ...testEnv, ARTIFACTS } as typeof env);
+  }), { ...testEnv, REPOS } as typeof env);
   expect(res.status).toBe(200);
   const diff = await res.json() as { base: string; head: string; files: { path: string; status: string }[] };
   expect(diff.base).toBe("new");
@@ -230,7 +230,7 @@ it("the submit route refuses a blank or non-text summary, and accepts a missing 
   const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-summary"));
   await L.newItem("Summary refusals", ["src/**"], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", "routes-summary--t1", H0, A);
+  await L.setWorkspace("t1", "routes-summary--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   for (const summary of ["", "   \n", 42, ["x"], null]) {
     const res = await call("POST", "/projects/routes-summary/items/t1/submit", A, { summary });
@@ -242,13 +242,13 @@ it("the submit route refuses a blank or non-text summary, and accepts a missing 
 });
 
 it("init again changes only what it names, and --reset starts over", async () => {
-  const ARTIFACTS = {
+  const REPOS = {
     create: async () => ({}),
     get: async () => ({ info: async () => ({ remote: "https://example/r.git", defaultBranch: "main" }), createToken: async () => ({ plaintext: "t", id: "i", expiresAt: "x" }), [Symbol.dispose]() {} }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   const put = (body: unknown) => worker.fetch(new Request("https://atelier.test/api/projects/kept", {
     method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS } as typeof env);
+  }), { ...testEnv, REPOS } as typeof env);
   const policy = async () => (await (await put({})).json() as { project: { title?: string; policy: Record<string, unknown> } }).project;
 
   const first = await put({ checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], refuseOverlap: true, title: "Kept" });
@@ -272,7 +272,7 @@ it("init again changes only what it names, and --reset starts over", async () =>
   // A first init of a new project with nothing named gets the defaults.
   const fresh = await worker.fetch(new Request("https://atelier.test/api/projects/fresh", {
     method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: "{}",
-  }), { ...testEnv, ARTIFACTS } as typeof env);
+  }), { ...testEnv, REPOS } as typeof env);
   expect((await fresh.json() as { project: { policy: unknown } }).project.policy).toMatchObject({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"] });
 });
 
@@ -288,15 +288,15 @@ it("a merge's lease cannot be cancelled once the merge is on the baseline", asyn
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const H1 = "a".repeat(40), H0 = "0".repeat(40), M = "c".repeat(40);
-  await L.newItem("Land", [], "owner"); await L.claim("t1", "claude-code/opus-5.5"); await L.setFork("t1", `${name}--t1`, H0, "claude-code/opus-5.5");
+  await L.newItem("Land", [], "owner"); await L.claim("t1", "claude-code/opus-5.5"); await L.setWorkspace("t1", `${name}--t1`, H0, "claude-code/opus-5.5");
   await L.recordPush("t1", "claude-code/opus-5.5", H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "claude-code/opus-5.5", at: new Date().toISOString(), changedPaths: ["README.md"] } as never);
   await L.submit("t1", "claude-code/opus-5.5"); await L.accept("t1", "owner", H1); await L.beginLanding("t1", "owner", H1);
   let published = false;
-  const ARTIFACTS = { get: async () => ({ log: async () => (published ? [{ hash: M, parents: [H0, H1] }] : [{ hash: H0, parents: [] }]), [Symbol.dispose]() {} }) } as unknown as Artifacts;
+  const REPOS = { get: async () => ({ log: async () => (published ? [{ hash: M, parents: [H0, H1] }] : [{ hash: H0, parents: [] }]), [Symbol.dispose]() {} }) } as unknown as Repos;
   const cancel = () => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/landing`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ cancel: true }),
-  }), { ...testEnv, ARTIFACTS } as typeof env);
+  }), { ...testEnv, REPOS } as typeof env);
   published = true;
   const refused = await cancel();
   expect(refused.status).toBe(409);
@@ -313,8 +313,8 @@ const artifacts = {
     createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
     [Symbol.dispose]() {},
   }),
-} as unknown as Artifacts;
-const artifactsEnv = { ...testEnv, ARTIFACTS: artifacts };
+} as unknown as Repos;
+const artifactsEnv = { ...testEnv, REPOS: artifacts };
 
 function putTitle(name: string, title: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
@@ -512,7 +512,7 @@ it("removal refuses claimed, submitted and accepted work unless forced", async (
     const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
     await L.newItem("Live work", [], "owner");
     await L.claim("t1", actor);
-    await L.setFork("t1", `${name}--t1`, "0".repeat(40), actor);
+    await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), actor);
     await L.recordPush("t1", actor, head, head);
     if (state !== "claimed") await L.submit("t1", actor);
     if (state === "accepted") {
@@ -617,7 +617,7 @@ it("a check posted for an item with no workspace records no paths, whatever the 
 // Artifacts holding a baseline and one fork as Git objects: first-parent logs,
 // newest first, and flat trees, which is what the evidence route reads to
 // measure the paths a workspace changes.
-function gitStore(logs: Record<string, { hash: string; parents: string[]; treeHash: string }[]>, trees: Record<string, Record<string, string>>): Artifacts {
+function gitStore(logs: Record<string, { hash: string; parents: string[]; treeHash: string }[]>, trees: Record<string, Record<string, string>>): Repos {
   const entries = (h: string) => trees[h] ? Object.entries(trees[h]).map(([name, hash]) => ({ name, mode: "100644", hash, type: "blob" })) : null;
   return {
     get: async (name: string) => {
@@ -631,7 +631,7 @@ function gitStore(logs: Record<string, { hash: string; parents: string[]; treeHa
         [Symbol.dispose]() {},
       };
     },
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 it("the item's own agent cannot name the paths its check changed: the Worker measures them, so a protected change needs its independent review", async () => {
@@ -641,10 +641,10 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   // The fork's one commit edits AGENTS.md; README.md is untouched.
-  const ARTIFACTS = gitStore({
+  const REPOS = gitStore({
     [name]: [{ hash: H0, parents: [], treeHash: T0 }],
     [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],
   }, {
@@ -656,7 +656,7 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
       method,
       headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...actingFor(actor, bearer), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }), { ...testEnv, ARTIFACTS } as typeof env);
+    }), { ...testEnv, REPOS } as typeof env);
   const owner = as(TOKEN, "owner");
   const issue = async (actor: string) => (await (await call("POST", "/tokens", "owner", { actor, projects: [name] })).json() as { token: string }).token;
   const agent = as(await issue(A), null), reviewer = as(await issue(B), null);
@@ -699,7 +699,7 @@ it("the evidence route measures against main's head, so a crafted merge cannot h
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Touch a.ts", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, OLD, A);
+  await L.setWorkspace("t1", `${name}--t1`, OLD, A);
   await L.recordPush("t1", A, M, M);
   // Main moved AGENTS.md from V1 to V2. The head M is a merge whose first
   // parent is OLD, with AGENTS.md back at V1 and a.ts edited; its other
@@ -716,7 +716,7 @@ it("the evidence route measures against main's head, so a crafted merge cannot h
       trees: { [T_OLD]: { "AGENTS.md": V1, "a.ts": A1 }, [T_M]: { "AGENTS.md": V1, "a.ts": A2 } },
     },
   };
-  const ARTIFACTS = {
+  const REPOS = {
     get: async (repo: string) => {
       const r = repos[repo];
       return {
@@ -727,14 +727,14 @@ it("the evidence route measures against main's head, so a crafted merge cannot h
         [Symbol.dispose]() {},
       };
     },
-  } as unknown as Artifacts;
-  expect(await (await ARTIFACTS.get(`${name}--t1`)).readTree(T_NEW)).toBeNull();
+  } as unknown as Repos;
+  expect(await (await REPOS.get(`${name}--t1`)).readTree(T_NEW)).toBeNull();
   const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
       headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...actingFor(actor, bearer), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }), { ...testEnv, ARTIFACTS } as typeof env);
+    }), { ...testEnv, REPOS } as typeof env);
   const owner = as(TOKEN, "owner");
   const agent = as((await (await call("POST", "/tokens", "owner", { actor: A, projects: [name] })).json() as { token: string }).token, null);
 
@@ -763,17 +763,17 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
   // The baseline's log too, so the task page can draw the change and offer its forms.
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
   // The server takes the confirmation secret as the owner's factor (t371);
   // `bare` is one with neither it nor Access, which can confirm no override.
   const SECRET = "developer-only-word-no-session-holds";
-  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: SECRET } as typeof env;
-  const bare = { ...testEnv, ARTIFACTS } as typeof env;
+  const bindings = { ...testEnv, REPOS, OVERRIDE_SECRET: SECRET } as typeof env;
+  const bare = { ...testEnv, REPOS } as typeof env;
   const as = (bearer: string, actor: string | null, on = bindings) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
@@ -875,14 +875,14 @@ it("t629: the developer token overrides a missing review on the developer's quot
   for (const id of ["t1", "t2"]) {
     await L.newItem("Rewrite the agent instructions", [], "owner");
     await L.claim(id, A);
-    await L.setFork(id, `${name}--${id}`, H0, A);
+    await L.setWorkspace(id, `${name}--${id}`, H0, A);
     await L.recordPush(id, A, H1, H1);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
     await L.submit(id, A);
   }
   const log = [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }];
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: log, [`${name}--t2`]: log, [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
-  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "developer-only-word" } as typeof env;
+  const REPOS = gitStore({ [`${name}--t1`]: log, [`${name}--t2`]: log, [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  const bindings = { ...testEnv, REPOS, OVERRIDE_SECRET: "developer-only-word" } as typeof env;
   const post = (path: string, body: unknown, headers: Record<string, string>, bearer = TOKEN, actor: string | null = "owner") =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method: "POST", headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json", ...headers }, body: JSON.stringify(body),
@@ -936,13 +936,13 @@ it("t371: a project that forbids overrides refuses them through the API and the 
   expect((await L.initProject({ name, repo: name, reset: false, noOverride: true }, "owner")).policy.noOverride).toBe(true);
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
   // A server that takes the confirmation secret, given: the prohibition is told even to a confirmed owner.
-  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "developer-only-word" } as typeof env;
+  const bindings = { ...testEnv, REPOS, OVERRIDE_SECRET: "developer-only-word" } as typeof env;
   const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
   }), bindings);
@@ -982,17 +982,17 @@ it("decision 2026-10-09: the accept route names the reviewer that could replace 
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
+  const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
   const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
       headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...actingFor(actor, bearer), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }), { ...testEnv, ARTIFACTS } as typeof env);
+    }), { ...testEnv, REPOS } as typeof env);
   const owner = as(TOKEN, "owner");
   const reason = "No model of another family is available";
   // t371: the owner allows the override first, as the task page records it with the confirmation secret.
@@ -1008,7 +1008,7 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Ready for the developer", ["src/**"], "owner");
   await L.claim("t1", agent);
-  await L.setFork("t1", `${name}--t1`, "0".repeat(40), agent);
+  await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), agent);
   await L.recordPush("t1", agent, head, head);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" } as never);
   await L.submit("t1", agent, "Did the work");
@@ -1159,7 +1159,7 @@ it("the standing route reads each section from its own source, not a window over
   // t1 is merged, with a summary, and t2 is taken and handed off with a note: both older than any window of 1,000 events.
   await L.newItem("Merged long ago", ["src/**"], "owner");
   await L.claim("t1", agent);
-  await L.setFork("t1", `${name}--t1`, H0, agent);
+  await L.setWorkspace("t1", `${name}--t1`, H0, agent);
   await L.recordPush("t1", agent, head, head);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"] } as never);
   await L.submit("t1", agent, "Merged summary");
@@ -1173,7 +1173,7 @@ it("the standing route reads each section from its own source, not a window over
   // A third task fills the project's recent record with pushes.
   await L.newItem("Noisy", [], "owner");
   await L.claim("t3", agent);
-  await L.setFork("t3", `${name}--t3`, H0, agent);
+  await L.setWorkspace("t3", `${name}--t3`, H0, agent);
   for (let n = 1; n <= 1010; n++) await L.recordPush("t3", agent, n.toString(16).padStart(40, "0"), null);
   const res = await call("GET", `/projects/${name}/standing`, agent);
   expect(res.status).toBe(200);
@@ -1227,7 +1227,7 @@ it("sessions record, clean, cap and read newest first, and only the project owne
 
 // The project's branch on the Node server (task 5): init makes the project's bare
 // repository with its HEAD on the branch it names, and a claim before the branch has
-// commits is refused naming it. (This was Artifacts as it behaved for llm-basics: a
+// commits is refused naming it. (This was Repos as it behaved for llm-basics: a
 // fork's repository info named a branch its HEAD did not; there are no forks now.)
 function branchSend(method: string, path: string, actor: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
@@ -1236,7 +1236,7 @@ function branchSend(method: string, path: string, actor: string, body?: unknown)
   }), testEnv);
 }
 // The branch the server's repository for `key` has as its HEAD.
-const repoBranch = async (key: string) => { using repo = await env.ARTIFACTS.get(key); return (await repo.info()).defaultBranch; };
+const repoBranch = async (key: string) => { using repo = await env.REPOS.get(key); return (await repo.info()).defaultBranch; };
 
 it("init records the branch it names, and the repository and the claim give that branch", async () => {
   const name = "branch-master", A = "opencode/glm-5.3";
@@ -1304,10 +1304,10 @@ it("a push reported on the project's branch records nothing, and one on the task
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record as never, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
-  await L.newItem("Observe", [], "owner"); await L.claim("t1", A); await L.setFork("t1", `${name}/t/1`, H0, A);
+  await L.newItem("Observe", [], "owner"); await L.claim("t1", A); await L.setWorkspace("t1", `${name}/t/1`, H0, A);
   // The task branch's history as the server reads it: H2 on top of H0, the base.
-  const artifacts = { get: async () => ({ info: async () => ({ defaultBranch: "main" }), log: async () => [{ hash: H2, parents: [H0] }, { hash: H0, parents: [] }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
-  const send = (ref: string) => observePushed({ ...env, ARTIFACTS: artifacts } as typeof env, { project: name, ref, after: H1 });
+  const artifacts = { get: async () => ({ info: async () => ({ defaultBranch: "main" }), log: async () => [{ hash: H2, parents: [H0] }, { hash: H0, parents: [] }], [Symbol.dispose]() {} }) } as unknown as Repos;
+  const send = (ref: string) => observePushed({ ...env, REPOS: artifacts } as typeof env, { project: name, ref, after: H1 });
   expect(await send("refs/heads/main")).toMatchObject({ observed: false });
   expect(await send("refs/heads/master")).toMatchObject({ observed: false });
   expect((await L.item("t1")).head).toBe(H0);
@@ -1326,17 +1326,17 @@ it("a merged check is recorded against both revisions, needs a main head on main
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Edit the readme", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   const store = (mainLog: { hash: string; parents: string[]; treeHash: string }[]) => gitStore({
     [name]: mainLog,
     [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],
   }, { [T0]: { "README.md": "b".repeat(40) }, [T1]: { "README.md": "c".repeat(40) } });
-  const as = (ARTIFACTS: Artifacts, actor = A) => (method: string, path: string, body?: unknown) =>
+  const as = (REPOS: Repos, actor = A) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...actingFor(actor), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }), { ...testEnv, ARTIFACTS } as typeof env);
+    }), { ...testEnv, REPOS } as typeof env);
   const rows = async () => (await (await call("GET", `/projects/${name}/items/t1`, "owner")).json()) as { evidence: Record<string, unknown>[]; gate: { ready: boolean; blockers: string[] } };
 
   // Main at H0: the head's own check names it, and a merged check against it is shown, not counted.
@@ -1382,7 +1382,7 @@ it("a merged check is recorded against both revisions, needs a main head on main
   await L.claim("t2", A);
   await L.recordPush("t2", A, H1, null);
   const noFork = await atH2("POST", "/items/t2/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, merged: true, mainHead: H2 });
-  expect(await noFork.json()).toMatchObject({ error: "no_fork" });
+  expect(await noFork.json()).toMatchObject({ error: "no_workspace" });
 });
 
 // Finding it would have caught: the container check's routes left behind would
@@ -1393,7 +1393,7 @@ it("the sandbox routes are gone: neither starting a run nor reading one answers"
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Check it", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, "0".repeat(40), A);
+  await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), A);
   await L.recordPush("t1", A, H1, H1);
   const started = await call("POST", `/projects/${name}/items/t1/sandbox`, "owner", {});
   // 410 with a message, not a 404 a CLI built before t768 would misread as a missing run.
@@ -1535,14 +1535,14 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Parse nested lists", [], "owner", { accept: ONE });
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: "1".repeat(40) }] }, {});
+  const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: "1".repeat(40) }] }, {});
   const api = (actor: string) => (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
     method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...actingFor(actor), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS } as typeof env);
+  }), { ...testEnv, REPOS } as typeof env);
   const owner = api("owner"), reviewer = api(GPT);
   type Detail = { criteria: string; gate: { ready: boolean }; reviews: unknown[] };
   const one = (await (await owner("GET", "/items/t1")).json() as Detail).criteria;
@@ -1640,7 +1640,7 @@ it("a project's showcase draws its figures and its eight latest merges from the 
     const by = i <= 2 ? GPT : SONNET, head = String(i).repeat(40).slice(0, 40);
     await L.newItem(`Shipped thing ${i}`, [], "owner");
     await L.claim(`t${i}`, by);
-    await L.setFork(`t${i}`, `${name}--t${i}`, "0".repeat(40), by);
+    await L.setWorkspace(`t${i}`, `${name}--t${i}`, "0".repeat(40), by);
     await L.recordPush(`t${i}`, by, head, head);
     await L.addEvidence({ itemId: `t${i}`, claim: "npm test", grade: "observed", head, passed: true, by, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
     await L.submit(`t${i}`, by);
@@ -1748,7 +1748,7 @@ async function seedLegacy(name: string) {
   const agent = "claude-code/opus-5.5", head = "a".repeat(40);
   await L.newItem("Edit a doc", ["docs/**"], "owner");
   await L.claim("t1", agent);
-  await L.setFork("t1", `${name}--t1`, "0".repeat(40), agent);
+  await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), agent);
   await L.recordPush("t1", agent, head, head);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["docs/a.md"], where: "sandbox" } as never);
   await L.submit("t1", agent, "Did the work");

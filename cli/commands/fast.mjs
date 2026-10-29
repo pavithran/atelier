@@ -12,7 +12,7 @@ export default async function fastCommand() {
     if (args.json) return console.log(JSON.stringify(r, null, 2));
     console.log(r.line);
     for (const line of landedLines(r.landed)) console.log(line);
-    // Builds reported ready before the fork-less build was removed, one
+    // Builds reported ready before the claimless build was removed, one
     // tN=SHA line each, until their tasks land.
     for (const line of fastReadyLines(r.ready ?? [])) console.log(line);
     return;

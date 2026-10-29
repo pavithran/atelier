@@ -41,7 +41,7 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
     if (!m) return send(404, { error: "not_found", detail: "no such route" });
     const [, name, id, verb] = m;
     if (!id && method === "POST") {
-      const item = { id: `t${++n}`, title: body.title ?? "", state: "open", owner: null, firstOwner: null, fork: null, head: null, pushes: 0 };
+      const item = { id: `t${++n}`, title: body.title ?? "", state: "open", owner: null, firstOwner: null, workspace: null, head: null, pushes: 0 };
       items.set(item.id, item);
       return send(201, item);
     }
@@ -63,22 +63,22 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
       if (!item.owner) item.firstOwner = actor;
       item.owner = actor;
       item.state = "claimed";
-      if (!item.fork) {
-        item.fork = `${name}--${id}`;
+      if (!item.workspace) {
+        item.workspace = `${name}--${id}`;
         if (bareRoot) {
-          mkdirSync(join(bareRoot, item.fork), { recursive: true });
-          spawnSync("git", ["init", "--bare", "-q", join(bareRoot, item.fork)], { encoding: "utf8" });
+          mkdirSync(join(bareRoot, item.workspace), { recursive: true });
+          spawnSync("git", ["init", "--bare", "-q", join(bareRoot, item.workspace)], { encoding: "utf8" });
         }
       }
-      const remote = bareRoot ? join(bareRoot, item.fork) : `https://git.test/${item.fork}.git`;
-      const token = `art_secret_${item.fork}`;
+      const remote = bareRoot ? join(bareRoot, item.workspace) : `https://git.test/${item.workspace}.git`;
+      const token = `art_secret_${item.workspace}`;
       return send(200, { item, workspace: { remote, token, expiresAt: new Date(Date.now() + 3600e3).toISOString(), defaultBranch: "main" }, baseline: { remote, token, defaultBranch: "main" } });
     }
     if (verb === "push") {
       item.pushes += 1;
       let observed = body.head ?? null;
-      if (bareRoot && item.fork) {
-        const r = spawnSync("git", ["--git-dir", join(bareRoot, item.fork), "rev-parse", "main"], { encoding: "utf8" });
+      if (bareRoot && item.workspace) {
+        const r = spawnSync("git", ["--git-dir", join(bareRoot, item.workspace), "rev-parse", "main"], { encoding: "utf8" });
         observed = r.status === 0 ? r.stdout.trim() : null;
       }
       item.head = observed;
@@ -122,7 +122,7 @@ test("N agents claim N tasks at once: all succeed, each with its own fork, and t
   const spread = items.filter((i) => i.title.startsWith("concurrency proof task"));
   assert.equal(spread.length, 5);
   assert.deepEqual(new Set(spread.map((i) => i.firstOwner)), new Set([0, 1, 2, 3, 4].map((i) => `sim/agent-${i}`)));
-  assert.equal(new Set(spread.map((i) => i.fork)).size, 5, "each agent gets its own fork");
+  assert.equal(new Set(spread.map((i) => i.workspace)).size, 5, "each agent gets its own fork");
   const race = items.find((i) => i.title === "concurrency proof race");
   assert.ok(race, "the race task exists");
   assert.match(race.firstOwner, /^sim\/agent-\d$/, "one agent won the race");

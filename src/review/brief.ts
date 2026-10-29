@@ -69,7 +69,7 @@ export interface BriefInput {
   // the file `diffFile` names in it.
   diffRef?: LargeRef | null;
   // Where the diff runs from, when the caller computed it: the merge base of
-  // the head and the branch the item merges into, or the fork point with the
+  // the head and the branch the item merges into, or the branch point with the
   // reason the merge base could not be found. Absent, the brief compares
   // from the item's base, as the ledger does when it fingerprints a request.
   //
@@ -515,26 +515,26 @@ function byReference(ref: LargeRef, compare: string | null): string[] {
 }
 
 // What the change is measured from. A task that merged its target branch
-// after it forked holds that branch's newer commits, so the change is read
+// after it branched holds that branch's newer commits, so the change is read
 // from the merge base of the head and that branch; when the caller could not
-// find it, the brief says the diff runs from the fork point and may hold the
+// find it, the brief says the diff runs from the branch point and may hold the
 // branch's commits too.
 function baseLines(base: string | null, given: BriefInput["compare"], compare: string | null): string[] {
   if (given?.branch && given.from) {
     return [
-      `Base: ${inline(given.from)}, the merge base of the head and ${code(given.branch)}, the branch it merges into. The task forked at ${base ? inline(base) : "a commit not recorded"}; commits it merged in from ${code(given.branch)} since are not part of the change.`,
+      `Base: ${inline(given.from)}, the merge base of the head and ${code(given.branch)}, the branch it merges into. The task branched at ${base ? inline(base) : "a commit not recorded"}; commits it merged in from ${code(given.branch)} since are not part of the change.`,
       `The change is everything from the merge base to the head: ${compare}`,
     ];
   }
   if (given?.fallback) {
     return [
-      `Base: ${base ? inline(base) : "not recorded"}, the fork point. The merge base with the branch the task merges into could not be found (${inline(given.fallback)}), so the diff runs from the fork point and may also hold commits the task merged in from that branch since; those are not the task's own change.`,
-      compare ? `The change is at most everything from the fork point to the head: ${compare}` : "The base is not recorded; compare the head with its fork point in your clone.",
+      `Base: ${base ? inline(base) : "not recorded"}, the branch point. The merge base with the branch the task merges into could not be found (${inline(given.fallback)}), so the diff runs from the branch point and may also hold commits the task merged in from that branch since; those are not the task's own change.`,
+      compare ? `The change is at most everything from the branch point to the head: ${compare}` : "The base is not recorded; compare the head with its branch point in your clone.",
     ];
   }
   return [
     `Base: ${base ? inline(base) : "not recorded"}`,
-    compare ? `The change is everything from the base to the head: ${compare}` : "The base is not recorded; compare the head with its fork point in your clone.",
+    compare ? `The change is everything from the base to the head: ${compare}` : "The base is not recorded; compare the head with its branch point in your clone.",
   ];
 }
 

@@ -42,7 +42,7 @@ async function pushed(L: L, id: string, at: string) {
 async function firstSubmission(L: L) {
   const id = (await L.newItem("Landing", [], "owner")).id;
   await L.claim(id, OPUS, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
   return id;
 }
 

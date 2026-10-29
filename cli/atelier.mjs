@@ -3,7 +3,7 @@
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
 // checkout. Checks run in a second, clean clone of exactly the head Atelier
-// sees in Artifacts. Session checks run in the registered checkout and are
+// sees in the repository. Session checks run in the registered checkout and are
 // Reported; one that fails stops wrap before it stages anything, unless
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
@@ -50,7 +50,7 @@ import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { serverFetch } from "./server-fetch.mjs";
-import { joinMainMerges } from "./workspace-fork.mjs";
+import { joinMainMerges } from "./workspace-branch.mjs";
 import * as grants from "./read-grant.mjs";
 import { lowSpeedEnv, secondsOf, serverTimeoutMs, talksToRemote, timedOut, tooSlow, withTimeout } from "./timeouts.mjs";
 import { saveWholeConfig, useConfig } from "./private-guard.mjs";
@@ -185,9 +185,9 @@ export function storedToken() {
   try { return readSecret("API_TOKEN", { env: { ...process.env, ATELIER_TOKEN: "" } }); } catch (error) { die(error.message); }
 }
 
-// The environment a git command runs with. Artifacts has no Git LFS: a push
+// The environment a git command runs with. The repository has no Git LFS: a push
 // would try to upload a project's LFS objects and fail, so every push to
-// Atelier skips the upload and Artifacts holds pointer files. A clone, always
+// Atelier skips the upload and the repository holds pointer files. A clone, always
 // a disposable copy (a task workspace, a check run), keeps the pointers rather
 // than trying to download what they point to. Nothing else skips the download:
 // a merge or reset in the owner's own checkout writes real LFS files as
@@ -202,7 +202,7 @@ export function gitEnv(base = process.env, extra = {}, args = [], ownerRemote = 
   return env;
 }
 
-// opts.token is an Artifacts token this one command sends as its
+// opts.token is a grant this one command sends as its
 // Authorization header (see auth). It is cut from any error text shown.
 // opts.hooks === false runs the command with every hook off (hooksOff in
 // cli/landing.mjs), as each Git command of a landing runs (landingGit).
@@ -293,7 +293,7 @@ export function recordTokenExpiry(dir, expiresAt) {
   if (typeof expiresAt === "string" && expiresAt) git(["config", "--local", "atelier.write-token-expires-at", expiresAt], { cwd: dir });
 }
 
-// How Artifacts (or the Worker in front of it) refuses a Git request whose
+// How the server refuses a Git request whose
 // token has lapsed or was revoked.
 // A refused discovery reads "returned error: 40x" when the server answers 403,
 // but a 401 sends git into its credential retry: with the Bearer header
@@ -1391,7 +1391,7 @@ export function redact(text, secrets) {
   return text;
 }
 
-// The Artifacts tokens a workspace's extraHeader settings hold, in
+// The grants a workspace's extraHeader settings hold, in
 // .git/config or in a file it includes: its write token, which a check can
 // read from disk.
 export function workspaceTokens(dir) {
@@ -1842,7 +1842,7 @@ export function formatCriteriaReviews(view) {
 
 // The checkout's state against the baseline, in words. The baseline's head
 // comes from the server (GET baseline-head), as the Worker reads it from
-// Artifacts: no token is minted and nothing is fetched into the checkout, so
+// the repository: no token is minted and nothing is fetched into the checkout, so
 // status and unwrap, which print this line, read and write nothing.
 // Every path out of it is one flattened line, whatever a name holds.
 export async function checkoutStatus(name, as) {
@@ -1882,10 +1882,10 @@ function localWorkspaceIds(name) {
 
 // One workspace's facts, as git reports them in the workspace: paths with
 // uncommitted changes (`.scratch/` aside, the session's scratch space),
-// commits not pushed to the fork, a merge in progress and its conflicted
+// commits not pushed to the branch, a merge in progress and its conflicted
 // files, and a COMMIT_MSG.txt an agent left waiting. `from` holds where
 // pushed history is measured from, best first: the head the server last
-// observed, then the fork point for a task nothing was pushed for. A folder
+// observed, then the branch point for a task nothing was pushed for. A folder
 // that is not a Git repository is reported as unreadable, never a crash.
 function localWorkspace(dir, id, from) {
   const unreadable = (why) => ({ id, uncommitted: null, unpushed: null, merging: null, conflicts: null, commitMessage: null, error: why });
@@ -1950,7 +1950,7 @@ export async function landingLease(name, as) {
 // What this machine holds for the project, for the On this Mac section: one
 // entry per task of the project with a workspace under the CLI's cache, in
 // the server's order, plus whether a landing is running here. The heads and
-// fork points come from the server's own task list, so nothing is minted and
+// branch points come from the server's own task list, so nothing is minted and
 // no workspace is written to. null when no task of the project has a
 // workspace here, and the command prints what it did before.
 export async function localStanding(name, as) {

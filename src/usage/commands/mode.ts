@@ -15,7 +15,7 @@ const spec: CommandSpec = {
   subcommands: { fast: { takes: ["reason", "quote"], capabilities: ["projects.developer-direction.v1"] }, full: { takes: ["quote"], capabilities: ["projects.developer-direction.v1"] } },
   help: {
     flags: { "--reason TEXT": "why the project goes to fast mode; required, at most 500 characters", "--quote WORDS": "the developer's own words directing the switch; with --as H/M, the model acting on them, they confirm it with the developer token alone, and both are recorded" },
-    example: 'atelier mode fast --reason "Artifacts fails every new fork" --project demo',
+    example: 'atelier mode fast --reason "the repository fails every new branch" --project demo',
   },
 };
 

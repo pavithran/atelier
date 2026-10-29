@@ -28,7 +28,7 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
@@ -36,15 +36,15 @@ async function setup(name: string) {
     [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],
     [name]: [{ hash: H0, parents: [], treeHash: T0 }],
   };
-  const ARTIFACTS = { get: async (repo: string) => {
+  const REPOS = { get: async (repo: string) => {
     const log = logs[repo] ?? [];
     if (repo === `${name}--t1` && race.during) { const during = race.during; race.during = undefined; await during(); }
     return {
       log: async (o: { limit?: number } = {}) => log.slice(0, o.limit ?? 50), readCommit: async (h: string) => log.find((c) => c.hash === h) ?? null,
       readTree: async () => null, readBlob: async () => null, info: async () => ({ remote: "https://git.test/r.git", defaultBranch: "main" }), [Symbol.dispose]() {},
     };
-  } } as unknown as typeof env.ARTIFACTS;
-  const bindings = { ...env, ATELIER_TOKEN: TOKEN, OVERRIDE_SECRET: SECRET, ARTIFACTS } as typeof env;
+  } } as unknown as typeof env.REPOS;
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN, OVERRIDE_SECRET: SECRET, REPOS } as typeof env;
   const cookie = await signIn(TOKEN, bindings);
   const post = (verb: string, fields: Record<string, string>) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/${verb}`, {
     method: "POST", redirect: "manual", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "", ...fields }),

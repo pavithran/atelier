@@ -234,7 +234,7 @@ it("the owner approves by hash, reroutes and retries a part, and a stop clears t
 
   // Part a is claimed and holds a write token; the plan item holds none.
   const claim = await L.claim(a.id, "zcode/glm-5.3", RUNNER);
-  await L.setFork(a.id, `${name}--${a.id}`, H0, "zcode/glm-5.3");
+  await L.setWorkspace(a.id, `${name}--${a.id}`, H0, "zcode/glm-5.3");
   expect(await L.recordToken(a.id, "zcode/glm-5.3", claim.generation, claim.replaces, "git:token-a")).toBe(true);
   const stopped = await call("POST", `/projects/${name}/items/${id}/plan/stop`, "owner", { note: "changed course" }, TOKEN, testEnv);
   expect(stopped.status).toBe(200);
@@ -311,7 +311,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
 
   // Part a lands, and b's brief shows it as it landed, with its head.
   const H1 = "1".repeat(40);
-  await L.setFork(a.id, `${name}--${a.id}`, H0, actor);
+  await L.setWorkspace(a.id, `${name}--${a.id}`, H0, actor);
   await L.recordPush(a.id, actor, H1, H1);
   await L.addEvidence({ itemId: a.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: actor, at: new Date().toISOString(), changedPaths: ["src/a/one.ts"] });
   await L.submit(a.id, actor);
@@ -329,7 +329,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   // its builder (the rework transition); the next brief is rework, quoting
   // both the findings and the failing check's output.
   const H2 = "2".repeat(40);
-  await L.setFork(b.id, `${name}--${b.id}`, H1, actorB);
+  await L.setWorkspace(b.id, `${name}--${b.id}`, H1, actorB);
   await L.recordPush(b.id, actorB, H2, H2);
   await L.addEvidence({ itemId: b.id, claim: "npm test", grade: "observed", head: H2, passed: false, by: actorB, at: new Date().toISOString(), changedPaths: ["src/b/one.ts"], outputTail: "3 tests failed in src/b/one.ts" });
   // The reviewer is a model other than b's builder.

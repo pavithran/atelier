@@ -19,8 +19,8 @@ const artifacts = {
     createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
     [Symbol.dispose]() {},
   }),
-} as unknown as Artifacts;
-const initEnv = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env;
+} as unknown as Repos;
+const initEnv = { ...env, ATELIER_TOKEN: TOKEN, REPOS: artifacts } as typeof env;
 
 function ledger(project: string) {
   return env.LEDGER.get(env.LEDGER.idFromName(`project:${project}`));

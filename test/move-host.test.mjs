@@ -172,7 +172,7 @@ test("migrate carries an open task: its fork's work becomes t/N at the recorded 
   assert.match(r.stdout, /next: the holder runs atelier claim t2 --as claude-code\/opus-5\.5/);
   assert.equal(tipOf(bare(), "refs/heads/t/2"), c.fork);
   const item = await L().item("t2");
-  assert.equal(item.fork, "relic/t/2");
+  assert.equal(item.workspace, "relic/t/2");
   assert.equal(item.owner, HOLDER, "the claim stands");
   assert.equal(item.state, "claimed");
   assert.equal(item.head, c.fork, "and the head");

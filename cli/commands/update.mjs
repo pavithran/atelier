@@ -63,7 +63,7 @@ export default async function updateCommand() {
     console.log(`${id} merged baseline ${baseline} through the merge pipeline, which regenerated its outputs. Push with: atelier push${rebased ? " --force" : ""}`);
     return;
   }
-  // After the rebase the fork no longer holds the head Atelier recorded,
+  // After the rebase the branch no longer holds the head Atelier recorded,
   // so the push needs --force, whose lease refuses to overwrite anything
   // pushed since (see push). Both ends of the rebase name that one command.
   const next = "Push with: atelier push --force";

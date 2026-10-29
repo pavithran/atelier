@@ -14,7 +14,7 @@ const model = "glm-5.3", reviewer = `opencode/${model}`;
 const command = ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}"];
 const claimed = {
   request: 7,
-  item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], fork: "p--t21", head: H1 },
+  item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], workspace: "p--t21", head: H1 },
   head: H1,
   need: { needed: true, reason: "every part is reviewed", head: H1, kind: "review", basis: "part", changeClass: "coordinated", changedPaths: ["src/review/needed.ts"], outOfScope: [], checks: [], round: 1, previous: [], previousReviewer: null, lapsed: [] },
   plan: null, events: [], owner: "owner",

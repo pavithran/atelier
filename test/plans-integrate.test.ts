@@ -32,7 +32,7 @@ const pass = (head: string, change: Partial<Evidence> = {}): Evidence => ({
   itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "atelier/integrator", at: T, changedPaths: ["src/a/x.ts"], ...change,
 });
 const planItem = (change: Partial<Item> = {}): Item => ({
-  id: "t1", title: "A feature", scope: ["src/**"], state: "submitted", owner: "atelier/integrator", fork: "proj--t1",
+  id: "t1", title: "A feature", scope: ["src/**"], state: "submitted", owner: "atelier/integrator", workspace: "proj--t1",
   base: BASE, head: MB, acceptedHead: null, pushActors: ["atelier/integrator"], createdAt: T, updatedAt: T, lastPushAt: T, ...change,
 });
 // A plan whose two parts are integrated, approved by another family and
@@ -116,7 +116,7 @@ test("integration needs an approval from another model family at the part's head
 test("an integration holds when it merges the part's head onto the integration head", () => {
   assert.deepEqual(verifyIntegration({ log: first, integrationHead: BASE, partHead: A, mergeCommit: MA }), []);
   assert.deepEqual(verifyIntegration({ log: second, integrationHead: MA, partHead: B, mergeCommit: MB }), []);
-  // The first-parent line alone, as Artifacts lists it.
+  // The first-parent line alone, as Repos lists it.
   const line = [commit(MB, MA, B), commit(MA, BASE, A), commit(BASE)];
   assert.deepEqual(verifyIntegration({ log: line, integrationHead: MA, partHead: B, mergeCommit: MB }), []);
   // The merge need not be the head; planGate refuses a branch that moved past its integration head.

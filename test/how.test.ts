@@ -38,7 +38,7 @@ test("every rule names code that exists where it says", () => {
 
 // The five verbs of t367, the words the app, the README and the docs share.
 test("the life of a task is five verbs in order, each guarded by a rule, and the README uses the same words", () => {
-  assert.deepEqual(STEPS.map((s) => s.verb), ["Claim", "Fork", "Prove", "Review", "Land"]);
+  assert.deepEqual(STEPS.map((s) => s.verb), ["Claim", "Branch", "Prove", "Review", "Land"]);
   for (const s of STEPS) assert.ok(RULES.some((r) => r.verb === s.verb), `no rule is listed under ${s.verb}`);
   assert.equal(TAKEAWAYS, "Proven. Reviewed. Recorded.");
   assert.equal(TAGLINE, "Git keeps the code. Atelier brings the receipts.");

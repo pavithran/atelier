@@ -49,10 +49,10 @@ async function setup(name: string, policy: Record<string, unknown> = {}) {
       info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
   const request = (method: string, path: string, token: string, actor: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS: artifacts } as typeof env);
   const call = (id: string, body: unknown, actor = "owner", token = TOKEN) => request("POST", `/projects/${name}/items/${id}/record-merge`, token, actor, body);
   const issue = async (body: unknown) => (await (await request("POST", "/tokens", TOKEN, "owner", body)).json() as { token: string }).token;
   let resume: () => void = () => {};
@@ -71,7 +71,7 @@ it("records a claimed task merged outside Atelier, with its merge, the commit me
   const item = await L.newItem("Built outside the gate", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
   expect(await L.recordToken(item.id, BUILDER, generation, null, "git:tok-1")).toBe(true);
-  await L.setFork(item.id, "record-merge-ok--t1", BASE, BUILDER);
+  await L.setWorkspace(item.id, "record-merge-ok--t1", BASE, BUILDER);
   const r = await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews, note: "merged under the freeze" });
   expect(r.status, await r.clone().text()).toBe(200);
   const got = await r.json() as { item: { state: string; owner: string | null; head: string; acceptedHead: string | null }; record: Record<string, unknown> };
@@ -100,7 +100,7 @@ it("takes the task's recorded head when no head is named", async () => {
   const { L, call } = await setup("record-merge-pushed");
   const item = await L.newItem("Pushed, then merged by hand", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-pushed--t1", BASE, BUILDER);
+  await L.setWorkspace(item.id, "record-merge-pushed--t1", BASE, BUILDER);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-pushed");
   await L.recordPush(item.id, BUILDER, HEAD, HEAD);
   const r = await call(item.id, { mergeCommit: MERGE, reviews });
@@ -117,7 +117,7 @@ it("the command suggested for a fast build carries the built commit as --head, a
   const { L, call } = await setup("record-merge-fast");
   const item = await L.newItem("Built in fast mode", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-fast--t1", BASE, BUILDER);
+  await L.setWorkspace(item.id, "record-merge-fast--t1", BASE, BUILDER);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-fast");
   const command = recordMergeCommand(item.id, HEAD);
   const word = (flag: string) => command.split(" ")[command.split(" ").indexOf(flag) + 1];
@@ -147,7 +147,7 @@ it("refuses an agent: only the developer records a merge", async () => {
   }
   expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: BUILDER });
   // The Ledger refuses it too, whatever the route.
-  const err = await L.recordMerge(item.id, BUILDER, { mergeCommit: MERGE, commit: HEAD, reviews }, { parents: [BASE, HEAD], holds: true }, { fork: null, token: null }).then(() => null, (e: unknown) => e as Error);
+  const err = await L.recordMerge(item.id, BUILDER, { mergeCommit: MERGE, commit: HEAD, reviews }, { parents: [BASE, HEAD], holds: true }, { workspace: null, token: null }).then(() => null, (e: unknown) => e as Error);
   expect(err?.message).toMatch(/not_project_owner/);
 });
 
@@ -172,7 +172,7 @@ it("refuses when the merge commit's second parent is not the task's head, or it 
   // A fork's base is not a head the task pushed.
   const forked = await L.newItem("Forked, nothing pushed", [], "owner");
   await L.claim(forked.id, BUILDER);
-  await L.setFork(forked.id, "record-merge-parent--t2", BASE, BUILDER);
+  await L.setWorkspace(forked.id, "record-merge-parent--t2", BASE, BUILDER);
   await refusal(await call(forked.id, { mergeCommit: MERGE, reviews }), 400, "bad_record", /commit merged/);
   // The reviews must approve the commit merged.
   await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews: [{ by: ASTRA, verdict: "reject", head: HEAD }] }), 400, "no_approval");
@@ -193,7 +193,7 @@ it("a first claim made while the baseline is read leaves no live write token", a
   await paused;
   // The task's first claim completes meanwhile: the claim, its fork, its write token.
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-race--t1", BASE, BUILDER);
+  await L.setWorkspace(item.id, "record-merge-race--t1", BASE, BUILDER);
   expect(await L.recordToken(item.id, BUILDER, generation, null, "git:tok-race")).toBe(true);
   resume();
   const r = await pending;
@@ -207,7 +207,7 @@ it("refuses the record when the workspace changes after it was read, and drops n
   const item = await L.newItem("Claimed after the read", [], "owner");
   const workspace = await L.workspaceOf(item.id);
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-moved--t1", BASE, BUILDER);
+  await L.setWorkspace(item.id, "record-merge-moved--t1", BASE, BUILDER);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-new");
   const err = await L.recordMerge(item.id, "owner", { mergeCommit: MERGE, commit: HEAD, reviews }, { parents: [BASE, HEAD], holds: true }, workspace).then(() => null, (e: unknown) => e as Error);
   expect(err?.message).toMatch(/workspace_changed/);
@@ -216,10 +216,10 @@ it("refuses the record when the workspace changes after it was read, and drops n
 });
 
 // gpt-6-astra's third review of t653: a first claim waiting on Artifacts for
-// its fork, a record-merge made meanwhile, and then the claim's setFork,
+// its fork, a record-merge made meanwhile, and then the claim's setWorkspace,
 // which replaced the merged task's head with the fork's base. Record-merge
 // refuses while a claim is in flight (held, workspace not complete), and
-// setFork refuses a task its claim no longer holds. 2.0 task 5: a claim makes
+// setWorkspace refuses a task its claim no longer holds. 2.0 task 5: a claim makes
 // a branch on the Git host, not a fork, so the route's claim cannot be held at
 // the fork any more; the test holds the claim at its reservation in the Ledger
 // (the state the route's claim is in until it completes) and drives the
@@ -229,10 +229,10 @@ it("refuses the record while a claim is in flight, through the route, and record
   const item = await L.newItem("Claimed while the merge is recorded", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
   // The claim holds the task; its workspace is not complete.
-  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: BUILDER, fork: null });
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: BUILDER, workspace: null });
   await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews }), 409, "claim_in_flight", /being claimed by claude-code\/opus-5\.5/);
   expect(((await L.events(item.id)) as unknown as LedgerEvent[]).some((e) => e.kind === "item.merged")).toBe(false);
-  await L.setFork(item.id, "record-merge-inflight--t1", BASE, BUILDER, false, generation);
+  await L.setWorkspace(item.id, "record-merge-inflight--t1", BASE, BUILDER, false, generation);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-inflight");
   const r = await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews });
   expect(r.status, await r.clone().text()).toBe(200);
@@ -241,28 +241,28 @@ it("refuses the record while a claim is in flight, through the route, and record
 
 it("a fork recorded after the task was merged or claimed again is refused, and the merged head is unchanged", async () => {
   const { L, call } = await setup("record-merge-late-fork");
-  // A claim reserves the task and pauses before setFork; the developer
+  // A claim reserves the task and pauses before setWorkspace; the developer
   // abandons the task meanwhile (record-merge itself refuses a claim in flight).
   const item = await L.newItem("Abandoned under a pending claim", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
   await L.abandon(item.id, "owner", "merged by hand; recorded elsewhere");
-  const late = await L.setFork(item.id, "record-merge-late-fork--t1", BASE, BUILDER, false, generation).then(() => null, (e: unknown) => e as Error);
+  const late = await L.setWorkspace(item.id, "record-merge-late-fork--t1", BASE, BUILDER, false, generation).then(() => null, (e: unknown) => e as Error);
   expect(late?.message).toMatch(/claim_superseded/);
-  expect(await L.item(item.id)).toMatchObject({ state: "abandoned", fork: null, head: null });
+  expect(await L.item(item.id)).toMatchObject({ state: "abandoned", workspace: null, head: null });
   // A merged task: its claim completed, the merge recorded, then a stale
-  // setFork of that claim arrives.
+  // setWorkspace of that claim arrives.
   const merged = await L.newItem("Merged, then a stale fork", [], "owner");
   const claim = await L.claim(merged.id, BUILDER);
-  await L.setFork(merged.id, "record-merge-late-fork--t2", BASE, BUILDER, false, claim.generation);
+  await L.setWorkspace(merged.id, "record-merge-late-fork--t2", BASE, BUILDER, false, claim.generation);
   await L.recordToken(merged.id, BUILDER, claim.generation, null, "tok-m");
   expect((await call(merged.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
-  const stale = await L.setFork(merged.id, "record-merge-late-fork--t2", BASE, BUILDER, false, claim.generation).then(() => null, (e: unknown) => e as Error);
+  const stale = await L.setWorkspace(merged.id, "record-merge-late-fork--t2", BASE, BUILDER, false, claim.generation).then(() => null, (e: unknown) => e as Error);
   expect(stale?.message).toMatch(/claim_superseded/);
   expect(await L.item(merged.id)).toMatchObject({ state: "merged", head: HEAD });
   // Another claim's generation is refused too.
   const other = await L.newItem("Claimed again", [], "owner");
   const first = await L.claim(other.id, BUILDER);
-  const wrong = await L.setFork(other.id, "record-merge-late-fork--t3", BASE, BUILDER, false, first.generation + 1).then(() => null, (e: unknown) => e as Error);
+  const wrong = await L.setWorkspace(other.id, "record-merge-late-fork--t3", BASE, BUILDER, false, first.generation + 1).then(() => null, (e: unknown) => e as Error);
   expect(wrong?.message).toMatch(/claim_superseded/);
 });
 
@@ -276,7 +276,7 @@ it("a handed-off task is recorded: no claim is in flight after a handoff", async
   const { L, call } = await setup("record-merge-handoff");
   const item = await L.newItem("Handed off, then merged by hand", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-handoff--t1", BASE, BUILDER, false, generation);
+  await L.setWorkspace(item.id, "record-merge-handoff--t1", BASE, BUILDER, false, generation);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-h");
   await L.handoff(item.id, "owner", ASTRA, "the freeze moved it", false, "tok-h");
   expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: ASTRA });
@@ -290,7 +290,7 @@ it("refuses the record while the holder's re-claim is in flight, and records it 
   const { L, call } = await setup("record-merge-reclaim");
   const item = await L.newItem("Re-claimed by its holder", [], "owner");
   const first = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-reclaim--t1", BASE, BUILDER, false, first.generation);
+  await L.setWorkspace(item.id, "record-merge-reclaim--t1", BASE, BUILDER, false, first.generation);
   await L.recordToken(item.id, BUILDER, first.generation, null, "tok-1");
   // The holder claims again: a new generation, the fork and old token still recorded.
   const again = await L.claim(item.id, BUILDER);
@@ -309,7 +309,7 @@ it("records a merge the baseline holds flattened, when the CLI names the baselin
   const { L, call } = await setup("record-merge-flat");
   const item = await L.newItem("Merged on a history-since baseline", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-flat--t1", BASE, BUILDER);
+  await L.setWorkspace(item.id, "record-merge-flat--t1", BASE, BUILDER);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-flat");
   const project = "1".repeat(40);
   const r = await call(item.id, { mergeCommit: project, baselineMerge: FLAT, head: HEAD, reviews });
@@ -322,7 +322,7 @@ it("still refuses a merge the baseline cannot map, naming atelier sync, and the 
   const { L, call } = await setup("record-merge-unmapped");
   const item = await L.newItem("Unmapped", [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, "record-merge-unmapped--t1", BASE, BUILDER);
+  await L.setWorkspace(item.id, "record-merge-unmapped--t1", BASE, BUILDER);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-unmapped");
   // The task has a pushed head, which a missing head would otherwise pick up.
   await L.recordPush(item.id, BUILDER, HEAD, HEAD);
@@ -384,7 +384,7 @@ const eventsOf = async (L: Awaited<ReturnType<typeof setup>>["L"], id: string) =
 const claimed = async (L: Awaited<ReturnType<typeof setup>>["L"], name: string, title: string) => {
   const item = await L.newItem(title, [], "owner");
   const { generation } = await L.claim(item.id, BUILDER);
-  await L.setFork(item.id, `${name}--${item.id}`, BASE, BUILDER);
+  await L.setWorkspace(item.id, `${name}--${item.id}`, BASE, BUILDER);
   await L.recordToken(item.id, BUILDER, generation, null, `tok-${item.id}`);
   return item;
 };

@@ -188,7 +188,7 @@ test("a plan's inbox entries: approve-plan for an answered proposal, plan-blocke
 
 test("items of one plan are not overlap for each other, and parts never appear as accept, assess, failing, scope or stale", () => {
   const item = (id: string, change: Partial<Item> = {}): Item => ({
-    id, title: id, scope: ["src/**"], state: "claimed", owner: `claude-code/m${id}`, fork: null, base: null, head: null, acceptedHead: null,
+    id, title: id, scope: ["src/**"], state: "claimed", owner: `claude-code/m${id}`, workspace: null, base: null, head: null, acceptedHead: null,
     createdAt: AT, updatedAt: "2026-10-01T00:00:00.000Z", lastPushAt: null, ...change,
   });
   const plan = item("t1", { kind: "plan" });

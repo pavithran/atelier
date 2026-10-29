@@ -312,11 +312,11 @@ export function withEmptyTree(r: Reader): Reader {
   return { tree: async (h) => (h === EMPTY_TREE ? [] : r.tree(h)), blob: (h) => r.blob(h) };
 }
 
-type Commit = Pick<ArtifactsCommitMetadata, "hash" | "treeHash" | "parents">;
+type Commit = Pick<GitCommit, "hash" | "treeHash" | "parents">;
 
 // The commits the head reaches that are not in `onMain`, newest first. Every
-// commit is read from the fork by its id; one the fork cannot show throws.
-async function taskCommits(fork: ArtifactsRepo, head: Commit, onMain: Set<string>): Promise<Commit[]> {
+// commit is read from the branch by its id; one the branch cannot show throws.
+async function taskCommits(work: GitRepo, head: Commit, onMain: Set<string>): Promise<Commit[]> {
   const read = new Map<string, Commit>([[head.hash, head]]);
   const found = new Map<string, Commit>();
   const next = [head.hash];
@@ -324,9 +324,9 @@ async function taskCommits(fork: ArtifactsRepo, head: Commit, onMain: Set<string
     const hash = next.shift()!;
     if (onMain.has(hash) || found.has(hash)) continue;
     if (found.size >= TASK_COMMITS) throw new Error(`secret scan: the task adds more than ${TASK_COMMITS} commits, more than the scan reads`);
-    if (!read.has(hash)) for (const c of await fork.log({ ref: hash, limit: LOG_PAGE })) read.set(c.hash, c);
+    if (!read.has(hash)) for (const c of await work.log({ ref: hash, limit: LOG_PAGE })) read.set(c.hash, c);
     const commit = read.get(hash);
-    if (!commit) throw new Error(`secret scan: the fork did not show commit ${hash.slice(0, 8)}`);
+    if (!commit) throw new Error(`secret scan: the work did not show commit ${hash.slice(0, 8)}`);
     found.set(hash, commit);
     next.push(...(commit.parents ?? []));
   }
@@ -427,40 +427,40 @@ function oldestFirst(commits: Commit[]): Commit[] {
 // The scan of the commit a push recorded and every commit of the task behind
 // it, against the repository the item is measured against (main's history as
 // it is now, see againstMain in src/diff.ts), oldest commit first.
-// `forkedFrom`, the commit the item's fork started at, also ends the walk,
-// so a task that forked from a commit older than the main history read is
+// `branchedFrom`, the commit the item's branch started at, also ends the walk,
+// so a task that branched from a commit older than the main history read is
 // not taken to add main's older commits. The scan is bound to `head`, the
-// commit the Ledger recorded, never to the fork's live head: the fork may
+// commit the Ledger recorded, never to the branch's live head: the branch may
 // have moved on since the head was recorded, and a scan of the newer head
 // would be applied to the older one's record. The commit is read by its id,
-// and the scan runs only when the commit read is that one; a fork that
+// and the scan runs only when the commit read is that one; a branch that
 // cannot show it (a reader that answers with the live head, a commit not
 // reachable) throws, so the scan stays pending and is retried rather than
 // clearing or recording anything for the wrong head. The head's objects are
-// read from the fork first and from the baseline second (pairReader), and
+// read from the branch first and from the baseline second (pairReader), and
 // any object neither holds throws.
-export async function scanCommit(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, head: string, forkedFrom: string | null = null): Promise<PushScan & { head: string; base: string }> {
-  using fork = await artifacts.get(workspaceRepo);
-  using baseline = await artifacts.get(baselineRepo);
-  const [[commit], history] = await Promise.all([fork.log({ ref: head, limit: 1 }), baseline.log({ limit: MAIN_COMMITS })]);
+export async function scanCommit(repos: Repos, baselineRepo: string, workspaceRepo: string, head: string, branchedFrom: string | null = null): Promise<PushScan & { head: string; base: string }> {
+  using work = await repos.get(workspaceRepo);
+  using baseline = await repos.get(baselineRepo);
+  const [[commit], history] = await Promise.all([work.log({ ref: head, limit: 1 }), baseline.log({ limit: MAIN_COMMITS })]);
   if (!commit || commit.hash !== head) throw new Error(`secret scan: ${workspaceRepo} did not show the recorded head ${head.slice(0, 8)}${commit ? ` (read ${commit.hash.slice(0, 8)})` : ""}`);
   const main = history[0];
   if (!main) throw new Error(`secret scan: ${baselineRepo} has no commits to scan against`);
   const onMain = new Set(history.map((c) => c.hash));
-  if (forkedFrom) onMain.add(forkedFrom);
-  const commits = await taskCommits(fork, commit, onMain);
+  if (branchedFrom) onMain.add(branchedFrom);
+  const commits = await taskCommits(work, commit, onMain);
   // A parent's tree is read from its commit: the task's own from the walk,
-  // main's from main's history, any other from the fork by its id.
+  // main's from main's history, any other from the branch by its id.
   const trees = new Map<string, string>([...history, ...commits].map((c) => [c.hash, c.treeHash]));
   for (const c of commits) {
     for (const p of c.parents ?? []) {
       if (trees.has(p)) continue;
-      const parent = await fork.readCommit(p);
+      const parent = await work.readCommit(p);
       if (!parent) throw new Error(`secret scan: ${workspaceRepo} did not show commit ${p.slice(0, 8)}`);
       trees.set(p, parent.treeHash);
     }
   }
-  const r = withEmptyTree(pairReader(fork, baseline));
+  const r = withEmptyTree(pairReader(work, baseline));
   const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, commit.treeHash));
   return { ...scan, head: commit.hash, base: main.hash };
 }

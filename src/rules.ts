@@ -28,9 +28,9 @@ export interface Item {
   changedFiles?: string[];
   state: ItemState;
   owner: string | null;     // actor, e.g. "claude-code/opus-5.5"; null when unowned
-  fork: string | null;      // Artifacts repo name of the item's workspace
-  base: string | null;      // baseline commit the fork started from
-  head: string | null;      // last head Atelier verified in the fork
+  workspace: string | null; // the item's workspace, KEY/t/N (KEY/plan/N for a plan): its branch
+  base: string | null;      // the commit the task's branch started from
+  head: string | null;      // last head Atelier verified on the task's branch
   acceptedHead: string | null;
   pushActors?: string[];     // holders and recorded push contributors
   createdAt: string;
@@ -68,7 +68,7 @@ export interface Item {
   // was made; a review of the part is bound to them beside `accept`
   // (criteriaOf in src/criteria.ts). Null or absent for any other item.
   partAccept?: string[] | null;
-  blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
+  blocked?: Block | null;   // set while the task is blocked; it keeps its owner and branch meanwhile
   // The tasks this task waits on (G3): it is not offered, claimed or
   // accepted until every one is merged. Absent when it waits on none.
   blockedBy?: string[];
@@ -351,7 +351,7 @@ export interface Evidence {
   // Cloudflare container check; it still counts and is shown as it was.
   where?: "sandbox" | "runner";
   // Main's head when an observed check was recorded, read by the Worker from
-  // Artifacts. A merged check ran on the merge of `head` with that commit
+  // the repository. A merged check ran on the merge of `head` with that commit
   // rather than on `head` alone, so it is bound to both revisions: it is
   // stale once main moves on, and it never satisfies a required check at the
   // head, which the head's own run does.
@@ -884,7 +884,7 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
       if (acting) actors.add(acting);
       if (by && (!acting || by.includes("/"))) actors.add(by);
       // A pushed commit whose final Agent line names someone else than the
-      // holder, as the Worker read it from the fork (pushAuthors), is that
+      // holder, as the Worker read it from the branch (pushAuthors), is that
       // actor's work: it joins the contributors the gate compares.
       for (const a of pushAuthors(event.data)) actors.add(a.actor);
     }
@@ -2496,7 +2496,7 @@ export function unkeptIgnored(paths: string[]): string[] {
 // Whether a finished task's workspace may go (t561), or why it stays.
 // Removal is permanent, so it goes only against proof that nothing is lost:
 // the item merged or was abandoned; its HEAD is a head Atelier recorded (the
-// fork's last head or the merge's accepted head) or is in main; it has no
+// branch's last head or the merge's accepted head) or is in main; it has no
 // changed or untracked files; the ignored files it holds are all rebuildable
 // output (`ignored` lists the others); and every commit it reaches is under
 // a recorded head or in main.
@@ -2601,16 +2601,6 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The holder is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
 }
 
-export interface PushNotice { repo: string; ref: string; after: string }
-export function pushNotice(value: unknown, namespace = "atelier"): PushNotice | null {
-  if (!value || typeof value !== "object") return null;
-  const v = value as { type?: string; source?: { namespace?: string; repoName?: string }; payload?: { ref?: string; after?: string } };
-  if (v.type !== "cf.artifacts.repo.pushed" || v.source?.namespace !== namespace) return null;
-  const { ref, after } = v.payload ?? {};
-  if (!v.source.repoName || !ref?.startsWith("refs/heads/") || !after || !/^[a-f0-9]{40,64}$/.test(after) || /^0+$/.test(after)) return null;
-  return { repo: v.source.repoName, ref, after };
-}
-
 // Review leases use the server clock. Renewal is coalesced to one write per
 // 30 seconds; five minutes without one fences the claim, even after SIGKILL.
 export const REVIEW_RENEW_MS = 30_000;
@@ -2622,7 +2612,7 @@ export function reviewLeaseExpired(renewedAt: string | null | undefined, now: nu
 // ── modes (t585) ─────────────────────────────────────────────────────────────
 // Atelier has two modes. Full mode is the default: every change goes through
 // the gate. Fast mode is the owner's: switched on with a reason when the
-// gated path cannot run (on 2026-10-13 Artifacts failed every new fork, so
+// gated path cannot run (on 2026-10-13 the repository failed every new branch, so
 // no task could be claimed and four finished tasks were merged by hand,
 // outside the record), it lets the owner land finished work in batches from
 // a local checkout, each landing recorded with a receipt and audited by a
@@ -3291,8 +3281,8 @@ export function openNotes(notes: readonly GoalNote[]): GoalNote[] {
 }
 
 // ── fast-build reports ───────────────────────────────────────────────────────
-// The fork-less fast build (t589) was removed in t228: a build claims with a
-// fork in fast mode too. Reports recorded before then (item.fast_ready) still
+// The fast build that claimed no task (t589) was removed in t228: a build claims with a
+// branch in fast mode too. Reports recorded before then (item.fast_ready) still
 // replay and read as built until their task lands.
 
 // What a fast build reports: the commit, the main it was built on, the

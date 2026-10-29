@@ -165,7 +165,7 @@ test("CLI rename asks the server, then moves the local config entry to the new n
   assert.deepEqual(JSON.parse(calls()[0].body), { to: "ikon" });
   // The old name stays with the entry, for workspaces made before (t645).
   assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog, formerNames: ["weblog"] } });
-  assert.match(renamed.stdout, /weblog is now ikon on https:\/\/atelier\.test\. Its Ledger, baseline weblog and every fork stay where they are\. The local config entry weblog is now ikon\./);
+  assert.match(renamed.stdout, /weblog is now ikon on https:\/\/atelier\.test\. Its Ledger, baseline weblog and every branch stay where they are\. The local config entry weblog is now ikon\./);
   assert.match(renamed.stdout, /weblog still works/);
 }));
 
@@ -242,7 +242,7 @@ test("CLI removal keeps local config on refusal and removes it on success", () =
   assert.deepEqual(config().projects, {});
   assert.equal(calls()[1].method, "DELETE");
   assert.deepEqual(JSON.parse(calls()[1].body), { force: true });
-  assert.match(removed.stdout, /Artifacts repository and project Ledger data are retained/);
+  assert.match(removed.stdout, /project.s repository and its Ledger data are retained/);
 }));
 
 test("CLI removal says which local settings were dropped, including notesRemote", () => fixture(({ command, initial }) => {

@@ -17,7 +17,7 @@ const HASH = "4".repeat(64);
 const PLANNER = "claude-code/opus-5.5";
 const AT = "2026-10-06T12:00:00.000Z";
 
-const item = { id: "t1", title: "Ship the feature", scope: ["src/**"], state: "open", owner: null, fork: null, base: null, head: null, acceptedHead: null, createdAt: AT, updatedAt: AT, lastPushAt: null, kind: "plan" };
+const item = { id: "t1", title: "Ship the feature", scope: ["src/**"], state: "open", owner: null, workspace: null, base: null, head: null, acceptedHead: null, createdAt: AT, updatedAt: AT, lastPushAt: null, kind: "plan" };
 const proposedView = {
   item, phase: "proposed", goal: "Ship the feature", scope: ["src/**"], planner: PLANNER, plannerReasons: [], blocked: null, completedAt: null,
   proposal: { hash: HASH, by: PLANNER, at: AT, count: 1, answered: true },

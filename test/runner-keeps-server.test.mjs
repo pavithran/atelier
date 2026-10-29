@@ -120,7 +120,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
     createToken: async (scope) => ({ id: "tok1", plaintext: "art_dummy", scope, expiresAt: iso(Date.now() + 3600e3) }),
     revokeToken: async () => true, [Symbol.dispose]() {},
   }) };
-  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { ARTIFACTS: artifacts } });
+  const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { REPOS: artifacts } });
   const call = (method, path, body, bearer = OWNER) => fetch(`${server.url}/api${path}`, {
     method, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "x-atelier-actor": "owner", ...(bearer === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -303,7 +303,7 @@ async function prereviewWorld(name) {
     const id = (await L.newItem(`Task ${h.slice(-2)}`, [], "owner", { accept: ["It works"] })).id;
     await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
     await L.claim(id, OPUS, RUNNER_A);
-    await L.setFork(id, `fork-${id}`, H0, OPUS);
+    await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
     await L.recordPush(id, OPUS, h, h);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: h, passed: true, by: OPUS, at: iso(Date.now()), changedPaths: ["src/a.ts"] });
     await L.submit(id, OPUS);

@@ -27,7 +27,7 @@ it("a phone reaches every decision from the list, and the list is what /decision
     const id = `t${i + 1}`, head = String(i + 1).repeat(40);
     await L(NAME).newItem(title, ["src/**"], "owner");
     await L(NAME).claim(id, A);
-    await L(NAME).setFork(id, `${NAME}--${id}`, H0, A);
+    await L(NAME).setWorkspace(id, `${NAME}--${id}`, H0, A);
     await L(NAME).recordPush(id, A, head, head);
     await L(NAME).addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
     await L(NAME).submit(id, A);

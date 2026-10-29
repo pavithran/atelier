@@ -15,7 +15,7 @@ function artifacts(created: string[]) {
   return {
     create: async (name: string) => { created.push(name); return {}; },
     get: async () => ({ info: async () => ({ remote: "https://example/r.git", defaultBranch: "main" }), createToken: async () => ({ plaintext: "t", id: "i", expiresAt: "x" }), [Symbol.dispose]() {} }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
 // Owner-token writes name the acting model (G18).
@@ -39,7 +39,7 @@ type Policy = { checks: string[]; checkClasses?: { command: string; by: string; 
 
 it("init refuses a check that deploys before it makes the baseline, whatever is declared", async () => {
   const created: string[] = [];
-  const call = api({ ...testEnv, ARTIFACTS: artifacts(created) } as typeof env);
+  const call = api({ ...testEnv, REPOS: artifacts(created) } as typeof env);
   for (const body of [
     { checks: ["npm test", "npx wrangler deploy"] },
     { checks: ["npm --prefix web run deploy"], checkClasses: [{ command: "npm --prefix web run deploy", by: "owner", note: "trust me" }] },
@@ -56,7 +56,7 @@ it("init refuses a check that deploys before it makes the baseline, whatever is 
 });
 
 it("init records how each check is read-only, needs the owner's declaration for one it cannot read, and keeps it on the next init", async () => {
-  const call = api({ ...testEnv, ARTIFACTS: artifacts([]) } as typeof env);
+  const call = api({ ...testEnv, REPOS: artifacts([]) } as typeof env);
   const policy = async () => ((await (await call("GET", "/projects/classes-declared", "owner")).json()) as { project: { policy: Policy } }).project.policy;
   const undeclared = await call("PUT", "/projects/classes-declared", "owner", { checks: ["npm test", "./check.sh"] });
   expect(undeclared.status).toBe(400);
@@ -75,7 +75,7 @@ it("init records how each check is read-only, needs the owner's declaration for 
 
 it("a project's existing checks keep running: an init that names no checks keeps them, records the known ones and may declare the rest", async () => {
   const L = await legacy("classes-legacy", ["npm ci && npm test", "./scripts/verify.sh"]);
-  const call = api({ ...testEnv, ARTIFACTS: artifacts([]) } as typeof env);
+  const call = api({ ...testEnv, REPOS: artifacts([]) } as typeof env);
   const retitled = await call("PUT", "/projects/classes-legacy", "owner", { title: "Legacy" });
   expect(retitled.status, await retitled.clone().text()).toBe(200);
   expect((await L.project()).policy).toMatchObject({ checks: ["npm ci && npm test", "./scripts/verify.sh"], checkClasses: [{ command: "npm ci && npm test", by: "command" }] });
@@ -99,7 +99,7 @@ it("a check that deploys is not counted from anyone's machine, even when it was 
   const L = await legacy(name, ["npm test", "npx wrangler deploy"]);
   await L.newItem("Work", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   const call = api();
   const evidence = await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "npx wrangler deploy", passed: true, head: H1 });
@@ -112,7 +112,7 @@ it("a check that deploys is not counted from anyone's machine, even when it was 
 
 it("init persists preparation through the API and ledger, preserves omission, clears and resets, and validates classification and paths", async () => {
   const created: string[] = [];
-  const call = api({ ...testEnv, ARTIFACTS: artifacts(created) } as typeof env);
+  const call = api({ ...testEnv, REPOS: artifacts(created) } as typeof env);
   const path = "/projects/preparation-policy";
   const command = "npm ci --prefer-offline --no-audit --no-fund && npm run types";
   const prepare = { command, inputs: ["package.json", "package-lock.json", "wrangler.jsonc"], outputs: ["node_modules", "worker-configuration.d.ts"] };

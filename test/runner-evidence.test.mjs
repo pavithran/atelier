@@ -150,7 +150,7 @@ test("the brief records that no tests changed, and has no section when no run wa
 
 test("runReview puts the collected evidence in the brief, and a collector that throws reads as not run", async () => {
   const claimed = {
-    request: 41, item: { ...item, fork: "p--t21" }, head: H1, need,
+    request: 41, item: { ...item, workspace: "p--t21" }, head: H1, need,
     plan: null, events: [], owner: "owner",
     readToken: { remote: "https://artifacts.example/p--t21", token: "read-token", defaultBranch: "main" },
   };

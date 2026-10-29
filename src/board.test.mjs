@@ -5,7 +5,7 @@ import { taskStage, projectBoard, boardText } from './board.ts';
 import { renderBoard } from './board-html.ts';
 import { gate } from './rules.ts';
 
-const item = (extra = {}) => ({ id: 't1', title: 'Build this', state: 'open', owner: null, scope: [], fork: null, base: null, head: null, acceptedHead: null, createdAt: '2026-10-01', updatedAt: '2026-10-01', lastPushAt: null, ...extra });
+const item = (extra = {}) => ({ id: 't1', title: 'Build this', state: 'open', owner: null, scope: [], workspace: null, base: null, head: null, acceptedHead: null, createdAt: '2026-10-01', updatedAt: '2026-10-01', lastPushAt: null, ...extra });
 const queued = { job: 'build', actor: 'codex/gpt-6-astra' };
 
 test('every stage and competing higher-priority fact', () => {

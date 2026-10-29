@@ -37,7 +37,7 @@ async function task(name: string): Promise<string> {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const { id } = await L(name).newItem("Rows", ["docs/**"], "owner");
   await L(name).claim(id, OPUS);
-  await L(name).setFork(id, `${name}--${id}`, H0, OPUS);
+  await L(name).setWorkspace(id, `${name}--${id}`, H0, OPUS);
   await L(name).recordPush(id, OPUS, H1, H1);
   await L(name).submit(id, OPUS);
   return id;

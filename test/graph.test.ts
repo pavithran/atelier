@@ -15,7 +15,7 @@ function night() {
     ev("t1", OWNER, "item.created"),
     ev("t2", OWNER, "item.created"),
     ev("t1", "claude-code/opus-5.5", "item.claimed"),
-    ev("t1", "claude-code/opus-5.5", "fork.created"),
+    ev("t1", "claude-code/opus-5.5", "workspace.created"),
     ev("t1", "claude-code/opus-5.5", "push.observed", { head: "aaaaaaaa11" }),
     // Atelier's sandbox records its own checks, and its push events its own pushes.
     ev("t1", "atelier/sandbox", "evidence.observed", { claim: "npm test", passed: true, where: "sandbox" }),

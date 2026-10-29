@@ -67,7 +67,7 @@ export function world() {
       },
       readTree: async (h: string) => trees.get(h) ?? null,
       readBlob: async (h: string) => { const b = blobs.get(h); return b ? { arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) } : null; },
-    } as unknown as ArtifactsRepo;
+    } as unknown as GitRepo;
   };
   return { commit, repo };
 }

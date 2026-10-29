@@ -319,7 +319,7 @@ export function commandFor(entry, { model, briefFile, workspace, planFile, diffF
 
 // A role's instructions, as the runner passes them to the harness: the
 // project's `.atelier/prompts/ROLE.md` when the workspace (a clone of the
-// fork) holds one, else the default text `atelier guide --role ROLE` prints.
+// branch) holds one, else the default text `atelier guide --role ROLE` prints.
 // The override travels with the project's code, so the agent reads exactly
 // what the owner's checkout would print for the role. Returned without a
 // trailing newline, so the caller joins it to the brief with a single blank
@@ -958,7 +958,7 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
   }
 }
 
-// A review job clones the part's fork read-only with an Artifacts read token,
+// A review job clones the part's branch read-only with a read grant,
 // which git sends as an Authorization header through its environment, as the
 // CLI's auth() does, never in an argument.
 function gitAuth(token, base = process.env) {
@@ -1082,7 +1082,7 @@ export async function rescueWork(cwd, git, log, now = new Date()) {
 // A builder that ends validation_blocked with its work uncommitted (t557)
 // used to have the claim released as "no new commit", and the next run
 // started from the old head without it: four runs lost their work so on
-// 2026-10-12. The runner now commits that work in progress on the fork under
+// 2026-10-12. The runner now commits that work in progress on the branch under
 // the builder's commit identity, with the builder's Agent line and the
 // trailer below, pushes it unsubmitted and releases the claim. The trailer
 // is how a later run, on any machine, knows its head is that unverified work
@@ -1141,7 +1141,7 @@ export const workInProgressSection = (head, actor) => [
 ].join("\n");
 
 // A merge-main job's build (docs/orchestrator.md, section 5): a part's
-// workspace forks from the plan's branch, a task's is its own fork of main,
+// workspace branches from the plan's branch, a task's is its own branch of main,
 // and after claiming the runner fetches the current baseline branch
 // through a read token — the plan item's base for a part (the baseline: the
 // token the refresh job reads main with), the task's own for a task, whose
@@ -1190,7 +1190,7 @@ export async function startMergeMain(assignment, workspace, io) {
 // A part sent back because its integration conflicted with the plan's
 // branch (docs/orchestrator.md, section 5): its dispatch names the plan
 // branch's head (`planHead`), and before the harness runs the runner reads
-// it through the part's own base token, which reads the plan item's fork,
+// it through the part's own base token, which reads the plan item's branch,
 // and merges it as startMergeMain merges main, with the same three outcomes.
 // With `merge` false, as when a merge-main part's merge of main is still in
 // progress, it is fetched and not merged: "skipped".
@@ -2175,7 +2175,7 @@ export async function runTask(assignment, config, name, io) {
       const named = `files the harness left uncommitted after its commits and one follow-up turn: ${leftovers.map((f) => f.path).join(", ")}`;
       state = { ...state, leftovers: leftovers.map((f) => f.path), detail: `${state.reason}; ${named}`.slice(0, 2000), reason: `${state.reason}; ${named}` };
     }
-    state = { ...state, claimedFork: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
+    state = { ...state, claimedTask: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
     // The final record adds the head, the start and the reason as information.
     if (failedNow && claimed && !error.providerLimit) {
       await markFailure({ reason: state.reason });
@@ -2207,7 +2207,7 @@ export async function runTask(assignment, config, name, io) {
       io.log("claim preserved: the failure marker or the head could not be recorded");
     } else if (claimed && (exitOutcome?.release || (state.head && item.kind === "part")) && state.taskFailure) {
       // A part whose finish failed is released, not held (docs/orchestrator.md,
-      // section 3): the fork keeps the commits, and the plan's tick sends the
+      // section 3): the branch keeps the commits, and the plan's tick sends the
       // part back with the failing output in its next brief.
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, "", workspace)], workspace);
@@ -2369,7 +2369,7 @@ export function runFacts(task, state, { dir = null, now = Date.now, host = hostn
 // A runner that gives a task up (t584) lets go of the claim, so the core-file
 // hold on other dispatches lifts at once and the developer's inbox, status and
 // stuck report carry the task (the note starts with GAVE_UP). It pushes what it
-// committed first, so the work is on the fork, not only on this Mac. Whatever
+// committed first, so the work is on the branch, not only on this Mac. Whatever
 // fails, the release is still tried: a hold with nobody working is worse than
 // work left in a workspace, and the note says if the push failed. A harness
 // that failed leaves its marker in the workspace, so a runner that claims the
@@ -2560,7 +2560,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
     io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
     // Claim the request; the server returns the part, the brief's inputs and a
-    // read token for the fork, so the part can be cloned read-only.
+    // read token for the branch, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
     // failed review need not wait for its five-minute lease to expire.
     // A pre-review job's claim that bound this gate review hands it over
@@ -2596,7 +2596,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     await (io.prepareReview ?? prepareReviewDependencies)(workspace, io.workspacePath(project, item.id));
     const compare = await reviewBase(io, workspace, claimed, { project });
     if (io.stopped()) throw new Error("interrupted");
-    if (compare.fallback) io.log(`review diff from the fork point: ${project}/${item.id} at ${claimed.head.slice(0, 12)}: ${compare.fallback}`);
+    if (compare.fallback) io.log(`review diff from the branch point: ${project}/${item.id} at ${claimed.head.slice(0, 12)}: ${compare.fallback}`);
     // A merge-main job's merge is reviewed by what it resolved (mergeReview);
     // every other head by the diff from `compare`.
     const merged = claimed.landed ? null : await mergeReview(io, workspace, claimed);
@@ -2849,7 +2849,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
 // The merge commit a post-merge review reads (t591), fetched into the review
 // clone from where it lives. A task landed in fast mode is merged on the
 // developer's own main (recorded with atelier record-merge), and the merge reaches the
-// project's baseline only when the developer publishes main; the task's fork
+// project's baseline only when the developer publishes main; the task's branch
 // never holds it. The clone the claim names may therefore lack it, and the
 // checkout failed with "fatal: unable to read tree (<merge>)". When the
 // clone lacks it, the baseline is read through its read token (the
@@ -3348,15 +3348,15 @@ export async function verifyBlockers(io, ctx, blockers) {
 // The commit a review diffs from: the merge base of the reviewed head and the
 // branch the item merges into, which the claim names with a read token (the
 // plan's integration branch for a part, the project's main otherwise). A
-// task that merged main after it forked holds main's newer commits, and a
-// diff from its fork point would show them as the task's own; the merge
+// task that merged main after it branched holds main's newer commits, and a
+// diff from its branch point would show them as the task's own; the merge
 // base leaves them out, as git merge-base HEAD main does in
 // bin/orchestrate/review.sh. When the branch cannot be fetched or shares no
-// history with the head, the diff runs from the fork point the claim records
-// and the reason is returned, for the brief to say so. A fork point the clone
+// history with the head, the diff runs from the branch point the claim records
+// and the reason is returned, for the brief to say so. A branch point the clone
 // cannot read is no fallback: the review stops here, before any harness
 // starts, with an error that names the job and the operation that failed,
-// so the notice (a fork-point diff is in use) and the terminal error (there
+// so the notice (a branch-point diff is in use) and the terminal error (there
 // is no diff to give) are told apart in the log (t173).
 // `job` is { project }, for the names in those two messages.
 export async function reviewBase(io, workspace, claimed, job = {}) {
@@ -3397,7 +3397,7 @@ export async function reviewBase(io, workspace, claimed, job = {}) {
     try { readable = await io.hasCommit(workspace, base); } catch { readable = false; }
   }
   if (!readable) {
-    throw new Error(`review of ${job.project ?? "?"}/${claimed.item.id} at ${String(claimed.head).slice(0, 12)} cannot start, with target branch ${target.branch}: ${operation} failed (${failure}) and the fork point ${base ? String(base).slice(0, 12) : "(none recorded)"} cannot be read in the clone`);
+    throw new Error(`review of ${job.project ?? "?"}/${claimed.item.id} at ${String(claimed.head).slice(0, 12)} cannot start, with target branch ${target.branch}: ${operation} failed (${failure}) and the branch point ${base ? String(base).slice(0, 12) : "(none recorded)"} cannot be read in the clone`);
   }
   return { from: base, fallback: `${operation} on ${target.branch} failed (${failure})` };
 }
@@ -3431,7 +3431,7 @@ export function mergeMainJob(claimed) {
 // A merge-main job's head is a merge of main into the part or task: its first
 // parent is the builder's previous head and its second is main. Diffed from
 // the branch the item merges into, as other reviews are (reviewBase), such a
-// head shows all of main's work since the item forked, often more than a
+// head shows all of main's work since the item branched, often more than a
 // reviewer can read or a harness can be handed. It is reviewed instead by what
 // the merge resolved, `git show --remerge-diff HEAD` (how the committed merge
 // differs from the merge git makes on its own, conflict markers included),
@@ -3481,7 +3481,7 @@ export async function runIntegrate(assignment, config, name, io) {
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // The branch goes back to its head before the merge, in the workspace and,
-  // through atelier push --rollback, on the fork and in the ledger.
+  // through atelier push --rollback, on the branch and in the ledger.
   const rollback = async () => {
     await io.rollback(workspace, before);
     await io.cli(["push", item.id, ...at, "--rollback"], workspace);
@@ -3503,7 +3503,7 @@ export async function runIntegrate(assignment, config, name, io) {
     }
     await io.cli(["claim", item.id, ...at, "--runner", name]);
     claimed = true;
-    // The merge starts from the branch as the fork holds it, so a merge whose
+    // The merge starts from the branch as the branch holds it, so a merge whose
     // push failed in an earlier run is not carried into this one.
     await io.resetToRemote(workspace);
     before = await io.head(workspace);
@@ -3557,7 +3557,7 @@ export async function runIntegrate(assignment, config, name, io) {
     }
     // Any error after the claim gives the plan item back, so the job can run again.
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, claimedFork: claimed, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, claimedTask: claimed, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -3569,7 +3569,7 @@ export function checkFailures(output) {
 
 // The refresh job (docs/orchestrator.md, section 5): the integrator merges
 // main's head, the one the dispatch names, into the plan's branch, so later
-// parts fork from a branch that holds main's later work and later
+// parts branch from a branch that holds main's later work and later
 // integrations build on it. It runs as the integrate job does: claim the
 // plan item, merge with --no-ff, push with atelier push, run the plan's
 // checks, and post refreshed with the merge commit. A branch that already
@@ -3598,7 +3598,7 @@ export async function runRefresh(assignment, config, name, io) {
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // As in runIntegrate: back to the head before the merge, in the workspace
-  // and, through atelier push --rollback, on the fork and in the ledger.
+  // and, through atelier push --rollback, on the branch and in the ledger.
   const rollback = async () => {
     await io.rollback(workspace, before);
     await io.cli(["push", item.id, ...at, "--rollback"], workspace);
@@ -3632,7 +3632,7 @@ export async function runRefresh(assignment, config, name, io) {
     }
     await io.cli(["claim", item.id, ...at, "--runner", name]);
     claimed = true;
-    // As in runIntegrate: the merge starts from the branch as the fork holds it.
+    // As in runIntegrate: the merge starts from the branch as the branch holds it.
     await io.resetToRemote(workspace);
     before = await io.head(workspace);
     const base = JSON.parse(await io.cli(["base-token", item.id, ...at]));
@@ -3679,7 +3679,7 @@ export async function runRefresh(assignment, config, name, io) {
       catch (rollbackError) { io.log(`rollback failed: ${rollbackError.message}`); }
     }
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, claimedFork: claimed, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, claimedTask: claimed, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -4105,7 +4105,7 @@ export async function runPlanTask(assignment, config, name, io) {
     state = { phase: "failed", reason: error.message };
     state.taskFailure = taskFailure && !error.infrastructure && !error.providerLimit && !io.stopped();
     if (error.providerLimit) state.providerLimit = error.providerLimit;
-    state.claimedFork = claimed;
+    state.claimedTask = claimed;
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
     if (error.detail) state.detail = error.detail;
@@ -4610,7 +4610,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
     // after the reset (excludeScratch).
     reset: async (cwd) => { await resetTo(cwd, "HEAD"); excludeScratch(cwd); },
-    // The integrate and refresh jobs' reset: to the fork's copy of the branch
+    // The integrate and refresh jobs' reset: to the branch's copy of the branch
     // the claim names (atelier.branch), which the claim has just fetched.
     resetToRemote: async (cwd) => {
       const branch = (await checked(["git", "config", "--local", "atelier.branch"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild)).trim();

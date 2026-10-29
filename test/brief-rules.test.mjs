@@ -28,7 +28,7 @@ const need = (over = {}) => ({
   changedPaths: ["src/review/needed.ts"], outOfScope: [], checks: [{ claim: "npm test", grade: "observed", passed: true, where: "sandbox" }],
   round: 1, previous: [], previousReviewer: null, lapsed: [], ...over,
 });
-const item = { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], fork: "p--t21", head: H1 };
+const item = { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], workspace: "p--t21", head: H1 };
 const review = (over = {}) => ({ need: need(), item, events: [], plan: { goal: "Automatic cross-family review", part }, diff: "+x\n", owner: "owner", ...over });
 
 test("the pinned rules state what every agent must be told", () => {

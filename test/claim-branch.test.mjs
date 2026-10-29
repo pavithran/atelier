@@ -97,7 +97,7 @@ test("atelier claim makes t/N in well under 10 seconds; the workspace has one re
   const branch = `t/${id.slice(1)}`;
   assert.equal(await tip(`refs/heads/${branch}`), main, "the branch starts at the project branch's tip");
   const item = await L().item(id);
-  assert.equal(item.fork, `demo/${branch}`);
+  assert.equal(item.workspace, `demo/${branch}`);
   assert.equal(item.base, main);
   assert.match(await L().tokenId(id), /^git:[0-9a-f]{64}$/);
   const dir = workspace(id);

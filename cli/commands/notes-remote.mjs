@@ -10,10 +10,10 @@ export default async function notesRemoteCommand() {
   if (args.off) {
     delete p.notesRemote;
     saveConfig(cfg);
-    return console.log(`${name}: provenance notes stay local and in Artifacts.`);
+    return console.log(`${name}: provenance notes stay local and in the repository.`);
   }
   const remote = args._[1];
-  if (!remote) return console.log(p.notesRemote ? `${name}: notes go to ${p.notesRemote} on each merge.` : `${name}: notes stay local and in Artifacts. Set one with: atelier notes-remote REMOTE`);
+  if (!remote) return console.log(p.notesRemote ? `${name}: notes go to ${p.notesRemote} on each merge.` : `${name}: notes stay local and in the repository. Set one with: atelier notes-remote REMOTE`);
   const cwd = needCheckout(name, p);
   if (!git(["remote"], { cwd }).split("\n").includes(remote)) die(`${cwd} has no remote called ${remote}`);
   p.notesRemote = remote;

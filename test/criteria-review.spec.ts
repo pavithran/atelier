@@ -243,7 +243,7 @@ it("every build item the queue offers carries its criteria reviews: waiting, hel
   expect(await offered()).toEqual({ waiting: [], held: [[id, "claimed", "build", 1]] });
   expect((await L.jobBrief(id, OPUS)).text).toContain("## Review of the acceptance criteria");
   // Released with an attempt committed and dispatched again: waiting again, counted.
-  await L.setFork(id, "criteria-every-offer--t1", H0, OPUS);
+  await L.setWorkspace(id, "criteria-every-offer--t1", H0, OPUS);
   await L.recordPush(id, OPUS, H1, null);
   await L.release(id, OPUS, "stalled");
   await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
@@ -312,7 +312,7 @@ it("a plan asks for each part's criteria review before it dispatches the part, o
   await L.addCriteriaReview({ itemId: partId, by: GLM, rev: 2, criteria: claim2.criteria, request: claim2.request, approve: true, summary: "Still observable." }, true);
   expect((await L.waiting()).map((i) => i.id)).toEqual([partId]);
   await L.claim(partId, builder, RUNNER);
-  await L.setFork(partId, `fork-${partId}`, H0, builder);
+  await L.setWorkspace(partId, `fork-${partId}`, H0, builder);
   await L.recordPush(partId, builder, H1, H1);
   const observed: Evidence = { itemId: partId, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a/x.ts"] };
   await L.addEvidence(observed);
@@ -501,7 +501,7 @@ it("a criteria review flags a criterion the builder cannot verify as the owner's
   expect(brief.text).toContain("criterion-2: the developer's check. Signing in needs a real account; the developer signs in after deploy and sees the banner.");
   expect(brief.text).toContain("Builder: build for it and say in your summary what you built and what remains to be checked after deploy; do not claim to have verified it");
   // The code review's claim carries the review with its check, and its brief lets the reviewer defer that criterion alone.
-  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L.recordPush(id, OPUS, H1, H1);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/banner.ts"] } satisfies Evidence);
   await L.submit(id, OPUS);

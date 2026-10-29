@@ -73,7 +73,7 @@ test("a command finds this checkout registered behind entries with no usable pat
     await withConfig({ none: {}, empty: { path: "" }, number: { path: 7 }, demo: { path: checkout } }, async (configDir) => {
       const r = await run(["notes-remote"], configDir, checkout);
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /^demo: notes stay local and in Artifacts\./);
+      assert.match(r.stdout, /^demo: notes stay local and in the repository\./);
     });
   } finally {
     rmSync(checkout, { recursive: true, force: true });
@@ -142,7 +142,7 @@ test("a command that works without a checkout still works for an entry with no p
     try {
       const r = await run(["notes-remote", "--off", "--project", "demo"], configDir, dir);
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /demo: provenance notes stay local and in Artifacts\./);
+      assert.match(r.stdout, /demo: provenance notes stay local and in the repository\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

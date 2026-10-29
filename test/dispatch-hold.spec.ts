@@ -8,7 +8,7 @@ import type { Item } from "../src/rules.ts";
 
 const A = "codex/gpt-6-astra", TOKEN = "dispatch-hold-token";
 const now = Date.now(), at = new Date(now).toISOString();
-const item = (id: string, extra: Partial<Item> = {}): Item => ({ id, title: id, scope: ["src/**"], state: "open", owner: null, fork: null, base: null, head: null, acceptedHead: null, createdAt: at, updatedAt: at, lastPushAt: null, dispatch: makeDispatch({}, "owner", at), ...extra });
+const item = (id: string, extra: Partial<Item> = {}): Item => ({ id, title: id, scope: ["src/**"], state: "open", owner: null, workspace: null, base: null, head: null, acceptedHead: null, createdAt: at, updatedAt: at, lastPushAt: null, dispatch: makeDispatch({}, "owner", at), ...extra });
 
 it("only claimed work and live landings hold core files, preserving exemptions", () => {
   const queued = item("t1"), live = item("t2", { state: "claimed", owner: A });

@@ -36,7 +36,7 @@ async function seedOnce() {
   await index().registerProject(record);
   const { id } = await L().newItem("Work", ["docs/**"], "owner");
   await L().claim(id, OPUS);
-  await L().setFork(id, `${KEY}--${id}`, H0, OPUS);
+  await L().setWorkspace(id, `${KEY}--${id}`, H0, OPUS);
   await L().recordPush(id, OPUS, H1, H1);
   await L().submit(id, OPUS);
   await L().addReview({ itemId: id, by: GPT, head: H1, criteria: NO_CRITERIA, approve: false, note: "needs a test", at: new Date().toISOString(), findings: [{ file: "a.ts", line: 1, severity: "blocking", text: "drops rows" }] });

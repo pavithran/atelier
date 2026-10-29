@@ -38,7 +38,7 @@ async function setup(name: string, builder = BUILDER) {
   await index().putModel({ ...entry("opus-5.5", []), harness: "claude-code", where: "cloud", provider: "subscription", endpoint: undefined });
   await L.newItem("Review external model", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim("t1", builder);
-  await L.setFork("t1", `${name}--t1`, BASE, builder);
+  await L.setWorkspace("t1", `${name}--t1`, BASE, builder);
   await L.recordPush("t1", builder, HEAD, HEAD);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: HEAD, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
   await L.submit("t1", builder);
@@ -181,7 +181,7 @@ it("an admitted model's own actor token records a proved, counting approval thro
   await admit(L);
   const api = (method: string, path: string, body: unknown, token = TOKEN, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: { get: async () => ({ log: async () => [{ hash: HEAD }], [Symbol.dispose]() {} }) } as unknown as Artifacts } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS: { get: async () => ({ log: async () => [{ hash: HEAD }], [Symbol.dispose]() {} }) } as unknown as Repos } as typeof env);
   const issued = await api("POST", "/tokens", { actor: ALIAS, projects: [name], label: "Outside reviewer" });
   expect(issued.status).toBe(201);
   const { token } = await issued.json() as { token: string };

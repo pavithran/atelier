@@ -41,7 +41,7 @@ const api = (method, path, body, token = OWNER, actor = "owner") => fetch(`${bas
 const tip = async (item) => (await tryGit(root, "ls-remote", remote(OWNER), `refs/heads/t/${item.slice(1)}`)).stdout.split("\t")[0];
 
 before(async () => {
-  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { ARTIFACTS: artifacts } });
+  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { REPOS: artifacts } });
   base = server.url.replace("localhost", "127.0.0.1");
   assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
   for (let i = 1; i <= 6; i++) assert.equal((await api("POST", "/projects/demo/items", { title: `Task ${i}` })).status, 201);

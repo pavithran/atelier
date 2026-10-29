@@ -1,6 +1,6 @@
-// A baseline that starts partway through a project's history. Artifacts holds
-// at most 1 GB per repository and 32 MB per file, so a project whose full
-// history is larger joins with only its recent history: the baseline begins
+// A baseline that starts partway through a project's history, as 1.x's
+// `init --history-since` made one for a project too large for its repository
+// host, and as a project moved here from 1.x may still have: the baseline begins
 // with a root commit holding the project's tree as it was on a chosen day,
 // and each commit on the project's first-parent line since then is rebuilt on
 // top of it with the same tree, authors, dates and message.

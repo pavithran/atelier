@@ -29,7 +29,7 @@ export const coreCount = () => cpus().length || 1;
 
 // One slot unless told otherwise (t161): on 2026-10-21 three clean-clone suites
 // ran at once on one Mac under the old default of a quarter of the cores, and
-// two landings failed both attempts on timing and Artifacts 503 noise. Only an
+// two landings failed both attempts on timing and the repository 503 noise. Only an
 // explicit ATELIER_TEST_SLOTS at first creation, or `--set`, raises it.
 export const DEFAULT_SLOTS = 1;
 

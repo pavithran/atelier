@@ -28,7 +28,7 @@ const T = "2026-10-03T12:00:00.000Z";
 function item(over: Partial<Item> = {}): Item {
   return {
     id: "t1", title: "Fix it", scope: ["src/**"], state: "submitted", owner: "claude-code/opus-5.5",
-    fork: "proj--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
+    workspace: "proj--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
     createdAt: T, updatedAt: T, lastPushAt: T, ...over,
   };
 }
@@ -448,13 +448,6 @@ test("decisions reject stale revisions and retain the latest review from each re
   assert.equal(gate(item(),policy,[pass()],[no,yes]).ready,true);
   assert.equal(decisionFor(item({state:'merged'}),policy,[],[]).action,'none');
   assert.equal(decisionFor(item(),policy,[pass({passed:false})],[]).title,'Checks need attention');
-});
-
-test("push notices admit only valid branch updates in the configured namespace", async () => {
-  const {pushNotice}=await import('../src/rules.ts');
-  const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'project--t1'},payload:{ref:'refs/heads/main',after:H1}};
-  assert.deepEqual(pushNotice(notice),{repo:'project--t1',ref:'refs/heads/main',after:H1});
-  for(const bad of [null,{}, {...notice,type:'other'}, {...notice,source:{...notice.source,namespace:'other'}},{...notice,payload:{ref:'refs/tags/v1',after:H1}},{...notice,payload:{ref:'refs/heads/main',after:'0'.repeat(40)}}])assert.equal(pushNotice(bad),null);
 });
 
 test("actor names allow a :profile suffix on the model, never on the harness", () => {
@@ -1989,7 +1982,7 @@ test("acceptedState: no recorded main head, or a search that could not answer, i
 test("readAccepted: a fork that cannot be read is unknown while the others are read, and tasks past the cap are unknown without a read", async () => {
   const { ACCEPTED_READS, readAccepted } = await import("../src/accepted-main.ts");
   const main = "b".repeat(40);
-  const mk = (n: number, fork: string | null = `f${n}`) => ({ id: `t${n}`, title: "x", state: "accepted" as const, fork, acceptedHead: H1 });
+  const mk = (n: number, workspace: string | null = `f${n}`) => ({ id: `t${n}`, title: "x", state: "accepted" as const, workspace, acceptedHead: H1 });
   const asked: string[] = [];
   const holds = async (fork: string) => { asked.push(fork); if (fork === "f2") throw new Error("fork unreadable"); return fork === "f3" ? null : fork !== "f4"; };
   const out = await readAccepted([mk(1), mk(2), mk(3), mk(4), mk(5, null)], main, holds);
@@ -2127,7 +2120,7 @@ const stageEv = (seq: number, kind: string, data: Record<string, unknown> = {}) 
 const READY = { commit: H1, base: H2, builder: "claude-code/sonnet-5.5", runner: "mac-mini", workspace: "/work/t1" };
 
 test("stageOf takes the first stage that holds, from filed up to shipped", () => {
-  const bare = item({ state: "open", owner: null, head: null, fork: null });
+  const bare = item({ state: "open", owner: null, head: null, workspace: null });
   assert.equal(stageOf(bare).stage, "filed");
   assert.equal(stageOf({ ...bare, accept: ["c1"], criteriaReviews: 1 }).stage, "agreed");
   assert.equal(stageOf({ ...bare, dispatch: { agent: "claude-code", model: "sonnet-5.5" } as Item["dispatch"] }).stage, "queued");

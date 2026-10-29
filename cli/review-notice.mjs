@@ -12,8 +12,8 @@ const EXECUTION_POLICY = "docs/control-plane/execution-policy.v1.json";
 
 // The paths the workspace's head changes from the project baseline, as the
 // Worker measures them: the baseline's default branch is fetched with its
-// read grant and the merge base taken with it. The fork's origin/main is no
-// stand-in (a pushed task's own fork holds its head there), so it and a local
+// read grant and the merge base taken with it. The branch's origin/main is no
+// stand-in (a pushed task's own branch holds its head there), so it and a local
 // main serve only where no baseline is given. Null where it cannot be told.
 export function changedFromMain(git, dir, baseline) {
   const diffFrom = (rev) => {

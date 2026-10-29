@@ -1,4 +1,4 @@
-// An item's diff against the baseline, computed from Artifacts objects. The
+// An item's diff against the baseline, computed from the repository objects. The
 // binding reads trees, blobs and commit logs but has no diff operation, so the
 // line diff (Myers) and the tree walk live here. The algorithms are pure and
 // take a reader, so they are tested without Cloudflare.
@@ -32,14 +32,14 @@ export interface ItemDiff {
   truncated: boolean;    // more changed files than the limit; the rest are not listed
   baseTree?: string;     // main's tree and the head's
   headTree?: string;
-  main?: MainPreview | null;  // how far main has moved since the fork point, and whether it merges; absent when not read
+  main?: MainPreview | null;  // how far main has moved since the work point, and whether it merges; absent when not read
   merged?: Landed;       // set on a merged item's diff, which shows the change as it landed (mergedDiff)
 }
 
 // How a merged item's diff was read: from the merge commit's first parent to
 // the merge, or, when the merge is the accepted head itself (a fast-forward),
-// from the item's fork point to that head.
-export interface Landed { commit: string; from: "first-parent" | "fork-point" }
+// from the item's branch point to that head.
+export interface Landed { commit: string; from: "first-parent" | "branch-point" }
 
 export const LIMITS = {
   files: 60,             // changed files listed
@@ -168,12 +168,12 @@ export function splitLines(text: string): string[] {
 
 // An item's diff as text, in git's shape so a reader greps it as any diff: a
 // file header, the status git would note, then the hunks with their @@ lines.
-// Files Artifacts could not diff (binary, too large, a submodule) keep their
+// Files the repository could not diff (binary, too large, a submodule) keep their
 // place as notes, so the text still lists every changed file. This is what a
 // review too large for its brief leaves in R2 by reference (t284): the ledger
 // names the key and anything may read the whole diff back as text.
 export function renderDiffText(item: string, diff: ItemDiff): string {
-  const out: string[] = [`# diff of ${item} from ${diff.base} (base) to ${diff.head} (head), as Atelier read it from Artifacts`];
+  const out: string[] = [`# diff of ${item} from ${diff.base} (base) to ${diff.head} (head), as Atelier read it from the repository`];
   for (const f of diff.files) {
     out.push(`diff --git a/${f.path} b/${f.path}`);
     if (f.status === "added") out.push("new file");
@@ -307,7 +307,7 @@ export async function treeDiff(r: Reader, baseTree: string, headTree: string, li
   return { files, truncated };
 }
 
-// ── Artifacts ──────────────────────────────────────────────────────────────
+// ── the repository ──────────────────────────────────────────────────────────────
 
 // What an item changes is measured against main as it is now: every path
 // whose content at the item's head differs from main's head. That is the set
@@ -318,28 +318,28 @@ export async function treeDiff(r: Reader, baseTree: string, headTree: string, li
 // newer changes too, until `atelier update` brings them in; a workspace that
 // has them lists only its own work.
 //
-// The fork point below is not used for this. It is read from the fork's
+// The branch point below is not used for this. It is read from the branch's
 // first-parent log, which the agent shapes: a merge commit whose first parent
-// descends from an older main commit makes that commit the fork point, while
+// descends from an older main commit makes that commit the branch point, while
 // the merge's other parent carries main's newer history, so git merges the
 // item with a newer base and a protected file the head quietly reverted lands
-// unmeasured. The fork point serves only the merge preview, which says how far
+// unmeasured. The branch point serves only the merge preview, which says how far
 // main has moved and whether the item's own commits would merge, and is
 // advisory.
 export interface Measure { main: string; mainTree: string; head: string; headTree: string }
 
-export async function againstMain(fork: ArtifactsRepo, baseline: ArtifactsRepo): Promise<Measure | null> {
-  const [[head], [main]] = await Promise.all([fork.log({ limit: 1 }), baseline.log({ limit: 1 })]);
+export async function againstMain(work: GitRepo, baseline: GitRepo): Promise<Measure | null> {
+  const [[head], [main]] = await Promise.all([work.log({ limit: 1 }), baseline.log({ limit: 1 })]);
   if (!head || !main) return null;
   return { main: main.hash, mainTree: main.treeHash, head: head.hash, headTree: head.treeHash };
 }
 
-// A reader over both repositories. The head's objects are in the fork; main's
+// A reader over both repositories. The head's objects are in the branch; main's
 // newer objects are only in the baseline. Git objects are content addressed,
-// so a hash names the same object wherever it is found, and the fork is tried
+// so a hash names the same object wherever it is found, and the branch is tried
 // first because a workspace that has taken main's commits holds both sides.
-export function pairReader(fork: ArtifactsRepo, baseline: ArtifactsRepo): Reader {
-  const a = repoReader(fork), b = repoReader(baseline);
+export function pairReader(work: GitRepo, baseline: GitRepo): Reader {
+  const a = repoReader(work), b = repoReader(baseline);
   return {
     tree: async (h) => (await a.tree(h)) ?? b.tree(h),
     blob: async (h) => (await a.blob(h)) ?? b.blob(h),
@@ -353,7 +353,7 @@ export function pairReader(fork: ArtifactsRepo, baseline: ArtifactsRepo): Reader
 // parent of one of them. A workspace rebased with `atelier
 // update` is previewed against what it was rebased onto, and one that merged
 // main is previewed against the main commit it merged, not against where it
-// forked, whose newer main commits it already holds (t230). The agent shapes
+// branched, whose newer main commits it already holds (t230). The agent shapes
 // this history (see againstMain), so it is read only for the merge preview,
 // never to measure what the item changes.
 export function mergeBase(workspaceLog: { hash: string; parents?: string[] }[], baselineLog: string[]): string | null {
@@ -361,7 +361,7 @@ export function mergeBase(workspaceLog: { hash: string; parents?: string[] }[], 
   return baselineLog.find((h) => held.has(h)) ?? null;
 }
 
-export function repoReader(repo: ArtifactsRepo): Reader {
+export function repoReader(repo: GitRepo): Reader {
   return {
     tree: (h) => repo.readTree(h),
     blob: async (h) => {
@@ -394,28 +394,28 @@ export async function changedPaths(r: Reader, baseTree: string, headTree: string
 }
 
 // The workspace's head and every path it differs from main's head on (see
-// againstMain), both read from Artifacts with the measure `atelier check`'s clean clone uses. The gate classifies a change on these paths, so they come from here
-// and never from the caller, and never from a fork point the workspace's
+// againstMain), both read from the repository with the measure `atelier check`'s clean clone uses. The gate classifies a change on these paths, so they come from here
+// and never from the caller, and never from a branch point the workspace's
 // history chooses. When either repository has no commits, nothing is
 // measured: the paths are null and the gate waits.
 export interface Measurement { head: string | null; main: string | null; changedPaths: string[] | null }
 
-export async function measureWorkspace(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<Measurement> {
-  using fork = await artifacts.get(workspaceRepo);
-  using baseline = await artifacts.get(baselineRepo);
-  const m = await againstMain(fork, baseline);
-  if (!m) return { head: (await fork.log({ limit: 1 }))[0]?.hash ?? null, main: null, changedPaths: null };
-  return { head: m.head, main: m.main, changedPaths: await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree) };
+export async function measureWorkspace(repos: Repos, baselineRepo: string, workspaceRepo: string): Promise<Measurement> {
+  using work = await repos.get(workspaceRepo);
+  using baseline = await repos.get(baselineRepo);
+  const m = await againstMain(work, baseline);
+  if (!m) return { head: (await work.log({ limit: 1 }))[0]?.hash ?? null, main: null, changedPaths: null };
+  return { head: m.head, main: m.main, changedPaths: await changedPaths(pairReader(work, baseline), m.mainTree, m.headTree) };
 }
 
 // The item's diff against main as it is now (see againstMain).
-export async function itemDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
-  using fork = await artifacts.get(workspaceRepo);
-  using baseline = await artifacts.get(baselineRepo);
-  const m = await againstMain(fork, baseline);
+export async function itemDiff(repos: Repos, baselineRepo: string, workspaceRepo: string): Promise<ItemDiff | null> {
+  using work = await repos.get(workspaceRepo);
+  using baseline = await repos.get(baselineRepo);
+  const m = await againstMain(work, baseline);
   if (!m) return null;
   if (m.mainTree === m.headTree) return { base: m.main, head: m.head, files: [], truncated: false, baseTree: m.mainTree, headTree: m.headTree };
-  const { files, truncated } = await treeDiff(pairReader(fork, baseline), m.mainTree, m.headTree);
+  const { files, truncated } = await treeDiff(pairReader(work, baseline), m.mainTree, m.headTree);
   return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
 }
 
@@ -444,10 +444,10 @@ export function strictReader(r: Reader): Reader {
 // ── merged items ───────────────────────────────────────────────────────────
 
 // Where a merged item landed, read from its record: the merge commit of its
-// last `item.merged` event, with the head merged and where the item forked.
+// last `item.merged` event, with the head merged and where the item branched.
 // A part merged through its plan landed on the plan's branch first, so its
 // change is the merge that integrated it there (`part.integrated`), in the
-// plan's fork, and not the plan's merge onto main, which carries every part.
+// plan's branch, and not the plan's merge onto main, which carries every part.
 // Null for an item not merged.
 export interface Landing { commit: string; head: string | null; base: string | null; onPlanBranch: boolean }
 
@@ -470,22 +470,22 @@ export function landingOf(
 // the merge would be listed as the item deleting it. A merge commit with its
 // own first parent, a true merge or a squash, is diffed from that parent;
 // one that is the merged head itself, a fast-forward, is diffed from the
-// item's fork point, since its first parent is only the head's last commit's.
+// item's branch point, since its first parent is only the head's last commit's.
 // `repoName` holds the merge commit; the workspace, when there is one, is
-// read too for a fork point main does not hold. A merge that cannot be read
+// read too for a branch point main does not hold. A merge that cannot be read
 // throws, so the page says the diff is unavailable rather than empty.
-export async function mergedDiff(artifacts: Artifacts, repoName: string, workspaceRepo: string | null, landing: Landing): Promise<ItemDiff> {
-  using repo = await artifacts.get(repoName);
-  using fork = workspaceRepo ? await artifacts.get(workspaceRepo) : null;
-  const reader = fork ? pairReader(fork, repo) : repoReader(repo);
-  const commit = async (h: string) => (await repo.readCommit(h)) ?? (fork ? await fork.readCommit(h) : null);
+export async function mergedDiff(repos: Repos, repoName: string, workspaceRepo: string | null, landing: Landing): Promise<ItemDiff> {
+  using repo = await repos.get(repoName);
+  using work = workspaceRepo ? await repos.get(workspaceRepo) : null;
+  const reader = work ? pairReader(work, repo) : repoReader(repo);
+  const commit = async (h: string) => (await repo.readCommit(h)) ?? (work ? await work.readCommit(h) : null);
   const merge = await commit(landing.commit);
   if (!merge) throw new Error(`merge commit ${landing.commit} is not readable`);
   const fastForward = merge.hash === landing.head && merge.parents.length < 2;
   const baseHash = fastForward ? landing.base : merge.parents[0] ?? null;
   const base = baseHash ? await commit(baseHash) : null;
   if (!base) throw new Error(`the commit ${landing.commit} landed on is not readable`);
-  const from: Landed["from"] = fastForward ? "fork-point" : "first-parent";
+  const from: Landed["from"] = fastForward ? "branch-point" : "first-parent";
   const shown = { base: base.hash, head: merge.hash, baseTree: base.treeHash, headTree: merge.treeHash, merged: { commit: merge.hash, from } };
   if (base.treeHash === merge.treeHash) return { ...shown, files: [], truncated: false };
   return { ...shown, ...(await treeDiff(reader, base.treeHash, merge.treeHash)) };

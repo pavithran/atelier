@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Projects", line: 1, slot: 10,
       form: "projects rename OLD NEW [--release-name]",
-      about: "The developer gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every fork stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused. With `--release-name` the project also gives up OLD: it stops answering to OLD, tokens limited to OLD are limited to NEW, and a project created later under OLD is stored apart, with a ledger and a baseline repository of their own.",
+      about: "The developer gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every branch stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused. With `--release-name` the project also gives up OLD: it stops answering to OLD, tokens limited to OLD are limited to NEW, and a project created later under OLD is stored apart, with a ledger and a baseline repository of their own.",
     },
     {
       group: "Projects", line: 1, slot: 30,
@@ -21,7 +21,7 @@ const spec: CommandSpec = {
     {
       group: "Projects", line: 1, slot: 20,
       form: "projects remove NAME [--force]",
-      about: "Removes a project from the index and from this machine's config. The Artifacts repository and the ledger are kept. It is refused while work is live unless `--force` is given.",
+      about: "Removes a project from the index and from this machine's config. The project's repository and the ledger are kept. It is refused while work is live unless `--force` is given.",
     },
   ],
   flags: { force: true, "release-name": true, from: "--from needs the old host's remote: --from https://…/relic.git", "token-env": "--token-env needs a variable name: --token-env ARTIFACTS_TOKEN", "way-back": true, "push-back": true, "end-bake": true, "clear-secret": "--clear-secret needs the reason the line is safe: --clear-secret \"a test fixture's dummy key\"", quote: "--quote needs the developer's words: --quote \"clear it\"" },

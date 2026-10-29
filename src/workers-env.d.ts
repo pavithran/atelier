@@ -3,16 +3,15 @@
 // wrangler's types command; wrangler is gone, and this declares only what
 // the code uses, as the Node runtime provides it: the bindings (Env), the Durable
 // Object state and stubs (src/runtime/namespace.mjs), SQL storage
-// (src/runtime/sql.mjs), the Artifacts reader (src/git/artifacts.mjs), the
+// (src/runtime/sql.mjs), the repository readers (src/git/local-repos.mjs), the
 // LARGE store (src/runtime/large.mjs), and the handler types of
 // src/index.ts's default export (src/runtime/server.mjs calls its fetch).
 
 interface Env {
   LARGE: R2Bucket;
-  ARTIFACTS: Artifacts;
+  REPOS: Repos;
   AI_GATEWAY_ID: string;
   PUBLIC_ORIGIN: string;
-  ARTIFACTS_NAMESPACE: string;
   LEDGER: DurableObjectNamespace<import("./index").Ledger>;
 }
 
@@ -77,8 +76,8 @@ interface R2Bucket {
   get(key: string): Promise<{ text(): Promise<string> } | null>;
 }
 
-// ── Artifacts, the reader over the server's bare repositories ─────────────
-interface ArtifactsCommitMetadata {
+// ── REPOS, the readers over the server's bare repositories ──────────────
+interface GitCommit {
   hash: string;
   treeHash: string;
   message: string;
@@ -88,32 +87,21 @@ interface ArtifactsCommitMetadata {
   authoredAt: number;
   committedAt: number;
 }
-interface ArtifactsTreeEntry { name: string; mode: string; hash: string; type: "tree" | "blob" | "symlink" | "gitlink" | "exec" }
-interface ArtifactsRepoInfo {
+interface GitTreeEntry { name: string; mode: string; hash: string; type: "tree" | "blob" | "symlink" | "gitlink" | "exec" }
+interface GitRepoInfo {
   id: string; name: string; description: string | null; defaultBranch: string; createdAt: string; updatedAt: string;
   lastPushAt: string | null; source: string | null; readOnly: boolean; remote: string;
 }
-interface ArtifactsCreateRepoResult { id: string; name: string; description: string | null; defaultBranch: string; remote: string; token: string }
-interface ArtifactsCreateTokenResult { id: string; plaintext: string; scope: "read" | "write"; expiresAt: string }
-interface ArtifactsTokenInfo { id: string; scope: "read" | "write"; state: "active" | "expired" | "revoked"; createdAt: string; expiresAt: string }
-interface ArtifactsRepo extends Disposable {
-  createToken(scope?: "write" | "read", ttl?: number): Promise<ArtifactsCreateTokenResult>;
-  listTokens(): Promise<{ tokens: ArtifactsTokenInfo[]; total: number }>;
-  revokeToken(tokenOrId: string): Promise<boolean>;
-  info(): Promise<ArtifactsRepoInfo>;
+interface GitRepo extends Disposable {
+  info(): Promise<GitRepoInfo>;
   readBlob(hash: string): Promise<Blob | null>;
-  readTree(hash: string): Promise<ArtifactsTreeEntry[] | null>;
-  readCommit(hash: string): Promise<ArtifactsCommitMetadata | null>;
+  readTree(hash: string): Promise<GitTreeEntry[] | null>;
+  readCommit(hash: string): Promise<GitCommit | null>;
   readFile(args: { ref: string; path: string }): Promise<Blob | null>;
-  log(opts?: { ref?: string; limit?: number; offset?: number }): Promise<ArtifactsCommitMetadata[]>;
-  fork(name: string, opts?: { description?: string; readOnly?: boolean; defaultBranchOnly?: boolean }): Promise<ArtifactsCreateRepoResult>;
+  log(opts?: { ref?: string; limit?: number; offset?: number }): Promise<GitCommit[]>;
 }
-interface Artifacts {
-  create(name: string, opts?: { readOnly?: boolean; description?: string; setDefaultBranch?: string }): Promise<ArtifactsCreateRepoResult>;
-  get(name: string): Promise<ArtifactsRepo>;
-  import(params: { source: { url: string; branch?: string; depth?: number }; target: { name: string; opts?: { description?: string; readOnly?: boolean } } }): Promise<ArtifactsCreateRepoResult>;
-  list(opts?: { limit?: number; cursor?: string }): Promise<{ repos: Omit<ArtifactsRepoInfo, "remote">[]; total: number; cursor?: string }>;
-  delete(name: string): Promise<boolean>;
+interface Repos {
+  get(name: string): Promise<GitRepo>;
 }
 
 // ── The handler ───────────────────────────────────────────────────────────

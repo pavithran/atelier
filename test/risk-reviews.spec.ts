@@ -17,14 +17,14 @@ const artifacts = {
     createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
     [Symbol.dispose]() {},
   }),
-} as unknown as Artifacts;
+} as unknown as Repos;
 
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+  }), { ...testEnv, REPOS: artifacts } as typeof env);
 }
 
 const RISK = { core: ["src/rules.ts"], reviews: { "docs-or-tests": 0, other: 1, core: 2 } };

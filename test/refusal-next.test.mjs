@@ -74,7 +74,7 @@ const STRICT = [
   "wrong_agent", "wrong_model", "wrong_runner", "not_submitted", "not_accepted", "accepted", "not_landable", "not_integrable",
   "integrated", "landing", "landing_lease", "stale_landing", "lease_lost", "no_lease",
   "main_moved", "main_unread", "merge_open", "merge_not_on_main", "merge_unconfirmed", "not_a_merge", "no_merge_commit",
-  "not_merged", "unverified_merge", "conflicts_with_main", "history_rewritten", "nothing_pushed", "no_head", "no_fork",
+  "not_merged", "unverified_merge", "conflicts_with_main", "history_rewritten", "nothing_pushed", "no_head", "no_workspace",
   "fork_changed", "workspace_changed", "branch_not_pushed", "branch_busy", "not_ready", "blocked", "stale_default_branch",
   "second_parent_differs", "ancestry_unverified", "landed", "stale_run", "stale_criteria", "stale_request", "not_independent",
   "self_review", "no_criteria", "not_open", "overlap", "no_approval", "not_approved", "acceptance_changed", "secret",

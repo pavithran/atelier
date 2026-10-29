@@ -1,5 +1,5 @@
 // The browsing pages: a directory, a file, the log, a commit and a path's
-// history, for a project's baseline or one task's fork. Server-rendered, no
+// history, for a project's baseline or one task's branch. Server-rendered, no
 // script, every value escaped. `Where` names the repository being read and
 // builds every link, so a link never leaves the repository it came from.
 
@@ -50,7 +50,7 @@ function frame(w: Where, title: string, crumb: string, tab: "code" | "log" | "co
   const active = tab === "commit" ? "Log" : tab === "code" ? "Code" : "Log";
   const crumbs = `<nav class="breadcrumbs"><a href="/home">Home</a> / <a href="/p/${enc(w.project.name)}">${e(name)}</a>${
     w.item ? ` / <a href="/p/${enc(w.project.name)}/${enc(w.item)}">${e(w.item)}</a>` : ""} / ${e(crumb)}</nav>`;
-  const what = w.item ? `${e(w.item)}'s fork` : "the baseline";
+  const what = w.item ? `${e(w.item)}'s branch` : "the baseline";
   const at = head ? `<p class="meta repo-at">${w.at ? "At" : "Head of"} ${what}: <a class="mono" href="${commitHref(w, head.hash)}">${short(head.hash)}</a> · ${e(firstLine(head.message))} · ${e(head.author.name)} · ${day(head.authoredAt)}${w.at ? ` · <a href="${root(w)}/code">back to the head</a>` : ""}</p>` : "";
   return page(`${title} · ${name}`, `<div class="page-width repo">${crumbs}<header class="proj-head"><h1>${e(name)}${w.item ? ` <span class="repo-sub">${e(w.item)}</span>` : ""}</h1>${projectTabs(w.project, active)}${at}</header>${body}</div>`, "Home", ownerName);
 }

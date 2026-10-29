@@ -132,10 +132,10 @@ it("a push notice finds the first task of a fork by its row, and none for an unk
   await inside(L, async (instance: any) => {
     for (const id of [second.id, first.id]) instance.sql.exec(`UPDATE items SET fork = ? WHERE id = ?`, "reads-fork--shared", id);
   });
-  expect(await L.itemIdOfFork("reads-fork--shared")).toBe(first.id);
-  expect(await L.itemIdOfFork("reads-fork--none")).toBeNull();
-  const probe = await rowsRead(L, (ledger) => ledger.itemIdOfFork("reads-fork--shared"));
-  const every = await rowsRead(L, (ledger) => ledger.items().find((i: any) => i.fork === "reads-fork--shared")?.id);
+  expect(await L.itemIdOfWorkspace("reads-fork--shared")).toBe(first.id);
+  expect(await L.itemIdOfWorkspace("reads-fork--none")).toBeNull();
+  const probe = await rowsRead(L, (ledger) => ledger.itemIdOfWorkspace("reads-fork--shared"));
+  const every = await rowsRead(L, (ledger) => ledger.items().find((i: any) => i.workspace === "reads-fork--shared")?.id);
   expect(probe.value).toBe(every.value);
 });
 

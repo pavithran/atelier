@@ -124,7 +124,7 @@ test("--dry-run prints the steps and the refusals without changing anything", as
   assert.match(r.output, /Preview: [0-9a-f]{8} merges cleanly into main at [0-9a-f]{8}\./);
   assert.equal(f.box.lease, null);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
-  assert.equal(f.forkHead("t1"), before.fork);
+  assert.equal(f.forkHead("t1"), before.workspace);
   assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.checkout);
   // The order (t550, G2): the review without the lease, then the lease for

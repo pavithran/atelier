@@ -52,7 +52,7 @@ async function task(L: L, title: string, to: "claimed" | "submitted" | "accepted
   const { id } = await L.newItem(title, ["src/**"], "owner");
   if (to === "new") return id;
   await L.claim(id, OPUS);
-  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L.recordPush(id, OPUS, head, head);
   if (to === "claimed") return id;
   if (to === "released") { await L.release(id, OPUS, "stepping away"); return id; }
@@ -280,7 +280,7 @@ it("a newer main while a refresh runs is refreshed next, from the head the refre
 // ── the routes, through the Worker ───────────────────────────────────────
 
 // A stand-in Artifacts: each repository a log, newest first, with messages.
-function artifacts(repos: Record<string, { hash: string; parents: string[]; message?: string }[]>): Artifacts {
+function artifacts(repos: Record<string, { hash: string; parents: string[]; message?: string }[]>): Repos {
   return {
     get: async (name: string) => ({
       log: async ({ ref, limit = 50 }: { ref?: string; limit?: number } = {}) => {
@@ -291,14 +291,14 @@ function artifacts(repos: Record<string, { hash: string; parents: string[]; mess
       revokeToken: async () => {},
       [Symbol.dispose]() {},
     }),
-  } as unknown as Artifacts;
+  } as unknown as Repos;
 }
 
-function call(name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts, method = "POST") {
+function call(name: string, path: string, actor: string, body: unknown, REPOS: Repos, method = "POST") {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/${path}`, {
     method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body),
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
+  }), { ...env, ATELIER_TOKEN: TOKEN, REPOS } as typeof env);
 }
 const errorOf = async (res: Response) => ((await res.json()) as { error: string }).error;
 

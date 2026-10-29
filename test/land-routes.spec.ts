@@ -59,7 +59,7 @@ const events = async (L: L, id?: string) => (await L.events(id)) as unknown as L
 // review of it unless they are not protected.
 async function submittedTask(L: L, id: string, head: string, changedPaths = ["src/land.ts"]) {
   await L.claim(id, OPUS, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
   await L.recordPush(id, OPUS, head, head);
   await L.addEvidence({
     itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths,
@@ -304,8 +304,8 @@ it("the landing-lease route's confirm reads main itself, refusing a main it does
   const aHead = "9".repeat(40), M1 = "1".repeat(40), M2 = "2".repeat(40);
   await submittedTask(L, a, aHead, ["docs/a.md"]);
   let top = M2;
-  const ARTIFACTS = { get: async () => ({ log: async () => [{ hash: top }], [Symbol.dispose]() {} }) };
-  const bindings = { ...env, ATELIER_TOKEN: "land-routes-token", ARTIFACTS } as unknown as typeof env;
+  const REPOS = { get: async () => ({ log: async () => [{ hash: top }], [Symbol.dispose]() {} }) };
+  const bindings = { ...env, ATELIER_TOKEN: "land-routes-token", REPOS } as unknown as typeof env;
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
     method: "POST", headers: { authorization: ["Bearer", "land-routes-token"].join(" "), "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify(body),
   }), bindings);
@@ -807,7 +807,7 @@ it("an acceptance records the family mode in force and each contributor's compan
   const id = (await L.newItem("Landing", [], "owner")).id;
   const first = "d".repeat(40), head = "e".repeat(40);
   await L.claim(id, GPT, RUNNER);
-  await L.setFork(id, `fork-${id}`, H0, GPT);
+  await L.setWorkspace(id, `fork-${id}`, H0, GPT);
   await L.recordPush(id, GPT, first, first);
   await L.release(id, GPT, "Opus finishes it");
   await L.claim(id, OPUS, RUNNER);

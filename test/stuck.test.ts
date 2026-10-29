@@ -12,7 +12,7 @@ const NOW = new Date("2026-10-03T12:00:00.000Z");
 function item(over: Partial<Item> = {}): Item {
   return {
     id: "t1", title: "Fix it", scope: ["src/**"], state: "claimed", owner: "claude-code/opus-5.5",
-    fork: "proj--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
+    workspace: "proj--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
     createdAt: T0, updatedAt: T0, lastPushAt: null, ...over,
   };
 }

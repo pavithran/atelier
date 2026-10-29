@@ -32,7 +32,7 @@ test("the log is read in pages of 1,000 up to the limit, and says whether it rea
   const source = { log: async (o: { limit?: number; offset?: number }) => { calls.push(o); return all.slice(o.offset ?? 0, (o.offset ?? 0) + (o.limit ?? 50)); } };
   const whole = await readImported(source, null, 3000);
   assert.deepEqual([whole.total, whole.complete, calls.length], [2500, true, 3]);
-  assert.ok(calls.every((o) => !("ref" in (o as object))), "the head is read without a ref, as Artifacts requires");
+  assert.ok(calls.every((o) => !("ref" in (o as object))), "the head is read without a ref, as Repos requires");
   const cut = await readImported(source, null, 2000);
   assert.deepEqual([cut.total, cut.complete], [2000, false]);
 });

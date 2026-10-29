@@ -31,7 +31,7 @@ it("GET /api/reliability carries each model's speed over the stated window, and 
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const { id } = await L("speed-a").newItem("Work by opus", ["docs/**"], "owner");
   await L("speed-a").claim(id, OPUS);
-  await L("speed-a").setFork(id, `speed-a--${id}`, H0, OPUS);
+  await L("speed-a").setWorkspace(id, `speed-a--${id}`, H0, OPUS);
   await L("speed-a").recordPush(id, OPUS, H1, H1);
   await L("speed-a").submit(id, OPUS);
   await call("POST", "/runs", { actor: OPUS, role: "build", outcome: "stalled", project: "speed-a", item: id });
