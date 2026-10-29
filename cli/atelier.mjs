@@ -1824,6 +1824,13 @@ export function formatReviews(reviews, owner = OWNER, unparsable = [], claims = 
     lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
     for (const f of r.findings ?? []) lines.push(`    ${f.severity}${f.label ? ` (${flat(f.label)})` : ""} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+    // G11: the second model's check of the blocking findings, and what it demoted.
+    if (r.verification) {
+      const v = r.verification;
+      lines.push(`    Checked by ${flat(v.by)}: ${v.demoted?.length ? `demoted ${v.demoted.map((d) => `finding ${d.index} (${flat(d.label)})`).join(", ")} to a follow-up` : "every blocking finding confirmed"}.`);
+      if (v.demoted?.length) lines.push(`    Whether a demotion stands is the orchestrator's call: a finding that holds is recorded with atelier finding ID --head ${short(r.head)} --reviewer ${flat(r.by)} --index N --verdict confirmed, and another review asked with atelier review-request ID --reviewer H/M.`);
+      lines.push(`    Its answer: ${flat(v.answer) || "(nothing written)"}`);
+    }
   }
   for (const r of newestReviews(unparsable)) {
     lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);

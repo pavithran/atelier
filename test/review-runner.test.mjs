@@ -2014,6 +2014,11 @@ test("a blocking finding the check does not confirm is recorded as unverified an
     const note = argv[argv.indexOf("--note") + 1];
     assert.match(note, /The reviewer rejected, but no blocking finding stood \(0 already answered, 0 pre-existing, 1 unverified\)/);
     assert.match(note, /The reviewer's summary: One bug\./);
+    // G11: who checked, the end of its answer and the finding it demoted go with the verdict.
+    const checked = JSON.parse(argv[argv.indexOf("--verification") + 1]);
+    assert.ok(checked.by.includes("/"), JSON.stringify(checked));
+    assert.equal(checked.answer, verification);
+    assert.deepEqual(checked.demoted, [{ index: 1, label: "unverified", text: "A lapsed claim is never retried." }]);
   }
 });
 
@@ -2023,6 +2028,8 @@ test("with two blocking findings, the one the check confirms keeps the rejection
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "reject");
   assert.deepEqual(findingsOf(posted(calls)).map((f) => [f.text, f.severity, f.label ?? null]), [["First.", "follow-up", "unverified"], ["Second.", "blocking", null]]);
+  const argv = posted(calls);
+  assert.deepEqual(JSON.parse(argv[argv.indexOf("--verification") + 1]).demoted, [{ index: 1, label: "unverified", text: "First." }], "only the finding it did not confirm is named as demoted");
 });
 
 test("a check that gives no answer, fails or times out releases the request and posts nothing: silence is not a refutation", async () => {

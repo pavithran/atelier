@@ -402,6 +402,32 @@ export interface PostDeployCheck {
 }
 export const CHECK_BY: readonly PostDeployCheck["by"][] = ["owner", "orchestrator"];
 
+// The second model's check of a review's blocking findings (t717, G11): who
+// checked, the end of what it answered, and the findings it did not confirm,
+// which the runner recorded as follow-ups (their position among the
+// review's findings, one based, the label and the text). The orchestrator
+// reads them and decides whether the demotion stands.
+export interface ReviewVerification {
+  by: string;
+  answer: string;
+  demoted: { index: number; label: string; text: string }[];
+}
+export const VERIFICATION_ANSWER_MAX = 2000;
+
+// A verification as a route body gives it, checked, or a RuleError.
+export function cleanVerification(v: unknown): ReviewVerification {
+  const bad = () => new RuleError("bad_findings", "verification must be {by: harness/model, answer: text, demoted: [{index, label, text}]}", 400);
+  if (!v || typeof v !== "object") throw bad();
+  const o = v as Record<string, unknown>;
+  if (typeof o.by !== "string" || !validActor(o.by) || typeof o.answer !== "string" || !Array.isArray(o.demoted)) throw bad();
+  const demoted = o.demoted.map((d) => {
+    const e = d as Record<string, unknown>;
+    if (!e || !Number.isInteger(e.index) || (e.index as number) < 1 || typeof e.label !== "string" || typeof e.text !== "string") throw bad();
+    return { index: e.index as number, label: e.label.slice(0, 40), text: e.text.slice(0, 1000) };
+  });
+  return { by: o.by, answer: o.answer.slice(-VERIFICATION_ANSWER_MAX), demoted };
+}
+
 export interface Review {
   itemId: string;
   by: string;
@@ -410,6 +436,7 @@ export interface Review {
   note: string;
   at: string;
   findings?: Finding[];
+  verification?: ReviewVerification;
   // Who recorded the review and how (src/ledger.ts addReview). `recordedBy`
   // is the actor whose token made the request: the reviewer itself when its
   // own agent token proved it (`proved` true), the project owner when the

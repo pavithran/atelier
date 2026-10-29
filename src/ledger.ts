@@ -4733,6 +4733,14 @@ export class Ledger extends DurableObject<Env> {
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
+    // A rejection on a claim answers that claim and the requests at the head
+    // no runner has claimed; another reviewer's claimed request is left to
+    // finish (G11), as a claimed tier request is, so reviews asked together
+    // each give their verdict, and the rejection stands beside an approval.
+    else if (!r.approve && boundClaims.length) {
+      for (const c of boundClaims) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, c.id);
+      this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL AND (criteria IS NULL OR criteria = ?)`, r.itemId, r.head, r.criteria!);
+    }
     else this.answerReviewRequest(r.itemId, r.head, r.criteria!, at, r.approve ? boundClaims.map((c) => c.id as number) : undefined, r.approve && !claimed ? r.by : undefined);
     // A rejection sends the change back for rework, so a tier request at the
     // head no runner has claimed yet is no longer asked for; a claimed one is
@@ -9037,7 +9045,34 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false): ReviewAsked {
+  // The reviews a gate needs, asked together at one head (G11): each named
+  // reviewer is asked as requestReview asks one, in one transaction, and no
+  // request of one of them redirects (withdraws) another's, so every request
+  // stands open at once and runners serve them side by side. A refusal for
+  // any reviewer asks none.
+  requestReviews(id: string, actor: string, reviewers: string[], pool: ModelEntry[], wanted = false, proved = false, offers?: readonly SeenOffer[], hand = false): { asked: ReviewAsked[] } {
+    offers = this.ownOffers(offers);
+    this.keepOffers(offers);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403, `only the developer can: atelier review-request ${id} --reviewer H/M --reviewer H/M`);
+    const distinct = reviewers.filter((r, i) => reviewers.findIndex((o) => sameActor(o, r)) === i);
+    if (distinct.length < 2) throw new RuleError("bad_request", "reviewers names two or more different reviewers to ask together; one is asked with reviewer", 400);
+    this.reviewItem(id);
+    this.keepPool(pool);
+    try {
+      return this.ctx.storage.transactionSync(() => {
+        const at = new Date().toISOString();
+        const asked = distinct.map((r) => this.askReview(id, actor, r, pool, wanted, proved, undefined, offers, hand, distinct));
+        this.log(id, actor, "review.asked_together", { head: asked.find((a) => a.head)?.head ?? null, reviewers: distinct, requests: asked.map((a) => a.request ?? null) }, at, proved);
+        return { asked };
+      });
+    } catch (err) {
+      // Rolled back, as requestReview rolls back a redirect that asks nobody.
+      if (!(err instanceof KeptRequests)) throw err;
+      throw new RuleError("review_blocked", `${id}: ${err.answer.reason}; no reviewer was asked`, 409, `run atelier show ${id}`);
+    }
+  }
+
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = []): ReviewAsked {
     const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
@@ -9118,6 +9153,8 @@ export class Ledger extends DurableObject<Env> {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         if (asked && sameActor(asked, reviewer)) continue;
+        // A reviewer asked in the same call stands beside this one (G11).
+        if (asked && together.some((t) => sameActor(t, asked))) continue;
         if (surplus <= 0) continue;
         surplus--;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
@@ -9139,16 +9176,20 @@ export class Ledger extends DurableObject<Env> {
     // fresh number the runners serve again. Judged only when the caller has
     // the live offers; a claimed request is being served and stays.
     const renewed = item.head && offers ? this.renewSkippedRequest(id, item.head, offers, actor, at, proved) : null;
+    // Reviewers asked together (G11) are judged each as if the others' live
+    // requests were not there, so one does not stand in for another.
+    const besideMe = (who: string | null | undefined) => !!who && together.some((t) => sameActor(t, who)) && !(reviewer !== null && sameActor(who, reviewer));
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
-      requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, postMerge: item.state === "merged", now: new Date(at), owner: this.owner,
+      requests: this.reviewRequests(id).filter((r) => !((r.state === "open" || r.state === "claimed") && besideMe(r.reviewer))), verdicts: this.findingVerdicts(id), wanted, postMerge: item.state === "merged", now: new Date(at), owner: this.owner,
       ...(reviewer !== null ? { reviewer } : {}),
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
     // The named reviewer's own request, when it has one, comes first (t374).
-    const liveRows = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC`, id, item.head).toArray();
+    const liveRows = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC`, id, item.head).toArray()
+      .filter((r) => { const d = JSON.parse(r.dispatch as string) as Dispatch; return !besideMe(d.agent && d.model ? `${d.agent}/${d.model}` : undefined); });
     const live = (reviewer === null ? undefined : liveRows.find((r) => { const d = JSON.parse(r.dispatch as string) as Dispatch; return !!d.agent && !!d.model && sameActor(`${d.agent}/${d.model}`, reviewer); })) ?? liveRows[0];
     if (!need.needed) {
       if (live) {

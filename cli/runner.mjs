@@ -2733,6 +2733,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // nothing left to block on is posted as the approval it comes to. A
     // post-merge audit is not settled: its findings open defect tasks.
     let posted = parsed;
+    let verification = null;
     if (claimed.landed && parsed.unmet) {
       const names = `${parsed.unmet.length === 1 ? "criterion" : "criteria"} ${parsed.unmet.join(", ")}`;
       posted = { ...parsed, summary: `Rejected: the reviewer declared ${names} unmet; an unproved criterion is unmet, and unmet blocks. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) };
@@ -2750,6 +2751,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
         return { phase: "failed", reason: settled.failed, taskFailure: true };
       }
       posted = settled.parsed;
+      verification = settled.verification ?? null;
     }
     const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, posted.verdict === "approve" ? "--approve" : "--reject", "--note", posted.summary];
     // The verdict is bound to the criteria the brief carried and to the
@@ -2758,6 +2760,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (claimed.criteria) argv.push("--criteria", claimed.criteria);
     if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
     if (posted.findings.length) argv.push("--findings", JSON.stringify(posted.findings));
+    if (verification) argv.push("--verification", JSON.stringify(verification));
     if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${posted.verdict}`);
@@ -3197,14 +3200,21 @@ export async function settleRejection(io, ctx) {
   const blockers = findings.flatMap((f, i) => (f.severity === "blocking" ? [i] : []));
   let confirmed = new Set(blockers.map((i) => i + 1));
   let preExisting = new Set();
+  let checker = null;
   if (blockers.length) {
     const checked = await verifyBlockers(io, ctx, blockers.map((i) => findings[i]));
     if (checked.failed) return { failed: checked.failed };
     confirmed = new Set(blockers.filter((_, k) => checked.confirmed.has(k + 1)).map((i) => i + 1));
     preExisting = new Set(blockers.filter((_, k) => checked.preExisting.has(k + 1)).map((i) => i + 1));
+    checker = checked.verifier ? { by: checked.verifier, answer: checked.answer ?? "" } : null;
   }
   findings = applyVerification(findings, confirmed, preExisting);
-  if (answered === 0 && JSON.stringify(findings) === JSON.stringify(parsed.findings)) return { parsed };
+  // G11: the check is recorded on the review, with the findings it demoted,
+  // so the orchestrator decides whether each demotion stands.
+  const demoted = blockers.filter((i) => findings[i].severity !== "blocking").map((i) => ({ index: i + 1, label: findings[i].label ?? "unverified", text: findings[i].text }));
+  const verification = checker ? { ...checker, demoted } : null;
+  const withCheck = (out) => (verification && out.parsed ? { ...out, verification } : out);
+  if (answered === 0 && JSON.stringify(findings) === JSON.stringify(parsed.findings)) return withCheck({ parsed });
   const count = (label) => findings.filter((f) => f.label === label).length;
   const result = parseVerdict(reply, ctx.criteria, { counted: true, deferred: ctx.deferred, settled: findings });
   const account = `${answered} already answered, ${count("pre-existing")} pre-existing, ${count("unverified")} unverified`;
@@ -3215,12 +3225,12 @@ export async function settleRejection(io, ctx) {
   // instead had it claimed and answered the same way again and again.
   if (result.unmet) {
     const names = result.unmet.join(", ");
-    return { parsed: { ...result, summary: `Rejected: ${result.unmet.length === 1 ? "criterion" : "criteria"} ${names} ${result.unmet.length === 1 ? "is" : "are"} unmet, and no blocking finding stood (${account}); the follow-ups are listed as findings. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } };
+    return withCheck({ parsed: { ...result, summary: `Rejected: ${result.unmet.length === 1 ? "criterion" : "criteria"} ${names} ${result.unmet.length === 1 ? "is" : "are"} unmet, and no blocking finding stood (${account}); the follow-ups are listed as findings. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } });
   }
   if (result.verdict === "approve") {
-    return { parsed: { ...result, summary: `The reviewer rejected, but no blocking finding stood (${account}), so this is recorded as an approval with follow-ups. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } };
+    return withCheck({ parsed: { ...result, summary: `The reviewer rejected, but no blocking finding stood (${account}), so this is recorded as an approval with follow-ups. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } });
   }
-  return { parsed: result };
+  return withCheck({ parsed: result });
 }
 
 // The independent check of blocking findings (t717, src/review/verify.ts): a
@@ -3268,7 +3278,8 @@ export async function verifyBlockers(io, ctx, blockers) {
     if (!read.ok) return { failed: `the verification by ${choice.actor} gave no answer: ${read.error}` };
     // PRE-EXISTING counts only when the check was given a base to look at;
     // without one the answer is not one it could give, and the finding blocks.
-    return { confirmed: new Set([...read.confirmed, ...(ctx.base ? [] : read.preExisting)]), preExisting: ctx.base ? read.preExisting : new Set() };
+    // Who checked and the end of what it said go on the review (G11).
+    return { confirmed: new Set([...read.confirmed, ...(ctx.base ? [] : read.preExisting)]), preExisting: ctx.base ? read.preExisting : new Set(), verifier: choice.actor, answer: String(said).slice(-2000) };
   } finally {
     await io.removeBrief(brief);
     io.removeDiff(whole);

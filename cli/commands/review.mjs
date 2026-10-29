@@ -11,6 +11,12 @@ export default async function reviewCommand() {
     if (typeof args.findings !== "string" || !args.findings.trim()) die("--findings needs a JSON list of findings");
     try { findings = JSON.parse(args.findings); } catch { die("--findings is not valid JSON"); }
   }
+  // The second model's check of the blocking findings (G11), as the runner gives it.
+  let verification;
+  if (args.verification !== undefined) {
+    if (typeof args.verification !== "string" || !args.verification.trim()) die("--verification needs a JSON object");
+    try { verification = JSON.parse(args.verification); } catch { die("--verification is not valid JSON"); }
+  }
   // The criteria binding is the one the reviewer read, never the task's
   // now: a verdict without it is refused by the server, with how to refresh.
   if (args.criteria !== undefined && !/^[a-f0-9]{64}$/.test(String(args.criteria))) die("--criteria needs the 64-digit binding atelier show prints");
@@ -31,6 +37,7 @@ export default async function reviewCommand() {
     ...(args.criteria !== undefined ? { criteria: String(args.criteria) } : {}),
     ...(requestNumber !== undefined ? { request: requestNumber } : {}),
     ...(findings !== undefined ? { findings } : {}),
+    ...(verification !== undefined ? { verification } : {}),
   }, as);
   console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
 }
