@@ -158,6 +158,21 @@ GIT="$2" OTOOL=/bin/ls check_tools`, SETUP, bin, path], { env: { ...env(), ...ex
   assert.equal(run(join(source, "linked-installer")).status, 1);
 });
 
+test("setup keeps the shared hooks and their ancestors in root custody, without daemon write access", { skip: darwin }, () => {
+  const i = inputs();
+  for (const envName of ["staging", "production"]) {
+    const now = dry(SETUP, ["--env", envName, i.tar, i.bin, i.token]);
+    assert.equal(now.status, 0, now.err);
+    const server = `/Users/atelierd/server${envName === "production" ? "-production" : ""}.new`;
+    assert.ok(now.out.includes("+ chown root:atelierd /Users/atelierd\n"));
+    assert.ok(now.out.includes("+ chmod 750 /Users/atelierd\n"));
+    assert.ok(now.out.includes(`+ chown -R root:atelierd ${server}\n`));
+    assert.ok(now.out.includes(`+ chmod -RN ${server}\n`));
+    assert.ok(now.out.includes(`+ chmod -R u=rwX,g=rX,o= ${server}\n`));
+    assert.ok(now.out.includes(`+ chmod 750 ${server}/hooks/pre-receive\n`));
+  }
+});
+
 // Finding 5: bin/ is shared; node goes in beside cloudflared.
 test("setup-server.sh puts node into bin/ beside what is there, and never removes or replaces bin/ itself", { skip: darwin }, () => {
   const i = inputs();

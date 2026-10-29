@@ -38,8 +38,10 @@ function checkout({ pkg = { name: "atelier" }, lock = { lockfileVersion: 3, pack
   git("init", "-q", "-b", "main");
   const put = (path, text) => { mkdirSync(join(cwd, path, ".."), { recursive: true }); writeFileSync(join(cwd, path), text); };
   put("cli/serve.mjs", "// the server\n");
-  put("hooks/pre-receive", "#!/bin/sh\n");
-  chmodSync(join(cwd, "hooks/pre-receive"), 0o755);
+  for (const hook of ["pre-receive", "post-receive"]) {
+    put(`hooks/${hook}`, "#!/bin/sh\n");
+    chmodSync(join(cwd, "hooks", hook), 0o755);
+  }
   put("package.json", JSON.stringify(pkg));
   put("package-lock.json", JSON.stringify(lock));
   git("add", "."); git("commit", "-qm", "first");
@@ -192,7 +194,9 @@ test("ship's deploy, through a stand-in sudo, has root build the release from th
   assert.equal(readFileSync(join(s.home, "sudo.log"), "utf8"), `sudo /Library/Atelier/install-server.sh --env staging ${head}\n`);
   const mode = (p) => execFileSync("stat", ["-f", "%Lp", join(s.home, p)], { encoding: "utf8" }).trim();
   assert.equal(mode("server/cli/serve.mjs"), "640");
-  assert.equal(mode("server/hooks/pre-receive"), "750");
+  assert.equal(mode("server"), "750");
+  assert.equal(mode("server/hooks"), "750");
+  for (const hook of ["pre-receive", "post-receive"]) assert.equal(mode(`server/hooks/${hook}`), "750");
   assert.equal(mode("server/COMMIT"), "640");
 });
 
