@@ -29,12 +29,13 @@ function bash(h, body) {
   const script = `
 SETUP_RESTORE_LIB=1 source scripts/studio/setup-restore.sh
 set +e
+MV=mv; RM=rm
 SVC=${userInfo().username}
 HOME_DIR='${h}'
 D="$HOME_DIR/data/staging"; R="$HOME_DIR/repos/staging"
 D_OLD="$D.before-restore-T"; R_OLD="$R.before-restore-T"
 ${body}`;
-  return spawnSync("bash", ["-c", script], { encoding: "utf8" });
+  return spawnSync("/bin/bash", ["-p", "-c", script], { encoding: "utf8" });
 }
 
 test("a failed second move aside is undone: data moves back, repos stays, and nothing is left at the destinations", { skip: darwin }, () => {

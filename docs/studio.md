@@ -189,12 +189,15 @@ PAVI's steps, once:
 5. **The install**, on the Studio, after a release holding `cli/backup.mjs` is installed:
 
    ```
-   sudo bash scripts/studio/setup-backup.sh staging R2.env backup.pub
+   sudo /usr/bin/install -o root -g wheel -m 700 scripts/studio/setup-backup.sh scripts/studio/zone.atelier.backup.plist.template /private/var/root/
+   sudo /bin/bash -p /private/var/root/setup-backup.sh staging "$PWD/R2.env" "$PWD/backup.pub"
    ```
 
    It copies its inputs into root-owned storage and checks them there, and refuses an identity. Then it stops every `atelierd` job (the servers, the tunnel and the backups), waits until no `atelierd` process runs, checks the directories again, installs the settings and recipient as `atelierd`'s and the LaunchDaemon from `scripts/studio/zone.atelier.backup.plist.template`, starts again the jobs that ran, and runs one backup at once, waiting up to 300 seconds for it to report its upload. Staging is down for those seconds. On any failure it puts back, under the same rules, the settings and the LaunchDaemon it found, and starts the jobs that ran. It prints no secret. Afterwards remove `R2.env` and the copy of `backup.pub` given to it; the script deletes nothing in a path PAVI's user controls. Run it again with `production` when production moves.
 
-`DRYRUN=1` before `bash` prints what the script would change and needs no root.
+Review the script and template before copying them. The privileged scripts require a root-owned source path, clear the inherited environment, verify the Command Line Tools and daemon Node, and hold the shared `/Library/Atelier/lock/install.lock` through recovery. Pass absolute input paths because they change to `/`.
+
+`DRYRUN=1 /bin/bash -p scripts/studio/setup-backup.sh staging "$PWD/R2.env" "$PWD/backup.pub"` prints what would change without root. Root discards `DRYRUN`.
 
 ## The monthly restore rehearsal
 
@@ -231,7 +234,8 @@ If the Studio's data is lost or untrusted, the restore is made on PAVI's Mac, as
 2. Copy `restore.tar` and the checkout's `scripts/studio/` to the Studio over the tailnet, and there:
 
    ```
-   sudo bash scripts/studio/setup-restore.sh production restore.tar
+   sudo /usr/bin/install -o root -g wheel -m 700 scripts/studio/setup-restore.sh /private/var/root/
+   sudo /bin/bash -p /private/var/root/setup-restore.sh production "$PWD/restore.tar"
    ```
 
    It copies the tar into root-owned storage and checks it there: plain files and directories under `data/` and `repos/` only, every database through SQLite's integrity check, every project the index registers with its Ledger, every repository bare. Then it stops every `atelierd` job, waits until no `atelierd` process runs, and checks the four paths again (data and repos absent or plain directories, never links; both destinations absent, not even a dangling link). It records the undo before the next step: it prints how to undo, and moves the current `data/ENV` and `repos/ENV` aside to `ENV.before-restore-STAMP`, never deleting them. It installs the restored directories as `atelierd`'s and starts again the jobs that ran. Each move aside is recorded as it happens, so on a failure it undoes exactly the moves made, removing any partial copy first and moving nothing over a link or an existing path. If any undo step fails, for any reason, every `atelierd` job stays stopped and no start command is printed: it prints what the run placed and moved, what stands at each of the four paths (a link named as one), repair hints, and "repair these, then run setup-restore.sh again (or bootstrap by hand once all four are as they were)".
@@ -250,6 +254,8 @@ Work recorded after the backup was made (at most a day) is lost from the Ledger;
 - with `age` on PATH, a key from `age-keygen` works with this code's encryption, `age -r` output opens with this code, and `cli/backup.mjs keygen`'s keys work with `age`; without it the test is skipped and says so.
 
 `test/setup-restore.test.mjs` sources `setup-restore.sh`'s functions without root and shows that a failed second move aside is undone (data moved back, repos untouched), that a partial placement is removed and both directories moved back, that a link at either directory or anything at either destination, a dangling link included, is refused, and that recovery moves nothing over a link.
+
+`test/setup-backup-hardening.test.mjs` exercises hostile startup environments, executable ownership, source custody, the shared PID lock and its cleanup, Node validation, input snapshots and the rendered backup plist against temporary files.
 
 `setup-backup.sh` and `setup-restore.sh` have been run only with `DRYRUN=1`; neither has run on the Studio.
 
