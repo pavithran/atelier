@@ -368,7 +368,8 @@ test("wait --any --for answered through the CLI returns when one of two review r
 });
 
 test("under --json a wait that is not met prints {code, detail, next} with the same exit status: timeout, abandonment, unreadable", async () => {
-  const lastJson = (r) => JSON.parse(r.stderr.trim().split("\n").at(-1));
+  // The whole of stderr is the one object: no retry or other prose beside it.
+  const lastJson = (r) => JSON.parse(r.stderr);
   const open = await task("Json: never merges");
   const slow = await cli(["wait", open, "--timeout", "0.3", "--interval", "0.1", "--project", "demo", "--json"]);
   assert.equal(slow.code, 3);
@@ -382,7 +383,7 @@ test("under --json a wait that is not met prints {code, detail, next} with the s
   assert.equal(lastJson(dead).code, "abandoned");
   assert.match(lastJson(dead).detail, new RegExp(`^${gone} is abandoned`));
   assert.match(lastJson(dead).next, new RegExp(`atelier show ${gone}`));
-  const away = await cli(["wait", open, "--project", "demo", "--json", "--for", "checked", "--interval", "0.05"], { ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_RETRY_MS: "" });
+  const away = await cli(["wait", open, "--project", "demo", "--json", "--for", "checked", "--interval", "0.05"], { ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_RETRY_MS: "0,0" });
   assert.equal(away.code, 5, away.stderr);
   assert.equal(lastJson(away).code, "unreadable");
   const met = await cli(["wait", "--any", `${gone},${open}`, "--for", "filed", "--project", "demo", "--json"]);
@@ -391,8 +392,14 @@ test("under --json a wait that is not met prints {code, detail, next} with the s
 });
 
 test("the default single-task wait rides a server down from the start and exits 5 with the JSON object", async () => {
-  const away = await cli(["wait", "t1", "--project", "demo", "--json", "--interval", "0.05"], { ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_RETRY_MS: "" });
+  for (const extra of [{}, { ATELIER_JSON: "1" }]) {
+    const argv = ["wait", "t1", "--project", "demo", "--interval", "0.05", ...(extra.ATELIER_JSON ? [] : ["--json"])];
+    const one = await cli(argv, { ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_RETRY_MS: "0,0", ...extra });
+    assert.equal(one.code, 5, one.stderr);
+    assert.equal(JSON.parse(one.stderr).code, "unreadable", "the whole of stderr is one object");
+  }
+  const away = await cli(["wait", "t1", "--project", "demo", "--json", "--interval", "0.05"], { ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_RETRY_MS: "0,0" });
   assert.equal(away.code, 5, away.stderr);
-  const r = JSON.parse(away.stderr.trim().split("\n").at(-1));
+  const r = JSON.parse(away.stderr);
   assert.deepEqual([r.code, Object.keys(r).sort()], ["unreadable", ["code", "detail", "next"]]);
 });

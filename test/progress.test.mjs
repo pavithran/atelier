@@ -39,8 +39,8 @@ test("the stream-json log folds into commands started and completed, the current
   assert.equal(s.started, 1);
   foldStream(s, text.slice(-10), "2026-10-28T12:00:05.000Z");
   assert.deepEqual([s.started, s.completed, s.tokens], [2, 1, 240]);
-  assert.deepEqual(s.last, { name: "Bash", summary: "npm test -- --grep parser", at: "2026-10-28T12:00:00.000Z", error: false });
-  assert.deepEqual([...s.pending.values()], [{ name: "Edit", summary: "src/a.ts", since: "2026-10-28T12:00:05.000Z" }], "a path, never the content");
+  assert.deepEqual(s.last, { name: "Bash", summary: "npm", at: "2026-10-28T12:00:00.000Z", error: false }, "the program's name, never its arguments");
+  assert.deepEqual([...s.pending.values()], [{ name: "Edit", summary: null, since: "2026-10-28T12:00:05.000Z" }], "no path, no content");
   foldStream(s, toolResult("b") + result(0.37), "2026-10-28T12:01:00.000Z");
   assert.deepEqual([s.completed, s.pending.size, s.costUsd], [2, 0, 0.37]);
 });
@@ -223,13 +223,13 @@ process.stdin.resume(); process.stdin.on("data", () => {});
   };
   // Mid-command: the current step, a child process alive, nothing completed.
   const mid = await until((p) => p.current?.name === "Bash" && p.childAlive === true, "a running command with a child");
-  assert.equal(mid.current.summary, "npm test");
+  assert.equal(mid.current.summary, "npm");
   assert.equal(mid.commands.completed, 0);
   assert.equal(mid.actor, BUILDER);
   assert.equal(mid.runner, "home:studio");
   assert.equal(mid.ended, false);
   const text = await cli(["situation", "--project", "demo"]);
-  assert.match(text.stdout, /progress: 0 commands run; 0 commits on t\/1; running Bash \(npm test\) for \d+s; a child process is alive; no check yet; elapsed \d+s/);
+  assert.match(text.stdout, /progress: 0 commands run; 0 commits on t\/1; running Bash \(npm\) for \d+s; a child process is alive; no check yet; elapsed \d+s/);
   writeFileSync(`${go}.1`, "");
   // Between commands: two completed, one commit on t/N, no child.
   const between = await until((p) => p.commands.completed === 2 && p.commits === 1 && p.childAlive === false && !p.current, "two commands and a commit");
@@ -277,23 +277,33 @@ test("a build that ends in a failure, in work left uncommitted or at a provider 
   rmSync(join(root, "mode"), { force: true });
 });
 
-test("no key in a command reaches the Ledger, show or situation: the runner and the server both redact", async () => {
+test("the progress line keeps only program names: no command text in any form reaches the Ledger, show or situation", async () => {
   const TOKEN = "atl_0123456789abcdef0123456789abcdef";
-  const commands = [`ATELIER_TOKEN=${TOKEN} atelier ls`, `curl -H "Authorization: Bearer ${TOKEN}" https://x.test`, `deploy --token ${TOKEN}`];
-  for (const c of commands) assert.ok(!summaryOf("Bash", { command: c }).includes(TOKEN.slice(4, 20)), summaryOf("Bash", { command: c }));
-  // A runner that sent them anyway: the server redacts before it keeps them.
+  const commands = [
+    [`ATELIER_TOKEN=${TOKEN} atelier ls`, "atelier"],
+    [`curl -H "Authorization: Bearer ${TOKEN}" https://x.test`, "curl"],
+    [`curl -H 'authorization: Digest username="u", response="${TOKEN}"' x`, "curl"],
+    [`/usr/local/bin/deploy --token ${TOKEN}`, "deploy"],
+    [`node -e 'fetch(u, {headers: {"x-api-key": "${TOKEN}"}})'`, "node"],
+    [`A=1 B="${TOKEN}" npm test -- --grep ${TOKEN}`, "npm"],
+  ];
+  for (const [c, name] of commands) assert.equal(summaryOf("Bash", { command: c }), name, c);
+  assert.equal(summaryOf("Grep", { pattern: TOKEN }), null, "a call that runs no command keeps nothing");
+  assert.equal(summaryOf("Edit", { file_path: `/x/${TOKEN}` }), null);
+  // A runner that sent whole commands anyway: the server keeps program names alone.
   const id = builtId;
   const started = new Date(Date.now() + 1000).toISOString();
   const kept = await L().recordProgress("home:studio", [{ task: id, actor: BUILDER, startedAt: started, commands: { started: 3, completed: 2 },
-    current: { name: "Bash", summary: commands[0], since: started }, last: { name: "Bash", summary: commands[1], at: started }, harness: `claude-code ${commands[2]}` }]);
+    current: { name: "Bash", summary: commands[0][0], since: started }, last: { name: "Bash", summary: "git", at: started }, harness: `claude-code ${commands[3][0]}` }]);
   assert.equal(kept, 1);
-  const stored = JSON.stringify(await L().progressOf(id));
+  const record = await L().progressOf(id);
+  assert.deepEqual([record.current.summary, record.last.summary, record.harness], [null, "git", null]);
+  const stored = JSON.stringify(record);
   const shown = (await cli(["show", id, "--project", "demo"])).stdout + (await cli(["show", id, "--project", "demo", "--json"])).stdout;
   const listed = (await cli(["situation", "--project", "demo"])).stdout + (await cli(["situation", "--project", "demo", "--json"])).stdout;
   for (const [where, text] of [["the Ledger", stored], ["show", shown], ["situation", listed]]) {
-    assert.ok(!text.includes(TOKEN.slice(4, 20)), `${where} holds the key: ${text}`);
+    assert.ok(!text.includes(TOKEN.slice(4, 20)) && !text.includes("Bearer") && !text.includes("--token"), `${where} holds command text: ${text}`);
   }
-  assert.match(stored, /ATELIER_TOKEN=\[key removed\]/);
 });
 
 test("a codex build reports no command telemetry: said so, never flagged for no command at its start, still for silence", () => {
@@ -314,14 +324,16 @@ test("a codex build reports no command telemetry: said so, never flagged for no 
   assert.equal(progressView({ ...rec, childAlive: true }, new Date(t + STALL_MS)).stall, null);
 });
 
+// Quoted keys naming a credential, and every quoted value of a Digest header.
+const open = (SECRET) => [`{"x-api-key": "${SECRET}", "n": 1}`, `{'authorization': '${SECRET}'}`, `{"token": "${SECRET}"}`, `{"api_key":"${SECRET}"}`,
+  `Authorization: Digest username="u", realm="r", nonce="${SECRET}", response="${SECRET}"`, `curl -H 'authorization: Digest username="u", response="${SECRET}"' https://x.test`];
 test("the shared redactor takes bearer and basic credentials in any case and shape, and credential headers whatever follows", async () => {
   const { redactKeys } = await import("../src/models/pool.ts");
   const SECRET = "abcdef12-ghijk345-lmnop678";
-  for (const text of [`Authorization: bearer ${SECRET}`, `AUTHORIZATION: BEARER ${SECRET}`, `curl -H "authorization: Bearer ${SECRET}" x`, `bEaReR ${SECRET}`, `x-api-key: ${SECRET}`, `X-API-KEY:${SECRET} rest`, `Authorization: Basic dXNlcjpwYXNz`, `basic dXNlcjpwYXNz`]) {
+  for (const text of [`Authorization: bearer ${SECRET}`, `AUTHORIZATION: BEARER ${SECRET}`, `curl -H "authorization: Bearer ${SECRET}" x`, `bEaReR ${SECRET}`, `x-api-key: ${SECRET}`, `X-API-KEY:${SECRET} rest`, `Authorization: Basic dXNlcjpwYXNz`, `basic dXNlcjpwYXNz`, ...open(SECRET)]) {
     const out = redactKeys(text);
     assert.ok(!out.includes(SECRET) && !out.includes("dXNlcjpwYXNz"), `${text} -> ${out}`);
-    assert.ok(!summaryOf("Bash", { command: text }).includes(SECRET.slice(0, 12)));
-    assert.ok(!parseProgress({ task: "t1", actor: BUILDER, startedAt: "2026-10-28T12:00:00.000Z", current: { name: "Bash", summary: text } }).current.summary.includes(SECRET.slice(0, 12)));
   }
+  assert.equal(redactKeys(`{"name": "demo", "x-api-key": "${SECRET}"}`), '{"name": "demo", "x-api-key": "[key removed]"}', "other values stay");
   assert.equal(redactKeys("a basic test failed"), "a basic test failed", "the word basic alone is prose");
 });

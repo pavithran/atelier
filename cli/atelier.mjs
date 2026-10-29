@@ -1092,7 +1092,8 @@ export async function request(method, path, body, as, extra = {}, signal) {
     if (attempt >= waits.length) {
       die(`server request failed: ${failure.message}. Atelier at ${server()} is not answering after ${attempt + 1} tries; ${maybe ? check : "nothing was recorded"}; work in this workspace is kept`, 4);
     }
-    process.stderr.write(`atelier: ${method} ${path} failed (${failure.message}); trying again in ${waits[attempt] / 1000}s (${attempt + 1} of ${waits.length})\n`);
+    // Under --json stderr carries the one JSON object alone, so the retries go unsaid.
+    if (!jsonWanted()) process.stderr.write(`atelier: ${method} ${path} failed (${failure.message}); trying again in ${waits[attempt] / 1000}s (${attempt + 1} of ${waits.length})\n`);
     await RETRY.sleep(waits[attempt]);
   }
   let data;

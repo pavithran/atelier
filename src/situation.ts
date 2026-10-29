@@ -77,6 +77,9 @@ const RUNS_KEPT = 20;
 // and kept (redactKeys, the run notes' rule): a runner that sent a key never
 // gets it stored, shown or listed.
 const text = (v: unknown, max: number): string | null => typeof v === "string" && v ? redactKeys(v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")).slice(0, max) : null;
+// A command is kept as its program's name alone (npm, git), never its
+// arguments; anything else a runner sends in its place is dropped.
+const program = (v: unknown): string | null => typeof v === "string" && /^[A-Za-z0-9._+-]{1,64}$/.test(v) ? v : null;
 const time = (v: unknown): string | null => typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
 const count = (v: unknown): number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 1e9 ? v : 0;
 const amount = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1e6 ? v : null;
@@ -90,10 +93,10 @@ export function parseProgress(raw: unknown): Omit<ProgressRecord, "runner" | "re
   if (!task || !actor || !startedAt) return null;
   const c = (r.commands ?? {}) as Record<string, unknown>, cur = r.current as Record<string, unknown> | null, last = r.last as Record<string, unknown> | null;
   return {
-    task, actor, harness: text(r.harness, 64), telemetry: r.telemetry !== false, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
+    task, actor, harness: program(r.harness), telemetry: r.telemetry !== false, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
     commands: { started: count(c.started), completed: count(c.completed) },
-    current: cur && typeof cur === "object" && text(cur.name, 64) ? { name: text(cur.name, 64)!, summary: text(cur.summary, 120), since: time(cur.since) ?? startedAt } : null,
-    last: last && typeof last === "object" && text(last.name, 64) ? { name: text(last.name, 64)!, summary: text(last.summary, 120), at: time(last.at) ?? startedAt, error: last.error === true } : null,
+    current: cur && typeof cur === "object" && text(cur.name, 64) ? { name: text(cur.name, 64)!, summary: program(cur.summary), since: time(cur.since) ?? startedAt } : null,
+    last: last && typeof last === "object" && text(last.name, 64) ? { name: text(last.name, 64)!, summary: program(last.summary), at: time(last.at) ?? startedAt, error: last.error === true } : null,
     childAlive: typeof r.childAlive === "boolean" ? r.childAlive : null,
     commits: count(r.commits), changedFiles: count(r.changedFiles), logBytes: count(r.logBytes),
     tokens: amount(r.tokens), costUsd: amount(r.costUsd),

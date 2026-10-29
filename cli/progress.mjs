@@ -15,17 +15,20 @@
 //   - when the run started and ended.
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { redactKeys } from "../src/models/pool.ts";
 
-const SUMMARY_MAX = 120;
 const oneLine = (text) => String(text ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").replace(/\s+/g, " ").trim();
-// What a tool call was asked to do, in a short line: a command, a path, a
-// pattern. Never the content it writes, and no key: the run notes' redaction
-// (redactKeys: key shapes, a bearer credential, NAME_TOKEN=value) runs on
-// the whole text before it is cut, so no part of a key survives the cut.
+// What a tool call ran, as the program's name alone: a command's first word
+// past any NAME=value assignments, its path stripped (npm, git, node). No
+// argument, path, pattern or description is ever kept, so no key can leak
+// through one, whatever form it takes. A call that runs no command (an edit,
+// a read) keeps no summary: its tool's name says what it was.
+export const PROGRAM = /^[A-Za-z0-9._+-]{1,64}$/;
 export function summaryOf(name, input = {}) {
-  const pick = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.description ?? "";
-  return redactKeys(oneLine(typeof pick === "string" ? pick : "")).slice(0, SUMMARY_MAX) || null;
+  if (typeof input?.command !== "string") return null;
+  const words = oneLine(input.command).split(" ").filter(Boolean);
+  const first = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? "";
+  const program = first.replace(/^["']|["']$/g, "").split("/").pop() ?? "";
+  return PROGRAM.test(program) ? program : null;
 }
 
 // A fresh reading of one run's log.
