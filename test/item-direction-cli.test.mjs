@@ -110,7 +110,8 @@ test("a model's call without --quote reaches the server as the model's own actor
     assert.equal(r.status, 0, r.stderr);
   }
   // Block and unblock name the model as the actor; the server stops a
-  // developer-token call under any actor but the developer's.
-  assert.deepEqual(f.posts().map((p) => [p.actor, p.acting]), [[OPUS, undefined], [OPUS, undefined], ["owner", OPUS], ["owner", OPUS]]);
+  // developer-token call under any actor but the developer's. Every write on
+  // the developer token carries the acting header (G18).
+  assert.deepEqual(f.posts().map((p) => [p.actor, p.acting]), [[OPUS, OPUS], [OPUS, OPUS], ["owner", OPUS], ["owner", OPUS]]);
   assert.ok(f.posts().every((p) => p.body.quote === undefined));
 });
