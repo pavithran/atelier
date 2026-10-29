@@ -128,7 +128,7 @@ test("show says the task's pre-review in words, and takes no build reasons from 
   assert.equal(r.status, 0, r.stderr);
   assert.ok(!r.stdout.includes("Not offered"), r.stdout);
   for (const line of [
-    "Pre-review 1000000007: blocked; reviewer codex/gpt-6-astra on home:studio; attempt 1 of 3",
+    "Pre-review 1000000007: blocked; reviewer codex/gpt-6-astra on home:studio; asked 1 time at this binding",
     "Binding: head aaaaaaaa merged with main bbbbbbbb, tree dddddddd, criteria cccccccccccc, contributors claude-code/opus-5.5",
     "Verdict: reject: It breaks.",
     "  src/a.ts:3 · blocking · the queue loses a waiter",

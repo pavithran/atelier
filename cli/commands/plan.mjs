@@ -51,7 +51,16 @@ export default async function planCommand() {
   }
   if (sub === "approve") {
     if (typeof args.hash !== "string" || !/^[a-f0-9]{64}$/.test(args.hash)) die(`--hash needs the full hash atelier plan show ${id} prints: atelier plan approve ${id} --hash HASH`);
-    const view = await call("POST", `${I(name, id)}/plan/approve`, { hash: args.hash, allowPaid: args["allow-paid"] === true }, OWNER);
+    // Each part's builder and reviewer, as the model names them (G17):
+    // --route KEY=BUILDER:REVIEWER, once per part. Without them the server
+    // lists the routing's candidates and refuses.
+    const routes = {};
+    for (const r of args.multi.route ?? []) {
+      const m = /^([^=]+)=([^:]+\/[^:]+):([^:]+\/[^:]+)$/.exec(String(r));
+      if (!m) die(`--route takes KEY=BUILDER:REVIEWER, each as harness/model: atelier plan approve ${id} --hash HASH --route api=claude-code/opus-5.5:codex/gpt-6`);
+      routes[m[1]] = { builder: m[2], reviewer: m[3] };
+    }
+    const view = await call("POST", `${I(name, id)}/plan/approve`, { hash: args.hash, allowPaid: args["allow-paid"] === true, ...(Object.keys(routes).length ? { routes } : {}) }, OWNER);
     const queued = view.parts.filter((p) => p.dispatch && p.state === "open");
     console.log(`${id} is approved at ${args.hash.slice(0, 12)}: ${view.parts.map((p) => `${p.id} ${p.key}`).join(", ")}.`);
     console.log(queued.length ? `Queued now: ${queued.map((p) => `${p.id} for ${p.dispatch.agent}/${p.dispatch.model}`).join(", ")}.` : "Nothing could start yet.");

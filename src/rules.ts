@@ -7,6 +7,7 @@ import type { LargeRef } from "./large.ts";
 import type { CommitIdentityPolicy } from "./commit-identity.ts";
 import type { CheckSilence, CheckStop, TIMEOUT_FACT } from "./check-limit.ts";
 import { criteriaOf } from "./criteria.ts";
+import { LIMITS } from "./limits.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -2212,18 +2213,10 @@ export function eventStage(item: Item, facts: TaskStageFacts = {}): string {
   return item.state === "blocked" || item.state === "abandoned" ? item.state : stageOf(item, facts).stage;
 }
 
-// How long a task may stay at a stage before the five-minute tick records it
-// as stuck (t223). Stages not listed (building, landed, shipped) have no
-// limit: a builder's silence is the stuck report's, and a finished task is not
-// waiting for anything.
-const MINUTE_MS = 60_000, HOUR_MS = 3_600_000;
-export const STAGE_LIMITS_MS: Readonly<Partial<Record<TaskStage, number>>> = {
-  filed: 24 * HOUR_MS, agreed: 48 * HOUR_MS, queued: 10 * MINUTE_MS, built: 20 * MINUTE_MS,
-  checked: 10 * MINUTE_MS, reviewed: 2 * HOUR_MS, landable: 5 * MINUTE_MS,
-};
-export const STAGE_TICK_MS = 5 * MINUTE_MS;
-// A tick older than this is the first line of `status`.
-export const STAGE_TICK_STALE_MS = 15 * MINUTE_MS;
+// How long a task may stay at a stage before the tick records it as stuck
+// (t223), and the tick's other limits: src/limits.ts, the one module that
+// names them (G6).
+export { STAGE_LIMITS_MS } from "./limits.ts";
 
 // The times a stage is entered from, which stageOf does not carry. Each is
 // the time of the record that put the task at the stage; null when it is not
@@ -2260,7 +2253,7 @@ export function stageEnteredAt(stage: TaskStage, item: Item, head: string | null
 // Whether the task has stayed past the stage's limit at `now`. A checked
 // stage whose review is claimed is being acted on, so it is not stuck.
 export function stageOverrun(stage: TaskStage, enteredAt: string | null, now: Date, clock: StageClock = {}): { limitMs: number; overMs: number } | null {
-  const limit = STAGE_LIMITS_MS[stage];
+  const limit = LIMITS.stageMs[stage];
   if (limit === undefined || !enteredAt) return null;
   if (stage === "checked" && clock.reviewClaimed) return null;
   const t = Date.parse(enteredAt);
@@ -2268,11 +2261,6 @@ export function stageOverrun(stage: TaskStage, enteredAt: string | null, now: Da
   const over = now.getTime() - t - limit;
   return over > 0 ? { limitMs: limit, overMs: over } : null;
 }
-
-// Whether the tick can act on a stuck stage. It can act on none yet: rerouting,
-// asking again and queueing a landing are later tasks'. A stage the tick cannot
-// act on is told to the developer in the same tick it is found stuck.
-export const tickCanAct = (_stage: TaskStage): boolean => false;
 
 // "What needs the project owner now?" Only things a person must decide or
 // unblock rank high; failing checks are the item owner's problem and rank
@@ -3029,18 +3017,25 @@ export function fastLandedLines(landed: readonly { item: string; receipt: { merg
   return lines;
 }
 
-// The fix task a rejected post-merge review of a fast landing files: its
-// criteria are the review's blocking findings, or the note when it gave none.
-// A non-blocking finding stays a note on the goal (t203), not a criterion.
-export function fastFixTask(itemId: string, title: string, review: { by: string; head: string; note: string; request?: number; findings?: Finding[] }): { title: string; brief: string; accept: string[] } {
-  const findings = (review.findings ?? []).filter((f) => f.severity === "blocking");
-  const accept = findings.length
-    ? findings.map((f) => `${f.file}${f.line === null ? "" : `:${f.line}`}: ${f.text}`.slice(0, 1000))
-    : [`Resolve the post-merge review's rejection of ${itemId}: ${review.note}`.slice(0, 1000)];
+// The notes a rejected post-merge review leaves on the goal (G6): each
+// blocking finding, or the review's note when it gave none, marked blocking.
+// The server files no task from them; `atelier file-fix ID --from-note N`
+// does, when the model decides to (fixTaskFromNote).
+export function postMergeNotes(itemId: string, review: { by: string; head: string; note: string; request?: number; findings?: readonly Finding[]; fast?: boolean }): GoalNote[] {
+  const blocking = (review.findings ?? []).filter((f) => f.severity === "blocking");
+  const base = { itemId, by: review.by, head: review.head, blocking: true as const, ...(review.request !== undefined ? { request: review.request } : {}), ...(review.fast ? { fast: true as const } : {}) };
+  if (blocking.length) return blocking.map((f) => ({ ...base, file: f.file, line: f.line, text: f.text.slice(0, 1000) }));
+  return review.note.trim() ? [{ ...base, file: "", line: null, text: `The post-merge review rejected ${itemId}: ${review.note}`.slice(0, 1000) }] : [];
+}
+
+// The task `atelier file-fix` files from one goal note: its title, brief and
+// one criterion, the note itself.
+export function fixTaskFromNote(goal: { id: string; title: string }, n: number, note: GoalNote): { title: string; brief: string; accept: string[] } {
+  const where = note.file ? `${note.file}${note.line === null ? "" : `:${note.line}`}: ` : "";
   return {
-    title: `Fix after fast landing of ${itemId}: ${title}`,
-    brief: `${itemId} landed in fast mode and its post-merge review by ${review.by} at ${review.head.slice(0, 12)} rejected it${review.request !== undefined ? ` (review request ${review.request})` : ""}. Note: ${review.note}`.slice(0, 3000),
-    accept,
+    title: `Fix in ${goal.id} (note ${n}): ${note.text}`.slice(0, 200),
+    brief: `Filed from note ${n} on ${goal.id} (${goal.title}), left by ${note.by} at ${note.head.slice(0, 12)}${note.request !== undefined ? ` in review request ${note.request}` : ""}${note.blocking ? ", a blocking finding" : ""}.\n${where}${note.text}`.slice(0, 3000),
+    accept: [`Resolve ${where}${note.text}`.slice(0, 1000)],
   };
 }
 
@@ -3293,7 +3288,9 @@ export function applyVerification(findings: readonly Finding[], confirmed: Reado
 // follow-up finding, pre-existing or unverified or neither. A note is not a
 // task; it is filed as one only when the developer picks it or it blocks a
 // later change. Null when the review has no follow-up finding.
-export interface GoalNote { itemId: string; by: string; head: string; file: string; line: number | null; text: string; label?: string }
+export interface GoalNote { itemId: string; by: string; head: string; file: string; line: number | null; text: string; label?: string; blocking?: true; request?: number; fast?: true }
+// What tells one note from another: the same finding noted again is one note.
+export const noteKey = (n: Pick<GoalNote, "file" | "line" | "text">): string => `${n.file}:${n.line}:${n.text}`;
 export function reviewNotes(itemId: string, review: { by: string; head: string; findings?: readonly Finding[] }): GoalNote[] | null {
   const found = (review.findings ?? []).filter((f) => f.severity === "follow-up");
   if (!found.length) return null;
@@ -3305,7 +3302,7 @@ export function reviewNotes(itemId: string, review: { by: string; head: string; 
 export function openNotes(notes: readonly GoalNote[]): GoalNote[] {
   const seen = new Set<string>();
   return notes.filter((n) => {
-    const key = `${n.file}:${n.line}:${n.text}`;
+    const key = noteKey(n);
     return seen.has(key) ? false : (seen.add(key), true);
   });
 }

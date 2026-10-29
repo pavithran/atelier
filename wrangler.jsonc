@@ -12,15 +12,11 @@
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
-  // The daily model snapshots (t623, takeModelSnapshots in src/index.ts):
-  // every six hours, so a run that fails or finds a project unreadable is
-  // tried again within the day; a run with nothing due writes nothing. The
-  // list replaces whatever schedules an earlier deploy left on the Worker.
-  // Every 10 minutes the stuck rules are evaluated for each project and the
-  // opened and cleared episodes recorded (t196, recordStuckEpisodes).
-  // Every 5 minutes each live task's stage is read against its limit and the
-  // stage events recorded (t223, recordStageTicks).
-  "triggers": { "crons": ["*/5 * * * *", "*/10 * * * *", "7 */6 * * *"] },
+  // No crons (Atelier 2.0, task 8): the stage tick, the stuck episodes and
+  // the model snapshots run on the Node server's timers
+  // (src/runtime/timers.mjs), and src/index.ts has no scheduled() handler.
+  // The empty list replaces whatever schedules an earlier deploy left.
+  "triggers": { "crons": [] },
   // Cloudflare Access in front of the owner's pages (src/access.ts): set all
   // three, as vars or secrets, and the Worker verifies the Access assertion
   // on every owner route — /login and its token form among them — against the
@@ -43,9 +39,9 @@
     // The gateway runners send their calls through, whose figures the
     // Models page reads from the GraphQL Analytics API.
     "AI_GATEWAY_ID": "atelier",
-    // The origin the stuck notices link to, sent from the cron where no
-    // request names one, and the Artifacts namespace whose push events the
-    // queue accepts: the ARTIFACTS binding's below.
+    // The origin the stuck notices link to, sent from the timer where no
+    // request names one, and the Artifacts namespace the ARTIFACTS binding
+    // below names.
     "PUBLIC_ORIGIN": "https://atelier.zone",
     "ARTIFACTS_NAMESPACE": "atelier"
   },
@@ -82,8 +78,7 @@
       "name": "atelier-staging",
       "routes": [{ "pattern": "next.atelier.zone", "custom_domain": true }],
       "workers_dev": false,
-      // No crons: the stuck notices, stage ticks and model snapshots run in
-      // production alone. Left out, production's three would be inherited.
+      // No crons, as production has none: the Node server runs them on timers.
       "triggers": { "crons": [] },
       "vars": {
         // The same gateway as production: the Models page only reads its

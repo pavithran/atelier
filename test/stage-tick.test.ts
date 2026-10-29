@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Item, TaskStage } from "../src/rules.ts";
-import { STAGE_LIMITS_MS, stageEnteredAt, stageOverrun, tickCanAct } from "../src/rules.ts";
+import { STAGE_LIMITS_MS, stageEnteredAt, stageOverrun } from "../src/rules.ts";
 import { findStageOverrun, openStages, reconcileStages, tickLine, type StageFinding } from "../src/stage-tick.ts";
 
-// t223: the stage limits as pure functions, and the stuck/told/cleared
-// transitions a tick decides from them.
+// t223: the stage limits as pure functions, and the stuck/cleared
+// transitions a tick decides from them (G6: nothing is "told"; the record
+// and its note are the fact).
 
 const MIN = 60_000, HOUR = 60 * MIN;
 const T0 = "2026-10-23T00:00:00.000Z";
@@ -55,9 +56,10 @@ const kinds = (moves: { kind: string }[]) => moves.map((m) => m.kind);
 // Replays a tick's moves as the events a Ledger would hold.
 const events = (moves: { item: string; kind: string; data: Record<string, unknown> }[]) => moves;
 
-test("finding an overrun records one stuck and one told, and a repeat adds nothing", () => {
-  const first = reconcileStages([found()], new Map(), true);
-  assert.deepEqual(kinds(first), ["stage.stuck", "stage.told"]);
+test("finding an overrun records one stuck with its note, and a repeat adds nothing", () => {
+  const first = reconcileStages([found({ note: "no live runner offers codex/gpt-6" })], new Map(), true);
+  assert.deepEqual(kinds(first), ["stage.stuck"]);
+  assert.equal(first[0].data.note, "no live runner offers codex/gpt-6");
   assert.deepEqual(Object.fromEntries(Object.keys({ stage: "built", head: "a", limitMs: 20 * MIN }).map((k) => [k, (first[0].data)?.[k]])), { stage: "built", head: "a", limitMs: 20 * MIN });
   const open = openStages(events(first));
   assert.deepEqual(reconcileStages([found({ overMs: 5 * MIN })], open, true), []);
@@ -67,9 +69,9 @@ test("finding an overrun records one stuck and one told, and a repeat adds nothi
 test("is stuck once per stage and per head", () => {
   const open = openStages(events(reconcileStages([found()], new Map(), true)));
   const moves = reconcileStages([found({ head: "b" })], open, true);
-  assert.deepEqual(kinds(moves), ["stage.stuck", "stage.told", "stage.cleared"]);
+  assert.deepEqual(kinds(moves), ["stage.stuck", "stage.cleared"]);
   assert.deepEqual(Object.fromEntries(Object.keys({ stage: "built", head: "a" }).map((k) => [k, (moves.at(-1))?.[k]])), { stage: "built", head: "a" });
-  assert.deepEqual(kinds(reconcileStages([found(), found({ stage: "checked" })], new Map(), true)), ["stage.stuck", "stage.told", "stage.stuck", "stage.told"]);
+  assert.deepEqual(kinds(reconcileStages([found(), found({ stage: "checked" })], new Map(), true)), ["stage.stuck", "stage.stuck"]);
 });
 
 test("a task that leaves the stage clears it, and coming back is a new stuck", () => {
@@ -78,7 +80,7 @@ test("a task that leaves the stage clears it, and coming back is a new stuck", (
   assert.deepEqual(kinds(cleared), ["stage.cleared"]);
   all = [...all, ...cleared];
   assert.deepEqual(reconcileStages([], openStages(events(all)), true), []);
-  assert.deepEqual(kinds(reconcileStages([found()], openStages(events(all)), true)), ["stage.stuck", "stage.told"]);
+  assert.deepEqual(kinds(reconcileStages([found()], openStages(events(all)), true)), ["stage.stuck"]);
 });
 
 test("an incomplete read records nothing and clears nothing", () => {
@@ -87,11 +89,10 @@ test("an incomplete read records nothing and clears nothing", () => {
   assert.deepEqual(reconcileStages([], open, false), []);
 });
 
-test("tells only a stage the tick cannot act on", () => {
-  assert.equal(tickCanAct("built"), false);
-  assert.deepEqual(kinds(reconcileStages([found()], new Map(), true, () => true)), ["stage.stuck"]);
-  const stuckOnly = openStages(events(reconcileStages([found()], new Map(), true, () => true)));
-  assert.deepEqual(kinds(reconcileStages([found()], stuckOnly, true)), ["stage.told"]);
+test("a stuck record from before G6 that was told still clears, and writes no further told", () => {
+  const old = [{ item: "t1", kind: "stage.stuck", data: { stage: "built", head: "a" } }, { item: "t1", kind: "stage.told", data: { stage: "built", head: "a", note: "the tick cannot act on this stage" } }];
+  assert.deepEqual(reconcileStages([found()], openStages(old), true), []);
+  assert.deepEqual(kinds(reconcileStages([], openStages(old), true)), ["stage.cleared"]);
 });
 
 test("finds an overrun from the item and its clock", () => {
@@ -176,87 +177,17 @@ test("an overdue tick is ahead of usage and token-expiry warnings, in status and
   assert.equal(withOverdueTick("text", []), "text");
 });
 
-// t245: rerouting a queued dispatch, and replacing a stalled fork.
-import { decideReroute, decideReviewReroute, forkStalled, olderThan, recordedKeys, replacementFork, FORK_REPLACE_MS } from "../src/stage-tick.ts";
-import type { Dispatch, SeenOffer } from "../src/dispatch/rules.ts";
+// t245: a stalled fork, which a claim replaces until task 13 removes forks.
+import { forkStalled, olderThan, recordedKeys, replacementFork, FORK_REPLACE_MS } from "../src/stage-tick.ts";
 
-const disp = (over: Partial<Dispatch> = {}): Dispatch => ({ to: "any", agent: "codex", model: "gpt-6-astra", by: "owner", at: T0, note: "", ...over });
-const offer = (runner: string, agents: SeenOffer["agents"], over: Partial<SeenOffer> = {}): SeenOffer => ({ runner, kind: "home", agents, at: T0, ...over });
-const NOW = at(5 * MIN);
-
-test("a dispatch a live runner takes, and is not late, is left alone", () => {
-  assert.equal(decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "codex", models: ["gpt-6-astra"] }])], now: NOW, project: "p", late: false, rerouted: false }), null);
-});
-
-test("a dispatch no live runner offers goes to a model one does, the same tick", () => {
-  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
-  assert.deepEqual([v?.acts, v?.from, v?.to], [true, "codex/gpt-6-astra", { agent: "claude-code", model: "sonnet-5.5" }]);
-});
-
-test("a late dispatch whose model a live runner offers keeps it, told as stuck", () => {
-  const offers = [offer("home:a", [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["sonnet-5.5"] }])];
-  const v = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: true, rerouted: false });
-  assert.equal(v?.acts, false);
-  assert.match(v!.note, /kept on codex\/gpt-6-astra/);
-});
-
-test("a dispatch held by a hold or a claim is not rerouted, late or not", () => {
-  const offers = [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])];
-  assert.equal(decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers, now: NOW, project: "p", late: true, held: true, rerouted: false }), null);
-});
-
-test("a held dispatch whose model no live runner offers moves to a cheaper offered model", () => {
-  const offers = [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5", "haiku-4.5"] }])];
-  const v = decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers, now: NOW, project: "p", late: false, held: true, rerouted: false });
-  assert.deepEqual([v?.acts, v?.from, v?.to], [true, "claude-code/sonnet-5.5", { agent: "claude-code", model: "haiku-4.5" }]);
-});
-
-test("a busy runner still offers its model: the dispatch keeps it", () => {
-  const offers = [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }, { agent: "claude-code", models: ["opus-5.5"] }])];
-  const d = disp({ agent: "claude-code", model: "sonnet-5.5" });
-  assert.equal(decideReroute({ dispatch: d, offers, now: NOW, project: "p", late: false, rerouted: false }), null);
-  assert.equal(decideReroute({ dispatch: d, offers, now: NOW, project: "p", late: true, rerouted: false })?.acts, false);
-});
-
-test("a dispatch no runner offers falls back to a cheaper model, never a costlier one", () => {
-  const offers = [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5", "haiku-4.5"] }])];
-  const v = decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers, now: NOW, project: "p", late: false, rerouted: false });
-  assert.deepEqual([v?.acts, v?.to?.model], [true, "haiku-4.5"]);
-});
-
-test("an escalation to Opus is refused and told, naming the model and the runners", () => {
-  const v = decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
-  assert.equal(v?.acts, false);
-  assert.equal(v?.from, "claude-code/sonnet-5.5");
-  assert.match(v!.note, /home:a offers build as claude-code\/opus-5\.5/);
-  assert.match(v!.note, /claude-code\/opus-5\.5: Opus tier/);
-});
-
-test("no offered model is told, naming what the live runners offer", () => {
-  const v = decideReroute({ dispatch: disp({ to: "cloud" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
-  assert.equal(v?.acts, false);
-  assert.match(v!.note, /home:a is a home runner, not a cloud one/);
-  assert.match(decideReroute({ dispatch: disp(), offers: [], now: NOW, project: "p", late: false, rerouted: false })!.note, /no runner has asked/);
-});
-
-test("a second miss never reroutes again", () => {
-  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: true });
-  assert.equal(v?.acts, false);
-  assert.match(v!.note, /already rerouted once/);
-});
-
-test("the family rule that applies passes a model over", () => {
-  const offers = [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5", "haiku-4.5"] }])];
-  const v = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: false, rerouted: false, refuse: (a) => a.endsWith("sonnet-5.5") ? "its family built it" : null });
-  assert.equal(v?.to?.model, "haiku-4.5");
-  const none = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: false, rerouted: false, refuse: () => "its family built it" });
-  assert.equal(none?.acts, false);
-  assert.match(none!.note, /passed over: claude-code\/sonnet-5\.5: its family built it/);
-});
-
-test("a plan's or integrator's dispatch is told, not moved", () => {
-  const v = decideReroute({ dispatch: disp({ job: "integrate" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
-  assert.equal(v?.acts, false);
+// G6: the tick reroutes no dispatch and re-points no review request, so
+// decideReroute, decideReviewReroute and costTier are gone; what they decided
+// is a stage.stuck note now (test/tick-facts.test.mjs).
+test("the reroute and re-point deciders are gone from the tick", async () => {
+  const tick = await import("../src/stage-tick.ts") as Record<string, unknown>;
+  for (const gone of ["decideReroute", "decideReviewReroute", "costTier", "LAND_REQUEUES_FOR_MAIN"]) assert.equal(tick[gone], undefined, gone);
+  const rules = await import("../src/rules.ts") as Record<string, unknown>;
+  for (const gone of ["tickCanAct", "STAGE_TICK_MS", "STAGE_TICK_STALE_MS"]) assert.equal(rules[gone], undefined, gone);
 });
 
 test("a fork is stalled past 30 minutes with no fork or head recorded", () => {
@@ -293,21 +224,6 @@ test("olderThan is false for an unknown or unreadable time and for exactly the l
   assert.equal(olderThan(T0, at(HOUR + 1), HOUR), true);
 });
 
-test("an unclaimed review request is re-pointed to the reviewer picked, once", () => {
-  const picked = decideReviewReroute({ from: "claude-code/opus-5.5", pick: "claude-code/sonnet-5.5", unpicked: null, rerouted: false });
-  assert.deepEqual({ acts: picked.acts, to: picked.to }, { acts: true, to: "claude-code/sonnet-5.5" });
-  const again = decideReviewReroute({ from: "claude-code/sonnet-5.5", pick: "codex/gpt-6-astra", unpicked: null, rerouted: true });
-  assert.equal(again.acts, false);
-  assert.match(again.note, /already re-pointed once/);
-});
-
-test("with no reviewer picked the verdict is told with the reason", () => {
-  const none = decideReviewReroute({ from: "claude-code/opus-5.5", pick: null, unpicked: "no live runner offers it", rerouted: false });
-  assert.equal(none.acts, false);
-  assert.match(none.note, /no other reviewer a live runner offers qualifies: no live runner offers it/);
-});
-
-// t253: what the tick does with a task left landable past its limit.
 import { decideLandQueue, landerLive, type LandQueueInput } from "../src/stage-tick.ts";
 
 const land = (over: Partial<LandQueueInput> = {}): LandQueueInput => ({ item: "t1", accepted: true, fast: false, lease: null, lander: true, queued: [], main: "m1", now: at(HOUR), ...over });

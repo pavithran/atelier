@@ -261,7 +261,7 @@ test("release: the owner's repeat of a release it made answers already; after an
 test("undispatch on an undispatched task answers already and logs one item.undispatched", async (t) => {
   const w = await world(t);
   const id = await w.file("Undispatch twice");
-  const sent = await w.send("POST", `/projects/demo/items/${id}/dispatch`, { to: "any" });
+  const sent = await w.send("POST", `/projects/demo/items/${id}/dispatch`, { to: "any", agent: "codex", model: "gpt-6" });
   assert.equal(sent.status, 200, await sent.clone().text());
   const { first, again } = await w.twice("POST", `/projects/demo/items/${id}/undispatch`, {});
   assert.equal(first.already, undefined);

@@ -27,7 +27,7 @@ import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { cleanCard, cleanCardModel, cleanWithdrawal } from "./models/cards.ts";
 import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.ts";
-import { suggestBuilder } from "./models/suggest.ts";
+import { builderCandidates, candidatesText } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, isModel, ownerWriteRefusal, registeredActing } from "./models/judgement.ts";
@@ -121,14 +121,10 @@ type Settings = {
   // owner's Access identity is the factor there (ownerFactorOf).
   OVERRIDE_SECRET?: string;
   // The origin this Worker answers on, for links built where there is no
-  // request to read it from, such as the stuck notices the cron sends:
+  // request to read it from, such as the stuck notices the timer sends:
   // https://atelier.zone in production, https://next.atelier.zone on the
   // staging copy (wrangler.jsonc, env.staging), https://atelier.zone unset.
   PUBLIC_ORIGIN?: string;
-  // The Artifacts namespace the ARTIFACTS binding names, whose push events
-  // the queue accepts (pushNotice): "atelier" in production and unset,
-  // "atelier-staging" on the staging copy.
-  ARTIFACTS_NAMESPACE?: string;
 };
 
 // The factor no agent holds, which an override's confirmation rests on
@@ -3137,23 +3133,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A live claim is not ended by a dispatch unless --release says so; refused
       // first, before a builder is suggested for a task nobody may take (t391).
       await L.refuseLiveHolder(id, body);
-      let suggestion;
-      // atelier dispatch with no --agent asks for the suggestion; a dispatch
-      // that names no agent without asking stays open to any runner's agent.
-      // An overlap override of an existing dispatch keeps its builder
-      // restrictions unless named, so it asks for no suggestion.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && waitingDispatch(await L.item(id)))) {
+      // atelier dispatch with no --agent names no builder (G17): the server
+      // picks none. It prints the candidates, each with its reliability line
+      // and any gate filter that refuses it, and refuses; the model names one.
+      // An overlap override of an existing dispatch keeps its builder, so it
+      // asks for nothing.
+      // Every new dispatch names both its agent and its model, whatever the
+      // client sent: a harness alone, a model alone or neither leaves the
+      // runner to choose, which is a pick the server does not make. An
+      // overlap override of a waiting dispatch that names both keeps it.
+      const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
+      const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
+      const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
+      if (!named && !keptNamed) {
         requireOwner(env, actor);
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
-        // The suggestion is checked against runners' offers for the job this
-        // dispatch will carry, a plain build unless it names another.
-        // Read for this project (offersFor, t652): a model only a runner
-        // scoped to another project offers is not suggested here.
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
-        const slash = suggestion.actor.indexOf("/");
-        body.agent = suggestion.actor.slice(0, slash);
-        body.model = suggestion.actor.slice(slash + 1);
-        body.to = suggestion.where;
+        const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
+        const first = candidates.find((c) => !c.refusal);
+        const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
+        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
       }
       // A merge-main dispatch names the main head its job merges. The owner
       // names none after a landing conflicted, so the head is main's as the
@@ -3175,11 +3173,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reasons, or, for a builder the developer named, each build
       // assignment bearing on the task skipped for it (gpt-6-astra's seventh
       // review of t622, finding 2).
-      const why = suggestion ? suggestion.reasons.join(" ") : await namedBuilderReasons(env, ref.key, body, actor);
-      return json({ ...await L.dispatch(id, actor, body, oldToken, why), ...(suggestion ? { suggestion } : {}) });
+      const why = await namedBuilderReasons(env, ref.key, body, actor);
+      return json(await L.dispatch(id, actor, body, oldToken, why));
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // The queued-landing pre-review, on the model's request (G17): once per
+    // call, of the reviewer it names; without one, the candidates and a refusal.
+    case "prereview": {
+      requireOwner(env, actor);
+      const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      const records = { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key };
+      return json(await L.requestPrereview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), records), 201);
+    }
+    // A task filed from one of the goal's notes (G6): the server files none
+    // by itself; the model files one with atelier file-fix ID --from-note N.
+    case "file-fix": {
+      requireOwner(env, actor);
+      const filed = await L.fileFix(id, actor, body.note, c.acting ?? null);
+      return json(filed, filed.already ? 200 : 201);
+    }
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit": {
@@ -3366,6 +3379,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      // The separate tier review, of the tier model named (G17): never asked
+      // by the server itself.
+      if (body.tier === true) return json(await L.requestTierReview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), body.hand === true));
       const track = reviewer === null ? { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
@@ -3808,7 +3824,9 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       // The runner offers come with the pool, so the routing an approval
       // fixes counts a reviewer only when a live runner offers it for the
       // review job (routeParts in src/plans/route.ts).
-      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers());
+      // The routes are the model's (G17): { KEY: { builder, reviewer } }.
+      if (body.routes !== undefined && (typeof body.routes !== "object" || body.routes === null || Array.isArray(body.routes))) throw new RuleError("bad_route", "routes maps each part's key to { builder, reviewer }", 400, `atelier plan approve ${id} --hash HASH --route KEY=BUILDER:REVIEWER`);
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers(), (body.routes as Record<string, { builder?: unknown; reviewer?: unknown }> | undefined) ?? null);
       return json(await L.planView(id));
     }
     case "revise":
@@ -4038,15 +4056,14 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
   return stuckReport(project, origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names);
 }
 
-// Every 10 minutes: each project's stuck rules are evaluated and the
-// transitions of its episodes recorded. A project that cannot be read at all
+// Every 10 minutes, on the server's timer (src/runtime/timers.mjs): each
+// project's stuck rules are evaluated and the transitions of its episodes
+// recorded. A project that cannot be read at all
 // records nothing, so it clears nothing. Episodes are kept under the project's
 // storage key, which a rename keeps and a released name does not reach, never
 // under its name (t196).
-// The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
-// and the origin the recorded evidence links name: the PUBLIC_ORIGIN var, so
-// the staging copy links to itself, and production's origin when it is unset.
-const STUCK_CRON = "*/10 * * * *";
+// The origin the recorded evidence links name: the PUBLIC_ORIGIN setting, so
+// the staging server links to itself, and production's origin when it is unset.
 const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.trim().replace(/\/+$/, "") || "https://atelier.zone";
 // Sends the project's due episodes (src/stuck/notices.ts) in as many messages
 // as the channel's body limit needs, and records each message's episodes only
@@ -4059,7 +4076,10 @@ const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.tr
 async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, name: string, at: string): Promise<void> {
   const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
   if (!topic) return;
-  const due = await I.stuckDue(key, at);
+  // The project's standing notice-delay (src/standing.ts) replaces the
+  // default wait; an unreadable project waits the default.
+  const delay = await ledger(env, key).standing().then((m) => m.get("notice-delay"), () => undefined);
+  const due = await I.stuckDue(key, at, delay ? Number(delay) * 60_000 : undefined);
   for (const { request, episodes } of stuckBatchRequests(topic, stuckOrigin(env), name, due)) {
     try {
       const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
@@ -4088,11 +4108,10 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
   }
 }
 
-// Every 5 minutes (t223): each registered project's live tasks are read
+// Every 5 minutes, on the server's timer (t223): each registered project's live tasks are read
 // against their stage limits and the stage events recorded (Ledger.stageTick).
 // A project that cannot be read records nothing. The run itself is recorded on
 // the index, which `status` reads for when the tick last ran.
-const STAGE_CRON = "*/5 * * * *";
 export async function recordStageTicks(env: Env, now = new Date()): Promise<{ read: number; unread: number }> {
   const I = index(env);
   let read = 0, unread = 0;
@@ -4946,55 +4965,50 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // answers 404 before auth is asked, as it does after it.
 const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
+// A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
+// task 8; design section 4.4): what queue() did for a push event from
+// Artifacts, for one push and with no queue behind it. The hook POSTs
+// { project, ref, before, after, grant } to the loopback internal listener
+// with the per-process secret (src/git/host.mjs) and waits for this answer;
+// a failure is logged there and the ref stays moved, so the next `atelier
+// push` records the head (the push route reads the branch itself).
+// The branch is read again here (headOf), never taken from the hook's word,
+// and observed as the Artifacts event was: a head that does not hold the
+// recorded one is noted (push.unrecorded), not taken as progress; one that
+// does is recorded with the authors its commits name and the retention a
+// merge of main may carry, and the hook's own secret scan becomes its scan
+// record. On the Node server the push's grant names who pushed (`actor`,
+// from the server's own grant record), so the push is recorded as that
+// holder's, as `atelier push` would record it a moment later (recordPush);
+// a push recordPush refuses (a rewrite not declared, a holder no longer
+// holding) is observed as an Artifacts event was (observePush). A push to
+// any other ref, or to the branch of a task that is closed or no longer its
+// workspace, records nothing.
+export type PushedNotice = { project: string; ref: string; before?: string; after?: string; actor?: string };
+export async function observePushed(env: Env, notice: PushedNotice): Promise<{ observed: boolean; item?: string; head?: string | null; reason?: string }> {
+  const branch = /^refs\/heads\/((?:t|plan)\/[1-9][0-9]*)$/.exec(String(notice.ref ?? ""))?.[1];
+  if (!branch) return { observed: false, reason: `${notice.ref} is not a task's branch` };
+  const project = (await index(env).projects()).find((p) => (p.key ?? p.name) === notice.project);
+  if (!project) return { observed: false, reason: `no project ${notice.project}` };
+  const key = project.key ?? project.name;
+  const L = ledgerOf(env, project);
+  const fork = `${key}/${branch}`;
+  const itemId = await L.itemIdOfFork(fork);
+  const item = itemId ? await L.item(itemId) : undefined;
+  if (!item) return { observed: false, reason: `no task's workspace is ${branch}` };
+  if (["merged", "abandoned"].includes(item.state)) return { observed: false, item: item.id, reason: `${item.id} is ${item.state}` };
+  const current = await headOf(env, fork);
+  if (!current) return { observed: false, item: item.id, head: null, reason: `${branch} has no commits` };
+  const { holdsRecorded } = await pushLineage(env, fork, current, item.head, null);
+  const authors = holdsRecorded ? await pushedAuthors(env, fork, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
+  const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
+  let recorded: Item = await L.hookPush(item.id, notice.actor ?? null, current, notice.after ?? null, holdsRecorded, authors, retention);
+  if (recorded.head === current) recorded = await scanRecorded(env, L, recorded);
+  if (recorded.head === current) return { observed: true, item: item.id, head: current };
+  return { observed: false, item: item.id, head: current, reason: holdsRecorded === true ? `${item.id}'s recorded head moved meanwhile` : `${branch} no longer holds ${item.id}'s recorded head; atelier push records it once the rewrite is declared` };
+}
+
 export default {
-  // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
-  // A run with nothing due reads nothing but the index's list of takes.
-  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-    if (controller.cron === STAGE_CRON) { await recordStageTicks(env, new Date(controller.scheduledTime)); return; }
-    if (controller.cron === STUCK_CRON) { await recordStuckEpisodes(env, new Date(controller.scheduledTime)); return; }
-    await takeModelSnapshots(env, controller.scheduledTime);
-  },
-  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
-    for (const message of batch.messages) {
-      try {
-        // Events from the namespace this Worker's ARTIFACTS binding names
-        // alone; another namespace's, such as production's on staging, are dropped.
-        const notice = pushNotice(message.body, (env as unknown as Settings).ARTIFACTS_NAMESPACE?.trim() || undefined);
-        if (notice) {
-          const projects = await index(env).projects();
-          for (const project of projects) {
-            const L = ledgerOf(env, project);
-            const itemId = await L.itemIdOfFork(notice.repo);
-            const item = itemId ? await L.item(itemId) : undefined;
-            if (!item || ["merged","abandoned"].includes(item.state)) continue;
-            // Only a push to the project's branch moves the head headOf reads.
-            if (notice.ref !== `refs/heads/${await projectBranch(env, project)}`) break;
-            const current = await headOf(env,notice.repo);
-            if (current) {
-              // A head that does not hold the recorded one is not taken as
-              // progress (observePush); the compare-and-set retry is for a
-              // head that should have moved and did not.
-              const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
-              const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
-              const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors,true,retention);
-              // The push scan for a push seen on the fork, as the push route
-              // runs it: file and line only, never the value. It runs for the
-              // head recorded with its scan pending, which a sighting that
-              // moved the head just wrote and a redelivery after a failed
-              // scan still finds; a scan that throws leaves the event
-              // retried, so no push is acknowledged with its scan pending. A
-              // duplicate sighting of a scanned head runs nothing.
-              if (recorded.head === current) await scanRecorded(env, L, recorded);
-              if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
-            }
-            break;
-          }
-        }
-        message.ack();
-      } catch (error) { console.error("push event retry", error); message.retry(); }
-    }
-  },
   async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const pathname = url.pathname.endsWith("/") && url.pathname.length > 1 ? url.pathname.slice(0, -1) : url.pathname;

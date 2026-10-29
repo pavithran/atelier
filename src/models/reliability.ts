@@ -34,7 +34,7 @@ export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 // A run that ended on the infrastructure, not on the model (t591): a review
 // job whose merge commit no source held. The runner reports it so the miss
 // is on record with what was missing, and it counts against no model: not
-// in its record, its speed, the stall exclusion nor the dispatch skip.
+// in its record, its speed nor the dispatch skip.
 export const INFRASTRUCTURE_OUTCOMES = ["infrastructure_miss"] as const;
 export type InfrastructureOutcome = (typeof INFRASTRUCTURE_OUTCOMES)[number];
 export const isInfrastructureOutcome = (outcome: string): outcome is InfrastructureOutcome => (INFRASTRUCTURE_OUTCOMES as readonly string[]).includes(outcome);

@@ -48,11 +48,12 @@ test("staging names its own Worker, Artifacts namespace, R2 bucket and workflow,
   assert.equal(staging.workflows, undefined);
 });
 
-test("staging states its triggers with no crons, so production's schedules are not inherited", () => {
-  assert.ok(Object.hasOwn(staging, "triggers"), "left out, wrangler would carry production's crons into staging");
+test("neither production nor staging has crons: the Node server runs the three jobs on timers (task 8)", () => {
+  assert.ok(Object.hasOwn(staging, "triggers"), "left out, wrangler would carry production's triggers into staging");
   assert.deepEqual(staging.triggers, { crons: [] });
-  assert.ok(config.triggers.crons.length > 0);
-  assert.notDeepEqual(staging.triggers, config.triggers);
+  assert.deepEqual(config.triggers, { crons: [] });
+  const server = readFileSync(new URL("../src/runtime/server.mjs", import.meta.url), "utf8");
+  for (const job of ["stage tick", "stuck episodes", "model snapshots"]) assert.match(server, new RegExp(`name: "${job}"`));
 });
 
 test("staging answers on next.atelier.zone as a custom domain, with workers.dev off", () => {
@@ -66,7 +67,7 @@ test("staging sets AI_GATEWAY_ID, its own origin and its own Artifacts namespace
   assert.equal(typeof staging.vars.AI_GATEWAY_ID, "string");
   assert.equal(staging.vars.PUBLIC_ORIGIN, "https://next.atelier.zone");
   assert.equal(config.vars.PUBLIC_ORIGIN, "https://atelier.zone");
-  // The namespace the queue accepts is the one the ARTIFACTS binding names.
+  // The namespace the ARTIFACTS binding names.
   assert.equal(staging.vars.ARTIFACTS_NAMESPACE, staging.artifacts[0].namespace);
   assert.equal(config.vars.ARTIFACTS_NAMESPACE, config.artifacts[0].namespace);
 });
@@ -81,7 +82,6 @@ test("staging binds LEDGER to its own Ledger class with no script_name, and decl
 test("production's own settings are as they were", () => {
   assert.deepEqual(config.routes, [{ pattern: "atelier.zone", custom_domain: true }]);
   assert.equal(config.workers_dev, false);
-  assert.deepEqual(config.triggers, { crons: ["*/5 * * * *", "*/10 * * * *", "7 */6 * * *"] });
   assert.deepEqual(config.durable_objects, { bindings: [{ name: "LEDGER", class_name: "Ledger" }] });
   assert.equal(config.vars.AI_GATEWAY_ID, "atelier");
 });

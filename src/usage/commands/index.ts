@@ -29,6 +29,7 @@ import command_done from "./done.ts";
 import command_edit from "./edit.ts";
 import command_events from "./events.ts";
 import command_fast from "./fast.ts";
+import command_file_fix from "./file-fix.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
 import command_flow from "./flow.ts";
@@ -57,6 +58,7 @@ import command_open from "./open.ts";
 import command_ops from "./ops.ts";
 import command_owners from "./owners.ts";
 import command_plan from "./plan.ts";
+import command_prereview from "./prereview.ts";
 import command_projects from "./projects.ts";
 import command_pull from "./pull.ts";
 import command_push from "./push.ts";
@@ -129,6 +131,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/edit.ts", spec: command_edit },
   { path: "src/usage/commands/events.ts", spec: command_events },
   { path: "src/usage/commands/fast.ts", spec: command_fast },
+  { path: "src/usage/commands/file-fix.ts", spec: command_file_fix },
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
   { path: "src/usage/commands/flow.ts", spec: command_flow },
@@ -157,6 +160,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/ops.ts", spec: command_ops },
   { path: "src/usage/commands/owners.ts", spec: command_owners },
   { path: "src/usage/commands/plan.ts", spec: command_plan },
+  { path: "src/usage/commands/prereview.ts", spec: command_prereview },
   { path: "src/usage/commands/projects.ts", spec: command_projects },
   { path: "src/usage/commands/pull.ts", spec: command_pull },
   { path: "src/usage/commands/push.ts", spec: command_push },

@@ -291,6 +291,7 @@ export interface PlannerPick {
   actor: string | null;     // null when no pool model may plan
   reasons: string[];        // why this planner, or why none
   passedOver: Choice[];     // pool actors that may not plan, with the rules they failed
+  candidates?: { actor: string; where: string; line: string; refusal: string | null }[];
 }
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
@@ -306,7 +307,13 @@ const PLAN_JOB: Pick<Dispatch, "to" | "job"> = { to: "home", job: "plan" };
 // A plan assignment (`assignments`, the project's copy: its own and every
 // project's; src/models/assignments.ts) puts its eligible choices first; the
 // developer's --planner names one outright and never comes here.
-export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[], assignments: readonly Assignment[] = []): PlannerPick {
+// Every model that could plan, each with what refuses it (G17): what a plan
+// naming no planner lists before it refuses; the server picks none.
+export function plannerCandidates(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[]): { actor: string; where: string; line: string; refusal: string | null }[] {
+  return pickPlanner(pool, events, policy, profiles, offers, [], true).candidates ?? [];
+}
+
+export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[], assignments: readonly Assignment[] = [], listAll = false): PlannerPick {
   const entries = new Map(pool.map((entry) => [actorOf(entry), entry]));
   const ranked = route({ kind: "research" }, pool.map((entry) => profileFor(entry, profiles)), recordFor(pool, events), { localOnly: false, allowedWhere: "any" });
   const offered = offers ? offeredActors(liveOffers(offers)) : null;
@@ -332,6 +339,7 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     return refusals;
   };
   const rows = ranked.map((candidate, i) => ({ candidate, i, entry: entries.get(candidate.actor!)!, refusals: refusalsOf(entries.get(candidate.actor!)!) }));
+  if (listAll) return { actor: null, passedOver: [], reasons: [], candidates: rows.map((r) => ({ actor: actorOf(r.entry), where: r.entry.where, line: `rank ${r.i + 1} of ${ranked.length} for research work, score ${r.candidate.score}`, refusal: r.refusals.length ? r.refusals.join("; ") : null })) };
   const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), applicableAssignments(assignments, null, ["plan"]), (r) => (r.refusals.length ? r.refusals.join("; ") : null), FALLBACK.plan);
   for (const row of byAssignment.order) {
     const { candidate, i, entry, refusals } = row;

@@ -1062,7 +1062,7 @@ test("only the project owner can port to an open unclaimed task", () => {
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
 // its pure rules.
-import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST, postMergeOwed, postMergeReviewLine, fastLandedLines } from "../src/rules.ts";
+import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, postMergeNotes, fixTaskFromNote, SAME_FAMILY_FAST, postMergeOwed, postMergeReviewLine, fastLandedLines } from "../src/rules.ts";
 
 test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
   assert.deepEqual(projectMode(null), { mode: "full" });
@@ -1193,14 +1193,18 @@ test("a same-family post-merge review is accepted only for a task landed in fast
   assert.match(postMergeIndependence("claude-code/sonnet-5", contributors, null, false).refusal ?? "", /same family/);
   assert.deepEqual(postMergeIndependence("codex/gpt-6", contributors, null, false), { refusal: null, independence: null });
   assert.equal(SAME_FAMILY_FAST, "same-family (fast mode)");
-  const fix = fastFixTask("t9", "Add a thing", { by: "claude-code/sonnet-5", head: H2, note: "breaks x", request: 3, findings: [{ file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] });
-  assert.equal(fix.title, "Fix after fast landing of t9: Add a thing");
-  assert.deepEqual(fix.accept, ["src/a.ts:4: null deref"]);
-  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
-  // A non-blocking finding is a note on the goal, never a criterion (t203).
+  // G6: a rejected post-merge review files no task; its blocking findings,
+  // or its note when it gave none, are blocking notes on the goal, and a
+  // task is filed from one only by atelier file-fix.
+  const notes = postMergeNotes("t9", { by: "claude-code/sonnet-5", head: H2, note: "breaks x", request: 3, fast: true, findings: [{ file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] });
+  assert.deepEqual(notes.map((n) => [n.file, n.line, n.text, n.blocking, n.request, n.fast]), [["src/a.ts", 4, "null deref", true, 3, true]]);
+  assert.deepEqual(postMergeNotes("t9", { by: "a/b", head: H2, note: "wrong", findings: [] }).map((n) => n.text), ["The post-merge review rejected t9: wrong"]);
+  // A non-blocking finding is a note of its own (reviewNotes, t203), not one of these.
   const followUp = { file: "src/b.ts", line: 9, severity: "follow-up" as const, text: "rename y" };
-  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [followUp, { file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] }).accept, ["src/a.ts:4: null deref"]);
-  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [followUp] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
+  assert.deepEqual(postMergeNotes("t9", { by: "a/b", head: H2, note: "wrong", findings: [followUp, { file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] }).map((n) => n.text), ["null deref"]);
+  const fix = fixTaskFromNote({ id: "t9", title: "Add a thing" }, 1, notes[0]);
+  assert.equal(fix.title, "Fix in t9 (note 1): null deref");
+  assert.deepEqual(fix.accept, ["Resolve src/a.ts:4: null deref"]);
 });
 
 // ── fast builds (t589) ───────────────────────────────────────────────────────

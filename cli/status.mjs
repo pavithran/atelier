@@ -23,7 +23,8 @@ import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch
 import { openStuck } from "../src/stuck/view.ts";
 import { tickLine } from "../src/stage-tick.ts";
 import { stripVTControlCharacters } from "node:util";
-import { directionText, expiredBlocks, forkAgeText, mergedByOverride, STAGE_TICK_STALE_MS, stageOf } from "../src/rules.ts";
+import { directionText, expiredBlocks, forkAgeText, mergedByOverride, stageOf } from "../src/rules.ts";
+import { LIMITS } from "../src/limits.ts";
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
@@ -355,7 +356,7 @@ export async function readStuck(get, base, name, items) {
   const view = openStuck(name, report && Array.isArray(report.entries) ? report : null, Array.isArray(transitions) ? transitions : null, items);
   // The stage tick (t223), added last so the older keys keep their places. A
   // server from before it answers no tick, and nothing is said of it.
-  return tick && "ranAt" in tick ? { ...view, tick: tickLine(tick.ranAt, new Date(tick.now ?? Date.now()), STAGE_TICK_STALE_MS) } : view;
+  return tick && "ranAt" in tick ? { ...view, tick: tickLine(tick.ranAt, new Date(tick.now ?? Date.now()), LIMITS.tickStaleMs) } : view;
 }
 const stuckTime = (t) => (t === "unknown" ? "unknown" : branchTime(t));
 // Open stuck episodes, listed before any ordinary item. `stuck` is openStuck's

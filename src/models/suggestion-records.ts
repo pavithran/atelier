@@ -2,7 +2,7 @@ import type { LedgerEvent, ProjectRecord } from "../ledger.ts";
 import type { RunReport } from "./reliability.ts";
 import { summarize, type ReviewerRecords, type SuggestionRecords } from "./suggest.ts";
 
-// Read all pages; a truncated history could forget a stalled-build exclusion.
+// Read all pages; a truncated history would misstate a model's record.
 export async function suggestionRecords(
   index: { projects(): Promise<ProjectRecord[]>; runs(limit?: number): Promise<RunReport[]> },
   ledger: (project: ProjectRecord) => { events(id?: string, limit?: number, before?: number): Promise<LedgerEvent[]> },
