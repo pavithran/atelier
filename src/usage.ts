@@ -367,6 +367,13 @@ Standing rules:
   \`bin/orchestrate/post-merge.sh\`, until the developer decides.
 - After each landing, report to the developer with \`atelier status --brief\`: what
   merged, what is deployed, what is running and the spend.
+- Wait with \`atelier wait\`, never a \`sleep\` loop: \`atelier wait --all tA,tB
+  --for merged\` (or \`--any\`, a stage such as \`--for checked\`, \`--for
+  answered\` for a review request, \`--runner home:NAME --silent N\`). It holds
+  no lock and rides through a server restart; it exits 0 met, 1 cannot be met,
+  3 at \`--timeout\`, 4 naming a task that was abandoned. Order work with
+  \`atelier edit ID --blocked-by tA,tB\`: the task is not offered, claimed or
+  landed until each is merged.
 - Report every run that ended without a result with \`atelier run-report\`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then \`atelier handoff\` the task to another model or

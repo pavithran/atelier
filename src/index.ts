@@ -1899,6 +1899,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
           if ("held" in item && item.held) return [];
+          // A task waiting on tasks not yet merged is offered to none (G3).
+          if ("waitingOn" in item && (item as { waitingOn?: unknown[] }).waitingOn?.length) return [];
           const a = item.dispatch?.job === "land" ? { agent: "atelier", model: "lander", actor: "atelier/lander" } : item.dispatch ? assign(item.dispatch, offer) : null;
           // A queued landing is not the task's claim: a claimed task lands
           // as ordinary land does, so its holder is not the lander's to match.
@@ -2962,6 +2964,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
+    // The tasks a task waits on (G3): the developer replaces the list; the
+    // Ledger refuses a cycle, a closed task and a plan's part.
+    case "blocked-by":
+      return json(await L.setBlockedBy(id, actor, asStrings(body.blockedBy ?? [], "blockedBy")));
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit": {
@@ -4150,7 +4156,10 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
     if (listedApart(item)) return { project, item: runner ? runnerWhyItem(item, undefined) : item };
-    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), cleared: mine(item.clearedSkips), offers, runs: reports, project, offer, busy });
+    const waits = (item as { waitingOn?: { id: string; state: string }[] }).waitingOn ?? [];
+    // A task waiting on tasks not yet merged (G3) says so first: no runner is offered it until they merge.
+    const blockedBy: UnclaimedReason[] = waits.length ? [{ kind: "held", line: `Waiting on ${waits.map((b) => `${b.id} (${b.state})`).join(", ")} to merge${waits.some((b) => b.state === "abandoned") ? `; an abandoned blocker never merges, so the developer drops it with atelier edit ${item.id} --blocked-by` : `; atelier wait --all ${waits.map((b) => b.id).join(",")} --for merged waits for them`}.` }] : [];
+    const why = [...blockedBy, ...unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), cleared: mine(item.clearedSkips), offers, runs: reports, project, offer, busy })];
     if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this
     // listing from an older server's, which carries `held` alone.
@@ -4930,7 +4939,7 @@ export default {
           // A claim that lost the race to a hold (held, t540) is no
           // refusal: the queue stops offering the task while the hold
           // stands, and offers it again once it clears.
-          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held") return;
+          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held" || rule.code === "blocked_by") return;
           const forbidden = !!token?.runner && rule.status === 403;
           try {
             const held = await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined, forbidden);

@@ -3817,7 +3817,9 @@ export function notReadyGiveUp(task, entry) {
 // report, so it is logged as one, and a runner run with --once that ends on
 // it does not exit as failed. Any other refused claim, runner_forbidden
 // among them, is logged and kept as a refusal.
-const HELD_ANSWER = /^atelier: held: /m;
+// A claim of a task that waits on tasks not yet merged (G3, blocked_by) is
+// the same kind of wait: the queue offers it again once they merge.
+const HELD_ANSWER = /^atelier: (?:held|blocked_by): /m;
 export const lostToHold = (state) => !!state.claimRefused && HELD_ANSWER.test(state.reason ?? "");
 export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? ""))
   ? `claim held, waiting: ${oneLine(String(message)).trim()}; it is claimed again at a later poll that offers it`

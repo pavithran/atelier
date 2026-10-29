@@ -50,7 +50,7 @@ import { ago } from "./floor.ts";
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
-import type { SituationFacts } from "./situation.ts";
+import type { Blocker, SituationFacts } from "./situation.ts";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
   PREREVIEW_ATTEMPTS, PREREVIEW_DEPTH, PREREVIEW_JOB, PREREVIEW_RETRY_MS,
@@ -305,7 +305,7 @@ type SameExit = { signature: string; count: number };
 
 // A dispatched open task as the queue answers it: the core-file hold with every
 // blocker, the separate claim refusal, and what t420 adds for the owner's listing.
-type Waiting = Item & { held?: CoreHold; orphaned?: OrphanedClaim[]; claimRefusal?: string; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] };
+type Waiting = Item & { held?: CoreHold; orphaned?: OrphanedClaim[]; claimRefusal?: string; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[]; waitingOn?: Blocker[] };
 
 // What an init asks for. A field present replaces the project's current
 // value; a field absent keeps it. `reset` starts from the defaults, as a
@@ -1090,6 +1090,10 @@ export class Ledger extends DurableObject<Env> {
     // fingerprint, reason, head, by and at, one per flagged line judged
     // safe, never removed. Null until the first clearance.
     if (!columns.includes("secret_cleared")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret_cleared TEXT`);
+    // The tasks a task waits on (G3): a JSON array of ids, null when none.
+    // The queue offers it, a claim takes it and a landing accepts it only
+    // once every one is merged (unmergedBlockers).
+    if (!columns.includes("blocked_by")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked_by TEXT`);
     this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
@@ -3128,12 +3132,83 @@ export class Ledger extends DurableObject<Env> {
       const landing = this.landingRecord(i.id);
       if (landing) landings[i.id] = landing;
     }
-    const held = this.dispatchWaiting().flatMap((w) => "held" in w && w.held ? [{ id: w.id, held: w.held }] : []);
+    const waiting = this.dispatchWaiting();
+    const held = waiting.flatMap((w) => "held" in w && w.held ? [{ id: w.id, held: w.held }] : []);
+    // Every listed task's blockers with their states (G3), merged ones too.
+    const blockers: SituationFacts["blockers"] = Object.fromEntries(items.filter((i) => i.blockedBy?.length).map((i) => [i.id, i.blockedBy!.map((b) => this.blockerOf(b))]));
     const reviewRequests = this.sql.exec(`SELECT id, item, head, state, dispatch, claimedBy, runner, claimedAt, tier FROM review_requests WHERE state IN ('open', 'claimed') ORDER BY id`).toArray()
       .map((r) => ({ id: Number(r.id), item: r.item as string, head: r.head as string, state: r.state as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch, claimedBy: (r.claimedBy as string | null) ?? null, runner: (r.runner as string | null) ?? null, claimedAt: (r.claimedAt as string | null) ?? null, tier: r.tier === 1 }));
     const landJobs = this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at`).toArray().map((r) => ({ item: r.item as string, by: r.by as string, at: r.at as string }));
     const project = this.project();
-    return { project: { name: project.name, policy: project.policy }, mode: this.mode(), items, stages, held, reviewRequests, landingLease: this.projectLanding(), landJobs, landings, lastChecks, standing: this.standingDecisions() };
+    return { project: { name: project.name, policy: project.policy }, mode: this.mode(), items, stages, held, reviewRequests, landingLease: this.projectLanding(), landJobs, landings, lastChecks, standing: this.standingDecisions(), blockers };
+  }
+
+  // ── tasks that wait on tasks (G3) ─────────────────────────────────────────
+
+  // A task named as a blocker, with its state and title; one that does not
+  // exist is "missing", which never merges.
+  private blockerOf(id: string): Blocker {
+    const row = this.sql.exec(`SELECT state, title FROM items WHERE id = ?`, id).toArray()[0];
+    return { id, state: (row?.state as string | undefined) ?? "missing", title: (row?.title as string | undefined) ?? "" };
+  }
+
+  // The tasks `item` waits on that are not merged. An abandoned blocker stays
+  // among them, so the task stays waiting and listed until the developer
+  // drops it; nothing releases it silently.
+  unmergedBlockers(item: Pick<Item, "blockedBy">): Blocker[] {
+    return (item.blockedBy ?? []).map((b) => this.blockerOf(b)).filter((b) => b.state !== "merged");
+  }
+
+  // Refuses to claim or accept a task while a task it waits on is not merged.
+  private assertBlockersMerged(item: Item, what: "claimed" | "accepted"): void {
+    const waits = this.unmergedBlockers(item);
+    if (!waits.length) return;
+    const dead = waits.filter((b) => b.state === "abandoned" || b.state === "missing");
+    const keep = (item.blockedBy ?? []).filter((b) => !dead.some((d) => d.id === b));
+    throw new RuleError("blocked_by", `${item.id} waits on ${waits.map((b) => `${b.id} (${b.state})`).join(", ")}, which must merge before it is ${what}${dead.length ? `; ${dead.map((b) => b.id).join(", ")} will never merge, so it waits until the developer drops ${dead.length === 1 ? "it" : "them"}` : ""}`, 409,
+      dead.length ? `only the developer can: atelier edit ${item.id} --blocked-by ${keep.length ? keep.join(",") : "''"}` : `atelier wait --all ${waits.map((b) => b.id).join(",")} --for merged, then run the same command again`);
+  }
+
+  // The developer sets the tasks a task waits on (G3), replacing the list;
+  // an empty list clears it. Each must exist and none may lead back to the
+  // task through the lists already recorded: a cycle is refused and nothing
+  // changes. A closed task and a plan or its part (ordered by the plan) take none.
+  setBlockedBy(id: string, actor: string, ids: string[]): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer sets the tasks a task waits on", 403, `only the developer can: atelier edit ${id} --blocked-by tA,tB`);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; it waits on nothing now`, 409, "run atelier ls to pick another task");
+    if (item.kind === "plan" || item.kind === "part") throw new RuleError("plan_ordered", `${id} is a plan or a part of one, whose parts are ordered by the plan's dependencies; nothing was changed`, 409, `order the parts in the plan: atelier plan show ${item.plan ?? id}`);
+    const list = [...new Set(ids)];
+    for (const b of list) {
+      if (!/^t[1-9][0-9]*$/.test(b)) throw new RuleError("bad_blocked_by", `"${b}" is not a task id such as t12`, 400);
+      if (b === id) throw new RuleError("blocked_by_cycle", `${id} cannot wait on itself; nothing was changed`, 409, `atelier edit ${id} --blocked-by ${list.filter((x) => x !== id).join(",") || "''"}`);
+      this.item(b);
+    }
+    const cycle = this.blockedByCycle(id, list);
+    if (cycle) throw new RuleError("blocked_by_cycle", `${cycle.join(" waits on ")}: ${id} would wait on itself through that chain; nothing was changed`, 409, `atelier edit ${id} --blocked-by ${list.filter((x) => x !== cycle[1]).join(",") || "''"}, or atelier edit ${cycle[1]} --blocked-by to break the chain there`);
+    const at = new Date().toISOString();
+    this.update(id, { blocked_by: list.length ? JSON.stringify(list) : null }, at);
+    this.log(id, actor, "item.blocked_by", { blockedBy: list, was: item.blockedBy ?? [] }, at);
+    return this.item(id);
+  }
+
+  // The chain from `id` through one of `list` and the recorded lists back to
+  // `id`, as [id, first, ..., id], or null when there is none.
+  private blockedByCycle(id: string, list: string[]): string[] | null {
+    const edges = new Map(this.sql.exec(`SELECT id, blocked_by FROM items WHERE blocked_by IS NOT NULL`).toArray().map((r) => [r.id as string, JSON.parse(r.blocked_by as string) as string[]]));
+    edges.set(id, list);
+    const seen = new Set<string>();
+    const walk = (from: string, path: string[]): string[] | null => {
+      for (const next of edges.get(from) ?? []) {
+        if (next === id) return [...path, next];
+        if (seen.has(next)) continue;
+        seen.add(next);
+        const found = walk(next, [...path, next]);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(id, [id]);
   }
 
   private runnerMeta<T>(key: string): T | null {
@@ -3161,7 +3236,7 @@ export class Ledger extends DurableObject<Env> {
     // separately from the grants that authorize build/plan operations.
     const queue = this.queued(undefined, idleRunner), { waiting, reviews } = queue;
     for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
-      if (!item.dispatch || "held" in item && item.held) continue;
+      if (!item.dispatch || "held" in item && item.held || ((item as Waiting).waitingOn?.length ?? 0) > 0) continue;
       const assignment = assign(item.dispatch, offer);
       if (!assignment || ["integrate", "refresh"].includes(item.dispatch.job ?? "")) continue;
       // A pre-review (t524) is a review job: it grants what a review does.
@@ -3284,6 +3359,8 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const item = this.item(id);
     assertNotTerminal(item);
+    // A task waiting on tasks not yet merged is not taken (G3).
+    if (actor !== INTEGRATOR) this.assertBlockersMerged(item, "claimed");
     if (runnerToken) this.assertRunnerJob(runnerToken, id, actor, true);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
@@ -3695,7 +3772,9 @@ export class Ledger extends DurableObject<Env> {
       return { ...i, held, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
     });
     if (JSON.stringify(previous) !== JSON.stringify(current)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('core-holds', ?)`, JSON.stringify(current));
-    return result;
+    // A task waiting on tasks not yet merged (G3) carries them: the queue
+    // offers it to no runner until every one is merged.
+    return result.map((w) => { const waits = this.unmergedBlockers(w); return waits.length ? { ...w, waitingOn: waits } : w; });
   }
 
   // Both halves of the queue in one call, as a runner's poll reads them:
@@ -4981,6 +5060,8 @@ export class Ledger extends DurableObject<Env> {
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
+    // The lander merges no task before the tasks it waits on (G3).
+    this.assertBlockersMerged(item, "accepted");
     if (criteria !== undefined) assertShownCriteria(item, criteria);
     const project = this.project(), policy = project.policy;
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
@@ -7163,7 +7244,7 @@ export class Ledger extends DurableObject<Env> {
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
     const lastDeploy = this.lastDeploy();
-    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id) };
+    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -11365,6 +11446,8 @@ function toItem(r: Row): Item {
     ...(r.plan ? { plan: r.plan as string } : {}),
     ...(r.part_key ? { partKey: r.part_key as string } : {}),
     ...(r.deps ? { deps: JSON.parse(r.deps as string) as string[] } : {}),
+    // Only a task that waits on others carries the list (G3).
+    ...(r.blocked_by ? { blockedBy: JSON.parse(r.blocked_by as string) as string[] } : {}),
     ...(r.kind === "part" && r.part_accept ? { partAccept: JSON.parse(r.part_accept as string) as string[] } : {}),
   };
 }

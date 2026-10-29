@@ -75,6 +75,9 @@ export default async function showCommand() {
   if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued) : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
+  // The tasks it waits on (G3), each with its state: it is not offered,
+  // claimed or accepted until every one is merged.
+  if (d.blockers?.length) blocks.push(`Blocked by: ${d.blockers.map((b) => `${b.id} (${b.state})`).join(", ")}${d.blockers.every((b) => b.state === "merged") ? "; every one is merged" : d.blockers.some((b) => b.state === "abandoned") ? `; an abandoned blocker never merges, so it waits until the developer drops it: atelier edit ${id} --blocked-by` : "; it waits until each is merged"}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
   if (limit) blocks.push(`Check limit: ${limitText(d.policy)}`);
   if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
@@ -112,9 +115,12 @@ export function actedLine(a) {
 export function taskJson(d, queued = null) {
   const i = d.item;
   const held = queued?.held ? (queued.held.blockers ?? [queued.held]).map((b) => ({ kind: "core-file", blocker: b.id, state: b.state, owner: b.owner, file: b.core, since: queued.held.since ?? null })) : [];
+  // Each task it waits on that is not merged (G3) holds it too.
+  const waits = (d.blockers ?? []).filter((b) => b.state !== "merged").map((b) => ({ kind: "blocked-by", blocker: b.id, state: b.state }));
   return {
     id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
-    scope: i.scope, dispatch: i.dispatch ?? null, runner: i.runner ?? null, holds: held, lastFailure: lastFailureOf(d),
+    scope: i.scope, dispatch: i.dispatch ?? null, runner: i.runner ?? null, holds: [...held, ...waits], lastFailure: lastFailureOf(d),
+    ...(d.blockers?.length ? { blockedBy: d.blockers.map((b) => ({ id: b.id, state: b.state })) } : {}),
   };
 }
 

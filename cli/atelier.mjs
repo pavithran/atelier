@@ -403,7 +403,11 @@ const commandOf = (argv) => {
     if (plain.has(a.slice(2)) ? next === "true" || next === "false" : next !== undefined && !next.startsWith("--")) i++;
   }
 };
-const switchesFor = (argv) => (commandFor(commandOf(argv) ?? "") === "status" ? SWITCHES : new Set([...SWITCHES].filter((flag) => flag !== "brief")));
+// `wait --all tA,tB` and `--any tA,tB` (G3) take task ids, where `ls --all` is a switch.
+const switchesFor = (argv) => {
+  const cmd = commandFor(commandOf(argv) ?? "");
+  return new Set([...SWITCHES].filter((flag) => (flag !== "brief" || cmd === "status") && !(cmd === "wait" && (flag === "all" || flag === "any"))));
+};
 
 export function parseArgs(argv, switches = switchesFor(argv)) {
   const out = { _: [], multi: {}, bare: [], problems: [] };

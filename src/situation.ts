@@ -39,7 +39,12 @@ export interface SituationFacts {
   landings: Record<string, LandingRecord>;
   lastChecks: Record<string, { claim: string; passed: boolean | null; head: string; at: string; by: string; stopped?: { kind: string; minutes: number } }>;
   standing: Decision[];
+  // Each listed task's blockers (G3), merged ones included, with their states.
+  blockers: Record<string, Blocker[]>;
 }
+
+// A task another waits on (G3), as the waiting task lists it.
+export interface Blocker { id: string; state: string; title: string }
 
 export interface DiskFacts { path: string; freeBytes: number; totalBytes: number }
 
@@ -79,14 +84,23 @@ export function situationOf(input: SituationInput) {
       stage: stage?.stage ?? null, stageSince: stage?.since ?? null, stageAgeMs: ageMs(stage?.since, now),
       createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
       dispatch: dispatchJson(i.dispatch),
+      blockedBy: (facts.blockers?.[i.id] ?? []).map((b) => ({ id: b.id, state: b.state })),
       lastCheck: facts.lastChecks[i.id] ?? null,
     };
   });
-  const holds = facts.held.map(({ id, held }) => ({
-    task: id, kind: "core-file" as const,
-    blockers: (held.blockers ?? [held]).map((b) => ({ id: b.id, state: b.state, owner: b.owner, file: b.core })),
-    since: held.since ?? null, ageMs: held.elapsedMs ?? ageMs(held.since, now),
-  }));
+  const holds = [
+    ...facts.held.map(({ id, held }) => ({
+      task: id, kind: "core-file" as const,
+      blockers: (held.blockers ?? [held]).map((b) => ({ id: b.id, state: b.state as string, owner: b.owner as string | null, file: b.core as string | null })),
+      since: held.since ?? null, ageMs: held.elapsedMs ?? ageMs(held.since, now),
+    })),
+    // A live task waits on every blocker not yet merged (G3); an abandoned
+    // one stays listed, so the task is never released silently.
+    ...items.filter((i) => i.state !== "merged" && i.state !== "abandoned").flatMap((i) => {
+      const waits = (facts.blockers?.[i.id] ?? []).filter((b) => b.state !== "merged");
+      return waits.length ? [{ task: i.id, kind: "blocked-by" as const, blockers: waits.map((b) => ({ id: b.id, state: b.state, owner: null as string | null, file: null as string | null })), since: null as string | null, ageMs: null as number | null }] : [];
+    }),
+  ];
   const reviewRequests = facts.reviewRequests.map((r) => ({
     id: r.id, task: r.item, head: r.head, state: r.state, reviewer: actorOf(r.dispatch), claimedBy: r.claimedBy, runner: r.runner,
     requestedAt: r.dispatch.at ?? null, ageMs: ageMs(r.dispatch.at, now), claimedAt: r.claimedAt, ...(r.tier ? { tier: true } : {}),
