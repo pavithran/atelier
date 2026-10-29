@@ -367,3 +367,13 @@ test("the program word is read from the raw command through an allowlist: odd wh
     assert.ok(!got.includes("secret"), JSON.stringify(c));
   }
 });
+
+test("round 7: parseProgress keeps no free text: the actor, tool names and programs are strict names or dropped", () => {
+  const at = "2026-10-28T12:00:00.000Z";
+  const base = { task: "t1", actor: BUILDER, startedAt: at };
+  assert.equal(parseProgress({ ...base, actor: "bearer ${TOKEN}hunter2" }), null, "a report with no strict actor is not kept");
+  const p = parseProgress({ ...base, harness: "claude-code", current: { name: "bearer {env:TOKEN}hunter2", summary: "npm" }, last: { name: "Bash", summary: "basic [keyhunter2" } });
+  assert.equal(p.current, null, "a tool name that is not a bare name is dropped with its step");
+  assert.deepEqual([p.last.name, p.last.summary, p.harness], ["Bash", null, "claude-code"]);
+  assert.ok(!JSON.stringify(p).includes("hunter2"));
+});

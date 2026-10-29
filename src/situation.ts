@@ -73,10 +73,11 @@ export interface ProgressRecord {
 }
 
 const RUNS_KEPT = 20;
-// Every text a runner reports is redacted again here, whole, before it is cut
-// and kept (redactKeys, the run notes' rule): a runner that sent a key never
-// gets it stored, shown or listed.
-const text = (v: unknown, max: number): string | null => typeof v === "string" && v ? redactKeys(v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")).slice(0, max) : null;
+// No free text a runner reports is kept: the actor must be a harness/model
+// name, a tool a bare tool name, a command its program's name; anything
+// else in their place is dropped, never stored or shown.
+const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const tool = (v: unknown): string | null => typeof v === "string" && /^[A-Za-z0-9_.:-]{1,64}$/.test(v) && redactKeys(v) === v ? v : null;
 // A command is kept as its program's name alone (npm, git), never its
 // arguments; anything else a runner sends in its place is dropped.
 // The shared redactor runs over it too, as a second line of defence.
@@ -90,14 +91,14 @@ const amount = (v: unknown): number | null => typeof v === "number" && Number.is
 export function parseProgress(raw: unknown): Omit<ProgressRecord, "runner" | "receivedAt" | "changedAt" | "runs"> | null {
   const r = (raw ?? {}) as Record<string, unknown>;
   const task = typeof r.task === "string" && /^t[1-9][0-9]*$/.test(r.task) ? r.task : null;
-  const actor = text(r.actor, 128), startedAt = time(r.startedAt);
+  const actor = typeof r.actor === "string" && ACTOR.test(r.actor) ? r.actor : null, startedAt = time(r.startedAt);
   if (!task || !actor || !startedAt) return null;
   const c = (r.commands ?? {}) as Record<string, unknown>, cur = r.current as Record<string, unknown> | null, last = r.last as Record<string, unknown> | null;
   return {
     task, actor, harness: program(r.harness), telemetry: r.telemetry !== false, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
     commands: { started: count(c.started), completed: count(c.completed) },
-    current: cur && typeof cur === "object" && text(cur.name, 64) ? { name: text(cur.name, 64)!, summary: program(cur.summary), since: time(cur.since) ?? startedAt } : null,
-    last: last && typeof last === "object" && text(last.name, 64) ? { name: text(last.name, 64)!, summary: program(last.summary), at: time(last.at) ?? startedAt, error: last.error === true } : null,
+    current: cur && typeof cur === "object" && tool(cur.name) ? { name: tool(cur.name)!, summary: program(cur.summary), since: time(cur.since) ?? startedAt } : null,
+    last: last && typeof last === "object" && tool(last.name) ? { name: tool(last.name)!, summary: program(last.summary), at: time(last.at) ?? startedAt, error: last.error === true } : null,
     childAlive: typeof r.childAlive === "boolean" ? r.childAlive : null,
     commits: count(r.commits), changedFiles: count(r.changedFiles), logBytes: count(r.logBytes),
     tokens: amount(r.tokens), costUsd: amount(r.costUsd),

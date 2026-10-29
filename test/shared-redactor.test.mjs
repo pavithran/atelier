@@ -67,3 +67,12 @@ test("the runner's copy: stderrSummary removes them before a note leaves the run
   }
   assert.equal(stderrSummary(`${PATHS[0]}\n`), PATHS[0]);
 });
+
+test("round 7: a placeholder is exempt only as a whole word, and quoted fields use the one credential-name list", () => {
+  for (const [note, secret] of [["bearer ${TOKEN}hunter2", "hunter2"], ["bearer {env:TOKEN}hunter2", "hunter2"], ["basic [keyhunter2", "hunter2"], ["Bearer $TOKENhunter2x", "hunter2"],
+    ['{"pwd":"hunter2"}', "hunter2"], ['{"passwd": "hunter2"}', "hunter2"], ["{'auth': 'hunter2'}", "hunter2"], ['{"db_password":"hunter2"}', "hunter2"], ['{"session_cookie": "hunter2"}', "hunter2"]]) {
+    assert.ok(!redactKeys(note).includes(secret), `${note} -> ${redactKeys(note)}`);
+    assert.ok(!stderrSummary(`${note}\n`).includes(secret), `runner copy: ${note}`);
+  }
+  for (const kept of ["Bearer ${TOKEN}", "Bearer {env:GATEWAY_TOKEN}", "bearer $TOKEN", "Bearer [key removed] sent"]) assert.equal(redactKeys(kept), kept);
+});

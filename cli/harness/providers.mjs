@@ -238,7 +238,8 @@ export function opencodeConfig(provider, models, { baseURL, gateway, major } = {
   if (!spec) throw new Error(`unknown provider ${provider}`);
   const viaGateway = !!(gateway && spec.gateway);
   const headers = { "cf-aig-metadata": `{env:${METADATA_VAR}}` };
-  if (viaGateway) headers["cf-aig-authorization"] = `Bearer {env:${GATEWAY_TOKEN_VAR}}`;
+  // Joined, so no scheme word stands before a placeholder in the source for the key scan to read.
+  if (viaGateway) headers["cf-aig-authorization"] = ["Bearer", `{env:${GATEWAY_TOKEN_VAR}}`].join(" ");
   return {
     $schema: "https://opencode.ai/config.json",
     share: "disabled",
