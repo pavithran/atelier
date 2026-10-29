@@ -109,6 +109,8 @@ test("the staging LaunchDaemon keeps its settings and uses the verified Command 
   const out = join(root, "staging.plist");
   const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c && write_plist "$1"`, SETUP, out], { env: env(), encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
+  const git = spawnSync('/usr/bin/plutil', ['-extract', 'EnvironmentVariables.ATELIER_GIT', 'raw', '-o', '-', out], { encoding: 'utf8' });
+  assert.equal(git.status, 0, git.stderr); assert.equal(git.stdout.trim(), '/Library/Developer/CommandLineTools/usr/bin/git');
   assert.equal(readFileSync(out, "utf8"), expected.replace("bin:/usr/bin:", "bin:/Library/Developer/CommandLineTools/usr/bin:/usr/bin:").replace("    <key>HOME</key>", "    <key>ATELIER_GIT</key><string>/Library/Developer/CommandLineTools/usr/bin/git</string>\n    <key>HOME</key>"));
 });
 
@@ -129,6 +131,27 @@ test("running setup again keeps the https public origin the tunnel step set, and
   }
 });
 
+test("kept_origin enforces ownership, mode and ACL custody outside dry runs", { skip: darwin }, () => {
+  const f = join(root, 'unsafe-origin.plist');
+  writeFileSync(f, '<?xml version="1.0"?><plist version="1.0"><dict><key>EnvironmentVariables</key><dict><key>PUBLIC_ORIGIN</key><string>https://next.atelier.zone</string></dict></dict></plist>');
+  const check = (body) => spawnSync('/bin/bash', ['-p', '-c', `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
+    unset DRYRUN
+    ${body}
+    kept_origin "$1"`, SETUP, f], { env: env(), encoding: 'utf8' });
+  const owner = check(''); assert.notEqual(owner.status, 0); assert.match(owner.stderr, /not root-owned/);
+  // Supply root ownership metadata only, leaving real mode and ACL checks active.
+  const rootOwner = `STAT=owner_stat; owner_stat() { if [ "$2" = %Su ]; then echo root; else /usr/bin/stat "$@"; fi; }`;
+  chmodSync(f, 0o666);
+  const mode = check(rootOwner); assert.notEqual(mode.status, 0); assert.match(mode.stderr, /writable/);
+  chmodSync(f, 0o600);
+  const acl = spawnSync('/bin/chmod', ['+a', 'everyone allow read', f], { encoding: 'utf8' });
+  assert.equal(acl.status, 0, acl.stderr);
+  try {
+    const result = check(rootOwner); assert.notEqual(result.status, 0); assert.match(result.stderr, /ACL/);
+  } finally { spawnSync('/bin/chmod', ['-N', f]); }
+  const good = check(rootOwner); assert.equal(good.status, 0, good.stderr); assert.equal(good.stdout, 'https://next.atelier.zone');
+});
+
 test("production is set up the same way with port 4100, zone.atelier.server, server-production and its own data, repositories, secrets, token and log", { skip: darwin }, () => {
   const i = inputs();
   const now = dry(SETUP, ["--env", "production", i.tar, i.bin, i.token]);
@@ -142,6 +165,8 @@ test("production is set up the same way with port 4100, zone.atelier.server, ser
   const out = join(root, "production.plist");
   const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c && write_plist "$1"`, SETUP, out], { env: env(), encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
+  const git = spawnSync('/usr/bin/plutil', ['-extract', 'EnvironmentVariables.ATELIER_GIT', 'raw', '-o', '-', out], { encoding: 'utf8' });
+  assert.equal(git.status, 0, git.stderr); assert.equal(git.stdout.trim(), '/Library/Developer/CommandLineTools/usr/bin/git');
   const plist = readFileSync(out, "utf8");
   for (const piece of ["<string>zone.atelier.server</string>", "<string>/Users/atelierd/server-production/cli/serve.mjs</string>", "<string>--env</string><string>production</string>",
     "<string>/Users/atelierd/data/production</string>", "<string>/Users/atelierd/repos/production</string>", "<string>/Users/atelierd/secrets/production</string>",

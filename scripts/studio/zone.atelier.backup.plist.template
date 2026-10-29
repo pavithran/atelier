@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The nightly backup of one Atelier environment to R2 (docs/studio.md),
-     as atelierd. setup-backup.sh fills @ENV@, @HOME@, @HOUR@ and @MINUTE@
+     as atelierd. setup-backup.sh fills @ENV@, @HOME@, @SERVER@, @HOUR@ and @MINUTE@
      and installs it as /Library/LaunchDaemons/zone.atelier.backup.@ENV@.plist. -->
 <plist version="1.0">
 <dict>
@@ -11,7 +11,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>@HOME@/bin/node</string>
-    <string>@HOME@/server/cli/backup.mjs</string>
+    <string>@HOME@/@SERVER@/cli/backup.mjs</string>
     <string>--env</string><string>@ENV@</string>
     <string>--data</string><string>@HOME@/data/@ENV@</string>
     <string>--repos</string><string>@HOME@/repos/@ENV@</string>

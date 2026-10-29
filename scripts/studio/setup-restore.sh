@@ -31,8 +31,8 @@ cd /
 # DRYRUN=1 prints what would change and needs no root.
 #
 # As in the other setup scripts, the developer's sudo is the decision to
-# trust these bytes once: they are copied into root-owned storage, checked
-# there, and never run. The order is setup-tunnel.sh's: everything prepared
+# trust these bytes once: inputs must already be in root-owned storage with
+# trusted parents. A private copy is checked and Git execution settings removed. The order is setup-tunnel.sh's: everything prepared
 # and checked first; then every atelierd job stops and no atelierd process
 # may run while root writes, its directories checked again once it is quiet.
 # The undo is recorded before the next step: the current data/ENV and
@@ -73,11 +73,12 @@ SQLITE=/usr/bin/sqlite3
 STAT=/usr/bin/stat
 TAR=/usr/bin/tar
 
-if [ "$EUID" = 0 ]; then
+check_system_tools() {
   for tool in "$AWK" "$BASENAME" "$CAT" "$CHMOD" "$CHOWN" "$CP" "$DATE" "$DSCL" "$FILE" "$FIND" "$GREP" "$ID_CMD" "$LAUNCHCTL" "$LS" "$MKDIR" "$MKTEMP" "$MV" "$PGREP" "$READLINK" "$RM" "$SED" "$SEQ" "$SHLOCK" "$SLEEP" "$SQLITE" "$STAT" "$TAR"; do
     [ -f "$tool" ] && [ -x "$tool" ] && [ "$("$STAT" -f %Su "$tool")" = root ] || { echo "unsafe system tool $tool" >&2; exit 1; }
   done
-fi
+}
+if [ "$EUID" = 0 ]; then check_system_tools; fi
 
 
 fail() { echo "setup: $*" >&2; exit 1; }
@@ -221,6 +222,14 @@ check_node() {
   [ "$count" -gt 0 ] || fail "node has an empty library list"
 }
 
+early_cleanup() {
+  local status=${1:-$?}
+  trap - EXIT INT TERM
+  [ -z "$WORK" ] || "$RM" -rf "$WORK"
+  [ -z "$LOCK" ] || "$RM" -f "$LOCK"
+  exit "$status"
+}
+
 LOCK_DIR=/Library/Atelier/lock
 acquire_lock() {
   local d lock_pid
@@ -243,13 +252,48 @@ acquire_lock() {
 }
 
 
+extract_archive() {
+  if ! dry && ! trusted_source "$TAR_SRC"; then
+    echo 'setup: review and install the archive into root-owned storage first:' >&2
+    echo 'sudo /usr/bin/install -o root -g wheel -m 600 restore.tar /private/var/root/' >&2
+    return 1
+  fi
+  "$CP" -P "$TAR_SRC" "$WORK/restored.tar"
+  if ! dry; then
+    trusted_entry "$WORK" || fail "unsafe input storage"
+    trusted_entry "$WORK/restored.tar" || fail "unsafe input copy"
+  fi
+  "$TAR" -tvf "$WORK/restored.tar" > "$WORK/list-long" || fail "the tar cannot be listed"
+  "$TAR" -tf "$WORK/restored.tar" > "$WORK/list" || fail "the tar cannot be listed"
+  [ -s "$WORK/list" ] || fail "the tar is empty"
+  if "$AWK" '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1} END {exit bad?0:1}' "$WORK/list-long"; then fail "the tar holds something other than files and directories"; fi
+  if "$GREP" -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the tar names a path outside itself"; fi
+  if "$GREP" -vE '^(\./)?(data|repos)(/|$)' "$WORK/list" >/dev/null; then fail "the tar holds something besides data/ and repos/"; fi
+  "$MKDIR" "$WORK/x"
+  "$TAR" -xf "$WORK/restored.tar" --no-same-owner --no-same-permissions -C "$WORK/x"
+  X="$WORK/x"
+}
+# Restored Git settings are data, never authority to run commands.
+sanitize_repositories() {
+  local repo
+  [ -d "$X/repos" ] || fail "the tar has no repos/"
+  for repo in "$X/repos"/* "$X/repos"/.[!.]* "$X/repos"/..?*; do
+    [ -e "$repo" ] || continue
+    case "${repo##*/}" in *.git) ;; *) fail "unexpected repository entry" ;; esac
+    [ -d "$repo" ] && [ -f "$repo/HEAD" ] || fail "not a bare repository"
+    "$RM" -rf "$repo/config" "$repo/config.worktree" "$repo/hooks" "$repo/info" \
+      "$repo/objects/info/alternates" "$repo/objects/info/http-alternates"
+    printf '[core]\n\tbare = true\n\thooksPath = /Users/atelierd/%s/hooks\n' "$SERVER" > "$repo/config"
+  done
+}
+
 # A test sources the functions above alone (test/setup-restore.test.mjs).
 if [ "${SETUP_RESTORE_LIB:-}" = 1 ]; then return 0; fi
 
 usage="usage: setup-restore.sh staging|production RESTORED.tar"
 ENV=${1:?$usage}
 TAR_SRC=${2:?$usage}
-case "$ENV" in staging|production) ;; *) echo "setup: ENV is staging or production, not $ENV" >&2; exit 1 ;; esac
+case "$ENV" in staging) SERVER=server ;; production) SERVER=server-production ;; *) echo "setup: ENV is staging or production, not $ENV" >&2; exit 1 ;; esac
 
 SVC=atelierd
 HOME_DIR=/Users/$SVC
@@ -273,17 +317,9 @@ fi
 safe_dir /Library/LaunchDaemons
 if ! dry; then
   "$DSCL" . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-server.sh first"
-  check_paths
 fi
 
 LOCK= WORK=
-early_cleanup() {
-  local status=${1:-$?}
-  trap - EXIT INT TERM
-  [ -z "$WORK" ] || "$RM" -rf "$WORK"
-  [ -z "$LOCK" ] || "$RM" -f "$LOCK"
-  exit "$status"
-}
 trap early_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -294,6 +330,7 @@ if ! dry; then
     trusted_entry "$d" || fail "unsafe lock directory $d"
   done
   acquire_lock
+  check_paths
 fi
 WORK=$("$MKTEMP" -d /var/tmp/atelier-restore-setup.XXXXXX)
 if ! dry; then
@@ -304,20 +341,9 @@ fi
 
 # 1. The tar into root-owned storage, then checked there: plain files and
 #    directories under data/ and repos/ only, nothing outside itself.
-"$CP" "$TAR_SRC" "$WORK/restored.tar"
-if ! dry; then
-  trusted_entry "$WORK" || fail "unsafe input storage"
-  trusted_entry "$WORK/restored.tar" || fail "unsafe input copy"
-fi
-"$TAR" -tvf "$WORK/restored.tar" > "$WORK/list-long" || fail "the tar cannot be listed"
-"$TAR" -tf "$WORK/restored.tar" > "$WORK/list" || fail "the tar cannot be listed"
-[ -s "$WORK/list" ] || fail "the tar is empty"
-if "$AWK" '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1} END {exit bad?0:1}' "$WORK/list-long"; then fail "the tar holds something other than files and directories"; fi
-if "$GREP" -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the tar names a path outside itself"; fi
-if "$GREP" -vE '^(\./)?(data|repos)(/|$)' "$WORK/list" >/dev/null; then fail "the tar holds something besides data/ and repos/"; fi
-"$MKDIR" "$WORK/x"
-"$TAR" -xf "$WORK/restored.tar" --no-same-owner --no-same-permissions -C "$WORK/x"
-X="$WORK/x"
+extract_archive
+sanitize_repositories
+
 [ -f "$X/data/ledgers/__index.sqlite" ] || fail "the restored data has no ledgers/__index.sqlite"
 [ -d "$X/repos" ] || fail "the tar has no repos/"
 # Every database passes SQLite's integrity check, and every project the

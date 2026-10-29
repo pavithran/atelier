@@ -134,7 +134,7 @@ dry() { [ "${DRYRUN:-}" = 1 ]; }
 kept_origin() {
   local file=$1 value
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
-  if [ "$EUID" = 0 ]; then trusted_entry "$file" || return 1; fi
+  if ! dry; then trusted_entry "$file" || return 1; fi
   value=$("$PLUTIL" -extract EnvironmentVariables.PUBLIC_ORIGIN raw -o - "$file" 2>/dev/null) || return 1
   [[ "$value" =~ ^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
   printf '%s' "$value"

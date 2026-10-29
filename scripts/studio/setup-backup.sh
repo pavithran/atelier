@@ -36,8 +36,8 @@ cd /
 # DRYRUN=1 prints what would change and needs no root.
 #
 # As in setup-server.sh and setup-tunnel.sh, the developer's sudo is the
-# decision to trust these bytes once: they are copied into root-owned
-# storage, checked there, and never run as root. What it makes:
+# decision to trust these bytes once: inputs must already be installed in
+# root-owned storage, with trusted parents, and are copied without links. What it makes:
 # - /Users/atelierd/secrets/backup/: the R2 settings and the recipient, one
 #   file each, atelierd's alone (700, files 600). A directory apart from
 #   secrets/ENV, so the server never reads the R2 credentials.
@@ -45,7 +45,7 @@ cd /
 #   and encrypted before upload, and emptied after.
 # - /Library/LaunchDaemons/zone.atelier.backup.ENV.plist, from
 #   zone.atelier.backup.plist.template beside this script: node
-#   server/cli/backup.mjs as atelierd, production at 03:00 local, staging at
+#   the environment’s server/cli/backup.mjs as atelierd, production at 03:00 local, staging at
 #   03:30, so the two never run together.
 #
 # The order is setup-tunnel.sh's: everything is prepared and checked first;
@@ -89,11 +89,12 @@ TAIL=/usr/bin/tail
 TR=/usr/bin/tr
 WC=/usr/bin/wc
 
-if [ "$EUID" = 0 ]; then
+check_system_tools() {
   for tool in "$CAT" "$CHMOD" "$CHOWN" "$CP" "$DSCL" "$FILE" "$GREP" "$ID_CMD" "$INSTALL" "$LAUNCHCTL" "$LS" "$MKDIR" "$MKTEMP" "$MV" "$PGREP" "$PLUTIL" "$RM" "$SED" "$SEQ" "$SHLOCK" "$SLEEP" "$STAT" "$TAIL" "$TR" "$WC"; do
     [ -f "$tool" ] && [ -x "$tool" ] && [ "$("$STAT" -f %Su "$tool")" = root ] || { echo "unsafe system tool $tool" >&2; exit 1; }
   done
-fi
+}
+if [ "$EUID" = 0 ]; then check_system_tools; fi
 
 
 fail() { echo "setup: $*" >&2; exit 1; }
@@ -146,6 +147,14 @@ check_node() {
   [ "$count" -gt 0 ] || fail "node has an empty library list"
 }
 
+early_cleanup() {
+  local status=${1:-$?}
+  trap - EXIT INT TERM
+  [ -z "$WORK" ] || "$RM" -rf "$WORK"
+  [ -z "$LOCK" ] || "$RM" -f "$LOCK"
+  exit "$status"
+}
+
 LOCK_DIR=/Library/Atelier/lock
 acquire_lock() {
   local d lock_pid
@@ -168,6 +177,68 @@ acquire_lock() {
 }
 
 
+dry() { [ "${DRYRUN:-}" = 1 ]; }
+prepare_inputs() {
+  if ! dry; then
+    if ! trusted_source "$R2_SRC" || ! trusted_source "$PUB_SRC"; then
+      echo 'setup: review and install both inputs into root-owned storage first:' >&2
+      echo 'sudo /usr/bin/install -o root -g wheel -m 600 R2.env backup.pub /private/var/root/' >&2
+      return 1
+    fi
+  fi
+  "$CP" -P "$R2_SRC" "$WORK/r2.env"
+  "$CP" -P "$PUB_SRC" "$WORK/recipient"
+  "$CP" -P "$TEMPLATE" "$WORK/template"
+  if ! dry; then
+    trusted_entry "$WORK" || fail "unsafe input storage"
+    trusted_entry "$WORK/r2.env" || fail "unsafe input copy"
+    trusted_entry "$WORK/recipient" || fail "unsafe input copy"
+    trusted_entry "$WORK/template" || fail "unsafe input copy"
+  fi
+  [ "$(LC_ALL=C "$TR" -d '\000' < "$WORK/r2.env" | "$WC" -c)" = "$("$WC" -c < "$WORK/r2.env")" ] || fail "the R2 settings hold a NUL byte"
+  "$MKDIR" "$WORK/values"
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in ''|'#'*) continue ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    [ "$key" != "$line" ] || fail "a line of the R2 settings is not KEY=VALUE"
+    case "$key" in
+      R2_ENDPOINT|R2_BUCKET|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|R2_PREFIX) ;;
+      *) fail "the R2 settings contain an unknown setting" ;;
+    esac
+    [ ! -e "$WORK/values/$key" ] || fail "the R2 settings contain a duplicate setting"
+    printf '%s\n' "$value" > "$WORK/values/$key"
+  done < "$WORK/r2.env"
+  for key in R2_ENDPOINT R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do [ -s "$WORK/values/$key" ] || fail "the R2 settings lack $key"; done
+  LC_ALL=C "$GREP" -qxE 'https://[0-9a-f]{32}(\.(eu|fedramp))?\.r2\.cloudflarestorage\.com' "$WORK/values/R2_ENDPOINT" || fail "R2_ENDPOINT is not https://ACCOUNT.r2.cloudflarestorage.com"
+  LC_ALL=C "$GREP" -qxE '[a-z0-9][a-z0-9-]{1,61}[a-z0-9]' "$WORK/values/R2_BUCKET" || fail "R2_BUCKET is not a bucket name"
+  LC_ALL=C "$GREP" -qxE '[0-9a-f]{32}' "$WORK/values/R2_ACCESS_KEY_ID" || fail "R2_ACCESS_KEY_ID is not an R2 access key id (32 hex characters)"
+  LC_ALL=C "$GREP" -qxE '[0-9a-f]{64}' "$WORK/values/R2_SECRET_ACCESS_KEY" || fail "R2_SECRET_ACCESS_KEY is not an R2 secret access key (64 hex characters)"
+  # The prefix: segments of letters, digits, '.', '_' and '-', none "." or "..".
+  if [ -e "$WORK/values/R2_PREFIX" ]; then
+    LC_ALL=C "$GREP" -qxE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/' "$WORK/values/R2_PREFIX" \
+      && ! LC_ALL=C "$GREP" -qE '(^|/)\.{1,2}/' "$WORK/values/R2_PREFIX" || fail "R2_PREFIX is not a path of plain segments ending in /"
+  fi
+  # The recipient: one age1 line, and nothing secret.
+  ! LC_ALL=C "$GREP" -qi 'AGE-SECRET-KEY' "$WORK/recipient" || fail "$PUB_SRC holds an age identity; the identity never comes to the Studio. Give the .pub file"
+  [ "$("$GREP" -cv '^#' "$WORK/recipient" || true)" = 1 ] && "$GREP" -v '^#' "$WORK/recipient" | LC_ALL=C "$GREP" -qxE 'age1[02-9ac-hj-np-z]{58}' \
+    || fail "$PUB_SRC is not an age recipient (age1..., as cli/backup.mjs keygen writes it)"
+  "$GREP" -v '^#' "$WORK/recipient" > "$WORK/values/BACKUP_PUBLIC_KEY"
+}
+render_plist() {
+  "$SED" -e "s|@ENV@|$ENV|g" -e "s|@HOME@|$HOME_DIR|g" -e "s|@SERVER@|$SERVER|g" -e "s|@HOUR@|$HOUR|g" -e "s|@MINUTE@|$MINUTE|g" "$WORK/template" > "$WORK/plist"
+  "$PLUTIL" -lint "$WORK/plist" >/dev/null || fail "the backup plist does not parse"
+  x() { "$PLUTIL" -extract "$1" raw -o - "$WORK/plist" 2>/dev/null; }
+  [ "$(x Label)" = "$LABEL" ] && [ "$(x UserName)" = "$SVC" ] && [ "$(x GroupName)" = "$SVC" ] \
+    && [ "$(x ProgramArguments.0)" = "$HOME_DIR/bin/node" ] && [ "$(x ProgramArguments.1)" = "$HOME_DIR/$SERVER/cli/backup.mjs" ] \
+    && [ "$(x ProgramArguments.3)" = "$ENV" ] && [ "$(x ProgramArguments.5)" = "$HOME_DIR/data/$ENV" ] \
+    && [ "$(x ProgramArguments.7)" = "$HOME_DIR/repos/$ENV" ] && [ "$(x ProgramArguments.9)" = "$B" ] && [ "$(x ProgramArguments.11)" = "$W" ] \
+    && [ "$(x StartCalendarInterval.Hour)" = "$HOUR" ] && [ "$(x StartCalendarInterval.Minute)" = "$MINUTE" ] \
+    && [ "$(x EnvironmentVariables.ATELIER_GIT)" = "$GIT" ] \
+    && ! "$GREP" -q '@' "$WORK/plist" || fail "the plist made from the template is not the expected one"
+}
+
 if [ "${SETUP_BACKUP_LIB:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 
 usage="usage: setup-backup.sh staging|production R2.env BACKUP.pub"
@@ -178,8 +249,8 @@ PUB_SRC=${3:?$usage}
 SVC=atelierd
 HOME_DIR=/Users/$SVC
 case "$ENV" in
-  production) HOUR=3; MINUTE=0 ;;
-  staging) HOUR=3; MINUTE=30 ;;
+  production) SERVER=server-production; HOUR=3; MINUTE=0 ;;
+  staging) SERVER=server; HOUR=3; MINUTE=30 ;;
   *) echo "setup: ENV is staging or production, not $ENV" >&2; exit 1 ;;
 esac
 LABEL=zone.atelier.backup.$ENV
@@ -193,7 +264,6 @@ W="$HOME_DIR/backup-work"
 LOG="$HOME_DIR/log/backup-$ENV.log"
 NAMES="R2_ENDPOINT R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_PREFIX BACKUP_PUBLIC_KEY"
 
-dry() { [ "${DRYRUN:-}" = 1 ]; }
 run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
 
 dry || [ "$("$ID_CMD" -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
@@ -220,7 +290,7 @@ safe_dir() {
 # The directories this script writes in or relies on, existing ones only for
 # the two it creates.
 check_dirs() {
-  safe_dir "$HOME_DIR"; safe_dir "$HOME_DIR/bin"; safe_dir "$HOME_DIR/server"; safe_dir "$HOME_DIR/secrets"; safe_dir "$HOME_DIR/log"
+  safe_dir "$HOME_DIR"; safe_dir "$HOME_DIR/bin"; safe_dir "$HOME_DIR/$SERVER"; safe_dir "$HOME_DIR/secrets"; safe_dir "$HOME_DIR/log"
   safe_dir "$HOME_DIR/data/$ENV"; safe_dir "$HOME_DIR/repos/$ENV"
   [ ! -e "$B" ] || safe_dir "$B"
   [ ! -e "$W" ] || safe_dir "$W"
@@ -228,20 +298,9 @@ check_dirs() {
 safe_dir /Library/LaunchDaemons
 if ! dry; then
   "$DSCL" . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-server.sh first"
-  check_dirs
-  [ -f "$HOME_DIR/server/cli/backup.mjs" ] && [ -f "$HOME_DIR/server/src/backup/age.mjs" ] \
-    || fail "the installed server has no cli/backup.mjs; install a release holding task 12 with atelier ship first"
-  [ "$("$STAT" -f %Su "$HOME_DIR/server/cli/backup.mjs")" = root ] || fail "the installed server is not root's"
 fi
 
 LOCK= WORK=
-early_cleanup() {
-  local status=${1:-$?}
-  trap - EXIT INT TERM
-  [ -z "$WORK" ] || "$RM" -rf "$WORK"
-  [ -z "$LOCK" ] || "$RM" -f "$LOCK"
-  exit "$status"
-}
 trap early_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -252,6 +311,9 @@ if ! dry; then
     trusted_entry "$d" || fail "unsafe lock directory $d"
   done
   acquire_lock
+  check_dirs
+  trusted_source "$HOME_DIR/$SERVER/cli/backup.mjs" || fail "unsafe installed backup program"
+  trusted_source "$HOME_DIR/$SERVER/src/backup/age.mjs" || fail "unsafe installed age module"
 fi
 WORK=$("$MKTEMP" -d /var/tmp/atelier-backup-setup.XXXXXX)
 if ! dry; then
@@ -261,65 +323,22 @@ if ! dry; then
 fi
 
 # 1. Inputs into root-owned storage, then checked there. Values are never
-#    echoed: a failure names the setting, not what it held.
-"$CP" "$R2_SRC" "$WORK/r2.env"
-"$CP" "$PUB_SRC" "$WORK/recipient"
-"$CP" "$TEMPLATE" "$WORK/template"
-if ! dry; then
-  trusted_entry "$WORK" || fail "unsafe input storage"
-  trusted_entry "$WORK/r2.env" || fail "unsafe input copy"
-  trusted_entry "$WORK/recipient" || fail "unsafe input copy"
-  trusted_entry "$WORK/template" || fail "unsafe input copy"
-fi
-[ "$(LC_ALL=C "$TR" -d '\000' < "$WORK/r2.env" | "$WC" -c)" = "$("$WC" -c < "$WORK/r2.env")" ] || fail "the R2 settings hold a NUL byte"
-"$MKDIR" "$WORK/values"
-while IFS= read -r line || [ -n "$line" ]; do
-  line=${line%$'\r'}
-  case "$line" in ''|'#'*) continue ;; esac
-  key=${line%%=*}
-  value=${line#*=}
-  [ "$key" != "$line" ] || fail "a line of the R2 settings is not KEY=VALUE"
-  case " R2_ENDPOINT R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_PREFIX " in
-    *" $key "*) ;;
-    *) fail "the R2 settings name $key, which is not one of R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PREFIX" ;;
-  esac
-  [ ! -e "$WORK/values/$key" ] || fail "the R2 settings name $key twice"
-  printf '%s\n' "$value" > "$WORK/values/$key"
-done < "$WORK/r2.env"
-for key in R2_ENDPOINT R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do [ -s "$WORK/values/$key" ] || fail "the R2 settings lack $key"; done
-LC_ALL=C "$GREP" -qxE 'https://[0-9a-f]{32}(\.(eu|fedramp))?\.r2\.cloudflarestorage\.com' "$WORK/values/R2_ENDPOINT" || fail "R2_ENDPOINT is not https://ACCOUNT.r2.cloudflarestorage.com"
-LC_ALL=C "$GREP" -qxE '[a-z0-9][a-z0-9-]{1,61}[a-z0-9]' "$WORK/values/R2_BUCKET" || fail "R2_BUCKET is not a bucket name"
-LC_ALL=C "$GREP" -qxE '[0-9a-f]{32}' "$WORK/values/R2_ACCESS_KEY_ID" || fail "R2_ACCESS_KEY_ID is not an R2 access key id (32 hex characters)"
-LC_ALL=C "$GREP" -qxE '[0-9a-f]{64}' "$WORK/values/R2_SECRET_ACCESS_KEY" || fail "R2_SECRET_ACCESS_KEY is not an R2 secret access key (64 hex characters)"
-# The prefix: segments of letters, digits, '.', '_' and '-', none "." or "..".
-if [ -e "$WORK/values/R2_PREFIX" ]; then
-  LC_ALL=C "$GREP" -qxE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/' "$WORK/values/R2_PREFIX" \
-    && ! LC_ALL=C "$GREP" -qE '(^|/)\.{1,2}/' "$WORK/values/R2_PREFIX" || fail "R2_PREFIX is not a path of plain segments ending in /"
-fi
-# The recipient: one age1 line, and nothing secret.
-! LC_ALL=C "$GREP" -qi 'AGE-SECRET-KEY' "$WORK/recipient" || fail "$PUB_SRC holds an age identity; the identity never comes to the Studio. Give the .pub file"
-[ "$("$GREP" -cv '^#' "$WORK/recipient" || true)" = 1 ] && "$GREP" -v '^#' "$WORK/recipient" | LC_ALL=C "$GREP" -qxE 'age1[02-9ac-hj-np-z]{58}' \
-  || fail "$PUB_SRC is not an age recipient (age1..., as cli/backup.mjs keygen writes it)"
-"$GREP" -v '^#' "$WORK/recipient" > "$WORK/values/BACKUP_PUBLIC_KEY"
+#    echoed: malformed lines get fixed diagnostics.
+prepare_inputs
 
 # 2. The plist, from the template, checked field by field.
-"$SED" -e "s|@ENV@|$ENV|g" -e "s|@HOME@|$HOME_DIR|g" -e "s|@HOUR@|$HOUR|g" -e "s|@MINUTE@|$MINUTE|g" "$WORK/template" > "$WORK/plist"
-"$PLUTIL" -lint "$WORK/plist" >/dev/null || fail "the backup plist does not parse"
-x() { "$PLUTIL" -extract "$1" raw -o - "$WORK/plist" 2>/dev/null; }
-[ "$(x Label)" = "$LABEL" ] && [ "$(x UserName)" = "$SVC" ] && [ "$(x GroupName)" = "$SVC" ] \
-  && [ "$(x ProgramArguments.0)" = "$HOME_DIR/bin/node" ] && [ "$(x ProgramArguments.1)" = "$HOME_DIR/server/cli/backup.mjs" ] \
-  && [ "$(x ProgramArguments.3)" = "$ENV" ] && [ "$(x ProgramArguments.5)" = "$HOME_DIR/data/$ENV" ] \
-  && [ "$(x ProgramArguments.7)" = "$HOME_DIR/repos/$ENV" ] && [ "$(x ProgramArguments.9)" = "$B" ] && [ "$(x ProgramArguments.11)" = "$W" ] \
-  && [ "$(x StartCalendarInterval.Hour)" = "$HOUR" ] && [ "$(x StartCalendarInterval.Minute)" = "$MINUTE" ] \
-  && [ "$(x EnvironmentVariables.ATELIER_GIT)" = "$GIT" ] \
-  && ! "$GREP" -q '@' "$WORK/plist" || fail "the plist made from the template is not the expected one"
+render_plist
+
 [ ! -L "$PLIST" ] || fail "$PLIST is a link"
 for job in $JOBS; do [ ! -L "/Library/LaunchDaemons/$job.plist" ] || fail "/Library/LaunchDaemons/$job.plist is a link"; done
 
 # What was there, recorded before recovery is armed: the previous plist, and
 # which jobs were loaded, so recovery starts the same ones again.
 had_plist=
-if [ -f "$PLIST" ]; then "$CP" "$PLIST" "$WORK/old.plist"; had_plist=1; fi
+if [ -f "$PLIST" ]; then
+  trusted_entry "$PLIST" || fail "unsafe previous plist"
+  "$CP" -P "$PLIST" "$WORK/old.plist"; had_plist=1
+fi
 loaded=
 if ! dry; then
   for job in $JOBS; do
