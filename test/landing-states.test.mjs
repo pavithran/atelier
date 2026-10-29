@@ -62,14 +62,12 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { landing, assertRestored } from "./landing-states-shared.mjs";
-// The owner's checkout, its baseline and a task's fork with the task's first
-// revision, served by a stand-in ledger whose answers come from `box`: the
+// The owner's checkout, the server's one repository (main, and the task's
+// branch t/1 with the task's first revision), served by a stand-in ledger whose answers come from `box`: the
 // item's state, head and accepted revision, the landing lease, and one-shot
 // failures. A `gate` promise holds the answer to the next lease request until
 // it settles, as a slow server would. `withdraw` makes the next lease request find the acceptance
-// withdrawn by a push, as the server's recordPush does in that window. With
-// `fresh`, the baseline holds the checkout's history rebuilt from its last
-// commit, as atelier init --history-since makes it.
+// withdrawn by a push, as the server's recordPush does in that window.
 // ── a merge on the baseline ─────────────────────────────────────────────────
 
 // The merge is pushed and the server fails to record it: the journal says
@@ -78,40 +76,37 @@ import { landing, assertRestored } from "./landing-states-shared.mjs";
 // when the process stopped after the push returned and before the journal
 // said so: the merge commit is found in the baseline's history. merge then
 // records the merge.
-for (const fresh of [false, true]) {
-  test(`a published merge is never cancelled, and merge records it${fresh ? ', on a baseline that holds part of the history' : ''}`, async (t) => {
-    const f = await landing(t, { fresh });
-    f.box.failMerge = true;
-    const first = await f.run('merge', 't1');
-    assert.equal(first.status, 4, first.output);
-    const merged = f.at();
-    assert.equal(f.journal().phase, 'published');
-    // A baseline with part of the history holds the merge's rebuilt twin.
-    const sent = f.tip();
-    if (fresh) assert.notEqual(sent, merged); else assert.equal(sent, merged);
-    const refusal = `t1's merge ${sent.slice(0, 8)} is already on the baseline, so the landing cannot be cancelled, and the checkout keeps it.\nRecord the merge with: atelier merge t1\n`;
+test('a published merge is never cancelled, and merge records it', async (t) => {
+  const f = await landing(t);
+  f.box.failMerge = true;
+  const first = await f.run('merge', 't1');
+  assert.equal(first.status, 4, first.output);
+  const merged = f.at();
+  assert.equal(f.journal().phase, 'published');
+  const sent = f.tip();
+  assert.equal(sent, merged);
+  const refusal = `t1's merge ${sent.slice(0, 8)} is already on the baseline, so the landing cannot be cancelled, and the checkout keeps it.\nRecord the merge with: atelier merge t1\n`;
 
-    for (const step of ['committed', 'published']) {
-      f.rewrite({ phase: step });
-      for (const flags of [['--discard-local'], []]) {
-        f.box.requests.length = 0;
-        const cancel = await f.run('merge', 't1', '--cancel', ...flags);
-        assert.equal(cancel.status, 1, `${step} ${flags}: ${cancel.output}`);
-        assert.ok(cancel.output.includes(refusal), cancel.output);
-        assert.equal(f.at(), merged);
-        assert.equal(f.journal().phase, step);
-        assert.ok(!f.asked('/landing', true), 'the lease stays');
-      }
+  for (const step of ['committed', 'published']) {
+    f.rewrite({ phase: step });
+    for (const flags of [['--discard-local'], []]) {
+      f.box.requests.length = 0;
+      const cancel = await f.run('merge', 't1', '--cancel', ...flags);
+      assert.equal(cancel.status, 1, `${step} ${flags}: ${cancel.output}`);
+      assert.ok(cancel.output.includes(refusal), cancel.output);
+      assert.equal(f.at(), merged);
+      assert.equal(f.journal().phase, step);
+      assert.ok(!f.asked('/landing', true), 'the lease stays');
     }
+  }
 
-    const recorded = await f.run('merge', 't1');
-    assert.equal(recorded.status, 0, recorded.output);
-    assert.equal(f.box.state, 'merged');
-    assert.equal(f.at(), merged);
-    assert.equal(f.tip(), sent);
-    assert.equal(f.journal(), null);
-  });
-}
+  const recorded = await f.run('merge', 't1');
+  assert.equal(recorded.status, 0, recorded.output);
+  assert.equal(f.box.state, 'merged');
+  assert.equal(f.at(), merged);
+  assert.equal(f.tip(), sent);
+  assert.equal(f.journal(), null);
+});
 
 
 // A merge removes the task's workspace on this Mac once its HEAD is in main
@@ -121,7 +116,7 @@ test('a merge removes the task\'s workspace once its work is in main, and keeps 
   const f = await landing(t);
   const ws = join(f.cache, 'work', 'proj', 't1');
   mkdirSync(join(f.cache, 'work', 'proj'), { recursive: true });
-  f.git(f.p, 'clone', '-q', f.fork, ws);
+  f.git(f.p, 'clone', '-q', '-b', 't/1', f.fork, ws);
   f.git(ws, 'config', 'atelier.project', 'proj'); f.git(ws, 'config', 'atelier.item', 't1');
   writeFileSync(join(ws, 'work.txt'), 'not committed\n');
   const first = await f.run('merge', 't1');
@@ -144,7 +139,7 @@ test('a ledger that fails after the merge leaves the workspace and does not fail
   const f = await landing(t, { env: { ATELIER_RETRY_MS: '0,0,0' } });
   const ws = join(f.cache, 'work', 'proj', 't1');
   mkdirSync(join(f.cache, 'work', 'proj'), { recursive: true });
-  f.git(f.p, 'clone', '-q', f.fork, ws);
+  f.git(f.p, 'clone', '-q', '-b', 't/1', f.fork, ws);
   f.git(ws, 'config', 'atelier.project', 'proj'); f.git(ws, 'config', 'atelier.item', 't1');
   f.box.failItemAfterMerge = true;
   const r = await f.run('merge', 't1');
@@ -192,7 +187,7 @@ test('an unpublished merge is cancelled after the baseline is read', async (t) =
   assert.equal(cancelled.status, 0, cancelled.output);
   assert.equal(f.at(), f.start);
   assert.equal(f.journal(), null);
-  assert.ok(f.asked('/baseline-token') && f.asked('/landing', true));
+  assert.ok(f.asked('/git-token') && f.asked('/landing', true));
 });
 // The checkout as the merge found it: on its start, with nothing uncommitted and no Git merge in progress.
 // A merge pushed and not recorded, whose checkout the owner moved back to
@@ -263,7 +258,7 @@ test('an acceptance withdrawn before the lease: merge and cancel say so, and can
   const retry = await f.run('merge', 't1');
   assert.equal(retry.status, 1, retry.output);
   assert.ok(retry.output.includes(`t1 is claimed, no longer accepted at ${f.H1.slice(0, 8)}, where this checkout began landing it, so that landing cannot be finished. Cancel it with: atelier merge t1 --cancel --discard-local\n`), retry.output);
-  assert.ok(!f.asked('/baseline-token'), 'the refusal comes before the landing reads the baseline');
+  assert.ok(!f.asked('/git-token'), 'the refusal comes before the landing reads the baseline');
 
   const kept = await f.run('merge', 't1', '--cancel');
   assert.equal(kept.status, 1, kept.output);

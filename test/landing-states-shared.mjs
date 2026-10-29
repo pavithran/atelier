@@ -5,33 +5,28 @@ import { createServer } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { buildHistory, savePairs } from '../cli/fresh.mjs';
 import { landingDir, landingJournal, landingJournalFile } from '../cli/landing.mjs';
 import { SERVER_CAPABILITIES } from '../src/route-level.ts';
-export async function landing(t, { fresh = false, env: extra = {} } = {}) {
+export async function landing(t, { env: extra = {} } = {}) {
   const p = realpathSync(mkdtempSync(join(tmpdir(), 'atelier-states-')));
   t.after(() => rmSync(p, { recursive: true, force: true }));
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), HOME: join(p, 'home'), GIT_CONFIG_GLOBAL: join(p, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   mkdirSync(env.HOME);
   writeFileSync(env.GIT_CONFIG_GLOBAL, '[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n[init]\n\tdefaultBranch = main\n');
   const git = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  const checkout = join(p, 'checkout'), baseline = join(p, 'baseline.git'), fork = join(p, 'fork.git'), workspace = join(p, 'workspace'), config = join(p, 'config'), cache = join(p, 'cache');
+  const checkout = join(p, 'checkout'), baseline = join(p, 'baseline.git'), workspace = join(p, 'workspace'), config = join(p, 'config'), cache = join(p, 'cache');
   mkdirSync(checkout); mkdirSync(config);
   git(checkout, 'init', '-q');
   writeFileSync(join(checkout, 'work.txt'), 'base\n');
   git(checkout, 'add', '.'); git(checkout, 'commit', '-q', '-m', 'Initial');
   const start = git(checkout, 'rev-parse', 'HEAD');
-  if (fresh) {
-    const built = buildHistory((args, { cwd }) => git(cwd, ...args), checkout, start, start);
-    savePairs(join(checkout, '.git'), 'proj', built.pairs);
-    git(p, 'init', '-q', '--bare', baseline);
-    git(checkout, 'push', '-q', baseline, `${built.head}:refs/heads/main`);
-  } else git(p, 'clone', '-q', '--bare', checkout, baseline);
-  git(p, 'clone', '-q', '--bare', baseline, fork); git(p, 'clone', '-q', fork, workspace);
-  // A new revision of the task, pushed to its fork.
-  const revise = (text) => { writeFileSync(join(workspace, 'work.txt'), text); git(workspace, 'commit', '-q', '-am', `Task: ${text.trim()}`); git(workspace, 'push', '-q', 'origin', 'main'); return git(workspace, 'rev-parse', 'HEAD'); };
+  git(p, 'clone', '-q', '--bare', checkout, baseline);
+  // The server's one repository holds main and the task's branch t/1.
+  git(p, 'clone', '-q', baseline, workspace); git(workspace, 'checkout', '-q', '-b', 't/1');
+  // A new revision of the task, pushed to its branch.
+  const revise = (text) => { writeFileSync(join(workspace, 'work.txt'), text); git(workspace, 'commit', '-q', '-am', `Task: ${text.trim()}`); git(workspace, 'push', '-q', 'origin', 't/1'); return git(workspace, 'rev-parse', 'HEAD'); };
   const H1 = revise('changed\n');
-  const box = { state: 'accepted', head: H1, acceptedHead: H1, lease: null, gate: null, withdraw: false, failLanding: false, failMerge: false, failItemAfterMerge: false, requests: [] };
+  const box = { state: 'accepted', head: H1, acceptedHead: H1, lease: null, leaseHolder: null, gate: null, withdraw: false, failLanding: false, failMerge: false, failItemAfterMerge: false, requests: [] };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -44,8 +39,14 @@ export async function landing(t, { fresh = false, env: extra = {} } = {}) {
     // A ledger that stops answering once the merge is recorded (t561).
     if (path === '/api/projects/proj/items/t1' && req.method === 'GET' && box.failItemAfterMerge && box.state === 'merged') return reply(503, { error: 'temporary', detail: 'ledger down' });
     if (path === '/api/projects/proj/items/t1' && req.method === 'GET') return reply(200, { item: item(), policy: { checks: [], protected: [], commitIdentity: { name: 'Fixture', email: 'fixture@example.invalid', agentEmails: [] } }, gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews: [], events: [] });
-    if (path.endsWith('/baseline-token')) return reply(200, { remote: baseline, token: 'fixture', defaultBranch: 'main' });
-    if (path.endsWith('/read-token')) return reply(200, { remote: fork, token: 'fixture', head: box.head, defaultBranch: 'main' });
+    // One repository holds main and the task's branch: a read grant reads both, and a landing grant pushes.
+    if (path.endsWith('/git-token')) return reply(200, { kind: body.kind, remote: baseline, token: body.kind === 'landing' ? 'fixture-landing' : 'fixture', expiresAt: '2999-01-01T00:00:00.000Z', defaultBranch: 'main', repository: 'server', ...(body.item ? { branch: 't/1', into: 'main', head: box.head } : {}) });
+    // The project's landing lease, which merge takes by hand and releases when it ends.
+    if (path.endsWith('/landing-lease')) {
+      if (req.method === 'GET') return reply(200, { lease: box.leaseHolder ? { item: box.leaseHolder } : null });
+      box.leaseHolder = body.cancel ? null : body.item;
+      return reply(200, { lease: box.leaseHolder ? { item: box.leaseHolder } : null });
+    }
     // The stand-in lets every cancel through, so what refuses one here is the CLI.
     if (path.endsWith('/landing') && body.cancel === true) { box.lease = null; return reply(200, item()); }
     if (path.endsWith('/landing')) {
@@ -68,7 +69,7 @@ export async function landing(t, { fresh = false, env: extra = {} } = {}) {
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
-  writeFileSync(join(config, 'config.json'), JSON.stringify({ server: url, owner: 'owner', projects: { proj: { path: checkout, branch: 'main', ...(fresh ? { fresh: true } : {}) } } }));
+  writeFileSync(join(config, 'config.json'), JSON.stringify({ server: url, owner: 'owner', projects: { proj: { path: checkout, branch: 'main' } } }));
   const run = async (...args) => {
     const child = spawn(process.execPath, [resolve('cli/atelier.mjs'), ...args, '--project', 'proj'], { cwd: checkout, env: { ...env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: 'fixture', ATELIER_CACHE: cache, ATELIER_SERVER: url, ...extra } });
     let output = '';
@@ -91,12 +92,12 @@ export async function landing(t, { fresh = false, env: extra = {} } = {}) {
   const mergeElsewhere = () => {
     const other = join(p, 'other');
     git(p, 'clone', '-q', baseline, other);
-    git(other, 'fetch', '-q', fork, box.acceptedHead);
+    git(other, 'fetch', '-q', baseline, box.acceptedHead);
     git(other, 'merge', '-q', '--no-ff', '-m', 'Merge t1 elsewhere', box.acceptedHead);
     git(other, 'push', '-q', 'origin', 'main');
     return git(other, 'rev-parse', 'HEAD');
   };
-  return { p, cache, git, baseline, fork, checkout, workspace, box, run, revise, H1, start, at, tip, journal, journalFile, rewrite, asked, begin, dir, mergeElsewhere };
+  return { p, cache, git, baseline, fork: baseline, checkout, workspace, box, run, revise, H1, start, at, tip, journal, journalFile, rewrite, asked, begin, dir, mergeElsewhere };
 }
 export function assertRestored(f) {
   assert.equal(f.at(), f.start);

@@ -13,11 +13,14 @@ A builder could write to any branch of a shared repository if nothing stopped it
 | `task` | `refs/heads/t/N` of its task | while the task's Ledger records it |
 | `read` | nothing; reads every branch | 8 hours |
 | `landing` | the project's branch, once, with a merge of its task's accepted head; and `refs/notes/atelier` | 5 minutes, while its holding of the landing lease and the acceptance stand, until the merge is recorded |
+| `refresh` | `refs/heads/t/N` of its task, beside the holder's task grant | 8 hours, while the task's refresh lease it was minted under stands and the Ledger records it as that lease's grant |
 | owner | the project's branch only to create it in an empty repository; `refs/heads/dev/*` and `refs/notes/atelier` | the server token itself |
 
 A task grant counts only while the task's Ledger records it as the item's write token (`git:HASH` in `items.token_id`). The Ledger already changes that record on every change of holder: release, handoff, abandon, merge and a new claim. So each of those revokes the grant with no extra step, and asking for a new grant replaces the old one. A task has one live write credential at a time.
 
-`POST /api/projects/P/git-token` with `{"kind": "read"}` or `{"kind": "task", "item": "tN"}` gives one. A task grant goes only to the task's holder.
+`POST /api/projects/P/git-token` with `{"kind": "read"}` or `{"kind": "task", "item": "tN"}` gives one. A task grant goes only to the task's holder. A read grant asked with `"item": "tN"` also names the task's branch (null before its first claim), the branch it merges into (`into`: its plan's branch for a part, the project's otherwise), and its recorded head and base; it is the one read credential every caller uses (Atelier 2.0, task 13, removed the `read-token`, `base-token` and `baseline-token` routes).
+
+A task refresh's lease (t462) carries a `refresh` grant, minted to the leaseholder and recorded on the lease: it writes the task's branch while that lease stands, and the lease's settling or lapsing revokes it.
 
 `{"kind": "landing", "item": "tN", "head": H}` gives a landing grant (task 6, design section 4.7). It goes only to the holder of the project's live landing lease, for that task, while the task is accepted at H; otherwise the route refuses with `no_lease`, `not_accepted` or `acceptance_changed`, each naming the next command. The grant is bound to the project, the task, H and the holding of the lease it was minted under (the lease's `id`, drawn afresh at every take or takeover and kept by a renewal). It counts only while the task is still accepted at H and that holding still stands, so a lease released, taken over or released and retaken, or an acceptance withdrawn, ends it for good. It updates the project's branch once: the hook's last check (rule 7) takes that update in the grant store in one statement, and a second update with the same grant is refused, while its notes stay writable. It lives five minutes and is revoked once the landing's merge is recorded, so a used grant gets 401. Since the grant names its task, the hook's scan of the landing push applies the clearances the owner recorded on that task.
 
@@ -69,14 +72,16 @@ Every repository names the hook through `core.hooksPath`, and a pushed tree cann
 
 The remote is given at the address the request came to when that is this machine's or the tailnet's (100.64.0.0/10), and at the public origin otherwise (`gitOrigin` in `src/runtime/server.mjs`). The CLI accepts plain `http://` to a tailnet address, which WireGuard encrypts.
 
-The CLI clones the branch alone (`git clone --single-branch --branch t/N`) and fetches the project's branch from the same remote as the baseline: one remote, `origin`. `atelier push` pushes `HEAD:refs/heads/t/N`. A check's clean clone, `atelier diff` and a review job clone `t/N` alone with a read grant, which `read-token`, `base-token` and `review-claim` answer on this server.
+The CLI clones the branch alone (`git clone --single-branch --branch t/N`) and fetches the project's branch from the same remote as the baseline: one remote, `origin`. `atelier push` pushes `HEAD:refs/heads/t/N`. A check's clean clone, `atelier diff` and a review job clone `t/N` alone with a read grant (`git-token` with the item, or `review-claim`'s answer), and fetch the branch the task merges into from the same remote.
 
-`atelier init` makes the project's repository, its HEAD on the project's branch, and mints nothing: the owner's first push of the project's branch, into the empty repository, goes with the server token. Later commits reach it only through a landing. The four commands that pushed the project's branch with the server token on 1.x no longer push on this server (task 11), since the repository is the baseline and the server answers `repository: "server"` from `baseline-token` and `baseline-head`:
+`atelier init` makes the project's repository, its HEAD on the project's branch, and mints nothing: the owner's first push of the project's branch, into the empty repository, goes with the server token. Later commits reach it only through a landing. The four commands that pushed the project's branch with the server token on 1.x no longer push on this server (task 11), since the repository is the baseline and the server answers `repository: "server"` from a read grant and `baseline-head`:
 
-- `atelier init` run again records the policy and pushes nothing. It says how the checkout's branch stands against the server's, and names a landing for commits the server lacks, or `atelier pull` for a checkout behind. `--history-since` is refused: the repository takes the whole history.
+- `atelier init` run again records the policy and pushes nothing. It says how the checkout's branch stands against the server's, and names a landing for commits the server lacks, or `atelier pull` for a checkout behind. The first init pushes the whole history in one push; `--history-since` is gone (task 13).
 - `atelier sync` goes away. There is no separate baseline to carry commits to; it refuses, naming `atelier pull` for one direction and a landing for the other.
 - `atelier wrap` keeps its session note, commit and checkout remotes, and in place of publishing the baseline it reports the server's branch and what the checkout holds beyond it.
 - `atelier ship` skips its baseline step, which ran `atelier sync`, and records it as skipped. It already ships only the revision the server's branch holds. Init sends the prose standard's text with its path, so a claim can hand it to a builder with no checkout.
+
+The developer's branches (`atelier branch push|fetch|ls`, t641) are `dev/NAME` in the project's repository: a push goes with the server token, which alone writes `dev/*`, a fetch with a read grant, and the server records each push's commit and Mac once the repository holds it.
 
 Before Git reads a byte, the server checks the credential. A request with no live grant for this project gets 401 at `info/refs`. A read grant asking to push gets 403.
 

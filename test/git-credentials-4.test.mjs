@@ -3,14 +3,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { REAL_GIT, WRITE, WRITE2, READ, BASE, LEGACY, isolated, real, fixture, started, lapse, cli, actor, serveGit } from "./git-credentials-shared.mjs";
+import { REAL_GIT, WRITE, WRITE2, READ, LEGACY, isolated, real, fixture, started, lapse, cli, actor, serveGit } from "./git-credentials-shared.mjs";
 
 test("update and push renew an expired token from a subdirectory of the workspace", async (t) => {
   for (const command of ["update", "push"]) {
     const f = await started(t);
     real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
     lapse(f);
-    f.refuse.status = 500;
+    // push no longer reads the branch first, so only a refusal prompts its renewal; update fetches by the recorded expiry.
+    f.refuse.status = command === "push" ? 403 : 500;
     real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
     const sub = join(f.workspace, "deep", "er");
     mkdirSync(sub, { recursive: true });
@@ -18,19 +19,6 @@ test("update and push renew an expired token from a subdirectory of the workspac
     assert.equal(r.status, 0, `${command}: ${r.output}`);
     assert.match(readFileSync(join(f.workspace, ".git", "atelier-credentials"), "utf8"), new RegExp(WRITE2), command);
   }
-});
-
-
-test("push renews a lapsed token before reading the fork's branch, so a branch mismatch still stops it", async (t) => {
-  const f = await started(t);
-  real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
-  real(f.workspace, "config", "--local", "atelier.branch", "elsewhere");
-  lapse(f);
-  f.refuse.status = 403;
-  real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
-  const r = await f.run(["push"], f.workspace);
-  assert.notEqual(r.status, 0, r.output);
-  assert.match(r.output, /reads its head from main, but this workspace pushes to elsewhere/);
 });
 
 
@@ -64,7 +52,12 @@ for (const [what, fail, code] of [
 ]) for (const command of ["update", "push"]) {
   test(`${command}: a renewal answered by ${what} exits ${code} and says to run atelier start`, async (t) => {
     const f = await started(t);
-    if (command === "push") real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+    // push renews on a refusal only (it reads no branch first), so the token it holds is refused.
+    if (command === "push") {
+      real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+      f.valid["repo.git"] = new Set([READ]);
+      f.refuse.status = 403;
+    }
     real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
     f.api.fail = fail;
     const r = await f.run([command], f.workspace);

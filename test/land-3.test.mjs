@@ -44,7 +44,7 @@ test("two landings check and review at the same time, and only their merges take
   }
   // Whichever merged second merged its reviewed head onto the first's merge
   // (G2): its approval stood, with no second review and nothing pushed to
-  // its fork, and main's tip is its merge onto the other's.
+  // its branch, and main's tip is its merge onto the other's.
   // Each run asked at most once, at the one head each task has.
   for (const id of ["t1", "t2"]) {
     const asks = f.box.reviewAsks.filter((x) => x.item === id);
@@ -54,7 +54,7 @@ test("two landings check and review at the same time, and only their merges take
   const tip = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
   const [first, second] = git(f.p, "--git-dir", f.baseline, "rev-list", "--parents", "-n", "1", tip).split(" ").slice(1);
   assert.equal(git(f.p, "--git-dir", f.baseline, "rev-list", "--parents", "-n", "1", first).split(" ").length, 3, "the second merge's first parent is the first merge");
-  assert.ok([git(f.p, "--git-dir", f.baseline.replace("baseline.git", "fork-t1.git"), "rev-parse", "main"), git(f.p, "--git-dir", f.baseline.replace("baseline.git", "fork-t2.git"), "rev-parse", "main")].includes(second));
+  assert.ok([f.forkHead("t1"), f.forkHead("t2")].includes(second));
 });
 
 

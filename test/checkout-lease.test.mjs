@@ -149,7 +149,7 @@ async function shipper(t, real, { failDeploys = 0 } = {}) {
     }
     if (path === "/api/projects/demo/actions/runs") { state.runs.push(body); return send(201, body); }
     if (path === "/api/projects/demo" && req.method === "GET") return send(200, { project: { policy: { checks: [] } }, items: [] });
-    if (path === "/api/projects/demo/baseline-token") return send(200, { remote: join(dir, "baseline.git"), token: "t", defaultBranch: "main" });
+    if (path === "/api/projects/demo/git-token") return send(200, { kind: "read", remote: join(dir, "baseline.git"), token: "t", expiresAt: "2999-01-01T00:00:00.000Z", defaultBranch: "main", repository: "server" });
     if (path === "/api/projects/demo/sessions") return send(req.method === "GET" ? 200 : 201, req.method === "GET" ? [] : { actor: "owner", at: new Date().toISOString(), data: body });
     send(404, { error: "not_found", detail: `the stand-in has no ${req.method} ${path}` });
   }));
@@ -379,7 +379,7 @@ test("the next landing reports a checkout head changed outside the lease as a fa
   writeFileSync(join(ws, "t2.txt"), "t2\n");
   execFileSync("git", ["add", "."], { cwd: ws });
   execFileSync("git", ["commit", "-q", "-m", "Task t2's own change"], { cwd: ws });
-  execFileSync("git", ["push", "-q", "origin", "main"], { cwd: ws });
+  execFileSync("git", ["push", "-q", "origin", "HEAD"], { cwd: ws });
   f.box.reviewOf = { t2: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] } };
   const second = await f.run(f.checkout, "land", "t2");
   assert.match(second.output, new RegExp(`Fact: demo's registered checkout is at ${byHand.slice(0, 8)}, not at ${merged.slice(0, 8)} where t1's merge left it at .* UTC: something changed it outside atelier merge and atelier ship, such as a commit, a pull or a deploy by hand\\. Nothing was refused; the landing goes on from ${byHand.slice(0, 8)}\\.\\nnext: see what changed with git log ${merged.slice(0, 8)}\\.\\.${byHand.slice(0, 8)} in the checkout; deploy through atelier ship --project demo, which records the deploy`));
@@ -389,7 +389,7 @@ test("the next landing reports a checkout head changed outside the lease as a fa
   assert.match(second.output, /1 commit ahead of the project's main \([0-9a-f]{8}\), which no landing reviewed/);
   assert.notEqual(f.box.states.t2, "merged");
   // Once the developer puts it on main themselves, the landing goes on and lands.
-  execFileSync("git", ["push", "-q", "origin", "main"], { cwd: f.checkout });
+  execFileSync("git", ["push", "-q", "origin", "HEAD"], { cwd: f.checkout });
   const third = await f.run(f.checkout, "land", "t2");
   assert.equal(third.status, 0, third.output);
   assert.equal(f.box.states.t2, "merged");

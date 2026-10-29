@@ -51,7 +51,7 @@ test("a clean landing is reviewed without the lease, then takes it to merge the 
   const before = { fork: f.forkHead("t1"), workspace: git(f.workspace("t1"), "rev-parse", "HEAD"), checkout: git(f.checkout, "rev-parse", "HEAD") };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  // Nothing was merged into the workspace or pushed to the fork (G2).
+  // Nothing was merged into the workspace or pushed to the task's branch (G2).
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
   assert.equal(f.forkHead("t1"), before.fork);
   // The registered checkout and the baseline hold the merge commit: main's

@@ -2432,116 +2432,32 @@ export function inboxFor(
 }
 
 // Repo names: letters, digits, . _ - ; must start alphanumeric; ≤ 63 here to be safe.
-export function repoName(project: string, itemId?: string): string {
-  const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "");
-  const name = itemId ? `${clean(project)}--${clean(itemId)}` : clean(project);
+export function repoName(project: string): string {
+  const name = project.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "");
   if (!name || name.length > 63) throw new RuleError("bad_name", `cannot make a repo name from "${project}"`, 400);
   return name;
 }
 
 // The developer's branches (t641): work in progress that travels between
-// the developer's Macs. They live in a repository of their own beside the
-// baseline, branchesRepoName(key), which only the developer is given a token
-// for: Artifacts scopes a token to a whole repository, read or write, never
-// to refs, so a branch kept in the baseline would be readable with every
-// agent's and runner's read token, and a token that could push it could push
-// main as well. In a repository of their own, no push of a branch can reach
-// the baseline's main, which still moves only through landing and sync.
-//
-// The branches repository's name is BRANCHES_REPO_PREFIX and the first 32
-// hex digits of the SHA-256 of the project's key: a fixed form whose length
-// never depends on the key, so a key of any length a baseline takes has one
-// (Astra's review of t641, finding 2). A name derived from the key by adding
-// to it met other names: demo--branches is a baseline name, and
-// branches--t1 is project branches's fork of t1 (the reviews of t641).
-// BRANCHES_REPO_NAME matches the form, and assertBaselineName refuses it to
-// any baseline a project would be registered with; a task fork, KEY--tN,
-// never has the form. Every place that finds a repository already under the
-// name it would make checks it was made for that purpose before any token
-// is minted for it (src/index.ts), so even a name a project registered
-// before this change holds is never taken for another's.
+// the developer's Macs. They are dev/NAME in the project's repository
+// (design section 4.3), which the hook lets only the server token write, so
+// no agent's credential can push one, and no push of one moves the project's
+// branch, which only a landing moves.
 //
 // Every developer branch is under DEVELOPER_BRANCH_PREFIX. A NAME given
 // without it is taken under it (`atelier branch push idea` pushes
-// wip/idea), except a name that is the project's branch, main, HEAD or a
+// dev/idea), except a name that is the project's branch, main, HEAD or a
 // task's id, which is refused rather than quietly renamed, and a name with
 // another prefix (feature/x, refs/heads/x), which is outside the prefix.
 // The rest of the name keeps to what git check-ref-format takes, more
 // strictly: letters, digits, . _ - and / between parts.
-export const BRANCHES_REPO_PREFIX = "devbr-";
-export const BRANCHES_REPO_NAME = /^devbr-[0-9a-f]{32}$/;
-export const DEVELOPER_BRANCH_PREFIX = "wip/";
-export async function branchesRepoName(key: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
-  return `${BRANCHES_REPO_PREFIX}${[...digest].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32)}`;
-}
-export function assertBaselineName(repo: string): void {
-  if (BRANCHES_REPO_NAME.test(repo)) throw new RuleError("repo_reserved", `a baseline cannot be named ${repo}: names of the form ${BRANCHES_REPO_PREFIX} and 32 hex digits are kept for the developer's branches repositories`, 409);
-}
-
-// What Atelier writes as the description of each repository it makes, and
-// reads back before it takes one it finds already under the name it would
-// make: an earlier attempt's, whose answer was lost (t349), is taken; one
-// made for any other purpose is refused (the reviews of t641).
-export const baselineMark = (project: string) => `Atelier baseline for ${project}`;
-export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
-
-// A task fork that Artifacts is still preparing (t18). Each claim waits a
-// few seconds for the fork and then answers not_ready, and a failed claim
-// gives the item back, so nothing in the claim remembers how long the fork
-// has been stuck. The Ledger keeps the record below per item, outside the
-// claim, from the first not_ready answer until the fork is recorded.
-// Atelier deletes no repository: a fork that stays unready is replaced by a
-// fork under a new name (t245, t286), and the old one is left as it is.
-//   since:      the first not_ready answer for the repository;
-//   reportedAt: the stuck fork was recorded as an event.
-export const FORK_STUCK_MS = 10 * 60_000;
-// How long a task fork may stay unready, with no commit recorded, before the
-// tick or the next claim replaces it (t181, t245, t286).
-export const FORK_REPLACE_MS = 30 * 60_000;
-// How long a fork request may go without its answer before a claim takes it
-// for one that was cut off (t286): longer than any claim request runs, so a
-// claim still waiting on Artifacts is never taken for one.
-export const FORK_REQUEST_MS = 2 * 60_000;
-// How many forks under new names a task gets beyond its first (t254), counted
-// from the task's last release: a release requests a fresh run of them.
-export const FORK_REPLACEMENTS = 2;
-
-export type ForkPreparation = { fork: string; since: string | null; reportedAt: string | null };
-export type ForkPreparationView = { fork: string; since: string; ageMs: number; action: "wait" | "stuck"; next: string };
-
-export function forkAgeText(ms: number): string {
-  const minutes = Math.floor(Math.max(0, ms) / 60_000);
-  return minutes < 1 ? "less than a minute" : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
-}
-
-// How long a fork has been preparing, and what the developer or the next
-// claim should do. Before the limit the next claim tries again. After it the
-// fork is stuck. When the Ledger records no fork and no head for the task,
-// nothing shows commits in it, and a claim or the tick replaces it with a
-// fork under a new name once it has been preparing FORK_REPLACE_MS (t286);
-// when the Ledger records one, the fork may hold the task's commits and must
-// not be deleted.
-export function forkPreparationView(prep: ForkPreparation & { since: string }, item: { id: string; fork?: string | null; head?: string | null }, now: number): ForkPreparationView {
-  const ageMs = Math.max(0, now - Date.parse(prep.since));
-  const base = { fork: prep.fork, since: prep.since, ageMs };
-  const minutes = FORK_STUCK_MS / 60_000;
-  if (ageMs < FORK_STUCK_MS) {
-    return { ...base, action: "wait", next: `Atelier tries the fork again on each claim: claim ${item.id} again in a few minutes. After ${minutes} minutes without a ready fork, it is reported as stuck.` };
-  }
-  const stuck = `${prep.fork} has not become ready in ${forkAgeText(ageMs)}. Atelier deletes no fork.`;
-  if (item.fork || item.head) {
-    return { ...base, action: "stuck", next: `${stuck} The Ledger records ${item.fork ? "a fork" : "a head"} for ${item.id}, so the repository may hold the task's commits: do not delete it; check it in Artifacts.` };
-  }
-  return { ...base, action: "stuck", next: `${stuck} The Ledger records no commit for ${item.id}, so once it has been preparing ${FORK_REPLACE_MS / 60_000} minutes, the next claim of ${item.id} makes a fork under a new name, at most ${FORK_REPLACEMENTS} times; nothing needs deleting by hand. When those forks stall too, \`atelier stuck\` names the release that requests a fresh fork.` };
-}
-export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
+export const DEVELOPER_BRANCH_PREFIX = "dev/";
 const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 export function developerBranch(name: unknown, defaultBranch = "main"): string {
   const refuse = (why: string) => { throw new RuleError("bad_branch", `${typeof name === "string" ? JSON.stringify(name) : "the branch"} ${why}; a developer branch is ${DEVELOPER_BRANCH_PREFIX}NAME, such as ${DEVELOPER_BRANCH_PREFIX}idea`, 400); };
   if (typeof name !== "string" || !name) return refuse("is not a branch name");
   const reserved = new Set(["main", "master", "HEAD", defaultBranch]);
-  if (reserved.has(name) || /^t[0-9]+$/.test(name)) return refuse("is the project's branch or a task's; main changes only through landing or sync, and a task's work only through its workspace");
+  if (reserved.has(name) || /^t[0-9]+$/.test(name)) return refuse("is the project's branch or a task's; main changes only through a landing, and a task's work only through its workspace");
   if (name.startsWith("refs/")) return refuse(`is a full ref; name the branch under ${DEVELOPER_BRANCH_PREFIX} alone`);
   const full = name.startsWith(DEVELOPER_BRANCH_PREFIX) ? name : name.includes("/") ? refuse(`is outside ${DEVELOPER_BRANCH_PREFIX}`) : `${DEVELOPER_BRANCH_PREFIX}${name}`;
   if (full.length > 200) return refuse("is longer than 200 characters");
@@ -2625,11 +2541,6 @@ export function assertCriteria(item: Item, expected: unknown): void {
   if (expected !== now) {
     throw new RuleError("stale_criteria", `${item.id}'s acceptance criteria changed since this review read them (bound to ${expected.slice(0, 12)}, now ${now.slice(0, 12)}); ${refresh}`, 409, `run atelier show ${item.id} for the current binding, then review again with --criteria BINDING`);
   }
-}
-
-// Porting to a released fork does not take its claim or dispatch.
-export function ownerPortAllowed(item: Pick<Item, "owner" | "state">, actor: string, owner = DEFAULT_OWNER): boolean {
-  return actor === owner && item.owner === null && item.state === "open";
 }
 
 export function assertLive(item: Item): void {

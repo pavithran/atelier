@@ -14,7 +14,6 @@ export interface RunnerMemory {
   skipHeads: { key: string; heads: (string | null)[] }[];  // the heads a skip began at (noteSkipHeads)
   reasons: { task: string; why: string }[];  // the last reason each task is passed by, in words
   backoff: { key: string; count: number }[];        // failed runs in a row waiting out a backoff, by backoffKey
-  notReady: { key: string; since: number; tries: number; detail: string; expired: boolean }[];  // forks still being prepared
   pauses: ProviderPause[];                           // provider limits this runner met; the server shares them
 }
 
@@ -44,10 +43,6 @@ export function parseMemory(raw: unknown): RunnerMemory | null {
     infrastructure: entries(r.infrastructure, counted),
     skipHeads: entries(r.skipHeads, (x) => Array.isArray(x.heads) ? { heads: x.heads.slice(0, 16).flatMap((h) => typeof h === "string" && h.length <= 64 ? [h] : h === null ? [null] : []) } : null),
     backoff: entries(r.backoff, counted),
-    notReady: entries(r.notReady, (x) => {
-      const since = typeof x.since === "number" && Number.isFinite(x.since) ? x.since : null, tries = count(x.tries);
-      return since === null || tries === null ? null : { since, tries, detail: typeof x.detail === "string" ? x.detail.slice(0, 300) : "", expired: x.expired === true };
-    }),
     pauses: list(r.pauses).flatMap((e) => {
       const x = (e ?? {}) as Record<string, unknown>;
       return typeof x.harness === "string" && x.harness.length <= 64 && typeof x.resetAt === "string" && Number.isFinite(Date.parse(x.resetAt))
@@ -85,7 +80,7 @@ export function dropTasks(memory: RunnerMemory, tasks: readonly string[]): { mem
     ...memory,
     refused: keys(memory.refused), gaveUp: keys(memory.gaveUp),
     failures: keep(memory.failures), infrastructure: keep(memory.infrastructure),
-    skipHeads: keep(memory.skipHeads), backoff: keep(memory.backoff), notReady: keep(memory.notReady),
+    skipHeads: keep(memory.skipHeads), backoff: keep(memory.backoff),
     reasons: memory.reasons.filter((r) => !tasks.includes(r.task)),
   };
   return { removed, memory: cut };

@@ -139,7 +139,7 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   expect(item).toMatchObject({ id: "t1", state: "open", owner: null });
 
   const claimed = await L.claim("t1", A);
-  expect(claimed).toMatchObject({ item: { state: "claimed", owner: A }, needsFork: true });
+  expect(claimed).toMatchObject({ item: { state: "claimed", owner: A } });
   await L.setFork("t1", "lifecycle--t1", H0, A);
 
   await refusal(L.submit("t1", A), "nothing_pushed", /push work before submitting/);
@@ -414,14 +414,14 @@ it("exactly one owner: claims are serialised and scoped, and a stored eligible l
 it("a failed fork unclaims the item, and a re-claim does not fork again", async () => {
   const L = await setup("fork-failed");
   await L.newItem("One", ["src/**"], "owner");
-  expect(await L.claim("t1", A)).toMatchObject({ needsFork: true });
+  expect(await L.claim("t1", A)).toMatchObject({ item: { fork: null } });
 
   await L.unclaim("t1", A, "fork: repository quota exceeded");
   expect(await L.item("t1")).toMatchObject({ state: "open", owner: null });
 
   await L.claim("t1", B);
   await L.setFork("t1", "fork-failed--t1", H0, B);
-  expect(await L.claim("t1", B)).toMatchObject({ needsFork: false });
+  expect(await L.claim("t1", B)).toMatchObject({ item: { fork: "fork-failed--t1" } });
   expect(kinds(await L.events("t1"))).toEqual(["fork.created", "item.claimed", "item.claim_failed", "item.claimed", "item.created"]);
 });
 
@@ -844,9 +844,8 @@ it("the owner can dispatch a held task, which releases its holder and queues it 
   expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.released", "item.dispatched"]));
   // A runner claims it again and finds the earlier commits.
-  const { item: again, needsFork } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  const { item: again } = await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
   expect(again).toMatchObject({ state: "claimed", head: H1 });
-  expect(needsFork).toBe(false);
 });
 
 it("a merge-main dispatch sends a conflicted landing back to its builder, and needs a workspace to merge into", async () => {

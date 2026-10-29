@@ -84,7 +84,7 @@ test("before accepting, the landing asks for the lease again, so a takeover its 
   f.env = { ATELIER_LAND_RENEW_MS: "3600000", ATELIER_LAND_POLL_MS: "40" };
   // Once the lease is taken (t550), the landing is held at its read of main
   // until t2's landing has taken the lease over.
-  f.box.holdOn = (url) => url.endsWith("/base-token") && f.box.leaseLog.length > 0 && f.box.lease?.item === "t1";
+  f.box.holdOn = (url) => url.endsWith("/git-token") && f.box.leaseLog.length > 0 && f.box.lease?.item === "t1";
   f.onOutput = (out) => {
     if (out.includes("Landing lease taken for t1") && f.box.lease?.item === "t1") f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
   };

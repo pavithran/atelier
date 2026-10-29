@@ -158,7 +158,7 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
 // The CLI half of the step above, as the runner's child runs it: with
 // ATELIER_RUNNER_TOKEN and ATELIER_RUNNER_NAME set and no owner token,
 // `atelier baseline-token` sends the runner credential, asks the project's
-// baseline-token route for read scope and reads the project's policy, and
+// git-token route for a read grant and reads the project's policy, and
 // prints the token the server minted with the regenerate command beside
 // it, so the runner can fetch main with the one and regenerate with the
 // other. No item route is called: the item's base-token answers a runner
@@ -174,9 +174,10 @@ test("the direct CLI reads the baseline token and the regenerate command with th
       if (url === "https://one.test/api/config") return Response.json({ runner: "home:studio", tokenId: "id" });
       if (options.headers["x-atelier-actor"] !== "claude-code/gpt-6-astra") throw new Error("wrong actor");
       if (url === "https://one.test/api/projects/demo" && options.method === "GET") return Response.json({ project: { name: "demo", policy: { checks: [], regenerate: "node cli/regenerate.mjs" } }, items: [], events: [] });
-      if (url !== "https://one.test/api/projects/demo/baseline-token" || options.method !== "POST") throw new Error("unexpected route " + url);
-      if (JSON.parse(options.body).scope !== "read") throw new Error("wrong baseline-token request");
-      return Response.json({ remote: "https://git.test/demo.git", token: "main-read-secret", tokenId: "up-1", expiresAt: "2026-10-11T00:00:00.000Z", defaultBranch: "main" });
+      if (url !== "https://one.test/api/projects/demo/git-token" || options.method !== "POST") throw new Error("unexpected route " + url);
+      const asked = JSON.parse(options.body);
+      if (asked.kind !== "read" || asked.item !== undefined) throw new Error("wrong git-token request");
+      return Response.json({ kind: "read", remote: "https://git.test/demo.git", token: "main-read-secret", expiresAt: "2026-10-11T00:00:00.000Z", defaultBranch: "main", repository: "server" });
     };
     await import(${JSON.stringify(cli)});
   `;

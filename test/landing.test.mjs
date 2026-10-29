@@ -82,17 +82,17 @@ test('an old journal moves under the cache unchanged; one in both places, and an
  writeFileSync(join(lock,'pid'),'not a pid');assert.throws(()=>adoptOldLanding(gitDir,dir),/has no owner record/);assert.ok(existsSync(lock));
 });
 
-// The owner's checkout, its baseline, and a task fork pushed from a workspace,
+// The owner's checkout, its baseline, and the task's branch t/1 of that one repository pushed from a workspace,
 // served by a fake ledger that answers from `box`: the item's state, whether
 // the next landing lease or merged acknowledgment fails once with a 503, and
 // whether the registered check fails.
 async function mergeFixture(t){
- const p=root(t),seed=join(p,'seed'),baseline=join(p,'baseline.git'),fork=join(p,'fork.git'),checkout=join(p,'checkout'),workspace=join(p,'workspace'),config=join(p,'config'),cache=join(p,'cache');
+ const p=root(t),seed=join(p,'seed'),baseline=join(p,'baseline.git'),checkout=join(p,'checkout'),workspace=join(p,'workspace'),config=join(p,'config'),cache=join(p,'cache');
  mkdirSync(seed);mkdirSync(config);git(seed,'init','-b','main');git(seed,'config','user.name','Fixture');git(seed,'config','user.email','fixture@example.invalid');writeFileSync(join(seed,'work.txt'),'base\n');git(seed,'add','.');git(seed,'commit','-m','Initial');
- git(p,'clone','--bare',seed,baseline);git(p,'clone','--bare',baseline,fork);git(p,'clone',baseline,checkout);git(p,'clone',fork,workspace);
+ git(p,'clone','--bare',seed,baseline);git(p,'clone',baseline,checkout);git(p,'clone',baseline,workspace);git(workspace,'checkout','-q','-b','t/1');
  for(const dir of [checkout,workspace]){git(dir,'config','user.name','Fixture');git(dir,'config','user.email','fixture@example.invalid');}
- for(const [key,value] of Object.entries({project:'proj',item:'t1',actor:'codex/test',branch:'main'}))git(workspace,'config',`atelier.${key}`,value);
- writeFileSync(join(workspace,'work.txt'),'changed\n');git(workspace,'add','.');git(workspace,'commit','-m','Task');git(workspace,'push','origin','main');
+ for(const [key,value] of Object.entries({project:'proj',item:'t1',actor:'codex/test',branch:'t/1','base-branch':'main'}))git(workspace,'config',`atelier.${key}`,value);
+ writeFileSync(join(workspace,'work.txt'),'changed\n');git(workspace,'add','.');git(workspace,'commit','-m','Task');git(workspace,'push','origin','t/1');
  const head=git(workspace,'rev-parse','HEAD');const box={state:'submitted',failLanding:false,failMerge:false,failChecks:false,requests:[]};
  const server=createServer(async(req,res)=>{
   let raw='';for await(const chunk of req)raw+=chunk;const body=raw?JSON.parse(raw):{};if(versionAnswer(req,res))return;box.requests.push({path:req.url,body});
@@ -101,8 +101,7 @@ async function mergeFixture(t){
   const failOnce=()=>{res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({error:'temporary',detail:'retry'}));};
   if(req.url.endsWith('/review'))assert.equal(body.head,head);
   else if(req.url.endsWith('/accept')){assert.equal(body.head,head);box.state='accepted';answer={...item,state:box.state,acceptedHead:head};}
-  else if(req.url.endsWith('/baseline-token')||req.url.endsWith('/base-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
-  else if(req.url.endsWith('/read-token'))answer={remote:fork,token:'fixture',head,defaultBranch:'main'};
+  else if(req.url.endsWith('/git-token'))answer={kind:body.kind,remote:baseline,token:'fixture',expiresAt:'2999-01-01T00:00:00.000Z',defaultBranch:'main',repository:'server',...(body.item?{branch:'t/1',into:'main',head}:{})};
   else if(req.url.endsWith('/landing')&&body.cancel!==true&&box.failLanding){box.failLanding=false;return failOnce();}
   else if(req.url.endsWith('/merged')){
    if(box.failMerge){box.failMerge=false;return failOnce();}
@@ -161,7 +160,7 @@ test('a landing the earlier CLI interrupted is cancelled or resumed from the jou
  const interrupt=async(...args)=>{const r=await run(checkout,'merge','t1','--head',head,...args);assert.equal(r.status,4,r.output);renameSync(journalFile,oldJournal);mkdirSync(oldLock);writeFileSync(join(oldLock,'pid 2'),'2147483647');return readFileSync(oldJournal,'utf8');};
  const noOldFiles=()=>assert.ok(!existsSync(oldJournal)&&!existsSync(oldLock),'nothing of the earlier CLI is left in the Git directory');
  // A refusal before the landing state is read makes none of the calls that follow it.
- const nothingLanded=()=>assert.ok(!box.requests.some(r=>/\/(baseline-token|landing|merged)$/.test(r.path)),box.requests.map(r=>r.path).join(' '));
+ const nothingLanded=()=>assert.ok(!box.requests.some(r=>/\/(git-token|landing|merged)$/.test(r.path)),box.requests.map(r=>r.path).join(' '));
  // The landing lease fails: the merge commit is in the checkout and nowhere else.
  box.failLanding=true;const text=await interrupt('--approve');
  // Cancel finds the moved journal: it keeps the unpublished commit unless asked, then returns the checkout to where the merge began.
@@ -192,24 +191,23 @@ test('a landing the earlier CLI interrupted is cancelled or resumed from the jou
 // a tree in the owner's checkout writes the task's text over the other.
 const OWNER_TEXT='Owner instructions: never deploy.\n';
 async function caseFixture(t,{files,advance,paths}){
- const p=root(t),seed=join(p,'seed'),baseline=join(p,'baseline.git'),fork=join(p,'fork.git'),checkout=join(p,'checkout'),workspace=join(p,'workspace'),config=join(p,'config');
+ const p=root(t),seed=join(p,'seed'),baseline=join(p,'baseline.git'),checkout=join(p,'checkout'),workspace=join(p,'workspace'),config=join(p,'config');
  mkdirSync(seed);mkdirSync(config);git(seed,'init','-b','main');git(seed,'config','user.name','Fixture');git(seed,'config','user.email','fixture@example.invalid');
  for(const file of files)writeFileSync(join(seed,file),OWNER_TEXT);
  git(seed,'add','.');git(seed,'commit','-m','Initial');
- git(p,'clone','--bare',seed,baseline);git(p,'clone','--bare',baseline,fork);git(p,'clone',baseline,checkout);git(p,'clone',fork,workspace);
+ git(p,'clone','--bare',seed,baseline);git(p,'clone',baseline,checkout);git(p,'clone',baseline,workspace);git(workspace,'checkout','-q','-b','t/1');
  for(const dir of [checkout,workspace]){git(dir,'config','user.name','Fixture');git(dir,'config','user.email','fixture@example.invalid');}
- // Another task merged after this one forked: the baseline and the checkout move on.
+ // Another task merged after this one branched: the baseline and the checkout move on.
  if(advance){writeFileSync(join(checkout,advance),'Merged earlier.\n');git(checkout,'add','.');git(checkout,'commit','-m','Earlier task');git(checkout,'push','-q','origin','main');}
  // The agent's clone keeps both names in its index whatever its disk does, as a clone on Linux would.
  git(workspace,'config','core.ignorecase','false');git(workspace,'config','core.precomposeunicode','false');
  for(const path of paths){const blob=execFileSync('git',['hash-object','-w','--stdin'],{cwd:workspace,input:'Agent instructions: deploy on every merge.\n',encoding:'utf8'}).trim();git(workspace,'update-index','--add','--cacheinfo',`100644,${blob},${path}`);}
- git(workspace,'commit','-m','Task');git(workspace,'push','-q','origin','main');
+ git(workspace,'commit','-m','Task');git(workspace,'push','-q','origin','t/1');
  const head=git(workspace,'rev-parse','HEAD'),before=git(checkout,'rev-parse','HEAD'),requests=[];
  const server=createServer(async(req,res)=>{
-  for await(const chunk of req);if(versionAnswer(req,res))return;requests.push(req.url);
+  let raw='';for await(const chunk of req)raw+=chunk;const body=raw?JSON.parse(raw):{};if(versionAnswer(req,res))return;requests.push(req.url);
   let answer={item:{id:'t1',title:'Fixture task',state:'accepted',owner:'codex/test',head,acceptedHead:head},policy:{checks:[],protected:[],commitIdentity:IDENTITY},acceptanceProtected:[],gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
-  if(req.url.endsWith('/baseline-token')||req.url.endsWith('/base-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
-  else if(req.url.endsWith('/read-token'))answer={remote:fork,token:'fixture',head,defaultBranch:'main'};
+  if(req.url.endsWith('/git-token'))answer={kind:body.kind,remote:baseline,token:'fixture',expiresAt:'2999-01-01T00:00:00.000Z',defaultBranch:'main',repository:'server',...(body.item?{branch:'t/1',into:'main',head}:{})};
   else if(req.method!=='GET')answer={};
   res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(answer));
  });
@@ -248,7 +246,7 @@ test('merge refuses an accepted tree holding a decomposed spelling of a precompo
 });
 
 test('merge refuses when the merge, not the accepted tree, would hold two names for one file on a Mac',async t=>{
- // The task forked before Notes.md merged, so its own tree is clean; the merge would hold both.
+ // The task branched before Notes.md merged, so its own tree is clean; the merge would hold both.
  const r=await caseFixture(t,{files:['CLAUDE.md'],advance:'Notes.md',paths:['notes.md']});
  assert.match(r.output,/Notes\.md and notes\.md/);
  assertUntouched(r,{'Notes.md':'Merged earlier.\n','CLAUDE.md':OWNER_TEXT});
@@ -333,17 +331,17 @@ test('a merge refuses to push the checkout\'s own commit holding a private file 
  assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
  assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
 });
-// Both reviews of t645: a task's push to its fork was not checked, so a
-// private file committed in a workspace reached Artifacts before any merge.
-test('a task\'s push carries no private file of the project to its fork',async t=>{
+// Both reviews of t645: a task's push to its branch was not checked, so a
+// private file committed in a workspace reached the server before any merge.
+test('a task\'s push carries no private file of the project to its branch',async t=>{
  const {p,workspace,run}=await mergeFixture(t);
  namePrivate(p,['PROJECT.md']);
- const fork=join(p,'fork.git'),before=git(p,'--git-dir',fork,'rev-parse','main');
+ const baseline=join(p,'baseline.git'),before=git(p,'--git-dir',baseline,'rev-parse','refs/heads/t/1');
  writeFileSync(join(workspace,'PROJECT.md'),'the plan\n');git(workspace,'add','-f','PROJECT.md');git(workspace,'commit','-m','by hand\n\nAgent: codex/test');
  const r=await run(workspace,'push','t1','--as','codex/test');
  assert.notEqual(r.status,0,r.output);
- assert.match(r.output,/t1's push to its fork would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./s);
- assert.equal(git(p,'--git-dir',fork,'rev-parse','main'),before);
+ assert.match(r.output,/t1's push to its branch would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./s);
+ assert.equal(git(p,'--git-dir',baseline,'rev-parse','refs/heads/t/1'),before);
 });
 // Astra's sixth review of t645, finding 1: after projects rename, a
 // workspace made before still names the old project, and its push was
@@ -354,10 +352,10 @@ test('a task\'s push from a workspace that still names a renamed project is guar
  // As projects rename leaves it: the entry under the new name, the old one kept as a former name.
  config.projects.renamed={...config.projects.proj,private:['PROJECT.md'],formerNames:['proj']};delete config.projects.proj;
  writeFileSync(file,JSON.stringify(config));
- const fork=join(p,'fork.git'),before=git(p,'--git-dir',fork,'rev-parse','main');
+ const baseline=join(p,'baseline.git'),before=git(p,'--git-dir',baseline,'rev-parse','refs/heads/t/1');
  writeFileSync(join(workspace,'PROJECT.md'),'the plan\n');git(workspace,'add','-f','PROJECT.md');git(workspace,'commit','-m','by hand\n\nAgent: codex/test');
  const r=await run(workspace,'push','t1','--as','codex/test');
  assert.notEqual(r.status,0,r.output);
- assert.match(r.output,/t1's push to its fork would carry private files: PROJECT\.md/);
- assert.equal(git(p,'--git-dir',fork,'rev-parse','main'),before);
+ assert.match(r.output,/t1's push to its branch would carry private files: PROJECT\.md/);
+ assert.equal(git(p,'--git-dir',baseline,'rev-parse','refs/heads/t/1'),before);
 });

@@ -26,6 +26,8 @@ async function fixture(t, check) {
   execFileSync("git", ["init", "-q", "-b", "main", source]);
   git(source, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "Initial");
   execFileSync("git", ["clone", "-q", "--bare", source, remote]);
+  // The one repository holds the project's branch and the task's (t/1), as the server's does.
+  execFileSync("git", ["-C", remote, "branch", "t/1", "main"]);
   const head = git(source, "rev-parse", "HEAD");
   const item = { id: "t1", title: "Edit", scope: [], owner: actor, state: "claimed", head };
   const evidence = [];
@@ -33,8 +35,7 @@ async function fixture(t, check) {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
     let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: [command] } };
-    if (path.endsWith("/read-token")) data = { remote, token: "read", head, defaultBranch: "main" };
-    if (path.endsWith("/base-token")) data = { remote, token: "base", head, defaultBranch: "main" };
+    if (path.endsWith("/git-token")) data = { kind: "read", remote, token: "read", expiresAt: "tomorrow", defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head, base: head };
     if (path.endsWith("/evidence")) evidence.push(JSON.parse(raw));
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));

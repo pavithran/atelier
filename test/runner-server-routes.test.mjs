@@ -31,15 +31,17 @@ for (const method of ["GET", "POST", "DELETE"]) {
   });
 }
 
-test("runner authorization retains path and write-scope restrictions", () => {
+test("runner authorization retains its path restrictions", () => {
   for (const path of ["projects//items/t1", "projects/demo/items/other", "projects/demo/items/t1/plan/approve"]) {
     assert.equal(runnerRoute("GET", path.split("/")), false, path);
     assert.throws(() => routeKey("GET", path.split("/")), /Unexpected runner request/);
   }
+  // The read-token, base-token and baseline-token routes are gone: a runner
+  // reads through git-token alone.
   for (const path of ["projects/demo/baseline-token", "projects/demo/items/t1/read-token", "projects/demo/items/t1/base-token"]) {
-    assert.equal(runnerRoute("POST", path.split("/"), { scope: "read" }), true);
-    assert.equal(runnerRoute("POST", path.split("/"), { scope: "write" }), false);
+    assert.equal(runnerRoute("POST", path.split("/"), { scope: "read" }), false, path);
   }
+  assert.equal(runnerRoute("POST", ["projects", "demo", "git-token"], { kind: "read" }), true);
 });
 
 test("the server answers each listed route", async (t) => {

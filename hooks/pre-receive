@@ -4,8 +4,9 @@
 // user with the grant in the environment (src/git/http.mjs); this hook,
 // named by core.hooksPath and out of every agent's reach, refuses each ref
 // update the grant does not cover.
-//   1. One ref per push, the one the grant names: task tN writes
-//      refs/heads/t/N, plan tN refs/heads/plan/N, landing the project's
+//   1. One ref per push, the one the grant names: task tN and refresh tN
+//      (a task refresh's leaseholder) write refs/heads/t/N, plan tN
+//      refs/heads/plan/N, landing the project's
 //      branch, owner the project's branch and refs/heads/dev/*. Landing and
 //      owner also write Atelier's provenance notes, refs/notes/atelier, on a
 //      push of their own; a task or plan grant never does.
@@ -38,6 +39,7 @@ const n = /^t(\d+)$/.exec(task)?.[1];
 const NOTES = "refs/notes/atelier";
 const writes = {
   task: n && { test: (r) => r === `refs/heads/t/${n}`, text: `t/${n}` },
+  refresh: n && { test: (r) => r === `refs/heads/t/${n}`, text: `t/${n}` },
   plan: n && { test: (r) => r === `refs/heads/plan/${n}`, text: `plan/${n}` },
   landing: branch && { test: (r) => r === `refs/heads/${branch}` || r === NOTES, text: `${branch} and ${NOTES}` },
   owner: branch && { test: (r) => r === `refs/heads/${branch}` || r === NOTES || /^refs\/heads\/dev\/[^/].*$/.test(r), text: `${branch}, dev/* and ${NOTES}` },

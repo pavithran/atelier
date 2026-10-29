@@ -70,7 +70,7 @@ it("a review, handoff, release or abandonment note over 2000 characters is refus
   const { generation } = await L.claim("t1", A);
   await L.setFork("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  expect(await L.recordToken("t1", A, generation, null, "write-token-1")).toBe(true);
+  expect(await L.recordToken("t1", A, generation, null, "git:write-token-1")).toBe(true);
   const revoked: string[] = [];
   const as = caller(name, artifacts(revoked));
   const holder = as(await issue(name, A), null), reviewer = as(await issue(name, B), null), owner = as(TOKEN, "owner");
@@ -94,7 +94,8 @@ it("a review, handoff, release or abandonment note over 2000 characters is refus
   expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: false, note: exact })).status).toBe(200);
   expect((await L.reviewsFor("t1"))[0].note).toBe(exact);
   expect((await holder("POST", "/items/t1/release", { note: exact })).status).toBe(200);
-  expect(revoked).toEqual(["write-token-1"]);
+  // The release clears the write token's record, which is its revocation.
+  expect(await L.tokenId("t1")).toBeNull();
   const released = ((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "item.released");
   expect(released?.data.note).toBe(exact);
 });

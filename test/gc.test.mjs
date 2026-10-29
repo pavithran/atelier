@@ -87,7 +87,7 @@ test("a finished workspace goes once its HEAD is in main or the recorded head, a
   const main = { dir: checkout, branch: "main" };
   // Main keeps what it took before: each workspace's history is merged in.
   const intoMain = (dir, rev = "HEAD") => { f.git(checkout, "fetch", "-q", dir, rev); f.git(checkout, "merge", "-q", "--allow-unrelated-histories", "--no-edit", "FETCH_HEAD"); };
-  // Merged, its HEAD behind the accepted head (main went on through the fork).
+  // Merged, its HEAD behind the accepted head (main went on through a landing).
   const behind = f.workspace("t1");
   f.git(behind, "commit", "--allow-empty", "-m", "Accepted");
   f.items[0].acceptedHead = f.items[0].head = f.git(behind, "rev-parse", "HEAD");
@@ -242,6 +242,7 @@ test("check records its running child, reports pass and failure, and cleans its 
   if (!canInspectSlots(t)) return;
   const f = fixture(t), remote = f.workspace("t1"), evidence = [];
   const head = f.items[0].acceptedHead;
+  f.git(remote, "branch", "t/1", "main");
   const probe = `const fs = require('node:fs'); const r = JSON.parse(fs.readFileSync(process.cwd() + '.atelier.json')); if (r.project !== 'proj' || !r.childPid) process.exit(8); process.kill(r.pid, 0); process.kill(r.childPid, 0); console.log('record verified');`;
   const shellQuote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
   const commands = [`node -e ${shellQuote(probe)}`, "echo deliberate-failure >&2; exit 7"];
@@ -249,7 +250,7 @@ test("check records its running child, reports pass and failure, and cleans its 
     let body = ""; for await (const chunk of req) body += chunk;
     let response;
     if (req.url.endsWith("/evidence")) { evidence.push(JSON.parse(body)); response = {}; }
-    else if (req.url.endsWith("-token")) response = { remote, token: "fixture", head, defaultBranch: "main" };
+    else if (req.url.endsWith("/git-token")) response = { kind: "read", remote, token: "fixture", expiresAt: "tomorrow", defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head, base: head };
     else response = { item: f.items[0], policy: { checks: commands } };
     res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(response));
   });

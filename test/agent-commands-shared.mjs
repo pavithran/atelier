@@ -14,20 +14,22 @@ export const brief = {
 };
 export const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 export const head = "a".repeat(40), passed = [{ claim: "npm test", result: "passed", where: "in a clean clone on this machine" }];
-export async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch, policy = {}, kind, evidence = [], logs = {}, prepare = null, env = {} } = {}) {
+export async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, policy = {}, kind, evidence = [], logs = {}, prepare = null, env = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "cache", "work", "proj", "t1");
   const source = join(root, "source"), remote = join(root, "remote.git");
-  execFileSync("git", ["init", "-q", "-b", forkBranch, source]);
+  execFileSync("git", ["init", "-q", "-b", "main", source]);
   git(source, "config", "user.name", "Test Owner");
   git(source, "config", "user.email", "owner@example.test");
   git(source, "commit", "-q", "--allow-empty", "-m", "Initial");
   execFileSync("git", ["clone", "-q", "--bare", source, remote]);
+  // The one repository holds the project's branch and the task's (t/1), as the server's does.
+  git(remote, "branch", "t/1", "main");
   const head = git(source, "rev-parse", "HEAD");
   const item = { id: "t1", ...(kind ? { kind } : {}), title: brief.title, scope: ["docs/**"], owner: actor, state: "claimed", head, dispatch: { note: "Keep examples" } };
   const gate = { ready: !blockers.length, blockers };
-  const posts = [], requests = [], branch = { claim: claimBranch };
+  const posts = [], requests = [];
   const command = dirtyWorkspace ? `printf drift > ${workspace}/drift.txt; exit 1` : failed ? "exit 1" : "exit 0";
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -49,12 +51,12 @@ export async function fixture(t, { failed = false, dirtyWorkspace = false, block
     if (path === "/api/projects/proj") data = { project: { policy: { prepare } }, items: [item] };
     if (path === "/api/projects") data = [{ name: "proj", title: "Proj" }];
     if (path === "/api/runners") data = [];
-    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" }, commitIdentity: { name: "Test Owner", email: "owner@example.test", agentEmails: [] } };
-    if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
-    if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
+    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, branch: "t/1", defaultBranch: "main", expiresAt: "tomorrow" }, baseline: { defaultBranch: "main" }, commitIdentity: { name: "Test Owner", email: "owner@example.test", agentEmails: [] } };
+    if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "refs/heads/t/1") };
+    if (path.endsWith("/git-token")) data = { kind: "read", remote, token: "fake", expiresAt: "tomorrow", defaultBranch: "main", repository: "server", ...(JSON.parse(raw).item ? { branch: "t/1", into: "main", head, base: head } : {}) };
     if (path.endsWith("/brief")) data = brief;
     if (path.split("?")[0].endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title, kind: "accept", reason: "all checks observed passing at this head", weight: 100 }];
-    const broken = failStep && path.endsWith(`/${failStep}`) && (failStep !== "base-token" || requests.filter((p) => p.endsWith("/base-token")).length === 1);
+    const broken = failStep && path.endsWith(`/${failStep}`) && (failStep !== "git-token" || requests.filter((p) => p.endsWith("/git-token")).length === 1);
     res.writeHead(broken ? 503 : 200, { "content-type": "application/json" });
     res.end(JSON.stringify(broken ? { error: "unavailable", detail: "try later" } : data));
   });
@@ -70,5 +72,5 @@ export async function fixture(t, { failed = false, dirtyWorkspace = false, block
     const status = await new Promise((done) => child.on("close", done));
     return { status, output, stdout };
   }
-  return { run, workspace, posts, requests, origin, remote, branch, head };
+  return { run, workspace, posts, requests, origin, remote, head };
 }

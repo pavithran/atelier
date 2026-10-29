@@ -95,7 +95,7 @@ test("a head pushed while the landing waits for the lease is not accepted or mer
     pushing = true;
     // The builder pushes again while the approved head waits for the lease.
     writeFileSync(join(f.workspace("t1"), "late.txt"), "late\n");
-    git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-q", "-m", "Late work"); git(f.workspace("t1"), "push", "-q", "origin", "HEAD:main");
+    git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-q", "-m", "Late work"); git(f.workspace("t1"), "push", "-q", "origin", "HEAD");
     setTimeout(() => { f.box.lease = null; }, 120);
   };
   const r = await f.run(f.checkout, "land", "t1");
@@ -166,7 +166,7 @@ test("a conflict only in files the regenerate command rewrites stops the landing
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "HEAD");
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
   const merge = f.posts("/land").find((x) => x.body.step === "merge-main");

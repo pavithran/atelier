@@ -22,6 +22,7 @@ import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync
 import { appendMovedCodeRecord, prepareRecordedWorkspace, tailOf } from "./landing.mjs";
 import { workspaceNotice } from "./review-notice.mjs";
 import { reviewerOffered } from "./review-oneshot.mjs";
+import { baseReadGrant, taskReadGrant } from "./read-grant.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -440,7 +441,7 @@ export async function runLand(io) {
   // it: measuring needs a baseline fetch into the workspace, and a dry run
   // changes nothing.
   if (!noReview && !dryRun && !needsPreparation && existsSync(join(dir, ".git"))) {
-    const baseline = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" }).catch(() => undefined);
+    const baseline = await baseReadGrant(request, name, id).catch(() => undefined);
     const notice = workspaceNotice((argv, o) => git(argv, { allowFail: true, ...o }), dir, d0.policy, { baseline, part: d0.item?.kind === "part" });
     if (notice) for (const line of notice) print(line);
   }
@@ -1436,10 +1437,10 @@ async function fetchLanding(io, { at, id, name, head }) {
   const { request, git } = io;
   const has = (sha) => git(["cat-file", "-e", `${sha}^{commit}`], { cwd: at, allowFail: true }).status === 0;
   if (!has(head)) {
-    const ws = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/read-token`, {});
+    const ws = await taskReadGrant(request, name, id);
     await git(["fetch", "--quiet", "--no-write-fetch-head", ws.remote, head], { cwd: at, token: ws.token });
   }
-  const read = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
+  const read = await baseReadGrant(request, name, id);
   const listed = String(await git(["ls-remote", read.remote, `refs/heads/${read.defaultBranch}`], { cwd: at, token: read.token })).trim();
   const mainHead = listed.split(/\s/)[0];
   if (!/^[0-9a-f]{40,64}$/.test(mainHead)) throw new Error(`main (${read.defaultBranch}) could not be read from the baseline`);
@@ -1559,9 +1560,8 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead, he
 // runs the same moved-code comparison: its `git` runs each command as a
 // runner child, so every call here is awaited, which the landing's
 // synchronous git does not mind; `base` is the baseline token it already
-// read through the project's baseline-token route, which a runner token
-// may call where the item's base-token answers only for the job it holds,
-// so no request is made here; `message` names the merge commit's message
+// read through `atelier baseline-token`, which a runner token may call for
+// any project it serves, so no request is made here; `message` names the merge commit's message
 // from main's head, ending in the builder's Agent line where the landing's
 // names the landing; and `moved.port` takes the comparison's findings
 // instead of stopping, so the merge goes on and the builder ports the
@@ -1573,7 +1573,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
   const { request, git, print } = io;
   guard();
   const t0 = Date.now();
-  const read = base ?? await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
+  const read = base ?? await baseReadGrant(request, name, id);
   try { await git(["fetch", "--quiet", read.remote, read.defaultBranch], { cwd: dir, token: read.token }); }
   catch (error) { throw Object.assign(error, { infrastructure: true }); }
   const mainHead = await git(["rev-parse", "FETCH_HEAD"], { cwd: dir });

@@ -1,5 +1,5 @@
 // The task refresh's runner jobs (t462, cli/task-refresh.mjs), against real
-// Git repositories standing in for a task's fork and main, with the server's
+// Git repository standing in for the project's, with the task's branch and main, with the server's
 // side faked at the CLI: a clean merge, a task already holding main, a
 // mechanical conflict found by the integrator and resolved by a resolver, a
 // resolution outside the transformations, behavioural and uncertain
@@ -27,8 +27,8 @@ function git(cwd, ...args) {
   return r.stdout.trim();
 }
 
-// A fork of the task and main, as two bare repositories, from one history:
-// a base commit, the task's commit on it (`task`), and main's (`main`).
+// The project's repository, holding the task's branch t/7 and main, from one
+// history: a base commit, the task's commit on it (`task`), and main's (`main`).
 // `files` gives each side's files; null removes one.
 function fixture(t, { base = {}, task = {}, main = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "t462-"));
@@ -47,12 +47,11 @@ function fixture(t, { base = {}, task = {}, main = {} } = {}) {
   const taskHead = commit(task, "task work\n\nAgent: claude-code/opus-5.5");
   git(work, "checkout", "--quiet", "-B", "mainline", b);
   const mainHead = commit(main, "main moved");
-  const fork = join(root, "fork.git"), baseline = join(root, "main.git");
-  git(root, "init", "--quiet", "--bare", "-b", "main", fork);
-  git(root, "init", "--quiet", "--bare", "-b", "main", baseline);
-  git(work, "push", "--quiet", fork, `${taskHead}:refs/heads/main`);
-  git(work, "push", "--quiet", baseline, `${mainHead}:refs/heads/main`);
-  return { root, work, fork, baseline, base: b, task: taskHead, main: mainHead };
+  const repo = join(root, "demo.git");
+  git(root, "init", "--quiet", "--bare", "-b", "main", repo);
+  git(work, "push", "--quiet", repo, `${taskHead}:refs/heads/t/7`);
+  git(work, "push", "--quiet", repo, `${mainHead}:refs/heads/main`);
+  return { root, work, repo, base: b, task: taskHead, main: mainHead };
 }
 
 // The runner's io for the job, with git run for real and the CLI faked:
@@ -63,7 +62,7 @@ function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "cl
   const lease = { id: "L1", job: job === "task-resolve" ? "resolve" : "refresh", by: actor, mainHead: f.main, expectedHead: f.task, ...(checking ? { checking } : {}), ...(pushing ? { pushing } : {}) };
   const flag = (argv, name) => argv[argv.indexOf(name) + 1];
   const defaults = {
-    "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : argv.includes("--status") ? { head: f.task, lease: true, checking: null } : ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null, ...(proseStandard ? { proseStandard } : {}) }),
+    "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : argv.includes("--status") ? { head: f.task, lease: true, checking: null } : ({ lease, workspace: { remote: f.repo, branch: "t/7", token: "w", defaultBranch: "main" }, baseline: { remote: f.repo, token: "r", defaultBranch: "main" }, checks, commitIdentity: null, ...(proseStandard ? { proseStandard } : {}) }),
     "refresh-pushing": () => ({ ...lease, pushing: {} }),
     refreshed: (argv) => ({ result: { outcome: argv.includes("--head") ? "refreshed" : "held", reason: checks.length && argv.includes("--head") ? "checks pending" : null } }),
     "refresh-failed": (argv) => {
@@ -101,9 +100,9 @@ function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "cl
   return { io, calls, logs, reports, assignment, verbs: () => calls.map((c) => c[0]), run: () => runTaskRefresh(assignment, { agents: [] }, "home:test", io) };
 }
 
-const forkHead = (f) => git(f.root, "--git-dir", f.fork, "rev-parse", "main");
-const parents = (f, head) => git(f.root, "--git-dir", f.fork, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1);
-const message = (f, head) => git(f.root, "--git-dir", f.fork, "log", "-1", "--format=%B", head).trim();
+const branchHead = (f) => git(f.root, "--git-dir", f.repo, "rev-parse", "t/7");
+const parents = (f, head) => git(f.root, "--git-dir", f.repo, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1);
+const message = (f, head) => git(f.root, "--git-dir", f.repo, "log", "-1", "--format=%B", head).trim();
 const IMPORTS = 'import { a } from "./a.ts";\nimport { b } from "./b.ts";\n\nexport const all = [a, b];\n';
 
 test("a clean refresh is merged in a workspace of its own, pushed after it is announced, recorded with the integrator's Agent line, and checked", async (t) => {
@@ -112,7 +111,7 @@ test("a clean refresh is merged in a workspace of its own, pushed after it is an
   const state = await h.run();
   assert.equal(state.phase, "refreshed");
   assert.deepEqual(h.verbs(), ["refresh-lease", "refresh-pushing", "refreshed", "check", "refresh-checked"]);
-  const head = forkHead(f);
+  const head = branchHead(f);
   assert.equal(head, state.head);
   assert.deepEqual(parents(f, head), [f.task, f.main]);
   assert.equal(message(f, head), `Merge main at ${f.main.slice(0, 8)} into t7\n\nAgent: atelier/integrator`);
@@ -131,12 +130,12 @@ test("a task that already holds main is reported refreshed with no head, and not
   git(f.work, "checkout", "--quiet", f.task);
   git(f.work, "merge", "--quiet", "--no-edit", f.main);
   const merged = git(f.work, "rev-parse", "HEAD");
-  git(f.work, "push", "--quiet", f.fork, `${merged}:refs/heads/main`);
+  git(f.work, "push", "--quiet", f.repo, `${merged}:refs/heads/t/7`);
   const h = harness({ ...f, task: merged });
   assert.equal((await h.run()).held, true);
   assert.deepEqual(h.verbs(), ["refresh-lease", "refreshed"]);
   assert.ok(!h.calls[1].includes("--head"));
-  assert.equal(forkHead(f), merged);
+  assert.equal(branchHead(f), merged);
 });
 
 test("the integrator sends a mechanical conflict to a resolver and pushes nothing", async (t) => {
@@ -146,7 +145,7 @@ test("the integrator sends a mechanical conflict to a resolver and pushes nothin
   assert.equal(state.recorded, true);
   const failed = h.calls.find((c) => c[0] === "refresh-failed");
   assert.equal(failed[failed.indexOf("--outcome") + 1], "mechanical");
-  assert.equal(forkHead(f), f.task);
+  assert.equal(branchHead(f), f.task);
 });
 
 test("a resolver's mechanical resolution is verified, committed under its Agent line and pushed", async (t) => {
@@ -157,10 +156,10 @@ test("a resolver's mechanical resolution is verified, committed under its Agent 
   const state = await h.run();
   assert.equal(state.phase, "refreshed");
   assert.match(h.calls.find((c) => c[0] === "resolve")[1], /import-union/);
-  const head = forkHead(f);
+  const head = branchHead(f);
   assert.deepEqual(parents(f, head), [f.task, f.main]);
   assert.match(message(f, head), /\n\nAgent: claude-code\/opus-5\.5$/);
-  assert.equal(git(f.root, "--git-dir", f.fork, "show", `${head}:index.ts`), resolved.trimEnd());
+  assert.equal(git(f.root, "--git-dir", f.repo, "show", `${head}:index.ts`), resolved.trimEnd());
   const refreshed = h.calls.find((c) => c[0] === "refreshed");
   assert.equal(refreshed[refreshed.indexOf("--transformations") + 1], "import-union");
 });
@@ -191,7 +190,7 @@ test("a resolution outside the transformations goes back to the builder and noth
   assert.equal(h.reports[0].kind, "uncertain");
   assert.match(h.reports[0].files[0].why, /not mechanical.*index\.ts/);
   assert.match(failed[failed.indexOf("--reason") + 1], /not mechanical/);
-  assert.equal(forkHead(f), f.task);
+  assert.equal(branchHead(f), f.task);
 });
 
 test("a behavioural conflict goes back to the builder with the merge base, both heads, the paths and the hunks", async (t) => {
@@ -203,7 +202,7 @@ test("a behavioural conflict goes back to the builder with the merge base, both 
   assert.deepEqual([report.base, report.head, report.main, report.kind], [f.base, f.task, f.main, "behavioural"]);
   assert.equal(report.files[0].path, "limit.ts");
   assert.deepEqual([report.files[0].hunks[0].ours, report.files[0].hunks[0].base, report.files[0].hunks[0].theirs], [["export const limit = 20;"], ["export const limit = 10;"], ["export const limit = 30;"]]);
-  assert.equal(forkHead(f), f.task);
+  assert.equal(branchHead(f), f.task);
   assert.ok(!h.verbs().includes("refresh-pushing"));
 });
 
@@ -272,8 +271,8 @@ for (const job of ["task-refresh", "task-resolve"]) {
     // The regression: Git's merge is clean, so without the comparison the
     // refresh would push it and hide the finding from the landing.
     const probe = join(f.root, "probe");
-    git(f.root, "clone", "--quiet", f.fork, probe);
-    git(probe, "fetch", "--quiet", f.baseline, f.main);
+    git(f.root, "clone", "--quiet", f.repo, probe);
+    git(probe, "fetch", "--quiet", f.repo, f.main);
     git(probe, "merge", "--quiet", "--no-edit", f.main);
     const h = harness(f, { job, resolve: () => { throw new Error("no resolver runs on a moved-code finding"); } });
     const state = await h.run();
@@ -287,7 +286,7 @@ for (const job of ["task-refresh", "task-resolve"]) {
     assert.deepEqual([report.base, report.head, report.main, report.kind], [f.base, f.task, f.main, "behavioural"]);
     assert.deepEqual(report.files.map((x) => x.path), ["cli/atelier.mjs"]);
     assert.match(report.files[0].why, /cli\/commands\/report\.mjs/);
-    assert.equal(forkHead(f), f.task);
+    assert.equal(branchHead(f), f.task);
   });
 }
 
@@ -299,14 +298,14 @@ test("a builder's push under the refresh is never overwritten: the refresh's pus
     writeFileSync(join(f.work, "task.txt"), "task, fixed\n");
     git(f.work, "commit", "--quiet", "-am", "fix\n\nAgent: claude-code/opus-5.5");
     builder = git(f.work, "rev-parse", "HEAD");
-    git(f.work, "push", "--quiet", f.fork, `${builder}:refs/heads/main`);
+    git(f.work, "push", "--quiet", f.repo, `${builder}:refs/heads/t/7`);
     return {};
   } } });
   const state = await h.run();
   assert.equal(state.recorded, true);
   const failed = h.calls.find((c) => c[0] === "refresh-failed");
   assert.equal(failed[failed.indexOf("--outcome") + 1], "superseded");
-  assert.equal(forkHead(f), builder);
+  assert.equal(branchHead(f), builder);
   assert.ok(!h.verbs().includes("refreshed"));
 });
 
@@ -314,7 +313,7 @@ test("a push the server refuses to announce (busy, landing, moved) pushes nothin
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   const h = harness(f, { answers: { "refresh-pushing": () => { throw new Error("refresh_deferred: t7 is landing now"); } } });
   await h.run();
-  assert.equal(forkHead(f), f.task);
+  assert.equal(branchHead(f), f.task);
   const failed = h.calls.find((c) => c[0] === "refresh-failed");
   assert.equal(failed[failed.indexOf("--reason") + 1], "step push", "facts alone, never the refusal's text (round 12)");
 });
@@ -335,7 +334,7 @@ test("a pushed head whose report is refused remains fenced for recovery", async 
   const state = await h.run();
   assert.equal(state.phase, "failed");
   assert.equal(h.verbs().filter((v) => v === "refreshed").length, 2);
-  assert.notEqual(forkHead(f), f.task);
+  assert.notEqual(branchHead(f), f.task);
   assert.deepEqual(released(h), []);
 });
 
@@ -345,10 +344,10 @@ test("a recorded refresh whose answer was lost is asked again, not taken back", 
   const h = harness(f, { answers: { refreshed: () => { if (++asks === 1) throw new Error("socket hang up"); return { replay: true, result: { outcome: "refreshed", reason: null } }; } } });
   const state = await h.run();
   assert.equal(state.phase, "refreshed");
-  assert.equal(forkHead(f), state.head);
+  assert.equal(branchHead(f), state.head);
 });
 
-test("a refresh the server recorded though both its answers were lost stays on the fork, and its lease is not given back", async (t) => {
+test("a refresh the server recorded though both its answers were lost stays on the branch, and its lease is not given back", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   let recordedHead = f.task;
   // The server records the refresh each time; the answers never arrive.
@@ -362,24 +361,24 @@ test("a refresh the server recorded though both its answers were lost stays on t
   const state = await h.run();
   assert.equal(state.phase, "failed");
   assert.notEqual(recordedHead, f.task);
-  assert.equal(forkHead(f), recordedHead, "the push the ledger names is not taken back");
+  assert.equal(branchHead(f), recordedHead, "the push the ledger names is not taken back");
   assert.deepEqual(released(h), []);
   assert.ok(h.calls.some((c) => c[0] === "refresh-lease" && c.includes("--status")));
 });
 
-test("a push whose recorded head cannot be read is left on the fork rather than taken back", async (t) => {
+test("a push whose recorded head cannot be read is left on the branch rather than taken back", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   const h = harness(f, { answers: { refreshed: () => { throw new Error("socket hang up"); } } });
   const answer = h.io.cli;
   h.io.cli = async (argv) => { if (argv[0] === "refresh-lease" && argv.includes("--status")) { h.calls.push(argv); throw new Error("socket hang up"); } return answer(argv); };
   await h.run();
-  assert.notEqual(forkHead(f), f.task);
+  assert.notEqual(branchHead(f), f.task);
   assert.deepEqual(released(h), []);
 });
 
 test("a lease resumed at a recorded head runs only the checks and reports them under it", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
-  const recorded = git(f.root, "--git-dir", f.fork, "rev-parse", "main");
+  const recorded = git(f.root, "--git-dir", f.repo, "rev-parse", "t/7");
   const h = harness(f, { checks: ["npm test"], checking: recorded });
   const state = await h.run();
   assert.deepEqual(state, { phase: "refreshed", head: recorded });
@@ -387,7 +386,7 @@ test("a lease resumed at a recorded head runs only the checks and reports them u
   const checked = h.calls.find((c) => c[0] === "refresh-checked");
   assert.equal(checked[checked.indexOf("--expected-head") + 1], f.task);
   assert.ok(checked.includes("--passed"));
-  assert.equal(forkHead(f), recorded);
+  assert.equal(branchHead(f), recorded);
 });
 
 test("a refused lease is no failure the runner counts", async (t) => {
@@ -414,7 +413,7 @@ test("a provider's usage limit on the resolver's harness gives the lease back at
   assert.ok(release.includes("--provider-limit"));
   assert.match(release[release.indexOf("--reason") + 1], /^step [a-z-]+/, "facts alone (round 12)");
   assert.ok(!h.verbs().some((v) => ["refresh-failed", "refresh-pushing", "refreshed"].includes(v)));
-  assert.equal(forkHead(f), f.task);
+  assert.equal(branchHead(f), f.task);
   assert.ok(h.logs.some((l) => /released t7's refresh lease; the same work resumes when the provider's limit resets/.test(l)));
 });
 
@@ -429,14 +428,14 @@ test("an exception from the moved-code detector is reported as the lease's relea
   assert.ok(!release.includes("--provider-limit"));
   assert.match(release[release.indexOf("--reason") + 1], /^step [a-z-]+/, "facts alone, never git's error (round 12)");
   assert.ok(!h.verbs().some((v) => ["refresh-failed", "refresh-pushing", "refreshed"].includes(v)));
-  assert.equal(forkHead(f), f.task);
+  assert.equal(branchHead(f), f.task);
 });
 
 test("a refused refresh report never starts a rollback or releases the push fence", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   const h = harness(f, { answers: { refreshed: () => { throw new Error("head_moved"); } } });
   await h.run();
-  assert.notEqual(forkHead(f), f.task);
+  assert.notEqual(branchHead(f), f.task);
   assert.equal(released(h).length, 0);
   assert.ok(!h.verbs().includes("refresh-failed"));
 });
@@ -478,7 +477,7 @@ test("a renewal that fails is said, and the job goes on", async (t) => {
   let lease;
   const h = harness(f, { job: "task-resolve", renewMs: 5, resolve: async (cwd) => { await sleep(40); writeFileSync(join(cwd, "index.ts"), resolved); },
     answers: { "refresh-lease": (argv) => { if (argv.includes("--renew")) throw new Error("socket hang up"); return lease; } } });
-  lease = { lease: { id: "L1", job: "resolve", by: "claude-code/opus-5.5", mainHead: f.main, expectedHead: f.task }, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks: [], commitIdentity: null };
+  lease = { lease: { id: "L1", job: "resolve", by: "claude-code/opus-5.5", mainHead: f.main, expectedHead: f.task }, workspace: { remote: f.repo, branch: "t/7", token: "w", defaultBranch: "main" }, baseline: { remote: f.repo, token: "r", defaultBranch: "main" }, checks: [], commitIdentity: null };
   assert.equal((await h.run()).phase, "refreshed");
   assert.ok(h.logs.some((l) => l === "renewing t7's refresh lease failed: socket hang up"));
 });
@@ -496,17 +495,17 @@ for (const outcome of ["pushed", "not-pushed", "moved", "unreachable"]) {
     const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
     const first = harness(f);
     const head = (await first.run()).head;
-    if (outcome === "not-pushed") git(f.work, "push", "--quiet", "--force", f.fork, `${f.task}:refs/heads/main`);
-    if (outcome === "moved") git(f.work, "push", "--quiet", "--force", f.fork, `${f.main}:refs/heads/main`);
+    if (outcome === "not-pushed") git(f.work, "push", "--quiet", "--force", f.repo, `${f.task}:refs/heads/t/7`);
+    if (outcome === "moved") git(f.work, "push", "--quiet", "--force", f.repo, `${f.main}:refs/heads/t/7`);
     const h = harness(f, { checks: ["npm test"], pushing: { head, until: new Date(0).toISOString() }, gitFault: (args) => outcome === "unreachable" && args[0] === "ls-remote" });
     await h.run();
     assert.ok(!h.verbs().includes("refresh-pushing"));
     if (outcome === "pushed") {
       assert.deepEqual(h.verbs(), ["refresh-lease", "refreshed", "check", "refresh-checked"]);
-      assert.equal(forkHead(f), head);
+      assert.equal(branchHead(f), head);
     } else if (outcome === "unreachable") {
       assert.ok(!h.verbs().includes("refresh-failed"));
-      assert.equal(forkHead(f), head);
+      assert.equal(branchHead(f), head);
     } else {
       assert.deepEqual(h.verbs(), ["refresh-lease", "refresh-failed"]);
     }
@@ -526,7 +525,7 @@ test("pushes have a bounded execution timeout", async (t) => {
   assert.equal(pushes, 1);
 });
 
-for (const timeout of [false, true]) test(`a push that changes the fork then ${timeout ? "times out" : "returns an error"} retains its check obligation`, async (t) => {
+for (const timeout of [false, true]) test(`a push that changes the branch then ${timeout ? "times out" : "returns an error"} retains its check obligation`, async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   const h = harness(f, { checks: ["npm test"] });
   const run = h.io.git;
@@ -537,16 +536,16 @@ for (const timeout of [false, true]) test(`a push that changes the fork then ${t
     return { status: 1, stderr: "remote hung up after receiving the commit" };
   };
   await h.run();
-  assert.notEqual(forkHead(f), f.task);
+  assert.notEqual(branchHead(f), f.task);
   assert.deepEqual(released(h), []);
   assert.ok(!h.verbs().includes("refresh-failed"));
   if (!timeout) assert.deepEqual(h.verbs().slice(-3), ["refreshed", "check", "refresh-checked"]);
 });
 
 // Astra's third review of t645, finding 1: the refresh took main's history
-// as held by the fork, so a private file main added and later deleted went
-// to the fork with main's commits, unread.
-test("a refresh carries none of the project's private files to the fork, main's commits included", async (t) => {
+// as held by the branch, so a private file main added and later deleted went
+// to the branch with main's commits, unread.
+test("a refresh carries none of the project's private files to the task's branch, main's commits included", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   git(f.work, "checkout", "--quiet", "mainline");
   writeFileSync(join(f.work, "PROJECT.md"), "the plan\n");
@@ -555,11 +554,11 @@ test("a refresh carries none of the project's private files to the fork, main's 
   git(f.work, "rm", "--quiet", "PROJECT.md");
   git(f.work, "commit", "--quiet", "-m", "plan removed");
   f.main = git(f.work, "rev-parse", "HEAD");
-  git(f.work, "push", "--quiet", "--force", f.baseline, `${f.main}:refs/heads/main`);
+  git(f.work, "push", "--quiet", "--force", f.repo, `${f.main}:refs/heads/main`);
   privateConfig(t, { demo: { private: ["PROJECT.md"] } });
   const h = harness(f);
   const state = await h.run();
   assert.notEqual(state.phase, "refreshed");
   assert.match(String(state.reason), /t7's refresh would carry private files: PROJECT\.md/);
-  assert.equal(forkHead(f), f.task, "the fork got nothing");
+  assert.equal(branchHead(f), f.task, "the branch got nothing");
 });

@@ -3,7 +3,7 @@
 // a checkout's main does not hold the baseline's. Two Macs share a project's
 // baseline: each test makes their checkouts with atelier clone, each Mac with
 // its own Atelier config and cache, against a stand-in server whose
-// baseline-token answer names a bare repository, on disk or served over HTTP
+// git-token answer names a bare repository, on disk or served over HTTP
 // behind a token check (test/helpers/git-http.mjs). All of it lives under
 // os.tmpdir().
 import { test } from "node:test";

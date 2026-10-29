@@ -224,7 +224,7 @@ test("no marker at all decides nothing: the unblocked task runs", async () => {
 // 4. Memory goes with the poll and comes back after a restart.
 
 const task = (over = {}) => ({ ...assignment, item: { ...assignment.item, dispatch: { at: "2026-10-28T09:00:00.000Z", job: "build" }, head: "h1", updatedAt: "u1", ...over } });
-const maps = () => ({ refused: new Set(), gaveUpTasks: new Set(), failures: new Map(), infrastructureFailures: new Map(), skipHeads: new Map(), backoff: new Map(), notReady: new Map() });
+const maps = () => ({ refused: new Set(), gaveUpTasks: new Set(), failures: new Map(), infrastructureFailures: new Map(), skipHeads: new Map(), backoff: new Map() });
 const passes = (m, t) => passedBy(t, ["build", "review"], { refused: m.refused, failures: m.failures, infrastructureFailures: m.infrastructureFailures, gaveUpTasks: m.gaveUpTasks });
 
 test("what the runner passes by is snapshotted with its reasons and restored into a new process", () => {
@@ -236,12 +236,10 @@ test("what the runner passes by is snapshotted with its reasons and restored int
   before.gaveUpTasks.add(taskKey(a));
   before.skipHeads.set(failureKey(a), new Set(["h1", null]));
   before.backoff.set(failureKey(b), { count: 4, due: 9 });
-  before.notReady.set(taskKey(a), { since: 1_000, tries: 2, due: 5, detail: "repo is still being prepared", expired: false });
   const memory = JSON.parse(JSON.stringify(runnerMemory(before)));
   assert.deepEqual(memory.failures, [{ key: failureKey(a), count: 2 }]);
   assert.ok(!("sameExits" in memory), "every same-exit count is the server's, so none is kept here");
   assert.deepEqual(memory.backoff, [{ key: failureKey(b), count: 4 }]);
-  assert.equal(memory.notReady[0].tries, 2);
   const said = Object.fromEntries(memory.reasons.map((r) => [r.task, r.why]));
   assert.match(said["atelier/t13"], /gave it up|skipped after 2 failed runs/);
   assert.match(said["atelier/t14"], /infrastructure failures|claim refused/);
@@ -249,12 +247,10 @@ test("what the runner passes by is snapshotted with its reasons and restored int
   const after = maps();
   assert.equal(passes(after, a), null);
   const restored = restoreMemory(memory, after);
-  assert.equal(restored, memory.refused.length + memory.gaveUp.length + memory.failures.length + memory.infrastructure.length + memory.skipHeads.length + memory.backoff.length + memory.notReady.length);
   for (const t of [a, b]) assert.ok(passes(after, t), `${t.item.id} is still passed by`);
-  // The waits are restored too: a backoff is due again in as many polls as its count asks, and the fork's first answer keeps its time.
+  // The waits are restored too: a backoff is due again in as many polls as its count asks,.
   assert.equal(after.backoff.get(failureKey(b)).count, 4);
   assert.ok(after.backoff.get(failureKey(b)).due > 0);
-  assert.deepEqual([after.notReady.get(taskKey(a)).since, after.notReady.get(taskKey(a)).tries], [1_000, 2]);
   for (const t of [review, plainReview]) assert.equal(passedBy(t, ["criteria-review", "review"], after), null, "a review's same-exit count is not kept here");
   assert.deepEqual([...after.skipHeads.get(failureKey(a))], ["h1", null]);
   // A task the old process never passed by is taken.
@@ -365,11 +361,9 @@ test("forgetting a task drops its entries from every map and leaves the others; 
   m.gaveUpTasks.add(taskKey(a));
   m.skipHeads.set(failureKey(a), new Set(["h1"]));
   m.backoff.set(failureKey(a), { count: 3, due: 2 });
-  m.notReady.set(taskKey(a), { since: 1, tries: 1, due: 1 });
   m.failures.set(failureKey(b), 2);
-  assert.equal(forgetTask("atelier/t13", m), 6);
+  assert.equal(forgetTask("atelier/t13", m), 5);
   assert.deepEqual([...m.failures.keys()], [failureKey(b)]);
-  assert.equal(m.refused.size + m.gaveUpTasks.size + m.skipHeads.size + m.backoff.size + m.notReady.size, 0);
   assert.equal(forgetTask("atelier/t13", m), 0);
   assert.equal(forgetTask("atelier/t99", m), 0);
 });

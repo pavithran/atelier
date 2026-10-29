@@ -43,7 +43,7 @@ export interface RefreshLease {
   // (takeLease) and the merge's Agent line is still the announcer's.
   pushing?: { head: string; until: string; by?: string; job?: RefreshJob };
   checking?: string;
-  // The id of the fork write token minted for the lease, revoked when it settles.
+  // The refresh grant minted for the lease (`grant:ID`), revoked when it settles.
   tokenId?: string;
 }
 

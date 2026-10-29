@@ -25,6 +25,7 @@ elif has symbolic-ref "$@"; then echo refs/heads/main
 elif has --is-shallow-repository "$@"; then echo false
 elif has rev-parse "$@"; then echo ${"a".repeat(40)}
 elif has config "$@"; then exit 1
+elif has ls-remote "$@"; then exit 0
 elif ! has push "$@"; then exit 2
 fi
 `, { mode: 0o755 });
@@ -311,7 +312,7 @@ test("CLI init asks for no approval on a checkout with ControlPlane files", () =
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "agent-policy.v1.json"), retiredFiles.valid["agent-policy.v1.json"]);
   // Before t149 this stopped with "Record the developer's approval" after one read and no write.
-  for (const flags of [["--title", "Weblog"], ["--reset"], ["--history-since", "2026-01-01"]]) {
+  for (const flags of [["--title", "Weblog"], ["--reset"]]) {
     const done = command(["init", ...flags]);
     assert.doesNotMatch(done.stderr, /Record the developer's approval/, flags.join(" "));
   }
@@ -322,50 +323,6 @@ test("CLI init asks for no approval on a checkout with ControlPlane files", () =
   assert.equal(given.status, 0, given.stderr);
   assert.equal(JSON.parse(calls().filter((c) => c.method === "PUT").at(-1).body).approval, "PAVI, 2026-10-02: approved");
 }));
-
-function syncCheckout({ command, initial }, { fresh, files }) {
-  const top = initial.projects.weblog.path;
-  if (fresh) initial.projects.weblog.fresh = true;
-  writeFileSync(join(top, "config.json"), JSON.stringify(initial));
-  const gitDir = join(top, "fake-git"), dir = join(top, "docs/control-plane");
-  mkdirSync(gitDir);
-  mkdirSync(dir, { recursive: true });
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
-  const head = "a".repeat(40);
-  writeFileSync(join(gitDir, "atelier-baseline-map.json"), JSON.stringify({ weblog: { [head]: head } }));
-  writeFileSync(join(top, "git"), `#!/bin/sh
-has() { needle=$1; shift; for arg in "$@"; do [ "$arg" = "$needle" ] && return 0; done; return 1; }
-if has --show-toplevel "$@"; then pwd
-elif has --absolute-git-dir "$@"; then echo "$(pwd)/fake-git"
-elif has --abbrev-ref "$@"; then echo main
-elif has symbolic-ref "$@"; then echo refs/heads/main
-elif has --is-shallow-repository "$@"; then echo false
-elif has rev-parse "$@"; then echo ${head}
-elif has config "$@"; then exit 1
-elif ! has status "$@" && ! has fetch "$@"; then exit 2
-fi
-`, { mode: 0o755 });
-  return command(["sync"]);
-}
-
-test("CLI sync with a partial-history baseline sends no ControlPlane policy, whatever the files hold", () => {
-  for (const [kind, files] of Object.entries(retiredFiles)) fixture((f) => {
-    const result = syncCheckout(f, { fresh: true, files });
-    // Malformed files used to stop sync; the baseline still matches here, so it still carries nothing and says so.
-    assert.equal(result.status, 0, `${kind}: ${result.stderr}`);
-    assert.match(result.stdout, /baseline already matches/);
-    assert.deepEqual(f.calls().map((c) => c.method), ["POST"], `${kind}: only the baseline token was asked for, no policy PUT`);
-  });
-});
-
-test("CLI sync with a whole-history baseline already at the checkout's head pushes nothing and sends no policy", () => {
-  for (const [kind, files] of Object.entries(retiredFiles)) fixture((f) => {
-    const result = syncCheckout(f, { fresh: false, files });
-    assert.equal(result.status, 0, `${kind}: ${result.stderr}`);
-    assert.match(result.stdout, /baseline already holds main/, kind);
-    assert.deepEqual(f.calls().map((c) => c.method), ["POST"], `${kind}: only the baseline token was asked for, no policy read or write`);
-  });
-});
 
 // Astra's seventh review of t645: init --rename-local moved the entry
 // without its old name, and projects rename into an existing entry dropped

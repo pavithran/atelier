@@ -168,7 +168,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
     // branch already contains main. The server verifies the merge and Agent
     // line again; only then can its required checks run.
     if (lease.pushing) {
-      const remote = await git(["ls-remote", workspace.remote, `refs/heads/${workspace.defaultBranch || "main"}`], { token: workspace.token, timeoutMs: PUSH_TIMEOUT_MS });
+      const remote = await git(["ls-remote", workspace.remote, `refs/heads/${workspace.branch}`], { token: workspace.token, timeoutMs: PUSH_TIMEOUT_MS });
       const top = remote.split(/\s+/)[0];
       if (!HASH.test(top)) throw new Error("cannot reconcile the announced push: no fork head");
       if (top !== lease.pushing.head) {
@@ -290,7 +290,8 @@ export async function runTaskRefresh(assignment, config, name, io) {
       recorded = true;
       return { phase: "failed", reason: `not pushed: ${error.message}`, recorded: true };
     }
-    const branch = workspace.defaultBranch || "main";
+    // The task's branch (t/N), which the lease's refresh grant writes.
+    const branch = workspace.branch;
     if (Date.now() - pushStarted >= PUSH_TIMEOUT_MS) throw new Error("push authorization expired before git started");
     // The merge adds none of the project's private files to the fork (t645):
     // everything the fork lacks is read for them, main's commits included,

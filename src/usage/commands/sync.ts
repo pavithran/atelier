@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Setup", line: 1, slot: 40,
       form: "sync",
-      about: "For a baseline built with `--history-since`, carries commits made in the checkout outside Atelier to the baseline. It reads no policy from the checkout; a baseline that holds the whole history takes new commits from `init`. Refused before anything is sent while main does not hold the baseline's main (`pull` brings it in).",
+      about: "Refused: the server keeps the project's repository itself, which is the baseline, and only a landing moves its branch. It names `pull` to bring the checkout to the server's branch, and a landing for commits made in the checkout outside Atelier.",
     },
   ],
   flags: {},

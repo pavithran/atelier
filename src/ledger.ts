@@ -1,6 +1,5 @@
 import { landingOf } from "./diff.ts";
-import { FORK_REPLACEMENTS, forkReplacements } from "./stuck/forks.ts";
-import { decideLandQueue, findStageOverrun, forkStalled, landerLive, olderThan, openStages, PREPARING, reconcileStages, replacementFork, REVIEW_TIER_STAGE, STAGE_EVENT_KINDS, type LandQueued, type LandQueueVerdict, type StageFinding } from "./stage-tick.ts";
+import { decideLandQueue, findStageOverrun, landerLive, olderThan, openStages, reconcileStages, REVIEW_TIER_STAGE, STAGE_EVENT_KINDS, type LandQueued, type LandQueueVerdict, type StageFinding } from "./stage-tick.ts";
 import { LIMITS } from "./limits.ts";
 import { REPORT_DEFAULTS } from "./stuck/report.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
@@ -18,9 +17,9 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, eventStage, forkAgeText, FORK_REQUEST_MS, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, type LedgerBookmark, type TaskStage } from "./rules";
+import { DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, eventStage, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, type LedgerBookmark, type TaskStage } from "./rules";
 import {
-  preparationPaths, ownerPortAllowed,
+  preparationPaths,
   REVIEW_RENEW_MS, REVIEW_LEASE_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, effectiveAdmissions, familyRefusal, modelKey, sharesName, splitHarness, standardAdmissions, STANDARD_REVIEWER_PROJECT, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
@@ -35,7 +34,7 @@ import {
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, postMergeNotes, fixTaskFromNote, reviewNotes, openNotes, noteKey, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
-  forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
+  riskNeed,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria, sha256Hex } from "./criteria.ts";
@@ -131,7 +130,7 @@ export interface FastLanding {
 // developer to merge: the commit atelier fast status lists as tN=SHA.
 export type FastReadyEntry = FastReady & { item: string; title: string; at: string; by: string };
 
-// A developer branch's last push (t641): its name under wip/, the commit
+// A developer branch's last push (t641): its name under dev/, the commit
 // the branches repository held for it after the push, that commit's first
 // line and time, and the Mac it was pushed from.
 export interface DeveloperBranch {
@@ -831,8 +830,6 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
 
 export function assertRepoAvailable(projects: ProjectRecord[], name: string, repo: string): void {
   if (projects.some((p) => p.name === name)) return;
-  // A new baseline never takes a developer branches repository's name (t641).
-  assertBaselineName(repo);
   const other = projects.find((p) => p.name !== name && p.repo === repo);
   if (other) throw new RuleError("repo_taken", `baseline ${repo} is already registered to ${other.name}`, 409);
 }
@@ -1098,7 +1095,7 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
     // The claim generation a claim reserved and has not completed (t653):
     // set where a claim reserves its generation (assignOwner), cleared when
-    // the claim records its token (recordToken, recordRunnerGit), and by any change of
+    // the claim records its token (recordToken), and by any change of
     // owner, which supersedes it (update: release, handoff, unclaim, abandon,
     // merge). A ledger from before holds none: no claim is taken as in flight.
     if (!columns.includes("claim_pending")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_pending INTEGER`);
@@ -1344,12 +1341,13 @@ export class Ledger extends DurableObject<Env> {
     return true;
   }
 
-  // The Artifacts tokens an agent token's requests minted (t598), so revoking
+  // The Git grants an agent token's requests were given (t598), so revoking
   // the agent token can revoke them too. Recording is refused (false) when the
   // agent token is unknown or already revoked: the caller then revokes the
-  // token it just minted. A token past its expiry needs no revoking, so its
-  // row is dropped whenever another is recorded.
-  recordArtifactsToken(agentId: string, repo: string, tokenId: string, expiresAt: string): boolean {
+  // grant it just minted. A grant past its expiry needs no revoking, so its
+  // row is dropped whenever another is recorded. The rows keep the table
+  // the 1.0 schema named for Artifacts tokens; `repo` names the project.
+  recordGrant(agentId: string, repo: string, tokenId: string, expiresAt: string): boolean {
     const row = this.sql.exec(`SELECT json FROM agent_tokens WHERE id = ?`, agentId).toArray()[0];
     if (!row || (JSON.parse(row.json as string) as AgentToken).revokedAt) return false;
     this.sql.exec(`DELETE FROM agent_artifacts_tokens WHERE expires_at <= ?`, new Date().toISOString());
@@ -1357,12 +1355,12 @@ export class Ledger extends DurableObject<Env> {
     return true;
   }
 
-  agentArtifactsTokens(agentId: string): { repo: string; tokenId: string }[] {
+  agentGrants(agentId: string): { repo: string; tokenId: string }[] {
     return this.sql.exec(`SELECT repo, token_id FROM agent_artifacts_tokens WHERE agent_id = ? ORDER BY rowid`, agentId).toArray()
       .map((r) => ({ repo: r.repo as string, tokenId: r.token_id as string }));
   }
 
-  forgetArtifactsToken(agentId: string, tokenId: string): void {
+  forgetGrant(agentId: string, tokenId: string): void {
     this.sql.exec(`DELETE FROM agent_artifacts_tokens WHERE agent_id = ? AND token_id = ?`, agentId, tokenId);
   }
 
@@ -2282,25 +2280,6 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, "atelier", "stage.land-queued", { stage: "landable", head, main, at, reason: verdict.queue, note: verdict.note }, at);
   }
 
-  // Moves a task to a fork under a new name (replacementFork), which its next
-  // claim makes, and records it as stage.rerouted, stage "preparing", which
-  // counts against FORK_REPLACEMENTS whether the tick or a claim made it. The
-  // old repository is left as it is. Returns the new name.
-  private replaceFork(id: string, from: string, since: string, note: string, at: string): string {
-    const to = replacementFork(from);
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkNameKey(id), to);
-    this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
-    this.log(id, "atelier", "stage.rerouted", { stage: PREPARING, head: "", from, to, since, note }, at);
-    return to;
-  }
-
-  // The name a task's next fork is made under when the tick or a claim
-  // replaced an unready one, or null for the usual name.
-  forkNameFor(id: string): string | null {
-    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, forkNameKey(id)).toArray()[0];
-    return row ? (row.value as string) : null;
-  }
-
   // Each run of the tick is a tick.ran row on the index instance: its time and
   // how many projects it did and did not read completely. Rows older than a
   // week are dropped. The latest-run lookup reads the newest row.
@@ -2657,30 +2636,11 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The developer's branches (t641, developerBranch in src/rules.ts): each
-  // one's last commit as the branches repository holds it, read there by
-  // the Worker after the push, and the Mac it was pushed from.
+  // one's last commit as the project's repository holds it, read there by
+  // the server after the push, and the Mac it was pushed from.
   developerBranches(): DeveloperBranch[] {
     return this.sql.exec(`SELECT json FROM developer_branches`).toArray().map((r) => JSON.parse(r.json as string) as DeveloperBranch)
       .sort((a, b) => b.pushedAt.localeCompare(a.pushedAt) || a.name.localeCompare(b.name));
-  }
-
-  // The branches repository Atelier made for this project (t641), recorded
-  // when it was made: the only repository the branch routes mint a token for.
-  branchesRepo(): string | null {
-    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'branches-repo'`).toArray()[0];
-    return row ? String(row.value) : null;
-  }
-
-  recordBranchesRepo(actor: string, repo: string): string {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branches repository", 403, "only the developer can: atelier branch push");
-    const held = this.branchesRepo();
-    if (held && held !== repo) throw new RuleError("branches_repo_mismatch", `this project's branches repository is ${held}, not ${repo}`, 409);
-    if (!held) {
-      const at = new Date().toISOString();
-      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('branches-repo', ?)`, repo);
-      this.log(null, actor, "branches.repo", { repo }, at);
-    }
-    return repo;
   }
 
   // A branch's record as stored, or null: the version a record is written
@@ -3296,7 +3256,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The token's validity, its project scope and the route were checked before
-  // this (src/index.ts, src/runner-git.ts); this checks the job: that the
+  // this (src/index.ts); this checks the job: that the
   // runner holds it, or that a live poll offered it to this actor for a claim.
   // A job this runner still holds, whose task has since been merged or
   // abandoned, is answered with that state (task_terminal, t476), not with
@@ -3368,19 +3328,6 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`DELETE FROM meta WHERE key GLOB ?`, `runner-job:*:${id}`);
   }
 
-  recordRunnerGit(id: string, actor: string, generation: number, replaces: string | null, hash: string, token: AgentToken): boolean {
-    if (!this.recordToken(id, actor, generation, replaces, `runner:${hash}`)) return false;
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-git:${hash}`, JSON.stringify({ parent: token.hash, actor, id, generation }));
-    return true;
-  }
-
-  runnerGit(hash: string): { parent: string; actor: string; id: string; generation: number } | null {
-    const grant = this.runnerMeta<{ parent: string; actor: string; id: string; generation: number }>(`runner-git:${hash}`);
-    if (!grant || this.tokenId(grant.id) !== `runner:${hash}`) return null;
-    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, grant.id).one();
-    return row.claim_gen === grant.generation ? grant : null;
-  }
-
   // The item's write-token slot: its holder, its claim generation and the
   // token recorded now, for a Git credential that rotates it (recordToken).
   tokenSlot(id: string): { owner: string | null; generation: number; replaces: string | null } {
@@ -3398,7 +3345,7 @@ export class Ledger extends DurableObject<Env> {
   // write token its caller goes on to mint, and says which recorded token
   // that one replaces: the caller revokes it, and records the new one with
   // recordToken under this generation.
-  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
+  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; generation: number; replaces: string | null } {
     const at = new Date().toISOString();
     const item = this.item(id);
     assertNotTerminal(item);
@@ -3482,7 +3429,7 @@ export class Ledger extends DurableObject<Env> {
       if (!held && asking) {
         this.log(id, actor, "item.runner_adopted", { runner: asking }, at, proved);
       }
-      return { item: this.item(id), needsFork: !item.fork, ...reserved };
+      return { item: this.item(id), ...reserved };
     }
     const reserved = this.assignOwner(id, actor, { state: "claimed", runner: runner?.runner ?? null }, at, true);
     // The claim records the binding of the criteria the holder takes the
@@ -3491,7 +3438,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `claim-rollback:${id}`, JSON.stringify({
       generation: reserved.generation, state: item.state, owner: item.owner, runner: item.runner ?? null,
     }));
-    return { item: this.item(id), needsFork: !item.fork, ...reserved };
+    return { item: this.item(id), ...reserved };
   }
 
   // The only boundary for assigning an owner or renewing a claim generation.
@@ -3515,28 +3462,6 @@ export class Ledger extends DurableObject<Env> {
         this.sql.exec(`DELETE FROM owner_assignment WHERE id = ?`, id);
       }
     });
-  }
-
-  // Fence owner reservations separately from claims: porting grants no owner
-  // assignment. Share the token slot so the next claim revokes the port token.
-  reserveOwnerPort(id: string, actor: string) {
-    const item = this.item(id);
-    if (!ownerPortAllowed(item, actor, this.owner)) throw new RuleError("owner_port", "only the developer may port to an open, unclaimed task", 403, "only the developer can port work to an open, unclaimed task: atelier claim ID --as H/M");
-    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`, 409, `run atelier claim ${id} --as HARNESS/MODEL to make its workspace`);
-    const row = this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
-    const generation = crypto.randomUUID();
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `owner-port:${id}`, JSON.stringify({ generation, claimGeneration: row.claim_gen }));
-    return { item, generation, replaces: (row.token_id as string | null) ?? null };
-  }
-
-  recordOwnerPortToken(id: string, actor: string, generation: string, replaces: string | null, tokenId: string, expiresAt: string): boolean {
-    if (!ownerPortAllowed(this.item(id), actor, this.owner)) return false;
-    const row = this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
-    const reservation = this.runnerMeta<{ generation: string; claimGeneration: number }>(`owner-port:${id}`);
-    if (reservation?.generation !== generation || row.claim_gen !== reservation.claimGeneration || ((row.token_id as string | null) ?? null) !== replaces) return false;
-    this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
-    this.log(id, actor, "owner-port.token", { tokenId, expiresAt }, new Date().toISOString());
-    return true;
   }
 
   // Minting a token waits on Artifacts, and meanwhile the item can be handed
@@ -4146,121 +4071,10 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
     }
     this.update(id, { fork, base, head: base }, at);
-    this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
     this.log(id, actor, "fork.created", { fork, base }, at, proved);
     // A plan forks from the baseline, so its base is main's head as it
     // stands now.
     if (base && this.item(id).kind === "plan") this.setMainHead(base, at);
-  }
-
-  // A task fork that Artifacts is slow to prepare (t18; src/rules.ts
-  // ForkPreparation). The record is per item and outlives a claim that is
-  // given up, so the first not_ready answer is remembered across retries and
-  // releases. Each call is made by the claim that is waiting on the fork, and
-  // changes nothing once that claim is released, superseded or closed: a late
-  // answer cannot start a clock or record an event.
-  private forkPrep(id: string): ForkPreparation | null {
-    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, forkPrepKey(id)).toArray()[0];
-    return row ? JSON.parse(row.value as string) as ForkPreparation : null;
-  }
-
-  private saveForkPrep(id: string, prep: ForkPreparation): void {
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkPrepKey(id), JSON.stringify(prep));
-  }
-
-  private claimHeld(id: string, actor: string, generation: number): boolean {
-    const item = this.item(id);
-    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
-    return item.state === "claimed" && item.owner === actor && row.claim_gen === generation;
-  }
-
-  // The claim waited out the fork and it is not ready. Starts the clock at the
-  // first answer, and says how long the fork has been preparing and what to
-  // do next; a fork stuck past the limit is recorded once as an event naming
-  // the repository and the remedy. Null when the claim is no longer held, so a
-  // late answer starts no clock and records nothing.
-  forkNotReady(id: string, fork: string, actor: string, generation: number, proved = false): ForkPreparationView | null {
-    if (!this.claimHeld(id, actor, generation)) return null;
-    const at = new Date().toISOString();
-    const found = this.forkPrep(id);
-    const prep: ForkPreparation = found?.fork === fork ? found : { fork, since: null, reportedAt: null };
-    const since = prep.since ?? at;
-    const view = forkPreparationView({ ...prep, since }, this.item(id), Date.parse(at));
-    const reportedAt = view.action === "stuck" ? prep.reportedAt ?? at : prep.reportedAt;
-    this.saveForkPrep(id, { fork, since, reportedAt });
-    if (view.action === "stuck" && !prep.reportedAt) {
-      this.log(id, actor, "fork.stuck", { fork, since, minutes: Math.floor(view.ageMs / 60_000), next: view.next }, at, proved);
-    }
-    return view;
-  }
-
-  // A request to Artifacts to make the task's fork (t286). The claim notes it
-  // before it asks, and drops the note once Artifacts answers that it made
-  // the fork (forkAnswered). A note that outlives FORK_REQUEST_MS belongs to
-  // a request cut off before its answer came: on 2026-10-25 three claims in
-  // miqra timed out after 60 s while their forks were being made, and each
-  // fork then stayed preparing. The first note for a name is kept, so a later
-  // claim that finds the fork already there does not restart its clock.
-  // Returns whether this request made a new note: a request that finds the
-  // fork already there drops the note it made (forkAnswered), since the
-  // request that made the fork had its answer, and only a note left by a
-  // request cut off before its answer outlives the claim.
-  forkRequested(id: string, fork: string, actor: string, generation: number): boolean {
-    if (!this.claimHeld(id, actor, generation) || this.forkRequest(id)?.fork === fork) return false;
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkRequestKey(id), JSON.stringify({ fork, at: new Date().toISOString() }));
-    return true;
-  }
-
-  forkAnswered(id: string, fork: string): void {
-    if (this.forkRequest(id)?.fork === fork) this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkRequestKey(id));
-  }
-
-  private forkRequest(id: string): { fork: string; at: string } | null {
-    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, forkRequestKey(id)).toArray()[0];
-    return row ? JSON.parse(row.value as string) as { fork: string; at: string } : null;
-  }
-
-  // A claim found the task's new fork still unready (t286). When the request
-  // that made it never had its answer and is older than FORK_REQUEST_MS, or
-  // the fork has been preparing past FORK_REPLACE_MS, the claim does what
-  // the tick would do at that limit (replaceStalledForks), without waiting
-  // for the tick: it moves the task to a fork under a new name and returns
-  // the name, which the claim then makes. Null, and nothing changes, when the
-  // claim no longer holds the task, a commit of its own is recorded, neither
-  // holds, or the task has had FORK_REPLACEMENTS replacements already.
-  replaceUnreadyFork(id: string, fork: string, actor: string, generation: number): string | null {
-    if (!this.claimHeld(id, actor, generation)) return null;
-    const now = new Date(), item = this.item(id);
-    const request = this.forkRequest(id), prep = this.forkPrep(id);
-    const cutOff = request?.fork === fork && forkStalled({ since: request.at }, item, now, this.mainHead(), FORK_REQUEST_MS);
-    const stalled = prep?.fork === fork && forkStalled(prep, item, now, this.mainHead());
-    if (!cutOff && !stalled) return null;
-    const replaced = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE item_id = ? AND kind IN ('stage.rerouted', 'item.released') ORDER BY seq`, id).toArray()
-      .map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
-    if (forkReplacements(replaced, id) >= FORK_REPLACEMENTS) return null;
-    const since = cutOff ? request!.at : prep!.since!;
-    const why = cutOff ? `the request that made ${fork} had no answer, and it was still preparing ${forkAgeText(now.getTime() - Date.parse(since))} later` : `${fork} was preparing for ${forkAgeText(now.getTime() - Date.parse(since))}`;
-    return this.replaceFork(id, fork, since, `${why}, with no commit recorded; this claim makes ${replacementFork(fork)}. Atelier deleted nothing.`, now.toISOString());
-  }
-
-  // A read of the task's recorded fork found it ready: it is no longer being
-  // prepared, whatever an earlier claim saw.
-  forkReady(id: string): void {
-    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
-  }
-
-  // The forks being prepared, by item, as the views say them: only those
-  // that have been waited on, of an item not yet merged or abandoned, whether
-  // the fork is a new one or a recorded one made again for a claim.
-  forkPreparations(): Record<string, ForkPreparationView> {
-    const now = Date.now(), out: Record<string, ForkPreparationView> = {};
-    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'fork-prep:%'`).toArray()) {
-      const id = (row.key as string).slice("fork-prep:".length);
-      const prep = JSON.parse(row.value as string) as ForkPreparation;
-      const item = this.sql.exec(`SELECT id FROM items WHERE id = ? AND state NOT IN ('merged', 'abandoned')`, id).toArray()[0];
-      if (prep.since && item) out[id] = forkPreparationView({ ...prep, since: prep.since }, this.item(id), now);
-    }
-    return out;
   }
 
   // atelier migrate (Atelier 2.0, task 11; design section 5, step 4): the
@@ -4282,7 +4096,6 @@ export class Ledger extends DurableObject<Env> {
     if ((item.head ?? item.base) !== carried.head) throw new RuleError("head_moved", `${id}'s head moved to ${String(item.head ?? item.base).slice(0, 12)} while ${carried.head.slice(0, 12)} was carried, so nothing was moved`, 409, `run atelier migrate ${id} again`);
     const at = new Date().toISOString();
     this.update(id, { fork }, at);
-    this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
     this.log(id, actor, "item.migrated", { from: carried.from, fork, head: carried.head, ...(carried.tip && carried.tip !== carried.head ? { tip: carried.tip } : {}), remote: carried.remote }, at);
     return this.item(id);
   }
@@ -4354,7 +4167,6 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409, `run atelier claim ${id} --as ${actor}`);
     }
     this.update(id, { base, head: base }, at);
-    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
     this.log(id, actor, "fork.moved", { fork, from, base }, at, proved);
   }
 
@@ -4402,26 +4214,13 @@ export class Ledger extends DurableObject<Env> {
   // paths pass it; the Ledger's own tests, which run no scan, do not.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = [], scan = false, retention: RetentionRead | null = null): Item {
     const item = this.item(id);
-    // The owner may port work to a released fork without taking its claim
-    // or removing its dispatch. The next builder inherits the recorded head.
-    const ownerPort = ownerPortAllowed(item, actor, this.owner);
-    if (!ownerPort) {
-      if (item.state !== "accepted") assertLive(item);
-      assertOwner(item, actor);
-    }
+    if (item.state !== "accepted") assertLive(item);
+    assertOwner(item, actor);
     const landing = this.landing(id);
     if (item.state === "accepted" && landing && item.head !== observedHead) {
       throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)}; push again once it has landed`, 409, "wait until the merge lands, then run atelier push again");
     }
-    if (item.head === observedHead) {
-      // The fork notification may have observed this port before the owner's
-      // push request. Still credit the owner, without moving the head again.
-      if (ownerPort && !item.pushActors?.includes(actor)) {
-        this.log(id, actor, "push.observed", { head: observedHead, ...this.otherAuthors(item, authors) }, new Date().toISOString(), proved);
-        return this.item(id);
-      }
-      return item;
-    }
+    if (item.head === observedHead) return item;
     const rewritten = !!item.head && !lineage.holdsRecorded;
     const unverified = rewritten && lineage.holdsRecorded === null;
     if (rewritten && lineage.rebasedFrom !== item.head) {
@@ -4434,7 +4233,7 @@ export class Ledger extends DurableObject<Env> {
     const reopened = item.state === "accepted";
     this.update(id, {
       head: observedHead, last_push_at: now,
-      state: ownerPort ? "open" : item.state === "submitted" ? "submitted" : "claimed",
+      state: item.state === "submitted" ? "submitted" : "claimed",
       ...(reopened ? { accepted_head: null } : {}),
       ...(scan ? { secret_scan: observedHead } : {}),
     }, now);
@@ -5117,23 +4916,9 @@ export class Ledger extends DurableObject<Env> {
   private releaseAllowed(id: string, actor: string, note: string): Item {
     assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
-    // A claim answering 503 not_ready has already given the task back, so a
-    // task whose forks all stalled is open, not claimed. Its release is the
-    // way out (t378): it holds nothing, so any actor may record it.
-    if (item.state === "open" && this.forkReplacementsUsed(id)) return item;
     assertLive(item);
     if (actor !== this.owner) assertOwner(item, actor);
     return item;
-  }
-
-  // Whether the task's fork stalled with every replacement since its last
-  // release already made, so only a release gives it a fresh fork.
-  private forkReplacementsUsed(id: string): boolean {
-    const prep = this.forkPrep(id);
-    if (!prep || !forkStalled(prep, this.item(id), new Date(), this.mainHead())) return false;
-    const events = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE item_id = ? AND kind IN ('stage.rerouted', 'item.released') ORDER BY seq`, id).toArray()
-      .map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
-    return forkReplacements(events, id) >= FORK_REPLACEMENTS;
   }
 
   // A task closed as delivered by another names a task that has merged.
@@ -7505,9 +7290,8 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    const preparing = this.forkPreparations()[id];
     const lastDeploy = this.lastDeploy();
-    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
+    return { item, ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -11048,7 +10832,7 @@ export class Ledger extends DurableObject<Env> {
     };
   }
 
-  // The fork write token minted for a lease, kept so it is revoked when the
+  // The refresh grant minted for a lease, kept so it is revoked when the
   // lease settles. False when the lease is no longer the target's (it
   // lapsed and another runner took it), and the caller revokes it at once.
   recordRefreshToken(id: string, lease: string, tokenId: string): boolean {
@@ -11056,6 +10840,15 @@ export class Ledger extends DurableObject<Env> {
     if (!target?.lease || target.lease.id !== lease) return false;
     this.saveRefreshTarget(id, { ...target, lease: { ...target.lease, tokenId } });
     return true;
+  }
+
+  // Whether the refresh grant `tokenId` still writes the task's branch
+  // (stillRefreshing in src/git/host.mjs): it is the grant recorded for the
+  // live refresh lease `lease`, held by `actor`, of a task still open to work.
+  refreshGrantLive(id: string, lease: string, actor: string, tokenId: string): boolean {
+    if (["merged", "abandoned", "integrated"].includes(this.item(id).state)) return false;
+    const held = this.refreshTargetOf(id)?.lease;
+    return !!held && held.id === lease && held.by === actor && held.tokenId === tokenId && leaseLive(held, Date.now());
   }
 
   // The leaseholder keeps its lease through a long run (a resolver's
@@ -11805,9 +11598,6 @@ const ACTOR_EVENT_SQL = `(${ACTOR_EVENT_KINDS.map((k) => `'${k}'`).join(", ")})`
 // restart after a deploy fires between requests (t586).
 gateMethods(Ledger.prototype, (self) => GATES.get(self));
 
-const forkPrepKey = (id: string) => `fork-prep:${id}`;
-const forkNameKey = (id: string) => `fork-name:${id}`;
-const forkRequestKey = (id: string) => `fork-request:${id}`;
 
 function toEvent(r: Row): LedgerEvent {
   return {

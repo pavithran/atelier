@@ -6,7 +6,7 @@ import { FRESH_TRAILER, savePairs } from "../fresh.mjs";
 import { installMergeConfig } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { privateGuardFor } from "../private-guard.mjs";
-import { OWNER, P, apiToken, args, call, cfg, die, entryPath, landingGit, saveConfig, server, short } from "../atelier.mjs";
+import { OWNER, P, apiToken, args, call, cfg, die, entryPath, landingGit, readGrant, saveConfig, server, short } from "../atelier.mjs";
 
 // The developer, on a Mac that has no checkout of the project yet (t643):
 // Git, not iCloud, carries code between Macs, and the project's baseline is
@@ -57,7 +57,7 @@ export default async function cloneCommand() {
   const names = Array.isArray(listed) ? listed.map((p) => p.name) : [];
   if (!names.includes(name)) die(`no project named ${name} on ${server()}; nothing was cloned. ${names.length ? `Its projects: ${names.join(", ")}.` : "It has no projects."}`);
   const { project: record } = await call("GET", P(name), undefined, OWNER);
-  const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+  const base = await readGrant(name, null, OWNER);
   const branch = base.defaultBranch;
 
   const parent = dirname(dir);

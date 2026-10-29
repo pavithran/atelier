@@ -36,59 +36,12 @@ test("done refuses an over-long summary before any request, push or check", asyn
   const f = await fixture(t);
   await f.run(["start", "t1"]);
   git(f.workspace, "commit", "-q", "--allow-empty", "-m", "Work");
-  const requests = f.requests.length, remoteHead = git(f.remote, "rev-parse", "main");
+  const requests = f.requests.length, remoteHead = git(f.remote, "rev-parse", "refs/heads/t/1");
   const r = await f.run(["done", "x".repeat(601)], f.workspace);
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /the summary is 601 characters; the limit is 600\. Shorten it and send it again/);
   assert.equal(f.requests.length, requests);
-  assert.equal(git(f.remote, "rev-parse", "main"), remoteHead);
-});
-
-
-test("push refuses a branch the fork does not read, and a claim refresh corrects the workspace", async (t) => {
-  // The fork's HEAD names master while the claim gives main, as for llm-basics t2.
-  const f = await fixture(t, { forkBranch: "master", claimBranch: "main" });
-  const claimed = await f.run(["claim", "t1"]);
-  assert.equal(claimed.status, 0, claimed.output);
-  assert.match(claimed.output, /Warning: t1's fork reads its head from master, but the project's branch is main, so atelier push will refuse/);
-  assert.equal(git(f.workspace, "config", "atelier.branch"), "main");
-  git(f.workspace, "commit", "-q", "--allow-empty", "-m", "Work");
-  const head = git(f.workspace, "rev-parse", "HEAD");
-
-  const refused = await f.run(["push"], f.workspace);
-  assert.equal(refused.status, 1, refused.output);
-  assert.match(refused.output, /t1's fork reads its head from master, but this workspace pushes to main \(git config atelier\.branch\); nothing was pushed\. Run atelier claim t1/);
-  assert.equal(git(f.remote, "for-each-ref", "--format=%(refname)"), "refs/heads/master");
-  assert.ok(!f.posts.some((p) => p.path.endsWith("/push")));
-
-  // The server now gives the registered branch: the refresh rewrites the workspace's and says so.
-  f.branch.claim = "master";
-  const refreshed = await f.run(["claim", "t1"]);
-  assert.equal(refreshed.status, 0, refreshed.output);
-  assert.match(refreshed.output, /This workspace pushed to main; it now pushes to master, the branch Atelier reads\./);
-  assert.doesNotMatch(refreshed.output, /Warning/);
-  assert.equal(git(f.workspace, "config", "atelier.branch"), "master");
-  assert.equal(git(f.workspace, "rev-parse", "HEAD"), head);
-
-  const pushed = await f.run(["push"], f.workspace);
-  assert.equal(pushed.status, 0, pushed.output);
-  assert.match(pushed.output, new RegExp(`t1 head ${head.slice(0, 8)} \\(observed in Artifacts\\)`));
-  assert.equal(git(f.remote, "rev-parse", "refs/heads/master"), head);
-  assert.deepEqual(f.posts.filter((p) => p.path.endsWith("/push")).map((p) => p.body), [{ head }]);
-  // A claim that changes nothing says nothing about the branch.
-  assert.doesNotMatch((await f.run(["claim", "t1"])).output, /now pushes to|Warning/);
-});
-
-
-test("a workspace with no recorded branch pushes to the branch its fork reads", async (t) => {
-  const f = await fixture(t, { forkBranch: "master" });
-  assert.equal((await f.run(["claim", "t1"])).status, 0);
-  git(f.workspace, "config", "--unset", "atelier.branch");
-  git(f.workspace, "commit", "-q", "--allow-empty", "-m", "Work");
-  const r = await f.run(["push"], f.workspace);
-  assert.equal(r.status, 0, r.output);
-  assert.equal(git(f.remote, "rev-parse", "refs/heads/master"), git(f.workspace, "rev-parse", "HEAD"));
-  assert.equal(git(f.remote, "for-each-ref", "--format=%(refname)"), "refs/heads/master");
+  assert.equal(git(f.remote, "rev-parse", "refs/heads/t/1"), remoteHead);
 });
 
 
@@ -119,16 +72,16 @@ for (const [label, extra, expected, path = "AGENTS.md"] of [
   assert.ok(notice >= 0, r.output);
   assert.ok(notice < failed, r.output);
   assert.match(r.output, expected);
-  assert.ok(f.requests.some((path) => path.endsWith("/base-token")));
+  assert.ok(f.requests.some((path) => path.endsWith("/git-token")));
 });
 
 
-test("done still pushes, checks and submits when the advisory base-token request fails", async (t) => {
-  const f = await fixture(t, { failStep: "base-token" });
+test("done still pushes, checks and submits when the advisory git-token request fails", async (t) => {
+  const f = await fixture(t, { failStep: "git-token" });
   assert.equal((await f.run(["start", "t1"])).status, 0);
   const r = await f.run(["done", "Edited docs"], f.workspace);
   assert.equal(r.status, 0, r.output);
-  for (const step of ["base-token", "push", "submit"]) assert.ok(f.requests.some((p) => p.endsWith(`/${step}`)), step);
+  for (const step of ["git-token", "push", "submit"]) assert.ok(f.requests.some((p) => p.endsWith(`/${step}`)), step);
 });
 
 

@@ -25,14 +25,14 @@ function fixture(t) {
   writeFileSync(join(source, 'work'), 'recorded'); g('commit', '-qam', 'recorded');
   const head = g('rev-parse', 'HEAD');
   git(['clone', '-q', source, dir]);
-  writeFileSync(join(source, 'work'), 'newer fork tip'); g('commit', '-qam', 'unrecorded');
+  writeFileSync(join(source, 'work'), 'newer tip'); g('commit', '-qam', 'unrecorded');
   const detail = { item: { head, owner: 'codex/test', state: 'submitted' }, policy: { commitIdentity: { name: 'Project', email: 'project@example.invalid' }, prepare: { command: 'npm ci' } } };
   const calls = [], lines = [];
   // A fake clock: a wait advances it and takes no time.
   const clock = { at: 0 }, waits = [];
   const io = { now: () => clock.at, sleep: async ms => { waits.push(ms); clock.at += ms; }, git, name: 'proj', id: 't1', owner: 'owner', p: { path: source, branch: 'main' }, print: s => lines.push(s), request: async (method, path, body) => {
     calls.push({ method, path, body });
-    return method === 'POST' ? { remote: source, token: 'SECRET-READ', defaultBranch: 'main' } : detail;
+    return method === 'POST' ? { kind: 'read', remote: source, token: 'SECRET-READ', defaultBranch: 'main', repository: 'server', branch: 't/1', into: 'main' } : detail;
   } };
   const ctx = { dir, itemPath: '/projects/proj/items/t1', detail };
   const local = (...args) => git(args, { cwd: dir });
@@ -40,7 +40,7 @@ function fixture(t) {
   return { clock, waits, root, source, dir, base, head, detail, io, ctx, local, calls, lines, backup };
 }
 
-for (const state of ['missing', 'behind', 'diverged', 'dirty', 'conflicted']) test(`recorded head recovery preserves ${state} workspace and ignores newer fork tip`, async t => {
+for (const state of ['missing', 'behind', 'diverged', 'dirty', 'conflicted']) test(`recorded head recovery preserves ${state} workspace and ignores newer tip`, async t => {
   const f = fixture(t);
   if (state === 'missing') rmSync(f.dir, { recursive: true });
   else {
@@ -65,7 +65,7 @@ for (const state of ['missing', 'behind', 'diverged', 'dirty', 'conflicted']) te
   assert.deepEqual(JSON.parse(f.local('config', 'atelier.prepare')), f.detail.policy.prepare);
   assert.ok(f.lines.some(s => s.includes(f.head)));
   assert.doesNotMatch(readFileSync(join(f.dir, '.git/config'), 'utf8') + f.lines.join(''), /SECRET-READ/);
-  assert.deepEqual(f.calls[0].body, { scope: 'read' });
+  assert.deepEqual(f.calls[0].body, { kind: 'read', item: 't1' });
   assert.ok(f.calls.every(c => !c.path.endsWith('/claim')));
   if (oldHead) {
     const backup = f.backup();
@@ -153,7 +153,7 @@ test('recovery fetches the exact recorded object using only the read credential'
   assert.notEqual(fetches[0].cwd, f.dir);
 });
 
-test('a recorded object absent from the fork leaves the workspace untouched', async t => {
+test('a recorded object absent from the server leaves the workspace untouched', async t => {
   const f = fixture(t);
   f.detail.item.head = '0'.repeat(40);
   writeFileSync(join(f.dir, 'precious'), 'keep');
@@ -240,10 +240,10 @@ test('credential-bearing remotes are refused before fetching or replacing a work
   f.local('reset', '--hard', f.base);
   let fetched = false;
   f.io.request = async (...args) => args[0] === 'POST'
-    ? { remote: 'https://SECRET-READ@git.example.invalid/fork.git', token: 'SECRET-READ', defaultBranch: 'main' }
+    ? { remote: 'https://SECRET-READ@git.example.invalid/proj.git', token: 'SECRET-READ', defaultBranch: 'main', branch: 't/1', into: 'main' }
     : request(...args);
   f.io.git = (args, opts) => { if (args[0] === 'fetch') fetched = true; return git(args, opts); };
-  await assert.rejects(prepareRecordedWorkspace(f.io, f.ctx), { message: 'invalid fork remote' });
+  await assert.rejects(prepareRecordedWorkspace(f.io, f.ctx), { message: 'invalid remote' });
   assert.equal(fetched, false);
   assert.equal(f.local('rev-parse', 'HEAD'), f.base);
   assert.doesNotMatch(readFileSync(join(f.dir, '.git/config'), 'utf8') + f.lines.join(''), /SECRET-READ/);

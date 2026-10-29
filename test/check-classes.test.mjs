@@ -157,6 +157,8 @@ async function checkFixture(t, checks) {
   execFileSync("git", ["init", "-q", "-b", "main", source]);
   git(source, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "Initial");
   execFileSync("git", ["clone", "-q", "--bare", source, remote]);
+  // The one repository holds the project's branch and the task's (t/1), as the server's does.
+  execFileSync("git", ["-C", remote, "branch", "t/1", "main"]);
   const head = git(source, "rev-parse", "HEAD");
   const item = { id: "t1", title: "Edit", scope: [], owner: "codex/test", state: "claimed", head };
   const paths = [];
@@ -164,8 +166,7 @@ async function checkFixture(t, checks) {
     for await (const _ of req);
     paths.push(req.url);
     let data = { item, gate: { ready: false, blockers: [] }, policy: { checks } };
-    if (req.url.endsWith("/read-token")) data = { remote, token: "read", head, defaultBranch: "main" };
-    if (req.url.endsWith("/baseline-token")) data = { remote, token: "base", head, defaultBranch: "main" };
+    if (req.url.endsWith("/git-token")) data = { kind: "read", remote, token: "read", expiresAt: "tomorrow", defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head, base: head };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });
@@ -187,7 +188,7 @@ test("check runs nothing, and clones nothing, when a registered check or the com
   assert.equal(r.status, 1, r.stdout);
   assert.match(r.stderr, /`npm --prefix web run deploy` is not a check: it runs a script whose name says it deploys or publishes/);
   assert.match(r.stderr, /Nothing was run\. Ask the developer to replace the check with atelier init --check\./);
-  assert.ok(!f.paths.some((p) => p.endsWith("/read-token") || p.endsWith("/evidence")), f.paths.join(" "));
+  assert.ok(!f.paths.some((p) => p.endsWith("/git-token") || p.endsWith("/evidence")), f.paths.join(" "));
   assert.equal(existsSync(ran(f.root)), false);
   assert.ok(!existsSync(join(f.root, "cache", "checks")) || readdirSync(join(f.root, "cache", "checks")).length === 0, "no clone was made");
   const given = await f.run("check", "t1", "--", "git", "push", "origin", "main");

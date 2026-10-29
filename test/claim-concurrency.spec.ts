@@ -1,8 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { env, server } from "./support/workers.ts";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "./support/vitest.ts";
+import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
-import { setForkWaitMs, setRetryBaseMs } from "../src/transient.ts";
 
 // t339's concurrency proof fired 100 claims of 100 tasks at once on the live
 // server, and 9 answered 500. These tests fire as many claims at once
@@ -13,10 +12,10 @@ import { setForkWaitMs, setRetryBaseMs } from "../src/transient.ts";
 // read while the fork is in progress, a token or revocation that fails, a
 // repository handle that fails) and the t761 retry cases of routes that call
 // Artifacts went with the forks: the Git host's branch and grant calls are
-// local and have no such failures to retry. What the Node server still reads
-// from env.ARTIFACTS (its local reader: headOf behind baseline-head, the code
-// pages) and the catch-all that answers a failure keep their tests at the end,
-// over a fake injected into the env, as before. Every credential here is a dummy.
+// local and have no such failures to retry, and the reads went with
+// Artifacts' passing failures (t761): the catch-all that answers a failure
+// keeps its test at the end, over a fake injected into the env, as before.
+// Every credential here is a dummy.
 
 const TOKEN = "claim-concurrency-owner";
 
@@ -146,10 +145,6 @@ it("t496: an abandoned dispatched task stays closed on every poll and retry", as
 
 // ── what still reads env.ARTIFACTS, and the catch-all (t761, t339) ─────────
 
-// These tests inject transient Artifacts failures; the retry backoff would
-// otherwise spend seconds waiting (and time out under load). Milliseconds do.
-beforeAll(() => setRetryBaseMs(1));
-afterAll(() => setRetryBaseMs());
 afterEach(() => vi.restoreAllMocks());
 
 const H0 = "0".repeat(40);
@@ -199,71 +194,4 @@ it("a request that fails for an unforeseen reason logs the error's code and mess
   const res = await get(fa.artifacts, "/api/projects/concurrency-log/baseline-head");
   expect(res.status).toBe(500);
   expect(errors.join("\n")).toMatch(/GET \/api\/projects\/concurrency-log\/baseline-head failed: Error code=NOT_FOUND message="repo not found: concurrency-log"/);
-});
-
-// t761 (audit finding 3): about forty-five Artifacts calls sit outside
-// artifactsStep, and a one-second Artifacts blip on any of them answered 500.
-describe("t761: a transient Artifacts failure answers 503 on any route", () => {
-  it("a route that calls Artifacts outside artifactsStep answers 503 with Retry-After, not 500", async () => {
-    const errors: string[] = [];
-    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
-    let down = true;
-    const fa = await artifactsProject("concurrency-bare", { get: () => down, inProgress: 0 });
-    const browse = () => get(fa.artifacts, "/p/concurrency-bare/code");
-    const first = await browse();
-    expect(first.status).toBe(503);
-    expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
-    expect(errors.join("\n")).toContain("code=UNAVAILABLE");
-    down = false;
-    expect((await browse()).status).not.toBe(503);
-  });
-
-  it("an error that is not a passing Artifacts failure still answers 500", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const fa = await artifactsProject("concurrency-bare-500", { inProgress: 0 }, false);
-    expect((await get(fa.artifacts, "/api/projects/concurrency-bare-500/baseline-head")).status).toBe(500);
-  });
-
-  it("headOf waits out a failure that passes and answers the head, and answers 503 when it does not pass", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    let down = 2;
-    const fa = await artifactsProject("concurrency-head", { get: () => down-- > 0, inProgress: 0 });
-    const ok = await get(fa.artifacts, "/api/projects/concurrency-head/baseline-head");
-    expect(ok.status).toBe(200);
-    // The Node server adds repository: "server" (task 11).
-    expect(await ok.json()).toEqual({ head: H0, repository: "server" });
-    down = 99;
-    const dead = await get(fa.artifacts, "/api/projects/concurrency-head/baseline-head");
-    expect(dead.status).toBe(503);
-    expect(((await dead.json()) as { error: string }).error).toBe("artifacts_unavailable");
-  });
-
-  it("a repository that is not there is not retried", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    let gets = 0;
-    const fa = await artifactsProject("concurrency-head-gone", { get: () => { gets++; return false; }, inProgress: 0 }, false);
-    const res = await get(fa.artifacts, "/api/projects/concurrency-head-gone/baseline-head");
-    expect(res.status).toBe(500);
-    expect(gets).toBe(1);
-  });
-
-  it("a head that becomes readable after about five seconds of waiting is answered, and one that never does answers 503", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    // Real steps of 500 ms are 500, 1000, 1500 and 2000 ms before the fifth
-    // read: five seconds. The step is lowered so the test does not wait.
-    setForkWaitMs(1);
-    try {
-      const fa = await artifactsProject("concurrency-fork-wait", { inProgress: 4 });
-      const ready = await get(fa.artifacts, "/api/projects/concurrency-fork-wait/baseline-head");
-      expect(ready.status).toBe(200);
-      expect(await ready.json()).toEqual({ head: H0, repository: "server" });
-      const never = await artifactsProject("concurrency-fork-never", { inProgress: 99 });
-      const res = await get(never.artifacts, "/api/projects/concurrency-fork-never/baseline-head");
-      expect(res.status).toBe(503);
-      expect(((await res.json()) as { error: string }).error).toBe("not_ready");
-    } finally { setForkWaitMs(); }
-  });
 });

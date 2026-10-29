@@ -4,22 +4,22 @@ import { developerBranch } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { guardedPush, remoteBases } from "../private-guard.mjs";
 import { branchLine, formatDeveloperBranches } from "../status.mjs";
-import { OWNER, P, actor, args, call, cfg, die, landingGit, needCheckout, project, request, short, wsConfig } from "../atelier.mjs";
+import { OWNER, P, actor, apiToken, args, call, cfg, die, landingGit, needCheckout, project, request, short, wsConfig } from "../atelier.mjs";
 
 // The developer carries work in progress between their Macs (t641) on
-// branches under wip/, kept in the project's branches repository beside the
-// baseline (developerBranch in src/rules.ts says why it is a repository of
-// its own). Each command mints its own short-lived token for that
-// repository alone, which only the developer is given, sends it to the one
-// Git command that needs it and keeps it nowhere; every Git command runs
-// with every hook off (landingGit), so no hook of the checkout sees it.
-// The name is checked here before a token is minted, and
-// the push names one ref on both sides, so nothing but that branch moves.
-// The push goes through guardedPush like every other Atelier push (t650):
-// the branch is resolved to its commit once, every commit and tree the
-// branches repository's tip of that branch lacks is read for private files,
-// and that commit is what is pushed, so a private file a wip commit carries
-// (after git add -f, say) never reaches the branches repository.
+// branches under dev/, kept in the project's repository on the server
+// (developerBranch in src/rules.ts), which the hook lets only the server
+// token write. A push goes with the server token, a fetch with a read grant
+// the command asks for; each is sent to the one Git command that needs it
+// and kept nowhere, and every Git command runs with every hook off
+// (landingGit), so no hook of the checkout sees it. The name is checked
+// here before anything is asked, and the push names one ref on both sides,
+// so nothing but that branch moves. The push goes through guardedPush like
+// every other Atelier push (t650): the branch is resolved to its commit
+// once, every commit and tree the repository's tip of that branch lacks is
+// read for private files, and that commit is what is pushed, so a private
+// file a dev commit carries (after git add -f, say) never reaches the
+// repository.
 export default async function branchCommand() {
   const git = landingGit;
   const [, sub, given] = args._;
@@ -34,7 +34,7 @@ export default async function branchCommand() {
   const dir = needCheckout(name, cfg.projects?.[name]);
   const current = git(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: dir, allowFail: true });
   const here = current.status === 0 ? current.stdout.trim() : null;
-  const asked = given ?? here ?? die(`the checkout at ${dir} has no branch checked out; name the branch: atelier branch push wip/NAME`);
+  const asked = given ?? here ?? die(`the checkout at ${dir} has no branch checked out; name the branch: atelier branch push dev/NAME`);
   let branch;
   try { branch = developerBranch(String(asked), cfg.projects[name].branch ?? "main"); } catch (error) { die(`${error.message}. Nothing was ${sub === "push" ? "pushed" : "fetched"}`); }
   const ref = `refs/heads/${branch}`, spec = `${args.force === true ? "+" : ""}${ref}:${ref}`;
@@ -43,7 +43,8 @@ export default async function branchCommand() {
     const local = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: dir, allowFail: true });
     if (local.status !== 0) die(`the checkout at ${dir} has no branch ${branch}${branch !== asked ? `; name yours ${branch} first (git branch -m ${asked} ${branch})` : ""}. Nothing was pushed`);
     const token = await call("POST", `${P(name)}/branches/token`, { scope: "write" }, as);
-    const commit = guardedPush({ project: name, cwd: dir, tip: ref, bases: () => remoteBases({ git, cwd: dir, remote: token.remote, ref, opts: { token: token.token } }), what: `Not pushed to ${name}'s branches repository: ${branch}`, fail: die },
+    token.token ??= apiToken();
+    const commit = guardedPush({ project: name, cwd: dir, tip: ref, bases: () => remoteBases({ git, cwd: dir, remote: token.remote, ref, opts: { token: token.token } }), what: `Not pushed to ${name}'s repository: ${branch}`, fail: die },
       (sha) => {
         git(["push", "--quiet", "--no-follow-tags", "--recurse-submodules=no", token.remote, `${args.force === true ? "+" : ""}${sha}:${ref}`], { cwd: dir, token: token.token });
         return sha;
@@ -55,7 +56,7 @@ export default async function branchCommand() {
       if (String(error.message).startsWith("branch_moved: ")) die(`${name}: pushed ${branch} @ ${short(commit)}, but ${error.message.slice("branch_moved: ".length)}`);
       die(error.message, error.code ?? 1);
     });
-    console.log(`${name}: pushed ${branchLine(recorded)} to the project's branches repository. The baseline's main is untouched; on another Mac, atelier branch fetch ${branch.slice("wip/".length)} brings it there.`);
+    console.log(`${name}: pushed ${branchLine(recorded)} to the project's repository. Its main is untouched; on another Mac, atelier branch fetch ${branch.slice("dev/".length)} brings it there.`);
     return;
   }
 

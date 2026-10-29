@@ -67,10 +67,6 @@ test("init run again records the policy and pushes nothing, saying what the chec
   // The policy the re-run sent is the server's now.
   const project = await (await fetch(`${base}/api/projects/demo`, { headers: { authorization: `Bearer ${OWNER}`, "x-atelier-actor": "owner" } })).json();
   assert.deepEqual(project.project.policy.checks, ["git status"]);
-  // --history-since means nothing where the repository takes the whole history.
-  const since = await cli(["init", "--history-since", "2026-01-01"]);
-  assert.notEqual(since.code, 0);
-  assert.match(since.stderr, /--history-since does nothing there\.\nnext: atelier init --project demo, without --history-since/);
   git(checkout, "reset", "-q", "--hard", main);
 });
 

@@ -40,17 +40,17 @@ test("a gate that does not hold the reviewed head ready stops the landing before
 // review ran does not send the head back for a merge of main and a second
 // review: the head is merged onto main as it is under the lease, and the
 // checks on that merged tree decide.
-test("main moved during the review: the reviewed head is merged onto the new main with no second review and nothing pushed to its fork (G2)", async (t) => {
+test("main moved during the review: the reviewed head is merged onto the new main with no second review and nothing pushed to its branch (G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
-  const fork = git(f.p, "--git-dir", f.baseline.replace("baseline.git", "fork-t1.git"), "rev-parse", "main");
+  const fork = f.forkHead("t1");
   const moved = await mainMovesDuringReview(f);
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.ok(moved());
   assert.equal(f.box.reviewAsks.filter((x) => x.item === "t1").length, 1);
   assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["start", "review", "lease", "accept", "merge-main", "regenerate", "checks", "push", "merged", "release"]);
-  assert.equal(git(f.p, "--git-dir", f.baseline.replace("baseline.git", "fork-t1.git"), "rev-parse", "main"), fork, "nothing was pushed to the task's fork");
+  assert.equal(f.forkHead("t1"), fork, "nothing was pushed to the task's branch");
   const tip = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
   const [first, second] = git(f.p, "--git-dir", f.baseline, "rev-list", "--parents", "-n", "1", tip).split(" ").slice(1);
   assert.equal(second, fork);

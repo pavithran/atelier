@@ -33,7 +33,7 @@ function side(f, dir, files, message) {
   for (const [path, text] of Object.entries(files)) writeFileSync(join(dir, path), text);
   f.git(dir, 'add', '.'); f.git(dir, 'commit', '-q', '-m', message);
   if (dir === f.checkout) f.git(dir, 'push', '-q', f.baseline, 'HEAD:main');
-  else { f.git(dir, 'push', '-q', 'origin', 'main'); f.box.head = f.box.acceptedHead = f.git(dir, 'rev-parse', 'HEAD'); }
+  else { f.git(dir, 'push', '-q', 'origin', 'HEAD'); f.box.head = f.box.acceptedHead = f.git(dir, 'rev-parse', 'HEAD'); }
 }
 
 const kept = (f) => join(f.checkout, '.git', 'atelier', 'merge-logs');

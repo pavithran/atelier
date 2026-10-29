@@ -7,7 +7,6 @@ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { SIZE_FIX, SIZE_REFUSED } from "../large-diff.ts";
 import { inScope } from "../tokens.ts";
-import { stalledForks } from "./forks.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
 export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
@@ -84,9 +83,6 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       add("task", f.itemId, f.reason, f.since, f.suggestion === "hand off"
         ? `hand off: choose the next agent H/M, then ${command(`handoff ${f.itemId} --to H/M`)}`
         : `check in with the holder${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact them before handing the task to another agent`);
-    for (const f of stalledForks(live, events, now))
-      add("fork-stalled", f.item, `no fork became ready after the tick replaced it: ${f.forks.map((k) => `${k.name} (${Math.floor(k.ageMs / 60_000)} min)`).join(", ")}`, f.since,
-        `request a fresh fork: ${command(`release ${f.item} --note "Fresh fork after the replacements stalled"`)}, then claim it again with ${command(`start ${f.item} --as H/M`)}; the release starts the count of replacement forks again, the task keeps its history, and Atelier deletes no repository`);
     if (lease && !landingLeaseLapsed(lease, time)) {
       const item = items.find((i) => i.id === lease.item);
       const closed = !item || ["merged", "abandoned"].includes(item.state);

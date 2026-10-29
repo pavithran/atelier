@@ -202,7 +202,7 @@ it("approve routes a reviewer only to a model a live runner offers for the revie
   expect(after.parts[0].route?.reviewer?.actor).toBe("claude-code/opus-5.5");
 });
 
-it("the owner approves by hash, reroutes and retries a part, and a stop revokes the write tokens of what it closes", async () => {
+it("the owner approves by hash, reroutes and retries a part, and a stop clears the write tokens of what it closes", async () => {
   const name = "plan-routes-approve";
   const id = await started(name);
   const L = ledger(name);
@@ -235,16 +235,13 @@ it("the owner approves by hash, reroutes and retries a part, and a stop revokes 
   // Part a is claimed and holds a write token; the plan item holds none.
   const claim = await L.claim(a.id, "zcode/glm-5.3", RUNNER);
   await L.setFork(a.id, `${name}--${a.id}`, H0, "zcode/glm-5.3");
-  expect(await L.recordToken(a.id, "zcode/glm-5.3", claim.generation, claim.replaces, "token-a")).toBe(true);
-  const revoked: [string, string][] = [];
-  const ARTIFACTS = {
-    get: async (repo: string) => ({ revokeToken: async (tokenId: string) => { revoked.push([repo, tokenId]); return true; }, [Symbol.dispose]() {} }),
-  } as unknown as Artifacts;
-  const stopped = await call("POST", `/projects/${name}/items/${id}/plan/stop`, "owner", { note: "changed course" }, TOKEN, { ...testEnv, ARTIFACTS } as typeof env);
+  expect(await L.recordToken(a.id, "zcode/glm-5.3", claim.generation, claim.replaces, "git:token-a")).toBe(true);
+  const stopped = await call("POST", `/projects/${name}/items/${id}/plan/stop`, "owner", { note: "changed course" }, TOKEN, testEnv);
   expect(stopped.status).toBe(200);
   const after = await stopped.json() as PlanView;
   expect([after.item.state, ...after.parts.map((p) => p.state)]).toEqual(["abandoned", "abandoned", "abandoned"]);
-  expect(revoked).toEqual([[`${name}--${a.id}`, "token-a"]]);
+  // The part's task grant counts only while the Ledger records it, so
+  // clearing the record revokes it.
   expect(await L.tokenId(a.id)).toBeNull();
 });
 

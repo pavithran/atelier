@@ -5,12 +5,10 @@ import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { checkLimits, stopLine, stopOf } from "../../src/check-limit.ts";
-import { OWNER, P, actor, apiToken, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
+import { OWNER, P, actor, args, at, call, cfg, die, git, project, readGrant, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 import { pushCheckoutRemote } from "../checkout-push.mjs";
-import { guardedPush, privateChanges, privateGuardFor, remoteBases } from "../private-guard.mjs";
-import { behindRefusal } from "../pull.mjs";
-import syncCommand from "./sync.mjs";
+import { privateChanges, privateGuardFor } from "../private-guard.mjs";
 
 export default async function wrapCommand() {
   const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name, true);
@@ -164,8 +162,7 @@ export default async function wrapCommand() {
   data.head = git(["rev-parse", "HEAD"], { cwd });
   const note = await call("POST", `${P(name)}/sessions`, cleanSession(data), as);
   console.log(sessionNoteText(note));
-  if (cfg.projects[name].fresh === true) await syncCommand();
-  else await publishBaseline();
+  await reportBaseline();
   console.log("Nothing deployed or published as a release.");
   console.log(FILING_RELAY);
   console.log(wrapRelay(note));
@@ -188,34 +185,13 @@ function serverBaselineText(name, branch, serverHead, cwd) {
     : `Baseline: the server's repository is the baseline, and its ${branch} is at ${short(serverHead)}; this checkout is behind it.\nnext: atelier pull --project ${name}`;
 }
 
-// The baseline alone: the step `wrap` ends with for a baseline that holds the
-// whole history.
-async function publishBaseline() {
+// The step `wrap` ends with: the project's repository on the server is the
+// baseline, which only a landing moves (Atelier 2.0, tasks 6 and 11), so wrap
+// publishes nothing and says how the checkout stands against it.
+async function reportBaseline() {
   const name = project();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
-  if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
-  const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
-  // On the Node server the project's repository is the baseline, which only
-  // a landing moves (Atelier 2.0, tasks 6 and 11): wrap publishes nothing
-  // there and says how the checkout stands against it.
-  if (t.repository === "server") {
-    const listed = git(["ls-remote", t.remote, `refs/heads/${p.branch}`], { cwd: p.path, token: apiToken(), hooks: false, allowFail: true });
-    return console.log(serverBaselineText(name, p.branch, /^([0-9a-f]{40,64})\s/.exec(listed.stdout ?? "")?.[1] ?? null, p.path));
-  }
-  // Another checkout may have moved the baseline on (t644): the push would be
-  // refused as a non-fast-forward, so wrap refuses first and names pull.
-  // A baseline without the branch yet takes the first push as it is.
-  const baselineHead = git(["ls-remote", t.remote, `refs/heads/${p.branch}`], { cwd: p.path, token: t.token, hooks: false }).split(/\s/)[0];
-  if (baselineHead) {
-    git(["fetch", "--quiet", "--no-tags", t.remote, p.branch], { cwd: p.path, token: t.token, hooks: false });
-    const behind = behindRefusal(landingGit, p.path, { name, fresh: false, branch: p.branch, baselineHead, nothing: "Nothing was pushed.", command: "atelier wrap" });
-    if (behind) die(behind);
-  }
-  // No commit the baseline lacks may carry a private file (t645). The
-  // baseline's head is read, and fetched when this checkout lacks it; the
-  // commit scanned is the one pushed.
-  const ref = `refs/heads/${p.branch}`;
-  guardedPush({ project: name, cwd: p.path, tip: ref, bases: () => remoteBases({ git, cwd: p.path, remote: t.remote, ref, opts: { token: t.token, ownerRemote: false } }), what: `Publishing ${p.branch} to ${name}'s baseline`, fail: die },
-    (sha) => git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${sha}:refs/heads/${p.branch}`], { cwd: p.path, token: t.token }));
-  console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
+  const t = await readGrant(name, null, OWNER);
+  const listed = git(["ls-remote", t.remote, `refs/heads/${p.branch}`], { cwd: p.path, token: t.token, hooks: false, allowFail: true });
+  console.log(serverBaselineText(name, p.branch, /^([0-9a-f]{40,64})\s/.exec(listed.stdout ?? "")?.[1] ?? null, p.path));
 }

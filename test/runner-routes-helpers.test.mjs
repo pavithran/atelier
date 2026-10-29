@@ -38,6 +38,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import ts from "typescript5";
 import { agentRoute, callParts, callPath, declaredHelperCall, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute } from "../src/tokens.ts";
 import { args, call, request, cliState } from "../cli/atelier.mjs";
 import { runnerTransport } from "../cli/runner.mjs";
@@ -92,8 +93,9 @@ test("the helper transport refuses undeclared operations at runtime regardless o
   cliState.loginToken = "atl_fixture_runner";
   await assert.rejects(call("POST", "/projects/p/items/t1/review-claim", {}, "test/actor"), /not a call/);
   assert.equal(sent.length, 2, "only the identity read is sent before learning the token kind");
-  await assert.rejects(call("POST", "/projects/p/items/t1/base-token", { scope: "write" }, "test/actor"), /only requests read scope/);
-  assert.equal(sent.length, 2, "a known runner cannot send agent operations or request write tokens");
+  await assert.rejects(call("POST", "/projects/p/git-token", { scope: "write" }, "test/actor"), /does not send scope/);
+  await assert.rejects(call("POST", "/projects/p/items/t1/base-token", { kind: "read" }, "test/actor"), /not a call the runner helpers declare/);
+  assert.equal(sent.length, 2, "a known runner cannot send agent operations or fields no declaration names");
 });
 
 // The reviewer's finding on the first round: the guard judged every form of
@@ -129,7 +131,8 @@ test("the runtime helper boundary resolves the same declarations exercised at th
       assert.doesNotThrow(() => declaredHelperCall(c.method, path, body, true));
     } else assert.throws(() => declaredHelperCall(c.method, path, body, true), /not a call/);
   }
-  assert.throws(() => declaredHelperCall("POST", "/projects/p/items/t1/base-token", { scope: "write" }, true), /only requests read scope/);
+  assert.throws(() => declaredHelperCall("POST", "/projects/p/git-token", { scope: "write" }, true), /does not send scope/);
+  assert.throws(() => declaredHelperCall("POST", "/projects/p/items/t1/base-token", { kind: "read" }, true), /not a call the runner helpers declare/);
   for (const path of ["/projects//items/t1/claim", "/projects/p/items/t1/claim?extra=1", "/projects/p/items/t1/claim/extra"]) {
     assert.throws(() => declaredHelperCall("POST", path, {}), /not a call/);
   }
@@ -149,8 +152,8 @@ function declaredPath(expr) {
   if (/^P\(\s*name\s*\)$/.test(text)) return "/projects/{project}";
   const template = /^`\$\{I\(\s*name\s*,\s*id\s*\)\}((?:\/[a-z-]+)*)`$/.exec(text);
   if (template) return `${ITEM}${template[1]}`;
-  // The project-level baseline read (t435), the one project route below the project record a runner token may call.
-  if (/^`\$\{P\(\s*name\s*\)\}\/baseline-token`$/.test(text)) return "/projects/{project}/baseline-token";
+  // The project's Git credential (git-token), the one project route below the project record a runner token may call.
+  if (/^`\$\{P\(\s*name\s*\)\}\/git-token`$/.test(text)) return "/projects/{project}/git-token";
   const literal = /^"(\/[a-z/-]+)"$/.exec(text);
   if (literal) return literal[1];
   return null;
@@ -165,9 +168,18 @@ function declaredPath(expr) {
 // function, returned, stored in an object) fails: it could be called there.
 function callSitesIn(input, roots, where) {
   const module = typeof input === "string" ? parseModule(input) : input;
-  const { calls, leaks } = callsTo(module, isAtelier, TRANSPORT, roots);
+  const { calls, leaks: passed } = callsTo(module, isAtelier, TRANSPORT, roots);
+  // The read-grant helpers (cli/read-grant.mjs) are handed the transport as
+  // their first argument and send one declared call, POST git-token, with
+  // the item in its body when they are given one: a call to one is that
+  // site, and the transport handed to it is not a leak.
+  const grants = grantCalls(module, roots);
+  const lineOf = (node) => module.sf.getLineAndCharacterOfPosition(node.getStart(module.sf)).line + 1;
+  const handed = new Set(grants.filter((g) => g.args[0]).map((g) => `${lineOf(g.args[0])} ${g.args[0].getText()}`));
+  const leaks = passed.filter((l) => !handed.has(`${l.line} ${l.text}`));
   assert.deepEqual(leaks.map((l) => `${l.name} as ${l.text} (line ${l.line})`), [], `${where}: passes the CLI's transport (call, request, postEvidence) on, where this check cannot follow a call through it`);
-  return calls.map((c) => {
+  const granted = grants.map((g) => ({ where, method: "POST", path: "/projects/{project}/git-token", keys: ["kind", ...(g.args[2] && g.args[2].getText().trim() !== "null" ? ["item"] : [])], text: g.text }));
+  return [...granted, ...calls.map((c) => {
     const [first, second, third] = c.name === "postEvidence" ? [undefined, c.args[0], c.args[1]] : c.args;
     const method = c.name === "postEvidence" ? "POST" : staticString(first);
     assert.ok(method, `${where}: a server call whose method this check cannot read: ${c.text}`);
@@ -177,7 +189,30 @@ function callSitesIn(input, roots, where) {
     assert.ok(declared, `${where}: a server call to a path this check cannot read: ${pathText}`);
     const keys = third === undefined || third.getText().trim() === "undefined" ? [] : objectKeys(third);
     return { where, method, path: declared, keys, text: `${method} ${pathText}` };
-  });
+  })];
+}
+
+// The calls within `roots` to the helpers of cli/read-grant.mjs, as the
+// module names them (an import of them, or the namespace it imports them
+// by): { args (nodes), text }.
+function grantCalls(module, roots) {
+  const GRANTS = new Set(["readGrant", "taskReadGrant", "baseReadGrant"]);
+  const names = new Set(), spaces = new Set();
+  for (const entry of module.imports) {
+    if (entry.typeOnly || !entry.spec || !/(?:^|\/)read-grant\.mjs$/.test(entry.spec)) continue;
+    for (const b of entry.bound) { if (b.imported === "*") spaces.add(b.local); else if (GRANTS.has(b.imported)) names.add(b.local); }
+  }
+  const found = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const named = ts.isIdentifier(callee) && names.has(callee.text) || ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && spaces.has(callee.expression.text) && GRANTS.has(callee.name.text);
+      if (named) found.push({ args: [...node.arguments], text: node.getText() });
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const r of [].concat(roots ?? module.sf)) visit(r);
+  return found;
 }
 
 // The helpers of cli/atelier.mjs a command reaches: those it imports, and
@@ -321,8 +356,8 @@ test("the commands the runner spawns reach the server through the CLI's transpor
   const made = new Set();
   for (const command of RUNNER_COMMANDS) {
     const mine = CLI_CALLS.filter((c) => c.command === command);
-    // An owner call (atelier push --owner-port) is the developer's own and
-    // is judged by the gateway case that refuses it to every other token.
+    // An owner call would be the developer's own and judged by the gateway
+    // case that refuses it to every other token; none is declared now.
     const credential = new Set(mine.filter((c) => c.credential !== "owner").map((c) => c.credential));
     assert.equal(credential.size, 1, `${command} is declared under more than one credential kind`);
     const allowed = [...credential][0] === "agent" ? agentRoute : runnerRoute;
@@ -337,8 +372,8 @@ test("the commands the runner spawns reach the server through the CLI's transpor
       // The path a command calls is one its credential may call. A route
       // declared for one command and called by another (finish and the rest
       // read the item, declared under finish) is judged by this command's
-      // credential; base-token asks for a read scope, never a write one.
-      const body = site.keys.includes("scope") ? { scope: "read" } : {};
+      // credential.
+      const body = {};
       if (declared.every((c) => c.credential === "owner")) {
         assert.deepEqual([runnerRoute(site.method, callParts(declared[0]), body), agentRoute(site.method, callParts(declared[0]), body)], [false, false], `${site.where}: ${site.text} is an owner call a runner or agent token may make`);
         continue;
@@ -361,7 +396,7 @@ test("the source check reads call sites as the commands write them", () => {
   assert.equal(declaredPath("`${I(name, id)}/review-skip`"), `${ITEM}/review-skip`);
   assert.equal(declaredPath('"/runs"'), "/runs");
   assert.equal(declaredPath("P(name)"), "/projects/{project}");
-  assert.equal(declaredPath("`${P(name)}/baseline-token`"), "/projects/{project}/baseline-token");
+  assert.equal(declaredPath("`${P(name)}/git-token`"), "/projects/{project}/git-token");
   assert.equal(declaredPath("`${P(name)}/items`"), null, "a path on another helper is not read, and fails the check");
   const keysOf = (code) => objectKeys(parseModule(`x(${code});`).sf.statements[0].expression.arguments[0]);
   assert.deepEqual(keysOf("{ head, ...(rebasedFrom ? { rebasedFrom } : {}) }"), ["head", "rebasedFrom"]);
@@ -388,6 +423,9 @@ test("the source check reads call sites as the commands write them", () => {
   assert.deepEqual(aliased('import { call } from "../atelier.mjs";\nconst send = call;\nawait send("POST", "/runs", {}, as);'), [["POST", "/runs"]]);
   assert.deepEqual(aliased('import { request } from "../atelier.mjs";\nlet go;\ngo = (request);\nawait go("GET", "/runs", undefined, as);'), [["GET", "/runs"]]);
   assert.deepEqual(aliased('const { postEvidence: post } = await import("../atelier.mjs");\nawait post("/runs", {});'), [["POST", "/runs"]]);
+  // A read-grant helper handed the transport is one POST git-token, with the item when it is given one.
+  assert.deepEqual(aliased('import { request } from "../atelier.mjs";\nimport { baseReadGrant, readGrant } from "../read-grant.mjs";\nawait baseReadGrant(request, name, id, as);\nawait readGrant(request, name);').map((s) => s.join(" ")), ["POST /projects/{project}/git-token", "POST /projects/{project}/git-token"]);
+  assert.deepEqual(snippetSites('import { baseReadGrant, readGrant } from "../read-grant.mjs";\nawait baseReadGrant(request, name, id, as);\nawait readGrant(request, name, null);').map((s) => s.keys), [["kind", "item"], ["kind"]]);
 });
 
 // The transport handed on where a call through it cannot be read is a leak.

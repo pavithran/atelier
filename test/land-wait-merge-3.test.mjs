@@ -20,7 +20,7 @@ test("the legacy settlement commits every file the regenerate command wrote, not
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
   f.box.regen = "echo generated > gen-fixtures.txt; echo extra > extra-gen.txt";
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "HEAD");
   const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
   assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "");
@@ -35,10 +35,10 @@ test("the legacy settlement refuses a file that became dirty before the command 
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "HEAD");
   // The merge's token request comes after the workspace was found clean and before the merge.
   let tokens = 0;
-  f.box.holdOn = (url) => { if (url.endsWith("/base-token") && ++tokens === 1) { writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished\n"); } return false; };
+  f.box.holdOn = (url) => { if (url.endsWith("/git-token") && ++tokens === 1) { writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished\n"); } return false; };
   const r = await f.workspaceMerge();
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /since the landing began \(video\.md\)/);
@@ -51,9 +51,9 @@ test("a conflict that also touches a file the regenerate command does not rewrit
   const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
   // Both sides also regenerate the fixture, so one conflict is generated and one is not.
   writeFileSync(join(f.checkout, "gen-fixtures.txt"), "from main\n");
-  git(f.checkout, "add", "."); git(f.checkout, "commit", "-m", "Main regenerates the fixture"); git(f.checkout, "push", "-q", "origin", "main");
+  git(f.checkout, "add", "."); git(f.checkout, "commit", "-m", "Main regenerates the fixture"); git(f.checkout, "push", "-q", "origin", "HEAD");
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "HEAD");
   const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   const r = await f.workspaceMerge();
   assert.equal(r.status, 1, r.output);
@@ -77,7 +77,7 @@ test("a conflict that also touches a file the regenerate command does not rewrit
 test("a regenerate command that fails while settling conflicts stops the landing with the failure named", async (t) => {
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "HEAD");
   f.box.regen = "echo boom >&2; exit 3";
   const before = f.forkHead("t1");
   const r = await f.workspaceMerge();
@@ -220,7 +220,7 @@ const named = (f, levels) => {
   for (const dir of [f.workspace("t1"), f.checkout]) {
     writeFileSync(join(dir, "src", "route-level.ts"), 'export const CAPABILITIES = buildCapabilities(CAPABILITY_DECLARATIONS);\nexport const ROUTE_LEVEL = 7;\n');
     if (levels && dir === f.workspace("t1")) writeFileSync(join(dir, "src", "capability-declarations.ts"), 'export const CAPABILITY_DECLARATIONS = [\n  { name: "items.task.v1", level: 7, summary: "x" },\n];\n');
-    git(dir, "add", "."); git(dir, "commit", "-m", "Raise with a named declaration"); git(dir, "push", "-q", "origin", "main");
+    git(dir, "add", "."); git(dir, "commit", "-m", "Raise with a named declaration"); git(dir, "push", "-q", "origin", "HEAD");
   }
 };
 

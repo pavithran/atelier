@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 5, slot: 20,
       form: "base-token ID",
-      about: "Reads a token for the repository the task is measured against: the plan's fork for a part, the baseline otherwise.",
+      about: "Reads a read grant naming the branch the task merges into: the plan's branch for a part, the project's otherwise.",
     },
   ],
   flags: {},

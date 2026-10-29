@@ -6,7 +6,7 @@ import { foldPath, pathCollisions } from "../../src/rules.ts";
 import { carryBaseline, loadPairs, savePairs, useRealHistory } from "../fresh.mjs";
 import { historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { OWNER, P, args, call, cfg, die, gitEnv, identityEnv, landingGit, landingHome, needCheckout, project, short } from "../atelier.mjs";
+import { OWNER, P, args, call, cfg, die, gitEnv, identityEnv, landingGit, landingHome, needCheckout, project, readGrant, short } from "../atelier.mjs";
 import { NO_IDENTITY } from "../../src/commit-identity.ts";
 import { privateConfigured, privateGuardFor } from "../private-guard.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
@@ -70,7 +70,7 @@ export default async function pullCommand() {
     const identity = (await call("GET", P(name), undefined, OWNER))?.project?.policy?.commitIdentity;
     const asProject = () => identityEnv(identity);
     try { pinCheckoutIdentity(cwd, identity); } catch (error) { die(`${error.message}. Nothing was pulled.`); }
-    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
+    const base = await readGrant(name, null, OWNER);
     git(["fetch", "--quiet", "--no-tags", base.remote, p.branch], { cwd, token: base.token });
     const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
     const listed = git(["ls-remote", base.remote, "refs/notes/atelier"], { cwd, token: base.token });

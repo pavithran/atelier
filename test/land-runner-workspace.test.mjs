@@ -45,27 +45,27 @@ const config = (dir, key) => { const r = realGit(["config", "--local", key], { c
 // Every value a key holds, in order, as Git pushes to every configured URL.
 const configAll = (dir, key) => { const r = realGit(["config", "--local", "--get-all", key], { cwd: dir, allowFail: true }); return r.status === 0 ? r.stdout.split("\n").filter(Boolean) : []; };
 
-// The baseline, the task's fork and its workspace, as a runner's claim left
-// them: `origin` names the runner route (or, with `pushUrlOnly`, the fork
+// The server's repository (main and the task's branch t/1) and the workspace, as a runner's claim left
+// them: `origin` names the runner route (or, with `pushUrlOnly`, the server's repository
 // with the route as a push URL apart; or, with `pushUrls` or `urls`, the
-// fork with those push URLs set apart or those fetch URLs, each "fork" or
+// fork with those push URLs set apart or those fetch URLs, each "fork" (the server's repository) or
 // the route, in that order), the credentials file holds the runner's Git
 // credential for the route, and the workspace records the
 // expiry the claim answered (none when null). With `onFork` the workspace
-// is an ordinary fork workspace. `claim` says how the server answers the
+// is an ordinary workspace. `claim` says how the server answers the
 // re-claim: ok, a refusal, no-token, no-remote, route (another runner route)
-// or bad-remote (a fork path that does not exist, so the fetch fails).
+// or bad-remote (a repository path that does not exist, so the fetch fails).
 function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = false, pushUrls = null, urls = null, onFork = false, holder = "codex/gpt-6-astra", runner = "home:mbp", actor = holder, claim = "ok", state = "submitted", dryRun = false, push = [], directHeader = false } = {}) {
-  const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), fork = join(p, "fork.git"), dir = join(p, "work", "proj", "t1");
+  const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), fork = baseline, dir = join(p, "work", "proj", "t1");
   mkdirSync(seed);
   sh(seed, "init", "-q", "-b", "main"); sh(seed, "config", "user.name", "Fixture"); sh(seed, "config", "user.email", "fixture@example.invalid");
   writeFileSync(join(seed, "work.txt"), "base\n"); sh(seed, "add", "."); sh(seed, "commit", "-q", "-m", "Initial");
-  sh(p, "clone", "-q", "--bare", seed, baseline); sh(p, "clone", "-q", "--bare", baseline, fork);
-  mkdirSync(join(p, "work", "proj"), { recursive: true }); sh(p, "clone", "-q", fork, dir);
+  sh(p, "clone", "-q", "--bare", seed, baseline);
+  mkdirSync(join(p, "work", "proj"), { recursive: true }); sh(p, "clone", "-q", fork, dir); sh(dir, "checkout", "-q", "-b", "t/1");
   sh(dir, "config", "user.name", "Fixture"); sh(dir, "config", "user.email", "fixture@example.invalid");
-  writeFileSync(join(dir, "work.txt"), "task\n"); sh(dir, "add", "."); sh(dir, "commit", "-q", "-m", "Task t1"); sh(dir, "push", "-q", "origin", "main");
+  writeFileSync(join(dir, "work.txt"), "task\n"); sh(dir, "add", "."); sh(dir, "commit", "-q", "-m", "Task t1"); sh(dir, "push", "-q", "origin", "t/1");
   const head = sh(dir, "rev-parse", "HEAD");
-  for (const [key, value] of Object.entries({ project: "proj", item: "t1", actor, branch: "main", ...(expiresAt ? { "write-token-expires-at": expiresAt } : {}) })) if (value) sh(dir, "config", `atelier.${key}`, value);
+  for (const [key, value] of Object.entries({ project: "proj", item: "t1", actor, branch: "t/1", "base-branch": "main", ...(expiresAt ? { "write-token-expires-at": expiresAt } : {}) })) if (value) sh(dir, "config", `atelier.${key}`, value);
   if (!onFork) {
     const named = (u) => (u === "fork" ? fork : u);
     if (pushUrls) for (const u of pushUrls) sh(dir, "config", "--add", "remote.origin.pushurl", named(u));
@@ -86,15 +86,14 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
     if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state } };
     if (path === itemPath) return { item: { id: "t1", state, owner: holder, runner, head, acceptedHead: state === "accepted" ? head : null }, policy: { checks: [] } };
     if (path === `${itemPath}/claim`) {
-      if (claim === "no-token") return { item: { id: "t1" }, workspace: { remote: fork, expiresAt: fresh, defaultBranch: "main" } };
-      if (claim === "no-remote") return { item: { id: "t1" }, workspace: { token: FORK_TOKEN, expiresAt: fresh, defaultBranch: "main" } };
-      if (claim === "route") return { item: { id: "t1" }, workspace: { remote: "https://atelier.invalid/git/runner/proj/t1.git", token: "another-runner-secret", expiresAt: fresh, defaultBranch: "main" } };
-      if (claim === "bad-remote") return { item: { id: "t1" }, workspace: { remote: join(p, "gone.git"), token: FORK_TOKEN, expiresAt: fresh, defaultBranch: "main" } };
+      if (claim === "no-token") return { item: { id: "t1" }, workspace: { remote: fork, branch: "t/1", expiresAt: fresh, defaultBranch: "main" } };
+      if (claim === "no-remote") return { item: { id: "t1" }, workspace: { branch: "t/1", token: FORK_TOKEN, expiresAt: fresh, defaultBranch: "main" } };
+      if (claim === "route") return { item: { id: "t1" }, workspace: { remote: "https://atelier.invalid/git/runner/proj/t1.git", token: "another-runner-secret", branch: "t/1", expiresAt: fresh, defaultBranch: "main" } };
+      if (claim === "bad-remote") return { item: { id: "t1" }, workspace: { remote: join(p, "gone.git"), token: FORK_TOKEN, branch: "t/1", expiresAt: fresh, defaultBranch: "main" } };
       if (claim !== "ok") throw Object.assign(new Error(claim), { status: 409 });
-      return { item: { id: "t1" }, workspace: { remote: fork, token: FORK_TOKEN, expiresAt: fresh, defaultBranch: "main" } };
+      return { item: { id: "t1" }, workspace: { remote: fork, token: FORK_TOKEN, branch: "t/1", expiresAt: fresh, defaultBranch: "main" } };
     }
-    if (path === `${itemPath}/base-token`) return { remote: baseline, token: "read", defaultBranch: "main" };
-    if (path === `${itemPath}/read-token`) return { remote: fork, token: "read", defaultBranch: "main" };
+    if (path === "/projects/proj/git-token") return { kind: "read", remote: baseline, token: "read", expiresAt: fresh, defaultBranch: "main", repository: "server", branch: "t/1", into: "main", head, base: sh(baseline, "rev-parse", "main") };
     return {};
   };
   // Each `atelier push` answers the next of `push` (true passes, a string

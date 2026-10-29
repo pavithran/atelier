@@ -36,7 +36,7 @@ test("a rerun of a conflicted merge resolved by hand still compares and raises t
   writeFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "export const ROUTE_LEVEL = 9;\n");
   git(f.workspace("t1"), "add", ".");
   git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
-  git(f.workspace("t1"), "push", "-q", "origin", "main");
+  git(f.workspace("t1"), "push", "-q", "origin", "HEAD");
   f.box.requests.length = 0;
   const r = await f.workspaceMerge();
   assert.equal(r.status, 0, r.output);
@@ -69,9 +69,9 @@ test("a merge that brought main in through a side branch still compares and rais
   git(w, "checkout", "-q", "-b", "side");
   git(w, "fetch", "-q", f.baseline, "main");
   git(w, "merge", "-q", "--no-ff", "-m", "Merge main into the side branch", "FETCH_HEAD");
-  git(w, "checkout", "-q", "main");
+  git(w, "checkout", "-q", "t/1");
   git(w, "merge", "-q", "--no-ff", "-m", "Merge the side branch into the task", "side");
-  git(w, "push", "-q", "origin", "main");
+  git(w, "push", "-q", "origin", "HEAD");
   // The premise of the regression: this topology leaves the --first-parent
   // rev-list empty, so the merge that brought main in must be found another way.
   const mainHead = git(f.checkout, "rev-parse", "HEAD");
@@ -120,7 +120,7 @@ test("--dry-run prints the steps and the refusals without changing anything", as
   // Reads only: the lease is read, never taken, and nothing that changes
   // state was posted; the POSTs are the read tokens the preview reads with.
   assert.ok(f.box.requests.some((x) => x.method === "GET" && x.path.endsWith("/landing-lease")));
-  assert.deepEqual([...new Set(f.box.requests.filter((x) => x.method === "POST").map((x) => x.path))].sort(), ["/api/projects/proj/items/t1/base-token", "/api/projects/proj/items/t1/read-token"]);
+  assert.deepEqual([...new Set(f.box.requests.filter((x) => x.method === "POST").map((x) => x.path))].sort(), ["/api/projects/proj/git-token"]);
   assert.match(r.output, /Preview: [0-9a-f]{8} merges cleanly into main at [0-9a-f]{8}\./);
   assert.equal(f.box.lease, null);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);

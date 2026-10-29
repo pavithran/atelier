@@ -248,22 +248,24 @@ test("only a remote the policy declares is a public mirror", () => {
 
 // ── claim ─────────────────────────────────────────────────────────────────
 
-// A server that answers a claim with a fork the test serves from a local
-// bare repository, and the policy's identity, or none; `atelier claim` runs
-// against it with no global Git identity and no registered checkout.
+// A server that answers a claim with the task's branch t/1 in a local bare
+// repository that also holds main, and the policy's identity, or none;
+// `atelier claim` runs against it with no global Git identity and no
+// registered checkout.
 async function claimFixture(t) {
   const root = tempRoot(t), env = bareEnv(root);
-  const source = join(root, "source"), fork = join(root, "fork.git");
+  const source = join(root, "source"), repository = join(root, "repository.git");
   execFileSync("git", ["init", "-q", "-b", "main", source], { env });
   run(source, ["-c", "user.name=Seed", "-c", `user.email=${OWNER.email}`, "commit", "-q", "--allow-empty", "-m", "Initial"], env);
-  execFileSync("git", ["clone", "-q", "--bare", source, fork], { env });
+  execFileSync("git", ["clone", "-q", "--bare", source, repository], { env });
+  execFileSync("git", ["--git-dir", repository, "branch", "t/1", "main"], { env });
   const state = { identity: POLICY };
   const server = createServer(async (req, res) => {
     if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     for await (const chunk of req) void chunk;
     const item = { id: "t1", title: "Edit", scope: [], owner: "codex/test", state: "claimed" };
     const data = req.url.endsWith("/claim")
-      ? { item, workspace: { token: "write-token", remote: fork, defaultBranch: "main", expiresAt: "2026-10-11T00:00:00.000Z" }, commitIdentity: state.identity }
+      ? { item, workspace: { token: "write-token", remote: repository, branch: "t/1", defaultBranch: "main", expiresAt: "2026-10-11T00:00:00.000Z" }, commitIdentity: state.identity }
       : { item };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));

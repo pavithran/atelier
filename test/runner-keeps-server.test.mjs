@@ -134,7 +134,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
     const me = async () => (await (await call("GET", "/runners/me", undefined, runnerToken)).json());
     // Nothing remembered yet.
     assert.equal((await me()).memory, undefined);
-    const memory = { refused: [], gaveUp: ['["demo","t13","2026-10-28T09:00:00.000Z"]'], failures: [{ key: '["demo","t13","2026-10-28T09:00:00.000Z"]', count: 2 }], infrastructure: [], skipHeads: [], backoff: [{ key: '["demo","t14","2026-10-28T09:00:00.000Z"]', count: 4 }], notReady: [{ key: '["demo","t15","2026-10-28T09:00:00.000Z"]', since: 1000, tries: 2, detail: "still being prepared", expired: false }], pauses: [], reasons: [{ task: "demo/t13", why: "skipped after 2 failed runs under this dispatch" }] };
+    const memory = { refused: [], gaveUp: ['["demo","t13","2026-10-28T09:00:00.000Z"]'], failures: [{ key: '["demo","t13","2026-10-28T09:00:00.000Z"]', count: 2 }], infrastructure: [], skipHeads: [], backoff: [{ key: '["demo","t14","2026-10-28T09:00:00.000Z"]', count: 4 }], pauses: [], reasons: [{ task: "demo/t13", why: "skipped after 2 failed runs under this dispatch" }] };
     assert.equal((await poll({ memory })).status, 200);
     assert.deepEqual((await me()).memory, memory);
     // A heartbeat or an older runner's poll carries none, and the last stands.

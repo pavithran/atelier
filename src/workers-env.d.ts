@@ -139,6 +139,3 @@ declare var caches: { default: { match(key: Request): Promise<Response | undefin
 
 // The landing Workflow's instance status, kept on records written before task 6 removed it.
 type InstanceStatus = { status: "queued" | "running" | "paused" | "errored" | "terminated" | "complete" | "waiting" | "waitingForPause" | "rollingBack" | "unknown"; error?: { name: string; message: string }; output?: unknown };
-
-// The web stream type src/runner-git.ts names, which Node keeps in node:stream/web.
-type ReadableStreamReadResult<T> = import("node:stream/web").ReadableStreamReadResult<T>;

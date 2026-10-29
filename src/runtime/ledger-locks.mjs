@@ -30,7 +30,7 @@
 // the task's lock too (never "planned"): a landing grant counts only while
 // its task is accepted at its head.
 export const GRANT_LOCKS = {
-  claim: "task", unclaim: "task", recordToken: "task", recordRunnerGit: "task", recordOwnerPortToken: "task",
+  claim: "task", unclaim: "task", recordToken: "task",
   release: "task", handoff: "task", abandon: "task", dispatch: "task", merged: "task", recordMerge: "task", landedFast: "task",
   accept: "task", setBlockedBy: "task", recordPush: "task", observePush: "task", editItem: "task", addReview: "task", setFork: "task", moveFork: "task", taskRefreshed: "task",
   beginProjectLanding: "lease", renewProjectLanding: "lease", cancelProjectLanding: "lease",

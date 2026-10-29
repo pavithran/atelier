@@ -17,13 +17,17 @@
 //            once the landing's merge is recorded (task 6). Its one update of
 //            the project's branch is recorded in `branch_sha` as the hook
 //            lets it through; a second is refused.
+//   refresh  writes refs/heads/t/N for its task beside the holder's task
+//            grant, minted to the holder of the task's refresh lease (t462)
+//            and bound to that lease (`lease`); live only while the task's
+//            Ledger records it as the lease's grant and the lease stands.
 // The plaintext leaves this module once, in mint's answer, and is never
 // stored, logged or put in a hook's environment (the hook gets the grant id).
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-export const KINDS = ["task", "read", "landing", "plan"];
-export const TTL_MS = { task: 7 * 24 * 3600e3, read: 8 * 3600e3, landing: 5 * 60e3, plan: 7 * 24 * 3600e3 };
+export const KINDS = ["task", "read", "landing", "plan", "refresh"];
+export const TTL_MS = { task: 7 * 24 * 3600e3, read: 8 * 3600e3, landing: 5 * 60e3, plan: 7 * 24 * 3600e3, refresh: 8 * 3600e3 };
 
 export function hashToken(token) {
   return createHash("sha256").update(token).digest("hex");
@@ -50,6 +54,7 @@ export class GrantStore {
     if (kind === "landing" && !/^[0-9a-f]{40}$/.test(accepted ?? "")) throw new Error("a landing grant names the accepted head");
     if (kind === "landing" && !/^t\d+$/.test(task ?? "")) throw new Error("a landing grant names its task as tN");
     if (kind === "landing" && !lease) throw new Error("a landing grant names the holding of the landing lease it was minted under");
+    if (kind === "refresh" && (!/^t\d+$/.test(task ?? "") || !lease)) throw new Error("a refresh grant names its task as tN and the refresh lease it was minted under");
     const token = `atl_${randomBytes(32).toString("hex")}`;
     const hash = hashToken(token);
     const id = randomUUID().replaceAll("-", "").slice(0, 16);

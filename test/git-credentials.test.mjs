@@ -6,15 +6,15 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REAL_GIT, WRITE, WRITE2, READ, BASE, LEGACY, isolated, real, fixture, started, lapse, cli, actor, serveGit } from "./git-credentials-shared.mjs";
-// Every local user can read a process's arguments with ps, so no Artifacts
+import { REAL_GIT, WRITE, WRITE2, READ, LEGACY, isolated, real, fixture, started, lapse, cli, actor, serveGit } from "./git-credentials-shared.mjs";
+// Every local user can read a process's arguments with ps, so no Git
 // token may appear in the arguments of any git the CLI runs. These tests put
 // a shim named git first on PATH that records each call's arguments and the
 // names (never the values) of its environment, then runs the real git. The
 // remotes are served over HTTP by git http-backend behind a check of the
 // Authorization header, so a token that does not reach git, or a revoked one
 // still configured, fails the command.
-const TOKENS = [WRITE, WRITE2, READ, BASE, LEGACY];
+const TOKENS = [WRITE, WRITE2, READ, LEGACY];
 // git http-backend as a CGI program behind a Node server. A request to a
 // repository is served only when every Authorization header it carries holds
 // a token valid for that repository, and at least one does.
@@ -40,9 +40,9 @@ test("claim, re-claim, push and check authenticate without a token in any git ar
   // A workspace claimed by a CLI that wrote the header into .git/config
   // itself: a re-claim with a fresh token must leave neither old one
   // configured, or the fetch carries a revoked token and is refused.
-  real(f.workspace, "config", "--local", "--add", `http.${f.forkUrl}.extraHeader`, `Authorization: Bearer ${LEGACY}`);
+  real(f.workspace, "config", "--local", "--add", `http.${f.repoUrl}.extraHeader`, `Authorization: Bearer ${LEGACY}`);
   f.claim.token = WRITE2;
-  f.valid["fork.git"] = new Set([WRITE2, READ]);
+  f.valid["repo.git"] = new Set([WRITE2, READ]);
   const reclaim = await f.run(["claim", "t1"], f.workspace);
   assert.equal(reclaim.status, 0, reclaim.output);
   const config = readFileSync(join(gitDir, "config"), "utf8");
@@ -50,7 +50,7 @@ test("claim, re-claim, push and check authenticate without a token in any git ar
   assert.equal(real(f.workspace, "config", "--local", "--get-all", "include.path"), "atelier-credentials", "the include is added once");
   assert.equal(statSync(join(gitDir, "atelier-credentials")).mode & 0o777, 0o600);
 
-  // The persisted header pushes; the read and baseline tokens clone and fetch.
+  // The persisted header pushes; the read token clones and fetches.
   real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
   const push = await f.run(["push"], f.workspace);
   assert.equal(push.status, 0, push.output);
@@ -59,8 +59,8 @@ test("claim, re-claim, push and check authenticate without a token in any git ar
   assert.match(check.output, /PASS {2}true/);
 
   const used = (repo, token) => f.seen.some((s) => s.repo === repo && s.tokens.includes(token));
-  assert.ok(used("fork.git", WRITE) && used("fork.git", WRITE2) && used("fork.git", READ) && used("base.git", BASE), JSON.stringify(f.seen));
-  assert.ok(!used("fork.git", LEGACY), "the old header was removed before the fetch");
+  assert.ok(used("repo.git", WRITE) && used("repo.git", WRITE2) && used("repo.git", READ), JSON.stringify(f.seen));
+  assert.ok(!used("repo.git", LEGACY), "the old header was removed before the fetch");
 
   noTokenInArgs();
   const calls = f.calls();

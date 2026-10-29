@@ -108,12 +108,10 @@ test("a command that needs the named entry's checkout refuses an unusable path b
     assert.doesNotMatch(r.stderr, /paths\[0\]|fetch failed|ECONNREFUSED|ENOTFOUND/, argv.join(" "));
   };
   try {
-    // sync, pull and notes-remote declare no server capabilities, so they
+    // pull and notes-remote declare no server capabilities, so they
     // reach their refusal with no server configured at all.
     await withConfig(projects, async (configDir) => {
       for (const [name, argv] of [
-        ["none", ["sync", "--project", "none"]],
-        ["empty", ["sync", "--project", "empty"]],
         ["none", ["pull", "--project", "none"]],
         ["none", ["notes-remote", "origin", "--project", "none"]],
       ]) refuses(await run(argv, configDir, dir), name, argv);
@@ -125,8 +123,8 @@ test("a command that needs the named entry's checkout refuses an unusable path b
       writeFileSync(join(configDir, "config.json"), JSON.stringify({ server: url, projects }));
       for (const [name, argv] of [
         ["none", ["merge", "t9", "--project", "none"]],
-        ["none", ["branch", "push", "wip/x", "--project", "none"]],
-        ["empty", ["branch", "push", "wip/x", "--project", "empty"]],
+        ["none", ["branch", "push", "dev/x", "--project", "none"]],
+        ["empty", ["branch", "push", "dev/x", "--project", "empty"]],
         ["none", ["record-merge", "t9", "--merge", sha, "--review", `h/m=approve@${sha}`, "--project", "none"]],
       ]) refuses(await run(argv, configDir, dir), name, argv);
     } finally {

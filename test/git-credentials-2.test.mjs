@@ -1,9 +1,9 @@
 // Part 2 of 4 of the tests that were in git-credentials.test.mjs, split so no file runs for more than about a minute (t771).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { REAL_GIT, WRITE, WRITE2, READ, BASE, LEGACY, isolated, real, fixture, started, lapse, cli, actor, serveGit } from "./git-credentials-shared.mjs";
+import { REAL_GIT, WRITE, WRITE2, READ, LEGACY, isolated, real, fixture, started, lapse, cli, actor, serveGit } from "./git-credentials-shared.mjs";
 
-for (const status of [403, 401]) test(`update renews a token the fork refuses as expired and fetches again (git sees ${status})`, async (t) => {
+for (const status of [403, 401]) test(`update renews a token the server refuses as expired and fetches again (git sees ${status})`, async (t) => {
   const f = await started(t);
   f.refuse.status = status;
   lapse(f);
@@ -14,7 +14,7 @@ for (const status of [403, 401]) test(`update renews a token the fork refuses as
 });
 
 
-for (const status of [403, 401]) test(`push renews a token the fork refuses as expired and pushes with the new one (git sees ${status})`, async (t) => {
+for (const status of [403, 401]) test(`push renews a token the server refuses as expired and pushes with the new one (git sees ${status})`, async (t) => {
   const f = await started(t);
   f.refuse.status = status;
   lapse(f);
@@ -29,7 +29,7 @@ for (const status of [403, 401]) test(`push renews a token the fork refuses as e
 for (const status of [403, 401]) test(`update says plainly to run atelier start when the token cannot be renewed for the caller (git sees ${status})`, async (t) => {
   const f = await started(t);
   f.refuse.status = status;
-  f.valid["fork.git"] = new Set([]);
+  f.valid["repo.git"] = new Set([]);
   f.claim.owner = "codex/other";
   const r = await f.run(["update"], f.workspace);
   assert.notEqual(r.status, 0);
@@ -41,7 +41,7 @@ for (const status of [403, 401]) test(`update says plainly to run atelier start 
 for (const status of [403, 401]) test(`update that renews and is refused again says to run atelier start (git sees ${status})`, async (t) => {
   const f = await started(t);
   f.refuse.status = status;
-  f.valid["fork.git"] = new Set([]);
+  f.valid["repo.git"] = new Set([]);
   const r = await f.run(["update"], f.workspace);
   assert.notEqual(r.status, 0);
   assert.match(r.output, /still refused this workspace's token after it was renewed\. Run atelier start t1 --as codex\/test\./);
