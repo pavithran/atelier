@@ -81,8 +81,16 @@ async function revParse(dir, ref) {
 // since the rehearsal. A branch this server has moved past is left; one that
 // has diverged from the remote's refuses, naming both. Answers what was
 // done, with the branch verified equal to the remote's.
-export async function mirrorBranch({ dir, branch, remote, token }) {
+// A project whose record names no branch (registered before records kept
+// one) takes the remote's HEAD branch.
+export async function mirrorBranch({ dir, branch: named, remote, token }) {
   const refs = await remoteRefs(dir, remote, token);
+  let branch = named;
+  if (!branch) {
+    const head = await git(dir, ["ls-remote", "--symref", remote, "HEAD"], token, 120_000).catch(() => "");
+    branch = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(head)?.[1] ?? null;
+    if (!branch) return { error: "no_branch", detail: `${remote.replace(/\?.*$/, "")} names no HEAD branch, and the project's record names none` };
+  }
   const want = refs[`refs/heads/${branch}`];
   if (!want) return { error: "no_branch", detail: `${remote.replace(/\?.*$/, "")} has no branch ${branch}` };
   const specs = [`+refs/heads/${branch}:${STAGE}/head`];
@@ -102,7 +110,7 @@ export async function mirrorBranch({ dir, branch, remote, token }) {
       const got = await revParse(dir, `${STAGE}/notes`);
       notes = got ? await follow(dir, NOTES, await revParse(dir, NOTES), got, "move-host notes") : "none";
     }
-    return { before, head, remoteHead: fetched, moved, notes, tags: tags.length };
+    return { branch, before, head, remoteHead: fetched, moved, notes, tags: tags.length };
   } finally {
     for (const r of ["head", "notes"]) await git(dir, ["update-ref", "-d", `${STAGE}/${r}`]).catch(() => {});
   }

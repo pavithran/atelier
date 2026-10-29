@@ -279,7 +279,7 @@ type GitHost = {
   moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
   revokeAfterPushes(id: string): Promise<boolean>;
   revokeLanding(args: { key: string; task: string }): Promise<number>;
-  mirror(args: { key: string; branch: string; remote: string; token: string | null }): Promise<HostMove>;
+  mirror(args: { key: string; branch: string | null; remote: string; token: string | null }): Promise<HostMove>;
   carry(args: { key: string; projectBranch: string; branch: string; task: string; remote: string; ref: string; token: string | null; head: string }): Promise<{ head: string; tip: string | null; carried: boolean; error?: undefined } | { error: string; detail: string }>;
   dropBranch(args: { key: string; projectBranch: string; branch: string; task: string; at: string }): Promise<boolean>;
   keepWayBack(args: { key: string; remote: string | null; token?: string | null }): void;
@@ -288,7 +288,7 @@ type GitHost = {
   readFile(args: { key: string; branch: string; path: string }): Promise<string | null>;
 };
 // What move-host did (src/git/move.mjs, mirrorBranch), or why it did nothing.
-type HostMove = { error?: undefined; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number }
+type HostMove = { error?: undefined; branch: string; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number }
   | { error: string; detail: string; before?: string | null; remoteHead?: string };
 
 function gitHost(env: Env): GitHost | null {
@@ -1289,7 +1289,11 @@ async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): 
   if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories, so a project's repository cannot move to it", 404, "move the project to the Studio server");
   const project = ref.name;
   const p = await L.project();
-  const branch = await projectBranch(env, p);
+  // A record from before records named the branch has none, and before the
+  // first move there is no repository here to read it from: the remote's
+  // HEAD branch is taken then (mirrorBranch).
+  const named = p.branch ?? await projectBranch(env, p).catch(() => null);
+  const branch = named ?? "main";
   const command = `atelier projects move-host ${project}`;
   if (body.endBake === true) {
     const kept = git.wayBackOf(ref.key);
@@ -1306,7 +1310,7 @@ async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): 
   }
   const { remote, token } = sourceOf(body, command);
   let done: HostMove;
-  try { done = await git.mirror({ key: ref.key, branch, remote, token }); }
+  try { done = await git.mirror({ key: ref.key, branch: named, remote, token }); }
   catch (error) {
     throw new RuleError("fetch_failed", `${shownRemote(remote)} could not be read: ${String((error as Error)?.message ?? error).slice(0, 400)}; nothing was moved`, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
   }
@@ -1316,17 +1320,18 @@ async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): 
       `only the developer can: find why both moved (git log on both), then move the host from a remote whose ${branch} holds this server's`);
   }
   if (done.error !== undefined) throw new RuleError("move_failed", `${done.detail}; nothing was recorded`, 409, `run ${command} --from REMOTE again`);
+  const moved = done.branch;
   // A project registered on 1.x never stored its prose standard's text,
   // which a claim hands to a builder with no checkout: it is read from the
   // branch just moved.
   let prose: string | null = null;
   if (p.policy.proseStandard && !(await L.proseStandardText())) {
-    const text = await git.readFile({ key: ref.key, branch, path: p.policy.proseStandard });
+    const text = await git.readFile({ key: ref.key, branch: moved, path: p.policy.proseStandard });
     if (text) { await L.setProseStandardText(text); prose = p.policy.proseStandard; }
   }
   if (body.wayBack === true) git.keepWayBack({ key: ref.key, remote, token });
   const wayBack = git.wayBackOf(ref.key);
-  const record = { remote: shownRemote(remote), branch, before: done.before, head: done.head, remoteHead: done.remoteHead, moved: done.moved, notes: done.notes, tags: done.tags, ...(body.wayBack === true ? { wayBack: true } : {}) };
+  const record = { remote: shownRemote(remote), branch: moved, before: done.before, head: done.head, remoteHead: done.remoteHead, moved: done.moved, notes: done.notes, tags: done.tags, ...(body.wayBack === true ? { wayBack: true } : {}) };
   await L.hostMoved(actor, "project.host_moved", record, done.moved === "ahead" ? null : done.head);
   return json({ project, ...record, proseStandard: prose, wayBack: wayBack ? { remote: shownRemote(wayBack.remote) } : null, remote: gitRemote(c, project) });
 }

@@ -277,4 +277,10 @@ test("the old host's token reaches git as a header over HTTP, and a fetch withou
   assert.equal(done.moved, "created");
   assert.equal(tipOf(into, "refs/heads/main"), tipOf(bare(), "refs/heads/main"));
   assert.doesNotMatch(readFileSync(join(into, "config"), "utf8"), /Bearer|atl_/, "nothing of the token is written to the repository");
+  // A project whose record names no branch takes the remote's HEAD branch.
+  const unnamed = join(root, "unnamed.git");
+  git(root, "init", "-q", "--bare", "-b", "main", unnamed);
+  const taken = await mirrorBranch({ dir: unnamed, branch: null, remote: artifacts, token: null });
+  assert.equal(taken.branch, "main");
+  assert.equal(tipOf(unnamed, "refs/heads/main"), tipOf(artifacts, "refs/heads/main"));
 });

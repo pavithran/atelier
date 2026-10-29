@@ -182,9 +182,9 @@ export class GitHost {
   async mirror({ key, branch, remote, token }) {
     const release = await this.lock(key, null);
     try {
-      const dir = this.repo(key, branch);
+      const dir = this.repo(key, branch ?? "main");
       const done = await mirrorBranch({ dir, branch, remote, token });
-      if (!done.error) await setHead(dir, branch);
+      if (!done.error) await setHead(dir, done.branch);
       return done;
     } finally { release(); }
   }
