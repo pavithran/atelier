@@ -15,6 +15,7 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
+import { parseAffectedTests } from "./affected-tests.ts";
 import { checkRemote, forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
@@ -2315,6 +2316,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
+      ...(has("affectedTests") ? { affectedTests: parseAffectedTests(body.affectedTests) } : {}),
       ...(has("shipRuns") ? { shipRuns: asStrings(body.shipRuns, "shipRuns") } : {}),
       ...(has("shipKinds") ? { shipKinds: asStrings(body.shipKinds, "shipKinds") } : {}),
       // The command that regenerates the project's fixtures after a task

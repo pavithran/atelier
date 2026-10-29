@@ -711,6 +711,10 @@ export interface ProjectPolicy {
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
+  // The affected-tests check (G20, src/affected-tests.ts): a task's check of
+  // the full-suite check it names runs only the tests the declared map or
+  // list command selects for the change, and ship runs that check whole.
+  affectedTests?: import("./affected-tests.ts").AffectedTests;
   // The check limit (G7, src/check-limit.ts): the hard ceiling and the
   // silence limit of a check's run, in minutes counted from its held test
   // slot, and the checks that declare a silence limit of their own. Absent,

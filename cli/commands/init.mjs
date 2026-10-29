@@ -153,6 +153,9 @@ export default async function initCommand() {
     // The command that regenerates the project's fixtures after a task
     // merges main (atelier land); omitted keeps it, "" clears it.
     ...(args.regenerate !== undefined ? { regenerate: args.regenerate } : {}),
+    // The affected-tests declaration (G20), read from a JSON file in the
+    // checkout; omitted keeps it, "" clears it.
+    ...(args["affected-tests"] !== undefined ? { affectedTests: affectedTestsArg(top, args["affected-tests"]) } : {}),
     // What may block a review, stated in every review brief; omitted keeps
     // it, "" restores the default bar.
     ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
@@ -271,6 +274,7 @@ export default async function initCommand() {
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
   if (pol.prepare) console.log(`Prepare:    ${pol.prepare.command} (inputs: ${pol.prepare.inputs.join(", ")}; outputs: ${pol.prepare.outputs.join(", ")})`);
   if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
+  if (pol.affectedTests) console.log(`Affected:   a task's \`${pol.affectedTests.check}\` runs ${pol.affectedTests.map ? `the tests a ${pol.affectedTests.map.length}-entry map selects` : `the tests \`${pol.affectedTests.list}\` lists`} with \`${pol.affectedTests.run}\`; ship runs \`${pol.affectedTests.check}\` whole before it delivers anything`);
   console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
   // A server older than the review bar ignores it and answers without one.
   if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
@@ -350,4 +354,13 @@ function serverInitText(titled, name, branch, serverHead, cwd, baseline) {
     `This checkout holds ${ahead} commit${ahead === "1" ? "" : "s"} the server's ${branch} lacks; only a landing moves ${branch} there, so they were not sent.`,
     `next: carry them as a task: atelier new "TITLE" --project ${name}, claim it, push the commits to its branch, then atelier land tN --project ${name}`,
   ].join("\n");
+}
+
+// --affected-tests PATH (G20): the declaration's JSON, from a file in the
+// checkout; "" clears it. The server checks its shape.
+function affectedTestsArg(top, path) {
+  if (path === "") return null;
+  if (typeof path !== "string") die('--affected-tests needs the path of a JSON file: atelier init --affected-tests docs/atelier/affected-tests.json, or --affected-tests "" to clear it');
+  try { return JSON.parse(readFileSync(resolve(top, path), "utf8")); }
+  catch (error) { die(`--affected-tests: ${path} could not be read as JSON: ${error.message}`); }
 }

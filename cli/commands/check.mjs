@@ -6,6 +6,8 @@ import { checkApplies } from "../../src/rules.ts";
 import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
 import { stopLine } from "../../src/check-limit.ts";
 import { appliesText, preparationBinding, refusalOf, refusalText, reusableResult } from "../../src/checks.ts";
+import { affectedCommand, selectByList, selectByMap } from "../../src/affected-tests.ts";
+import { writeFileSync } from "node:fs";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, git, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
 export const SANDBOX_GONE = "atelier: this project's policy names the container check mode (sandboxOnly), which Atelier no longer has; running the checks here, in a clean clone on this machine. The next atelier init writes the policy without it.\n";
@@ -50,9 +52,15 @@ export default async function checkCommand() {
   // What a command's earlier result must be bound to for this run to reuse it.
   // --fresh reuses nothing.
   const bindingOf = (cmd) => ({ project: name, task: id, head: ws.head, base: forkBase, mainHead: mainHead ?? null, mode: mainHead ? "merged" : "ordinary", where: "runner", command: cmd, preparation: preparationBinding(policy.prepare) });
-  const reusable = (cmd) => args.fresh ? null : reusableResult(evidenceBefore, bindingOf(cmd));
+  // G20: the full-suite check a task runs as its affected tests, when the
+  // project declares them; a result of a selection is never reused, and is
+  // not offered for reuse, since another selection may differ.
+  const affected = !args.rest?.length && policy.affectedTests && cmds.includes(policy.affectedTests.check) ? policy.affectedTests : null;
+  const reusable = (cmd) => args.fresh || cmd === affected?.check ? null : reusableResult(evidenceBefore, bindingOf(cmd));
+  let selection = null;
   const evidenceBody = (cmd, r, note) => {
-    const lead = [note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
+    const scope = cmd === affected?.check && selection ? (selection.kind === "affected" ? `AFFECTED TESTS: ${selection.why}: ${selection.tests.join(" ") || "none"}` : `FULL SUITE: ${selection.why}`) : "";
+    const lead = [scope, note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
     const tailSize = lead ? Math.max(500, LOCAL_OUTPUT_TAIL - lead.length) : LOCAL_OUTPUT_TAIL;
     const failureLines = !r.passed && !r.stopped && r.output.length > tailSize ? collectFailureLines(r.output) : "";
     return {
@@ -62,7 +70,7 @@ export default async function checkCommand() {
       // A run stopped at the check limit says so (G7): not a failed test.
       ...(r.stopped ? { stopped: r.stopped } : {}),
       ...(mainHead ? { merged: true, mainHead } : {}),
-      reuse: { base: forkBase, preparation: preparationBinding(policy.prepare) },
+      ...(cmd === affected?.check ? {} : { reuse: { base: forkBase, preparation: preparationBinding(policy.prepare) } }),
     };
   };
   const sequence = releaseSequence({ project: name, task: id, actor: as });
@@ -77,6 +85,22 @@ export default async function checkCommand() {
     const toRun = cmds.filter((cmd) => !reusable(cmd) && !(!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false));
     if (toRun.length) await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next(), undefined, policy), secrets).catch((error) => die(error.message, 2));
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
+    // The selection is read from the declaration and the clean clone alone:
+    // the changed paths against main and the head's tracked files.
+    if (affected && toRun.includes(affected.check)) {
+      const files = git(["ls-files", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+      if (affected.map) selection = selectByMap(affected.map, changed, files);
+      else if (changed === null) selection = { kind: "full", why: "the changed paths could not be measured" };
+      else {
+        writeFileSync(join(dir, ".git", "atelier-changed"), changed.join("\n") + "\n");
+        const listed = await runCheck(`(${affected.list}) < .git/atelier-changed 2>/dev/null`, dir, secrets, sequence.next(), undefined, policy);
+        selection = selectByList(listed.passed ? 0 : listed.status ?? null, listed.output, files);
+      }
+      console.log(selection.kind === "affected" ? `Affected tests for \`${affected.check}\`: ${selection.why}${selection.tests.length ? `: ${selection.tests.join(", ")}` : ""}.` : `Running the full suite for \`${affected.check}\`: ${selection.why}.`);
+    }
+    // The command a check runs: the affected tests for the full-suite check
+    // under a selection, else the check itself.
+    const commandOf = (cmd) => cmd === affected?.check && selection?.kind === "affected" ? affectedCommand(affected.run, selection.tests) : cmd;
     for (const cmd of cmds) {
       // A registered check whose paths this change does not touch is not
       // run. It is recorded as not applicable, which the Worker accepts only
@@ -98,7 +122,20 @@ export default async function checkCommand() {
         console.log(`PASS  ${cmd}  @ ${short(ws.head)}${on}  (reused evidence #${reused.id}; atelier check --fresh runs it again)`);
         continue;
       }
-      let r = await runCheck(cmd, dir, secrets, sequence.next(), undefined, policy);
+      // A selection with no tests, which the map declares for these paths, passes without a run.
+      if (cmd === affected?.check && selection?.kind === "affected" && !selection.tests.length) {
+        const r = { passed: true, output: "no test is affected by this change, as the declared map says", sha: "" };
+        const n = await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, r, ""), as);
+        const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
+        if (row) recorded = row.changedPaths;
+        doneChecks.push({ claim: cmd, result: "passed", where: CLEAN_CLONE });
+        console.log(`PASS  ${cmd}  @ ${short(ws.head)}${on}  (no affected tests)`);
+        continue;
+      }
+      const run = commandOf(cmd);
+      const refusedRun = run === cmd ? null : refusalOf(run);
+      if (refusedRun) die(refusalText(run, refusedRun));
+      let r = await runCheck(run, dir, secrets, sequence.next(), undefined, policy);
       // A check that fails is run once more at the same head (t744): a
       // result that changes with nothing else changed is the machine's, not
       // the change's. Both results are recorded, the failure first, so the
@@ -110,7 +147,7 @@ export default async function checkCommand() {
         process.stderr.write(`atelier: \`${cmd}\` failed; running it once more at the same head\n`);
         const first = r;
         await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, first, ""), as);
-        r = await runCheck(cmd, dir, secrets, sequence.next(), undefined, policy);
+        r = await runCheck(run, dir, secrets, sequence.next(), undefined, policy);
         flake = r.passed;
       }
       // The Worker measures the changed paths from Artifacts and ignores this
@@ -126,7 +163,8 @@ export default async function checkCommand() {
       if (row) recorded = row.changedPaths;
       doneChecks.push({ claim: cmd, result: r.passed ? "passed" : r.stopped ? "stopped" : "failed", ...(r.stopped ? { stopped: r.stopped } : {}), where: CLEAN_CLONE });
       // A stopped run is printed as what stopped it, never as FAIL: no test failed.
-      console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${flake ? `  (${FLAKE_NOTE})` : ""}${r.stopped ? `  (${stopLine(r.stopped)}; not a failed test)` : ""}`);
+      const scopeNote = cmd === affected?.check && selection ? (selection.kind === "affected" ? `  (affected tests: ${run})` : "  (full suite)") : "";
+      console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${scopeNote}${flake ? `  (${FLAKE_NOTE})` : ""}${r.stopped ? `  (${stopLine(r.stopped)}; not a failed test)` : ""}`);
       if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
     }
   } finally {

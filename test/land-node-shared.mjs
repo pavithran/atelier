@@ -13,7 +13,7 @@ import { strict as assert } from "node:assert";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { startServer } from "../src/runtime/server.mjs";
 import { criteriaOf } from "../src/criteria.ts";
 
@@ -94,7 +94,7 @@ export async function landingWorld(t) {
     rmSync(mover, { recursive: true, force: true });
     const c = await netGit(root, "clone", "-q", remote(OWNER), mover);
     assert.equal(c.status, 0, c.stderr);
-    for (const [path, text] of Object.entries(files)) writeFileSync(join(mover, path), text);
+    for (const [path, text] of Object.entries(files)) { mkdirSync(dirname(join(mover, path)), { recursive: true }); writeFileSync(join(mover, path), text); }
     git(mover, "add", ".");
     git(mover, "commit", "-q", "-m", message);
     setMain(mover);

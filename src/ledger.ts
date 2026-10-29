@@ -39,6 +39,7 @@ import {
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria, sha256Hex } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
+import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -337,6 +338,8 @@ export interface ProjectInit {
   checks?: string[];
   checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
   checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
+  // The affected-tests check (G20); null clears it (see settleAffectedTests).
+  affectedTests?: ProjectPolicy["affectedTests"] | null;
   // The ship order the checkout declares (cli/ship.mjs shipPolicy): the runs'
   // commands, whose files the gate guards like a check's, and the approval
   // kinds it needs, for the inbox's undelivered-merge reminder.
@@ -747,6 +750,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
     prepare = { command: normalized, inputs: preparationPaths(i.prepare.inputs), outputs: preparationPaths(i.prepare.outputs), declaration: declarations[0]! };
   }
   const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
+  const affectedTests = settleAffectedTests(checks, i.affectedTests, p?.affectedTests);
   const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
@@ -789,6 +793,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(prepare ? { prepare } : {}),
       ...(checkClasses.length ? { checkClasses } : {}),
       ...(checkPaths.length ? { checkPaths } : {}),
+      ...(affectedTests ? { affectedTests } : {}),
       ...(shipRuns.length ? { shipRuns } : {}),
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
