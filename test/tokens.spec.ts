@@ -1,7 +1,8 @@
-import { env } from "cloudflare:workers";
+import { execFileSync } from "node:child_process";
+import { env, server } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import { parseRuleError } from "../src/rules.ts";
-import { expect, it } from "vitest";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
 import { sha256, tokenOptions } from "../src/tokens.ts";
@@ -15,7 +16,7 @@ const L = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name
 
 function call(method: string, path: string, token = OWNER_TOKEN, actor?: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor === undefined ? {} : { "x-atelier-actor": actor }) },
+    method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor === undefined ? {} : { "x-atelier-actor": actor }), ...(token === OWNER_TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
@@ -69,7 +70,8 @@ it("records token issuance and revocation without secrets", async () => {
     for (const event of events) {
       expect(event.itemId).toBeNull();
       expect(event.actor).toBe("owner");
-      expect(event.data).toEqual({ id: issued.id, actor: ACTOR, projects: projects ?? null, expiresAt: issued.expiresAt });
+      // The issuance came through the route with the developer token, so G18 records the acting model; the revocation here is the Ledger's own call.
+      expect(event.data).toEqual({ id: issued.id, actor: ACTOR, projects: projects ?? null, expiresAt: issued.expiresAt, ...(event.kind === "token.issued" ? { acting: "claude-code/opus-5.5" } : {}) });
     }
     expect(JSON.stringify(events)).not.toContain(issued.token);
     expect(JSON.stringify(events)).not.toContain(await sha256(issued.token));
@@ -159,7 +161,7 @@ it("applies project scope to direct reads, writes and aggregate lists", async ()
   await project("token-inside");
   await project("token-outside");
   await L("token-inside").dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
-  await L("token-outside").dispatch("t1", "owner", { to: "home" });
+  await L("token-outside").dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
   const { token } = await issue(["token-inside"]);
   expect((await call("GET", "/projects/token-inside/items/t1", token)).status).toBe(200);
   for (const [method, path] of [["GET", "/projects/token-outside"], ["POST", "/projects/token-outside/items/t1/claim"], ["POST", "/projects/token-outside/baseline-token"]]) {
@@ -217,24 +219,20 @@ it("an agent claims, pushes, records checks, hands off and reviews as itself", a
   const name = "token-workflow";
   await project(name);
   const { token } = await issue([name]);
-  // The fork's history as the push route reads it: the pushed head on top
-  // of the base the fork started from, so the push holds the recorded head.
-  const base = "0".repeat(40);
-  let head = base;
-  const ARTIFACTS = {
-    get: async () => ({
-      fork: async () => ({}), log: async () => (head === base ? [{ hash: base, parents: [] }] : [{ hash: head, parents: [base] }, { hash: base, parents: [] }]),
-      info: async () => ({ remote: "https://example.test/r.git", defaultBranch: "main" }),
-      createToken: async () => ({ plaintext: "git-token", id: "git-id", expiresAt: "later" }),
-      revokeToken: async () => undefined,
-      [Symbol.dispose]() {},
-    }),
-  } as unknown as Artifacts;
+  // A claim makes the branch t/1 in the project's repository (task 5), so
+  // main needs a commit; the push route reads the branch's tip on the server,
+  // so the agent's commit is made in the bare repository, as a Git push would.
+  const dir = (server as unknown as { git: { repo(key: string, branch: string): string } }).git.repo(name, "main");
+  const author = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const commit = (parent: string[], message: string) => execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", ...parent.flatMap((p) => ["-p", p]), "-m", message], { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+  const base = commit([], "first");
+  execFileSync("git", ["update-ref", "refs/heads/main", base], { cwd: dir });
   const post = (verb: string, body = {}) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/${verb}`, {
     method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS });
+  }), testEnv);
   expect((await post("claim")).status).toBe(200);
-  head = "a".repeat(40);
+  const head = commit([base], "work");
+  execFileSync("git", ["update-ref", "refs/heads/t/1", head], { cwd: dir });
   expect((await post("push", { head })).status).toBe(200);
   expect((await post("evidence", { kind: "check", claim: "test", head, passed: true, changedPaths: [] })).status).toBe(200);
   expect((await post("submit", { summary: "Done" })).status).toBe(200);

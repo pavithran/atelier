@@ -58,6 +58,13 @@ process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-te
   process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
 }
 
+// Nor a runner live on this Mac: a runner's start refuses when another of
+// its name runs (t581), and a real home:studio, or one another test file
+// started, refused tests' runners. The start guard of a runner a test starts
+// reads only this process's tree (withinTree in cli/procs.mjs); status and
+// stuck still read the whole table, which their tests stand in.
+process.env.ATELIER_TEST_PROCESS = String(process.pid);
+
 // test/node-pool.mjs runs every Node test file, so it is not one file: it has
 // the run's own limit, ATELIER_TEST_TIMEOUT_MS, and each file it starts (a
 // process of its own, loading this guard) keeps FILE_LIMIT_MS. Under load the

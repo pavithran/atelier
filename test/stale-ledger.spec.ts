@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env, server } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { Ledger } from "../src/ledger.ts";
 import { UPDATING_DETAIL } from "../src/rules.ts";
@@ -33,7 +33,7 @@ async function project(name: string) {
 }
 function api(method: string, path: string) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" },
   }), testEnv);
 }
 
@@ -159,14 +159,17 @@ it("a Ledger built for an older DEPLOYED_MAIN restarts when the Worker first add
 it("a slow host between ledgerVersion and the call that follows it does not fail the call", async () => {
   await project("stale-slow");
   await mark("stale-slow", (instance) => { instance.env = { ...(instance.env as object), DEPLOYED_MAIN: OLD }; });
-  const proto = Ledger.prototype as unknown as Record<string, unknown>;
-  const saved = Object.getOwnPropertyDescriptor(proto, "mode")!;
-  Object.defineProperty(proto, "mode", {
-    configurable: true,
-    get(this: object) { const f = (saved.value as (...a: unknown[]) => unknown).bind(this); return new Promise((r) => setTimeout(() => r(f), 300)); },
-  });
+  // On Node the namespace looks a method up when the call arrives, with no
+  // awaited property access to hold, so the slow host holds the call itself,
+  // ahead of the server's own wrapper around it (2.0).
+  const ns = server.namespace as unknown as { around: (name: string, method: string, args: unknown[], go: () => Promise<unknown>) => Promise<unknown> };
+  const around = ns.around;
+  ns.around = async (name, method, args, go) => {
+    if (name === "project:stale-slow" && method === "mode") await wait(300);
+    return around ? around(name, method, args, go) : go();
+  };
   try {
     const res = await api("GET", "/projects/stale-slow/mode");
     expect(res.status).toBe(200);
-  } finally { Object.defineProperty(proto, "mode", saved); }
+  } finally { ns.around = around; }
 });

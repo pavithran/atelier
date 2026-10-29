@@ -1,5 +1,5 @@
 import { taskPage } from "../src/task-page.ts";
-import {expect,it} from 'vitest';
+import {expect,it} from "./support/vitest.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import {fillShell,hasShell,projectPageAt,renderProjectShowcase,renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
@@ -202,7 +202,7 @@ it('the task page shows a waiting dispatch note whole, line breaks kept and esca
 });
 
 // ── flow ──
-import {env} from 'cloudflare:workers';
+import {env} from "./support/workers.ts";
 import {signIn} from './signin.ts';
 import worker from '../src/index.ts';
 import {renderFlow} from '../src/ui';
@@ -523,7 +523,7 @@ it('browsing pages escape names and contents and keep links inside the repositor
 });
 
 it('browsing routes read only the baseline or that task fork, and say plainly what is missing',async()=>{
- const {env}=await import('cloudflare:workers');
+ const {env}=await import('./support/workers.ts');
  const {default:worker}=await import('../src/index');
  const TOKEN='browse-test-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);

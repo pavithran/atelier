@@ -1,12 +1,13 @@
-import { env } from "cloudflare:workers";
-import { afterEach, expect, it, vi } from "vitest";
-import worker from "../src/index.ts";
+import { env } from "./support/workers.ts";
+import { afterEach, expect, it, vi } from "./support/vitest.ts";
+import worker, { observePushed } from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { Item } from "../src/rules.ts";
-import { queue as runQueue } from "./workers-removed.ts";
 
-// The push scan through the Worker's two push paths (t332): the push route
-// and the queue consumer. Each records the head with its scan pending, scans
+// The push scan through the server's two push paths (t332): the push route
+// and the push the post-receive hook reports (observePushed; task 8 retired
+// the Artifacts queue consumer, whose retry is now the hook's logged failure
+// and the next `atelier push`). Each records the head with its scan pending, scans
 // that exact commit, and records the result only for it, so a scan that
 // fails, a reader that shows another commit, or a result for a head since
 // superseded never passes a push silently. The key in the fixture is built
@@ -15,6 +16,8 @@ import { queue as runQueue } from "./workers-removed.ts";
 
 const TOKEN = "secret-push-owner";
 const A = "claude-code/opus-5.5";
+// t178/G18: a model clearing a flag on the developer token carries the developer's words.
+const SAID = "yes, that is a fake key";
 const H0 = "0".repeat(40), H1 = "1".repeat(40), H2 = "2".repeat(40), H3 = "3".repeat(40), H4 = "4".repeat(40);
 const T0 = "a".repeat(40), T1 = "b".repeat(40), T2 = "c".repeat(40), T3 = "9".repeat(40);
 const B0 = "d".repeat(40), B1 = "e".repeat(40), B2 = "f".repeat(40), B3 = "8".repeat(40);
@@ -112,23 +115,28 @@ async function setup(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
   await L.newItem("Wire the keys", [], "owner");
   await L.claim("t1", A);
-  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.setFork("t1", `${name}/t/1`, H0, A);
   return L;
 }
 
+// G18: a write as the developer names the model acting (an actor that is a harness/model names itself).
 const api = (bindings: typeof env) => (method: string, path: string, actor: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": A } : {}), "content-type": "application/json" },
   body: body === undefined ? undefined : JSON.stringify(body),
 }), bindings);
 
 type Detail = { item: Item; gate: { ready: boolean; blockers: string[] } };
 const detail = async (call: ReturnType<typeof api>, name: string) => (await (await call("GET", `/projects/${name}/items/t1`, "owner")).json()) as Detail;
-const notice = (name: string, after: string) => ({ type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref: "refs/heads/main", after } });
 const events = async (L: Awaited<ReturnType<typeof setup>>) => (await L.events("t1")) as unknown as LedgerEvent[];
 
+// The hook's report of a push to t/1, as observePushed takes it: a report that
+// completes is what the queue acknowledged; a scan that cannot be read throws,
+// which the hook logs and which the queue retried (the pending mark stands).
 function queue(bindings: typeof env, name: string, after: string) {
   const counts = { acks: 0, retries: 0 };
-  const send = () => runQueue({ messages: [{ body: notice(name, after), ack() { counts.acks++; }, retry() { counts.retries++; } }] } as unknown as MessageBatch<unknown>, bindings);
+  const send = async () => {
+    try { await observePushed(bindings, { project: name, ref: "refs/heads/t/1", after }); counts.acks++; } catch { counts.retries++; }
+  };
   return { counts, send };
 }
 
@@ -196,7 +204,7 @@ it("a reader that shows another commit than the recorded head leaves the scan pe
   expect(d.gate.ready).toBe(false);
   expect(d.gate.blockers).toContainEqual(expect.stringMatching(/^secret scan pending for 11111111/));
   // The owner cannot clear what has not been judged.
-  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key" });
+  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key", quote: SAID });
   expect(clear.status).toBe(409);
   expect(((await clear.json()) as { error: string }).error).toBe("secret_pending");
   // The event for the same head, with the reader now showing the commit
@@ -300,7 +308,7 @@ it("a flag the owner cleared stays cleared when a later push keeps the same line
   const call = api(bindings);
   expect((await call("POST", `/projects/${name}/items/t1/push`, A, { head: H1 })).status).toBe(200);
   expect((await L.item("t1")).secret).toMatchObject([{ file: "keys.ts", line: 1, commit: H1, head: H1 }]);
-  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts" });
+  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts", quote: SAID });
   expect(clear.status).toBe(200);
   // H3 keeps keys.ts exactly as H1 had it, and adds a file that uses it: the
   // scan finds the same line again and records it as cleared, not blocking.
@@ -375,7 +383,7 @@ it("a tree the head names and no repository holds leaves the scan pending and th
   await q.send();
   expect(q.counts).toEqual({ acks: 0, retries: 1 });
   expect(await L.item("t1")).toMatchObject({ head: H1, secretScan: H1 });
-  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key" });
+  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key", quote: SAID });
   expect(clear.status).toBe(409);
 });
 
@@ -399,7 +407,7 @@ it("a key one commit added and a later commit removed is flagged at the head, na
   expect(flagged.data).toMatchObject({ head: H2, hits: [{ file: "keys.ts", line: 1, commit: H1 }] });
   expect(JSON.stringify([pushed, d, await events(L)])).not.toContain(FAKE_KEY);
   // The owner's clearance holds for the line, so the gate no longer refuses on it.
-  expect((await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts" })).status).toBe(200);
+  expect((await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a fake key, built from fake parts", quote: SAID })).status).toBe(200);
   expect((await detail(call, name)).gate.blockers.some((b) => b.startsWith("secret"))).toBe(false);
 });
 

@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
+import { env } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
-import { expect, it } from "vitest";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 
@@ -35,12 +35,14 @@ function artifacts(revoked: string[]) {
   } as unknown as Artifacts;
 }
 
+// Owner-token writes name the acting model (G18).
+const ACTING = "claude-code/opus-5.5";
 function caller(name: string, ARTIFACTS?: Artifacts) {
   const bindings = { ...env, ATELIER_TOKEN: TOKEN, ...(ARTIFACTS ? { ARTIFACTS } : {}) } as typeof env;
   return (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
-      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), bindings);
 }
@@ -48,7 +50,7 @@ function caller(name: string, ARTIFACTS?: Artifacts) {
 async function issue(name: string, actor: string): Promise<string> {
   const res = await worker.fetch(new Request("https://atelier.test/api/tokens", {
     method: "POST",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify({ actor, projects: [name] }),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   return ((await res.json()) as { token: string }).token;
@@ -79,7 +81,8 @@ it("a review, handoff, release or abandonment note over 2000 characters is refus
   await refused(await holder("POST", "/items/t1/handoff", { to: "opencode/glm-5.3", note: long }), /the handoff note is 2001 characters; the limit is 2000/);
   await refused(await holder("POST", "/items/t1/handoff", { to: `opencode/${"g".repeat(300)}`, note: "Over to you" }), /the name of the agent it is handed to is 309 characters; the limit is 200/);
   await refused(await holder("POST", "/items/t1/release", { note: long }), /the release note is 2001 characters; the limit is 2000/);
-  await refused(await owner("POST", "/items/t1/abandon", { note: long }), /the abandonment note is 2001 characters; the limit is 2000/);
+  // An abandon on the developer token carries the developer's words and the acting model (G18, t178).
+  await refused(await owner("POST", "/items/t1/abandon", { note: long, quote: "drop it" }), /the abandonment note is 2001 characters; the limit is 2000/);
   // Each refusal came before the holder's write token was revoked, and the task is as it was.
   expect(revoked).toEqual([]);
   expect(await L.item("t1")).toMatchObject({ state: "claimed", owner: A });

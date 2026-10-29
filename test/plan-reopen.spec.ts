@@ -1,11 +1,16 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import type { PlanView } from "../src/plans/show.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+
+// The routes the developer names at an approval (G17: Atelier picks none): every part built by
+// zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.
+const routesOf = async (L: { planView(id: string): Promise<{ plan?: { parts: { key: string }[] } | null }> }, id: string) =>
+  Object.fromEntries(((await L.planView(id)).plan?.parts ?? []).map((p) => [p.key, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
 
 // A plan whose branch would not merge with main (docs/orchestrator.md,
 // section 5, "Finishing"): the accept route refuses it and says to take main
@@ -67,7 +72,7 @@ async function submittedPlan(L: L) {
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   const a = parts[0].id;
   const d = (await L.item(a)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
@@ -113,9 +118,10 @@ function artifacts(commits: Record<string, Commit>, heads: Record<string, string
   } as unknown as Artifacts;
 }
 
+// G18: an owner-token write names the acting model.
 function call(name: string, path: string, body: unknown, ARTIFACTS: Artifacts) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 }
 const errorOf = async (res: Response) => (await res.json()) as { error: string; detail: string };
@@ -234,7 +240,8 @@ it("plan refresh --resolve on an accepted plan withdraws it and adds the merge-m
   const L = await setup("reopen-resolve");
   const { id } = await submittedPlan(L);
   await L.accept(id, "owner");
-  await L.planResolve(id, "owner", M1, false, undefined);
+  // G17: Atelier picks no builder for the added part, so the developer names it with --to.
+  await L.planResolve(id, "owner", M1, false, "zcode/glm-5.3");
   expect(await L.item(id)).toMatchObject({ state: "open", owner: null, acceptedHead: null });
   const view = await L.planView(id);
   expect(view.phase).toBe("building");
@@ -250,7 +257,7 @@ it("a plan building with parts left is not told to submit after a refresh", asyn
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   await L.planRefresh(item.id, "owner", M1, false);
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
   expect(await L.refreshed(item.id, INTEGRATOR, M1, null, true)).toMatchObject({ allIntegrated: false, parts: [] });

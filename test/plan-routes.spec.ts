@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { PlanView } from "../src/plans/show.ts";
 import { signIn } from "./signin.ts";
@@ -15,10 +15,11 @@ const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
+// G18: a developer-token write names the acting model (here the pool's first).
 function call(method: string, path: string, actor: string | null, body?: unknown, token = TOKEN, e = testEnv) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), e);
 }
@@ -43,6 +44,9 @@ async function project(name: string) {
     agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }, { agent: "zcode", models: ["glm-5.3"] }],
   });
 }
+
+// The routes the developer names in an approval body (G17: Atelier picks none).
+const routes = (...keys: string[]) => Object.fromEntries(keys.map((k) => [k, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
 
 async function agentToken(actor: string) {
   const res = await call("POST", "/tokens", "owner", { actor, label: "plan routes" });
@@ -75,12 +79,15 @@ it("the owner starts a plan through POST items, and the queue offers its plan jo
   expect([notOwner.status, ((await notOwner.json()) as { error: string }).error]).toEqual([403, "not_project_owner"]);
   expect((await call("POST", `/projects/${name}/items`, "owner", { kind: "plan", goal: "Ship", planner: 7 })).status).toBe(400);
 
-  // With no planner named, the pool's first model for research work is chosen.
-  const res = await call("POST", `/projects/${name}/items`, "owner", { kind: "plan", goal: "Ship the feature", scope: ["src/**"] });
+  // G17: with no planner named, none is picked: the start is refused listing the pool's candidates.
+  const unnamed = await call("POST", `/projects/${name}/items`, "owner", { kind: "plan", goal: "Ship the feature", scope: ["src/**"] });
+  expect(unnamed.status).toBe(409);
+  expect(await unnamed.json()).toMatchObject({ error: "planner_needed", detail: expect.stringMatching(/names no planner, and Atelier picks none[\s\S]*zcode\/glm-5\.3 \(cloud\): rank 1 of 3 for research work/) });
+  const res = await call("POST", `/projects/${name}/items`, "owner", { kind: "plan", goal: "Ship the feature", scope: ["src/**"], planner: "zcode/glm-5.3" });
   expect(res.status).toBe(201);
   const started = await res.json() as { item: { id: string; kind: string; dispatch: { job: string; agent: string; model: string } }; planner: string; reasons: string[] };
   expect(started.item).toMatchObject({ kind: "plan", dispatch: { job: "plan" } });
-  expect(started.reasons[0]).toMatch(/^Rank 1 of 3 in the pool for research work/);
+  expect(started.reasons).toEqual(["Named by the developer"]);
   const { agent: harness, model } = started.item.dispatch;
   expect(started.planner).toBe(`${harness}/${model}`);
 
@@ -180,16 +187,19 @@ it("approve routes a reviewer only to a model a live runner offers for the revie
   expect(view.preview?.[0].unrouted).toBe(`no reviewer of another family than zai (zcode/glm-5.3): codex/gpt-6-astra (${unoffered("codex/gpt-6-astra")}), claude-code/opus-5.5 (${unoffered("claude-code/opus-5.5")})`);
   const refused = await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash });
   expect(refused.status).toBe(409);
-  expect(await refused.json()).toMatchObject({ error: "unrouted", detail: expect.stringContaining("no live runner offers codex/gpt-6-astra for the review job") });
+  // G17: the approval names no routes, so it is refused listing the candidates; no reviewer is offered.
+  expect(await refused.json()).toMatchObject({ error: "routes_needed", detail: expect.stringContaining("no live runner offers codex/gpt-6-astra for the review job") });
   // A runner that offers the review job under another cross-family model
-  // unblocks the approval, and the reviewer routed is the model it offers.
+  // makes it the reviewer candidate, which the developer then names.
   await call("POST", "/queue", "owner", { runner: "home:studio", kind: "home", jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }] });
-  const approved = await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash });
+  const candidates = await (await call("GET", `/projects/${name}/items/${id}/plan`, "owner")).json() as PlanView;
+  expect(candidates.preview?.[0].reviewer?.actor).toBe("claude-code/opus-5.5");
+  expect(candidates.preview?.[0].reviewer?.reasons).toContain("Offered for the review job by home:studio");
+  const approved = await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash, routes: { a: { builder: "zcode/glm-5.3", reviewer: "claude-code/opus-5.5" } } });
   expect(approved.status).toBe(200);
   const after = await approved.json() as PlanView;
   expect(after.phase).toBe("building");
   expect(after.parts[0].route?.reviewer?.actor).toBe("claude-code/opus-5.5");
-  expect(after.parts[0].route?.reviewer?.reasons).toContain("Offered for the review job by home:studio");
 });
 
 it("the owner approves by hash, reroutes and retries a part, and a stop revokes the write tokens of what it closes", async () => {
@@ -204,7 +214,10 @@ it("the owner approves by hash, reroutes and retries a part, and a stop revokes 
   expect((await approve({ hash, allowPaid: "yes" })).status).toBe(400);
   const stale = await approve({ hash: "a".repeat(64) });
   expect([stale.status, ((await stale.json()) as { error: string }).error]).toEqual([409, "stale_plan"]);
-  const approved = await approve({ hash });
+  // G17: an approval that names no routes is refused with the candidates.
+  const unnamed = await approve({ hash });
+  expect([unnamed.status, ((await unnamed.json()) as { error: string }).error]).toEqual([409, "routes_needed"]);
+  const approved = await approve({ hash, routes: routes("a", "b") });
   expect(approved.status).toBe(200);
   const view = await approved.json() as PlanView;
   expect(view).toMatchObject({ phase: "building", approval: { hash, allowPaid: false } });
@@ -283,7 +296,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a"), part("b", { dependsOn: ["a"], scope: ["src/b/**"] })));
   const hash = post.valid ? post.hash : "";
   await L.release(id, "claude-code/opus-5.5", "proposed");
-  const view = await (await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash })).json() as PlanView;
+  const view = await (await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash, routes: routes("a", "b") })).json() as PlanView;
   const [a, b] = view.parts;
   expect(b.dispatch).toBeNull(); // b waits for a
 
@@ -322,7 +335,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   await L.setFork(b.id, `${name}--${b.id}`, H1, actorB);
   await L.recordPush(b.id, actorB, H2, H2);
   await L.addEvidence({ itemId: b.id, claim: "npm test", grade: "observed", head: H2, passed: false, by: actorB, at: new Date().toISOString(), changedPaths: ["src/b/one.ts"], outputTail: "3 tests failed in src/b/one.ts" });
-  // The plan spreads its parts across the tied models, so b's builder is not a's; the reviewer is another model still.
+  // The reviewer is a model other than b's builder.
   const reviewerB = ["codex/gpt-6-astra", "claude-code/opus-5.5", "zcode/glm-5.3"].find((m) => m !== actorB)!;
   await L.addReview({ itemId: b.id, criteria: await L.criteria(b.id), by: reviewerB, head: H2, approve: false, note: "The loop never ends", at: new Date().toISOString(),
     findings: [{ file: "src/b/one.ts", line: 12, severity: "blocking", text: "The loop never ends" }] } as never);

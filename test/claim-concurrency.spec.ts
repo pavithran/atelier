@@ -1,158 +1,85 @@
-import { env } from "cloudflare:workers";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { env, server } from "./support/workers.ts";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
-import { taskForkMark } from "../src/rules.ts";
 import { setForkWaitMs, setRetryBaseMs } from "../src/transient.ts";
-
-// These tests inject transient Artifacts failures; the retry backoff would
-// otherwise spend seconds waiting (and time out under load). Milliseconds do.
-beforeAll(() => setRetryBaseMs(1));
-afterAll(() => setRetryBaseMs());
 
 // t339's concurrency proof fired 100 claims of 100 tasks at once on the live
 // server, and 9 answered 500. These tests fire as many claims at once
-// against the Worker with an Artifacts fake that fails the way a busy
-// Artifacts may: a fork that errors before it is made, a fork made whose
-// answer is lost, a head read while the fork is in progress, and a token
-// that cannot be made. Every claim must succeed, or answer a 503 with
-// Retry-After that succeeds when retried, and no task may get two holders.
-// Every credential here is a dummy.
+// against the Worker on the Node server's real bare repository (task 5: a
+// claim makes the branch t/N and mints a task grant). Every claim must
+// succeed, and no task may get two holders or two live grants. The 1.x cases
+// that injected faults into Artifacts (a fork that errors or is lost, a head
+// read while the fork is in progress, a token or revocation that fails, a
+// repository handle that fails) and the t761 retry cases of routes that call
+// Artifacts went with the forks: the Git host's branch and grant calls are
+// local and have no such failures to retry. What the Node server still reads
+// from env.ARTIFACTS (its local reader: headOf behind baseline-head, the code
+// pages) and the catch-all that answers a failure keep their tests at the end,
+// over a fake injected into the env, as before. Every credential here is a dummy.
 
 const TOKEN = "claim-concurrency-owner";
-const H0 = "0".repeat(40);
 
-type Tok = { id: string; repo: string; scope: string; revoked: boolean };
-// `info` fails the nth repository info read (the project's branch, then each
-// token's remote); `revoke` the nth token revocation; `get` the nth
-// repository handle asked for, before any call on it.
-type Faults = {
-  forkBefore: (n: number) => boolean; forkAfter: (n: number) => boolean; inProgress: number; mint: (n: number) => boolean;
-  onHead?: () => Promise<void>;
-  info?: (n: number) => boolean; revoke?: (n: number) => boolean; get?: (n: number) => boolean;
-};
-
-const artifactsError = (code: string, message: string) => Object.assign(new Error(message), { code });
-const tick = () => new Promise<void>((ok) => setTimeout(ok, Math.random() * 20));
-
-function fakeArtifacts(faults: Faults) {
-  // Each repository keeps the description it was made with, which a claim
-  // reads back before it takes a fork an earlier attempt made (t641).
-  const repos = new Map<string, { reads: number; description?: string }>();
-  const tokens = new Map<string, Tok>();
-  let forks = 0, mints = 0, infos = 0, revokes = 0, gets = 0, n = 0;
-  const artifacts = {
-    get: async (repo: string) => {
-      await tick();
-      if (faults.get?.(++gets)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
-      const known = () => { const r = repos.get(repo); if (!r) throw artifactsError("NOT_FOUND", `repo not found: ${repo}`); return r; };
-      return {
-        fork: async (name: string, opts?: { description?: string }) => {
-          known();
-          await tick();
-          const k = ++forks;
-          if (faults.forkBefore(k)) throw artifactsError("INTERNAL_ERROR", "fork failed: upstream connection reset");
-          if (repos.has(name)) throw artifactsError("ALREADY_EXISTS", `repo already exists: ${name}`);
-          repos.set(name, { reads: 0, description: opts?.description });
-          if (faults.forkAfter(k)) throw artifactsError("DEADLINE_EXCEEDED", "fork timed out");
-        },
-        log: async () => {
-          await faults.onHead?.();
-          const r = known();
-          if (r.reads++ < faults.inProgress) throw artifactsError("FORK_IN_PROGRESS", "fork in progress");
-          return [{ hash: H0 }];
-        },
-        info: async () => {
-          const r = known();
-          if (faults.info?.(++infos)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
-          return { remote: `https://git.test/${repo}.git`, defaultBranch: "main", description: r.description ?? null };
-        },
-        createToken: async (scope: string) => {
-          known();
-          await tick();
-          if (faults.mint(++mints)) throw artifactsError("UNAVAILABLE", "token service unavailable");
-          const id = `tok${++n}`;
-          tokens.set(id, { id, repo, scope, revoked: false });
-          return { id, plaintext: `art_secret_${id}`, scope, expiresAt: new Date(Date.now() + 8 * 3600e3).toISOString() };
-        },
-        revokeToken: async (id: string) => {
-          if (faults.revoke?.(++revokes)) throw artifactsError("UNAVAILABLE", "token service unavailable");
-          const t = tokens.get(id); if (t) t.revoked = true; return !!t;
-        },
-        [Symbol.dispose]() {},
-      };
-    },
-  } as unknown as Artifacts;
-  const live = (repo: string) => [...tokens.values()].filter((t) => t.repo === repo && t.scope === "write" && !t.revoked).map((t) => t.id);
-  return { artifacts, repos, live };
+type GitHost = { repo(key: string, branch: string): string; live(id: string): Promise<boolean>; grants: { db: { prepare(sql: string): { all(...args: unknown[]): { id: string; hash: string }[] } } } };
+const git = (server as unknown as { git: GitHost }).git;
+// The credentials the Ledger would record (git:HASH) for the task's task grants that still write.
+async function liveGrants(project: string, task: string): Promise<string[]> {
+  const rows = git.grants.db.prepare("SELECT id, hash FROM grants WHERE project = ? AND kind = 'task' AND task = ? AND revoked_at IS NULL").all(project, task);
+  const live: string[] = [];
+  for (const r of rows) if (await git.live(r.id)) live.push(`git:${r.hash}`);
+  return live.sort();
 }
 
-function caller(bearer: string, artifacts: Artifacts, actor?: string) {
-  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env;
+function caller(bearer: string, actor?: string) {
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
+  // A write with the developer token names the acting model (G18).
+  const acting = bearer === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {};
   return (method: string, path: string, body: unknown = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}) },
+    headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", ...acting, ...(actor ? { "x-atelier-actor": actor } : {}) },
     body: JSON.stringify(body),
   }), bindings);
 }
 
 // A project with `tasks` open items and `agents` agents, each with a token
-// scoped to it.
-async function setup(name: string, tasks: number, agents: number, faults: Faults) {
+// scoped to it, and a commit on main for the claims' branches to start from.
+async function setup(name: string, tasks: number, agents: number) {
   const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record as never, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
+  const dir = git.repo(name, "main");
+  const author = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const sha = execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "first"], { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+  execFileSync("git", ["update-ref", "refs/heads/main", sha], { cwd: dir });
   for (let i = 0; i < tasks; i++) await L.newItem(`Task ${i + 1}`, [], "owner");
-  const fa = fakeArtifacts(faults);
-  fa.repos.set(name, { reads: 0 });
-  const owner = caller(TOKEN, fa.artifacts, "owner");
+  const owner = caller(TOKEN, "owner");
   const actors = Array.from({ length: agents }, (_, i) => `claude-code/agent-${i + 1}`);
   const callers = await Promise.all(actors.map(async (actor) => {
     const res = await owner("POST", "/tokens", { actor, projects: [name] });
     expect(res.status).toBe(201);
-    return caller(((await res.json()) as { token: string }).token, fa.artifacts);
+    return caller(((await res.json()) as { token: string }).token);
   }));
-  return { L, fa, actors, callers, claim: (t: string) => `/projects/${name}/items/${t}/claim` };
+  return { L, sha, actors, callers, claim: (t: string) => `/projects/${name}/items/${t}/claim` };
 }
 
-// Claims until one answers other than 503, as a caller honouring Retry-After
-// would; the waits are cut short here.
-async function claimRetrying(call: ReturnType<typeof caller>, path: string, retries: { n: number }) {
-  for (let i = 0; ; i++) {
-    const res = await call("POST", path);
-    if (res.status !== 503 || i >= 5) return res;
-    expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
-    retries.n++;
-    await new Promise((ok) => setTimeout(ok, 50));
-  }
-}
-
-afterEach(() => vi.restoreAllMocks());
-
-it("100 simultaneous claims of 100 tasks all succeed through transient Artifacts failures, one holder and one live token each", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  vi.spyOn(console, "error").mockImplementation(() => {});
-  const { L, fa, actors, callers, claim } = await setup("concurrency-hundred", 100, 100, {
-    forkBefore: (k) => k % 7 === 0, forkAfter: (k) => k % 5 === 0, inProgress: 1, mint: (k) => k % 6 === 0, info: (k) => k % 4 === 0,
-  });
-  const retries = { n: 0 };
-  const answers = await Promise.all(callers.map((call, i) => claimRetrying(call, claim(`t${i + 1}`), retries)));
+it("100 simultaneous claims of 100 tasks all succeed, one holder, one branch and one live grant each", async () => {
+  const name = "concurrency-hundred";
+  const { L, sha, actors, callers, claim } = await setup(name, 100, 100);
+  const answers = await Promise.all(callers.map((call, i) => call("POST", claim(`t${i + 1}`))));
   const statuses = answers.map((r) => r.status);
   expect(statuses.filter((s) => s !== 200)).toEqual([]);
   const items = await L.items();
   for (let i = 0; i < 100; i++) {
     const item = items.find((it) => it.id === `t${i + 1}`)!;
-    expect({ owner: item.owner, state: item.state, fork: item.fork }).toEqual({ owner: actors[i], state: "claimed", fork: `concurrency-hundred--t${i + 1}` });
-    expect(fa.live(item.fork!)).toEqual([await L.tokenId(item.id)]);
+    expect({ owner: item.owner, state: item.state, fork: item.fork, base: item.base }).toEqual({ owner: actors[i], state: "claimed", fork: `${name}/t/${i + 1}`, base: sha });
+    expect(await liveGrants(name, item.id)).toEqual([await L.tokenId(item.id)]);
   }
-}, 30_000);
+}, 60_000);
 
-it("100 agents claiming one task at once through transient failures leave exactly one holder; the rest are refused naming it", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  vi.spyOn(console, "error").mockImplementation(() => {});
-  const { L, fa, actors, callers, claim } = await setup("concurrency-race", 1, 100, {
-    forkBefore: (k) => k === 1, forkAfter: (k) => k === 2, inProgress: 2, mint: (k) => k === 1,
-  });
+it("100 agents claiming one task at once leave exactly one holder; the rest are refused naming it", async () => {
+  const name = "concurrency-race";
+  const { L, actors, callers, claim } = await setup(name, 1, 100);
   const answers = await Promise.all(callers.map((call) => call("POST", claim("t1"))));
   const bodies = await Promise.all(answers.map(async (r) => ({ status: r.status, body: await r.json() as { error?: string; detail?: string; item?: { owner: string } } })));
   const won = bodies.filter((b) => b.status === 200);
@@ -166,218 +93,113 @@ it("100 agents claiming one task at once through transient failures leave exactl
     expect(r.status).toBe(409);
     expect(r.body.detail).toContain(holder);
   }
-  expect(fa.live("concurrency-race--t1")).toEqual([await L.tokenId("t1")]);
-}, 30_000);
+  expect(await liveGrants(name, "t1")).toEqual([await L.tokenId("t1")]);
+}, 60_000);
 
-it("a fork made whose answer was lost is found by the retry and taken as the claim's own", async () => {
-  const warnings: string[] = [];
-  vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => { warnings.push(args.map(String).join(" ")); });
-  const { L, fa, actors, callers, claim } = await setup("concurrency-lost", 1, 1, {
-    forkBefore: () => false, forkAfter: (k) => k === 1, inProgress: 0, mint: () => false,
-  });
-  const res = await callers[0]("POST", claim("t1"));
-  expect(res.status).toBe(200);
-  expect(await L.item("t1")).toMatchObject({ owner: actors[0], fork: "concurrency-lost--t1", base: H0 });
-  expect(fa.live("concurrency-lost--t1")).toEqual([await L.tokenId("t1")]);
-  expect(warnings.join("\n")).toContain(`code=DEADLINE_EXCEEDED message="fork timed out"`);
-});
-
-it("a claim whose fork cannot be made answers 503 with Retry-After, leaves the task open, logs the code and message, and succeeds on retry", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const errors: string[] = [];
-  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
-  let down = true;
-  const { L, fa, actors, callers, claim } = await setup("concurrency-503", 1, 1, {
-    forkBefore: () => down, forkAfter: () => false, inProgress: 0, mint: () => false,
-  });
-  const first = await callers[0]("POST", claim("t1"));
-  expect(first.status).toBe(503);
-  expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
-  expect(((await first.json()) as { error: string }).error).toBe("artifacts_unavailable");
-  expect((await L.item("t1"))).toMatchObject({ owner: null, state: "open", fork: null });
-  expect(errors.join("\n")).toContain(`code=INTERNAL_ERROR message="fork failed: upstream connection reset"`);
-  down = false;
-  const again = await callers[0]("POST", claim("t1"));
-  expect(again.status).toBe(200);
-  expect((await L.item("t1")).owner).toBe(actors[0]);
-  expect(fa.live("concurrency-503--t1")).toEqual([await L.tokenId("t1")]);
-});
-
-it("a token that cannot be made answers 503; the claimer keeps the task and its retry gets the only live token", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  vi.spyOn(console, "error").mockImplementation(() => {});
-  let down = true;
-  const { L, fa, actors, callers, claim } = await setup("concurrency-mint", 1, 1, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => down,
-  });
-  const first = await callers[0]("POST", claim("t1"));
-  expect(first.status).toBe(503);
-  expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
-  expect(await first.text()).not.toContain("art_secret_");
-  expect((await L.item("t1")).owner).toBe(actors[0]);
-  down = false;
-  const again = await callers[0]("POST", claim("t1"));
-  expect(again.status).toBe(200);
-  expect(fa.live("concurrency-mint--t1")).toEqual([await L.tokenId("t1")]);
-});
-
-it("a project branch lookup that fails once is retried within the claim, which succeeds", async () => {
-  const warnings: string[] = [];
-  vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => { warnings.push(args.map(String).join(" ")); });
-  // The record names no branch, so the claim reads the baseline's info for it first.
-  const { L, fa, actors, callers, claim } = await setup("concurrency-branch-once", 1, 1, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, info: (k) => k === 1,
-  });
-  expect((await L.project()).branch).toBeFalsy();
-  const res = await callers[0]("POST", claim("t1"));
-  expect(res.status).toBe(200);
-  expect((await L.item("t1")).owner).toBe(actors[0]);
-  expect(fa.live("concurrency-branch-once--t1")).toEqual([await L.tokenId("t1")]);
-  expect(warnings.join("\n")).toContain(`read the branch of concurrency-branch-once (attempt 1, retrying) failed: Error code=UNAVAILABLE message="repository service unavailable"`);
-});
-
-it("a project branch lookup that stays unavailable answers 503 with Retry-After, logs the code and message, and the claimer's retry succeeds", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const errors: string[] = [];
-  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
-  let down = true;
-  const { L, fa, actors, callers, claim } = await setup("concurrency-branch", 1, 1, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, info: () => down,
-  });
-  const first = await callers[0]("POST", claim("t1"));
-  expect(first.status).toBe(503);
-  expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
-  const body = await first.text();
-  expect(JSON.parse(body).error).toBe("artifacts_unavailable");
-  expect(body).not.toContain("art_secret_");
-  expect(errors.join("\n")).toContain(`read the branch of concurrency-branch failed: Error code=UNAVAILABLE message="repository service unavailable"`);
-  expect(fa.live("concurrency-branch--t1")).toEqual([]);
-  expect((await L.item("t1")).owner).toBe(actors[0]);
-  down = false;
-  const again = await callers[0]("POST", claim("t1"));
-  expect(again.status).toBe(200);
-  expect(fa.live("concurrency-branch--t1")).toEqual([await L.tokenId("t1")]);
-});
-
-it("a holder's claim again whose revocation fails once is retried, and the old token is revoked before the new one is given", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const { L, fa, callers, claim } = await setup("concurrency-revoke", 1, 1, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, revoke: (k) => k === 1,
-  });
+it("a holder's claim again rotates the grant: the old one stops writing and the new one is the only live grant", async () => {
+  const name = "concurrency-rotate";
+  const { L, callers, claim } = await setup(name, 1, 1);
   expect((await callers[0]("POST", claim("t1"))).status).toBe(200);
   const old = await L.tokenId("t1");
   const again = await callers[0]("POST", claim("t1"));
   expect(again.status).toBe(200);
   const now = await L.tokenId("t1");
   expect(now).not.toBe(old);
-  expect(fa.live("concurrency-revoke--t1")).toEqual([now]);
+  expect(await liveGrants(name, "t1")).toEqual([now]);
 });
 
-it("claims whose repository handles fail at times all succeed, each with one live token", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  vi.spyOn(console, "error").mockImplementation(() => {});
-  const { L, fa, actors, callers, claim } = await setup("concurrency-get", 10, 10, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: (k) => k % 3 === 0,
-  });
-  const retries = { n: 0 };
-  const answers = await Promise.all(callers.map((call, i) => claimRetrying(call, claim(`t${i + 1}`), retries)));
-  expect(answers.map((r) => r.status).filter((s) => s !== 200)).toEqual([]);
-  for (let i = 0; i < 10; i++) {
-    const item = await L.item(`t${i + 1}`);
-    expect(item.owner).toBe(actors[i]);
-    expect(fa.live(item.fork!)).toEqual([await L.tokenId(item.id)]);
-  }
-});
-
-// Found by the stress runs of t749: a claim whose earlier attempt made the
-// fork reads the fork's head to check how it was made, and that read alone
-// was not retried, so a repository handle that failed there answered 500.
-it("t749: a claim that finds its earlier fork retries a repository handle that fails while the fork is checked, and succeeds", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const errors: string[] = [];
-  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
-  // Handle 1 forks the baseline, which answers that the fork exists; handle 2 reads that fork's head.
-  const { L, fa, actors, callers, claim } = await setup("concurrency-checked", 1, 1, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: (k) => k === 2,
-  });
-  fa.repos.set("concurrency-checked--t1", { reads: 0, description: taskForkMark("concurrency-checked--t1") });
+it("a claim on a project whose main has no commit answers 409 empty_branch, leaves the task open and mints no grant", async () => {
+  const name = "concurrency-empty";
+  const { L, callers, claim } = await setup(name, 1, 1);
+  const dir = git.repo(name, "main");
+  execFileSync("git", ["update-ref", "-d", "refs/heads/main"], { cwd: dir });
   const res = await callers[0]("POST", claim("t1"));
-  expect(errors).toEqual([]);
-  expect(res.status).toBe(200);
-  expect((await L.item("t1")).owner).toBe(actors[0]);
-  expect(fa.live("concurrency-checked--t1")).toEqual([await L.tokenId("t1")]);
+  expect(res.status).toBe(409);
+  expect(((await res.json()) as { error: string }).error).toBe("empty_branch");
+  expect(await L.item("t1")).toMatchObject({ owner: null, state: "open", fork: null });
+  expect(await liveGrants(name, "t1")).toEqual([]);
 });
 
-it("a holder's claim again whose revocation stays down answers 503 with Retry-After, keeps the old token, and its retry rotates it", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const errors: string[] = [];
-  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
-  let down = false;
-  const { L, fa, actors, callers, claim } = await setup("concurrency-revoke-down", 1, 1, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, revoke: () => down,
-  });
-  expect((await callers[0]("POST", claim("t1"))).status).toBe(200);
-  const old = await L.tokenId("t1");
-  down = true;
-  const first = await callers[0]("POST", claim("t1"));
-  expect(first.status).toBe(503);
-  expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
-  expect(await first.text()).not.toContain("art_secret_");
-  expect(errors.join("\n")).toContain(`revoke a write token for concurrency-revoke-down--t1 failed: Error code=UNAVAILABLE message="token service unavailable"`);
-  expect((await L.item("t1")).owner).toBe(actors[0]);
-  expect(await L.tokenId("t1")).toBe(old);
-  expect(fa.live("concurrency-revoke-down--t1")).toEqual([old]);
-  down = false;
-  expect((await callers[0]("POST", claim("t1"))).status).toBe(200);
-  const now = await L.tokenId("t1");
-  expect(now).not.toBe(old);
-  expect(fa.live("concurrency-revoke-down--t1")).toEqual([now]);
-});
-
-it("a request that fails for an unforeseen reason logs the error's code and message, not only its stack", async () => {
-  const errors: string[] = [];
-  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
-  const { L, callers, claim } = await setup("concurrency-log", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false });
-  await L.claim("t1", "claude-code/agent-1");
-  // A recorded fork Artifacts has never heard of: the token cannot be made, for good.
-  await L.setFork("t1", "concurrency-log--gone", H0, "claude-code/agent-1");
-  const res = await callers[0]("POST", `${claim("t1").replace(/claim$/, "read-token")}`);
-  expect(res.status).toBe(500);
-  expect(errors.join("\n")).toMatch(/POST \/api\/projects\/concurrency-log\/items\/t1\/read-token failed: Error code=NOT_FOUND message="repo not found: concurrency-log--gone"/);
-});
-
-it("t496: abandon during a dispatched claim's not-ready fork stays closed on every poll and retry", async () => {
-  let close: (() => Promise<void>) | undefined;
-  const { L, fa, claim } = await setup("abandon-not-ready", 1, 0, {
-    forkBefore: () => false, forkAfter: () => false, inProgress: 100,
-    mint: () => { throw new Error("closed work must never mint a token"); },
-    onHead: async () => { const pending = close; close = undefined; await pending?.(); },
-  });
-  await L.dispatch("t1", "owner", { to: "home" });
+it("t496: an abandoned dispatched task stays closed on every poll and retry", async () => {
+  const name = "abandon-closed";
+  const { L, claim } = await setup(name, 1, 0);
+  await L.dispatch("t1", "owner", { to: "home", agent: "claude-code", model: "agent-1" });
   expect(await L.waiting()).toHaveLength(1);
-  close = async () => { await L.abandon("t1", "owner", "Owner closed it while the fork was preparing"); };
-  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: fa.artifacts } as typeof env;
+  await L.abandon("t1", "owner", "Owner closed it while it was being claimed");
+  expect(await L.item("t1")).toMatchObject({ state: "abandoned", owner: null, dispatch: null });
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   const run = () => worker.fetch(new Request(`https://atelier.test/api${claim("t1")}`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "claude-code/agent-1", "x-atelier-runner": "home:studio" }, body: "{}",
   }), bindings);
-  expect((await run()).status).toBe(503);
-  expect(await L.item("t1")).toMatchObject({ state: "abandoned", owner: null, dispatch: null });
-  const access = vi.spyOn(fa.artifacts, "get");
   for (let i = 0; i < 3; i++) {
     expect(await L.waiting()).toEqual([]);
     const res = await run();
     expect((await res.json() as { error: string }).error).toBe("closed");
   }
-  const owner = caller(TOKEN, fa.artifacts, "owner");
+  const owner = caller(TOKEN, "owner");
   for (const [verb, body] of [["review-claim", {}], ["dispatch", { job: "merge-main" }]] as const) {
     const res = await owner("POST", claim("t1").replace(/claim$/, verb), body);
     expect((await res.json() as { error: string }).error).toBe("closed");
   }
-  expect(access).not.toHaveBeenCalled();
-  expect(fa.live("abandon-not-ready--t1")).toEqual([]);
+  expect(await liveGrants(name, "t1")).toEqual([]);
 }, 30_000);
 
+// ── what still reads env.ARTIFACTS, and the catch-all (t761, t339) ─────────
+
+// These tests inject transient Artifacts failures; the retry backoff would
+// otherwise spend seconds waiting (and time out under load). Milliseconds do.
+beforeAll(() => setRetryBaseMs(1));
+afterAll(() => setRetryBaseMs());
+afterEach(() => vi.restoreAllMocks());
+
+const H0 = "0".repeat(40);
+const artifactsError = (code: string, message: string) => Object.assign(new Error(message), { code });
+// `get` fails the nth repository handle asked for, before any call on it;
+// `inProgress` makes each repository's first reads answer FORK_IN_PROGRESS.
+type Faults = { get?: (n: number) => boolean; inProgress: number };
+function fakeArtifacts(faults: Faults) {
+  const repos = new Map<string, { reads: number }>();
+  let gets = 0;
+  const artifacts = {
+    get: async (repo: string) => {
+      if (faults.get?.(++gets)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
+      const known = () => { const r = repos.get(repo); if (!r) throw artifactsError("NOT_FOUND", `repo not found: ${repo}`); return r; };
+      return {
+        log: async () => {
+          const r = known();
+          if (r.reads++ < faults.inProgress) throw artifactsError("FORK_IN_PROGRESS", "fork in progress");
+          return [{ hash: H0 }];
+        },
+        info: async () => { known(); return { remote: `https://git.test/${repo}.git`, defaultBranch: "main", description: null }; },
+        [Symbol.dispose]() {},
+      };
+    },
+  } as unknown as Artifacts;
+  return { artifacts, repos };
+}
+
+// A registered project whose baseline repository `repo` the fake holds.
+async function artifactsProject(name: string, faults: Faults, hold = true) {
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record as never, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
+  const fa = fakeArtifacts(faults);
+  if (hold) fa.repos.set(name, { reads: 0 });
+  return fa;
+}
+
 const get = (artifacts: Artifacts, path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
+
+it("a request that fails for an unforeseen reason logs the error's code and message, not only its stack", async () => {
+  const errors: string[] = [];
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
+  // The baseline Artifacts has never heard of: the head read fails for good.
+  const fa = await artifactsProject("concurrency-log", { inProgress: 0 }, false);
+  const res = await get(fa.artifacts, "/api/projects/concurrency-log/baseline-head");
+  expect(res.status).toBe(500);
+  expect(errors.join("\n")).toMatch(/GET \/api\/projects\/concurrency-log\/baseline-head failed: Error code=NOT_FOUND message="repo not found: concurrency-log"/);
+});
 
 // t761 (audit finding 3): about forty-five Artifacts calls sit outside
 // artifactsStep, and a one-second Artifacts blip on any of them answered 500.
@@ -386,7 +208,7 @@ describe("t761: a transient Artifacts failure answers 503 on any route", () => {
     const errors: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
     let down = true;
-    const { fa } = await setup("concurrency-bare", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: () => down });
+    const fa = await artifactsProject("concurrency-bare", { get: () => down, inProgress: 0 });
     const browse = () => get(fa.artifacts, "/p/concurrency-bare/code");
     const first = await browse();
     expect(first.status).toBe(503);
@@ -398,20 +220,19 @@ describe("t761: a transient Artifacts failure answers 503 on any route", () => {
 
   it("an error that is not a passing Artifacts failure still answers 500", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const { L, callers, claim } = await setup("concurrency-bare-500", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false });
-    await L.claim("t1", "claude-code/agent-1");
-    await L.setFork("t1", "concurrency-bare-500--gone", H0, "claude-code/agent-1");
-    expect((await callers[0]("POST", claim("t1").replace(/claim$/, "read-token"))).status).toBe(500);
+    const fa = await artifactsProject("concurrency-bare-500", { inProgress: 0 }, false);
+    expect((await get(fa.artifacts, "/api/projects/concurrency-bare-500/baseline-head")).status).toBe(500);
   });
 
   it("headOf waits out a failure that passes and answers the head, and answers 503 when it does not pass", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     let down = 2;
-    const { fa } = await setup("concurrency-head", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: () => down-- > 0 });
+    const fa = await artifactsProject("concurrency-head", { get: () => down-- > 0, inProgress: 0 });
     const ok = await get(fa.artifacts, "/api/projects/concurrency-head/baseline-head");
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ head: H0 });
+    // The Node server adds repository: "server" (task 11).
+    expect(await ok.json()).toEqual({ head: H0, repository: "server" });
     down = 99;
     const dead = await get(fa.artifacts, "/api/projects/concurrency-head/baseline-head");
     expect(dead.status).toBe(503);
@@ -422,26 +243,25 @@ describe("t761: a transient Artifacts failure answers 503 on any route", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     let gets = 0;
-    const { fa } = await setup("concurrency-head-gone", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: () => { gets++; return false; } });
-    fa.repos.delete("concurrency-head-gone");
+    const fa = await artifactsProject("concurrency-head-gone", { get: () => { gets++; return false; }, inProgress: 0 }, false);
     const res = await get(fa.artifacts, "/api/projects/concurrency-head-gone/baseline-head");
     expect(res.status).toBe(500);
     expect(gets).toBe(1);
   });
 
-  it("a fork that becomes ready after about five seconds of waiting answers its head, and one that never does answers 503", async () => {
+  it("a head that becomes readable after about five seconds of waiting is answered, and one that never does answers 503", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     // Real steps of 500 ms are 500, 1000, 1500 and 2000 ms before the fifth
     // read: five seconds. The step is lowered so the test does not wait.
     setForkWaitMs(1);
     try {
-      const { fa } = await setup("concurrency-fork-wait", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 4, mint: () => false });
+      const fa = await artifactsProject("concurrency-fork-wait", { inProgress: 4 });
       const ready = await get(fa.artifacts, "/api/projects/concurrency-fork-wait/baseline-head");
       expect(ready.status).toBe(200);
-      expect(await ready.json()).toEqual({ head: H0 });
-      const never = await setup("concurrency-fork-never", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 99, mint: () => false });
-      const res = await get(never.fa.artifacts, "/api/projects/concurrency-fork-never/baseline-head");
+      expect(await ready.json()).toEqual({ head: H0, repository: "server" });
+      const never = await artifactsProject("concurrency-fork-never", { inProgress: 99 });
+      const res = await get(never.artifacts, "/api/projects/concurrency-fork-never/baseline-head");
       expect(res.status).toBe(503);
       expect(((await res.json()) as { error: string }).error).toBe("not_ready");
     } finally { setForkWaitMs(); }

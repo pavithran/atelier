@@ -1,8 +1,8 @@
 // Imported by the existing Workers spec entrypoint so these tests use the
 // real durable storage while staying beside the refresh implementation.
-import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { runInDurableObject } from "../../test/support/workers.ts";
+import { env } from "../../test/support/workers.ts";
+import { expect, it } from "../../test/support/vitest.ts";
 
 const B = "0".repeat(40), H = "1".repeat(40), M = "a".repeat(40), N = "b".repeat(40), R = "c".repeat(40);
 const actor = "atelier/integrator", builder = "codex/gpt-6-astra";

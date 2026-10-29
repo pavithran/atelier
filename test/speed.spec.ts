@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ModelSpeed, SpeedRecord } from "../src/models/speed.ts";
 import { renderModels, speedSection } from "../src/ui.ts";
@@ -16,10 +16,11 @@ const OPUS = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra";
 const [H0, H1] = ["0", "1"].map((c) => c.repeat(40));
 const L = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
+// G18: the developer token's write names the model acting.
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": OPUS, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

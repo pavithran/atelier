@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { DecisionView } from "../src/decisions.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -21,9 +21,10 @@ async function project(name: string) {
   return ledger(name);
 }
 
+// A write on the owner token names the acting model (G18).
 function api(method: string, path: string, actor: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

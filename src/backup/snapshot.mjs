@@ -29,6 +29,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { ledgerFile } from "../runtime/ledger-file.mjs";
 
 export const FORMAT = "atelier-backup-1";
 const SQLITE = /\.sqlite$/;
@@ -84,7 +85,7 @@ export function registeredProjects(indexFile) {
     });
   } finally { db.close(); }
 }
-export const ledgerFileOf = (key) => `project${encodeURIComponent(":")}${encodeURIComponent(key).replace(/\./g, "%2E").replace(/\*/g, "%2A")}.sqlite`;
+export const ledgerFileOf = (key) => ledgerFile(`project:${key}`);
 
 // LocalLarge's file being written, beside its name until renamed over it
 // (src/runtime/large.mjs): NAME.PID.RANDOM.tmp.

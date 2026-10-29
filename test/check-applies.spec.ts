@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 // A check can apply only when an item's changed paths match its globs. These
@@ -12,9 +12,10 @@ const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
 const A = "claude-code/opus-5.5";
 const H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
 
+// Owner-token writes name the acting model (G18).
 function api(bindings: typeof env = testEnv) {
   return (method: string, path: string, actor: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": A } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
 }
@@ -69,10 +70,10 @@ it("a check is recorded as not applicable only where the measured paths show it,
   expect(await everywhere.json()).toEqual({ error: "check_applies", detail: "`npm test` applies to every change; run it" });
   const na = await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "xcodebuild build", head: H1, notApplicable: true, passed: true });
   expect(na.status, await na.clone().text()).toBe(200);
-  expect(((await L.detail("t1")) as Detail).evidence.at(-1)).toMatchObject({ claim: "xcodebuild build", grade: "observed", passed: null, notApplicable: true, changedPaths: ["docs/a.md"], where: "runner" });
+  expect(((await L.detail("t1")) as unknown as Detail).evidence.at(-1)).toMatchObject({ claim: "xcodebuild build", grade: "observed", passed: null, notApplicable: true, changedPaths: ["docs/a.md"], where: "runner" });
   expect((await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "npm test", head: H1, passed: true })).status).toBe(200);
   expect((await call("POST", `/projects/${name}/items/t1/submit`, A, {})).status).toBe(200);
-  expect(((await L.detail("t1")) as Detail).gate).toMatchObject({ ready: true, blockers: [] });
+  expect(((await L.detail("t1")) as unknown as Detail).gate).toMatchObject({ ready: true, blockers: [] });
   // The record is logged as its own kind, never as a passed check (events are newest first).
   const kinds = ((await L.events("t1")) as unknown as { kind: string }[]).map((e) => e.kind);
   expect(kinds.filter((k) => k.startsWith("evidence."))).toEqual(["evidence.observed", "evidence.not_applicable"]);
@@ -90,9 +91,9 @@ it("a check whose paths the change touches cannot be recorded as not applicable,
   const res = await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "xcodebuild build", head: H1, notApplicable: true, changedPaths: ["docs/a.md"] });
   expect(res.status).toBe(409);
   expect(await res.json()).toEqual({ error: "check_applies", detail: "`xcodebuild build` applies to this change, which touches App/View.swift; run it" });
-  expect(((await L.detail("t1")) as Detail).evidence).toEqual([]);
+  expect(((await L.detail("t1")) as unknown as Detail).evidence).toEqual([]);
   expect((await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "npm test", head: H1, passed: true })).status).toBe(200);
-  expect(((await L.detail("t1")) as Detail).gate.blockers).toContain("`xcodebuild build` not yet observed at this head");
+  expect(((await L.detail("t1")) as unknown as Detail).gate.blockers).toContain("`xcodebuild build` not yet observed at this head");
 });
 
 it("init records the paths a check applies to, for registered checks only, and the standing shows them", async () => {

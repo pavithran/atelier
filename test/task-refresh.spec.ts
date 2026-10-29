@@ -1,6 +1,6 @@
-import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { runInDurableObject } from "./support/workers.ts";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent, RefreshView } from "../src/ledger.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
@@ -296,7 +296,7 @@ function artifacts(repos: Record<string, { hash: string; parents: string[]; mess
 
 function call(name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts, method = "POST") {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 }

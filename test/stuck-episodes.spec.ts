@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { afterEach, expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { scheduled } from "./workers-removed.ts";
 
@@ -19,7 +19,7 @@ const L = (key: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${key}`
 const HOUR = 3_600_000;
 const AGENT = "claude-code/opus-5.5";
 const call = (method: string, path: string, body?: unknown, e: typeof env = testEnv) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
 }), e);
 
 async function project(name: string) {

@@ -1,10 +1,15 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { baseRepoOf } from "../src/plans/integrate.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+
+// The routes the developer names at an approval (G17: Atelier picks none): every part built by
+// zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.
+const routesOf = async (L: { planView(id: string): Promise<{ plan?: { parts: { key: string }[] } | null }> }, id: string) =>
+  Object.fromEntries(((await L.planView(id)).plan?.parts ?? []).map((p) => [p.key, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
 
 // The integration branch (docs/orchestrator.md, section 5, build steps 12 to
 // 14). Parts fork from and are measured against their plan's fork; the
@@ -70,7 +75,7 @@ async function readyPart(L: L, plan = doc(part("a"))) {
   const post = await L.postPlan(item.id, PLANNER, plan);
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, [], await routesOf(L, item.id));
   const partId = parts[0].id;
   const builder = `${(await L.item(partId)).dispatch!.agent}/${(await L.item(partId)).dispatch!.model}`;
   const head = "a".repeat(40);
@@ -179,13 +184,13 @@ it("a failed integration records its kind, charges the builder only for a confli
   expect(view.parts[0].integrationFailure).toMatchObject({ kind: "checks", reason: "the plan's checks failed after the merge: FAIL npm test" });
 });
 
-it("rework after failed integrations never goes to the model that reviewed the part", async () => {
+it("rework after failed integrations never goes to the model that reviewed the part, and the named route has no alternate to walk to", async () => {
   const L = await setup("integrate-rework-reviewer");
   const { id, partId, builder } = await readyPart(L);
   const reviewer = (await events(L, partId)).find((e) => e.kind === "review.approved")!.actor;
   const route = (await L.planView(id)).parts[0].route!;
-  // The routing puts the reviewer first among the alternates, where the walk goes after two failed attempts.
-  expect(route.alternates.map((a) => a.actor)).toContain(reviewer);
+  // G17: the named route has no alternates, so the walk after two failed attempts has nowhere to go, the reviewer least of all.
+  expect(route.alternates).toEqual([]);
   await L.claim(id, INTEGRATOR, RUNNER, true);
   for (const [n, head] of [[1, "b".repeat(40)], [2, "c".repeat(40)]] as const) {
     await L.integrationFailed(id, INTEGRATOR, "a", `conflict ${n}`, "conflict");
@@ -194,11 +199,10 @@ it("rework after failed integrations never goes to the model that reviewed the p
     await L.recordPush(partId, builder, head, head);
     await L.submit(partId, builder);
   }
-  const next = (await L.item(partId)).dispatch!;
-  const to = `${next.agent}/${next.model}`;
-  expect(to).not.toBe(reviewer);
-  expect(to).not.toBe(builder);
-  expect(route.alternates.map((a) => a.actor)).toContain(to);
+  expect((await L.item(partId)).dispatch).toBeNull();
+  expect((await L.planView(id)).blocked).toBe("part a has no alternates left");
+  const asked = (await events(L, partId)).filter((e) => e.kind === "item.dispatched").map((e) => `${e.data.agent}/${e.data.model}`);
+  expect(asked).not.toContain(reviewer);
 });
 
 it("planGate blocks the plan until every part is integrated and approved at its integrated head", async () => {

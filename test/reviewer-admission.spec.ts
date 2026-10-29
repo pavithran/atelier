@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { criteriaOf } from "../src/criteria.ts";
@@ -23,6 +23,10 @@ const policy: ProjectPolicy = {
     claude: { available: true, eligible_roles: ["executor", "assessor"] },
   },
 };
+// Since G18 a write on the developer token names an acting model that resolves to a
+// pool entry, so the index pool also holds the orchestrating session's model (ACTING),
+// which neither builds nor reviews here; the ledgers still take POOL.
+const ACTING = "claude-code/opus-5.5";
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 async function setup(name: string, builder = BUILDER) {
@@ -31,6 +35,7 @@ async function setup(name: string, builder = BUILDER) {
   await L.setProject(record, "owner");
   await index().registerProject(record);
   await index().putModel(POOL[0]);
+  await index().putModel({ ...entry("opus-5.5", []), harness: "claude-code", where: "cloud", provider: "subscription", endpoint: undefined });
   await L.newItem("Review external model", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim("t1", builder);
   await L.setFork("t1", `${name}--t1`, BASE, builder);
@@ -52,7 +57,7 @@ const admit = (L: L) => L.admitReviewer("studio-review", true, "Qualified on the
 const withdraw = (L: L) => L.admitReviewer(POOL[0].id, false, "Retiring this reviewer", "owner", POOL);
 function call(name: string, method: string, id: string, actor = "owner", reason = "Qualified") {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/reviewers/${id}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify({ reason }),
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ reason }),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
 }
 
@@ -175,7 +180,7 @@ it("an admitted model's own actor token records a proved, counting approval thro
   const name = "admission-actor-token", L = await setup(name);
   await admit(L);
   const api = (method: string, path: string, body: unknown, token = TOKEN, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
+    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: { get: async () => ({ log: async () => [{ hash: HEAD }], [Symbol.dispose]() {} }) } as unknown as Artifacts } as typeof env);
   const issued = await api("POST", "/tokens", { actor: ALIAS, projects: [name], label: "Outside reviewer" });
   expect(issued.status).toBe(201);
@@ -212,6 +217,9 @@ it("aliases cannot be reassigned across project admissions and alias claims can 
   await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
   await L.claimReview("t1", ALIAS, runner);
   await L.releaseReview("t1", ALIAS, "Retry later");
+  // G6: a release ends the request as released; the model asks again by command.
+  expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("released");
+  await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
   expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("open");
   await withdraw(L);
   expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("withdrawn");
@@ -225,6 +233,8 @@ it("admitted aliases renew and release only their current claim generation", asy
   const first = await L.claimReview("t1", ALIAS, runner) as unknown as ReviewClaim;
   await L.renewReview("t1", ALIAS, first.request);
   await L.releaseReview("t1", ALIAS, "Restart", true, first.request);
+  // G6: the release opens no successor; the model asks again by command.
+  await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
   const next = await L.claimReview("t1", ALIAS, runner) as unknown as ReviewClaim;
   expect(next.request).not.toBe(first.request);
   await refusal(L.renewReview("t1", ALIAS, first.request), "stale_request");

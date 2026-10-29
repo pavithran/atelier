@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { parsePostMerge } from "../src/post-merge.ts";
 import type { Ledger } from "../src/ledger.ts";
@@ -39,8 +39,9 @@ async function setup(name: string, configured = true, accepted = true) {
       [Symbol.dispose]() {},
     }),
   } as unknown as Artifacts;
+  // G18: a write as the developer names the model acting (an actor that is a harness/model names itself).
   const call = (method: string, path: string, body?: unknown, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: token, ARTIFACTS: artifacts } as typeof env);
   const action = async (action: string, extra = {}, actor = "owner") => {
     const run = await L.postMergeRun("t1");

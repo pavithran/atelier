@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 const OWNER_TOKEN = "owner-port-test-secret", ACTOR = "codex/gpt-6-astra", HEAD = "a".repeat(40);
@@ -31,7 +31,7 @@ async function setup() {
   }) } as unknown as Artifacts;
   const bindings = { ...env, ATELIER_TOKEN: OWNER_TOKEN, ARTIFACTS: artifacts } as typeof env;
   const request = (actor = "owner", id = "t1") => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/owner-port-token`, {
-    method: "POST", headers: { authorization: `Bearer ${OWNER_TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: "{}",
+    method: "POST", headers: { authorization: `Bearer ${OWNER_TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: "{}",
   }), bindings);
   return { name, L, request, minted, revoked, onMint: (fn: () => Promise<void>) => { duringMint = fn; } };
 }

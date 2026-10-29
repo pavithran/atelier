@@ -5,8 +5,8 @@
 // confirmation secret never echoed, and no success the record does not
 // hold. An override, from the page or the command line, keeps whether a
 // qualifying reviewer was available, and the task's history says it.
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import { signIn } from "./signin.ts";
@@ -50,7 +50,7 @@ async function setup(name: string) {
     method: "POST", redirect: "manual", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "", ...fields }),
   }), bindings);
   const api = (path: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify(body),
   }), bindings);
   const view = async () => (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie } }), bindings)).text();
   return { L, post, api, view, race };
@@ -255,6 +255,8 @@ it("criterion 4: an override from the page keeps the reviewer availability in re
 
 it("criterion 4: an override from the command line keeps the reviewer the pool offered, and the history shows it", async () => {
   const { L, api, view } = await setup("forms-availability-cli");
+  // G18: the API call names the acting model, so it is in the pool (no runner offers it, so it is no reviewer).
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel({ id: "opus-5.5", harness: "claude-code", where: "cloud", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).putRunnerOffer({ runner: "home:forms", kind: "home", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build", "review"] }, new Date().toISOString());
   await L.confirmOverride("t1", "owner", H1, "secret");

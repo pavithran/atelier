@@ -1,14 +1,16 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
-import type { ProjectPolicy } from "../src/rules.ts";
+import { postMergeReviewLine, type ProjectPolicy } from "../src/rules.ts";
 
-// t331: the server asks a fast-mode merge's post-merge review itself, as the
-// merge is recorded, whatever path recorded it. Before this only atelier
-// land asked it (cli/land.mjs), and miqra/t130, accepted and merged without
-// land on 2026-10-26, was never reviewed.
+// t331: the server asks a fast-mode merge's post-merge review as the merge is
+// recorded, whatever path recorded it. Before this only atelier land asked it
+// (cli/land.mjs), and miqra/t130, accepted and merged without land on
+// 2026-10-26, was never reviewed. Since G6 and G17 it does so only under the
+// developer's standing post-merge-reviewer instruction, of the reviewer it
+// names; without one the review is owed and the model asks it by command.
 
 const TOKEN = "post-merge-request-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
@@ -25,7 +27,7 @@ const START = "0".repeat(40), C1 = "c".repeat(40), M1 = "d".repeat(40), P1 = "a"
 // What the task's detail says of its live request, which atelier land reads.
 type Live = { liveReview: { request: number; reviewer: string; stopped?: string } | null };
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-async function project(name: string, fast: boolean) {
+async function project(name: string, fast: boolean, reviewer: string | null = GPT) {
   const record = { name, repo: `${name}--baseline`, policy, createdAt: AT };
   const L = ledger(name);
   await L.setProject(record, "owner");
@@ -34,6 +36,7 @@ async function project(name: string, fast: boolean) {
   if (fast) {
     await L.confirmFastMode("owner", "access");
     await L.setMode("owner", "fast", "forks fail");
+    if (reviewer) await L.recordDecision({ standing: { key: "post-merge-reviewer", value: reviewer }, quote: "review after the merge" }, "owner", OPUS);
   }
   return L;
 }
@@ -113,7 +116,18 @@ it("a full-mode merge asks no post-merge review", async () => {
   expect(await requested(L, outside.id)).toEqual([]);
 });
 
-it("a fast-mode merge with no reviewer to ask stays merged, owed, and says why", async () => {
+it("a fast-mode merge with no standing reviewer asks nothing, stays merged and owed, and names the command", async () => {
+  const L = await project("pmr-no-standing", true, null);
+  const item = await accepted(L, "Nobody to ask");
+  await L.accept(item.id, "owner", C1);
+  expect(await L.merged(item.id, "owner", M1, true)).toMatchObject({ state: "merged" });
+  expect(await requested(L, item.id)).toEqual([]);
+  expect(((await L.events(item.id, 1000)) as unknown as LedgerEvent[]).some((e) => e.kind === "review.unasked")).toBe(false);
+  expect((await L.fastLandings())[0]).toMatchObject({ owed: true, review: { state: "not requested" } });
+  expect(postMergeReviewLine(item.id, (await L.fastLandings())[0].review)).toContain(`ask one with atelier review-request ${item.id} --reviewer H/M`);
+});
+
+it("a fast-mode merge whose standing reviewer cannot be asked stays merged, owed, and says why", async () => {
   const L = await project("pmr-no-reviewer", true);
   await L.poolChanged([]);
   const item = await accepted(L, "Nobody to ask");
@@ -121,32 +135,31 @@ it("a fast-mode merge with no reviewer to ask stays merged, owed, and says why",
   expect(await L.merged(item.id, "owner", M1, true)).toMatchObject({ state: "merged" });
   expect(await requested(L, item.id)).toEqual([]);
   const unasked = ((await L.events(item.id, 1000)) as unknown as LedgerEvent[]).find((e) => e.kind === "review.unasked");
-  expect(unasked?.data).toMatchObject({ via: "post-merge", reason: expect.stringContaining("no reviewer") });
+  expect(unasked?.data).toMatchObject({ via: "post-merge", reviewer: GPT, reason: expect.any(String) });
   expect((await L.fastLandings())[0]).toMatchObject({ owed: true, review: { state: "not requested" } });
 });
 
-it("a post-merge review that ends without a verdict twice is reported as owed in atelier status, naming the task", async () => {
+it("a post-merge review that ends without a verdict is reported as owed in atelier status, naming the task, until it is asked again (G6)", async () => {
   const name = "pmr-stopped";
   const L = await project(name, true);
   const item = await accepted(L, "Audited without a verdict");
   await L.accept(item.id, "owner", C1);
   await L.merged(item.id, "owner", M1, true);
   const reviewer = (await requested(L, item.id))[0].data.reviewer as string;
-  // Once is not yet owed: the request is asked again.
   const first = await L.claimReview(item.id, reviewer, RUNNER) as unknown as ReviewClaim;
   await L.unparsableReview(item.id, reviewer, M1, "the reply states no verdict: it has no VERDICT line and no JSON verdict", "SUMMARY: could not run the checks\nBLOCKING: 0", false, first.request);
-  expect((await L.fastLandings())[0]).toMatchObject({ owed: false, review: { state: "open" } });
-  const second = await L.claimReview(item.id, reviewer, RUNNER) as unknown as ReviewClaim;
-  await L.unparsableReview(item.id, reviewer, M1, "the reply states no verdict: it has no VERDICT line and no JSON verdict", "SUMMARY: could not run the checks\nBLOCKING: 0", false, second.request);
-  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: true, review: { state: "stopped without a verdict" } });
+  // The request ended as a fact: nothing reopens it, so the review is owed from the first.
+  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: true, review: { state: "no_verdict" } });
+  expect(await L.reviewWaiting()).toEqual([]);
   // atelier status prints the mode line from GET mode, and status --project
   // from the standing: both name the task as owed.
-  const owed = `Post-merge review owed: ${item.id} (stopped without a verdict)`;
+  const owed = `Post-merge review owed: ${item.id} (no_verdict)`;
   const mode = await (await api("GET", `/projects/${name}/mode`, "owner")).json() as { line: string };
   expect(mode.line).toMatch(/^Mode: fast since .* \(forks fail\)\. Post-merge review owed: /);
   expect(mode.line).toContain(owed);
   const standing = await (await api("GET", `/projects/${name}/standing`, "owner")).json() as { mode: string };
   expect(standing.mode).toContain(owed);
-  // The stop the runners, the claim and the stuck report read says so too.
-  expect(((await L.detail(item.id)) as unknown as Live).liveReview?.stopped).toMatch(new RegExp(`^the post-merge review of ${item.id} at ${M1.slice(0, 8)} is owed: it stopped after 2 releases \\(it ended without a verdict`));
+  // The model asks again by command, and the review is served: no longer owed.
+  await L.requestReview(item.id, "owner", reviewer, POOL, true);
+  expect((await L.fastLandings())[0]).toMatchObject({ owed: false, review: { state: "open" } });
 });

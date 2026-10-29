@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 import { Ledger } from "../src/ledger.ts";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
@@ -21,10 +21,11 @@ const at = (ms: number) => new Date(ms).toISOString();
 // An RFC 2047 title, decoded.
 const decodeTitle = (header: string) => new TextDecoder().decode(Uint8Array.from(atob(header.slice(10, -2)), (c) => c.charCodeAt(0)));
 
+// A write on the owner token names the acting model (G18), a runner header or not: only a real runner token skips it.
 function call(method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}, over: Partial<typeof env> = {}) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...headers },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...testEnv, ...over } as typeof env);
 }

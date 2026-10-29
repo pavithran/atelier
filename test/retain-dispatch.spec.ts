@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { Dispatch, CoreHold } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -22,10 +22,13 @@ const artifacts = {
   }),
 } as unknown as Artifacts;
 
+// G18: a write with the developer token names the model acting, and once the
+// pool has entries it must be one of them, so each test names one it seeds.
+let acting = A;
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": acting, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
 }
@@ -65,15 +68,19 @@ it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, 
   expect(cleared.status).toBe(200);
   expect(cleared.body.dispatch).toMatchObject({ agent: null, model: "qwen3-coder-next", note: "keep", at });
 
-  // With no dispatch, the request dispatches as usual.
+  // With no dispatch, the request dispatches as usual. A dispatch names its
+  // builder in full (G17), so the agent alone is refused and the pair is not.
   const none = await make();
-  const fresh = await dispatchOf(none, { retain: true, overlapOk: true, agent: "opencode" });
+  const half = await dispatchOf(none, { retain: true, overlapOk: true, agent: "opencode" });
+  expect(half.status).toBe(409);
+  expect(half.body).toMatchObject({ error: "builder_needed" });
+  const fresh = await dispatchOf(none, { retain: true, overlapOk: true, agent: "opencode", model: "glm-5.3-flash" });
   expect(fresh.status).toBe(200);
-  expect(fresh.body.dispatch).toMatchObject({ agent: "opencode", overlapOk: true });
+  expect(fresh.body.dispatch).toMatchObject({ agent: "opencode", model: "glm-5.3-flash", overlapOk: true });
 
   // A runner claims it first: the hold-only release is refused, not redispatched.
   const claimed = await make();
-  const pending = await dispatchOf(claimed, { to: "home", agent: "opencode" });
+  const pending = await dispatchOf(claimed, { to: "home", agent: "opencode", model: "glm-5.3-flash" });
   await L.claim(claimed, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
   const late = await dispatchOf(claimed, { retain: true, retainAt: pending.body.dispatch!.at, overlapOk: true });
   expect(late.status).toBe(409);
@@ -101,12 +108,15 @@ it("--overlap-ok with a builder the owner holds from building is refused and cha
   await L.setProject(record, "owner");
   const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   await index.registerProject(record);
+  // The pool is the server's, not the test's: only the pool this test names.
+  for (const m of await index.models() as ModelEntry[]) await index.removeModel(m.id);
   const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
     id, harness: "opencode", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: "2026-10-06T12:00:00.000Z", ...change,
   });
   await index.putModel(entry("glm-5.3-flash"));
   await index.putModel(entry("qwen3-coder-next", { state: "paused", stateAt: "2026-10-06T12:00:00.000Z", note: "AI Studio down" }));
   await index.putModel(entry("kimi-k3", { roles: ["review"] }));
+  acting = "opencode/glm-5.3-flash";
   const id = ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
   const first = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "keep" });
   const { dispatch } = (await first.json()) as { dispatch: Record<string, unknown> };
@@ -130,6 +140,9 @@ const POOL: ModelEntry[] = ["shared", "new"].map((id) => ({
   id, harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: "2026-10-06T12:00:00.000Z",
 }));
 async function setup(name: string, coreFiles = ["src/**"]) {
+  const pool = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  for (const m of await pool.models() as ModelEntry[]) await pool.removeModel(m.id);
+  acting = "codex/shared";
   for (const m of POOL) await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel(m);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const record = { name, repo: name, policy: { checks: [], protected: [], coreFiles }, createdAt: new Date().toISOString() };
@@ -142,11 +155,26 @@ async function setup(name: string, coreFiles = ["src/**"]) {
 }
 type Answer = { dispatch: Dispatch; retainedDispatch?: boolean; releasedCoreHold?: CoreHold; suggestion?: unknown };
 const original = { to: "home", agent: "codex", model: "shared", note: "Keep the workspace" };
+// A dispatch names both its agent and its model or neither (G17), so the
+// override applied through the dispatch route keeps both or replaces both.
+// One field alone, or a cleared one, is the hold-only release's (the first
+// test above); here it is refused, with the waiting dispatch and its hold as
+// they were.
 const cases = [
-  [{}, "codex", "shared"], [{ agent: "" }, null, "shared"], [{ model: "" }, "codex", null],
-  [{ agent: "", model: "" }, null, null], [{ agent: "other" }, "other", "shared"],
-  [{ model: "new" }, "codex", "new"], [{ agent: "other", model: "new" }, "other", "new"],
+  [{}, "codex", "shared"], [{ agent: "other", model: "new" }, "other", "new"],
 ] as const;
+const halves = [{ agent: "" }, { model: "" }, { agent: "", model: "" }, { agent: "other" }, { model: "new" }] as const;
+for (const [n, change] of halves.entries()) {
+  it(`API retains the waiting dispatch and refuses ${JSON.stringify(change)} as builder_needed`, async () => {
+    const { L, item, path } = await setup(`retain-half-${n}`);
+    await L.dispatch(item.id, "owner", original);
+    const before = (await L.item(item.id)).dispatch;
+    const res = await call("POST", path, { overlapOk: true, ...change });
+    expect(res.status, await res.clone().text()).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "builder_needed" });
+    expect((await L.item(item.id)).dispatch).toEqual(before);
+  });
+}
 for (const [n, [change, agent, model]] of cases.entries()) {
   it(`API and queue retain omitted fields and apply ${JSON.stringify(change)}`, async () => {
     const name = `retain-${n}`;
@@ -174,41 +202,50 @@ for (const [n, [change, agent, model]] of cases.entries()) {
     expect(again.dispatch).toMatchObject({ agent, model });
   });
 }
+// G17: with no waiting dispatch there is no builder to keep, so a first
+// dispatch, overridden or not, names its agent and model or is refused.
 it("fresh overrides, absent holds and ordinary redispatch keep their defaults", async () => {
   const { L, item, path } = await setup("retain-no-core", []);
-  const fresh = await (await call("POST", path, { overlapOk: true })).json() as Answer;
-  expect(fresh.dispatch).toMatchObject({ to: "any", agent: null, model: null, note: "", overlapOk: true });
+  const none = await call("POST", path, { overlapOk: true });
+  expect(none.status).toBe(409);
+  expect(await none.json()).toMatchObject({ error: "builder_needed" });
+  const fresh = await (await call("POST", path, { overlapOk: true, agent: "codex", model: "shared" })).json() as Answer;
+  expect(fresh.dispatch).toMatchObject({ to: "any", agent: "codex", model: "shared", note: "", overlapOk: true });
   expect(fresh.releasedCoreHold).toBeUndefined();
   expect(fresh.retainedDispatch).not.toBe(true);
   await L.dispatch(item.id, "owner", original);
   const absent = await (await call("POST", path, { overlapOk: true })).json() as Answer;
   expect(absent.releasedCoreHold).toBeUndefined();
-  const ordinary = await (await call("POST", path, {})).json() as Answer;
-  expect(ordinary.dispatch).toMatchObject({ to: "any", agent: null, model: null, note: "" });
+  const ordinary = await (await call("POST", path, { agent: "codex", model: "shared" })).json() as Answer;
+  expect(ordinary.dispatch).toMatchObject({ to: "any", agent: "codex", model: "shared", note: "" });
   expect(ordinary.dispatch.overlapOk).toBeUndefined();
 });
-it("a first overlap override asking for a suggestion still gets one from the pool", async () => {
-  const { path } = await setup("retain-fresh-suggest");
-  // The suggestion passes over a model no live runner offers (t622, finding
-  // 6 of gpt-6-astra's review); earlier tests here left home:retain offering
-  // one model only, so it offers the pool again first.
+// G17: --suggest picks nothing now. A first overlap override that names no
+// builder is refused with the pool's candidates, and nothing is dispatched.
+it("a first overlap override asking for a suggestion gets the candidates and a refusal, not a pick", async () => {
+  const { L, item, path } = await setup("retain-fresh-suggest");
+  // Candidates are the models a live runner offers (t622, finding 6 of
+  // gpt-6-astra's review); earlier tests here left home:retain offering one
+  // model only, so it offers the pool again first.
   expect((await call("POST", "/queue", { runner: "home:retain", agents: [{ agent: "codex", models: POOL.map((m) => m.id) }] })).status).toBe(200);
   const res = await call("POST", path, { overlapOk: true, suggest: true });
-  expect(res.status, await res.clone().text()).toBe(200);
-  const answer = await res.json() as Answer & { suggestion?: { actor: string } };
-  expect(answer.retainedDispatch).not.toBe(true);
-  expect(answer.releasedCoreHold).toBeUndefined();
-  expect(POOL.map((m) => `codex/${m.id}`)).toContain(answer.suggestion?.actor);
-  expect(`${answer.dispatch.agent}/${answer.dispatch.model}`).toBe(answer.suggestion?.actor);
+  expect(res.status).toBe(409);
+  const answer = await res.json() as { error: string; detail: string; next: string; dispatch?: unknown; suggestion?: unknown };
+  expect(answer.error).toBe("builder_needed");
+  for (const m of POOL) expect(answer.detail).toContain(`codex/${m.id}`);
+  expect(answer.next).toMatch(/^name one: atelier dispatch t\d+ --agent codex --model /);
+  expect(answer.dispatch).toBeUndefined();
+  expect(answer.suggestion).toBeUndefined();
+  expect((await L.item(item.id)).dispatch).toBeFalsy();
 });
 it("does not report a released hold for a first dispatch even with overlapping core scope", async () => {
   const { path } = await setup("retain-fresh-core");
-  const res = await call("POST", path, { overlapOk: true });
+  const res = await call("POST", path, { overlapOk: true, agent: "codex", model: "shared" });
   expect(res.status).toBe(200);
   const answer = await res.json() as Answer;
   expect(answer.releasedCoreHold).toBeUndefined();
   expect(answer.retainedDispatch).not.toBe(true);
-  expect(answer.dispatch).toMatchObject({ to: "any", agent: null, model: null, note: "", overlapOk: true });
+  expect(answer.dispatch).toMatchObject({ to: "any", agent: "codex", model: "shared", note: "", overlapOk: true });
 });
 it("retains a merge-main payload and permits explicit field replacements", async () => {
   const { L, item, path } = await setup("retain-job");
@@ -216,9 +253,14 @@ it("retains a merge-main payload and permits explicit field replacements", async
   await L.setFork(item.id, "retain-job--t2", "a".repeat(40), "codex/shared");
   await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: "b".repeat(40), release: true });
   const before = (await L.item(item.id)).dispatch!;
-  const res = await call("POST", path, { overlapOk: true, model: "", suggest: true });
+  // A model cleared alone would leave the runner to choose (G17): refused.
+  const cleared = await call("POST", path, { overlapOk: true, model: "", suggest: true });
+  expect(cleared.status).toBe(409);
+  expect(await cleared.json()).toMatchObject({ error: "builder_needed" });
+  expect((await L.item(item.id)).dispatch).toEqual(before);
+  const res = await call("POST", path, { overlapOk: true });
   expect(res.status).toBe(200);
-  expect((await res.json() as Answer).dispatch).toEqual({ ...before, model: null, overlapOk: true, at: expect.any(String) });
+  expect((await res.json() as Answer).dispatch).toEqual({ ...before, overlapOk: true, at: expect.any(String) });
   const replaced = await (await call("POST", path, { overlapOk: true, to: "cloud", note: "replacement", agent: "other", model: "new" })).json() as Answer;
   expect(replaced.dispatch).toMatchObject({ to: "cloud", note: "replacement", agent: "other", model: "new", job: "merge-main", head: before.head, task: true });
 });
@@ -229,12 +271,13 @@ it("validates merged dispatch before releasing or revoking, and never bypasses r
   await L.setFork(item.id, "retain-refused--t2", "a".repeat(40), "codex/shared");
   await L.recordToken(item.id, "codex/shared", mint.generation, mint.replaces, "retain-token");
   const before = await L.item(item.id);
-  const invalid = await call("POST", path, { overlapOk: true, model: "invalid model", release: true });
+  const invalid = await call("POST", path, { overlapOk: true, agent: "codex", model: "invalid model", release: true });
   expect(invalid.status).toBe(400);
   await L.setProject({ ...record, policy: { ...record.policy, refuseOverlap: true } }, "owner");
-  // Clearing the agent leaves a model restriction, but no named claimant
-  // exempt from the overlap refusal, even with the core override.
-  const refused = await call("POST", path, { overlapOk: true, agent: "", release: true });
+  // A builder other than the live task's holder is no named claimant exempt
+  // from the overlap refusal, even with the core override. (Before G17 this
+  // cleared the agent, which left only a model; a dispatch must now name both.)
+  const refused = await call("POST", path, { overlapOk: true, agent: "codex", model: "new", release: true });
   expect(refused.status).toBe(409);
   const text = await refused.text();
   expect(text).toContain(`overlaps live ${live.id}`);
@@ -256,7 +299,7 @@ for (const state of ["held", "submitted"] as const) {
     await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
     if (state === "submitted") { await L.recordPush(item.id, "codex/shared", "c".repeat(40), "c".repeat(40)); await L.submit(item.id, "codex/shared"); }
     expect((await L.item(item.id)).dispatch).toMatchObject({ job: "merge-main", head: MAIN_HEAD });
-    const res = await call("POST", path, { overlapOk: true, release: true, note: "address the review" });
+    const res = await call("POST", path, { overlapOk: true, release: true, agent: "codex", model: "shared", note: "address the review" });
     expect(res.status, await res.clone().text()).toBe(200);
     const { dispatch } = await res.json() as Answer;
     expect(dispatch).toMatchObject({ to: "any", note: "address the review", overlapOk: true });
@@ -265,7 +308,7 @@ for (const state of ["held", "submitted"] as const) {
     expect((await L.item(item.id)).dispatch).toEqual(dispatch);
     // --job still names the job given.
     await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
-    const named = await (await call("POST", path, { overlapOk: true, release: true, job: "merge-main", head: MAIN_HEAD })).json() as Answer;
+    const named = await (await call("POST", path, { overlapOk: true, release: true, agent: "codex", model: "shared", job: "merge-main", head: MAIN_HEAD })).json() as Answer;
     expect(named.dispatch).toMatchObject({ job: "merge-main", head: MAIN_HEAD });
   });
 }
@@ -293,28 +336,33 @@ it("a held task's rework dispatch refused as a fresh build is refused before its
   await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
   await L.setProject({ ...record, policy: { ...record.policy, refuseOverlap: true } }, "owner");
   const before = await L.item(item.id);
-  // The inherited agent and model would name the claimant exempt from the
-  // overlap refusal; the fresh build names none.
-  const res = await call("POST", path, { overlapOk: true, release: true, note: "address the review" });
+  // The earlier offer's builder is not inherited (G17: the fresh build names
+  // its own); a builder other than the live task's holder is not exempt from
+  // the overlap refusal.
+  const res = await call("POST", path, { overlapOk: true, release: true, agent: "codex", model: "new", note: "address the review" });
   expect(res.status, await res.clone().text()).toBe(409);
   expect(await res.text()).toContain("overlaps live");
   expect(revoked).not.toContain("preflight-token");
   expect(await L.tokenId(item.id)).toBe("preflight-token");
   expect(await L.item(item.id)).toEqual(before);
 });
+// G17: no builder is suggested for the rework either; the refusal lists the
+// candidates and the holder keeps the task.
 for (const state of ["held", "submitted"] as const) {
-  it(`a ${state} task redispatched with --overlap-ok and a note still gets a suggested builder`, async () => {
+  it(`a ${state} task redispatched with --overlap-ok and a note naming no builder gets the candidates and a refusal`, async () => {
     const { L, item, path } = await setup(`retain-suggest-${state}`, []);
     await L.dispatch(item.id, "owner", original);
     await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
     await L.setFork(item.id, `retain-suggest-${state}--t2`, "a".repeat(40), "codex/shared");
     if (state === "submitted") { await L.recordPush(item.id, "codex/shared", "c".repeat(40), "c".repeat(40)); await L.submit(item.id, "codex/shared"); }
+    const before = await L.item(item.id);
     const res = await call("POST", path, { overlapOk: true, release: true, suggest: true, note: "address the review" });
-    expect(res.status, await res.clone().text()).toBe(200);
-    const answer = await res.json() as Answer;
-    expect(answer.suggestion).toBeTruthy();
-    expect(answer.retainedDispatch).toBeUndefined();
-    expect(answer.dispatch.agent).toBe("codex");
-    expect(answer.dispatch.model).toBeTruthy();
+    expect(res.status, await res.clone().text()).toBe(409);
+    const answer = await res.json() as { error: string; detail: string; next: string; suggestion?: unknown };
+    expect(answer.error).toBe("builder_needed");
+    expect(answer.detail).toContain("codex/shared");
+    expect(answer.next).toMatch(/^name one: atelier dispatch t\d+ --agent codex --model /);
+    expect(answer.suggestion).toBeUndefined();
+    expect(await L.item(item.id)).toEqual(before);
   });
 }

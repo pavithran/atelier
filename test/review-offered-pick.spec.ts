@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
@@ -21,9 +21,11 @@ const entry = (harness: ModelEntry["harness"], id: string): ModelEntry => ({
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["src/**"] };
 const BUILDER = "zcode/glm-5.3";
 
+// Since G18 a write on the developer token names the acting model, one in the pool.
+const ACTING = "claude-code/opus-5.5";
 function call(method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
@@ -48,12 +50,20 @@ async function landable(name: string, offered: string[], offerAgeHours = 0) {
 }
 const land = (name: string, id: string) => call("POST", `/projects/${name}/items/${id}/review-request`, {});
 
-it("land with no --reviewer skips a first choice no live runner offers and asks one a runner offers", async () => {
+// G17: the server picks no reviewer. With none named it refuses, listing as
+// eligible only the models a live runner offers and saying why it refused the rest.
+it("land with no --reviewer picks none: it lists the one a runner offers as eligible and refuses the one none offers", async () => {
   const id = await landable("offered-pick-a", ["fable-5.1"]);
   const res = await land("offered-pick-a", id);
-  expect(res.status, await res.clone().text()).toBe(200);
-  const asked = await res.json() as { reviewer: string; requested: boolean };
-  expect(asked).toMatchObject({ reviewer: "claude-code/fable-5.1", requested: true });
+  expect(res.status).toBe(409);
+  const body = await res.json() as { error: string; detail: string; next: string };
+  expect(body.error).toBe("reviewer_needed");
+  expect(body.detail).toMatch(/Eligible \(1\):\n {2}claude-code\/fable-5\.1/);
+  expect(body.detail).toMatch(/claude-code\/opus-5\.5: no live runner offers the review job for claude-code\/opus-5\.5/);
+  expect(body.next).toBe(`name one: atelier review-request ${id} --reviewer claude-code/fable-5.1, or another of the eligible`);
+  const asked = await call("POST", "/projects/offered-pick-a/items/" + id + "/review-request", { reviewer: "claude-code/fable-5.1" });
+  expect(asked.status, await asked.clone().text()).toBe(200);
+  expect(await asked.json()).toMatchObject({ reviewer: "claude-code/fable-5.1", requested: true });
 });
 
 it("land with no --reviewer names no reviewer when no model of another family is offered, and asks nothing", async () => {
