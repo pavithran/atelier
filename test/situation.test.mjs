@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { startServer } from "../src/runtime/server.mjs";
 import { situationOf, RUNNER_SILENT_MS } from "../src/situation.ts";
 import { situationText, span } from "../cli/situation.mjs";
+import { approvalsByHead, dispatchStateOf, standingGoOf } from "../cli/commands/show.mjs";
 
 const run = promisify(execFile);
 const OWNER = "atl_00112233445566778899aabbccddeeff";
@@ -200,6 +201,18 @@ test("show --json carries id, state, owner, head, scope, dispatch, runner, holds
   assert.equal(w.dispatch.model, "glm-5.3");
   assert.ok(w.holds.some((x) => x.kind === "core-file" && x.blocker === holder && x.file === "src/core.ts"), JSON.stringify(w.holds));
   assert.equal(w.lastFailure, null);
+  // G4 2a: why it is not taken, by kind; where it stands toward a dispatch.
+  assert.ok(w.unclaimed.some((r) => r.kind === "held"), JSON.stringify(w.unclaimed));
+  assert.equal(w.dispatchState, "dispatched");
+  assert.deepEqual(w.standingGo, { landing: null, overrideConfirmation: null, fastMode: null });
+  assert.deepEqual(shown.unclaimed, []);
+  assert.equal(shown.dispatchState, null, "a claimed task is past dispatch");
+  const fresh = JSON.parse((await cli(["show", await task("Show: not dispatched"), "--project", "demo", "--json"])).stdout);
+  assert.equal(fresh.dispatchState, "not dispatched");
+  // The approvals at each head, as the reviews recorded them.
+  await L().addReview({ itemId: holder, by: OTHER, head: sha("d"), approve: true, criteria: (await L().detail(holder)).criteria, note: "Fine", at: new Date().toISOString() }, undefined, true);
+  const reviewed = JSON.parse((await cli(["show", holder, "--project", "demo", "--json"])).stdout);
+  assert.deepEqual(reviewed.approvals.map((a) => [a.head, a.current, a.approvedBy, a.rejectedBy]), [[sha("d"), true, [OTHER], []]]);
   // A closed task still answers.
   await L().abandon(waiting, "owner", "done with it");
   const closed = await cli(["show", waiting, "--project", "demo", "--json"]);
@@ -247,4 +260,26 @@ test("situationOf flags silence past 5 minutes and its minute of coarsening, fro
   assert.deepEqual(s.unavailable, ["free disk"]);
   assert.match(situationText(s), /free disk not readable here/);
   assert.equal(span(3 * 3600e3 + 5 * 60e3), "3h 5m");
+});
+
+test("show --json's 2a fields: approval per head carried or not and why, approved not dispatched, the standing go", () => {
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const d = {
+    item: { id: "t1", state: "open", head: B, dispatch: null, overrideConfirmation: { head: B, at: "2026-10-28T10:00:00.000Z" } },
+    reviews: [
+      { by: "x/one", head: A, approve: true, at: "2026-10-28T09:00:00.000Z" },
+      { by: "x/two", head: A, approve: false, at: "2026-10-28T09:10:00.000Z" },
+      { by: "x/one", head: B, approve: true, at: "2026-10-28T09:30:00.000Z", retained: { oldHead: A, reason: "the merge brought in only main's changes" } },
+      { by: "x/old", head: B, approve: true, at: "2026-10-28T09:40:00.000Z", withdrawn: { at: "x", reason: "criteria changed" } },
+    ],
+    events: [{ kind: "review.not_retained", at: "2026-10-28T09:20:00.000Z", data: { head: "c".repeat(40), from: A, approvals: ["x/one"], reason: "main changed src/a.ts" } }],
+    criteriaReview: { status: { approved: true, reason: "approved" } },
+    landJob: { by: "owner", at: "2026-10-28T11:00:00.000Z", quote: "land it" },
+    mode: { mode: "fast", line: "fast mode on the developer's words" },
+  };
+  assert.equal(dispatchStateOf(d), "approved, not dispatched");
+  const heads = approvalsByHead(d);
+  assert.deepEqual(heads[0], { head: B, current: true, since: "2026-10-28T09:30:00.000Z", approvedBy: ["x/one"], rejectedBy: [], carried: [{ by: "x/one", from: A, reason: "the merge brought in only main's changes" }], notCarried: [] });
+  assert.deepEqual([heads[1].approvedBy, heads[1].rejectedBy, heads[1].notCarried[0].reason], [["x/one"], ["x/two"], "main changed src/a.ts"]);
+  assert.deepEqual(standingGoOf(d), { landing: d.landJob, overrideConfirmation: d.item.overrideConfirmation, fastMode: "fast mode on the developer's words" });
 });

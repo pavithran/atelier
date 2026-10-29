@@ -2048,7 +2048,7 @@ export async function runTask(assignment, config, name, io) {
         const progressLog = io.progress ? `${workspace}.progress.jsonl` : null;
         if (progressLog) {
           rmSync(progressLog, { force: true });
-          io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog });
+          io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog, harness: agent });
         }
         try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
         finally { io.progress?.end(); }

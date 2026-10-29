@@ -279,7 +279,7 @@ test("show prints the owner brief and preserves JSON output", async (t) => {
   // task (t407); this fixture records none.
   // It leads with the task's own fields under ls --json's names (G4).
   const shown = JSON.parse(json.stdout);
-  const TASK_KEYS = ["id", "title", "state", "owner", "head", "createdAt", "updatedAt", "lastPushAt", "scope", "dispatch", "runner", "holds", "lastFailure"];
+  const TASK_KEYS = ["id", "title", "state", "owner", "head", "createdAt", "updatedAt", "lastPushAt", "scope", "dispatch", "runner", "holds", "lastFailure", "unclaimed", "dispatchState", "approvals", "standingGo"];
   assert.equal(shown.id, "t1");
   assert.equal(shown.head, f.head);
   assert.deepEqual([shown.holds, shown.lastFailure], [[], null]);

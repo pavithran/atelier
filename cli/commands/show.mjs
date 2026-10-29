@@ -78,7 +78,7 @@ export default async function showCommand() {
   // task's newest check.
   const progress = d.progress ? progressView(d.progress, new Date()) : null;
   const lastCheck = (d.evidence ?? []).filter((e) => e.grade === "observed").at(-1) ?? null;
-  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued) : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}) }, null, 2));
+  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   // The tasks it waits on (G3), each with its state: it is not offered,
@@ -119,7 +119,7 @@ export function actedLine(a) {
 // state, owner, head and its times, with scope, dispatch, runner, the holds
 // the queue keeps it under and its last failure. A merged or abandoned task
 // answers the same.
-export function taskJson(d, queued = null) {
+export function taskJson(d, queued = null, why = []) {
   const i = d.item;
   const held = queued?.held ? (queued.held.blockers ?? [queued.held]).map((b) => ({ kind: "core-file", blocker: b.id, state: b.state, owner: b.owner, file: b.core, since: queued.held.since ?? null })) : [];
   // Each task it waits on that is not merged (G3) holds it too.
@@ -128,6 +128,14 @@ export function taskJson(d, queued = null) {
     id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
     scope: i.scope, dispatch: i.dispatch ?? null, runner: i.runner ?? null, holds: [...held, ...waits], lastFailure: lastFailureOf(d),
     ...(d.blockers?.length ? { blockedBy: d.blockers.map((b) => ({ id: b.id, state: b.state })) } : {}),
+    // G4 2a: why a dispatched task is not taken, each reason with its kind
+    // (held, overlap, refused, skipped, unoffered, busy, elsewhere); where
+    // the task stands toward a dispatch; the approvals at each head, carried
+    // across a merge of main or not, and why; the developer's standing go.
+    unclaimed: why.map((r) => ({ kind: r.kind, line: r.line })),
+    dispatchState: dispatchStateOf(d),
+    approvals: approvalsByHead(d),
+    standingGo: standingGoOf(d),
   };
 }
 
@@ -138,4 +146,50 @@ export function lastFailureOf(d) {
     .map((e) => ({ kind: "check", claim: e.claim, head: e.head, at: e.at, ...(e.stopped ? { stopped: e.stopped } : {}) }));
   const landing = d.landing?.failedStep ? [{ kind: "landing", step: d.landing.failedStep, head: d.landing.head ?? null, at: d.landing.at }] : [];
   return [...checks, ...landing].sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] ?? null;
+}
+
+// Where an open task stands toward a dispatch: queued, "approved, not
+// dispatched" once a review approved its acceptance criteria, or not
+// dispatched. Null for a task past open.
+export function dispatchStateOf(d) {
+  const i = d.item;
+  if (i.state !== "open") return null;
+  if (i.dispatch) return "dispatched";
+  return d.criteriaReview?.status?.approved ? "approved, not dispatched" : "not dispatched";
+}
+
+// The verdicts standing at each head the task has had, newest head first:
+// each reviewer's latest, who approved and who rejected, which approvals
+// were carried to the head across a merge of main (from which head, and
+// why), and the merges that carried none (review.not_retained, and why).
+export function approvalsByHead(d) {
+  const reviews = (d.reviews ?? []).filter((r) => !r.withdrawn).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const heads = [...new Set(reviews.map((r) => r.head))];
+  const out = heads.map((head) => {
+    const latest = new Map();
+    for (const r of reviews.filter((x) => x.head === head)) latest.set(r.by, r);
+    const standing = [...latest.values()];
+    const at = reviews.filter((x) => x.head === head).at(-1)?.at ?? null;
+    return {
+      head, current: head === d.item.head, since: at,
+      approvedBy: standing.filter((r) => r.approve).map((r) => r.by),
+      rejectedBy: standing.filter((r) => !r.approve).map((r) => r.by),
+      carried: standing.filter((r) => r.retained).map((r) => ({ by: r.by, from: r.retained.oldHead ?? r.retained.from?.head ?? null, reason: r.retained.reason ?? null })),
+      notCarried: (d.events ?? []).filter((e) => e.kind === "review.not_retained" && e.data?.from === head)
+        .map((e) => ({ to: e.data.head ?? null, approvals: e.data.approvals ?? [], reason: e.data.reason ?? null, at: e.at })),
+    };
+  });
+  return out.reverse();
+}
+
+// The go the developer has given that stands for this task: a landing asked
+// for (atelier land --queue) with their words, the page's permission for a
+// command-line override at one head, and fast mode with its words. Null for
+// each that stands not.
+export function standingGoOf(d) {
+  return {
+    landing: d.landJob ?? null,
+    overrideConfirmation: d.item.overrideConfirmation ?? null,
+    fastMode: d.mode?.mode === "fast" ? d.mode.line ?? "fast" : null,
+  };
 }

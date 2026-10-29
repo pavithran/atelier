@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { formatBrief, formatCriteriaReviews, formatReviews } from "../cli/atelier.mjs";
+import { approvalsByHead } from "../cli/commands/show.mjs";
 
 // `atelier show` cannot show a review's findings in full: the brief cuts the
 // newest rejection's note to one line and its --json carried no reviews at
@@ -45,7 +46,8 @@ const STAGE = { stage: "built", detail: { head: "2222222222222222222222222222222
 const LIMIT = { ...checkLimits({ checks: [] }), checkSilence: [] };
 // show --json leads with the task's own fields under ls --json's names (G4);
 // this fixture's item records only its id and head.
-const TASK = { id: "t1", head: HEAD_B, dispatch: null, runner: null, holds: [], lastFailure: null };
+const TASK = { id: "t1", head: HEAD_B, dispatch: null, runner: null, holds: [], lastFailure: null, unclaimed: [], dispatchState: null,
+  approvals: approvalsByHead({ item: { id: "t1", head: HEAD_B }, reviews: REVIEWS }), standingGo: { landing: null, overrideConfirmation: null, fastMode: null } };
 const briefText = (origin) => `${formatBrief("proj", "t1", BRIEF, origin)}\n\nStage: built at 22222222\n\nCheck limit: ${limitText({ checks: [] })}`;
 // t407: replies no verdict could be read from, kept on the task with the
 // reviewer and the head. One carries a forged Atelier line, which must not

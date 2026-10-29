@@ -55,7 +55,7 @@ export function situationText(s) {
   const m = s.limits;
   section("Limits", [
     `  check limit ${m.limitMinutes} min (${m.limitFrom}), silence ${m.silenceMinutes} min, startup ${m.startupMinutes === null ? "none" : `${m.startupMinutes} min`}, slot wait ${m.slotWaitMinutes} min`,
-    `  checks: ${m.checks.length ? m.checks.map(flat).join(", ") : "none required"}`,
+    `  checks: ${m.checks.length ? m.checks.map(flat).join(", ") : "none required"}; deploy gate: ${m.deployGate?.length ? m.deployGate.map(flat).join(", ") : "no runs required"}`,
     `  mode: ${flat(m.modeLine)}`,
   ], "none");
 
@@ -78,11 +78,11 @@ export function situationText(s) {
 export function progressText(p, lastCheck = null) {
   if (!p) return "none reported";
   const check = lastCheck ? `last check ${flat(lastCheck.claim)} ${lastCheck.stopped ? "stopped" : lastCheck.passed ? "passed" : "failed"} at ${short(lastCheck.head)}` : "no check yet";
-  const current = p.current ? `running ${flat(p.current.name)}${p.current.summary ? ` (${flat(p.current.summary)})` : ""} for ${span(p.current.ageMs)}` : "between commands";
+  const current = p.telemetry === false ? null : p.current ? `running ${flat(p.current.name)}${p.current.summary ? ` (${flat(p.current.summary)})` : ""} for ${span(p.current.ageMs)}` : "between commands";
   return [
-    `${p.commands.completed} command${p.commands.completed === 1 ? "" : "s"} run`,
+    p.telemetry === false || !p.commands ? `no command telemetry for ${p.harness ?? "this harness"}` : `${p.commands.completed} command${p.commands.completed === 1 ? "" : "s"} run`,
     `${p.commits} commit${p.commits === 1 ? "" : "s"} on t/${String(p.task).slice(1)}`,
-    current,
+    ...(current ? [current] : []),
     p.childAlive === null ? "child processes not readable" : p.childAlive ? "a child process is alive" : "no child process",
     check,
     `elapsed ${span(p.elapsedMs)}`,

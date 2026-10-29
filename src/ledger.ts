@@ -3160,12 +3160,28 @@ export class Ledger extends DurableObject<Env> {
       const report = parseProgress(raw);
       if (!report) continue;
       const row = this.sql.exec(`SELECT runner, owner FROM items WHERE id = ?`, report.task).toArray()[0];
-      if (!row || typeof row.runner !== "string" || row.runner.toLowerCase() !== runner.toLowerCase() || row.owner !== report.actor) continue;
-      const next = nextProgress(this.progressOf(report.task), report, runner.toLowerCase(), now);
+      if (!row) continue;
+      const holds = typeof row.runner === "string" && row.runner.toLowerCase() === runner.toLowerCase() && row.owner === report.actor;
+      // A build that ended in a release (a failure, a provider limit, work in
+      // progress) reports its last line after the release: it is taken
+      // against the run's recorded identity, the task's newest claim, made
+      // by this actor on this runner, and never over a newer run's line.
+      const claim = holds ? null : this.sql.exec(`SELECT actor, data FROM events WHERE item_id = ? AND kind = 'item.claimed' ORDER BY seq DESC LIMIT 1`, report.task).toArray()[0];
+      const claimedHere = !!claim && claim.actor === report.actor && String((JSON.parse(claim.data as string) as { runner?: string }).runner ?? "").toLowerCase() === runner.toLowerCase();
+      const prev = this.progressOf(report.task);
+      if (!holds && !claimedHere) continue;
+      if (prev && Date.parse(prev.startedAt) > Date.parse(report.startedAt)) continue;
+      const next = nextProgress(prev, report, runner.toLowerCase(), now);
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `task-progress:${report.task}`, JSON.stringify(next));
       kept++;
     }
     return kept;
+  }
+
+  // The landing the developer asked for (atelier land --queue), with their words, while it stands.
+  private landJobOf(id: string): { by: string; at: string; quote: string | null } | null {
+    const row = this.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
+    return row ? { by: row.by as string, at: row.at as string, quote: (row.quote as string | null) ?? null } : null;
   }
 
   progressOf(id: string): ProgressRecord | null {
@@ -3189,7 +3205,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Refuses to claim or accept a task while a task it waits on is not merged.
-  private assertBlockersMerged(item: Item, what: "claimed" | "accepted"): void {
+  assertBlockersMerged(item: Item, what: "claimed" | "accepted" | "merged" | "given a landing grant"): void {
     const waits = this.unmergedBlockers(item);
     if (!waits.length) return;
     const dead = waits.filter((b) => b.state === "abandoned" || b.state === "missing");
@@ -3213,6 +3229,10 @@ export class Ledger extends DurableObject<Env> {
       if (b === id) throw new RuleError("blocked_by_cycle", `${id} cannot wait on itself; nothing was changed`, 409, `atelier edit ${id} --blocked-by ${list.filter((x) => x !== id).join(",") || "''"}`);
       this.item(b);
     }
+    // A merge already begun may be on the project's branch: a new blocker
+    // could not hold it back, so none is added until it ends or is cancelled.
+    const adding = list.filter((b) => !(item.blockedBy ?? []).includes(b) && this.blockerOf(b).state !== "merged");
+    if (adding.length && this.landing(id)) throw new RuleError("landing", `${id} is being merged, so it cannot be made to wait on ${adding.join(", ")} now; nothing was changed`, 409, `let the merge finish, or cancel it with atelier merge ${id} --cancel, then set the blockers`);
     const cycle = this.blockedByCycle(id, list);
     if (cycle) throw new RuleError("blocked_by_cycle", `${cycle.join(" waits on ")}: ${id} would wait on itself through that chain; nothing was changed`, 409, `atelier edit ${id} --blocked-by ${list.filter((x) => x !== cycle[1]).join(",") || "''"}, or atelier edit ${cycle[1]} --blocked-by to break the chain there`);
     const at = new Date().toISOString();
@@ -5244,6 +5264,9 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409, `run atelier show ${id}, review it again, then atelier merge ${id}`);
     }
+    // A task accepted before a blocker was added keeps its acceptance, but
+    // no merge of it begins until every blocker is merged (G3).
+    this.assertBlockersMerged(item, "merged");
     // A standing secret flag blocks the merge too (t332), as it blocks
     // acceptance through the gate; the message names the flag, never the value.
     const secret = secretBlockers(item);
@@ -7273,7 +7296,7 @@ export class Ledger extends DurableObject<Env> {
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
     const lastDeploy = this.lastDeploy();
-    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id) };
+    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {

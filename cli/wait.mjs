@@ -127,9 +127,9 @@ async function pollUntil(judgeOf, still, label, read, { intervalMs = 5000, timeo
 //       target: merged, submitted, accepted, or a stage (STAGES): every task
 //       (all) or one of them (any) has reached it; a stage is reached once
 //       the task's recorded stage is that one or a later one.
-//   { kind: "answered", ids }
-//       every review request of each task is answered (none is open or
-//       claimed), as the situation read lists them.
+//   { kind: "answered", mode: "all" | "any", ids }
+//       every task (all) or one of them (any) has no review request open or
+//       claimed, as the situation read lists them.
 //   { kind: "silent", runner, minutes }
 //       the runner's last poll is at least that old, or it never polled.
 // It is judged on GET /projects/P/situation?tasks=IDS (src/situation.ts),
@@ -149,7 +149,7 @@ function reached(task, target) {
 
 export function describeCondition(c) {
   if (c.kind === "tasks") return `${c.ids.length > 1 ? `${c.mode} of ${c.ids.join(", ")}` : c.ids[0]} ${c.target}`;
-  if (c.kind === "answered") return `the review requests of ${c.ids.join(", ")} to be answered`;
+  if (c.kind === "answered") return `the review requests of ${c.mode === "any" && c.ids.length > 1 ? "one of " : ""}${c.ids.join(", ")} to be answered`;
   return `${c.runner} silent for ${c.minutes} minutes`;
 }
 
@@ -177,9 +177,11 @@ export function judgeCondition(c, s, first = s) {
   if (c.kind === "answered") {
     const open = (id) => s.reviewRequests.filter((r) => r.task === id);
     const waiting = c.ids.filter((id) => open(id).length);
-    if (!waiting.length) {
-      const asked = c.ids.filter((id) => first.reviewRequests.some((r) => r.task === id));
-      return { ok: true, text: asked.length ? `the review requests of ${asked.join(", ")} are answered` : `${c.ids.join(", ")} ${c.ids.length === 1 ? "has" : "have"} no open review request` };
+    const answered = c.ids.filter((id) => !open(id).length);
+    if (c.mode === "any" ? answered.length > 0 : !waiting.length) {
+      const ids = c.mode === "any" ? answered : c.ids;
+      const asked = ids.filter((id) => first.reviewRequests.some((r) => r.task === id));
+      return { ok: true, text: asked.length ? `the review requests of ${asked.join(", ")} are answered` : `${ids.join(", ")} ${ids.length === 1 ? "has" : "have"} no open review request` };
     }
     const dead = tasks.find((t) => t.task.state === "abandoned");
     if (dead) return { ok: false, abandoned: true, text: `${dead.id} is abandoned; its review request will not be answered` };

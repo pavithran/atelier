@@ -306,3 +306,86 @@ test("the orchestrator guide says to use wait, and nothing shipped polls with sl
   }
   assert.deepEqual(offenders, [], "a shell sleep loop reading a task's state; use atelier wait");
 });
+
+test("a blocker added after acceptance keeps the acceptance but blocks the landing: no merge begins and no landing grant is issued", async () => {
+  const blocker = await task("Blocks after acceptance");
+  const id = await task("Accepted, then made to wait");
+  const head = sha("7");
+  const claim = await L().claim(id, AGENT);
+  await L().recordToken(id, AGENT, claim.generation, null, null);
+  await L().observePush(id, head, null);
+  await observed(id, head);
+  await L().submit(id, AGENT, "done");
+  await L().accept(id, "owner");
+  const set = await cli(["edit", id, "--blocked-by", blocker, "--project", "demo"]);
+  assert.equal(set.code, 0, set.stderr);
+  assert.equal((await L().item(id)).state, "accepted", "the acceptance stands");
+  await assert.rejects(L().beginLanding(id, "owner", head), (e) => /^409\|blocked_by\|.*before it is merged/.test(e.message) && /atelier wait --all/.test(e.message));
+  await L().beginProjectLanding(id, "owner");
+  const grant = await api("POST", "/projects/demo/git-token", { kind: "landing", item: id, head });
+  assert.equal(grant.status, 409, JSON.stringify(grant.body));
+  assert.equal(grant.body.error, "blocked_by");
+  assert.match(grant.body.next, /atelier wait --all/);
+  await L().cancelProjectLanding(id, "owner");
+  // Once the blocker merges, the landing goes through.
+  await merge(blocker, sha("8"));
+  await L().beginLanding(id, "owner", head);
+  assert.equal((await L().merged(id, "owner", sha("6"), true)).state, "merged");
+});
+
+test("--any --for answered keeps its quantifier: one of the tasks answered is enough, all needs every one", () => {
+  const s = { project: "demo", tasks: [{ id: "t1", state: "submitted" }, { id: "t2", state: "submitted" }], reviewRequests: [{ task: "t1", id: 1 }], runners: [] };
+  const first = { ...s, reviewRequests: [{ task: "t1", id: 1 }, { task: "t2", id: 2 }] };
+  const any = judgeCondition({ kind: "answered", mode: "any", ids: ["t1", "t2"] }, s, first);
+  assert.deepEqual([any.ok, any.text], [true, "the review requests of t2 are answered"]);
+  assert.equal(judgeCondition({ kind: "answered", mode: "all", ids: ["t1", "t2"] }, s, first), null);
+});
+
+test("wait --any --for answered through the CLI returns when one of two review requests is answered", async () => {
+  const opus = { id: "opus-5.5", harness: "claude-code", where: "cloud", provider: "subscription", aliases: [], family: "anthropic", note: "", addedBy: "owner", addedAt: new Date().toISOString() };
+  const ids = [];
+  for (const [n, c] of [["One of two", "3"], ["Two of two", "4"]]) {
+    const id = await task(n);
+    const claim = await L().claim(id, AGENT);
+    await L().recordToken(id, AGENT, claim.generation, null, null);
+    await L().observePush(id, sha(c), null);
+    await observed(id, sha(c));
+    await L().submit(id, AGENT, "done");
+    await L().requestReview(id, "owner", OTHER, [opus], true);
+    ids.push(id);
+  }
+  const all = await cli(["wait", "--all", ids.join(","), "--for", "answered", "--timeout", "0.5", "--interval", "0.1", "--project", "demo"]);
+  assert.equal(all.code, 3, "neither is answered");
+  const w = waiting(["--any", ids.join(","), "--for", "answered"]);
+  await pause(300);
+  const claimed = await L().claimReview(ids[1], OTHER, { runner: "home:a", kind: "home" }, true);
+  await L().addReview({ itemId: ids[1], by: OTHER, head: sha("4"), approve: true, criteria: (await L().detail(ids[1])).criteria, note: "Fine", at: new Date().toISOString(), request: claimed.request }, undefined, true);
+  const done = await w.done;
+  assert.equal(done.code, 0, done.out);
+  assert.equal(done.out.split("\n").at(-1), `the review requests of ${ids[1]} are answered`);
+  const still = await cli(["wait", "--all", ids.join(","), "--for", "answered", "--timeout", "0.5", "--interval", "0.1", "--project", "demo"]);
+  assert.equal(still.code, 3, "one is still open");
+});
+
+test("under --json a wait that is not met prints {code, detail, next} with the same exit status: timeout, abandonment, unreadable", async () => {
+  const lastJson = (r) => JSON.parse(r.stderr.trim().split("\n").at(-1));
+  const open = await task("Json: never merges");
+  const slow = await cli(["wait", open, "--timeout", "0.3", "--interval", "0.1", "--project", "demo", "--json"]);
+  assert.equal(slow.code, 3);
+  assert.deepEqual(Object.keys(lastJson(slow)).sort(), ["code", "detail", "next"]);
+  assert.equal(lastJson(slow).code, "timed_out");
+  assert.ok(lastJson(slow).next);
+  const gone = await task("Json: abandoned");
+  await L().abandon(gone, "owner", "dropped");
+  const dead = await cli(["wait", "--all", `${gone},${open}`, "--project", "demo"], { ATELIER_JSON: "1" });
+  assert.equal(dead.code, 4);
+  assert.equal(lastJson(dead).code, "abandoned");
+  assert.match(lastJson(dead).detail, new RegExp(`^${gone} is abandoned`));
+  assert.match(lastJson(dead).next, new RegExp(`atelier show ${gone}`));
+  const away = await cli(["wait", open, "--project", "demo", "--json", "--for", "checked", "--interval", "0.05"], { ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_RETRY_MS: "" });
+  assert.equal(away.code, 5, away.stderr);
+  assert.equal(lastJson(away).code, "unreadable");
+  const met = await cli(["wait", "--any", `${gone},${open}`, "--for", "filed", "--project", "demo", "--json"]);
+  assert.equal(met.code, 0);
+  assert.equal(JSON.parse(met.stdout).code, "met");
+});

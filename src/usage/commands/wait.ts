@@ -7,7 +7,7 @@ const spec: CommandSpec = {
     { group: "Items", line: 2, slot: 26, form: "wait --all tA,tB | --any tA,tB [--for merged|submitted|accepted|answered|STAGE] [--timeout SECONDS]", about: "Waits on several tasks at once: `--all` until every one reaches the state or stage, `--any` until one does; `--for answered` until their review requests are answered. A task abandoned before the condition is met ends the wait with exit status 4, naming it." },
     { group: "Items", line: 2, slot: 27, form: "wait --runner home:NAME --silent MINUTES [--timeout SECONDS]", about: "Waits until the runner's last poll is at least MINUTES old (or it never polled), as `atelier situation` reads it." },
   ],
-  flags: { for: false, timeout: false, interval: false, all: false, any: false, runner: false, silent: false },
+  flags: { for: false, timeout: false, interval: false, all: false, any: false, runner: false, silent: false, json: true },
   help: {
     flags: {
       "--for STATE": "merged (the default), submitted, accepted, reviewed, any-change, answered, or a stage such as checked or landable",
@@ -17,6 +17,7 @@ const spec: CommandSpec = {
       "--silent MINUTES": "how long the runner's last poll must be past",
       "--timeout SECONDS": "gives up after this long, exit status 3; with no limit by default",
       "--interval SECONDS": "how often it reads; 5 by default",
+      "--json": "the outcome as one JSON object: {code: \"met\", detail} on stdout, or {code, detail, next} on stderr with the same exit status (timed_out, abandoned, unmet, unreadable)",
     },
     example: "atelier wait --all t3,t4 --for merged --timeout 3600 --project demo",
   },

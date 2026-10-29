@@ -15,14 +15,17 @@
 //   - when the run started and ended.
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { redactKeys } from "../src/models/pool.ts";
 
 const SUMMARY_MAX = 120;
 const oneLine = (text) => String(text ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").replace(/\s+/g, " ").trim();
 // What a tool call was asked to do, in a short line: a command, a path, a
-// pattern. Never the content it writes.
-function summaryOf(name, input = {}) {
+// pattern. Never the content it writes, and no key: the run notes' redaction
+// (redactKeys: key shapes, a bearer credential, NAME_TOKEN=value) runs on
+// the whole text before it is cut, so no part of a key survives the cut.
+export function summaryOf(name, input = {}) {
   const pick = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.description ?? "";
-  return oneLine(typeof pick === "string" ? pick : "").slice(0, SUMMARY_MAX) || null;
+  return redactKeys(oneLine(typeof pick === "string" ? pick : "")).slice(0, SUMMARY_MAX) || null;
 }
 
 // A fresh reading of one run's log.
@@ -115,8 +118,11 @@ export function branchFacts(workspace, base, git = (args) => spawnSync("git", ar
 export function progressTracker({ now = Date.now, ps, git } = {}) {
   let run = null;
   return {
-    begin({ project, task, actor, base, workspace, log }) {
-      run = { project, task, actor, base, workspace, log, startedAt: new Date(now()).toISOString(), endedAt: null, pid: null, stream: newStream(), sent: false };
+    // Only the Claude Code adapter writes a stream-json log; another harness
+    // (codex, opencode, a runner's own command) reports no command telemetry,
+    // which is said as such, never as no command run.
+    begin({ project, task, actor, base, workspace, log, harness = null }) {
+      run = { project, task, actor, base, workspace, log, harness, telemetry: harness === "claude-code", startedAt: new Date(now()).toISOString(), endedAt: null, pid: null, stream: newStream(), sent: false };
     },
     spawned(pid) { if (run) run.pid = pid; },
     end() { if (run && !run.endedAt) run.endedAt = new Date(now()).toISOString(); },
@@ -125,12 +131,12 @@ export function progressTracker({ now = Date.now, ps, git } = {}) {
     report() {
       if (!run) return [];
       const at = new Date(now()).toISOString();
-      readStream(run.stream, run.log, at);
+      if (run.telemetry) readStream(run.stream, run.log, at);
       const s = run.stream;
       const below = run.pid && !run.endedAt ? descendants(run.pid, ps) : [];
       const current = !run.endedAt && s.pending.size ? [...s.pending.values()].at(-1) : null;
       return [{
-        project: run.project, task: run.task, actor: run.actor,
+        project: run.project, task: run.task, actor: run.actor, harness: run.harness, telemetry: run.telemetry,
         startedAt: run.startedAt, endedAt: run.endedAt, at,
         commands: { started: s.started, completed: s.completed },
         current, last: s.last,

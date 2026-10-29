@@ -936,7 +936,9 @@ export function requireWorkspace(cmd, name, id, as) {
 
 export async function resolveTokenActor() {
   if (resolvedCredential === apiToken() || !apiToken().startsWith("atl_")) return;
-  const config = await call("GET", "/config");
+  // Thrown, not ended here: a caller that rides through an unreachable
+  // server (atelier wait) reads it again; call() ends on it as before.
+  const config = await request("GET", "/config");
   tokenActor = config.actor;
   tokenRunner = config.runner;
   resolvedCredential = apiToken();

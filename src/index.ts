@@ -2039,6 +2039,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state !== "accepted") throw new RuleError("not_accepted", `${id} is ${item.state}, not accepted, so no landing grant was issued`, 409, `run atelier land ${id}`);
       if (item.acceptedHead !== head) throw new RuleError("acceptance_changed", `${id} is accepted at ${String(item.acceptedHead).slice(0, 12)}, not ${head.slice(0, 12)}, so no landing grant was issued for that head`, 409, `run atelier merge ${id} again, which lands the accepted head`);
+      // No landing grant while a task it waits on is unmerged (G3); the hook
+      // checks the same again at push time (stillLanding).
+      await L.assertBlockersMerged(item, "given a landing grant");
       const g = git.mint({ project: ref.key, kind: "landing", task: id, actor, accepted: head, lease: lease.id });
       await keepGitGrant(c, git, ref.key, g);
       return json({ kind: "landing", remote, token: g.token, expiresAt: g.expiresAt, branch, accepted: head });

@@ -119,6 +119,8 @@ export class GitHost {
     const L = this.ledger(key);
     const item = await L.item(g.task).catch(() => null);
     if (!item || item.state !== "accepted" || item.acceptedHead !== g.accepted) return false;
+    // A task waiting on an unmerged task does not land (G3); unreadable is not landing.
+    if ((await L.unmergedBlockers(item).catch(() => [null])).length) return false;
     const lease = await L.liveProjectLanding().catch(() => null);
     return !!lease?.id && lease.id === g.lease && lease.item === g.task && lease.holder === g.actor;
   }

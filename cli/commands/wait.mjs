@@ -1,6 +1,6 @@
 // atelier wait. Its declaration lives in src/usage/commands/wait.ts.
 import { I, OWNER, P, actor, args, die, itemArg, project, request } from "../atelier.mjs";
-import { STAGE_ORDER, STATE_TARGETS, WAIT_FOR, waitFor, waitUntil } from "../wait.mjs";
+import { EXIT, STAGE_ORDER, STATE_TARGETS, WAIT_FOR, waitFor, waitUntil } from "../wait.mjs";
 
 // One task and one of the original targets reads the task itself, as before;
 // anything else is a condition (G3) judged on the situation read, which
@@ -24,8 +24,26 @@ export default async function waitCommand() {
       const id = itemArg(), as = await actor(OWNER), target = args.for ?? "merged";
       return waitFor(target, (signal) => request("GET", I(name, id), undefined, as, {}, signal), opts);
     })();
-  console.log(result.text);
+  // Under --json (or ATELIER_JSON=1) the outcome is one JSON object: on
+  // stdout when met, and as every refusal is, {code, detail, next}, on
+  // stderr when not, with the same exit status (G4, G8).
+  if (args.json || process.env.ATELIER_JSON === "1") {
+    if (result.code === EXIT.met) console.log(JSON.stringify({ code: "met", detail: result.text, next: null }));
+    else process.stderr.write(`${JSON.stringify(waitRefusal(result, name))}\n`);
+  } else console.log(result.text);
   process.exit(result.code);
+}
+
+// What a wait that was not met says under --json, and the command that goes on from it.
+export function waitRefusal(result, project) {
+  const task = /^(t[1-9][0-9]*)\b/.exec(result.text)?.[1] ?? null;
+  const p = ` --project ${project}`;
+  switch (result.code) {
+    case EXIT.timedOut: return { code: "timed_out", detail: result.text, next: `atelier situation${p}, then wait again with a longer --timeout` };
+    case EXIT.abandoned: return { code: "abandoned", detail: result.text, next: task ? `atelier show ${task}${p}; drop it from the wait or from the blockers that name it` : `atelier situation${p}` };
+    case EXIT.unread: return { code: "unreadable", detail: result.text, next: "check that the server answers (atelier situation), then run the same wait again" };
+    default: return { code: "unmet", detail: result.text, next: task ? `atelier show ${task}${p}` : `atelier situation${p}` };
+  }
 }
 
 const TARGETS = [...new Set([...WAIT_FOR, "answered", ...STATE_TARGETS, ...STAGE_ORDER])];
@@ -49,10 +67,10 @@ function conditionOf() {
   if (args.all !== undefined || args.any !== undefined) {
     const mode = args.all !== undefined ? "all" : "any", list = ids(mode);
     if (target === "reviewed" || target === "any-change") die(`--for ${target} waits on one task: atelier wait t3 --for ${target}`);
-    return target === "answered" ? { kind: "answered", ids: list } : { kind: "tasks", mode, ids: list, target };
+    return target === "answered" ? { kind: "answered", mode, ids: list } : { kind: "tasks", mode, ids: list, target };
   }
   const id = args._[1];
   if (id === undefined || WAIT_FOR.includes(target)) return null;
   if (!/^t[1-9][0-9]*$/.test(id)) die(`atelier wait takes a task id such as t3, not "${id}"`);
-  return target === "answered" ? { kind: "answered", ids: [id] } : { kind: "tasks", mode: "all", ids: [id], target };
+  return target === "answered" ? { kind: "answered", mode: "all", ids: [id] } : { kind: "tasks", mode: "all", ids: [id], target };
 }

@@ -9,6 +9,7 @@
 import { checkLimits, type CheckLimits } from "./check-limit.ts";
 import { OFFER_REFRESH_MS, servesProject, type CoreHold, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
 import type { Decision } from "./decisions.ts";
+import { redactKeys } from "./models/pool.ts";
 import type { LandingLease } from "./landing-lease.ts";
 import type { LandingRecord, ProjectRecord } from "./ledger";
 import type { Block, Item } from "./rules";
@@ -57,6 +58,9 @@ export interface SituationFacts {
 // spend of each run of the task.
 export interface ProgressRecord {
   task: string; actor: string; runner: string;
+  // The harness, and whether it reports commands (only Claude Code's
+  // stream-json log does); without telemetry the command counts are unknown.
+  harness: string | null; telemetry: boolean;
   startedAt: string; endedAt: string | null; at: string;
   commands: { started: number; completed: number };
   current: { name: string; summary: string | null; since: string } | null;
@@ -69,7 +73,10 @@ export interface ProgressRecord {
 }
 
 const RUNS_KEPT = 20;
-const text = (v: unknown, max: number): string | null => typeof v === "string" && v ? v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").slice(0, max) : null;
+// Every text a runner reports is redacted again here, whole, before it is cut
+// and kept (redactKeys, the run notes' rule): a runner that sent a key never
+// gets it stored, shown or listed.
+const text = (v: unknown, max: number): string | null => typeof v === "string" && v ? redactKeys(v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")).slice(0, max) : null;
 const time = (v: unknown): string | null => typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
 const count = (v: unknown): number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 1e9 ? v : 0;
 const amount = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1e6 ? v : null;
@@ -83,7 +90,7 @@ export function parseProgress(raw: unknown): Omit<ProgressRecord, "runner" | "re
   if (!task || !actor || !startedAt) return null;
   const c = (r.commands ?? {}) as Record<string, unknown>, cur = r.current as Record<string, unknown> | null, last = r.last as Record<string, unknown> | null;
   return {
-    task, actor, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
+    task, actor, harness: text(r.harness, 64), telemetry: r.telemetry !== false, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
     commands: { started: count(c.started), completed: count(c.completed) },
     current: cur && typeof cur === "object" && text(cur.name, 64) ? { name: text(cur.name, 64)!, summary: text(cur.summary, 120), since: time(cur.since) ?? startedAt } : null,
     last: last && typeof last === "object" && text(last.name, 64) ? { name: text(last.name, 64)!, summary: text(last.summary, 120), at: time(last.at) ?? startedAt, error: last.error === true } : null,
@@ -109,12 +116,13 @@ export function progressView(p: ProgressRecord, now: Date) {
   const quietMs = ageMs(p.changedAt, now) ?? 0;
   const runMs = Math.max(0, (ended ? Date.parse(p.endedAt!) : now.getTime()) - Date.parse(p.startedAt));
   const stall = ended ? null
-    : p.commands.completed === 0 && runMs >= STARTUP_MS ? `no command completed in ${Math.floor(runMs / 60_000)} minutes since the build started`
+    : p.telemetry !== false && p.commands.completed === 0 && runMs >= STARTUP_MS ? `no command completed in ${Math.floor(runMs / 60_000)} minutes since the build started`
     : quietMs >= STALL_MS && p.childAlive === false ? `no change in ${Math.floor(quietMs / 60_000)} minutes and no child process alive`
     : null;
   return {
     task: p.task, actor: p.actor, runner: p.runner, startedAt: p.startedAt, endedAt: p.endedAt, ended,
-    commands: p.commands, commits: p.commits, changedFiles: p.changedFiles,
+    harness: p.harness ?? null, telemetry: p.telemetry !== false,
+    commands: p.telemetry === false ? null : p.commands, commits: p.commits, changedFiles: p.changedFiles,
     current: p.current && !ended ? { ...p.current, ageMs: ageMs(p.current.since, now) } : null,
     last: p.last, childAlive: ended ? false : p.childAlive,
     elapsedMs: runMs, tokens: p.tokens, costUsd: p.costUsd, logBytes: p.logBytes,
@@ -197,8 +205,10 @@ export function situationOf(input: SituationInput) {
     until: i.blocked!.until ?? null, fact: i.blocked!.fact ?? null, ...blockLift(i.id, i.blocked!),
   }));
   const policy = facts.project.policy ?? {};
-  const limits: CheckLimits & { checks: string[]; mode: string; modeLine: string } = {
-    ...checkLimits(policy), checks: [...(policy.checks ?? [])], mode: facts.mode.mode, modeLine: facts.mode.line,
+  // The checks every task needs, and the runs the deploy gate needs beside
+  // them (atelier ship: policy.shipRuns), so a gap shows before a deploy.
+  const limits: CheckLimits & { checks: string[]; deployGate: string[]; mode: string; modeLine: string } = {
+    ...checkLimits(policy), checks: [...(policy.checks ?? [])], deployGate: [...(policy.shipRuns ?? [])], mode: facts.mode.mode, modeLine: facts.mode.line,
   };
   const disk = input.disk && input.disk.totalBytes > 0
     ? { ...input.disk, freePercent: Math.round((input.disk.freeBytes / input.disk.totalBytes) * 1000) / 10, warning: input.disk.freeBytes / input.disk.totalBytes < DISK_WARN_PERCENT / 100 }

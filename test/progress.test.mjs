@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServer } from "../src/runtime/server.mjs";
-import { descendants, foldStream, newStream, progressTracker } from "../cli/progress.mjs";
+import { descendants, foldStream, newStream, progressTracker, summaryOf } from "../cli/progress.mjs";
 import { runAdapter, streamJsonArgv } from "../cli/harness/adapter.mjs";
 import { limitSpawn } from "../bin/harness/limit.mjs";
 import { nextProgress, parseProgress, progressView, situationOf, STALL_MS, STARTUP_MS } from "../src/situation.ts";
@@ -53,7 +53,7 @@ test("the tracker reads the log, the branch and the processes below the harness;
   const git = (args) => ({ status: 0, stdout: args[0] === "rev-list" ? "2\n" : "a.ts\nb.ts\nc.ts\n" });
   const tracker = progressTracker({ now: () => t, ps: () => ps, git });
   assert.deepEqual(tracker.report(), [], "nothing before a build starts");
-  tracker.begin({ project: "demo", task: "t4", actor: BUILDER, base: "b".repeat(40), workspace: root, log });
+  tracker.begin({ project: "demo", task: "t4", actor: BUILDER, base: "b".repeat(40), workspace: root, log, harness: "claude-code" });
   tracker.spawned(10);
   t += 90_000;
   const [r] = tracker.report();
@@ -63,7 +63,7 @@ test("the tracker reads the log, the branch and the processes below the harness;
   assert.deepEqual(descendants(10, () => ps), [{ pid: 11, depth: 1 }, { pid: 12, depth: 2 }]);
   // The model's CLI alone (depth 1) is no child process.
   const quiet = progressTracker({ now: () => t, ps: () => ({ status: 0, stdout: "  10 1\n  11 10\n" }), git });
-  quiet.begin({ project: "demo", task: "t4", actor: BUILDER, base: "b", workspace: root, log });
+  quiet.begin({ project: "demo", task: "t4", actor: BUILDER, base: "b", workspace: root, log, harness: "claude-code" });
   quiet.spawned(10);
   assert.equal(quiet.report()[0].childAlive, false);
   writeFileSync(log, toolUse("a", "Bash", { command: "npm test" }) + toolResult("a") + result(1.25));
@@ -144,6 +144,7 @@ const cli = (argv, { token = OWNER, cwd = root, env = {} } = {}) => run(process.
   cwd, env: { ...baseEnv, ...identity, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: acting, ...env },
 });
 const L = () => server.namespace.get(server.namespace.idFromName("project:demo"));
+let binDir, runnerConfig, runnerToken, builtId;
 
 before(async () => {
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
@@ -163,10 +164,10 @@ after(async () => { await server?.close(); });
 test("a real runner's build reports its progress line with each heartbeat; situation and show read it, and its cost", async () => {
   const id = (await api("POST", "/projects/demo/items", { title: "Built with progress", scope: ["src/**"] })).body.id;
   assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status, 200);
-  const runnerToken = (await api("POST", "/tokens", { runner: "home:studio", projects: ["demo"] })).body.token;
+  runnerToken = (await api("POST", "/tokens", { runner: "home:studio", projects: ["demo"] })).body.token;
   // The stand-in `claude`, first on PATH: signed in, and a build that runs a
   // command with a child process alive, commits, and ends with a result line.
-  const binDir = join(root, "fake-bin");
+  binDir = join(root, "fake-bin");
   mkdirSync(binDir);
   const go = join(root, "go");
   writeFileSync(join(binDir, "claude"), `#!${process.execPath}
@@ -175,6 +176,20 @@ const { writeFileSync, mkdirSync, existsSync } = require("node:fs");
 const args = process.argv.slice(2);
 if (args[0] === "auth") { process.stdout.write(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+// The other endings a build meets: a failure, work left uncommitted, a provider limit.
+const mode = (() => { try { return require("node:fs").readFileSync(${JSON.stringify(join(root, "mode"))}, "utf8").trim(); } catch { return "ok"; } })();
+if (mode !== "ok") {
+  process.stdin.resume(); process.stdin.on("data", () => {});
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id: "m1", name: "Bash", input: { command: "npm test" } }], usage: { input_tokens: 10, output_tokens: 5 } } });
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "m1", content: "ok" }] } });
+  if (mode === "wip") { require("node:fs").mkdirSync("src", { recursive: true }); require("node:fs").writeFileSync("src/wip.txt", "half done\\n"); }
+  const cost = { fail: 0.11, wip: 0.22, limit: 0.33 }[mode];
+  out(mode === "limit"
+    ? { type: "result", subtype: "error", is_error: true, result: "Claude AI usage limit reached|" + Math.floor(Date.now() / 1000 + 3600), total_cost_usd: cost }
+    : { type: "result", subtype: "success", is_error: false, result: "Stopped.", total_cost_usd: cost });
+  setTimeout(() => process.exit(mode === "wip" ? 0 : 1), 50);
+  return;
+}
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (file) => { for (let i = 0; i < 600 && !existsSync(file); i++) await wait(50); };
 process.stdin.resume(); process.stdin.on("data", () => {});
@@ -197,7 +212,7 @@ process.stdin.resume(); process.stdin.on("data", () => {});
 })();
 `);
   chmodSync(join(binDir, "claude"), 0o755);
-  const runnerConfig = join(root, "runner.json");
+  runnerConfig = join(root, "runner.json");
   writeFileSync(runnerConfig, JSON.stringify({ agents: [{ agent: "claude-code", models: ["sonnet-5.5"], command: [process.execPath, join(process.cwd(), "bin/harness/atelier-claude.mjs"), "{model}", "{brief_file}", "{workspace}", "{plan_file}", "{diff_file}", "{verdict_file}"] }] }));
   const runner = cli(["runner", "--name", "home:studio", "--config", runnerConfig, "--once"], { token: runnerToken, env: { PATH: `${binDir}:${process.env.PATH}`, ATELIER_HEARTBEAT_MS: "200" } });
   const situation = async () => (await api("GET", "/projects/demo/situation")).body;
@@ -238,6 +253,63 @@ process.stdin.resume(); process.stdin.on("data", () => {});
   assert.equal(json.progress.costUsd, 0.42);
   assert.match(progressText(json.progress), /\$0\.42; run ended/);
   assert.equal((await L().item(id)).state, "submitted", "the build went on to submit as before");
+  builtId = id;
   // Another runner cannot write this task's line.
   assert.equal(await L().recordProgress("home:other", [{ task: id, actor: BUILDER, startedAt: new Date().toISOString(), commands: { started: 99, completed: 99 } }]), 0);
+});
+
+test("a build that ends in a failure, in work left uncommitted or at a provider limit still records its last line and cost", async () => {
+  for (const [mode, cost] of [["fail", 0.11], ["wip", 0.22], ["limit", 0.33]]) {
+    writeFileSync(join(root, "mode"), mode);
+    const id = (await api("POST", "/projects/demo/items", { title: `Ends: ${mode}`, scope: ["src/**"] })).body.id;
+    assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status, 200);
+    const r = await cli(["runner", "--name", "home:studio", "--config", runnerConfig, "--once"], { token: runnerToken, env: { PATH: `${binDir}:${process.env.PATH}`, ATELIER_HEARTBEAT_MS: "5000" } });
+    const said = `${r.stdout}\n${r.stderr}`;
+    const p = (await api("GET", "/projects/demo/situation?tasks=" + id)).body.tasks.find((t) => t.id === id).progress;
+    assert.ok(p, `${mode}: no progress kept\n${said}`);
+    assert.equal(p.ended, true, `${mode}: ${JSON.stringify(p)}\n${said}`);
+    assert.equal(p.costUsd, cost, mode);
+    assert.equal(p.commands.completed, 1, mode);
+    if (mode === "fail") assert.notEqual((await L().item(id)).state, "submitted");
+    // The next ending is a task of its own: this one is not offered again.
+    await L().abandon(id, "owner", "the test is done with it");
+  }
+  rmSync(join(root, "mode"), { force: true });
+});
+
+test("no key in a command reaches the Ledger, show or situation: the runner and the server both redact", async () => {
+  const TOKEN = "atl_0123456789abcdef0123456789abcdef";
+  const commands = [`ATELIER_TOKEN=${TOKEN} atelier ls`, `curl -H "Authorization: Bearer ${TOKEN}" https://x.test`, `deploy --token ${TOKEN}`];
+  for (const c of commands) assert.ok(!summaryOf("Bash", { command: c }).includes(TOKEN.slice(4, 20)), summaryOf("Bash", { command: c }));
+  // A runner that sent them anyway: the server redacts before it keeps them.
+  const id = builtId;
+  const started = new Date(Date.now() + 1000).toISOString();
+  const kept = await L().recordProgress("home:studio", [{ task: id, actor: BUILDER, startedAt: started, commands: { started: 3, completed: 2 },
+    current: { name: "Bash", summary: commands[0], since: started }, last: { name: "Bash", summary: commands[1], at: started }, harness: `claude-code ${commands[2]}` }]);
+  assert.equal(kept, 1);
+  const stored = JSON.stringify(await L().progressOf(id));
+  const shown = (await cli(["show", id, "--project", "demo"])).stdout + (await cli(["show", id, "--project", "demo", "--json"])).stdout;
+  const listed = (await cli(["situation", "--project", "demo"])).stdout + (await cli(["situation", "--project", "demo", "--json"])).stdout;
+  for (const [where, text] of [["the Ledger", stored], ["show", shown], ["situation", listed]]) {
+    assert.ok(!text.includes(TOKEN.slice(4, 20)), `${where} holds the key: ${text}`);
+  }
+  assert.match(stored, /ATELIER_TOKEN=\[key removed\]/);
+});
+
+test("a codex build reports no command telemetry: said so, never flagged for no command at its start, still for silence", () => {
+  const log = join(root, "codex.progress.jsonl");
+  let t = Date.parse("2026-10-28T12:00:00.000Z");
+  const tracker = progressTracker({ now: () => t, ps: () => ({ status: 0, stdout: "  10 1\n  11 10\n" }), git: () => ({ status: 0, stdout: "1\n" }) });
+  tracker.begin({ project: "demo", task: "t9", actor: "codex/gpt-6", base: "b", workspace: root, log, harness: "codex" });
+  tracker.spawned(10);
+  t += 10 * 60_000;
+  const [r] = tracker.report();
+  assert.deepEqual([r.harness, r.telemetry, r.childAlive], ["codex", false, false]);
+  const rec = nextProgress(null, parseProgress(r), "home:studio", new Date(t).toISOString());
+  const startView = progressView(rec, new Date(t));
+  assert.equal(startView.stall, null, "no command telemetry is no startup stall");
+  assert.equal(startView.commands, null);
+  assert.match(progressText(startView), /^no command telemetry for codex; 1 commit on t\/9; no child process/);
+  assert.equal(progressView(rec, new Date(t + STALL_MS)).stall, "no change in 30 minutes and no child process alive");
+  assert.equal(progressView({ ...rec, childAlive: true }, new Date(t + STALL_MS)).stall, null);
 });
