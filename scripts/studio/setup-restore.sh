@@ -142,7 +142,7 @@ dry || [ "$(id -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
 [ -f "$TAR_SRC" ] && [ ! -L "$TAR_SRC" ] || fail "no restored tar at $TAR_SRC"
 safe_dir /Library/LaunchDaemons
 if ! dry; then
-  dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-staging.sh first"
+  dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-server.sh first"
   check_paths
 fi
 

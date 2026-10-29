@@ -59,8 +59,8 @@ function readJson(top, path) {
 // A run's kind is the approval it needs, or null. `problems` lists what stops
 // a ship before it runs anything; `notes` what the owner should know.
 // `file` is for reading another order in the same schema, such as
-// docs/atelier/ship-staging.json, which a release cut copies over the ship
-// file (docs/ship.md); atelier ship itself reads SHIP_FILE alone.
+// docs/atelier/ship-staging.json, the staging order without the push
+// (docs/ship.md); atelier ship itself reads SHIP_FILE alone.
 export function composeShip(top, file = SHIP_FILE) {
   const problems = [], notes = [];
   let doc;
