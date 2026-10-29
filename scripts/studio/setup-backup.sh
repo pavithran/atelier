@@ -1,14 +1,18 @@
 #!/bin/bash -p
 # Privileged bash ignores BASH_ENV, imported functions and shell options.
 # Root retains no caller environment.
-if builtin test "$EUID" = 0; then
-  case ":$SHELLOPTS:" in *:privileged:*) ;; *) builtin echo "privileged bash (-p) is required" >&2; exit 1 ;; esac
-  for inherited in $(builtin compgen -e); do
-    builtin export -n "$inherited"
-    builtin unset "$inherited" 2>/dev/null || :
-  done
-  export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
-fi
+privileged_start() {
+  if builtin test "${1:-$EUID}" = 0; then
+    case ":${2:-$SHELLOPTS}:" in *:privileged:*) ;; *) builtin echo "privileged bash (-p) is required" >&2; exit 1 ;; esac
+    for inherited in $(builtin compgen -e); do
+      builtin export -n "$inherited"
+      builtin unset "$inherited" 2>/dev/null || :
+    done
+    export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
+  fi
+}
+privileged_start "$EUID" "$SHELLOPTS"
+
 unset DEVELOPER_DIR
 umask 077
 SOURCE=${BASH_SOURCE[0]}
@@ -239,20 +243,32 @@ render_plist() {
     && ! "$GREP" -q '@' "$WORK/plist" || fail "the plist made from the template is not the expected one"
 }
 
+remember_plist() {
+  had_plist=
+  if [ -f "$PLIST" ]; then
+    trusted_entry "$PLIST" || fail "unsafe previous plist"
+    "$CP" -P "$PLIST" "$WORK/old.plist"; had_plist=1
+  fi
+}
+
+select_environment() {
+  ENV=$1
+  case "$ENV" in
+    production) SERVER=server-production; HOUR=3; MINUTE=0 ;;
+    staging) SERVER=server; HOUR=3; MINUTE=30 ;;
+    *) echo "setup: ENV is staging or production, not $ENV" >&2; exit 1 ;;
+  esac
+}
+
 if [ "${SETUP_BACKUP_LIB:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 
 usage="usage: setup-backup.sh staging|production R2.env BACKUP.pub"
-ENV=${1:?$usage}
+select_environment "${1:?$usage}"
 R2_SRC=${2:?$usage}
 PUB_SRC=${3:?$usage}
 
 SVC=atelierd
 HOME_DIR=/Users/$SVC
-case "$ENV" in
-  production) SERVER=server-production; HOUR=3; MINUTE=0 ;;
-  staging) SERVER=server; HOUR=3; MINUTE=30 ;;
-  *) echo "setup: ENV is staging or production, not $ENV" >&2; exit 1 ;;
-esac
 LABEL=zone.atelier.backup.$ENV
 PLIST=/Library/LaunchDaemons/$LABEL.plist
 # Every job that runs as atelierd, in the order they start: the servers,
@@ -334,11 +350,7 @@ for job in $JOBS; do [ ! -L "/Library/LaunchDaemons/$job.plist" ] || fail "/Libr
 
 # What was there, recorded before recovery is armed: the previous plist, and
 # which jobs were loaded, so recovery starts the same ones again.
-had_plist=
-if [ -f "$PLIST" ]; then
-  trusted_entry "$PLIST" || fail "unsafe previous plist"
-  "$CP" -P "$PLIST" "$WORK/old.plist"; had_plist=1
-fi
+remember_plist
 loaded=
 if ! dry; then
   for job in $JOBS; do

@@ -1,14 +1,18 @@
 #!/bin/bash -p
 # Privileged bash ignores BASH_ENV, imported functions and shell options.
 # Root retains no caller environment.
-if builtin test "$EUID" = 0; then
-  case ":$SHELLOPTS:" in *:privileged:*) ;; *) builtin echo "privileged bash (-p) is required" >&2; exit 1 ;; esac
-  for inherited in $(builtin compgen -e); do
-    builtin export -n "$inherited"
-    builtin unset "$inherited" 2>/dev/null || :
-  done
-  export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
-fi
+privileged_start() {
+  if builtin test "${1:-$EUID}" = 0; then
+    case ":${2:-$SHELLOPTS}:" in *:privileged:*) ;; *) builtin echo "privileged bash (-p) is required" >&2; exit 1 ;; esac
+    for inherited in $(builtin compgen -e); do
+      builtin export -n "$inherited"
+      builtin unset "$inherited" 2>/dev/null || :
+    done
+    export PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root LC_ALL=C
+  fi
+}
+privileged_start "$EUID" "$SHELLOPTS"
+
 unset DEVELOPER_DIR
 umask 077
 SOURCE=${BASH_SOURCE[0]}
@@ -268,10 +272,25 @@ extract_archive() {
   [ -s "$WORK/list" ] || fail "the tar is empty"
   if "$AWK" '{t=substr($1,1,1); if (t!="-" && t!="d") bad=1} END {exit bad?0:1}' "$WORK/list-long"; then fail "the tar holds something other than files and directories"; fi
   if "$GREP" -E '(^/|(^|/)\.\.(/|$))' "$WORK/list" >/dev/null; then fail "the tar names a path outside itself"; fi
-  if "$GREP" -vE '^(\./)?(data|repos)(/|$)' "$WORK/list" >/dev/null; then fail "the tar holds something besides data/ and repos/"; fi
+  # Only the restore layout produced from snapshot.mjs: databases, large
+  # objects and bare repositories. Reject unexpected paths before extraction.
+  "$SED" 's|^\./||' "$WORK/list" > "$WORK/paths"
+  if "$GREP" -vE '^(data/?|data/ledgers/?|data/[^/]+\.sqlite|data/ledgers/[^/]+\.sqlite|data/large(/[^/]+)*/?|repos/?|repos/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.git(/[^/]+)*/?)$' "$WORK/paths" >/dev/null \
+    || "$GREP" -E '(^|/)\.{1,2}(/|$)|//' "$WORK/paths" >/dev/null; then fail "the tar holds an unexpected backup path"; fi
   "$MKDIR" "$WORK/x"
   "$TAR" -xf "$WORK/restored.tar" --no-same-owner --no-same-permissions -C "$WORK/x"
   X="$WORK/x"
+  "$FIND" "$X/data" -print > "$WORK/data-paths"
+  while IFS= read -r path; do
+    local rel=${path#"$X/"}
+    if [ -d "$path" ]; then
+      case "$rel" in data|data/ledgers|data/large|data/large/*) ;; *) fail "unexpected data directory" ;; esac
+    elif [ -f "$path" ]; then
+      case "$rel" in data/large/*) ;; *)
+        [[ "$rel" =~ ^data/([^/]+|ledgers/[^/]+)\.sqlite$ ]] || fail "unexpected data file" ;;
+      esac
+    else fail "unexpected data entry"; fi
+  done < "$WORK/data-paths"
 }
 # Restored Git settings are data, never authority to run commands.
 sanitize_repositories() {
@@ -288,12 +307,17 @@ sanitize_repositories() {
 }
 
 # A test sources the functions above alone (test/setup-restore.test.mjs).
+select_environment() {
+  ENV=$1
+  case "$ENV" in staging) SERVER=server ;; production) SERVER=server-production ;; *) echo "setup: ENV is staging or production, not $ENV" >&2; exit 1 ;; esac
+}
+
 if [ "${SETUP_RESTORE_LIB:-}" = 1 ]; then return 0; fi
 
 usage="usage: setup-restore.sh staging|production RESTORED.tar"
-ENV=${1:?$usage}
+select_environment "${1:?$usage}"
 TAR_SRC=${2:?$usage}
-case "$ENV" in staging) SERVER=server ;; production) SERVER=server-production ;; *) echo "setup: ENV is staging or production, not $ENV" >&2; exit 1 ;; esac
+
 
 SVC=atelierd
 HOME_DIR=/Users/$SVC

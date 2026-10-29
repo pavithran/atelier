@@ -30,6 +30,13 @@ for (const script of scripts) {
   test(`${script.name}: every external executable is fixed and root-checked`, () => {
     const declarations = [...script.text.matchAll(/^([A-Z_]+)=(\/(?:usr\/bin|bin|usr\/sbin)\/[^\s]+)$/gm)];
     assert.ok(declarations.length > 20);
+    for (const [, name] of declarations) {
+      const missing = run(script, `unset ${name}; check_system_tools`);
+      assert.notEqual(missing.status, 0, `${name} must be defined and checked`);
+      const replaced = run(script, `${name}=/absent/${name}; check_system_tools`);
+      assert.notEqual(replaced.status, 0, `${name} must be verified`);
+    }
+    assert.match(script.text, /if \[ "\$EUID" = 0 \]; then check_system_tools; fi/);
     const checked = run(script, 'check_system_tools');
     assert.equal(checked.status, 0, checked.stderr);
     // Command positions, including pipelines, substitutions, run and find -exec.
@@ -147,8 +154,8 @@ test('the actual backup plist renderer selects each environment server and CLT g
   for (const [env, server, minute] of [['staging', 'server', 30], ['production', 'server-production', 0]]) {
     const h = scratch();
     const r = run(scripts[0], `WORK="$1"; TEMPLATE="$2"; /bin/cp "$TEMPLATE" "$WORK/template"
-      ENV=${env}; SERVER=${server}; HOME_DIR=/Users/atelierd; SVC=atelierd; LABEL=zone.atelier.backup.$ENV
-      HOUR=3; MINUTE=${minute}; B=$HOME_DIR/secrets/backup; W=$HOME_DIR/backup-work
+      select_environment ${env}; HOME_DIR=/Users/atelierd; SVC=atelierd; LABEL=zone.atelier.backup.$ENV
+      B=$HOME_DIR/secrets/backup; W=$HOME_DIR/backup-work
       render_plist`, [h, template]);
     assert.equal(r.status, 0, r.stderr);
     for (const [key, expected] of [['ProgramArguments.0', '/Users/atelierd/bin/node'], ['ProgramArguments.1', `/Users/atelierd/${server}/cli/backup.mjs`], ['EnvironmentVariables.ATELIER_GIT', '/Library/Developer/CommandLineTools/usr/bin/git']]) {
@@ -184,7 +191,7 @@ test('input snapshots refuse a last-moment source symlink instead of following i
 });
 
 test('restore extracts a hostile archive and installs only a fresh minimal repository config', { skip: mac }, () => {
-  for (const server of ['server', 'server-production']) {
+  for (const [env, server] of [['staging', 'server'], ['production', 'server-production']]) {
     const h = scratch(), archive = join(h, 'restore.tar'), repo = join(h, 'source/repos/key.git');
     for (const dir of ['hooks', 'objects/info', 'info']) mkdirSync(join(repo, dir), { recursive: true });
     mkdirSync(join(h, 'source/data')); mkdirSync(join(h, 'work'));
@@ -193,11 +200,123 @@ test('restore extracts a hostile archive and installs only a fresh minimal repos
     for (const file of ['hooks/pre-receive', 'objects/info/alternates', 'objects/info/http-alternates', 'info/attributes', 'config.worktree']) writeFileSync(join(repo, file), 'hostile');
     const tar = spawnSync('/usr/bin/tar', ['-cf', archive, '-C', join(h, 'source'), 'data', 'repos'], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
     assert.equal(tar.status, 0);
-    const r = run(scripts[1], `${custody}WORK="$1/work"; TAR_SRC="$1/restore.tar"; SERVER=${server}
+    const r = run(scripts[1], `${custody}WORK="$1/work"; TAR_SRC="$1/restore.tar"; select_environment ${env}
       extract_archive; sanitize_repositories; /bin/cp -R "$X/repos" "$1/installed"`, [h]);
     assert.equal(r.status, 0, r.stderr);
     const installed = join(h, 'installed/key.git');
     assert.equal(readFileSync(join(installed, 'config'), 'utf8'), `[core]\n\tbare = true\n\thooksPath = /Users/atelierd/${server}/hooks\n`);
     for (const file of ['hooks', 'objects/info/alternates', 'objects/info/http-alternates', 'info', 'config.worktree']) assert.equal(existsSync(join(installed, file)), false, file);
+  }
+});
+
+for (const script of scripts) {
+  test(`${script.name}: root startup requires privileged mode and scrubs hostile exports`, () => {
+    const h = scratch(), marker = join(h, 'planted'), injection = join(h, 'bash-env');
+    writeFileSync(injection, `/bin/touch '${marker}'`);
+    executable(join(h, 'env'), `/bin/touch '${marker}'`);
+    // Execute the actual function independently so readonly EUID/SHELLOPTS
+    // need no spoofing, and no later script setup can hide missing scrubbing.
+    const startup = script.text.slice(script.text.indexOf('privileged_start() {'), script.text.indexOf('\nunset DEVELOPER_DIR'));
+    assert.match(startup, /\nprivileged_start "\$EUID" "\$SHELLOPTS"\n/);
+    const fn = startup.slice(0, startup.lastIndexOf('\nprivileged_start '));
+    for (const options of ['braceexpand', 'braceexpand:privileged']) {
+      const body = `${fn}
+export BASH_ENV="$1/bash-env" PATH="$1" HOME="$1" ENV=evil NODE_OPTIONS=evil DEVELOPER_DIR=evil DRYRUN=1 SUDO_USER=evil
+privileged_start 0 '${options}'
+[ "$PATH" = /usr/bin:/bin:/usr/sbin:/sbin ] && [ "$HOME" = /var/root ] && [ "$LC_ALL" = C ] || exit 81
+for name in BASH_ENV ENV NODE_OPTIONS DEVELOPER_DIR DRYRUN SUDO_USER; do
+  [ -z "\${!name+x}" ] || exit 82
+done
+command env`;
+      const r = spawnSync('/bin/bash', ['-p', '-c', body, 'startup', h], { encoding: 'utf8' });
+      if (options.includes('privileged')) assert.equal(r.status, 0, r.stderr);
+      else { assert.equal(r.status, 1); assert.match(r.stderr, /privileged bash/); }
+      assert.equal(existsSync(marker), false);
+    }
+  });
+
+  test(`${script.name}: directory checks occur after acquiring the lock`, () => {
+    const section = script.text.slice(script.text.indexOf('trap early_cleanup EXIT'), script.text.indexOf('WORK=$('));
+    const check = script.name === 'backup' ? 'check_dirs' : 'check_paths';
+    const locked = run(script, `
+      WORK= LOCK= HOME_DIR=/fixture SERVER=server
+      trusted_entry() { :; }; trusted_source() { :; }; MKDIR=noop; noop() { :; }
+      acquire_lock() { locked=1; }
+      ${check}() { [ "\${locked:-}" = 1 ] || exit 91; echo checked-after-lock; }
+      ${section}`);
+    assert.equal(locked.status, 0, locked.stderr);
+    assert.equal(locked.stdout.trim(), 'checked-after-lock');
+  });
+}
+
+test('backup checks PUB_SRC custody independently of valid R2_SRC', { skip: mac }, () => {
+  for (const problem of ['owner', 'mode', 'link', 'race']) {
+    const h = backupInputs();
+    if (problem === 'link') { rmSync(join(h, 'backup.pub')); symlinkSync(join(h, 'R2.env'), join(h, 'backup.pub')); }
+    const r = run(scripts[0], `${custody}${inputVars}
+      fixture_stat() {
+        if [ "$2" = %Su ]; then
+          if [ "$3" = "$PUB_SRC" ] && [ "$3" != "$R2_SRC" ] && [ '${problem}' = owner ]; then echo pavi; else echo root; fi
+        elif [ "$3" = "$PUB_SRC" ] && [ '${problem}' = mode ]; then echo 722; else echo 700; fi
+      }
+      race_cp() {
+        [ "$1" = -P ] || exit 88
+        if [ "$2" = "$PUB_SRC" ] && [ '${problem}' = race ]; then /bin/rm "$2"; /bin/ln -s /bin/ls "$2"; fi
+        /bin/cp "$@"
+      }
+      CP=race_cp; trusted_source "$R2_SRC"; prepare_inputs`, [h, template]);
+    assert.equal(r.status, 1, `${problem}: ${r.stderr}`);
+    assert.match(r.stderr, /root-owned|writable|not a plain source/);
+    assert.equal(existsSync(join(h, 'work/values')), false);
+  }
+});
+
+test('backup refuses an untrusted previous plist before saving old.plist', { skip: mac }, () => {
+  for (const problem of ['owner', 'mode', 'link']) {
+    const h = scratch(), plist = join(h, 'old'); writeFileSync(plist, 'old settings');
+    if (problem === 'link') { rmSync(plist); symlinkSync('/bin/ls', plist); }
+    const r = run(scripts[0], `${custody}
+      WORK="$1"; PLIST="$1/old"
+      fixture_stat() { if [ "$2" = %Su ]; then echo '${problem === 'owner' ? 'pavi' : 'root'}'; else echo '${problem === 'mode' ? '722' : '700'}'; fi; }
+      remember_plist`, [h]);
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /root-owned|writable|not a plain source/);
+    assert.equal(existsSync(join(h, 'old.plist')), false);
+  }
+});
+
+test('restore accepts only snapshot data layout and repository keys', { skip: mac }, () => {
+  for (const extra of ['data/way-back/x.json', 'data/evil.git/HEAD', 'data/bad.sqlite/HEAD', 'repos/.hidden.git/HEAD', 'data/other', 'data/ledgers/nested/x.sqlite']) {
+    const h = scratch(); mkdirSync(join(h, 'source/data/ledgers'), { recursive: true }); mkdirSync(join(h, 'source/repos'));
+    mkdirSync(join(h, 'work')); mkdirSync(join(h, 'source', extra, '..'), { recursive: true });
+    writeFileSync(join(h, 'source', extra), 'hostile');
+    const tar = spawnSync('/usr/bin/tar', ['-cf', join(h, 'restore.tar'), '-C', join(h, 'source'), 'data', 'repos'], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
+    assert.equal(tar.status, 0);
+    const r = run(scripts[1], `${custody}WORK="$1/work"; TAR_SRC="$1/restore.tar"; extract_archive`, [h]);
+    assert.equal(r.status, 1, `${extra}: ${r.stderr}`);
+    assert.match(r.stderr, /unexpected backup path|unexpected data directory/);
+  }
+});
+
+test('restore accepts databases and nested large files, rejects links and devices', { skip: mac }, () => {
+  for (const kind of ['valid', 'symlink', 'hardlink', 'fifo', 'device', 'dot', 'empty-dir']) {
+    const h = scratch(); mkdirSync(join(h, 'work'));
+    const make = spawnSync('python3', ['-c', `
+import io, tarfile, sys
+kind, out = sys.argv[1:]
+with tarfile.open(out, 'w') as t:
+  for name in ['data', 'data/ledgers', 'data/large', 'data/large/nested', 'repos']:
+    e=tarfile.TarInfo(name); e.type=tarfile.DIRTYPE; e.mode=0o700; t.addfile(e)
+  for name in ['data/a.sqlite', 'data/ledgers/__index.sqlite', 'data/large/nested/blob']:
+    e=tarfile.TarInfo(name); e.size=2; t.addfile(e, io.BytesIO(b'ok'))
+  if kind != 'valid':
+    e=tarfile.TarInfo('data/large/./evil' if kind == 'dot' else 'data/other' if kind == 'empty-dir' else 'data/large/evil')
+    e.type={'symlink':tarfile.SYMTYPE,'hardlink':tarfile.LNKTYPE,'fifo':tarfile.FIFOTYPE,'device':tarfile.CHRTYPE,'dot':tarfile.REGTYPE,'empty-dir':tarfile.DIRTYPE}[kind]
+    e.linkname='data/a.sqlite'; t.addfile(e)
+`, kind, join(h, 'restore.tar')], { encoding: 'utf8' });
+    assert.equal(make.status, 0, make.stderr);
+    const r = run(scripts[1], `${custody}WORK="$1/work"; TAR_SRC="$1/restore.tar"; extract_archive`, [h]);
+    assert.equal(r.status, kind === 'valid' ? 0 : 1, `${kind}: ${r.stderr}`);
+    if (kind !== 'valid') assert.match(r.stderr, /unexpected backup path|other than files and directories/);
   }
 });
