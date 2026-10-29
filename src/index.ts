@@ -753,10 +753,10 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
     if (body.step === "abort") return json({ project, ...(await L.importAbort(body.import)) });
     if (body.step === "rows") return json(await L.importRows(body.import, body.table, body.columns, body.rows));
     if (body.step === "finish") {
-      const { counts, record } = await L.importFinish(body.import);
+      const { counts, migrated, record } = await L.importFinish(body.import);
       const registered = !ref.registered && record !== null;
       if (registered) await index(env).registerProject({ ...(record as ProjectRecord), name: project });
-      return json({ project, counts, registered });
+      return json({ project, counts, migrated, registered });
     }
     throw new RuleError("bad_request", "step is begin, resume, rows, finish or abort", 400);
   }

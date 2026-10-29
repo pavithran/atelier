@@ -22,24 +22,33 @@ const spec: CommandSpec = {
     },
     {
       group: "Developer", line: 8, slot: 40,
-      form: "ledger import --file F [--project P]",
-      about: "Loads a dump into the project's Ledger on this server, to rehearse a switch on production's rows. Refuses a Ledger that holds anything, a dump of another project, and a dump whose tables differ from this server's; registers the project when this server does not list it yet.",
+      form: "ledger import --file F [--resume ID] [--project P]",
+      about: "Loads a dump into the project's Ledger on this server, to rehearse a switch on production's rows or to move a project. A dump written by older code (1.0) is migrated to this server's schema as a start of this code would migrate it; a dump from newer code is refused, as are a Ledger that holds anything and a dump of another project. The rows stored are checked against each table's count and checksum in the dump before the import finishes. Registers the project when this server does not list it yet. An import that stops partway stays on the server: `--resume ID` sends the rest.",
+    },
+    {
+      group: "Developer", line: 8, slot: 50,
+      form: "ledger import --abort ID [--project P]",
+      about: "Takes back an import that stopped partway: everything it loaded is deleted and every table it made or remade is as it was, so the Ledger is empty again and a new import may begin.",
     },
   ],
   flags: {
     bookmark: "--bookmark needs the id atelier ledger bookmark printed: --bookmark b1",
     file: "--file needs a path: --file ledger.json",
+    resume: "--resume needs the id of the import that stopped: --resume 6f1c…",
+    abort: "--abort needs the id of the import that stopped: --abort 6f1c…",
   },
   subcommands: {
     bookmark: { takes: [] },
     restore: { takes: ["bookmark"] },
     dump: { takes: ["file"] },
-    import: { takes: ["file"] },
+    import: { takes: ["file", "resume", "abort"] },
   },
   help: {
     flags: {
       "--bookmark ID": "with restore, the bookmark to restore, as atelier ledger bookmark printed it",
       "--file F": "with dump, the file to write; with import, the dump to load",
+      "--resume ID": "with import, goes on with the import that stopped, sending only the rows it lacks",
+      "--abort ID": "with import, takes back the import that stopped",
       "--project NAME": "the project; this checkout's or workspace's project unless given",
     },
     example: "atelier ledger bookmark --project demo",

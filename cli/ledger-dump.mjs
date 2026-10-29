@@ -46,11 +46,17 @@ export async function collectDump(read) {
   const gone = tablesRead.filter((t) => !again.tables.some((a) => a.name === t.name)).map((t) => t.name);
   const changed = [...moved, ...gone];
   if (changed.length) throw new Error(`${changed.join(", ")} changed while the dump read ${changed.length === 1 ? "it" : "them"}; stop the runners and dump again`);
-  const tables = again.tables.map(({ count, checksum, ...t }) => ({ ...t, rows: rowsOf.get(t.name) }));
+  // Each table keeps the checksum the server answered for its rows, so an
+  // import can check the rows it stored against the source (task 10); the
+  // count is the rows themselves.
+  const tables = again.tables.map(({ count, ...t }) => ({ ...t, rows: rowsOf.get(t.name) }));
   return { ...again, tables, redacted: redacted + (again.redacted ?? 0) };
 }
 
-// What the import's first step carries: the dump without its rows.
+// What the import's first step carries: the dump without its rows, each
+// table with its row count and, from a dump that kept it, the checksum the
+// source server answered, which the import's finish checks the stored rows
+// against.
 export function manifestOf(dump) {
   return { ...dump, tables: dump.tables.map(({ rows, ...t }) => ({ ...t, count: rows.length })) };
 }
@@ -62,6 +68,15 @@ export function parseDump(text, format) {
   if (!dump || dump.format !== format || !Array.isArray(dump.tables) || dump.tables.some((t) => !t || typeof t.name !== "string" || !Array.isArray(t.columns) || !Array.isArray(t.rows))) {
     throw new Error(`the file is not a Ledger dump (${format})`);
   }
+  // A table whose rows no longer match the checksum the source answered was
+  // changed or cut after the dump was written.
+  const damaged = dump.tables.filter((t) => {
+    if (t.checksum === undefined) return false;
+    const sum = dumpChecksum();
+    for (const row of t.rows) sum.add(row);
+    return sum.value() !== t.checksum;
+  }).map((t) => t.name);
+  if (damaged.length) throw new Error(`the rows of ${damaged.join(", ")} do not match the checksum the server answered when the dump was written, so the file was changed since; nothing was sent`);
   return dump;
 }
 
@@ -70,8 +85,15 @@ export function parseDump(text, format) {
 // IMPORT_CHUNK_BYTES, then finish, whose answer it returns. `progress` hears
 // of each table loaded. With `resume`, the id of an import that failed
 // partway, it goes on from the rows the server recorded instead of beginning.
+// A failure after begin carries the import's id as `importId`, so the caller
+// can name the resume and the abort.
 export async function importDump(dump, post, progress = () => {}, resume = null) {
   const begun = resume ? await post({ step: "resume", import: resume }) : await post({ step: "begin", manifest: manifestOf(dump) });
+  try { return await loadRows(dump, post, progress, begun); }
+  catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { importId: begun.import }); }
+}
+
+async function loadRows(dump, post, progress, begun) {
   const loaded = begun.loaded ?? {};
   for (const t of dump.tables) {
     const columns = t.columns.map((c) => c.name);

@@ -38,6 +38,10 @@ export const GRANT_LOCKS = {
   planRefresh: "project", planResolve: "project", reroutePlan: "project", retryPlan: "project",
   refreshed: "project", refreshFailed: "project", poolChanged: "project", setMode: "project",
   retickDeployed: "project", initProject: "project", alarm: "project",
+  // An import (task 10) loads every table, items included, and its finish
+  // runs the migrations, which may fill a head column; its abort empties
+  // them all.
+  importBegin: "project", importRows: "project", importFinish: "project", importAbort: "project",
 };
 
 const TASK = /^t[1-9][0-9]*$/;
