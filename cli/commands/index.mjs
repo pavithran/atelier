@@ -37,6 +37,7 @@ import command_guide from "./guide.mjs";
 import command_handoff from "./handoff.mjs";
 import command_help from "./help.mjs";
 import command_identity from "./identity.mjs";
+import command_import_tasks from "./import-tasks.mjs";
 import command_inbox from "./inbox.mjs";
 import command_init from "./init.mjs";
 import command_integrated from "./integrated.mjs";
@@ -136,6 +137,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/handoff.mjs", run: command_handoff },
   { path: "cli/commands/help.mjs", run: command_help },
   { path: "cli/commands/identity.mjs", run: command_identity },
+  { path: "cli/commands/import-tasks.mjs", run: command_import_tasks },
   { path: "cli/commands/inbox.mjs", run: command_inbox },
   { path: "cli/commands/init.mjs", run: command_init },
   { path: "cli/commands/integrated.mjs", run: command_integrated },

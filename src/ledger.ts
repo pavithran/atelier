@@ -37,7 +37,7 @@ import {
   forkPreparationView, type ForkPreparation, type ForkPreparationView, riskNeed,
 } from "./rules";
 import { cleanSummary } from "./brief";
-import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
+import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria, sha256Hex } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
@@ -1475,6 +1475,56 @@ export class Ledger extends DurableObject<Env> {
       changed++;
     }
     return changed;
+  }
+
+  // ── a project's tokens on a move between servers (G14) ─────────────────
+  //
+  // The agent and runner tokens live in the index, not the project's Ledger,
+  // so a dump carries the ones that reach the project beside its tables:
+  // those limited to any name the project has had, and those limited to no
+  // project. Only their records, the hash and never the token, so a token
+  // moves intact and works on the server that imports it.
+
+  projectTokens(key: string): { names: string[]; tokens: { id: string; hash: string; json: string }[] } {
+    const names = this.namesOf(key);
+    const tokens = this.sql.exec(`SELECT id, hash, json FROM agent_tokens ORDER BY id`).toArray().filter((r) => {
+      const t = JSON.parse(r.json as string) as AgentToken;
+      return !t.projects?.length || t.projects.some((n) => names.includes(n));
+    }).map((r) => ({ id: r.id as string, hash: r.hash as string, json: r.json as string }));
+    return { names, tokens };
+  }
+
+  // The carried tokens that would clash with this index's: an id held under
+  // another hash, or a hash held under another id. Each named once.
+  tokenConflicts(tokens: { id: string; hash: string }[]): string[] {
+    const clash: string[] = [];
+    for (const t of tokens) {
+      const byId = this.sql.exec(`SELECT hash FROM agent_tokens WHERE id = ?`, t.id).toArray()[0];
+      const byHash = this.sql.exec(`SELECT id FROM agent_tokens WHERE hash = ?`, t.hash).toArray()[0];
+      if ((byId && byId.hash !== t.hash) || (byHash && byHash.id !== t.id)) clash.push(t.id);
+    }
+    return clash;
+  }
+
+  // Puts the carried tokens this index lacks, revoked ones as revoked. A
+  // token limited to any of the project's former names (`from`) is limited
+  // to its name here (`to`), where only that name is registered. A token
+  // already held under the same id and hash is left as it is.
+  importTokens(tokens: { id: string; hash: string; json: string }[], to: string, from: string[], actor: string): { added: number; held: number } {
+    let added = 0, held = 0;
+    const at = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      for (const t of tokens) {
+        if (this.sql.exec(`SELECT 1 FROM agent_tokens WHERE id = ? AND hash = ?`, t.id, t.hash).toArray().length) { held++; continue; }
+        const record = JSON.parse(t.json) as AgentToken;
+        if (record.id !== t.id || record.hash !== t.hash) throw new RuleError("bad_dump", `the dump's token ${String(t.id).slice(0, 20)} names another id or hash in its record`, 400);
+        if (record.projects?.length) record.projects = [...new Set(record.projects.map((n) => from.includes(n) ? to : n))];
+        this.sql.exec(`INSERT INTO agent_tokens (id, hash, json) VALUES (?, ?, ?)`, t.id, t.hash, JSON.stringify(record));
+        this.log(null, actor, "token.carried", { id: record.id, actor: record.actor, projects: record.projects ?? null, ...(record.runner ? { runner: record.runner } : {}), expiresAt: record.expiresAt, project: to }, at);
+        added++;
+      }
+    });
+    return { added, held };
   }
 
   // The model pool, on the index instance like the project list: shared by
@@ -6652,6 +6702,39 @@ export class Ledger extends DurableObject<Env> {
   decisions(): DecisionView[] {
     this.project();
     return listDecisions(this.decisionStore);
+  }
+
+  // atelier import-tasks (G14): a project's own task and decision files
+  // (docs/TASKS.md, docs/DECISIONS.md, as a project kept off Atelier writes
+  // them; cli/commands/import-tasks.mjs reads them) filed as open tasks and
+  // recorded as standing decisions, in one transaction, so a refusal of any
+  // entry files nothing. Each entry is remembered by the hash of its kind and
+  // text, so importing the same file again changes nothing: an entry filed
+  // before is answered with the id it was given. A refused entry names its
+  // line in the file.
+  importTasks(source: string, entries: { line: number; kind: "task" | "decision"; title?: string; brief?: string | null; text?: string }[], actor: string, acting: string | null = null): { filed: { line: number; id: string }[]; decided: { line: number; id: string }[]; kept: { line: number; id: string }[] } {
+    const project = this.project();
+    const out = { filed: [] as { line: number; id: string }[], decided: [] as { line: number; id: string }[], kept: [] as { line: number; id: string }[] };
+    this.ctx.storage.transactionSync(() => {
+      for (const e of entries) {
+        const key = `imported:${sha256Hex(JSON.stringify(e.kind === "task" ? ["task", e.title, e.brief ?? null] : ["decision", e.text]))}`;
+        const before = this.runnerMeta<{ id: string }>(key);
+        if (before) { out.kept.push({ line: e.line, id: before.id }); continue; }
+        let id: string;
+        try {
+          id = e.kind === "task"
+            ? this.newItem(String(e.title), [], actor, e.brief ? { brief: e.brief } : {}).id
+            : this.recordDecision({ text: e.text, quote: e.text }, actor, acting).id;
+        } catch (error) {
+          const rule = error instanceof RuleError ? error : null;
+          throw new RuleError("import_refused", `${source} line ${e.line}: ${rule ? `${rule.code}: ${rule.detail}` : String((error as Error)?.message ?? error)}; nothing was imported`, 409, `fix line ${e.line} of ${source}, then run atelier import-tasks ${source} --project ${project.name} again`);
+        }
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, key, JSON.stringify({ id, source, line: e.line, at: new Date().toISOString() }));
+        (e.kind === "task" ? out.filed : out.decided).push({ line: e.line, id });
+      }
+      if (out.filed.length || out.decided.length) this.log(null, actor, "project.imported", { source, filed: out.filed.map((f) => f.id), decided: out.decided.map((d) => d.id), kept: out.kept.length }, new Date().toISOString());
+    });
+    return out;
   }
 
   standingDecisions(): Decision[] {

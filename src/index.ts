@@ -742,7 +742,9 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
   }
   if (step === "dump" && m === "GET") {
     const table = c.url.searchParams.get("table");
-    if (table === null) return json({ ...(await L.dumpManifest() as Record<string, unknown>), project, key: ref.key, ledger: own });
+    // The tokens that reach the project come from the index beside the
+    // Ledger's tables (G14), by hash, with every name the project has had.
+    if (table === null) return json({ ...(await L.dumpManifest() as Record<string, unknown>), project, key: ref.key, ledger: own, ...(await index(env).projectTokens(ref.key)) });
     const after = Number(c.url.searchParams.get("after") ?? 0);
     if (!Number.isSafeInteger(after) || after < 0) throw new RuleError("bad_request", "after is a row number", 400);
     return json(await L.dumpRows(table, after));
@@ -757,6 +759,12 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
         if (!record || typeof record.repo !== "string") throw new RuleError("bad_dump", `the dump carries no project record, so ${project} cannot be registered here`, 400);
         await index(env).assertRepoAvailable(project, record.repo);
       }
+      // The tokens it carries (G14), checked before anything is loaded: a
+      // token this server holds under another hash, or a hash it holds under
+      // another id, refuses the import.
+      const tokens = carriedTokens(manifest.tokens);
+      const clash = tokens.length ? await index(env).tokenConflicts(tokens) : [];
+      if (clash.length) throw new RuleError("token_conflict", `this server already holds token ${clash.slice(0, 5).join(", ")}${clash.length > 5 ? ", …" : ""} under another hash or id, so the dump's tokens cannot move here and nothing was imported`, 409, `only the developer can: revoke the clashing token here with atelier token revoke ID, or import into another server`);
       return json(await L.importBegin(manifest, crypto.randomUUID()), 201);
     }
     if (body.step === "resume") return json(await L.importProgress(body.import));
@@ -766,11 +774,31 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
       const { counts, migrated, record } = await L.importFinish(body.import);
       const registered = !ref.registered && record !== null;
       if (registered) await index(env).registerProject({ ...(record as ProjectRecord), name: project });
-      return json({ project, counts, migrated, registered });
+      // The tokens move last, once the rows are in and the project is
+      // registered, each limited to the project's name here (G14). The
+      // finish carries the dump's token records, which begin checked.
+      const tokens = carriedTokens(body.tokens);
+      const names = Array.isArray(body.names) ? body.names.filter((n: unknown): n is string => typeof n === "string") : [];
+      const carried = tokens.length ? await index(env).importTokens(tokens, project, names, actor) : null;
+      return json({ project, counts, migrated, registered, ...(carried ? { tokens: carried } : {}) });
     }
     throw new RuleError("bad_request", "step is begin, resume, rows, finish or abort", 400);
   }
   throw new RuleError("not_found", "no such route", 404);
+}
+
+// The token records a dump carries (G14): each an id, a SHA-256 hash and
+// the record as the index stored it. Anything else refuses the import.
+function carriedTokens(raw: unknown): { id: string; hash: string; json: string }[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > 10_000) throw new RuleError("bad_dump", "the dump's tokens are a list of records", 400);
+  return raw.map((t) => {
+    const v = t as { id?: unknown; hash?: unknown; json?: unknown };
+    if (typeof v?.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v.id) || typeof v.hash !== "string" || !/^[0-9a-f]{64}$/.test(v.hash) || typeof v.json !== "string" || v.json.length > 10_000) {
+      throw new RuleError("bad_dump", "each of the dump's tokens is an id, a SHA-256 hash and its record", 400);
+    }
+    return { id: v.id, hash: v.hash, json: v.json };
+  });
 }
 
 function requireOwner(env: Env, actor: string) {
@@ -2680,6 +2708,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // Standing decisions (src/decisions.ts): GET lists every one with its
   // status, for the owner and for an agent token (agentRoute); POST records
   // one and POST decisions/ID/withdraw withdraws one, for the owner alone.
+  // atelier import-tasks (G14): open tasks and standing decisions from a
+  // project's own files, the developer's alone; the CLI parses the file and
+  // sends one entry per item, each with its line.
+  if (parts[2] === "import-tasks" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    const source = typeof body.source === "string" && body.source.trim() ? body.source.trim().slice(0, 200) : "the file";
+    if (!Array.isArray(body.entries) || body.entries.length > 500) throw new RuleError("bad_entries", "entries is a list of at most 500 tasks and decisions", 400, "split the file, then run atelier import-tasks on each part");
+    const entries = body.entries.map((e: Record<string, unknown>, i: number) => {
+      const line = Number.isSafeInteger(e?.line) ? e.line as number : i + 1;
+      if (e?.kind === "task" && typeof e.title === "string" && e.title.trim() && (e.brief === undefined || e.brief === null || typeof e.brief === "string")) return { line, kind: "task" as const, title: e.title.trim(), brief: typeof e.brief === "string" && e.brief.trim() ? e.brief.trim() : null };
+      if (e?.kind === "decision" && typeof e.text === "string" && e.text.trim()) return { line, kind: "decision" as const, text: e.text.trim() };
+      throw new RuleError("bad_entries", `${source} line ${line}: an entry is a task with a title or a decision with text`, 400, `fix line ${line} of ${source}, then run atelier import-tasks again`);
+    });
+    return json({ project: ref.name, source, ...(await L.importTasks(source, entries, actor, c.acting ?? null)) });
+  }
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);

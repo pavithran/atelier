@@ -53,7 +53,8 @@ export async function collectDump(read) {
   return { ...again, tables, redacted: redacted + (again.redacted ?? 0) };
 }
 
-// What the import's first step carries: the dump without its rows, each
+// What the import's first step carries: the dump without its rows (its
+// token records go too, which begin checks for clashes), each
 // table with its row count and, from a dump that kept it, the checksum the
 // source server answered, which the import's finish checks the stored rows
 // against.
@@ -113,5 +114,7 @@ async function loadRows(dump, post, progress, begun) {
     await send();
     progress(t.name, inserted);
   }
-  return post({ step: "finish", import: begun.import });
+  // The tokens that reach the project, and every name it has had, go with
+  // the finish, which puts them in this server's index (G14).
+  return post({ step: "finish", import: begun.import, ...(Array.isArray(dump.tokens) && dump.tokens.length ? { tokens: dump.tokens, names: dump.names ?? [] } : {}) });
 }
