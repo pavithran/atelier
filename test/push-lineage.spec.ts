@@ -3,6 +3,7 @@ import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { parseRuleError } from "../src/rules.ts";
+import { queue } from "./workers-removed.ts";
 
 // A push whose head no longer holds the head the Ledger recorded has
 // rewritten the fork's history: the commits recorded before are off the
@@ -202,7 +203,7 @@ it("a search that stops at its budget is refused as unverified, not as a rewrite
   // Seen through the queue, the same head is left where it is and the note says why.
   const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref: "refs/heads/main", after: tip } };
   let acks = 0, retries = 0;
-  await worker.queue({ messages: [{ body: notice, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, bindings);
+  await queue({ messages: [{ body: notice, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, bindings);
   expect([acks, retries]).toEqual([1, 0]);
   expect((await L.item("t1")).head).toBe(H1);
   expect((await events(L)).find((e) => e.kind === "push.unrecorded")?.data).toMatchObject({ head: tip, recorded: H1, reason: "ancestry_unverified" });
@@ -242,7 +243,7 @@ it("a push event whose head does not hold the recorded one leaves the head and n
   const { binding } = artifacts(() => H3, graph);
   const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref: "refs/heads/main", after: H3 } };
   let acks = 0, retries = 0;
-  const send = () => worker.queue({ messages: [{ body: notice, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: binding });
+  const send = () => queue({ messages: [{ body: notice, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: binding });
   await send();
   expect([acks, retries]).toEqual([1, 0]);
   expect((await L.item("t1")).head).toBe(H1);

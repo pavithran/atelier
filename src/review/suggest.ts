@@ -1,8 +1,9 @@
-// The ledger calls reviewer suggestion here so model ranking does not depend
-// on review execution or independence rules.
+// Reviewer suggestion, called by no route since G17: a review request without
+// a named reviewer lists the candidates and refuses (Ledger.reviewerCandidates).
+// It stays for the model tests until task 7 rewrites them.
 import { RuleError } from "../rules.ts";
 import { latestNote, noteLine } from "../models/pool.ts";
-import { frontier, precisionOfSummary, ranked, sensitive, summarize, type RecordSummary, type SuggestionInput } from "../models/suggest.ts";
+import { frontier, precisionOfSummary, ranked, summarize, type RecordSummary, type SuggestionInput } from "../models/suggest.ts";
 import type { Choice } from "../plans/route.ts";
 import { pickReviewer } from "./reviewer.ts";
 import type { Assignment } from "../models/assignments.ts";
@@ -28,7 +29,9 @@ export interface ReviewerSuggestionInput extends Omit<SuggestionInput, "sources"
 }
 
 export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly { actor: string; reason: string }[] = [], now = new Date()): Choice {
-  const strict = input.frontierRequired === true || sensitive(input.item);
+  // A protected change (the project's policy) asks a frontier reviewer; no
+  // keyword of the task's words does (G6, G17).
+  const strict = input.frontierRequired === true;
   const summary = input.summary ?? summarize({ sources: input.sources ?? [], runs: input.runs ?? [] }, input.owner, now);
   const ordered = ranked({ pool: input.pool, summary }).filter(({ entry }) => !strict || frontier(entry));
   const precision = precisionOfSummary(summary);
@@ -39,8 +42,8 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
     // Preserve outcome order between equal precision terms.
     recordOrder: ordered.map(({ entry }) => actorOf(entry)),
   });
-  if (!pick.reviewer) throw new RuleError("no_reviewer", `${strict ? "Security, concurrency or gate work requires a frontier reviewer. " : ""}${pick.unpicked}`, 409);
+  if (!pick.reviewer) throw new RuleError("no_reviewer", `${strict ? "A protected change requires a frontier reviewer. " : ""}${pick.unpicked}`, 409);
   const row = ordered.find(({ entry }) => actorOf(entry) === pick.reviewer!.actor)!;
   const note = latestNote(row.entry, input.project, input.item.id);
-  return { actor: pick.reviewer.actor, reasons: [strict ? "Frontier reviewer required for security, concurrency or gate work." : "Reviewer ranked by finding precision, then recorded outcomes.", row.reason, ...(note ? [noteLine(note)] : []), ...pick.reviewer.reasons] };
+  return { actor: pick.reviewer.actor, reasons: [strict ? "Frontier reviewer required for a protected change." : "Reviewer ranked by finding precision, then recorded outcomes.", row.reason, ...(note ? [noteLine(note)] : []), ...pick.reviewer.reasons] };
 }

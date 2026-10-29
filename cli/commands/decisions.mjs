@@ -20,4 +20,8 @@ export default async function decisionsCommand() {
       : `No decision stands for ${name}; atelier decisions --all lists the withdrawn ones.`);
   }
   console.log(formatDecisions(shown));
+  // The standing instructions (G6), the only things the server or the tick
+  // does by itself, said apart: each acts only while the project is in fast mode.
+  const standing = decisions.filter((d) => d.status === "standing" && d.standing);
+  if (standing.length) console.log(`Standing instructions: ${standing.map((d) => `${d.standing.key} = ${d.standing.value} (${d.id})`).join(", ")}. They act while ${name} is in fast mode.`);
 }

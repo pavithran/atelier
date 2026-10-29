@@ -17,6 +17,7 @@
 
 import { RuleError } from "./rules.ts";
 import { TEXT_CONTROLS } from "./text.ts";
+import { parseStanding, standingText, type Standing } from "./standing.ts";
 
 export const DECISION_TEXT_MAX = 1000;
 export const DECISION_QUOTE_MAX = 2000;
@@ -29,6 +30,7 @@ export interface Decision {
   by: string;
   at: string;
   acting?: string;       // the harness/model that recorded it for the owner (t440)
+  standing?: Standing;   // a standing instruction (src/standing.ts, G6)
   withdrawn?: { by: string; at: string; note: string; acting?: string };
 }
 
@@ -92,14 +94,19 @@ export function standingDecisions(store: DecisionStore): Decision[] {
 // the decision is still the owner's, resting on the owner's quoted words.
 export function recordDecision(store: DecisionStore, actor: string, body: Record<string, unknown>, now: string, acting: string | null = null): DecisionView {
   ownerOnly(store, actor, "records a standing decision");
-  const { text, quote } = cleanDecisionInput(body);
+  // A standing instruction's text is its key, value and effect; one key
+  // stands once, so changing its value is a withdrawal and a new record.
+  const standing = body.standing === undefined ? null : parseStanding(body.standing);
+  const { text, quote } = cleanDecisionInput(standing ? { ...body, text: standingText(standing) } : body);
   const all = rows(store.sql);
+  const held = standing ? all.find((d) => !d.withdrawn && d.standing?.key === standing.key) : undefined;
+  if (held) throw new RuleError("already_decided", `${held.id} already records the standing instruction ${standing!.key} = ${held.standing!.value}, on ${held.at.slice(0, 10)}. To change it, withdraw it first`, 409, `atelier decisions withdraw ${held.id} --note "why", then decide again`);
   const same = all.find((d) => !d.withdrawn && d.text === text);
   if (same) throw new RuleError("already_decided", `${same.id} already records that decision, on ${same.at.slice(0, 10)}. To change it, withdraw it first: atelier decisions withdraw ${same.id} --note "…"`, 409, `atelier decisions withdraw ${same.id} --note "why", then decide again`);
   const n = all.length + 1;
-  const decision: Decision = { id: `d${n}`, text, quote, by: actor, at: now, ...(acting ? { acting } : {}) };
+  const decision: Decision = { id: `d${n}`, text, quote, by: actor, at: now, ...(acting ? { acting } : {}), ...(standing ? { standing } : {}) };
   store.sql.exec(`INSERT INTO decisions (n, id, json) VALUES (?, ?, ?)`, n, decision.id, JSON.stringify(decision));
-  store.log("decision.recorded", { id: decision.id, text, quote, ...(acting ? { acting } : {}) });
+  store.log("decision.recorded", { id: decision.id, text, quote, ...(acting ? { acting } : {}), ...(standing ? { standing } : {}) });
   return view(decision);
 }
 

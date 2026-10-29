@@ -3,6 +3,7 @@ import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { parseRuleError } from "../src/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // t323 through the Worker and the Ledgers: a review request a runner released
 // twice for the same harness exit, with the release note runReview writes
@@ -30,7 +31,7 @@ async function offers(key: string, ms: number) {
   const at = new Date(Date.now() + ms).toISOString();
   for (const r of [FIRST, SECOND]) await I().putRunnerOffer({ ...r, agents: [{ agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }], projects: [key], jobs: ["build", "review"] }, at);
 }
-const tick = (ms: number) => worker.scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
+const tick = (ms: number) => scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
 const asked = async (key: string, id: string) => (await L(key).reviewWaiting()).filter((i) => i.id === id).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`);
 
 it("a review released twice for the same harness exit is refused to every runner of that model and re-pointed to another model", async () => {

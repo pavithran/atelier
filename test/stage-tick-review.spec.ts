@@ -2,6 +2,7 @@ import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // t225 through the Worker and the Ledgers: the tick releases a review claim
 // unanswered past reviewAnswerHours and asks again once per task and head, then
@@ -24,7 +25,7 @@ const POOL = [entry("claude-code", "opus-5.5"), entry("claude-code", "sonnet-5.5
 // The runner offers `models` for the review job for `key` alone, as it asked at the time of the tick.
 const offers = (key: string, models: string[], ms: number) =>
   I().putRunnerOffer({ runner: "home:review", kind: "home", agents: [{ agent: "claude-code", models }], projects: [key], jobs: ["build", "review"] }, new Date(Date.now() + ms).toISOString());
-const tick = (ms: number) => worker.scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
+const tick = (ms: number) => scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
 const stage = async (key: string) => ((await L(key).events(undefined, 1000)) as unknown as { itemId: string; kind: string; data: Record<string, unknown> }[])
   .filter((e) => e.kind.startsWith("stage.")).reverse();
 const kinds = async (key: string) => (await stage(key)).map((e) => [e.kind, e.data.stage]);

@@ -1,6 +1,7 @@
 import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // t223 through the Worker and the Ledgers: the */5 tick records stage.stuck
 // once per task, stage and head, stage.told in the same tick, stage.cleared
@@ -24,7 +25,7 @@ async function project(name: string) {
 }
 const task = async (key: string, title: string) => (await L(key).newItem(title, ["src/a.ts"], "owner", { accept: ["It works"] })).id;
 // The 5 minute cron firing, `hours` after now.
-const tick = (hours: number, e: typeof env = testEnv) => worker.scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, e);
+const tick = (hours: number, e: typeof env = testEnv) => scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, e);
 const stageEvents = async (key: string) => ((await L(key).events(undefined, 1000)) as unknown as { itemId: string; kind: string; data: Record<string, unknown> }[])
   .filter((e) => e.kind.startsWith("stage.")).reverse().map((e) => [e.itemId, e.kind, e.data.stage]);
 
@@ -106,6 +107,6 @@ it("the stuck episodes of t196 keep working beside the stage tick", async () => 
   await project("st-g");
   const id = await task("st-g", "Silent");
   await L("st-g").claim(id, AGENT);
-  await worker.scheduled({ scheduledTime: Date.now() + 7 * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, testEnv);
+  await scheduled({ scheduledTime: Date.now() + 7 * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, testEnv);
   expect((await I().stuckEpisodes("st-g")).map((t) => [t.item, t.kind])).toEqual([[id, "opened"]]);
 });

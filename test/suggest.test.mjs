@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { suggestBuilder, stalledBuilder } from '../src/models/suggest.ts';
+import * as suggestModule from '../src/models/suggest.ts';
+const { suggestBuilder } = suggestModule;
 import { suggestReviewer } from '../src/review/suggest.ts';
 import { cleanEntry } from '../src/models/pool.ts';
 const entry = (id, harness = 'codex') => cleanEntry({ id, harness, where: 'home' }, 'owner', '2026-10-01');
@@ -49,23 +50,19 @@ test('a task note bears only on the project it names, even where another project
   assert.ok(suggestBuilder({ ...input, project: 'gamma', pool: [noted] }).reasons.includes(gamma));
   assert.ok(!suggestBuilder({ ...input, project: 'gamma', pool: [noted] }).reasons.join(' ').includes('t1'));
 });
-test('sensitive work and two rejections require frontier builders', () => {
+// G6 and G17: no keyword of the task's words, no count of rejections and no
+// run of stalled builds narrows the builders; each was a judgment the model
+// now makes, reading the reliability figures.
+test('no keyword, rejection count or stall history narrows the builders', () => {
+  const sources = [{ project: 'p', events: [event(1, 'item.claimed', item.owner), event(2, 'item.merged', 'owner')] }];
   for (const title of ['Fix security checks', 'Repair concurrency', 'Change gate rules']) {
-    assert.notEqual(suggestBuilder({ ...input, item: { ...item, title } }).actor, item.owner);
+    assert.equal(suggestBuilder({ ...input, sources, item: { ...item, title } }).actor, item.owner);
   }
-  const sources = [{ project: 'p', events: [event(1, 'review.rejected', 'claude-code/fable-5', { head: 'a' }), event(2, 'review.rejected', 'claude-code/fable-5', { head: 'b' })] }];
-  assert.match(suggestBuilder({ ...input, sources }).reasons[0], /Two rejections/);
-  assert.throws(() => suggestBuilder({ ...input, sources, pool: [pool[0]] }), /frontier/);
-  assert.equal(suggestBuilder({ ...input, sources: sources.map(s => ({ ...s, project: 'other' })), pool: [pool[0]] }).actor, item.owner);
-});
-test('two stalled builds latch exclusion through other failures until success', () => {
-  const records = { sources: [], runs: [run(1), run(2), run(3, 'refused')] };
-  assert.equal(stalledBuilder(pool[0], records), true);
-  assert.notEqual(suggestBuilder({ ...input, ...records }).actor, item.owner);
-  assert.equal(stalledBuilder(pool[0], { sources: [], runs: [run(1), run(2, 'refused'), run(3)] }), false);
-  assert.equal(stalledBuilder(pool[0], { sources: [], runs: [run(1), run(2, 'stalled', 'review')] }), false);
-  records.sources.push({ project: 'p', events: [event(4, 'item.submitted', item.owner)] });
-  assert.equal(stalledBuilder(pool[0], records), false);
+  const rejected = [{ project: 'p', events: [event(1, 'review.rejected', 'claude-code/fable-5', { head: 'a' }), event(2, 'review.rejected', 'claude-code/fable-5', { head: 'b' })] }];
+  assert.equal(suggestBuilder({ ...input, sources: rejected, pool: [pool[0]] }).actor, item.owner);
+  assert.equal(suggestBuilder({ ...input, runs: [run(1), run(2), run(3)], pool: [pool[0]] }).actor, item.owner);
+  assert.equal(suggestModule.stalledBuilder, undefined);
+  assert.equal(suggestModule.sensitive, undefined);
 });
 test('review excludes every contributor company and refuses unknown or exhausted companies', () => {
   const result = suggestReviewer({ ...input, item: { ...item, pushActors: ['claude-code/fable-5'] } });
@@ -73,10 +70,10 @@ test('review excludes every contributor company and refuses unknown or exhausted
   assert.throws(() => suggestReviewer({ ...input, item: { ...item, pushActors: ['claude-code/fable-5', 'gemini-cli/gemini-3'] } }), /no reviewer/);
   assert.throws(() => suggestReviewer({ ...input, item: { ...item, owner: 'codex/unknown-model' } }), /not recognised/);
 });
-test('sensitive reviews cannot fall back outside frontier', () => {
+test("a task's words do not ask a frontier reviewer; a protected change does", () => {
   const sensitive = { ...item, title: 'Security gate changes' };
-  assert.equal(suggestReviewer({ ...input, item: sensitive }).actor, 'claude-code/fable-5');
-  assert.throws(() => suggestReviewer({ ...input, item: { ...sensitive, pushActors: ['claude-code/fable-5'] } }), /frontier reviewer/);
+  assert.equal(suggestReviewer({ ...input, item: sensitive }).actor, suggestReviewer(input).actor);
+  assert.equal(suggestReviewer({ ...input, frontierRequired: true }).actor, 'claude-code/fable-5');
 });
 test('finding verdict precision orders independent reviewers', () => {
   const events = Array.from({ length: 5 }, (_, i) => ({ ...event(i + 1, 'review.finding', 'owner', { by: 'gemini-cli/gemini-3', head: 'a', index: i, finding: { severity: 'blocking' }, verdict: 'confirmed' }), at: '2026-10-08T00:00:00Z' }));
@@ -105,17 +102,6 @@ test('single-family mode keeps the suggested builder within the company', () => 
   assert.equal(suggestBuilder({ ...single, policy: { ...single.policy, familyMode: { single: null, by: 'owner', at: '2026-10-09T11:00:00Z' } } }).actor, item.owner);
 });
 
-test('stall history spans projects, harnesses and registered aliases', () => {
-  const aliased = { ...pool[0], aliases: ['sol-alias'] };
-  const runs = [run(1), { ...run(2), actor: 'opencode/sol-alias', project: 'another-project' }];
-  assert.equal(stalledBuilder(aliased, { sources: [], runs }), true);
-  assert.throws(() => suggestBuilder({ ...input, pool: [aliased], runs }), /two consecutive stalled builds/);
-});
-test('a successful build clears the latch but a fresh pair stalls it again', () => {
-  const sources = [{ project: 'p', events: [event(3, 'item.submitted', item.owner)] }];
-  assert.equal(stalledBuilder(pool[0], { sources, runs: [run(1), run(2), run(4)] }), false);
-  assert.equal(stalledBuilder(pool[0], { sources, runs: [run(5), run(2), run(4), run(1)] }), true);
-});
 test('record loading pages past 1000 events and fails on unreadable projects', async () => {
   const { suggestionRecords } = await import('../src/models/suggestion-records.ts');
   const index = { projects: async () => [{ name: 'p' }], runs: async (limit) => { assert.equal(limit, Number.MAX_SAFE_INTEGER); return [run(1)]; } };

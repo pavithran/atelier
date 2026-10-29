@@ -49,7 +49,7 @@ test("a second runner's claim of a claimed dispatch is refused naming the holder
   const { ns, L } = await world();
   try {
     const task = await L.newItem("One claim", ["docs/**"], "owner");
-    await L.dispatch(task.id, "owner", { to: "home", agent: "opencode" });
+    await L.dispatch(task.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
     // Both runners are offered the dispatch; home:a claims first.
     const b = token("home:b");
     await L.runnerPoll(b, offer("home:b"));
@@ -65,11 +65,11 @@ test("a second runner's claim of a claimed dispatch is refused naming the holder
     // Dispatching it again while its runner polls is refused, naming the holder.
     const now = Date.now();
     await L.recordRunnerPolls([{ runner: "home:a", at: iso(now) }]);
-    await assert.rejects(L.dispatch(task.id, "owner", { to: "home", agent: "opencode" }), /409\|held\|.* is held by opencode\/glm-5\.3 on home:a/);
+    await assert.rejects(L.dispatch(task.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" }), /409\|held\|.* is held by opencode\/glm-5\.3 on home:a/);
     // Past the liveness limit (and the minute the timestamps are coarsened by) it is reassignable.
     await L.recordRunnerPolls([{ runner: "home:a", at: iso(now - RUNNER_GONE_MS - OFFER_REFRESH_MS - 1000) }]);
     await assert.rejects(L.assertRunnerJob(b, task.id, A, true), /which last polled at .*so the dispatch can be given to another runner now/);
-    const again = await L.dispatch(task.id, "owner", { to: "home", agent: "opencode" });
+    const again = await L.dispatch(task.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
     assert.equal(again.state, "open");
     assert.equal(again.owner, null);
     // And the other runner now claims it.
@@ -83,7 +83,7 @@ test("the queue carries when the developer unblocked a task, and a task never un
   try {
     const task = await L.newItem("Blocked once", ["docs/**"], "owner");
     const other = await L.newItem("Never blocked", ["docs/**"], "owner");
-    for (const id of [task.id, other.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode" });
+    for (const id of [task.id, other.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
     await L.block(task.id, "owner", "validation_blocked: npm test could not run");
     assert.deepEqual((await L.queued()).waiting.map((i) => i.id), [other.id], "blocked, it is not offered");
     const before = Date.now();
@@ -217,7 +217,7 @@ test("two runners claiming one dispatch at once through the real server: exactly
     await seedMain(root, `${server.url}/git/demo.git`, OWNER);
     const made = await (await call("POST", "/projects/demo/items", { title: "Claimed once", scope: ["docs/**"] })).json();
     const id = (made.item ?? made).id;
-    assert.equal((await call("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode" })).status, 200);
+    assert.equal((await call("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3" })).status, 200);
     const runners = {};
     for (const name of ["home:a", "home:b"]) {
       const t = await (await call("POST", "/tokens", { runner: name, projects: ["demo"] })).json();
@@ -312,11 +312,18 @@ async function prereviewWorld(name) {
   const t1 = await submitted(head(1)), t2 = await submitted(head(2));
   await L.beginProjectLanding(t1, "owner");
   await L.queueProjectLanding(t2, "owner");
-  // The pre-review of t2 the queue offers now, as a runner sees it.
+  // The pre-review of t2 the queue offers now, as a runner sees it. Since
+  // G17 nothing asks one by itself: when none is live, the model asks it
+  // (atelier prereview t2 --reviewer codex/gpt-6-astra).
   const offered = async () => {
     await L.queueProjectLanding(t2, "owner");
-    const { reviews } = await L.queued();
-    const item = reviews.find((r) => r.id === t2 && r.dispatch.job === "prereview");
+    let { reviews } = await L.queued();
+    let item = reviews.find((r) => r.id === t2 && r.dispatch.job === "prereview");
+    if (!item) {
+      await L.requestPrereview(t2, "owner", "codex/gpt-6-astra", POOL, await index.runnerOffers());
+      ({ reviews } = await L.queued());
+      item = reviews.find((r) => r.id === t2 && r.dispatch.job === "prereview");
+    }
     assert.ok(item, "a pre-review is offered");
     return item;
   };

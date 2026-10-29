@@ -1,6 +1,7 @@
 import { env } from "./support/workers.ts";
 import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { scheduled, queue } from "./workers-removed.ts";
 
 // The staging copy's vars (release split, PAVI 2026-10-26), through the
 // Worker: the stuck notices the */10 cron sends link to PUBLIC_ORIGIN, and the
@@ -26,7 +27,7 @@ async function stuckProject(name: string) {
   const { id } = await L(name).newItem("Stuck work", ["src/a.ts"], "owner", { accept: ["It works"] });
   await L(name).claim(id, AGENT);
 }
-const tick = (hours: number, e: typeof env) => worker.scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, e);
+const tick = (hours: number, e: typeof env) => scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, e);
 afterEach(() => vi.restoreAllMocks());
 
 // The notice for `name` after its episode has been open an hour: its Click
@@ -60,7 +61,7 @@ async function accepted(namespace: string, e: typeof env) {
   const counting = { ...e, LEDGER: { idFromName: (n: string) => { names.push(n); return env.LEDGER.idFromName(n); }, get: (id: DurableObjectId) => env.LEDGER.get(id) } } as unknown as typeof env;
   const body = { type: "cf.artifacts.repo.pushed", source: { namespace, repoName: "nobody--t1" }, payload: { ref: "refs/heads/main", after: "a".repeat(40) } };
   let acks = 0, retries = 0;
-  await worker.queue({ messages: [{ body, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, counting);
+  await queue({ messages: [{ body, ack() { acks++; }, retry() { retries++; } }] } as unknown as MessageBatch<unknown>, counting);
   expect([acks, retries]).toEqual([1, 0]);
   return names.includes("__index");
 }

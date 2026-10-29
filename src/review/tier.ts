@@ -103,6 +103,22 @@ export function tierReviewerPick(tier: readonly string[], contributors: readonly
   return { actor, reasons: actor ? ordered.reasons(actor) : ordered.outcome.lines };
 }
 
+// Every tier model with what refuses it for a change's separate tier review
+// (G17): a contributor, one asked for the gate's review, another company
+// under single-family mode, or what `mayReview` says (policy, standing, no
+// live offer). Atelier asks none by itself; the model names one.
+export function tierCandidates(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean | string, single: PoolFamily | null = null, pool: PoolNames | null = null): { actor: string; refusal: string | null }[] {
+  const names = (a: string) => { const e = pool ? exactEntry(pool, a) : undefined; return e ? [e.id, ...e.aliases].map((id) => `${e.harness}/${id}`) : [a]; };
+  const isIt = (a: string, who: string) => names(a).some((n) => sameActor(n, who));
+  return tier.map((a) => ({
+    actor: a,
+    refusal: contributed(a, contributors) || contributors.some((c) => isIt(a, c)) ? "contributed to this change, and nobody reviews their own work"
+      : gate.some((g) => (pool && exactEntry(pool, g) ? g === a : sameActor(g, a) || isIt(a, g))) ? "already asked for the gate's review"
+        : single && actorFamily(a) !== single ? `not one of ${single}'s models (single-family mode)`
+          : reviewable(mayReview(a)),
+  }));
+}
+
 // Whether a tier model may be asked for a separate tier review: the exact
 // pool entry it is, the owner's standing for the review job as
 // src/models/pool.ts judges it (actorStanding, unchanged), a refused status,

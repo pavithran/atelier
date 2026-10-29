@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { Item } from "../src/rules.ts";
+import { queue as runQueue } from "./workers-removed.ts";
 
 // The push scan through the Worker's two push paths (t332): the push route
 // and the queue consumer. Each records the head with its scan pending, scans
@@ -130,7 +131,7 @@ const events = async (L: Awaited<ReturnType<typeof setup>>) => (await L.events("
 
 function queue(bindings: typeof env, name: string, after: string) {
   const counts = { acks: 0, retries: 0 };
-  const send = () => worker.queue({ messages: [{ body: notice(name, after), ack() { counts.acks++; }, retry() { counts.retries++; } }] } as unknown as MessageBatch<unknown>, bindings);
+  const send = () => runQueue({ messages: [{ body: notice(name, after), ack() { counts.acks++; }, retry() { counts.retries++; } }] } as unknown as MessageBatch<unknown>, bindings);
   return { counts, send };
 }
 

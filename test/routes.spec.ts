@@ -4,6 +4,7 @@ import { NO_OWNER_FACTOR } from "../src/rules.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
+import { queue } from "./workers-removed.ts";
 
 // The queue and claim routes driven through the Worker's own fetch handler,
 // so the header parsing and wiring are tested, not only the Ledger beneath.
@@ -1304,7 +1305,7 @@ it("push events are read on the project's branch, not the one the fork's info re
   // The fork's history as the consumer reads it: H2 on top of H0, the base.
   const artifacts = { get: async () => ({ info: async () => ({ defaultBranch: "main" }), log: async () => [{ hash: H2, parents: [H0] }, { hash: H0, parents: [] }], [Symbol.dispose]() {} }) } as unknown as Artifacts;
   const notice = (ref: string) => ({ type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: `${name}--t1` }, payload: { ref, after: H1 } });
-  const send = (body: unknown) => worker.queue({ messages: [{ body, ack() {}, retry() {} }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: artifacts });
+  const send = (body: unknown) => queue({ messages: [{ body, ack() {}, retry() {} }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS: artifacts });
   await send(notice("refs/heads/main"));
   expect((await L.item("t1")).head).toBe(H0);
   await send(notice("refs/heads/master"));

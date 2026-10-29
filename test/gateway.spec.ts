@@ -4,6 +4,7 @@ import { expect, it, vi } from "./support/vitest.ts";
 import worker, { readGateway } from "../src/index.ts";
 import { Ledger } from "../src/ledger.ts";
 import { renderModels } from "../src/ui.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // The AI Gateway's figures inside the Worker: the Models page in each state
 // (off, refused, no calls, figures), GET /api/usage's `gateway` field, and
@@ -76,7 +77,7 @@ it("nothing pulls the gateway's logs: the scheduled handler takes model snapshot
   try {
     // The scheduled handler is back for the daily model snapshots (t623);
     // it asks Cloudflare for nothing.
-    await worker.scheduled({ scheduledTime: NOW, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, ON);
+    await scheduled({ scheduledTime: NOW, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, ON);
     expect(spy.mock.calls.some(([u]) => String(u).includes("api.cloudflare.com"))).toBe(false);
     const ctx = createExecutionContext();
     // The poll is an owner-token write: it names the acting model (G18).

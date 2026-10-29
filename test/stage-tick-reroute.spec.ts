@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { scheduled } from "./workers-removed.ts";
 
 // t245 through the Worker and the Ledgers: the tick re-dispatches a queued
 // dispatch no live runner offers once, tells on a miss it cannot or may not
@@ -26,7 +27,7 @@ const queued = async (key: string, to: { agent: string; model: string }) => {
 // The runner `runner` offers `agents` for `key` alone, as it asked at the time of the tick.
 const offers = (key: string, runner: string, agents: { agent: string; models: string[] }[], ms: number, kind: "home" | "cloud" = "home", jobs?: string[]) =>
   I().putRunnerOffer({ runner, kind, agents, projects: [key], ...(jobs ? { jobs } : {}) }, new Date(Date.now() + ms).toISOString());
-const tick = (ms: number) => worker.scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
+const tick = (ms: number) => scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
 const stage = async (key: string) => ((await L(key).events(undefined, 1000)) as unknown as { itemId: string; kind: string; data: Record<string, unknown> }[])
   .filter((e) => e.kind.startsWith("stage.")).reverse();
 const kinds = async (key: string) => (await stage(key)).map((e) => [e.itemId, e.kind, e.data.stage]);
