@@ -83,6 +83,42 @@ undo_moves() {
   return $rc
 }
 
+# Where each of the four paths stands: a directory, a link, something else,
+# or absent.
+path_state() {
+  if [ -L "$1" ]; then echo "a link to $(readlink "$1")"
+  elif [ -d "$1" ]; then echo "a directory"
+  elif [ -e "$1" ]; then echo "present, not a directory"
+  else echo "absent"; fi
+}
+# Recovery after the jobs have stopped: the moves undone, and the jobs that
+# ran started again only when every undo succeeded. Otherwise every job
+# stays stopped, since a server started on half-restored or mismatched
+# directories would serve them, or make a missing data directory afresh;
+# what is where is printed, with the commands that finish by hand.
+recover() {
+  if undo_moves; then start_loaded; return; fi
+  local p job
+  {
+    echo "setup: the restore could not be undone completely; every $SVC job is left stopped."
+    echo "setup: where things are now:"
+    for p in "$D" "$D_OLD" "$R" "$R_OLD"; do echo "  $p: $(path_state "$p")"; done
+    echo "setup: to finish by hand, after checking each path above: for each pair whose before-restore directory exists,"
+    echo "  remove what stands at the live path, then move the before-restore directory back; then start the jobs:"
+    for p in "$D:$D_OLD" "$R:$R_OLD"; do
+      local cur=${p%%:*} old=${p#*:}
+      if [ -d "$old" ] && [ ! -L "$old" ]; then
+        echo "  sudo rm -rf '$cur'"
+        echo "  sudo mv '$old' '$cur'"
+      fi
+    done
+    for job in $JOBS; do
+      case " $loaded " in *" $job "*) echo "  sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist" ;; esac
+    done
+  } >&2
+  return 1
+}
+
 # A test sources the functions above alone (test/setup-restore.test.mjs).
 if [ "${SETUP_RESTORE_LIB:-}" = 1 ]; then return 0; fi
 
@@ -183,8 +219,7 @@ restore() {
   echo "setup: putting the previous $ENV data and repositories back" >&2
   if ! stop_all; then echo "setup: nothing was put back" >&2; return 1; fi
   if ! ( safe_dir "$HOME_DIR" && safe_dir "$HOME_DIR/data" && safe_dir "$HOME_DIR/repos" ) 2>/dev/null; then echo "setup: a directory of $SVC is not safe to write; nothing was put back" >&2; return 1; fi
-  undo_moves || echo "setup: not everything was put back; see above" >&2
-  start_loaded
+  recover
 }
 trap 'status=$?; [ $status = 0 ] || restore; rm -rf "$WORK"; exit $status' EXIT
 

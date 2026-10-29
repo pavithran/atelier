@@ -103,3 +103,40 @@ undo_moves; echo "undo status $?"`);
   assert.equal(readFileSync(join(h, "data/staging.before-restore-T/ledger"), "utf8"), "live data");
   assert.equal(readFileSync(join(h, "repos/staging/HEAD"), "utf8"), "live repos");
 });
+
+test("an incomplete undo leaves every job stopped, says what is where, and gives the commands to finish", { skip: darwin }, () => {
+  const h = home();
+  const r = bash(h, `
+JOBS="zone.atelier.server.staging zone.atelier.tunnel"
+loaded=" zone.atelier.server.staging zone.atelier.tunnel"
+start_loaded() { echo "STARTED"; }
+check_paths
+move_aside
+placing_d=1; mkdir "$D"; echo half > "$D/ledger"
+# The mocked failure: the repos directory cannot be moved back.
+mv() { if [ "$1" = "$R_OLD" ]; then echo "mock: the move back of repos fails" >&2; return 1; fi; command mv "$@"; }
+recover; echo "recover status $?"`);
+  assert.doesNotMatch(r.stdout, /STARTED/);
+  assert.match(r.stdout, /recover status 1/);
+  assert.match(r.stderr, /could not be undone completely; every .* job is left stopped/);
+  assert.match(r.stderr, new RegExp(`${h}/data/staging: a directory`));
+  assert.match(r.stderr, new RegExp(`${h}/data/staging\\.before-restore-T: absent`));
+  assert.match(r.stderr, new RegExp(`${h}/repos/staging: absent`));
+  assert.match(r.stderr, new RegExp(`${h}/repos/staging\\.before-restore-T: a directory`));
+  assert.match(r.stderr, new RegExp(`sudo mv '${h}/repos/staging\\.before-restore-T' '${h}/repos/staging'`));
+  assert.doesNotMatch(r.stderr, /sudo mv '[^']*data\/staging\.before-restore-T'/);
+  assert.match(r.stderr, /sudo launchctl bootstrap system \/Library\/LaunchDaemons\/zone\.atelier\.server\.staging\.plist/);
+  assert.match(r.stderr, /sudo launchctl bootstrap system \/Library\/LaunchDaemons\/zone\.atelier\.tunnel\.plist/);
+  // The data undo that could be made was made.
+  assert.equal(readFileSync(join(h, "data/staging/ledger"), "utf8"), "live data");
+});
+
+test("a complete undo starts again the jobs that ran", { skip: darwin }, () => {
+  const h = home();
+  const r = bash(h, `
+start_loaded() { echo "STARTED"; }
+check_paths
+move_aside
+recover; echo "recover status $?"`);
+  assert.match(r.stdout, /STARTED\nrecover status 0/);
+});
