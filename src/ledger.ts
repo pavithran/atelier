@@ -1516,6 +1516,12 @@ export class Ledger extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       for (const t of tokens) {
         if (this.sql.exec(`SELECT 1 FROM agent_tokens WHERE id = ? AND hash = ?`, t.id, t.hash).toArray().length) { held++; continue; }
+        // A clash that arose after the route's last check (the index takes
+        // one call at a time, so only between the two) refuses here, before
+        // any row: no token moves, and nothing is half written.
+        if (this.tokenConflicts([t]).length) {
+          throw new RuleError("token_conflict", `this server holds token ${t.id} under another hash or id, so the project's tokens did not move; its Ledger is imported and registered`, 409, `only the developer can: revoke token ${t.id} here with atelier token revoke ${t.id}, then reissue the tokens the project needs with atelier token issue`);
+        }
         const record = JSON.parse(t.json) as AgentToken;
         if (record.id !== t.id || record.hash !== t.hash) throw new RuleError("bad_dump", `the dump's token ${String(t.id).slice(0, 20)} names another id or hash in its record`, 400);
         if (record.projects?.length) record.projects = [...new Set(record.projects.map((n) => from.includes(n) ? to : n))];
@@ -4166,6 +4172,51 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     if (head) this.setMainHead(head, at);
     this.log(null, actor, kind, data, at);
+  }
+
+  // Where the project's move stands (task 11, review): whether the bake has
+  // ended (move-host --end-bake), and whether a merge has been recorded here
+  // since the project's repository first moved, which only a landing makes.
+  // move-host is the migration's alone: after either, with no way back open,
+  // only a landing moves the project's branch.
+  hostMoveState(): { moved: boolean; ended: boolean; landedSince: boolean } {
+    const first = this.sql.exec(`SELECT MIN(seq) AS seq FROM events WHERE kind = 'project.host_moved'`).one().seq as number | null;
+    if (first === null) return { moved: false, ended: false, landedSince: false };
+    const ended = this.sql.exec(`SELECT data FROM events WHERE kind = 'project.way_back' AND seq > ? ORDER BY seq`, first).toArray()
+      .some((r) => (JSON.parse(r.data as string) as { state?: string }).state === "ended");
+    const landedSince = this.sql.exec(`SELECT 1 FROM events WHERE kind IN ('item.merged', 'item.landed_fast') AND seq > ? LIMIT 1`, first).toArray().length > 0;
+    return { moved: true, ended, landedSince };
+  }
+
+  // The secret scan of moved history (task 11, review): a move whose
+  // history holds a key-shaped line is refused and its findings kept here;
+  // the developer clears them, with the reason and their words, and the next
+  // move's scan lets those lines (same file, same fingerprint) through, as
+  // a task's clearances let a push through.
+  hostMoveScan(): { hits: SecretHit[]; clearances: { file: string; fingerprint: string }[] } {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'host-move-scan'`).toArray()[0];
+    const kept = row ? JSON.parse(row.value as string) as { hits?: SecretHit[]; clearances?: { file: string; fingerprint: string }[] } : {};
+    return { hits: kept.hits ?? [], clearances: kept.clearances ?? [] };
+  }
+
+  hostMoveRefused(actor: string, remote: string, head: string, hits: SecretHit[]): void {
+    const kept = this.hostMoveScan();
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('host-move-scan', ?)`, JSON.stringify({ ...kept, hits, head }));
+    this.log(null, actor, "project.host_move_refused", { remote, head, flags: hits.map((h) => ({ file: h.file, line: h.line, commit: h.commit })) }, new Date().toISOString());
+  }
+
+  clearHostMove(actor: string, reason: unknown, direction: OwnerDirection | null): { cleared: number } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer clears a moved history's secret flag", 403, "only the developer can: atelier projects move-host P --from REMOTE --clear-secret REASON --quote WORDS");
+    if (!direction) throw new RuleError("direction_required", "clearing a key-shaped line in moved history needs the developer's words", 400, "run the same command with --quote \"the developer's words\" --as H/M");
+    const text = secretClearReason(reason);
+    const kept = this.hostMoveScan();
+    const at = new Date().toISOString();
+    const fresh = kept.hits.filter((h) => h.fingerprint && !kept.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint));
+    if (!fresh.length) throw new RuleError("no_secret", "no refused move's key-shaped line is left to clear", 409, "run atelier projects move-host P --from REMOTE, which scans the history first");
+    const clearances = [...kept.clearances, ...fresh.map((h) => ({ file: h.file, fingerprint: h.fingerprint as string, reason: text, by: actor, at, quote: direction.quote, acting: direction.acting }))];
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('host-move-scan', ?)`, JSON.stringify({ hits: [], clearances }));
+    this.log(null, actor, "project.host_move_cleared", { reason: text, flags: fresh.map((h) => ({ file: h.file, line: h.line })), quote: direction.quote, acting: direction.acting }, at);
+    return { cleared: fresh.length };
   }
 
   // A part's fork forked again from its plan's branch at `base`, or a

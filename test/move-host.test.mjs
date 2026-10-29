@@ -285,3 +285,49 @@ test("the old host's token reaches git as a header over HTTP, and a fetch withou
   assert.equal(taken.branch, "main");
   assert.equal(tipOf(unnamed, "refs/heads/main"), tipOf(artifacts, "refs/heads/main"));
 });
+
+test("after --end-bake, move-host is refused, naming a landing", async () => {
+  const refused = await cli(["projects", "move-host", "relic", "--from", artifacts, "--project", "relic"]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /bake_over: relic's repository moved to this server and its bake has ended, so move-host no longer moves main; only a landing does/);
+  assert.match(refused.stderr, /next: carry the commits as a task and land it: .*atelier land tN --project relic/);
+});
+
+test("moved history meets the push's checks: a key-shaped line refuses the move until the developer clears it", async () => {
+  // A second project from the same 1.0 dump, whose old baseline holds a key.
+  const dump = JSON.parse(readFileSync(FIXTURE, "utf8"));
+  const file = join(root, "keyed.json");
+  writeFileSync(file, JSON.stringify({ ...dump, project: "keyed", key: "keyed", record: { ...dump.record, name: "keyed", repo: "keyed" } }));
+  const imported = await cli(["ledger", "import", "--file", file, "--project", "keyed"]);
+  assert.equal(imported.code, 0, imported.stderr);
+  const KEY = ["sk", "proj", "TESTONLY", "d".repeat(28)].join("-");
+  const keyedHistory = join(root, "keyed-history");
+  makeV1History(keyedHistory);
+  writeFileSync(join(keyedHistory, "config.env"), `MODE=test\nOPENAI_API_KEY=${KEY}\n`);
+  git(keyedHistory, "add", "config.env");
+  git(keyedHistory, "commit", "-q", "-m", "add config");
+  const keyed = join(root, "artifacts", "keyed.git");
+  git(root, "init", "-q", "--bare", "-b", "main", keyed);
+  git(keyedHistory, "push", "-q", keyed, "main:refs/heads/main");
+  const keyedBare = join(root, "data", "repos", "keyed.git");
+
+  const refused = await cli(["projects", "move-host", "keyed", "--from", keyed, "--project", "keyed"]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /scan_refused: .*the secret scan found a key-shaped line: config\.env:2 in [0-9a-f]{12}/);
+  assert.match(refused.stderr, /next: take the line out of the old baseline's history, or only the developer can clear it: .*--clear-secret/);
+  assert.doesNotMatch(refused.stderr, new RegExp(KEY), "the value is never named");
+  assert.equal(existsSync(keyedBare) ? tipOf(keyedBare, "refs/heads/main") : null, null, "nothing moved");
+  const kept = server.namespace.get(server.namespace.idFromName("project:keyed"));
+  assert.doesNotMatch(JSON.stringify((await kept.dumpRows("events")).rows), new RegExp(KEY));
+
+  // Without the developer's words the clearance is refused; with them the move goes in.
+  const bare = await cli(["projects", "move-host", "keyed", "--from", keyed, "--clear-secret", "a test fixture's dummy key", "--project", "keyed"]);
+  assert.notEqual(bare.code, 0);
+  const cleared = await cli(["projects", "move-host", "keyed", "--from", keyed, "--clear-secret", "a test fixture's dummy key", "--quote", "clear it, it is a dummy", "--project", "keyed"]);
+  assert.equal(cleared.code, 0, `${cleared.stdout}\n${cleared.stderr}`);
+  assert.equal(tipOf(keyedBare, "refs/heads/main"), git(keyedHistory, "rev-parse", "HEAD"));
+  const events = (await kept.dumpRows("events")).rows.map((r) => ({ kind: r[4], data: JSON.parse(r[5]) }));
+  const clear = events.find((e) => e.kind === "project.host_move_cleared");
+  assert.equal(clear.data.quote, "clear it, it is a dummy");
+  assert.equal(clear.data.acting, ACTING);
+});

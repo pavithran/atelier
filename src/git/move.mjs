@@ -12,6 +12,8 @@
 // a file; the way back's, which outlives a request, is kept in a file of its
 // own under the data directory, mode 600, as the grant store is.
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { openScan } from "./policy.mjs";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { branchTip, holds } from "./branches.mjs";
@@ -83,7 +85,10 @@ async function revParse(dir, ref) {
 // done, with the branch verified equal to the remote's.
 // A project whose record names no branch (registered before records kept
 // one) takes the remote's HEAD branch.
-export async function mirrorBranch({ dir, branch: named, remote, token }) {
+// `scan` is { root, policy }: the directory the scan's files go in and the
+// policy the hook would read ({ clearances, private }); without it nothing
+// is scanned.
+export async function mirrorBranch({ dir, branch: named, remote, token, scan = null }) {
   const refs = await remoteRefs(dir, remote, token);
   let branch = named;
   if (!branch) {
@@ -101,6 +106,13 @@ export async function mirrorBranch({ dir, branch: named, remote, token }) {
     const fetched = await revParse(dir, `${STAGE}/head`);
     if (fetched !== want) return { error: "moved", detail: `${branch} on the remote moved while it was fetched (${want.slice(0, 8)}, then ${String(fetched).slice(0, 8)})` };
     const before = await branchTip(dir, branch);
+    // What the move adds meets the checks a push would (the hook's rules 5
+    // and 6): the secret scan, less the lines the developer cleared, and the
+    // private-file guard, before any ref here moves.
+    if (scan && fetched !== before && !(before && await holds(dir, fetched, before))) {
+      const refused = await scanMove({ dir, scan, old: before ?? ZERO, sha: fetched, ref: `refs/heads/${branch}`, branch });
+      if (refused) return { error: "scan_refused", ...refused, before, remoteHead: fetched };
+    }
     const moved = await follow(dir, `refs/heads/${branch}`, before, fetched, `move-host from ${remote.replace(/\?.*$/, "")}`);
     if (moved === "diverged") return { error: "diverged", detail: `${branch} here (${before.slice(0, 8)}) and on the remote (${fetched.slice(0, 8)}) have each moved apart from the other`, before, remoteHead: fetched };
     const head = await branchTip(dir, branch);
@@ -108,12 +120,49 @@ export async function mirrorBranch({ dir, branch: named, remote, token }) {
     let notes = "none";
     if (refs[NOTES]) {
       const got = await revParse(dir, `${STAGE}/notes`);
-      notes = got ? await follow(dir, NOTES, await revParse(dir, NOTES), got, "move-host notes") : "none";
+      const had = await revParse(dir, NOTES);
+      const refused = got && scan && got !== had ? await scanMove({ dir, scan, old: had ?? ZERO, sha: got, ref: NOTES, branch }) : null;
+      notes = refused ? `not moved: ${refused.detail}` : got ? await follow(dir, NOTES, had, got, "move-host notes") : "none";
     }
     return { branch, before, head, remoteHead: fetched, moved, notes, tags: tags.length };
   } finally {
     for (const r of ["head", "notes"]) await git(dir, ["update-ref", "-d", `${STAGE}/${r}`]).catch(() => {});
   }
+}
+
+// Runs the hook's scans over `old..sha` for `ref` in the bare repository
+// `dir`, in a process whose directory is the repository (src/git/scan-run.mjs).
+// Answers null, or { detail, hits } for a refusal.
+const SCAN_RUN = fileURLToPath(new URL("./scan-run.mjs", import.meta.url));
+// A push adds at most TASK_COMMITS (1,000) commits, as `atelier init` and
+// the old pushHistory send a long history in steps. A move reads a long
+// history the same way: in steps along the first-parent line, each at most
+// STEP commits past the last, so each step stays under the hook's cap.
+const STEP = 400;
+async function scanMove({ dir, scan, old, sha, ref, branch }) {
+  const line = (await git(dir, ["rev-list", "--first-parent", "--reverse", sha, ...(/^0+$/.test(old) ? [] : ["--not", old])])).split("\n").filter(Boolean);
+  const stops = line.filter((_, i) => (i + 1) % STEP === 0 && i + 1 < line.length);
+  let from = old;
+  for (const to of [...stops, sha]) {
+    const refused = await scanStep({ dir, scan, old: from, sha: to, ref, branch });
+    if (refused) return refused;
+    from = to;
+  }
+  return null;
+}
+async function scanStep({ dir, scan, old, sha, ref, branch }) {
+  const files = openScan(scan.root, scan.policy);
+  try {
+    const args = JSON.stringify({ old, sha, ref, branch, policyPath: files.env.ATELIER_POLICY, reportPath: files.env.ATELIER_REPORT });
+    const out = await new Promise((ok, fail) => execFile(process.execPath, [SCAN_RUN, args], { cwd: dir, encoding: "utf8", maxBuffer: 1 << 24, timeout: 15 * 60_000, env: { ...process.env, GIT_DIR: dir } },
+      (err, stdout, stderr) => (err ? fail(new Error(String(stderr || err.message).trim().split("\n").slice(-2).join(" "))) : ok(stdout))));
+    const { refusal } = JSON.parse(out.trim().split("\n").at(-1));
+    if (!refusal) return null;
+    const report = files.report();
+    return { detail: refusal, hits: (report?.hits ?? []).filter((h) => !scan.policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint)) };
+  } catch (error) {
+    return { detail: `the moved history could not be scanned (${error.message}); nothing was moved`, hits: [] };
+  } finally { files.close(); }
 }
 
 // Carries one task's work (design section 5, step 4: `atelier migrate tN`):

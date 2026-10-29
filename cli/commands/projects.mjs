@@ -35,7 +35,8 @@ async function moveHostCommand(name) {
   }
   if (typeof args.from !== "string" || !args.from) die(`name the old host's repository: ${command} --from REMOTE [--token-env VAR] [--way-back]`);
   const token = sourceToken(command);
-  const r = await call("POST", `${P(name)}/move-host`, { remote: args.from, ...(token ? { token } : {}), ...(args["way-back"] === true ? { wayBack: true } : {}) }, await actor(OWNER));
+  if (args["clear-secret"] !== undefined && (typeof args["clear-secret"] !== "string" || typeof args.quote !== "string")) die(`clearing a key-shaped line in moved history needs the reason and the developer's words: ${command} --from REMOTE --clear-secret "why it is safe" --quote "the developer's words"`);
+  const r = await call("POST", `${P(name)}/move-host`, { remote: args.from, ...(token ? { token } : {}), ...(args["way-back"] === true ? { wayBack: true } : {}), ...(typeof args["clear-secret"] === "string" ? { clearSecret: args["clear-secret"], quote: args.quote } : {}) }, await actor(OWNER));
   const said = {
     created: `now holds ${r.branch} @ ${r.head.slice(0, 8)}, equal to ${r.remote}'s`,
     forwarded: `moved ${r.branch} on from ${String(r.before).slice(0, 8)} to ${r.head.slice(0, 8)}, equal to ${r.remote}'s`,
@@ -57,7 +58,7 @@ export default async function projectsCommand() {
     if (!name || args._.length !== 3) die(COMMAND_USAGE.projects);
     return await moveHostCommand(name);
   }
-  for (const flag of ["from", "token-env", "way-back", "push-back", "end-bake"]) if (args[flag] !== undefined) die(`atelier projects ${sub ?? ""} does not take --${flag}; only move-host does`);
+  for (const flag of ["from", "token-env", "way-back", "push-back", "end-bake", "clear-secret", "quote"]) if (args[flag] !== undefined) die(`atelier projects ${sub ?? ""} does not take --${flag}; only move-host does`);
   if (sub === "rename") {
     if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
     // The local move is checked first: a rename the local config would then

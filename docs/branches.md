@@ -90,7 +90,7 @@ A 1.x project comes to the Studio in three steps (design section 5; tasks 10 and
 
 A project kept off Atelier brings its own task and decision files with `atelier import-tasks docs/TASKS.md docs/DECISIONS.md`: `- [ ] TITLE` files an open task (indented lines under it are its brief), `- TEXT` records a standing decision, `- [x]` lines are not filed, and any other line refuses the file, naming it. Importing the same file again changes nothing.
 
-The history moved this way is the baseline's own, written by the server, so the hook does not scan it; the next push to a task's branch scans everything that branch holds beyond the project's branch.
+What a move adds meets the checks a push would: the server runs the hook's secret scan and private-file guard over it (`src/git/scan-run.mjs`, in steps along the first-parent line so each stays under the 1,000-commit cap) before any ref moves. A key-shaped line refuses the move, naming file and line; the developer clears it with `--clear-secret REASON --quote WORDS`, and the next move lets that line (same file, same fingerprint) through. `move-host` belongs to the migration alone: after `--end-bake`, or once a landing has moved the branch here with no way back kept, it is refused (`bake_over`) and only a landing moves the branch.
 
 **The way back.** With `--way-back` the server keeps the old baseline's remote and its token in `DATA/way-back/P.json`, mode 600, and after each recorded merge pushes the project's branch (and the notes) back to it, never forced. A push that fails is recorded as a `project.way_back` event and named in the merge's answer; the merge stands. `--push-back` retries, and `--end-bake` forgets the old baseline once the bake has passed.
 

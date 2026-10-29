@@ -151,3 +151,25 @@ test("import-tasks files a project's own tasks and decisions, refuses a line it 
   assert.equal((await L.items()).length, before + 2);
   assert.throws(() => parseTaskFile("  indented with nothing above\n", "X.md"), /X\.md line 1 is not an entry/);
 });
+
+test("a token minted between an import's begin and its finish that clashes with a carried one is a token_conflict with a next, and the import stays open", async () => {
+  const dump = JSON.parse(readFileSync(join(root, "relic-site.json"), "utf8"));
+  const { manifestOf } = await import("../cli/ledger-dump.mjs");
+  const url = "/projects/relic-site/ledger/import";
+  // Server C refused this dump at begin for its clashing token; with that
+  // token revoked and gone, a fresh server D takes the begin.
+  const server = await startServer({ env: "test", dataDir: join(root, "data-d"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
+  servers.d = { server, base: server.url.replace("localhost", "127.0.0.1") };
+  const begun = await api("d", "POST", url, { step: "begin", manifest: manifestOf(dump) });
+  assert.equal(begun.status, 201, JSON.stringify(begun.body));
+  for (const t of dump.tables) if (t.rows.length) await api("d", "POST", url, { step: "rows", import: begun.body.import, table: t.name, columns: t.columns.map((c) => c.name), rows: t.rows });
+  // Meanwhile a token is minted on D under a carried token's id.
+  await index("d").putAgentToken({ id: runner.id, hash: "e".repeat(64), actor: "runner/other", runner: "home:other", projects: ["x"], createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400e3).toISOString() });
+  const finish = await api("d", "POST", url, { step: "finish", import: begun.body.import, tokens: dump.tokens, names: dump.names });
+  assert.equal(finish.status, 409, JSON.stringify(finish.body));
+  assert.equal(finish.body.error, "token_conflict");
+  assert.match(finish.body.detail, new RegExp(`holds token ${runner.id} under another hash or id, minted since the import began`));
+  assert.match(finish.body.next, /atelier token revoke ID.*--resume .*--abort/);
+  assert.ok(!(await index("d").projects()).some((p) => p.name === "relic-site"), "nothing was registered");
+  assert.equal((await api("d", "POST", url, { step: "abort", import: begun.body.import })).status, 200, "the import is still open to abort");
+});

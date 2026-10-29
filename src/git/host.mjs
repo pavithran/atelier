@@ -179,11 +179,11 @@ export class GitHost {
   // tags fetched from the old host into the project's repository, under the
   // project's lock, so no push or landing runs while its branch is set
   // (src/git/move.mjs, mirrorBranch). The repository's HEAD names the branch.
-  async mirror({ key, branch, remote, token }) {
+  async mirror({ key, branch, remote, token, policy }) {
     const release = await this.lock(key, null);
     try {
       const dir = this.repo(key, branch ?? "main");
-      const done = await mirrorBranch({ dir, branch, remote, token });
+      const done = await mirrorBranch({ dir, branch, remote, token, scan: { root: this.scanDir, policy } });
       if (!done.error) await setHead(dir, done.branch);
       return done;
     } finally { release(); }

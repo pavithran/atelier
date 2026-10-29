@@ -7,7 +7,7 @@ import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteria
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
-import { scanCommit } from "./secret-scan.ts";
+import { scanCommit, type SecretHit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone, timeZone } from "./time";
@@ -279,7 +279,7 @@ type GitHost = {
   moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
   revokeAfterPushes(id: string): Promise<boolean>;
   revokeLanding(args: { key: string; task: string }): Promise<number>;
-  mirror(args: { key: string; branch: string | null; remote: string; token: string | null }): Promise<HostMove>;
+  mirror(args: { key: string; branch: string | null; remote: string; token: string | null; policy: { clearances: { file: string; fingerprint: string }[]; private: string[] } }): Promise<HostMove>;
   carry(args: { key: string; projectBranch: string; branch: string; task: string; remote: string; ref: string; token: string | null; head: string }): Promise<{ head: string; tip: string | null; carried: boolean; error?: undefined } | { error: string; detail: string }>;
   dropBranch(args: { key: string; projectBranch: string; branch: string; task: string; at: string }): Promise<boolean>;
   keepWayBack(args: { key: string; remote: string | null; token?: string | null }): void;
@@ -289,7 +289,7 @@ type GitHost = {
 };
 // What move-host did (src/git/move.mjs, mirrorBranch), or why it did nothing.
 type HostMove = { error?: undefined; branch: string; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number }
-  | { error: string; detail: string; before?: string | null; remoteHead?: string };
+  | { error: string; detail: string; before?: string | null; remoteHead?: string; hits?: SecretHit[] };
 
 function gitHost(env: Env): GitHost | null {
   return (env as unknown as { GIT?: GitHost }).GIT ?? null;
@@ -771,6 +771,12 @@ async function ledgerWayBack(c: Ctx, ref: ProjectRef, step: string): Promise<Res
     if (body.step === "abort") return json({ project, ...(await L.importAbort(body.import)) });
     if (body.step === "rows") return json(await L.importRows(body.import, body.table, body.columns, body.rows));
     if (body.step === "finish") {
+      // A token minted here since begin may clash with one the dump
+      // carries: refused before the finish, so the import stays open to be
+      // aborted or finished once the clash is gone.
+      const carriedNow = carriedTokens(body.tokens);
+      const clashNow = carriedNow.length ? await index(env).tokenConflicts(carriedNow) : [];
+      if (clashNow.length) throw new RuleError("token_conflict", `this server now holds token ${clashNow.slice(0, 5).join(", ")}${clashNow.length > 5 ? ", …" : ""} under another hash or id, minted since the import began, so import ${String(body.import).slice(0, 40)} was not finished`, 409, `only the developer can: revoke the clashing token here with atelier token revoke ID, then run atelier ledger import --file F --resume ${String(body.import).slice(0, 40)} --project ${project}; or abort it with atelier ledger import --abort ${String(body.import).slice(0, 40)} --project ${project}`);
       const { counts, migrated, record } = await L.importFinish(body.import);
       const registered = !ref.registered && record !== null;
       if (registered) await index(env).registerProject({ ...(record as ProjectRecord), name: project });
@@ -1308,11 +1314,30 @@ async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): 
     if (r.error) throw new RuleError("push_back_failed", `${branch} was not pushed back to ${r.remote}: ${r.detail}`, 409, `check the old baseline and its token, then run ${command} --push-back`);
     return json({ project, branch, wayBack: { remote: r.remote, head: r.head, notes: r.notes ?? null } });
   }
+  // move-host is the migration's alone (review of task 11): once the bake
+  // has ended, or a landing has moved the branch here with no way back
+  // open, only a landing moves the project's branch.
+  const state = await L.hostMoveState();
+  if (state.ended || (state.landedSince && !git.wayBackOf(ref.key))) {
+    throw new RuleError("bake_over", `${project}'s repository moved to this server and ${state.ended ? "its bake has ended" : "has had a landing here with no way back open"}, so move-host no longer moves ${branch}; only a landing does`, 409,
+      `carry the commits as a task and land it: atelier new "TITLE" --project ${project}, claim it, push them to its branch, then atelier land tN --project ${project}`);
+  }
   const { remote, token } = sourceOf(body, command);
+  // The developer clears the key-shaped lines a refused move found, with the
+  // reason and their words; the scan below then lets those lines through.
+  if (body.clearSecret !== undefined) await L.clearHostMove(actor, body.clearSecret, ownerDirection(body.quote, c.acting ?? null, "clearing a moved history's secret flag"));
+  const policy = { clearances: (await L.hostMoveScan()).clearances, private: await L.privatePaths() };
   let done: HostMove;
-  try { done = await git.mirror({ key: ref.key, branch: named, remote, token }); }
+  try { done = await git.mirror({ key: ref.key, branch: named, remote, token, policy }); }
   catch (error) {
     throw new RuleError("fetch_failed", `${shownRemote(remote)} could not be read: ${String((error as Error)?.message ?? error).slice(0, 400)}; nothing was moved`, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
+  }
+  if (done.error === "scan_refused") {
+    const hits = done.hits ?? [];
+    if (hits.length) await L.hostMoveRefused(actor, shownRemote(remote), done.remoteHead ?? "", hits);
+    throw new RuleError("scan_refused", `the history ${shownRemote(remote)} would add does not pass the checks a push meets: ${done.detail}`, 409, hits.length
+      ? `take the line out of the old baseline's history, or only the developer can clear it: ${command} --from REMOTE --clear-secret "why it is safe" --quote "the developer's words" --as H/M`
+      : `take the private files out of the old baseline's history, then run ${command} --from REMOTE again`);
   }
   if (done.error === "no_branch") throw new RuleError("no_branch", `${done.detail}, so nothing was moved`, 404, `name the repository that holds ${p.name}'s ${branch}: ${command} --from REMOTE`);
   if (done.error === "diverged") {
