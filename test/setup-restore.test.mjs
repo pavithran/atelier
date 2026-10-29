@@ -114,7 +114,7 @@ function assertNoStart(r, h) {
   for (const p of ["data/staging", "data/staging.before-restore-T", "repos/staging", "repos/staging.before-restore-T"]) {
     assert.match(r.stderr, new RegExp(`    ${h}/${p.replace(/\./g, "\\.")}: (a directory|absent|a link to .*|present, not a directory)\n`), p);
   }
-  assert.match(r.stderr, /repair these, then run setup-restore\.sh again \(or bootstrap by hand once all four are as they were\)/);
+  assert.match(r.stderr, /remove any partial restored copy and any link, then run setup-restore\.sh again/);
 }
 const LOADED = `JOBS="zone.atelier.server.staging zone.atelier.tunnel"
 loaded=" zone.atelier.server.staging zone.atelier.tunnel"
