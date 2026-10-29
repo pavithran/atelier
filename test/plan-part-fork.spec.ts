@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { env, server } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
@@ -233,6 +236,39 @@ it("a move that moved the branch but failed to record the new base is finished b
   expect(repo.tip(bBranch)).toBe(MA);
   expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: next, state: "claimed" });
   expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: M0, base: MA, acting: builder }]);
+});
+
+// A push that lands on the part's branch after the claim has read it and
+// before it moves it (the 1.x case of a fork pushed to while its delete
+// waited, retired with the forks in task 7; review of task 7, round 1). The
+// move is a conditional update-ref naming the head it read (moveBranch in
+// src/git/branches.mjs), so it fails and the push stands, and the Ledger
+// records no move. The race is played by a git on PATH that, at the move's
+// own update-ref, first sets the branch to the pushed commit.
+it("a push that lands on a part's branch between the claim's read and its move is kept, and no move is recorded", async () => {
+  const name = "pf-push-race";
+  const { L, b, bBranch, bFork, repo, M0, builder } = await setup(name, false);
+  const PUSHED = repo.commit(M0, "pushed while the claim moved the branch");
+  const bin = mkdtempSync(join(tmpdir(), "atelier-git-race-"));
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  writeFileSync(join(bin, "git"), `#!/bin/sh
+if [ "$1" = "update-ref" ] && [ "$3" = "atelier: move an empty branch" ] && [ ! -e "${bin}/raced" ]; then
+  : > "${bin}/raced"
+  "${real}" update-ref "$4" "${PUSHED}"
+fi
+exec "${real}" "$@"
+`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  let res: Response;
+  try { res = await claim(name, b, builder); } finally { process.env.PATH = path; }
+  try {
+    expect(execFileSync("sh", ["-c", `test -e "${bin}/raced" && echo raced || echo not`], { encoding: "utf8" }).trim(), "the move's update-ref ran").toBe("raced");
+  } finally { rmSync(bin, { recursive: true, force: true }); }
+  expect(res.status, await res.clone().text()).toBe(200);
+  expect(repo.tip(bBranch)).toBe(PUSHED);
+  expect(await L.item(b)).toMatchObject({ fork: bFork, base: M0, owner: builder, state: "claimed" });
+  expect(await moves(L, b)).toEqual([]);
 });
 
 it("a branch left at an earlier head of the plan's branch is moved to its head", async () => {
