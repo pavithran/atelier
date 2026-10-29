@@ -50,6 +50,7 @@ import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
 import { parseReadiness } from "./runners/readiness";
 import { diskOf, lastRunOf, situationOf } from "./situation.ts";
+import { automaticNote } from "./run-facts.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -3620,7 +3621,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ item, next: `${to} runs: atelier claim ${id} --project ${project}` });
     }
     case "release": {
-      const note = String(body.note ?? "");
+      // A runner's release (a failure, a give-up, work in progress) keeps its
+      // facts alone (automaticNote, the round-11 review); a release written
+      // by hand keeps its words.
+      const automatic = !!c.token?.runner;
+      const note = automatic ? automaticNote(body.note) : String(body.note ?? "");
       // Released by this actor already and held by no one now: the repeat of
       // a release whose answer was lost. Held by someone else, it is refused below.
       const repeated = await L.repeatedRelease(id, actor, note);
@@ -3631,7 +3636,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await revoke(env, before.fork, oldToken);
       // Only a runner credential can exempt this release from plan attempts;
       // neither an actor nor a free-text note establishes infrastructure failure.
-      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true);
+      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true, automatic);
       return json(item);
     }
     case "accept": {

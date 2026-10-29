@@ -170,7 +170,8 @@ test("a runner whose builder identity is refused starts no harness and releases 
   assert.deepEqual(calls.find((c) => c.identity), { identity: ["/cache/work/demo/t5", "demo"], meta: true }, "checked in the harness's own environment");
   const release = calls.find((c) => c.argv?.[0] === "release");
   assert.ok(release, "the task goes back");
-  assert.match(release.argv.at(-1), /GIT_AUTHOR_EMAIL/);
+  // Round 11: the note says what happened from a fixed list; the setting to fix is in the run's local log.
+  assert.match(release.argv.at(-1), /commit identity refused/);
 });
 
 // ── landing ───────────────────────────────────────────────────────────────

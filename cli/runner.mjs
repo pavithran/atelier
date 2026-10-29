@@ -42,6 +42,7 @@ import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
 import { progressTracker } from "./progress.mjs";
+import { automaticNote } from "../src/run-facts.ts";
 import { checkLimits, limitMs, minutesText, stopLine, stopOf } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
@@ -2194,7 +2195,7 @@ export async function runTask(assignment, config, name, io) {
       // The commits stay in the workspace, which the next run resets only to
       // its own head; the claim goes back so the same work resumes after the reset.
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", automaticNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
         released = true;
         io.log("released: the same work resumes when the provider's limit resets");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
@@ -2208,7 +2209,7 @@ export async function runTask(assignment, config, name, io) {
       // section 3): the fork keeps the commits, and the plan's tick sends the
       // part back with the failing output in its next brief.
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace);
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, "", workspace)], workspace);
         released = true;
         io.log("released: the part goes back to its plan with the failing output");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
@@ -2260,7 +2261,7 @@ export async function runTask(assignment, config, name, io) {
       if (kept && stalled) {
         state = { ...state, workInProgress: kept };
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} (wip) and pushed for the next run to continue`)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, `work in progress ${kept.slice(0, 8)} pushed`, workspace)], workspace);
           released = true;
           io.log(`released: work in progress ${kept.slice(0, 8)} pushed for the next run`);
         }
@@ -2270,7 +2271,7 @@ export async function runTask(assignment, config, name, io) {
         // a later run on this runner continues from (continuing).
         state = { ...state, workInProgress: pushRefused.wip, pushRefused: pushRefused.why };
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(`${state.reason}; the uncommitted work is committed as ${pushRefused.wip.slice(0, 8)} (wip) but the push was refused, so it is only in this runner's workspace: ${pushRefused.why}`)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, `work in progress ${pushRefused.wip.slice(0, 8)} kept local; push refused`, workspace)], workspace);
           released = true;
           io.log(`released: work in progress ${pushRefused.wip.slice(0, 8)} is local only, the push was refused`);
         }
@@ -2288,7 +2289,7 @@ export async function runTask(assignment, config, name, io) {
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else if (head === startedAt() && !unstaged) {
         try {
-          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", error.validationBlocked ? blockNote(state.reason) : releaseNote(state.reason)], workspace);
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", error.validationBlocked ? blockNote(state.reason) : failureReleaseNote(assignment, state, "", workspace)], workspace);
           // The task is released with nothing committed: nothing is owed.
           await io.clearHarnessFailure?.(workspace).catch((clearError) => io.log(`could not clear the failure marker: ${clearError.message}`));
           unsavedFailures.delete(obligationKey());
@@ -2303,7 +2304,7 @@ export async function runTask(assignment, config, name, io) {
       } else if (!unstaged) io.log("claim preserved: a commit exists or commit status is unknown");
     } else if (claimAttempted && !claimed) {
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", failureReleaseNote(assignment, state, "", workspace)]);
         released = true;
         io.log("released after claim step failed");
       } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
@@ -2376,11 +2377,14 @@ export async function giveUpClaim({ io, project, item, actor, workspace, reason,
   const at = ["--project", project, "--as", actor];
   let pushed = "";
   try { await io.cli(["push", item.id, ...at], workspace); }
-  catch (error) { pushed = ` (its commits are not pushed: ${String(error.message).split("\n")[0].slice(0, 120)})`; }
+  // Never the push's error text (round 11): it stays in this runner's log.
+  catch (error) { pushed = "; its commits are not pushed"; io.log(`the give-up's push failed: ${String(error.message).split("\n")[0]}`); }
   // A validation_blocked build is blocked for the developer, not given up
   // to the queue (t326): the same release, with its note marked.
   const prefix = validationBlocked ? BLOCKED_NOTE : GAVE_UP;
-  const note = `${prefix}${String(reason ?? "").slice(-(NOTE_MAX - prefix.length - pushed.length))}${pushed}`;
+  // A give-up's note carries facts alone (automaticNote); a validation_blocked
+  // one is the builder's report, the block's reason.
+  const note = validationBlocked ? `${prefix}${String(reason ?? "").slice(-(NOTE_MAX - prefix.length - pushed.length))}${pushed}` : automaticNote(`${GAVE_UP}${String(reason ?? "")}${pushed}`);
   try {
     await io.cli(["release", item.id, ...at, "--note", note], workspace);
     if (validationBlocked) {
@@ -2394,8 +2398,18 @@ export async function giveUpClaim({ io, project, item, actor, workspace, reason,
   }
 }
 
-// The note a release carries when a provider's limit stopped the job.
-const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limit.resetAt).toISOString()}: ${limit.reason}`;
+// The note a release carries when a provider's limit stopped the job: the
+// harness and the reset alone, never the provider's words (round 11).
+const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limit.resetAt).toISOString()}`;
+
+// The note a runner's failure release carries (round 11): the step, the exit,
+// what became of uncommitted work and where the run's log is on this host,
+// rebuilt by the fixed grammar the server applies too (automaticNote). The
+// error's own text goes to the run's local log, never into the note.
+export function failureReleaseNote(task, state, extra = "", workspace = null) {
+  const facts = runFacts(task, state, { dir: workspace ? join(dirname(workspace), "run-logs") : null });
+  return automaticNote([state.reason ?? "", extra, facts.exitCode !== null ? `exit ${facts.exitCode}` : "", facts.log && facts.host ? `log ${facts.host}:${facts.log}` : ""].filter(Boolean).join("; "));
+}
 
 // A task's identity for the failure counts: its project, id and dispatch,
 // so dispatching it again starts the count afresh (t420), as the server's
@@ -3448,7 +3462,7 @@ export async function runIntegrate(assignment, config, name, io) {
   let claimed = false, released = false, before = null, pushed = false;
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["release", item.id, ...at, "--note", releaseNote(reason)]); }
+    try { await io.cli(["release", item.id, ...at, "--note", automaticNote(reason)]); }
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // The branch goes back to its head before the merge, in the workspace and,
@@ -3566,7 +3580,7 @@ export async function runRefresh(assignment, config, name, io) {
   let claimed = false, released = false, before = null, pushed = false;
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["release", item.id, ...at, "--note", releaseNote(reason)]); }
+    try { await io.cli(["release", item.id, ...at, "--note", automaticNote(reason)]); }
     catch (error) { io.log(`release failed: ${error.message}`); }
   };
   // As in runIntegrate: back to the head before the merge, in the workspace

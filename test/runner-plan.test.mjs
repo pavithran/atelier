@@ -201,7 +201,8 @@ test("a part whose finish fails is released with the reason; an ordinary task ke
   assert.equal(partState.phase, "failed");
   const release = part.calls.find((c) => c.argv?.[0] === "release");
   assert.ok(release, "the part is released, not held");
-  assert.ok(release.argv.includes(partState.reason), "the release note says why the finish failed");
+  // Round 11: the note names the step as a fact; the reason's text stays in the run's local log.
+  assert.match(release.argv[release.argv.indexOf("--note") + 1], /^step [a-z-]+(; |$)/, "the release note names the step");
   assert.ok(part.logs.some((l) => l.includes("released: the part goes back")));
   const ordinary = fixture(t, { failCommand: "finish" });
   await runTask(ordinaryJob, buildConfig, "home:studio", ordinary.io);

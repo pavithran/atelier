@@ -97,7 +97,7 @@ test("a build that ends in a provider limit is released, with no failure and not
   assert.equal(runOutcome(state), null);
   assert.equal(released(calls).length, 1);
   assert.equal(released(calls)[0].options.providerLimit, true);
-  assert.match(released(calls)[0].argv.at(-1), /^opencode usage limit until 2026-10-10T13:30:00.000Z: usage limit reached$/);
+  assert.equal(released(calls)[0].argv.at(-1), "step run; opencode usage limit until 2026-10-10T13:30:00.000Z", "the provider's words stay off the note (round 11)");
   assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
   assert.ok(logs.some((l) => l.startsWith("released:")));
   // The workspace is not reset or rolled back after the harness: nothing is lost.

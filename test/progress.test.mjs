@@ -457,3 +457,60 @@ test("round 10: nothing a run's output held is in any file the server stores, ap
     for (const [form, secret] of LEAKS) assert.ok(!bytes.includes(secret), `${f} holds ${secret} (from ${form})`);
   }
 });
+
+test("round 11: a git failure echoing https://x:secret@host/repo.git reaches no ledger row or API answer through a runner's release, a give-up or an old row", async () => {
+  const { failureReleaseNote, giveUpClaim } = await import("../cli/runner.mjs");
+  const { automaticNote } = await import("../src/run-facts.ts");
+  const { ledgerFile } = await import("../src/runtime/ledger-file.mjs");
+  const { DatabaseSync } = await import("node:sqlite");
+  const LEAK = "https://x:secret@host/repo.git";
+  const reason = `git fetch ${LEAK} failed:\nfatal: unable to access '${LEAK}/': Could not resolve host: host`;
+  // The runner's own notes: the step, the exit, where the log is; never the error text.
+  const task = { project: "demo", item: { id: "t1" }, agent: "claude-code" };
+  const note = failureReleaseNote(task, { reason }, "work in progress abcdef12 pushed", join(root, "work", "demo", "t1"));
+  assert.match(note, /^step fetch; work in progress abcdef12 pushed; log [^:]+:\/.*\.log$/);
+  assert.ok(!note.includes("secret") && !note.includes("host/repo"), note);
+  assert.ok(readFileSync(note.split(":").slice(-1)[0], "utf8").includes(LEAK), "the text stays in the runner's own log");
+  const sent = [];
+  await giveUpClaim({ io: { cli: async (argv) => { if (argv[0] === "push") throw new Error(`git push ${LEAK} failed`); sent.push(argv); }, log: () => {} }, project: "demo", item: { id: "t1" }, actor: BUILDER, workspace: root, reason });
+  const given = sent[0][sent[0].indexOf("--note") + 1];
+  assert.equal(given, "the runner gave up: step fetch; its commits are not pushed");
+  assert.equal(automaticNote(given), given, "the grammar keeps its own notes as they are");
+  // A runner that sends the raw text anyway: the server keeps the facts alone.
+  const id = (await api("POST", "/projects/demo/items", { title: "A git failure", scope: ["src/**"] })).body.id;
+  assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status, 200);
+  const offer = { runner: "home:studio", kind: "home", jobs: ["build"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }] };
+  const asRunner = (method, path, body) => fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${runnerToken}`, "content-type": "application/json", "x-atelier-runner": "home:studio", "x-atelier-actor": BUILDER }, body: JSON.stringify(body) });
+  assert.equal((await asRunner("POST", "/queue", offer)).status, 200);
+  const claimed = await asRunner("POST", `/projects/demo/items/${id}/claim`, {});
+  assert.equal(claimed.status, 200, await claimed.clone().text());
+  const released = await asRunner("POST", `/projects/demo/items/${id}/release`, { note: `${reason}; the uncommitted work is committed as abcdef12 (wip)` });
+  assert.equal(released.status, 200, await released.clone().text());
+  // A release written by hand keeps its words.
+  const manual = await api("POST", "/projects/demo/items", { title: "Released by hand" });
+  await L().claim(manual.body.id, BUILDER);
+  assert.equal((await api("POST", `/projects/demo/items/${manual.body.id}/release`, { note: "stopping for the day" }, OWNER)).status, 200);
+  // An old row, recorded before the flag, by a model: read back as facts.
+  await server.close();
+  const db = new DatabaseSync(join(root, "data", "ledgers", ledgerFile("project:demo")));
+  db.prepare("INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, 'item.released', ?)").run(id, new Date().toISOString(), BUILDER, JSON.stringify({ from: BUILDER, by: BUILDER, note: `old: ${reason}` }));
+  db.close();
+  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", port: Number(new URL(base).port), vars: { ATELIER_TOKEN: OWNER } });
+  // A kept-alive connection to the stopped server is reset once; read again.
+  for (let i = 0; i < 5; i++) { try { await api("GET", "/projects/demo"); break; } catch { await new Promise((r) => setTimeout(r, 100)); } }
+  const events = (await api("GET", `/projects/demo/items/${id}`)).body.events.filter((e) => e.kind === "item.released");
+  assert.ok(events.length >= 2, JSON.stringify(events));
+  for (const e of events) assert.ok(!JSON.stringify(e).includes("secret"), JSON.stringify(e));
+  assert.ok(events.some((e) => e.data.note === "step fetch; work in progress abcdef12 pushed"), JSON.stringify(events.map((e) => e.data.note)));
+  const kept = (await api("GET", `/projects/demo/items/${manual.body.id}`)).body.events.find((e) => e.kind === "item.released");
+  assert.equal(kept.data.note, "stopping for the day");
+  const answers = [JSON.stringify((await api("GET", `/projects/demo/items/${id}`)).body), JSON.stringify((await api("GET", "/projects/demo/events")).body), JSON.stringify((await api("GET", "/projects/demo/situation")).body),
+    JSON.stringify((await api("GET", "/inbox")).body), (await cli(["show", id, "--project", "demo"])).stdout, (await cli(["show", id, "--project", "demo", "--json", "--reviews"])).stdout].join("\n");
+  assert.ok(!answers.includes("secret"), "no API answer holds it");
+  // Only the old row put there on purpose holds the text; the runner's release stored none.
+  const rows = new DatabaseSync(join(root, "data", "ledgers", ledgerFile("project:demo")), { readOnly: true });
+  const raw = rows.prepare("SELECT data FROM events WHERE item_id = ? AND kind = 'item.released'").all(id).map((r) => r.data);
+  rows.close();
+  assert.equal(raw.filter((d) => d.includes("secret")).length, 1, "the old row alone");
+  assert.ok(raw.some((d) => d.includes('"automatic":true') && !d.includes("secret")));
+});

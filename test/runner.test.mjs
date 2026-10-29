@@ -461,22 +461,22 @@ test("alreadyComplete weighs the head against the task's record, its ancestry an
 });
 
 
-test("a release note over the server's cap is cut to its end, whatever failed", async () => {
+test("a release note carries facts alone, never the failure's text however long (round 11)", async () => {
   const reason = `prefix ${"x".repeat(3000)} tail`;
   const released = fixture({ head: "before" });
   released.io.brief = async () => { throw new Error(reason); };
   await runTask(assignment, config, "home:studio", released.io);
   const note = released.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
-  assert.equal(note.length, 2000, "the server takes at most 2000 characters (NOTE_MAX)");
-  assert.ok(note.endsWith(" tail"));
+  assert.match(note, /^step run; log [^:]+:\//);
+  assert.ok(!note.includes("prefix") && !note.includes("tail"));
 
   const unclaimed = fixture();
   const { cli } = unclaimed.io;
   unclaimed.io.cli = async (argv, cwd) => { unclaimed.calls.push({ argv, cwd }); if (argv[0] === "claim") throw new Error(reason); };
   await runTask(assignment, config, "home:studio", unclaimed.io);
   const afterClaimFailure = unclaimed.calls.find((c) => c.argv?.[0] === "release")?.argv.at(-1);
-  assert.equal(afterClaimFailure.length, 2000);
-  assert.ok(afterClaimFailure.endsWith(" tail"));
+  assert.match(afterClaimFailure, /^step run; log [^:]+:\//);
+  assert.ok(!afterClaimFailure.includes("prefix") && !afterClaimFailure.includes("tail"));
 });
 
 
@@ -1650,7 +1650,7 @@ test("giving a task up releases the claim even when the push fails, and the note
   assert.equal(await giveUpClaim({ io, project: "atelier", item, actor: assignment.actor, workspace: "/w", reason: "harness exited 1" }), true);
   const release = calls.find((c) => c.argv?.[0] === "release").argv;
   const note = release[release.indexOf("--note") + 1];
-  assert.match(note, /^the runner gave up: harness exited 1 \(its commits are not pushed: push refused\)$/);
+  assert.equal(note, "the runner gave up: step harness; exit 1; its commits are not pushed");
   assert.ok(logs.some((l) => l.includes("released atelier/t13")));
   // A release that fails leaves the claim held, and says so.
   const refused = fixture({ failCommand: "release" });
