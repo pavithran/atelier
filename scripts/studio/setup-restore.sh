@@ -99,13 +99,8 @@ manual_steps() {
   echo "  $name: this run $([ -n "$moved" ] && echo "moved the original to $old" || echo "moved nothing")$([ -n "$placing" ] && echo ", and began placing the restored copy at $cur")$([ -n "$undone" ] && echo "; the recovery put it back")."
   echo "    $cur: $(path_state "$cur")"
   echo "    $old: $(path_state "$old")"
-  [ -z "$undone" ] || return 0
-  if [ -L "$cur" ]; then echo "    hint: $cur is a link; remove the link itself: sudo rm '$cur'"
-  elif [ -n "$placing" ] && ! absent "$cur"; then echo "    hint: remove the partial restored copy: sudo rm -rf '$cur'"; fi
-  if [ -n "$moved" ]; then
-    if [ -d "$old" ] && [ ! -L "$old" ]; then echo "    hint: then move the original back: sudo mv '$old' '$cur'"
-    else echo "    hint: the original is not at $old as a directory; find it first"; fi
-  fi
+  # Facts only, no commands: what to run depends on what stands at these
+  # paths, and a printed command could nest, delete or serve the wrong one.
 }
 
 # Recovery after the jobs have stopped: the moves undone, and the jobs that
@@ -113,7 +108,7 @@ manual_steps() {
 # for any reason, every job stays stopped and no start command is printed,
 # since a server started on half-restored or mismatched directories would
 # serve them, or make a missing data directory afresh; what stands at each
-# of the four paths is printed, with repair hints.
+# of the four paths is printed, as facts, with no command to run.
 recover() {
   if undo_moves; then start_loaded; return; fi
   {
@@ -121,7 +116,7 @@ recover() {
     echo "setup: what this run did, and what stands at each of the four paths:"
     manual_steps "data" "$D" "$D_OLD" "$moved_d" "$placing_d" "$undone_d"
     manual_steps "repos" "$R" "$R_OLD" "$moved_r" "$placing_r" "$undone_r"
-    echo "setup: repair these, then run setup-restore.sh again (or bootstrap by hand once all four are as they were)."
+    echo "setup: put the original data and repos back at their live paths, remove any partial restored copy and any link, then run setup-restore.sh again."
   } >&2
   return 1
 }

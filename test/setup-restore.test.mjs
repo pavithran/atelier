@@ -130,7 +130,8 @@ ln -s "$HOME_DIR/elsewhere" "$R"
 recover; echo "recover status $?"`);
   assertNoStart(r, h);
   assert.match(r.stderr, new RegExp(`    ${h}/repos/staging: a link to ${h}/elsewhere`));
-  assert.match(r.stderr, new RegExp(`hint: ${h}/repos/staging is a link; remove the link itself: sudo rm '${h}/repos/staging'`));
+  // Facts only: recovery prints no command to run.
+  assert.doesNotMatch(r.stderr, /sudo |hint:/);
   assert.ok(lstatSync(join(h, "repos/staging")).isSymbolicLink());
 });
 
@@ -145,11 +146,12 @@ mv() { if [ "$1" = "$R_OLD" ]; then echo "mock: the move back of repos fails" >&
 recover; echo "recover status $?"`);
   assertNoStart(r, h);
   assert.match(r.stderr, /data: this run moved the original to .*; the recovery put it back\./);
-  assert.match(r.stderr, new RegExp(`hint: then move the original back: sudo mv '${h}/repos/staging\\.before-restore-T' '${h}/repos/staging'`));
+  // Facts only: recovery prints no command to run.
+  assert.doesNotMatch(r.stderr, /sudo |hint:/);
   assert.equal(readFileSync(join(h, "data/staging/ledger"), "utf8"), "live data");
 });
 
-test("no original and a placed copy that cannot be removed: its removal is hinted, and no start command is printed", { skip: darwin }, () => {
+test("no original and a placed copy that cannot be removed: its state is printed, and no command is", { skip: darwin }, () => {
   const h = home();
   rmSync(join(h, "data/staging"), { recursive: true });
   const r = bash(h, `
@@ -161,7 +163,8 @@ rm() { if [ "$2" = "$D" ]; then echo "mock: rm fails" >&2; return 1; fi; command
 recover; echo "recover status $?"`);
   assertNoStart(r, h);
   assert.match(r.stderr, /data: this run moved nothing, and began placing the restored copy at /);
-  assert.match(r.stderr, new RegExp(`hint: remove the partial restored copy: sudo rm -rf '${h}/data/staging'`));
+  // Facts only: recovery prints no command to run.
+  assert.doesNotMatch(r.stderr, /sudo |hint:/);
 });
 
 test("a complete undo starts again the jobs that ran", { skip: darwin }, () => {
