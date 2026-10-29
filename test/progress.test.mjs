@@ -336,7 +336,7 @@ test("the shared redactor takes bearer and basic credentials in any case and sha
     assert.ok(!out.includes(SECRET) && !out.includes("dXNlcjpwYXNz"), `${text} -> ${out}`);
   }
   assert.equal(redactKeys(`{"name": "demo", "x-api-key": "${SECRET}"}`), '{"name": "demo", "x-api-key": "[key removed]"}', "other values stay");
-  assert.equal(redactKeys("a basic test failed"), "a basic test failed", "the word basic alone is prose");
+  assert.equal(redactKeys("a basic test failed"), "a basic [key removed] failed", "the word after basic always goes (round 6)");
 });
 
 test("a command whose assignments are quoted or escaped is kept as sh, never any part of a value", async () => {

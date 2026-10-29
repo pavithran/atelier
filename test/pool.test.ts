@@ -218,10 +218,12 @@ test("a status report is one of four states, with what was served", () => {
     assert.doesNotThrow(() => cleanEntry({ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: fine }, "pavi", AT));
 });
 
-test("redactKeys removes the value of a TOKEN, KEY, SECRET or PASSWORD assignment and keeps the name", () => {
-  assert.equal(redactKeys("API_TOKEN=abc123def456 failed"), "API_TOKEN=[key removed] failed");
+test("redactKeys removes a credential-named assignment's value to the end of the line and keeps the name", () => {
+  // Since the round-6 review of G3/G4/G21: everything after the = goes, whatever it looks like.
+  assert.equal(redactKeys("API_TOKEN=abc123def456 failed"), "API_TOKEN=[key removed]");
   assert.equal(redactKeys("PASSWORD=hunter2"), "PASSWORD=[key removed]");
-  assert.equal(redactKeys('client_secret="two words" next'), 'client_secret=[key removed] next');
+  assert.equal(redactKeys('client_secret="two words" next'), 'client_secret=[key removed]');
   assert.equal(redactKeys('const DURATION_TOKEN = 1'), 'const DURATION_TOKEN = 1');
-  assert.equal(redactKeys("TOKENS=1 and keyboard=us and MODE=fast"), "TOKENS=[key removed] and keyboard=[key removed] and MODE=fast");
+  assert.equal(redactKeys("MODE=fast and TOKENS=1 and keyboard=us"), "MODE=fast and TOKENS=[key removed]");
+  assert.equal(redactKeys("API_TOKEN=a b\nnext line"), "API_TOKEN=[key removed]\nnext line");
 });

@@ -19,6 +19,17 @@ const LEAKS = [
   ["Bearer zyxwvut98765 refused", "zyxwvut98765"],
   ["basic dTpw", "dTpw"],
   ["BASIC dTpw sent", "dTpw"],
+  // Round 6: any word after basic or bearer, and any credential-named value to the line's end.
+  ["basic ajpw", "ajpw"],
+  ["basic dTpw. failed", "dTpw"],
+  ["Bearer abc,def;ghi", "abc"],
+  ["PASSWORD=prefix\u00a0secretvalue", "secretvalue"],
+  ["PASSWORD=prefix\\ secretvalue", "secretvalue"],
+  ["PASSWORD=/hunter2", "hunter2"],
+  ["KEY_FILE=/etc/atelier/k.pem missing", "k.pem"],
+  ["db_pwd=x y z", "y z"],
+  ["--client-credential=s3cr3t rest", "s3cr3t"],
+  ["Auth_Header=xyz", "xyz"],
 ];
 const ROUND_ONE = [
   ["Authorization: Custom abc123", "abc123"],
@@ -26,23 +37,27 @@ const ROUND_ONE = [
   ["curl -H 'Authorization: basic dTpw'", "dTpw"],
   ['{"authorization": "tok123abc", "ok": 1}', "tok123abc"],
 ];
-const PATHS = ["could not read /srv/keys=prod/app.log", "KEY_FILE=/etc/atelier/k.pem missing", "cp ~/build/TOKEN=x/out.txt .", "/tmp/a=b/file", "--out=/x/y=z"];
+// Paths with = in them whose name is not a credential's, or that stand mid-path.
+const PATHS = ["could not read /srv/keys=prod/app.log", "cp ~/build/TOKEN=x/out.txt .", "/tmp/a=b/file", "--out=/x/y=z", "OUT_DIR=/tmp/a=b/c"];
 
-test("assignments, bearer and basic credentials in any case (a basic one of four or more characters), and credential headers are removed", () => {
+test("credential-named assignments to the line's end, the word after bearer or basic in any case, and credential headers are removed", () => {
   for (const [note, secret] of [...LEAKS, ...ROUND_ONE]) {
     const out = redactKeys(note);
     assert.ok(!out.includes(secret), `${note} -> ${out}`);
     assert.match(out, /\[key removed\]/);
   }
-  assert.equal(redactKeys("API_TOKEN=abc123def456 rejected"), "API_TOKEN=[key removed] rejected");
+  assert.equal(redactKeys("API_TOKEN=abc123def456 rejected"), "API_TOKEN=[key removed]", "to the end of the line");
   assert.equal(redactKeys("curl -H 'Authorization: Bearer abc.def-ghi9' failed"), "curl -H 'Authorization: [key removed]' failed");
   assert.equal(redactKeys("got bearer abcdefgh123 back"), "got bearer [key removed] back");
   assert.equal(redactKeys("basic dTpw"), "basic [key removed]");
 });
 
-test("paths with = in them are kept, and so are the words a harness writes around a credential", () => {
+test("paths with = in them are kept unless a credential names them; the word after basic always goes", () => {
   for (const path of PATHS) assert.equal(redactKeys(path), path);
-  assert.equal(redactKeys("basic auth failed for user"), "basic auth failed for user");
+  assert.equal(redactKeys("basic auth failed for user"), "basic [key removed] failed for user");
+  assert.equal(redactKeys("PASSWORD=/hunter2 and more"), "PASSWORD=[key removed]");
+  assert.equal(redactKeys("PASSWORD=prefix\u00a0secretvalue"), "PASSWORD=[key removed]");
+  assert.equal(redactKeys("Bearer {env:GATEWAY_TOKEN}"), "Bearer {env:GATEWAY_TOKEN}", "a placeholder holds no secret");
 });
 
 test("the runner's copy: stderrSummary removes them before a note leaves the runner, and keeps paths", () => {
