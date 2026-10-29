@@ -75,6 +75,18 @@ The CLI clones the branch alone (`git clone --single-branch --branch t/N`) and f
 
 Before Git reads a byte, the server checks the credential. A request with no live grant for this project gets 401 at `info/refs`. A read grant asking to push gets 403.
 
+## Moving a project here
+
+A 1.x project comes to the Studio in three steps (design section 5; tasks 10 and 11). Each is the developer's, and none is an owner push.
+
+1. `atelier ledger import --file F --project P` loads the project's Ledger from a dump of the 1.0 server. A dump from older code is migrated to this code's schema, as a start of this code would migrate it, and the rows stored are checked against the dump's counts and checksums before the import finishes. `--abort ID` takes back an import that stopped.
+2. `atelier projects move-host P --from REMOTE [--token-env VAR] [--way-back]` has the server fetch the project's branch, `refs/notes/atelier` and the tags from the Artifacts baseline (or any remote) and set them in the project's repository with `git update-ref`, naming the old value, under the project's lock (`src/git/move.mjs`). The branch must equal the remote's. Run again at the cut-over, it moves the branch on; a branch this server has moved past is left, and one that diverged is refused. The project's prose standard is read from the branch when the 1.x Ledger never stored its text.
+3. `atelier migrate tN --from REMOTE` carries a task still on its Artifacts fork: the server fetches the fork and makes `t/N` at the head the Ledger records, under the task's lock, and records the branch as the task's workspace. The holder, claim and head stand. Until then a claim of the task and a task grant for it are refused (`fork_elsewhere`), so no push can make `t/N` apart from that work; afterwards the holder's next claim mints the grant.
+
+The history moved this way is the baseline's own, written by the server, so the hook does not scan it; the next push to a task's branch scans everything that branch holds beyond the project's branch.
+
+**The way back.** With `--way-back` the server keeps the old baseline's remote and its token in `DATA/way-back/P.json`, mode 600, and after each recorded merge pushes the project's branch (and the notes) back to it, never forced. A push that fails is recorded as a `project.way_back` event and named in the merge's answer; the merge stands. `--push-back` retries, and `--end-bake` forgets the old baseline once the bake has passed.
+
 ## What the isolation rests on
 
 All of this holds only if agents cannot reach the server's files. Builders run as `pavi` with permission checks off, so anything `pavi` can write, an agent can write. The repositories, the hooks, the grant store and the ledger therefore belong to a separate macOS user, `atelierd`. `pavi` cannot read or replace them (mode 700 at the top of `/Users/atelierd`). Crossing that boundary takes the administrator password, which no agent holds.

@@ -4085,6 +4085,39 @@ export class Ledger extends DurableObject<Env> {
     return out;
   }
 
+  // atelier migrate (Atelier 2.0, task 11; design section 5, step 4): the
+  // task's work moves from its fork on Artifacts to its branch in the
+  // project's repository on this server, which the caller has made at the
+  // head this Ledger records. Only the record of where the work lives
+  // changes: the holder, its claim, the base, the head and any acceptance
+  // stand. The write token, an Artifacts token, writes nothing here; the
+  // holder's next claim mints a Git grant in its place. Refused for a closed
+  // task, a task with no fork, or one whose head moved since the caller read
+  // it. A task already on `fork` is answered as it stands.
+  migrateFork(id: string, fork: string, actor: string, carried: { from: string; head: string; tip: string | null; remote: string }): Item {
+    const item = this.item(id);
+    if (item.fork === fork) return item;
+    if (item.state === "merged" || item.state === "abandoned" || item.state === "integrated") {
+      throw new RuleError("task_closed", `${id} is ${item.state}; a closed task's work is in its project's history, so nothing moves`, 409, `run atelier show ${id}`);
+    }
+    if (!item.fork || item.fork !== carried.from) throw new RuleError("fork_changed", `${id}'s workspace is ${item.fork ?? "not made yet"}, not ${carried.from}, so nothing was moved`, 409, `run atelier migrate ${id} again`);
+    if ((item.head ?? item.base) !== carried.head) throw new RuleError("head_moved", `${id}'s head moved to ${String(item.head ?? item.base).slice(0, 12)} while ${carried.head.slice(0, 12)} was carried, so nothing was moved`, 409, `run atelier migrate ${id} again`);
+    const at = new Date().toISOString();
+    this.update(id, { fork }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, forkPrepKey(id), forkRequestKey(id));
+    this.log(id, actor, "item.migrated", { from: carried.from, fork, head: carried.head, ...(carried.tip && carried.tip !== carried.head ? { tip: carried.tip } : {}), remote: carried.remote }, at);
+    return this.item(id);
+  }
+
+  // A project's repository moved to this server, or its way back changed
+  // (task 11): one event of the project, with what the server did, and the
+  // project branch's head as main's head when the move set it.
+  hostMoved(actor: string, kind: "project.host_moved" | "project.way_back", data: Record<string, unknown>, head: string | null = null): void {
+    const at = new Date().toISOString();
+    if (head) this.setMainHead(head, at);
+    this.log(null, actor, kind, data, at);
+  }
+
   // A part's fork forked again from its plan's branch at `base`, or a
   // task's from main's (t462), as the claim route does for a fork that
   // holds nothing beyond the commit it forked from (docs/orchestrator.md,

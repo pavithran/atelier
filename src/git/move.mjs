@@ -1,0 +1,176 @@
+// Moving a project's repository to the Studio (Atelier 2.0, task 11; design
+// section 5, steps 4 to 7). The server itself fetches from the old host, an
+// Artifacts baseline or any Git remote the developer names, and writes the
+// refs into the project's bare repository with `git update-ref`, naming the
+// old value: since task 6 no owner push moves the project's branch once it
+// exists, so the move is the server's own write, never a push. During the
+// bake the server pushes the project's branch back to the old baseline after
+// each landing, so the way back finds it current.
+//
+// A credential for the old host reaches git through its environment
+// (GIT_CONFIG_COUNT and an http.extraHeader), never its arguments, a log or
+// a file; the way back's, which outlives a request, is kept in a file of its
+// own under the data directory, mode 600, as the grant store is.
+import { execFile } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { branchTip, holds } from "./branches.mjs";
+
+const ZERO = "0".repeat(40);
+const STAGE = "refs/atelier-move";
+const NOTES = "refs/notes/atelier";
+const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+function gitEnv(token) {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "/usr/bin/false", GIT_PROTOCOL_FROM_USER: "0" };
+  for (const k of Object.keys(env)) if (k.startsWith("GIT_CONFIG_") || k === "GIT_DIR") delete env[k];
+  // A local path is the file transport, which GIT_PROTOCOL_FROM_USER=0 would
+  // refuse; https and http are always allowed and nothing else is.
+  const settings = [["protocol.allow", "never"], ["protocol.https.allow", "always"], ["protocol.http.allow", "always"], ["protocol.file.allow", "always"]];
+  if (token) settings.push(["http.extraHeader", `Authorization: Bearer ${token}`]);
+  env.GIT_CONFIG_COUNT = String(settings.length);
+  settings.forEach(([key, value], i) => { env[`GIT_CONFIG_KEY_${i}`] = key; env[`GIT_CONFIG_VALUE_${i}`] = value; });
+  return env;
+}
+
+// Runs git in the bare repository `dir`. A failure's message is git's own
+// last lines, with any token taken out.
+function git(dir, args, token = null, timeout = 15 * 60_000) {
+  return new Promise((ok, fail) => execFile("git", args, { cwd: dir, encoding: "utf8", env: gitEnv(token), maxBuffer: 1 << 26, timeout }, (err, stdout, stderr) => {
+    if (!err) return ok(stdout.trim());
+    let said = String(stderr || err.message).trim().split("\n").filter((l) => !/^hint:/.test(l)).slice(-3).join(" ").slice(0, 400);
+    if (token) said = said.split(token).join("[token]");
+    fail(Object.assign(new Error(said), { status: err.code }));
+  }));
+}
+
+// The refs the remote has, as { ref: sha }.
+async function remoteRefs(dir, remote, token) {
+  const out = await git(dir, ["ls-remote", "--refs", remote], token, 120_000);
+  const refs = {};
+  for (const line of out.split("\n")) {
+    const [sha, ref] = line.split("\t");
+    if (sha && ref && SHA.test(sha)) refs[ref] = sha;
+  }
+  return refs;
+}
+
+// Moves `ref` from `from` (null: it must not exist) to `to`.
+const setRef = (dir, ref, to, from, why) => git(dir, ["update-ref", "-m", `atelier: ${why}`, ref, to, from ?? ZERO]);
+
+// How a local ref stands against the fetched commit: created, unchanged,
+// forwarded (the local one is in the fetched one's history, and is moved
+// on), ahead (the fetched one is in the local one's history: this server has
+// moved on since, by a landing, and nothing changes) or diverged (neither).
+async function follow(dir, ref, local, fetched, why) {
+  if (!local) { await setRef(dir, ref, fetched, null, why); return "created"; }
+  if (local === fetched) return "unchanged";
+  if (await holds(dir, local, fetched)) { await setRef(dir, ref, fetched, local, why); return "forwarded"; }
+  if (await holds(dir, fetched, local)) return "ahead";
+  return "diverged";
+}
+
+async function revParse(dir, ref) {
+  try { return await git(dir, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) || null; } catch { return null; }
+}
+
+// Mirrors the project's branch, Atelier's provenance notes and the tags of
+// `remote` into the bare repository `dir`. The branch is fetched to a staging
+// ref first and then set, created when the repository lacks it and moved
+// on when it is behind, so a second run at the cut-over carries what changed
+// since the rehearsal. A branch this server has moved past is left; one that
+// has diverged from the remote's refuses, naming both. Answers what was
+// done, with the branch verified equal to the remote's.
+export async function mirrorBranch({ dir, branch, remote, token }) {
+  const refs = await remoteRefs(dir, remote, token);
+  const want = refs[`refs/heads/${branch}`];
+  if (!want) return { error: "no_branch", detail: `${remote.replace(/\?.*$/, "")} has no branch ${branch}` };
+  const specs = [`+refs/heads/${branch}:${STAGE}/head`];
+  if (refs[NOTES]) specs.push(`+${NOTES}:${STAGE}/notes`);
+  const tags = Object.keys(refs).filter((r) => r.startsWith("refs/tags/"));
+  try {
+    await git(dir, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, ...specs, ...tags.map((t) => `${t}:${t}`)], token);
+    const fetched = await revParse(dir, `${STAGE}/head`);
+    if (fetched !== want) return { error: "moved", detail: `${branch} on the remote moved while it was fetched (${want.slice(0, 8)}, then ${String(fetched).slice(0, 8)})` };
+    const before = await branchTip(dir, branch);
+    const moved = await follow(dir, `refs/heads/${branch}`, before, fetched, `move-host from ${remote.replace(/\?.*$/, "")}`);
+    if (moved === "diverged") return { error: "diverged", detail: `${branch} here (${before.slice(0, 8)}) and on the remote (${fetched.slice(0, 8)}) have each moved apart from the other`, before, remoteHead: fetched };
+    const head = await branchTip(dir, branch);
+    if (moved !== "ahead" && head !== fetched) return { error: "moved", detail: `${branch} here is ${String(head).slice(0, 8)}, not the remote's ${fetched.slice(0, 8)}, after the move` };
+    let notes = "none";
+    if (refs[NOTES]) {
+      const got = await revParse(dir, `${STAGE}/notes`);
+      notes = got ? await follow(dir, NOTES, await revParse(dir, NOTES), got, "move-host notes") : "none";
+    }
+    return { before, head, remoteHead: fetched, moved, notes, tags: tags.length };
+  } finally {
+    for (const r of ["head", "notes"]) await git(dir, ["update-ref", "-d", `${STAGE}/${r}`]).catch(() => {});
+  }
+}
+
+// Carries one task's work (design section 5, step 4: `atelier migrate tN`):
+// fetches `ref` of `remote` (its Artifacts fork, or any remote) and makes
+// refs/heads/BRANCH at `head`, the head the Ledger records, which the fetched
+// history must hold. A branch already at `head` is taken as done. Answers
+// { head, tip } (tip: the remote ref's commit), or { error, detail }.
+export async function carryBranch({ dir, branch, remote, ref, token, head }) {
+  if (!SHA.test(head)) return { error: "no_head", detail: "the task records no head to carry" };
+  const at = await branchTip(dir, branch);
+  if (at === head) return { head, tip: null, carried: false };
+  if (at) return { error: "branch_exists", detail: `${branch} already exists here at ${at.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}` };
+  const stage = `${STAGE}/task`;
+  try {
+    try { await git(dir, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, `+${ref}:${stage}`], token); }
+    catch (error) { return { error: "fetch_failed", detail: `the fetch of ${ref} failed: ${error.message}` }; }
+    const tip = await revParse(dir, stage);
+    if (!tip) return { error: "fetch_failed", detail: `${ref} was not fetched` };
+    if (!await revParse(dir, head) || !await holds(dir, head, tip)) {
+      return { error: "head_missing", detail: `${ref} on the remote is at ${tip.slice(0, 8)}, whose history does not hold the recorded head ${head.slice(0, 8)}` };
+    }
+    await setRef(dir, `refs/heads/${branch}`, head, null, "migrate");
+    return { head, tip, carried: true };
+  } finally {
+    await git(dir, ["update-ref", "-d", stage]).catch(() => {});
+  }
+}
+
+// Deletes refs/heads/BRANCH while it still names `at`. True when it went.
+export async function dropBranch(dir, branch, at) {
+  try { await git(dir, ["update-ref", "-d", `refs/heads/${branch}`, at]); return true; } catch { return false; }
+}
+
+// The way back's record for a project (`atelier projects move-host --way-back`):
+// the old baseline's remote and the token that writes it, kept until the
+// bake ends, in DATA/way-back/KEY.json, mode 600, readable by the server's
+// user alone.
+export class WayBack {
+  constructor(dataDir) { this.dir = join(dataDir, "way-back"); }
+  #file(key) { return join(this.dir, `${key}.json`); }
+  get(key) {
+    try { return JSON.parse(readFileSync(this.#file(key), "utf8")); } catch { return null; }
+  }
+  set(key, { remote, token }) {
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    const file = this.#file(key);
+    writeFileSync(file, JSON.stringify({ remote, token: token ?? null }), { mode: 0o600 });
+    chmodSync(file, 0o600);
+  }
+  clear(key) { rmSync(this.#file(key), { force: true }); }
+}
+
+// Pushes the project's branch, and the notes when there are any, back to the
+// old baseline: a fast-forward, never forced, so a baseline someone moved
+// on is refused by git and reported, not overwritten. Answers { head } or
+// { error, detail }.
+export async function pushBack({ dir, branch, remote, token }) {
+  const head = await branchTip(dir, branch);
+  if (!head) return { error: "empty", detail: `${branch} has no commits here` };
+  try { await git(dir, ["push", "--quiet", "--no-verify", remote, `refs/heads/${branch}:refs/heads/${branch}`], token); }
+  catch (error) { return { error: "push_failed", detail: error.message, head }; }
+  let notes = null;
+  if (await revParse(dir, NOTES)) {
+    try { await git(dir, ["push", "--quiet", "--no-verify", remote, `${NOTES}:${NOTES}`], token); notes = "pushed"; }
+    catch (error) { notes = `not pushed: ${error.message}`; }
+  }
+  return { head, notes };
+}

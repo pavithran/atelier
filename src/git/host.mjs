@@ -13,6 +13,7 @@ import { gitRequest } from "./http.mjs";
 import { Locks } from "./locks.mjs";
 import { ensureRepo, repoDir } from "./repos.mjs";
 import { branchTip, createBranch, holds, moveBranch, setHead } from "./branches.mjs";
+import { WayBack, carryBranch, dropBranch, mirrorBranch, pushBack } from "./move.mjs";
 
 export const GRANT_LIVE = "/internal/grant-live";
 export const HOOKS_DIR = fileURLToPath(new URL("../../hooks", import.meta.url));
@@ -37,6 +38,7 @@ export class GitHost {
     this.namespace = namespace;
     this.settings = settings;
     this.grants = new GrantStore(join(dataDir, "git-grants.sqlite"));
+    this.wayBack = new WayBack(dataDir);
     // Rows of grants long expired or revoked go once a day; a task grant
     // the Ledger stopped recording is dead already and goes when it expires.
     this.grants.prune();
@@ -164,7 +166,68 @@ export class GitHost {
       revokeLanding: (args) => this.revokeLanding(args),
       claimBranch: (args) => this.claimBranch(args),
       moveEmptyBranch: (args) => this.moveEmptyBranch(args),
+      mirror: (args) => this.mirror(args),
+      carry: (args) => this.carry(args),
+      dropBranch: (args) => this.dropBranch(args),
+      keepWayBack: (args) => this.keepWayBack(args),
+      wayBackOf: (key) => { const w = this.wayBack.get(key); return w ? { remote: w.remote } : null; },
+      pushBack: (args) => this.pushBack(args),
+      readFile: (args) => this.readFile(args),
     };
+  }
+  // atelier projects move-host (task 11): the project's branch, notes and
+  // tags fetched from the old host into the project's repository, under the
+  // project's lock, so no push or landing runs while its branch is set
+  // (src/git/move.mjs, mirrorBranch). The repository's HEAD names the branch.
+  async mirror({ key, branch, remote, token }) {
+    const release = await this.lock(key, null);
+    try {
+      const dir = this.repo(key, branch);
+      const done = await mirrorBranch({ dir, branch, remote, token });
+      if (!done.error) await setHead(dir, branch);
+      return done;
+    } finally { release(); }
+  }
+  // atelier migrate tN (task 11): a task's work fetched from its old fork and
+  // made its branch here at the head the Ledger records, under the task's
+  // lock (src/git/move.mjs, carryBranch).
+  async carry({ key, projectBranch, branch, task, remote, ref, token, head }) {
+    const release = await this.lock(key, task);
+    try {
+      const dir = this.repo(key, projectBranch);
+      if (!await branchTip(dir, projectBranch)) return { error: "not_moved", detail: `${projectBranch} has no commits on this server yet` };
+      return await carryBranch({ dir, branch, remote, ref, token, head });
+    } finally { release(); }
+  }
+  // Takes back a branch `carry` made, while it is still at `at`, when the
+  // Ledger refused to record the move.
+  async dropBranch({ key, projectBranch, branch, task, at }) {
+    const release = await this.lock(key, task);
+    try { return await dropBranch(this.repo(key, projectBranch), branch, at); }
+    finally { release(); }
+  }
+  // The way back during the bake (design section 5, steps 6 and 7): the old
+  // baseline's remote and its write token kept, or forgotten (remote null).
+  keepWayBack({ key, remote, token }) {
+    if (remote === null) this.wayBack.clear(key);
+    else this.wayBack.set(key, { remote, token });
+  }
+  // The project's branch pushed back to the old baseline, under the
+  // project's lock as a reader, so a landing's push is not half seen.
+  // Answers null when no way back is kept.
+  async pushBack({ key, branch }) {
+    const kept = this.wayBack.get(key);
+    if (!kept) return null;
+    const release = await this.locks.acquireAll([[`project:${key}`, "r"]]);
+    try { return { remote: kept.remote, ...await pushBack({ dir: this.repo(key, branch), branch, remote: kept.remote, token: kept.token }) }; }
+    finally { release(); }
+  }
+  // A file's text at the tip of the project's branch, or null: what a moved
+  // project's prose standard holds, which a 1.x Ledger never stored.
+  async readFile({ key, branch, path, max = 200_000 }) {
+    if (typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes("..")) return null;
+    const { execFile } = await import("node:child_process");
+    return new Promise((ok) => execFile("git", ["show", `refs/heads/${branch}:${path}`], { cwd: this.repo(key, branch), encoding: "utf8", maxBuffer: max * 4 }, (err, stdout) => ok(err || stdout.length > max ? null : stdout)));
   }
   // Ends a task's landing grants (task 6): each is revoked once the pushes
   // made with it have ended. A grant is one landing's, so the record of that

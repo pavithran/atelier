@@ -18,7 +18,7 @@ const VALIDATION = [
     "bad_findings", "bad_goal", "bad_hash", "bad_head", "bad_host", "bad_identity", "bad_item", "bad_kind",
     "bad_label", "bad_lease", "bad_limit", "bad_task", "bad_list", "bad_main", "bad_mode", "bad_model", "bad_ms", "bad_name", "bad_note",
     "bad_outcome", "bad_post_merge", "bad_prepare", "bad_private", "bad_projects", "bad_prose_standard",
-    "bad_quote", "bad_reason", "bad_receipt", "bad_record", "bad_ref", "bad_regenerate", "bad_release",
+    "bad_quote", "bad_reason", "bad_receipt", "bad_record", "bad_regenerate", "bad_release",
     "bad_replaces", "bad_report", "bad_request", "bad_request_id", "bad_reset", "bad_resolve", "bad_resolver",
     "bad_review_bar", "bad_review_tier", "bad_revision", "bad_risk_reviews", "bad_role", "bad_run",
     "bad_runner", "bad_runner_token", "bad_scope", "bad_served", "bad_session", "bad_single_family",

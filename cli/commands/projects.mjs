@@ -4,9 +4,60 @@ import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
 import { moveConflict, moveProjectEntryOnDisk, releaseFormerName } from "../private-guard.mjs";
 
+// The old host's token for move-host and migrate, read from the variable
+// --token-env names, so it never stands in the command line or a shell's
+// history. None without the flag.
+export function sourceToken(command) {
+  if (args["token-env"] === undefined) return null;
+  const variable = args["token-env"];
+  if (typeof variable !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable)) die(`--token-env names an environment variable: ${command} --token-env ARTIFACTS_TOKEN`);
+  const value = process.env[variable]?.trim();
+  if (!value) die(`${variable} is not set, so there is no token to read the old host with; set it, then run ${command} again`);
+  return value;
+}
+
+// atelier projects move-host (Atelier 2.0, task 11; design section 5): the
+// server mirrors the project's branch, notes and tags from its old host into
+// its repository here, and during the bake pushes the branch back after each
+// landing so the way back stays open.
+async function moveHostCommand(name) {
+  const command = `atelier projects move-host ${name}`;
+  const modes = ["push-back", "end-bake"].filter((f) => args[f] === true);
+  if (modes.length > 1 || (modes.length && (args.from !== undefined || args["way-back"] === true))) die(`move-host does one thing at a time: --from REMOTE [--way-back], --push-back or --end-bake`);
+  const at = new URL(server()).host;
+  if (args["end-bake"] === true) {
+    const r = await call("POST", `${P(name)}/move-host`, { endBake: true }, await actor(OWNER));
+    return console.log(r.ended ? `${name} on ${at}: the way back is forgotten; landings no longer push ${r.branch} to the old baseline.` : `${name} on ${at} kept no way back; nothing changed.`);
+  }
+  if (args["push-back"] === true) {
+    const r = await call("POST", `${P(name)}/move-host`, { pushBack: true }, await actor(OWNER));
+    return console.log(`${name} on ${at}: ${r.branch} @ ${r.wayBack.head.slice(0, 8)} pushed back to ${r.wayBack.remote}${r.wayBack.notes ? `; notes ${r.wayBack.notes}` : ""}.`);
+  }
+  if (typeof args.from !== "string" || !args.from) die(`name the old host's repository: ${command} --from REMOTE [--token-env VAR] [--way-back]`);
+  const token = sourceToken(command);
+  const r = await call("POST", `${P(name)}/move-host`, { remote: args.from, ...(token ? { token } : {}), ...(args["way-back"] === true ? { wayBack: true } : {}) }, await actor(OWNER));
+  const said = {
+    created: `now holds ${r.branch} @ ${r.head.slice(0, 8)}, equal to ${r.remote}'s`,
+    forwarded: `moved ${r.branch} on from ${String(r.before).slice(0, 8)} to ${r.head.slice(0, 8)}, equal to ${r.remote}'s`,
+    unchanged: `already held ${r.branch} @ ${r.head.slice(0, 8)}, equal to ${r.remote}'s`,
+    ahead: `holds ${r.branch} @ ${String(r.before).slice(0, 8)}, which already holds ${r.remote}'s ${r.remoteHead.slice(0, 8)}; nothing moved`,
+  }[r.moved];
+  console.log([
+    `${name}'s repository on ${at} ${said}.`,
+    `Notes: ${r.notes}; tags: ${r.tags}.${r.proseStandard ? ` The prose standard's text was read from ${r.proseStandard}.` : ""}`,
+    r.wayBack ? `During the bake each landing pushes ${r.branch} back to ${r.wayBack.remote}; end it with ${command} --end-bake.` : "No way back is kept: landings push nothing to the old host.",
+    `Builders clone ${r.remote}. Tasks still on Artifacts forks move with atelier migrate tN --from REMOTE --project ${name}.`,
+  ].join("\n"));
+}
+
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {
   const [, sub, name, to] = args._;
+  if (sub === "move-host") {
+    if (!name || args._.length !== 3) die(COMMAND_USAGE.projects);
+    return await moveHostCommand(name);
+  }
+  for (const flag of ["from", "token-env", "way-back", "push-back", "end-bake"]) if (args[flag] !== undefined) die(`atelier projects ${sub ?? ""} does not take --${flag}; only move-host does`);
   if (sub === "rename") {
     if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
     // The local move is checked first: a rename the local config would then

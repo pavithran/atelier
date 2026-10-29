@@ -42,6 +42,8 @@ export const GRANT_LOCKS = {
   // runs the migrations, which may fill a head column; its abort empties
   // them all.
   importBegin: "project", importRows: "project", importFinish: "project", importAbort: "project",
+  // atelier migrate (task 11) changes which branch the task's work is on.
+  migrateFork: "task",
 };
 
 const TASK = /^t[1-9][0-9]*$/;

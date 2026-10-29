@@ -15,7 +15,7 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
-import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { checkRemote, forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
@@ -279,7 +279,17 @@ type GitHost = {
   moveEmptyBranch(args: { key: string; projectBranch: string; branch: string; from: string; base: string | null }): Promise<string | null>;
   revokeAfterPushes(id: string): Promise<boolean>;
   revokeLanding(args: { key: string; task: string }): Promise<number>;
+  mirror(args: { key: string; branch: string; remote: string; token: string | null }): Promise<HostMove>;
+  carry(args: { key: string; projectBranch: string; branch: string; task: string; remote: string; ref: string; token: string | null; head: string }): Promise<{ head: string; tip: string | null; carried: boolean; error?: undefined } | { error: string; detail: string }>;
+  dropBranch(args: { key: string; projectBranch: string; branch: string; task: string; at: string }): Promise<boolean>;
+  keepWayBack(args: { key: string; remote: string | null; token?: string | null }): void;
+  wayBackOf(key: string): { remote: string } | null;
+  pushBack(args: { key: string; branch: string }): Promise<{ remote: string; head?: string; notes?: string | null; error?: string; detail?: string } | null>;
+  readFile(args: { key: string; branch: string; path: string }): Promise<string | null>;
 };
+// What move-host did (src/git/move.mjs, mirrorBranch), or why it did nothing.
+type HostMove = { error?: undefined; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number }
+  | { error: string; detail: string; before?: string | null; remoteHead?: string };
 
 function gitHost(env: Env): GitHost | null {
   return (env as unknown as { GIT?: GitHost }).GIT ?? null;
@@ -1218,6 +1228,140 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
   return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
 }
 
+// ── moving a project to the Studio (Atelier 2.0, task 11) ───────────────
+//
+// Design section 5, steps 4 to 7. The developer's alone, on the Node server.
+// The old host's credential comes in the request body, reaches git through
+// its environment (src/git/move.mjs) and is kept only for the way back.
+
+// A remote as it may be recorded: without a query, which could carry a
+// credential, and cut to a length.
+const shownRemote = (remote: string) => remote.replace(/[?#].*$/, "").slice(0, 300);
+
+function sourceOf(body: Record<string, unknown>, command: string): { remote: string; token: string | null } {
+  const remote = typeof body.remote === "string" ? body.remote.trim() : "";
+  const bad = checkRemote(remote);
+  if (bad) throw new RuleError("bad_remote", `${bad}, so nothing was fetched`, 400, `run ${command} --from REMOTE, naming the old host's repository`);
+  if (body.token !== undefined && body.token !== null && (typeof body.token !== "string" || !body.token || body.token.length > 4096 || /[\s\0]/.test(body.token))) {
+    throw new RuleError("bad_token", "the old host's token is one line of text", 400, `run ${command} --token-env VAR, naming a variable that holds it`);
+  }
+  return { remote, token: typeof body.token === "string" ? body.token : null };
+}
+
+// POST /projects/P/move-host { remote, token?, wayBack? } mirrors the
+// project's branch, notes and tags from the old host into its repository
+// here (`atelier projects move-host`); run again at the cut-over, it carries
+// what changed since. { wayBack: true } also keeps the remote and its token
+// so each landing pushes the branch back during the bake; { pushBack: true }
+// pushes it back now; { endBake: true } forgets the way back.
+async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): Promise<Response> {
+  const { env, body, actor } = c;
+  requireOwner(env, actor);
+  const git = gitHost(env);
+  if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories, so a project's repository cannot move to it", 404, "move the project to the Studio server");
+  const project = ref.name;
+  const p = await L.project();
+  const branch = await projectBranch(env, p);
+  const command = `atelier projects move-host ${project}`;
+  if (body.endBake === true) {
+    const kept = git.wayBackOf(ref.key);
+    git.keepWayBack({ key: ref.key, remote: null });
+    if (kept) await L.hostMoved(actor, "project.way_back", { state: "ended", remote: kept.remote });
+    return json({ project, branch, wayBack: null, ended: !!kept });
+  }
+  if (body.pushBack === true) {
+    const r = await git.pushBack({ key: ref.key, branch });
+    if (!r) throw new RuleError("no_way_back", `${project} keeps no way back on this server, so nothing was pushed`, 409, `run ${command} --from REMOTE --token-env VAR --way-back`);
+    await L.hostMoved(actor, "project.way_back", r.error ? { state: "failed", remote: r.remote, head: r.head ?? null, detail: r.detail } : { state: "pushed", remote: r.remote, head: r.head, notes: r.notes ?? null });
+    if (r.error) throw new RuleError("push_back_failed", `${branch} was not pushed back to ${r.remote}: ${r.detail}`, 409, `check the old baseline and its token, then run ${command} --push-back`);
+    return json({ project, branch, wayBack: { remote: r.remote, head: r.head, notes: r.notes ?? null } });
+  }
+  const { remote, token } = sourceOf(body, command);
+  let done: HostMove;
+  try { done = await git.mirror({ key: ref.key, branch, remote, token }); }
+  catch (error) {
+    throw new RuleError("fetch_failed", `${shownRemote(remote)} could not be read: ${String((error as Error)?.message ?? error).slice(0, 400)}; nothing was moved`, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
+  }
+  if (done.error === "no_branch") throw new RuleError("no_branch", `${done.detail}, so nothing was moved`, 404, `name the repository that holds ${p.name}'s ${branch}: ${command} --from REMOTE`);
+  if (done.error === "diverged") {
+    throw new RuleError("diverged", `${done.detail}: this server's ${branch} holds commits the remote lacks and the remote holds commits this server lacks, so nothing was moved`, 409,
+      `only the developer can: find why both moved (git log on both), then move the host from a remote whose ${branch} holds this server's`);
+  }
+  if (done.error !== undefined) throw new RuleError("move_failed", `${done.detail}; nothing was recorded`, 409, `run ${command} --from REMOTE again`);
+  // A project registered on 1.x never stored its prose standard's text,
+  // which a claim hands to a builder with no checkout: it is read from the
+  // branch just moved.
+  let prose: string | null = null;
+  if (p.policy.proseStandard && !(await L.proseStandardText())) {
+    const text = await git.readFile({ key: ref.key, branch, path: p.policy.proseStandard });
+    if (text) { await L.setProseStandardText(text); prose = p.policy.proseStandard; }
+  }
+  if (body.wayBack === true) git.keepWayBack({ key: ref.key, remote, token });
+  const wayBack = git.wayBackOf(ref.key);
+  const record = { remote: shownRemote(remote), branch, before: done.before, head: done.head, remoteHead: done.remoteHead, moved: done.moved, notes: done.notes, tags: done.tags, ...(body.wayBack === true ? { wayBack: true } : {}) };
+  await L.hostMoved(actor, "project.host_moved", record, done.moved === "ahead" ? null : done.head);
+  return json({ project, ...record, proseStandard: prose, wayBack: wayBack ? { remote: shownRemote(wayBack.remote) } : null, remote: gitRemote(c, project) });
+}
+
+// POST /projects/P/items/tN/migrate { remote, ref?, token? } carries an open
+// task across (`atelier migrate tN`): its work, fetched from its old fork,
+// becomes its branch t/N here at the head the Ledger records, and the
+// Ledger records the branch as its workspace. Its claim and head stand; the
+// holder's next claim mints its Git grant.
+async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>, id: string): Promise<Response> {
+  const { env, body, actor } = c;
+  requireOwner(env, actor);
+  const git = gitHost(env);
+  if (!git) throw new RuleError("not_supported", "this server hosts no Git repositories, so no task moves to it", 404, "migrate tasks on the Studio server");
+  const p = await L.project();
+  const main = await projectBranch(env, p);
+  const item = await L.item(id);
+  const branch = itemBranch(item);
+  const fork = `${ref.key}/${branch}`;
+  const command = `atelier migrate ${id} --project ${ref.name}`;
+  const holder = item.owner ? `the holder runs atelier claim ${id} --as ${item.owner}` : `the next builder runs atelier claim ${id} --as H/M`;
+  if (item.fork === fork) return json({ item, branch, head: item.head, migrated: false, remote: gitRemote(c, ref.name), next: holder });
+  assertNotTerminal(item);
+  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace on Artifacts, so nothing moves; its claim here makes ${branch}`, 409, `run atelier claim ${id} --as H/M`);
+  const head = item.head ?? item.base;
+  if (!head) throw new RuleError("no_head", `${id} records no head or base, so there is nothing to carry`, 409, `only the developer can: release ${id} with atelier release ${id}, so its next claim starts it here`);
+  const { remote, token } = sourceOf(body, command);
+  const wanted = typeof body.ref === "string" && body.ref ? body.ref : main;
+  const from = wanted.startsWith("refs/") ? wanted : `refs/heads/${wanted}`;
+  if (!/^refs\/[A-Za-z0-9._\/-]{1,200}$/.test(from) || from.includes("..")) throw new RuleError("bad_ref", `${wanted.slice(0, 80)} is not a branch name`, 400, `run ${command} --from REMOTE --ref BRANCH`);
+  const done = await git.carry({ key: ref.key, projectBranch: main, branch, task: id, remote, ref: from, token, head });
+  if (done.error !== undefined) {
+    const detail = `${done.detail}, so ${id} was not moved`;
+    if (done.error === "not_moved") throw new RuleError("not_moved", detail, 409, `only the developer can: atelier projects move-host ${ref.name} --from REMOTE, then ${command} --from REMOTE`);
+    if (done.error === "head_missing") throw new RuleError("head_missing", detail, 409, `name the fork that holds ${head.slice(0, 12)}: ${command} --from REMOTE --ref BRANCH`);
+    if (done.error === "branch_exists") throw new RuleError("branch_exists", detail, 409, `only the developer can: compare ${branch} here with ${id}'s head (atelier show ${id})`);
+    throw new RuleError("fetch_failed", detail, 409, `check the remote and its token, then run ${command} --from REMOTE again`);
+  }
+  let moved: Item;
+  try { moved = await L.migrateFork(id, fork, actor, { from: item.fork, head, tip: done.tip, remote: shownRemote(remote) }); }
+  catch (error) {
+    if (done.carried) await git.dropBranch({ key: ref.key, projectBranch: main, branch, task: id, at: head });
+    throw error;
+  }
+  return json({ item: moved, branch, head, tip: done.tip, migrated: true, remote: gitRemote(c, ref.name), next: holder });
+}
+
+// The way back during the bake (design section 5, step 6): after a landing's
+// merge is recorded, the project's branch is pushed back to the old
+// baseline, when the project keeps one. A failure is recorded and answered,
+// never undoing the merge; `atelier projects move-host P --push-back` retries.
+async function pushBackAfterMerge(env: Env, L: ReturnType<typeof ledger>, key: string, p: ProjectRecord, actor: string): Promise<Record<string, unknown> | null> {
+  const git = gitHost(env);
+  if (!git) return null;
+  let r;
+  try { r = await git.pushBack({ key, branch: await projectBranch(env, p) }); }
+  catch (error) { r = { remote: git.wayBackOf(key)?.remote ?? "", error: "push_failed", detail: String((error as Error)?.message ?? error).slice(0, 300) }; }
+  if (!r) return null;
+  const record = r.error ? { state: "failed", remote: shownRemote(r.remote), head: r.head ?? null, detail: r.detail } : { state: "pushed", remote: shownRemote(r.remote), head: r.head, notes: r.notes ?? null };
+  await L.hostMoved(actor, "project.way_back", record).catch((e) => console.error(errorLine("record the way back's push", e)));
+  return record;
+}
+
 // A claim on the Node server (Atelier 2.0, task 5; design section 4.5),
 // after L.claim recorded it: the task's branch, t/N (plan/N for a plan), is
 // made in the project's repository at the tip of the branch it starts from
@@ -1244,7 +1388,7 @@ async function claimOnGit(c: Ctx, git: GitHost, L: ReturnType<typeof ledger>, t:
     // A workspace recorded on an Artifacts fork is moved to this server by
     // the migration, not by a claim.
     if (item.fork && item.fork !== fork) {
-      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: move ${id} to this server, then run atelier claim ${id} --as ${actor}`);
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
     }
     const made = await git.claimBranch({ key, projectBranch: main, branch, from });
     if (!made.head) {
@@ -1987,6 +2131,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // holder: the Ledger records it as the item's write token (`git:HASH`), so
   // a new one rotates it and every change of holder revokes it. 404 where the
   // server hosts no Git (the Workers deploy).
+  if (parts[2] === "move-host" && parts.length === 3 && m === "POST") return await moveHost(c, ref, L);
   if (parts[2] === "git-token" && parts.length === 3 && m === "POST") {
     const git = gitHost(env);
     if (!git) throw new RuleError("not_found", "this server hosts no Git repositories", 404);
@@ -2028,6 +2173,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     else if (c.token && c.token.actor !== actor) throw new RuleError("actor_mismatch", `this agent token speaks for ${c.token.actor}, not ${actor}; no Git credential was issued`, 403, `send the request as ${c.token.actor}`);
     const item = await L.item(id);
     if (item.state !== "claimed" || item.owner !== actor) throw new RuleError("not_holder", `${id} is not claimed by ${actor}; claim it first`, 409, `run atelier claim ${id} --as ${actor}`);
+    // A task whose work is still on its Artifacts fork has no branch here
+    // yet; a grant now would let a push make t/N apart from that work.
+    if (item.fork && item.fork !== `${ref.key}/${itemBranch(item)}`) {
+      throw new RuleError("fork_elsewhere", `${id}'s workspace is ${item.fork}, a fork on Artifacts, not a branch of ${p.name}'s repository on this server; it moves here with the migration, so no credential was issued`, 409, `only the developer can: atelier migrate ${id} --from REMOTE, then run atelier claim ${id} --as ${actor}`);
+    }
     // recordToken waits for the pushes in flight on the task (src/runtime/ledger-locks.mjs).
     const slot = await L.tokenSlot(id);
     const g = git.mint({ project: ref.key, kind: item.kind === "plan" ? "plan" : "task", task: id, actor, generation: slot.generation });
@@ -2608,6 +2758,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
   switch (verb) {
+    case "migrate": return await migrateTask(c, ref, L, id);
     case "claim": {
       // An integrate job's claim is preceded by a mergeability pre-check: a
       // predicted conflict sends the part back to its builder without a runner
@@ -3409,8 +3560,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const merged = await L.merged(id, actor, merge, true, item.acceptedHead);
       // One use: the task's landing grant goes once its push is recorded.
       await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
+      const wayBack = await pushBackAfterMerge(env, L, ref.key, p, actor);
       const postMerge = await L.postMergeRun(id);
-      return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
+      return json({ ...merged, ...(postMerge ? { postMerge } : {}), ...(wayBack ? { wayBack } : {}) });
     }
     // A merge made outside Atelier, recorded after the fact (t653): the
     // baseline is read here, where Git is, for the merge commit's parents and
@@ -3453,7 +3605,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const recorded = await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace);
       // A landing grant still live for the task ends with its merge recorded.
       await gitHost(env)?.revokeLanding({ key: ref.key, task: id });
-      return json(recorded);
+      const wayBack = await pushBackAfterMerge(env, L, ref.key, p, actor);
+      return json(wayBack ? { ...recorded, wayBack } : recorded);
     }
     case "landing": {
       requireOwner(env, actor);

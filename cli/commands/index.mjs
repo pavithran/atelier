@@ -46,6 +46,7 @@ import command_ledger from "./ledger.mjs";
 import command_login from "./login.mjs";
 import command_ls from "./ls.mjs";
 import command_merge from "./merge.mjs";
+import command_migrate from "./migrate.mjs";
 import command_mode from "./mode.mjs";
 import command_models from "./models.mjs";
 import command_new from "./new.mjs";
@@ -144,6 +145,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/login.mjs", run: command_login },
   { path: "cli/commands/ls.mjs", run: command_ls },
   { path: "cli/commands/merge.mjs", run: command_merge },
+  { path: "cli/commands/migrate.mjs", run: command_migrate },
   { path: "cli/commands/mode.mjs", run: command_mode },
   { path: "cli/commands/models.mjs", run: command_models },
   { path: "cli/commands/new.mjs", run: command_new },
