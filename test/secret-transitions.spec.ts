@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it, vi } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { Evidence, Item } from "../src/rules.ts";
 
@@ -139,8 +139,9 @@ async function setup(name: string) {
   return L;
 }
 
+// G18: a write as the developer names the model acting (an actor that is a harness/model names itself).
 const api = (bindings: typeof env) => (method: string, path: string, actor: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": A } : {}), "content-type": "application/json" },
   body: body === undefined ? undefined : JSON.stringify(body),
 }), bindings);
 
@@ -193,18 +194,22 @@ for (const [i, row] of rows.entries()) {
   });
 }
 
+// t178/G18: a model clearing on the developer token carries the developer's words (quote).
 it("an unscanned flag is cleared by the owner with a reason, and a changed object at the path blocks again", async () => {
   const row = rows.find((r) => r.name === "text→binary")!;
   const { d, call, name } = await pushed(row, rows.length);
   expect(d.gate.ready).toBe(false);
-  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a PNG icon, checked by hand" });
-  expect(clear.status).toBe(200);
+  const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a PNG icon, checked by hand", quote: "yes, that icon is fine" });
+  expect(clear.status, await clear.clone().text()).toBe(200);
   const cleared = (await clear.json()) as Item;
   expect(cleared.secret).toMatchObject([{ file: "a.ts", unscanned: true, cleared: true }]);
   expect(cleared.secretClearances).toMatchObject([{ file: "a.ts", reason: "a PNG icon, checked by hand" }]);
   const after = (await (await call("GET", `/projects/${name}/items/t1`, "owner")).json()) as Detail;
   expect(after.gate.ready).toBe(true);
   expect(after.item.secretClearances![0].fingerprint).toBe(cleared.secret![0].fingerprint);
+  // G18/t178: a model on the developer token clears on the developer's words, recorded with the acting model.
+  const events = (await env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`)).events("t1")) as unknown as { kind: string; data: Record<string, unknown> }[];
+  expect(events.find((e) => e.kind === "secret.cleared")?.data).toMatchObject({ confirmed: "direction", quote: "yes, that icon is fine", acting: A });
 });
 
 it("a head-side object the repositories do not hold leaves the scan pending, so the gate refuses", async () => {

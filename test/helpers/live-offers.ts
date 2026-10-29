@@ -1,4 +1,4 @@
-import { runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "../support/workers.ts";
 import type { SeenOffer } from "../../src/dispatch/rules.ts";
 import type { ModelEntry } from "../../src/models/pool.ts";
 

@@ -1,11 +1,16 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
+
+// The routes the developer names at an approval (G17: Atelier picks none): every part built by
+// zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.
+const routesOf = async (L: { planView(id: string): Promise<{ plan?: { parts: { key: string }[] } | null }> }, id: string) =>
+  Object.fromEntries(((await L.planView(id)).plan?.parts ?? []).map((p) => [p.key, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
 
 // Plan routing from the models live runners offer (t246): a runner's ask on
 // POST /queue is recorded on the index, and approval, the preview and the
@@ -38,10 +43,11 @@ const part = (key: string, change: Partial<PlanPart> = {}): PlanPart => ({
 });
 const doc = (...parts: PlanPart[]) => ({ schema: "atelier.plan.v1", goal: "Ship the feature", parts });
 
+// G18: an owner-token write names the acting model.
 function call(method: string, path: string, actor: string | null, body?: unknown, token = TOKEN, e = testEnv) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), e);
 }
@@ -72,29 +78,26 @@ async function proposed(L: L, plan = doc(part("a"), part("b"))) {
   return { id: item.id, hash: post.hash };
 }
 
-it("until any runner has asked, routing restricts nothing and the default planner is the pool's own order", async () => {
+it("until any runner has asked, routing restricts nothing and the planner candidates are the pool's own order", async () => {
   const L = await setup("plan-offers-hand");
   expect(await index().runnerOffers()).toEqual([]);
-  const byRank = await L.newPlan("Ranked", ["src/**"], "owner", null, POOL);
-  expect(byRank.reasons[0]).toMatch(/^Rank 1 of 3 in the pool for research work/);
-  await L.stopPlan(byRank.item.id, "owner", "done");
+  // G17: no planner is picked; the refusal lists every pool model, ranked, as nothing is known to be offered.
+  await refusal(L.newPlan("Ranked", ["src/**"], "owner", null, POOL), "planner_needed", /Eligible \(3\):\n\s+zcode\/glm-5\.3 \(cloud\): rank 1 of 3 for research work/);
   const { id, hash } = await proposed(L);
-  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL);
+  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL, [], await routesOf(L, id));
   expect(parts).toHaveLength(2);
   const view = await L.planView(id) as PlanView;
   expect(view.parts.every((p) => (p.route?.unrouted ?? null) === null)).toBe(true);
   await L.stopPlan(id, "owner", "done");
 });
 
-it("the default planner is one a live runner offers; a named planner is the owner's word alone", async () => {
+it("the planner candidates are those a live runner offers; a named planner is the owner's word alone", async () => {
   const L = await setup("plan-offers-planner");
-  // A runner offers only claude-code/opus-5.5: the default planner is opus,
-  // whatever ranks first, because no runner could claim the plan job of a
-  // model nobody offers.
+  // A runner offers only claude-code/opus-5.5: the only planner candidate is
+  // opus (G17: none is picked), whatever ranks first, because no runner could
+  // claim the plan job of a model nobody offers.
   await call("POST", "/queue", "owner", { runner: "home:studio", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], jobs: ["plan"] });
-  const again = await L.newPlan("Offered", ["src/**"], "owner", null, POOL);
-  expect(again.planner).toBe("claude-code/opus-5.5");
-  await L.stopPlan(again.item.id, "owner", "done");
+  await refusal(L.newPlan("Offered", ["src/**"], "owner", null, POOL), "planner_needed", /Eligible \(1\):\n\s+claude-code\/opus-5\.5 \(cloud\)[\s\S]*Refused:\n\s+zcode\/glm-5\.3: no live runner offers zcode\/glm-5\.3, so no runner could claim the plan job\n\s+codex\/gpt-6-astra: no live runner offers/);
   // A named planner needs no offer: the owner claims the plan by hand.
   const named = await L.newPlan("Named", ["src/**"], "owner", "zcode/glm-5.3", POOL);
   expect([named.planner, named.reasons]).toEqual(["zcode/glm-5.3", ["Named by the developer"]]);
@@ -122,10 +125,10 @@ it("approval and the preview route only from the models live runners offer", asy
   const { id, hash } = await proposed(L);
 
   // One runner asks, offering only zcode/glm-5.3: every part can build on it,
-  // but no offered model is of another family, so approval is refused naming
-  // each model no live runner offers.
+  // but no offered model is of another family, so the approval that names no
+  // routes (G17) is refused listing the candidates, the part with no reviewer.
   await call("POST", "/queue", "owner", { runner: "home:studio", agents: [{ agent: "zcode", models: ["glm-5.3"] }], jobs: ["build", "review"] });
-  await refusal(L.approvePlan(id, "owner", hash, false, POOL), "unrouted", /part a has no reviewer: no reviewer of another family than zai \(zcode\/glm-5\.3\): codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim its dispatch\), claude-code\/opus-5\.5 \(no live runner offers claude-code\/opus-5\.5, so no runner could claim its dispatch\)/);
+  await refusal(L.approvePlan(id, "owner", hash, false, POOL), "routes_needed", /part a: builders zcode\/glm-5\.3; reviewer none \(no reviewer of another family than zai \(zcode\/glm-5\.3\): codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim its dispatch\), claude-code\/opus-5\.5 \(no live runner offers claude-code\/opus-5\.5, so no runner could claim its dispatch\)/);
   // The preview an approval would fix says the same, and the offered builder
   // still shows, so the owner sees who would have built it.
   const preview = await L.planView(id, POOL);
@@ -135,15 +138,22 @@ it("approval and the preview route only from the models live runners offer", asy
   ]);
   expect(preview.preview?.[0].builder?.reasons.join("\n")).toMatch(/Offered by home:studio/);
 
-  // A second runner offers the rest of the pool: approval routes, and every
-  // builder, alternate and reviewer is a model one of the runners offers.
+  // A second runner offers the rest of the pool: the candidates route, and every
+  // builder, alternate and reviewer is a model one of the runners offers; the
+  // developer names the routes at the approval.
+  const offered = new Set(["claude-code/opus-5.5", "codex/gpt-6-astra", "zcode/glm-5.3"]);
   await index().putRunnerOffer({
     runner: "home:desk", kind: "home", jobs: ["build", "review"],
     agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }],
   }, new Date().toISOString());
-  await L.approvePlan(id, "owner", hash, false, POOL);
+  const candidates = await L.planView(id, POOL);
+  for (const r of candidates.preview ?? []) {
+    expect(r.unrouted).toBeNull();
+    expect(offered.has(r.builder?.actor ?? "")).toBe(true);
+    expect(offered.has(r.reviewer?.actor ?? "")).toBe(true);
+  }
+  await L.approvePlan(id, "owner", hash, false, POOL, [], await routesOf(L, id));
   const view = await L.planView(id) as PlanView;
-  const offered = new Set(["claude-code/opus-5.5", "codex/gpt-6-astra", "zcode/glm-5.3"]);
   expect(view.parts.length).toBe(2);
   for (const p of view.parts) {
     expect(p.route?.unrouted ?? null).toBeNull();
@@ -171,7 +181,7 @@ it("runners have asked but none is live: routing falls back to the whole pool, a
   // runners offer now.
   const shown = planText(await L.planView(id, null, null, await index().runnerOffers()) as PlanView, "plan-offers-stale");
   expect(shown).toMatch(/No runner is live now; the last to ask for work did so at 20\d\d-\d\d-\d\d \d\d:\d\d UTC, so routing falls back to the whole pool, and a dispatch may wait until a runner asks again/);
-  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL);
+  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL, [], await routesOf(L, id));
   expect(parts).toHaveLength(1);
   const view = await L.planView(id) as PlanView;
   expect(view.parts[0].route?.unrouted ?? null).toBeNull();
@@ -199,7 +209,7 @@ it("a model only a runner scoped to another project offers is not routed in this
   }, at);
   // Only glm-5.3 is offered to this project, so no reviewer of another
   // family is, and approval is refused as unrouted.
-  await refusal(L.approvePlan(id, "owner", hash, false, POOL), "unrouted", /part a has no reviewer: .*codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim its dispatch\)/);
+  await refusal(L.approvePlan(id, "owner", hash, false, POOL), "routes_needed", /part a: builders zcode\/glm-5\.3; reviewer none \(.*codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim its dispatch\)/);
   const preview = await L.planView(id, POOL);
   expect(preview.preview?.map((r) => [r.key, r.builder?.actor ?? null, r.unrouted !== null])).toEqual([
     ["a", "zcode/glm-5.3", true],
@@ -210,7 +220,7 @@ it("a model only a runner scoped to another project offers is not routed in this
     runner: "home:desk", kind: "home", jobs: ["build", "review"], projects: ["plan-offers-elsewhere", "plan-offers-scoped"],
     agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }],
   }, new Date().toISOString());
-  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL);
+  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL, [], await routesOf(L, id));
   expect(parts).toHaveLength(2);
   await L.stopPlan(id, "owner", "done");
 });

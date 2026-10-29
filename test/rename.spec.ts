@@ -1,6 +1,8 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { env, runInDurableObject, server } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
@@ -8,7 +10,8 @@ import { signIn } from "./signin.ts";
 // A project renamed on the server keeps its Ledger and repositories under the
 // name it was created with, and answers to every name it has had. These specs
 // drive the rename route and the resolution of former names through the
-// Worker's fetch handler, with Artifacts stubbed where a route reaches it.
+// Worker's fetch handler, over the Node server's bare repositories (task 2:
+// init makes the project's repository, named after its key).
 
 const TOKEN = "rename-test-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
@@ -18,7 +21,7 @@ const L = (key: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${key}`
 function call(method: string, path: string, actor: string, body?: unknown, e: typeof env = testEnv) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), e);
 }
@@ -31,19 +34,16 @@ async function project(name: string, title?: string) {
 
 const rename = (from: string, to: unknown, actor = "owner") => call("POST", `/projects/${from}/rename`, actor, { to });
 
-// The Artifacts calls a claim or an init makes, stubbed so the route runs to completion here.
-function artifacts(seen: { forks: string[]; created: string[] }) {
-  return {
-    create: async (repo: string) => { seen.created.push(repo); },
-    get: async () => ({
-      fork: async (name: string) => { seen.forks.push(name); },
-      log: async () => [{ hash: "0".repeat(40), parents: [] }],
-      info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
-      createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
-      revokeToken: async () => {},
-      [Symbol.dispose]() {},
-    }),
-  } as unknown as Artifacts;
+// The project's bare repository on the Node server, by the key it is stored under.
+const git = (server as unknown as { git: { reposDir: string; repo(key: string, branch: string): string } }).git;
+const hasRepo = (key: string) => existsSync(join(git.reposDir, `${key}.git`));
+// A commit on the key's main, for a claim's branch to start from.
+function seedMain(key: string) {
+  const dir = git.repo(key, "main");
+  const author = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+  const sha = execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "first"], { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+  execFileSync("git", ["update-ref", "refs/heads/main", sha], { cwd: dir });
+  return { dir, sha };
 }
 
 function cookie() {
@@ -73,34 +73,36 @@ it("the owner renames a project; both names reach the same Ledger, and an answer
   expect(body.items.map((i) => i.title)).toEqual(["Keep me"]);
   // The project's own record follows, with the rename in its history; nothing was copied to a Ledger under the new name.
   expect((await L("old-a").project()).name).toBe("new-a");
-  expect((await L("old-a").events() as unknown as { kind: string; data: { from: string; to: string } }[]).find((e) => e.kind === "project.renamed")?.data).toEqual({ from: "old-a", to: "new-a" });
+  expect((await L("old-a").events() as unknown as { kind: string; data: { from: string; to: string } }[]).find((e) => e.kind === "project.renamed")?.data).toEqual({ from: "old-a", to: "new-a", acting: "claude-code/opus-5.5" });
   const empty = await L("new-a").project().then(() => null, (e: unknown) => e as Error);
   expect(String(empty)).toContain("no_project");
   // Where the project stands, and the inbox, name it as it is now.
   expect(((await (await call("GET", "/projects/old-a/standing", "owner")).json()) as { project: { name: string } }).project.name).toBe("new-a");
   await L("old-a").newItem("Waiting", [], "owner");
-  await L("old-a").dispatch("t2", "owner", { to: "home" });
+  await L("old-a").dispatch("t2", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   const queue = await (await call("GET", "/queue", "owner")).json() as { project: string; item: { id: string } }[];
   expect(queue.find((q) => q.item.id === "t2" && ["old-a", "new-a"].includes(q.project))?.project).toBe("new-a");
 });
 
-it("an agent token limited to the old name writes through either name, and new forks are named after the key", async () => {
+it("an agent token limited to the old name writes through either name, and new branches are made in the repository of the key", async () => {
   await project("old-b");
+  const { dir, sha } = seedMain("old-b");
   await L("old-b").newItem("Take me", ["src/**"], "owner");
   await L("old-b").newItem("And me", ["docs/**"], "owner");
   const issued = await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6-astra", projects: ["old-b"] })).json() as { token: string };
   expect((await rename("old-b", "new-b")).status).toBe(200);
-  const seen = { forks: [] as string[], created: [] as string[] };
   const agent = (method: string, path: string, token = issued.token, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS: artifacts(seen) } as typeof env);
+  }), testEnv);
   const viaOld = await agent("POST", "/projects/old-b/items/t1/claim", issued.token, {});
   expect(viaOld.status).toBe(200);
   expect(viaOld.headers.get("x-atelier-project")).toBe("new-b");
   expect(((await viaOld.json()) as { item: { owner: string } }).item.owner).toBe("codex/gpt-6-astra");
   expect((await agent("POST", "/projects/new-b/items/t2/claim", issued.token, {})).status).toBe(200);
-  expect(seen.forks).toEqual(["old-b--t1", "old-b--t2"]);
-  expect((await L("old-b").item("t2")).fork).toBe("old-b--t2");
+  for (const id of ["t1", "t2"]) execFileSync("git", ["rev-parse", "--verify", `refs/heads/t/${id.slice(1)}`], { cwd: dir, encoding: "utf8" });
+  expect((await L("old-b").item("t1")).fork).toBe("old-b/t/1");
+  expect((await L("old-b").item("t2")).fork).toBe("old-b/t/2");
+  expect((await L("old-b").item("t2")).base).toBe(sha);
   // The token's listing shows the project once, under its new name.
   expect(((await (await agent("GET", "/projects")).json()) as { name: string }[]).map((p) => p.name)).toEqual(["new-b"]);
   // A token issued for the new name reaches the project through the old one; one for another project does not.
@@ -207,13 +209,12 @@ it("a later init through either name keeps the baseline and the key, and a remov
   await project("init-old");
   await L("init-old").newItem("Kept item", [], "owner");
   expect((await rename("init-old", "init-new")).status).toBe(200);
-  const seen = { forks: [] as string[], created: [] as string[] };
-  const put = (name: string, body: unknown) => call("PUT", `/projects/${name}`, "owner", body, { ...testEnv, ARTIFACTS: artifacts(seen) } as typeof env);
+  const put = (name: string, body: unknown) => call("PUT", `/projects/${name}`, "owner", body);
   const viaOld = await put("init-old", { title: "Renamed" });
   expect(viaOld.status).toBe(200);
   expect(viaOld.headers.get("x-atelier-project")).toBe("init-new");
   expect(((await viaOld.json()) as { project: unknown }).project).toMatchObject({ name: "init-new", repo: "init-old", title: "Renamed" });
-  expect(seen.created).toEqual(["init-old"]);
+  expect(hasRepo("init-old")).toBe(true);
   const listed = await (await call("GET", "/projects", "owner")).json() as { name: string }[];
   expect(listed.filter((p) => p.name.startsWith("init-")).map((p) => p.name)).toEqual(["init-new"]);
   expect(listed.find((p) => p.name === "init-new")).toMatchObject({ key: "init-old", formerly: ["init-old"], title: "Renamed" });
@@ -223,7 +224,7 @@ it("a later init through either name keeps the baseline and the key, and a remov
   const again = await put("init-new", {});
   expect(again.status).toBe(200);
   expect(((await again.json()) as { project: unknown }).project).toMatchObject({ name: "init-new", repo: "init-old", title: "Renamed" });
-  expect(seen.created).toEqual(["init-old", "init-old"]);
+  expect(hasRepo("init-old")).toBe(true);
   expect(((await (await call("GET", "/projects/init-new/items", "owner")).json()) as { title: string }[]).map((i) => i.title)).toEqual(["Kept item"]);
   expect(((await (await call("GET", "/projects", "owner")).json()) as { name: string }[]).find((p) => p.name === "init-new")).toMatchObject({ key: "init-old", formerly: ["init-old"] });
 });
@@ -329,7 +330,6 @@ it("the standard reviewer project cannot be removed, with or without --force, an
 // storage of the renamed project, the project created next under it is stored
 // apart, and a token limited to it never reaches the new project by that name.
 const release = (from: string, to: string) => call("POST", `/projects/${from}/rename`, "owner", { to, releaseName: true });
-const withArtifacts = (seen: { forks: string[]; created: string[] }) => ({ ...testEnv, ARTIFACTS: artifacts(seen) }) as typeof env;
 const bearer = (token: string, method: string, path: string, e: typeof env = testEnv) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
   method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
 }), e);
@@ -353,11 +353,10 @@ it("releasing a name: the project stops answering to it, the name is free, and t
   // The old project, its Ledger and its baseline stay reachable under the new name.
   expect(((await (await call("GET", "/projects/rel-a-old/items", "owner")).json()) as { title: string }[]).map((i) => i.title)).toEqual(["Old work"]);
   // A project created under the released name gets a key and a baseline of its own.
-  const seen = { forks: [] as string[], created: [] as string[] };
-  const created = await call("PUT", "/projects/rel-a", "owner", { title: "New A" }, withArtifacts(seen));
+  const created = await call("PUT", "/projects/rel-a", "owner", { title: "New A" });
   expect(created.status).toBe(200);
   expect(((await created.json()) as { project: unknown }).project).toMatchObject({ name: "rel-a", repo: "rel-a-2", title: "New A" });
-  expect(seen.created).toEqual(["rel-a-2"]);
+  expect(hasRepo("rel-a-2")).toBe(true);
   const both = (await I().projects()).filter((p) => p.name.startsWith("rel-a"));
   expect(both.map((p) => [p.name, p.key ?? p.name, p.repo])).toEqual([["rel-a", "rel-a-2", "rel-a-2"], ["rel-a-old", "rel-a", "rel-a"]]);
   expect(await I().resolveProject("rel-a")).toMatchObject({ name: "rel-a", key: "rel-a-2", registered: true, former: false });
@@ -401,8 +400,7 @@ it("tokens limited to the released name are limited to the new name, and never r
   // The token made for the old project still works for it, under its new name.
   expect((await bearer(agentToken.token, "GET", "/projects/tok-a-old/items")).status).toBe(200);
   // The name now reaches no project, and later the new one: neither token gets in.
-  const seen = { forks: [] as string[], created: [] as string[] };
-  expect((await call("PUT", "/projects/tok-a", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  expect((await call("PUT", "/projects/tok-a", "owner", {})).status).toBe(200);
   for (const token of [agentToken.token, unrelated.token]) {
     const refused = await bearer(token, "GET", "/projects/tok-a/items");
     expect(refused.status).toBe(403);
@@ -423,7 +421,7 @@ it("a runner offer limited by a rescoped token serves the old project under its 
   await project("off-a");
   const runnerToken = await (await call("POST", "/tokens", "owner", { runner: "off-runner", projects: ["off-a"] })).json() as { token: string };
   expect((await release("off-a", "off-a-old")).status).toBe(200);
-  expect((await call("PUT", "/projects/off-a", "owner", {}, withArtifacts({ forks: [], created: [] }))).status).toBe(200);
+  expect((await call("PUT", "/projects/off-a", "owner", {})).status).toBe(200);
   await I().askQueue({ runner: "home:off-runner", agents: [], projects: ["off-a-old"] } as never, new Date().toISOString());
   const names = (await I().askQueue(null, new Date().toISOString())).filter((p) => p.name.startsWith("off-a")).map((p) => [p.name, p.formerly ?? null]);
   expect(names).toEqual([["off-a", ["off-a-2"]], ["off-a-old", null]]);
@@ -479,10 +477,9 @@ it("releasing the current name of a project already renamed keeps its original k
   expect((await call("GET", "/projects/chn-1", "owner")).status).toBe(200);
   expect((await call("GET", "/projects/chn-2", "owner")).status).toBe(404);
   // A project created under chn-2 is stored under chn-2-2, with a baseline of that name.
-  const seen = { forks: [] as string[], created: [] as string[] };
-  const made = await call("PUT", "/projects/chn-2", "owner", {}, withArtifacts(seen));
+  const made = await call("PUT", "/projects/chn-2", "owner", {});
   expect(((await made.json()) as { project: unknown }).project).toMatchObject({ name: "chn-2", repo: "chn-2-2" });
-  expect(seen.created).toEqual(["chn-2-2"]);
+  expect(hasRepo("chn-2-2")).toBe(true);
   expect((await I().projects()).find((p) => p.name === "chn-3")).toMatchObject({ key: "chn-1", formerly: ["chn-1"], repo: "chn-1" });
 });
 
@@ -534,13 +531,12 @@ it("the standard project is renamed only with releaseName, and other projects ke
   expect((await release("atelier", "atelier-former")).status).toBe(200);
   expect(await I().standardOrigin()).toBe("atelier");
   // No project holds the name: a project made now still gets the old standard set, not an empty one.
-  const seen = { forks: [] as string[], created: [] as string[] };
-  expect((await call("PUT", "/projects/std-between", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  expect((await call("PUT", "/projects/std-between", "owner", {})).status).toBe(200);
   expect(await inherited("std-between")).toEqual(before);
   expect(await inherited("std-other")).toEqual(before);
 
   // The new project under the name starts with the old project's records, withdrawals included, and says where they came from.
-  expect((await call("PUT", "/projects/atelier", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  expect((await call("PUT", "/projects/atelier", "owner", {})).status).toBe(200);
   const fresh = L("atelier-2");
   expect((await fresh.project()).name).toBe("atelier");
   const copied = await fresh.standardReviewersSnapshot();
@@ -552,8 +548,8 @@ it("the standard project is renamed only with releaseName, and other projects ke
   expect(events[0].data.from).toBe("atelier");
   expect(events[0].data.admissions.map((a) => [a.id, a.active])).toEqual([["Qwen3-Coder-Next", true], ["gemini-4-argon", false]]);
   // A project made after it reads the new project's set, which is the same; running init again copies nothing twice.
-  expect((await call("PUT", "/projects/std-after", "owner", {}, withArtifacts(seen))).status).toBe(200);
-  expect((await call("PUT", "/projects/atelier", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  expect((await call("PUT", "/projects/std-after", "owner", {})).status).toBe(200);
+  expect((await call("PUT", "/projects/atelier", "owner", {})).status).toBe(200);
   expect(await inherited("std-after")).toEqual(before);
   expect(await inherited("std-other")).toEqual(before);
   expect((await fresh.events() as unknown as { kind: string }[]).filter((e) => e.kind === "reviewers.inherited")).toHaveLength(1);
@@ -570,7 +566,7 @@ it("a released key is checked as the repository init would name it: Demo skips d
   const res = await release("Demo", "demo-old");
   expect(res.status).toBe(200);
   expect(await I().resolveProject("Demo")).toMatchObject({ key: "Demo-3", registered: false });
-  const made = await call("PUT", "/projects/Demo", "owner", {}, withArtifacts({ forks: [], created: [] }));
+  const made = await call("PUT", "/projects/Demo", "owner", {});
   expect(made.status).toBe(200);
   expect(((await made.json()) as { project: unknown }).project).toMatchObject({ name: "Demo", repo: "demo-3" });
   // 62 characters plus "-2" is 64, more than a repository can be named.
@@ -592,7 +588,7 @@ it("after a release and reuse, an old page link and an owner-token runner config
   await project("reuse-a");
   await L("reuse-a").newItem("Old task", [], "owner");
   expect((await release("reuse-a", "reuse-a-old")).status).toBe(200);
-  expect((await call("PUT", "/projects/reuse-a", "owner", {}, withArtifacts({ forks: [], created: [] }))).status).toBe(200);
+  expect((await call("PUT", "/projects/reuse-a", "owner", {})).status).toBe(200);
   await L("reuse-a-2").newItem("Replacement task", [], "owner");
   const signedIn = await cookie();
   const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), testEnv);
@@ -608,8 +604,8 @@ it("after a release and reuse, an old page link and an owner-token runner config
   expect(await old.text()).toContain("Old task");
   // A runner polling with the owner token and no scope is offered every project's queue, each entry under the name it answers to now:
   // the name a config lists is the replacement's, and the renamed project's work is under its new name.
-  await L("reuse-a").dispatch("t1", "owner", { to: "home" });
-  await L("reuse-a-2").dispatch("t1", "owner", { to: "home" });
+  await L("reuse-a").dispatch("t1", "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
+  await L("reuse-a-2").dispatch("t1", "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   const polled = await call("POST", "/queue", "owner", { runner: "home:reuse-runner", agents: [{ agent: "opencode", models: ["glm-5.3"] }], projects: ["reuse-a"] });
   expect(polled.status, await polled.clone().text()).toBe(200);
   const queue = await polled.json() as { project: string; item: { title: string } }[];

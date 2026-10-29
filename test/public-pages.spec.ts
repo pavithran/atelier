@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import layout from "../src/layout.css";
 import { HELP_GROUPS } from "../src/usage.ts";
@@ -49,7 +49,7 @@ it("the showcase setting is gone: no Projects page form, no API route, no form p
   expect(home).not.toContain("/projects/showcase");
   expect(home).not.toContain("Public showcase");
   const api = (method: string, path: string) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: method === "GET" || method === "DELETE" ? undefined : JSON.stringify({ mode: "named" }),
   }), testEnv);
   expect((await api("GET", "/showcase")).status).toBe(404);

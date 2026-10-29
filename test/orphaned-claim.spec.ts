@@ -2,8 +2,8 @@
 // index records them for /api/runners, reach the project's ledger with every
 // poll, so a claim whose runner stopped polling holds no dispatch, the owner's
 // queue listing names it orphaned, and the runner's return restores the hold.
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import type { Item } from "../src/rules.ts";
@@ -11,7 +11,7 @@ import type { Item } from "../src/rules.ts";
 const A = "codex/gpt-6-astra", TOKEN = "orphaned-claim-token";
 const LIMIT = RUNNER_GONE_MS;
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
-const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, "content-type": "application/json", ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
 
 async function setup(name: string, runner: string | null) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
@@ -20,7 +20,8 @@ async function setup(name: string, runner: string | null) {
   await index().registerProject(record);
   await L.newItem("Claimed", ["src/**"], "owner");
   await L.newItem("Waiting", ["src/**"], "owner");
-  await L.dispatch("t2", "owner", {});
+  // A dispatch names its agent and model (G17), the pair the runners offer.
+  await L.dispatch("t2", "owner", { agent: "codex", model: "gpt-6-astra" });
   await L.claim("t1", A, runner ? { runner, kind: "home" } : null);
   const minted = await api("/tokens", "POST", { actor: A, projects: [name] });
   expect(minted.status, await minted.clone().text()).toBe(201);
@@ -110,7 +111,7 @@ it("a heartbeat is offered nothing, even a task its runner could take", async ()
   const name = "orphaned-claim-beat", runner = "home:orphaned-beat";
   const { L, offered, beat } = await setup(name, runner);
   await L.newItem("Free", ["docs/**"], "owner");
-  await L.dispatch("t3", "owner", {});
+  await L.dispatch("t3", "owner", { agent: "codex", model: "gpt-6-astra" });
   await polled(runner, 1000);
   expect(await offered()).toContain("t3");
   expect(await beat()).toEqual([]);

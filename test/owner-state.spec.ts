@@ -4,7 +4,7 @@
 // from the record, where the owner's approval, the independent review, the
 // command-line permission and the acceptance stand, with one next move, and
 // draws the override as a disclosure apart from its submit buttons.
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it } from "./support/vitest.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import { ownerState, renderItem, type Detail } from "../src/ui";
 import { setTimeZone } from "../src/time";

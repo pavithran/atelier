@@ -5,6 +5,7 @@
 // `git update-ref` with the old value named, so a push that lands in between
 // is never overwritten.
 import { execFile } from "node:child_process";
+import { validBranch } from "../branch-name.ts";
 
 const ZERO = "0".repeat(40);
 // The branches the server makes: a task's (t/N) and a plan's integration
@@ -19,7 +20,7 @@ function git(dir, args) {
 }
 
 function checkBranch(branch) {
-  if (typeof branch !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(branch) || branch.includes("..") || branch.endsWith("/") || branch.endsWith(".lock")) {
+  if (!validBranch(branch)) {
     throw new Error(`not a branch name: ${String(branch).slice(0, 80)}`);
   }
 }

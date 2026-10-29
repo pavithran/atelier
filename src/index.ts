@@ -30,6 +30,7 @@ import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.
 import { builderCandidates, candidatesText } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
+import { validBranch } from "./branch-name.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, isModel, ownerWriteRefusal, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
@@ -1014,11 +1015,14 @@ async function projectBranch(env: Env, p: ProjectRecord): Promise<string> {
 
 // A branch name as init sends it: one Git would accept for a branch (the
 // rules of git check-ref-format), so the name a workspace is told to push
-// to is a plain ref, never an option.
+// to is a plain ref, never an option, and one the server's repository takes
+// (validBranch, the rule src/git/branches.mjs keeps), so init never records a
+// branch it then cannot make.
 const BAD_REF = /[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|^[-./]|\/\.|[./]$|\.lock(\/|$)/;
 function branchArg(value: unknown): string {
-  if (typeof value !== "string" || !value || value.length > 200 || value === "@" || BAD_REF.test(value)) {
-    throw new RuleError("bad_branch", "the default branch must be a branch name, such as main or master", 400);
+  if (!validBranch(value) || BAD_REF.test(value)) {
+    throw new RuleError("bad_branch", "the default branch must be a branch name of ASCII letters, digits, '.', '_', '/' or '-', such as main or master", 400,
+      "check out a branch named that way (such as main) in the project's checkout and run atelier init again");
   }
   return value;
 }

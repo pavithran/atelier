@@ -53,7 +53,7 @@ export default async function runnerCommand() {
   // cannot read the process table, which says so.
   try { runnerUsage(args); } catch (error) { die(error.message); }
   if (!isReloaded(process.env)) {
-    const live = liveHere();
+    const live = liveHere(null, { ownTree: true });
     if (!live) say(NO_PROCESS_TABLE);
     const refusal = live && await guardName({
       runners: live.runners, name: args.name, replace: args.replace === true, say,

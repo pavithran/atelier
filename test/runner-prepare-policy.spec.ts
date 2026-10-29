@@ -1,5 +1,5 @@
-import { env } from 'cloudflare:workers';
-import { expect, it } from 'vitest';
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from '../src/index.ts';
 
 it('a project-scoped runner reads the preparation policy through the project route before claiming', async () => {
@@ -18,7 +18,7 @@ it('a project-scoped runner reads the preparation policy through the project rou
   const bindings = { ...env, ATELIER_TOKEN: owner };
   const issued = await worker.fetch(new Request('https://atelier.test/api/tokens', {
     method: 'POST',
-    headers: { authorization: `Bearer ${owner}`, 'content-type': 'application/json', 'x-atelier-actor': 'owner' },
+    headers: { authorization: `Bearer ${owner}`, 'content-type': 'application/json', 'x-atelier-actor': 'owner', 'x-atelier-acting': 'claude-code/opus-5.5' },
     body: JSON.stringify({ runner: 'home:prepare', projects: [name] }),
   }), bindings);
   expect(issued.status).toBe(201);

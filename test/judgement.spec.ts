@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -29,10 +29,10 @@ function call(method: string, path: string, actor: string | null, body?: unknown
 const acting = (who: string) => ({ "x-atelier-acting": who });
 
 // The acting models the tests name, in the owner's pool; a name outside it
-// is refused (registeredActing).
+// is refused (registeredActing). Since G18 the pool's own writes name an acting model too.
 async function pool() {
   for (const [harness, id] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"], ["zcode", "glm-judge-9"]]) {
-    expect((await call("PUT", `/models/${id}`, "owner", { harness, where: "cloud" })).status).toBe(200);
+    expect((await call("PUT", `/models/${id}`, "owner", { harness, where: "cloud" }, acting(OPUS))).status).toBe(200);
   }
 }
 
@@ -71,7 +71,7 @@ it("a finding's verdict keeps the acting model beside the owner; only the owner 
   // The owner's authority is unchanged: another actor is refused, named acting or not.
   expect((await call("POST", path, GPT, { head: H1, index: 1, verdict: "refuted" }, acting(OPUS))).status).toBe(403);
   // An agent token cannot name an acting model, nor reach the route.
-  const agent = (await (await call("POST", "/tokens", "owner", { actor: GPT, projects: ["judge-finding"] })).json() as { token: string }).token;
+  const agent = (await (await call("POST", "/tokens", "owner", { actor: GPT, projects: ["judge-finding"] }, acting(OPUS))).json() as { token: string }).token;
   const byAgent = await call("POST", path, null, { head: H1, index: 1, verdict: "refuted" }, acting(OPUS), agent);
   expect([byAgent.status, ((await byAgent.json()) as { error: string }).error]).toEqual([403, "acting_owner_only"]);
   // A malformed acting name is refused, and nothing is recorded.
@@ -90,12 +90,12 @@ it("a finding's verdict keeps the acting model beside the owner; only the owner 
   expect(named.status).toBe(201);
   const answer = (await named.json()) as { event: number; acting: string };
   expect(answer).toMatchObject({ id, head: H1, index: 1, verdict: "refuted", acting: OPUS });
-  // Missing: recorded as before, with no acting model; it stays unknown.
+  // Missing: since G18 the write is refused with the flag to add (it was once recorded with no acting model), and nothing is recorded.
   const missing = await call("POST", path, "owner", { head: H1, index: 2, verdict: "fixed" });
-  expect(missing.status).toBe(201);
-  expect(await missing.json()).not.toHaveProperty("acting");
+  expect(missing.status).toBe(400);
+  expect(await missing.json()).toMatchObject({ error: "acting_required", next: expect.stringContaining("--as H/M") });
   const verdicts = (await events("judge-finding", id)).filter((e) => e.kind === "review.finding").sort((a, b) => a.seq - b.seq);
-  expect(verdicts.map((e) => [e.seq, e.actor, e.data.index, e.data.acting])).toEqual([[answer.event, "owner", 1, OPUS], [answer.event + 1, "owner", 2, undefined]]);
+  expect(verdicts.map((e) => [e.seq, e.actor, e.data.index, e.data.acting])).toEqual([[answer.event, "owner", 1, OPUS]]);
 });
 
 it("a decision and its withdrawal keep the acting model beside the owner and the owner's words", async () => {
@@ -107,11 +107,12 @@ it("a decision and its withdrawal keep the acting model beside the owner and the
   expect((await call("POST", "/projects/judge-decisions/decisions", "owner", { text: "Mine.", quote: "mine" }, acting("nobody"))).status).toBe(400);
   const gone = await call("POST", "/projects/judge-decisions/decisions/d1/withdraw", "owner", { note: "the developer changed course" }, acting(GPT));
   expect(await gone.json()).toMatchObject({ id: "d1", acting: OPUS, withdrawn: { by: "owner", note: "the developer changed course", acting: GPT } });
+  // Since G18 a decision with no acting model is refused (it was once recorded with none), and nothing is recorded.
   const plain = await call("POST", "/projects/judge-decisions/decisions", "owner", { text: "Spend at most $5.", quote: "five dollars" });
-  expect(await plain.json()).not.toHaveProperty("acting");
+  expect(plain.status).toBe(400);
+  expect(await plain.json()).toMatchObject({ error: "acting_required", next: expect.stringContaining("--as H/M") });
   const logged = (await events("judge-decisions")).filter((e) => e.kind.startsWith("decision.")).map((e) => [e.kind, e.actor, e.data.quote, e.data.acting]);
   expect(logged).toEqual([
-    ["decision.recorded", "owner", "five dollars", undefined],
     ["decision.withdrawn", "owner", undefined, GPT],
     ["decision.recorded", "owner", "another company reviews everywhere", OPUS],
   ]);
@@ -149,7 +150,7 @@ it("a defect names the verdict it contradicts; the link is checked against the t
   const elsewhere = await finding(other, 1, "refuted");
   const path = `/projects/judge-defect/items/${id}/defect`;
   const refusal = async (contradicts: string, status: number, detail: RegExp) => {
-    const res = await call("POST", path, "owner", { note: "it drops rows after all", contradicts });
+    const res = await call("POST", path, "owner", { note: "it drops rows after all", contradicts }, acting(OPUS));
     const body = (await res.json()) as { error: string; detail: string };
     expect([contradicts, res.status, body.error]).toEqual([contradicts, status, "bad_contradicts"]);
     expect(body.detail).toMatch(detail);
@@ -165,11 +166,11 @@ it("a defect names the verdict it contradicts; the link is checked against the t
   expect((await call("POST", path, GPT, { note: "x", contradicts: `${refuted}#1` })).status).toBe(403);
   // Linked twice: both defects are recorded, with the link, and the verdict is contradicted once.
   for (const n of [1, 2]) {
-    const res = await call("POST", path, "owner", { note: `drops rows ${n}`, contradicts: `judge-defect/${id}@${refuted}#1` });
+    const res = await call("POST", path, "owner", { note: `drops rows ${n}`, contradicts: `judge-defect/${id}@${refuted}#1` }, acting(OPUS));
     expect(res.status).toBe(201);
   }
   // An unrelated defect names no verdict.
-  expect((await call("POST", path, "owner", { note: "unrelated" })).status).toBe(201);
+  expect((await call("POST", path, "owner", { note: "unrelated" }, acting(OPUS))).status).toBe(201);
   const defects = (await events("judge-defect", id)).filter((e) => e.kind === "item.defect").sort((a, b) => a.seq - b.seq);
   expect(defects.map((e) => [e.data.note, e.data.contradicts])).toEqual([
     ["drops rows 1", { event: refuted, finding: 1, head: H1, verdict: "refuted" }],
@@ -186,7 +187,7 @@ it("the JSON route and the Models page show each acting model's verdicts, decisi
   await project("judge-page");
   const id = await reviewedAndAccepted("judge-page");
   const seq = ((await (await call("POST", `/projects/judge-page/items/${id}/finding`, "owner", { head: H1, index: 1, verdict: "refuted" }, acting("zcode/glm-judge-9"))).json()) as { event: number }).event;
-  await call("POST", `/projects/judge-page/items/${id}/defect`, "owner", { note: "the rows were dropped", contradicts: `${seq}#1` });
+  await call("POST", `/projects/judge-page/items/${id}/defect`, "owner", { note: "the rows were dropped", contradicts: `${seq}#1` }, acting("zcode/glm-judge-9"));
   await call("POST", "/projects/judge-page/decisions", "owner", { text: "Review everything.", quote: "review everything" }, acting("zcode/glm-judge-9"));
   const read = await call("GET", "/reliability", "owner");
   const body = (await read.json()) as { judgement: JudgementRecord & { totals: Record<string, number> } };

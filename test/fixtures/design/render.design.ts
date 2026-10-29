@@ -1,14 +1,15 @@
-import { env } from "cloudflare:workers";
-import { expect, it, vi } from "vitest";
+import { appendFileSync } from "node:fs";
+import { env } from "../../support/workers.ts";
+import { expect, it, vi } from "../../support/vitest.ts";
 import { FIXED_NOW, PLANS, TOTAL_TASKS, seed } from "./seed.ts";
 import { ORIGIN, designEnv, draw, pageStates, serveKeys, session } from "./pages.ts";
 
 // Draws every page state in the brief from the seeded fixture with the
 // production renderers and CSS, and prints each as one JSON line for
 // scripts/design/capture.ts, which loads them into a browser. It is run only
-// by that command (scripts/design/vitest.config.ts), never by npm test, whose
-// fixture.spec.ts asserts the same seed and pages without printing them.
-// The lines reach the command through that config's onConsoleLog.
+// by that command, never by npm test, whose fixture.spec.ts asserts the same
+// seed and pages without printing them. The lines are appended to the file
+// ATELIER_DESIGN_OUT names, which the command reads.
 
 it("draws the design captures", { timeout: 600_000 }, async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -16,7 +17,9 @@ it("draws the design captures", { timeout: 600_000 }, async () => {
   serveKeys();
   const pages = designEnv(env, seeded);
   const cookie = await session(pages);
-  const emit = (o: Record<string, unknown>) => console.log(JSON.stringify({ magic: "design-capture", ...o }));
+  const out = process.env.ATELIER_DESIGN_OUT;
+  if (!out) throw new Error("ATELIER_DESIGN_OUT names no file for the drawn pages");
+  const emit = (o: Record<string, unknown>) => appendFileSync(out, `${JSON.stringify({ magic: "design-capture", ...o })}\n`);
   emit({ kind: "fixture", now: FIXED_NOW, tasks: TOTAL_TASKS, projects: PLANS.map((p) => ({ name: p.name, shapes: p.shapes })), ids: seeded.byShape });
   const live = await draw(pages, "/live.js", "public", "");
   emit({ kind: "asset", url: `${ORIGIN}/live.js`, contentType: live.headers.get("content-type"), body: await live.text() });

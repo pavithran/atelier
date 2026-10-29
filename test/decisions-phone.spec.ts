@@ -3,8 +3,8 @@
 // so a phone shows the list (layout.css hides the list only under
 // `has-selection`). Every row links to its own picked decision, whose back
 // link returns to that list: from the list, every decision can be reached.
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
 

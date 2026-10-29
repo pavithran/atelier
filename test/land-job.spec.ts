@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { RunnerOffer } from "../src/dispatch/rules.ts";
 import { parseRuleError } from "../src/rules.ts";
 import worker from "../src/index.ts";
@@ -50,7 +50,8 @@ it("a task that has merged or been closed has nothing to land", async () => {
 });
 
 const TOKEN = "land-job-token";
-const queue = (body: unknown) => worker.fetch(new Request("https://atelier.test/api/queue", { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+// G18: the developer token's write names the model acting.
+const queue = (body: unknown) => worker.fetch(new Request("https://atelier.test/api/queue", { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
 
 it("a queued landing of a claimed task is in the runner's queue answer, as ordinary land lands claimed tasks", async () => {
   const name = "land-job-claimed";

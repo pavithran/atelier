@@ -1,8 +1,7 @@
 // The Worker's scheduled() and queue() handlers, removed in Atelier 2.0 task
 // 8: the Node server runs the three crons on timers (src/runtime/timers.mjs)
-// and records a push from the post-receive hook (observePushed). The Workers
-// specs, skipped by name until task 7 rewrites them (test/workers-skipped.txt),
-// call these in their place: scheduled() runs the job its cron named, as the
+// and records a push from the post-receive hook (observePushed). The ported
+// specs, which now run under Node (task 7), call these in their place: scheduled() runs the job its cron named, as the
 // handler did; queue() is gone and says so.
 import { recordStageTicks, recordStuckEpisodes, takeModelSnapshots } from "../src/index.ts";
 

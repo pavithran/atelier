@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
@@ -46,7 +46,8 @@ async function submitted(project: string) {
   const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, OPUS, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  // G17: the approval names the part's builder and reviewer.
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, undefined, { a: { builder: "zcode/glm-5.3", reviewer: GPT } });
   const id = parts[0].id;
   const d = (await L.item(id)).dispatch!;
   const builder = `${d.agent}/${d.model}`;
@@ -138,8 +139,10 @@ it("a plan's planner and a part's builder are never rerouted to another company'
   const L = await single("single-reroute");
   await toAnthropic(L, "single-reroute");
   await refusal(L.newPlan("Ship it", ["src/**"], "owner", GPT, []), "single_family", /not one of anthropic's models/);
-  // The default planner passes over the other companies' models, whatever their rank.
-  const picked = await L.newPlan("Ship the feature", ["src/**"], "owner", null, [entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode"), entry("opus-5.5", "claude-code")]);
+  // G17: no planner is picked. The refusal lists only the company's models as eligible, whatever the others' rank.
+  const pool = [entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode"), entry("opus-5.5", "claude-code")];
+  await refusal(L.newPlan("Ship the feature", ["src/**"], "owner", null, pool), "planner_needed", /Eligible \(1\):\n {2}claude-code\/opus-5\.5/);
+  const picked = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, pool);
   expect(picked.planner).toBe(OPUS);
   const { item } = picked;
   await refusal(L.reroutePlan(item.id, "owner", GPT), "single_family", /not one of anthropic's models/);
@@ -147,7 +150,7 @@ it("a plan's planner and a part's builder are never rerouted to another company'
   const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, OPUS, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [...POOL, entry("sonnet-5.5", "claude-code")]);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [...POOL, entry("sonnet-5.5", "claude-code")], undefined, { a: { builder: "claude-code/sonnet-5.5", reviewer: OPUS } });
   await refusal(L.reroutePlan(parts[0].id, "owner", GPT), "single_family", /not one of anthropic's models/);
   expect(familyOf((await L.item(parts[0].id)).dispatch?.model ?? "opus-5.5")).toBe("anthropic");
 });
@@ -192,8 +195,7 @@ it("a part routed to another company's builder before the switch is never dispat
   const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, OPUS, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [...POOL, entry("sonnet-5.5", "claude-code")]);
-  await L.reroutePlan(parts[0].id, "owner", GPT);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [...POOL, entry("sonnet-5.5", "claude-code")], undefined, { a: { builder: GPT, reviewer: OPUS } });
   expect((await L.item(parts[0].id)).dispatch).toMatchObject({ model: "gpt-6-astra" });
   await toAnthropic(L, "single-part-switch");
   expect((await L.item(parts[0].id)).dispatch).toBeNull();

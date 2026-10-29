@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
@@ -28,9 +28,10 @@ async function project(name: string, over: Partial<ProjectPolicy> = {}) {
   const record = { name, repo: `${name}--baseline`, policy: { ...policy, ...over }, createdAt: AT };
   await ledger(name).setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  // G18: the model writes name the acting model.
   for (const [harness, id] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"]]) {
     expect((await worker.fetch(new Request(`https://atelier.test/api/models/${id}`, {
-      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ harness, where: "cloud" }),
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": OPUS, "content-type": "application/json" }, body: JSON.stringify({ harness, where: "cloud" }),
     }), testEnv)).status).toBe(200);
   }
   return ledger(name);
@@ -42,7 +43,7 @@ const post = (name: string, id: string, verb: string, body: Record<string, unkno
 const acting = { "x-atelier-acting": OPUS };
 const events = async (L: ReturnType<typeof ledger>, kind: string) => (await L.events(undefined, 100) as unknown as LedgerEvent[]).filter((e) => e.kind === kind);
 const agentToken = async (name: string) => (await (await worker.fetch(new Request("https://atelier.test/api/tokens", {
-  method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ actor: GPT, projects: [name] }),
+  method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", ...acting, "content-type": "application/json" }, body: JSON.stringify({ actor: GPT, projects: [name] }),
 }), testEnv)).json() as { token: string }).token;
 
 it("block and unblock take the developer's words and the acting model, and record both on the event, the task and the receipt lines", async () => {
@@ -69,7 +70,8 @@ it("the words need the acting model and the developer's own actor; blank words a
   const name = "dir-refused";
   const L = await project(name);
   await L.newItem("Wire the keys", ["src/**"], "owner", { accept: ["Works"] });
-  expect(await (await post(name, "t1", "block", { reason: "x", quote: QUOTE })).json()).toMatchObject({ error: "no_acting" });
+  // G18: with no acting header the developer token's write is refused at the door, before the verb's own no_acting check.
+  expect(await (await post(name, "t1", "block", { reason: "x", quote: QUOTE })).json()).toMatchObject({ error: "acting_required", next: expect.stringContaining("--as H/M") });
   expect(await (await post(name, "t1", "block", { reason: "x", quote: "  " }, acting)).json()).toMatchObject({ error: "bad_quote" });
   expect(await (await post(name, "t1", "block", { reason: "x", quote: QUOTE }, acting, TOKEN, OPUS)).json()).toMatchObject({ error: "bad_quote" });
   expect(await L.item("t1")).toMatchObject({ state: "open" });
@@ -103,10 +105,15 @@ it("without the words a model on the developer token is stopped, and the stop na
   expect(await stop(await post(name, "t1", "unblock", {}, {}, TOKEN, OPUS))).toContain(`atelier unblock t1 --quote`);
   expect(await L.item("t1")).toMatchObject({ state: "open" });
 
-  // The developer's own call, with no model named, goes on as before.
-  expect((await post(name, "t1", "block", { reason: "waiting on the schema" })).status).toBe(200);
-  expect((await post(name, "t1", "unblock", {})).status).toBe(200);
-  expect(await (await post(name, "t2", "abandon", { note: "by hand" })).json()).toMatchObject({ state: "abandoned" });
+  // G18: the developer's own call, with no model named, no longer reaches /api
+  // (their own use is the signed-in pages): it is refused naming --as. The
+  // Ledger's own abandon with no direction (what that page calls) records no quote.
+  for (const [verb, body] of [["block", { reason: "waiting on the schema" }], ["unblock", {}], ["abandon", { note: "by hand" }]] as const) {
+    const res = await post(name, verb === "abandon" ? "t2" : "t1", verb, body);
+    expect([res.status, await res.json()]).toMatchObject([400, { error: "acting_required", next: expect.stringContaining("--as H/M") }]);
+  }
+  expect(await L.item("t1")).toMatchObject({ state: "open" });
+  expect(await L.abandon("t2", "owner", "by hand", undefined, undefined, null)).toMatchObject({ state: "abandoned" });
   expect((await events(L, "item.abandoned"))[0].data).not.toHaveProperty("quote");
 });
 

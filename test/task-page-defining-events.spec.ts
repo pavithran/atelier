@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import { briefFor, definingOf } from "../src/brief.ts";
 import { landingOf } from "../src/diff.ts";
 import { criteriaOf } from "../src/criteria.ts";

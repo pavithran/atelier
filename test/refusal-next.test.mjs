@@ -12,7 +12,7 @@ import { test } from "node:test";
 // names the route it guards, where no other command applies.
 const VALIDATION = [
     "acting_owner_only", "ambiguous_acting", "bad_acting", "bad_action", "bad_actor", "bad_agent", "bad_allow_paid",
-    "bad_bookmark", "bad_branch", "bad_card", "bad_check_limit", "bad_check_paths", "bad_check_silence", "bad_checks", "bad_choices", "bad_claim",
+    "bad_bookmark", "bad_card", "bad_check_limit", "bad_check_paths", "bad_check_silence", "bad_checks", "bad_choices", "bad_claim",
     "bad_commit", "bad_contradicts", "bad_decision", "bad_declaration", "bad_delivered_by", "bad_dispatch",
     "bad_dump", "bad_evidence", "bad_expiry", "bad_failures", "bad_field", "bad_finding",
     "bad_findings", "bad_goal", "bad_hash", "bad_head", "bad_host", "bad_identity", "bad_item", "bad_kind",

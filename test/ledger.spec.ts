@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
+import { env } from "./support/workers.ts";
 import { holdLiveOffers, liveOffersFor } from "./helpers/live-offers.ts";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import { briefFor } from "../src/brief.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { Ledger, type CriteriaChange, type LedgerEvent, type ReviewClaim } from "../src/ledger.ts";
@@ -10,7 +10,6 @@ import type { Detail } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { taskProgress } from "../src/ui.ts";
-import { queue } from "./workers-removed.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
 // storage, inside the Workers test pool. The pure policy underneath is tested
@@ -484,8 +483,11 @@ it("the owner returns accepted work to a builder without losing reviews or accep
       : L.dispatch("t1", "owner", { job: "merge-main", head: H2, agent: "codex", model: "gpt-5.5" });
     await refusal(L.handoff("t1", A, B, "Not the developer"), "not_project_owner", /only the developer/);
     await L.beginLanding("t1", "owner", H1);
+    // G3/G4: beginning the landing writes its own event; the refused move adds none.
+    const begun = await L.events("t1") as unknown as LedgerEvent[];
+    expect(begun.map((e) => e.kind)).toEqual(["landing.begun", ...history.map((e) => e.kind)]);
     await refusal(move(), "landing", /holds the landing lease/);
-    expect(await L.events("t1")).toEqual(history);
+    expect(await L.events("t1")).toEqual(begun);
     await L.cancelLanding("t1", "owner");
     await L.checkHandoff("t1", "owner", B, "Resolve main conflict");
     const moved = await move();
@@ -593,23 +595,28 @@ it("HTTP approval rejects missing and stale revisions before reading Artifacts",
   expect(cross.status).toBe(403);
 });
 
-it("push events read the authoritative branch head and ignore duplicate or unrelated events", async () => {
-  const {default:worker}=await import('../src/index');
-  const L=await setup('events-project');await L.newItem('Observe pushes',[],'owner');await L.claim('t1',A);await L.setFork('t1','events-project--t1',H0,A);
+// Ported (2.0 task 8): queue() and its Artifacts push events are gone; the
+// post-receive hook reports a push to observePushed, which reads the task
+// branch's head from the project's repo (here a fake reader for the history)
+// and ignores a duplicate or a ref that is no task's branch.
+it("push notices read the authoritative branch head and ignore duplicate or unrelated pushes", async () => {
+  const {observePushed}=await import('../src/index');
+  const L=await setup('events-project');await L.newItem('Observe pushes',[],'owner');await L.claim('t1',A);await L.setFork('t1','events-project/t/1',H0,A);
   const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
   await index.registerProject({name:'events-project',repo:'events-project',policy,createdAt:new Date().toISOString()});
-  // The fork's history as the consumer reads it: H2 on top of H0, the base.
-  // The first event reads the head and then the history that holds the
-  // recorded head, then the base's line, where the pushed commits whose Agent
-  // lines it reads end (t215), and the secret scan's diff reads the fork's
-  // and the base's heads (t332); the duplicate reads the head alone, since it
-  // has not moved.
-  let reads=0,acks=0,retries=0;
+  // The branch's history as the observer reads it: H2 on top of H0, the base.
+  let reads=0;
   const artifacts={get:async()=>({info:async()=>({defaultBranch:'main'}),log:async()=>{reads++;return[{hash:H2,parents:[H0]},{hash:H0,parents:[]}]},[Symbol.dispose](){}})} as unknown as Artifacts;
-  const notice={type:'cf.artifacts.repo.pushed',source:{namespace:'atelier',repoName:'events-project--t1'},payload:{ref:'refs/heads/main',after:H1}};
-  const send=async(body:unknown)=>queue({messages:[{body,ack(){acks++},retry(){retries++}}]} as unknown as MessageBatch<unknown>,{...env,ARTIFACTS:artifacts});
-  await send(notice);await send(notice);await send({...notice,payload:{...notice.payload,ref:'refs/heads/other'}});
-  expect((await L.item('t1')).head).toBe(H2);expect(acks).toBe(3);expect(retries).toBe(0);expect(reads).toBe(6);
+  const bound={...env,ARTIFACTS:artifacts};
+  const notice={project:'events-project',ref:'refs/heads/t/1',after:H1};
+  expect(await observePushed(bound,notice)).toMatchObject({observed:true,item:'t1',head:H2});
+  const readsAfterFirst=reads;
+  expect(await observePushed(bound,notice)).toMatchObject({observed:true,item:'t1',head:H2});
+  const other=await observePushed(bound,{...notice,ref:'refs/heads/other'});
+  expect(other.observed).toBe(false);
+  expect((await L.item('t1')).head).toBe(H2);
+  // The first push reads the head, the history, the base's line and the scan's diffs; the duplicate reads the head alone; the unrelated ref reads nothing.
+  expect([readsAfterFirst,reads]).toEqual([5,6]);
   expect(kinds(await L.events('t1')).filter(k=>k==='push.observed')).toHaveLength(1);
 });
 
@@ -743,23 +750,23 @@ it("a dispatch to a task a builder holds live is refused unless --release says t
   const L = await setup("dispatch-held-live");
   const item = await L.newItem("Held", ["docs/**"], "owner");
   await L.claim(item.id, A);
-  await refusal(L.dispatch(item.id, "owner", { to: "home" }), "held", new RegExp(`${item.id} is held by ${A.replace("/", "\\/")}, who claimed it .*atelier dispatch ${item.id} --release`));
+  await refusal(L.dispatch(item.id, "owner", { to: "home", agent: "codex", model: "gpt-5.5" }), "held", new RegExp(`${item.id} is held by ${A.replace("/", "\\/")}, who claimed it .*atelier dispatch ${item.id} --release`));
   await refusal(L.checkDispatch(item.id, "owner", { to: "home" }), "held", /is held by/);
   expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: A, dispatch: null });
   expect(kinds(await L.events(item.id))).not.toContain("item.released");
 
-  const taken = await L.dispatch(item.id, "owner", { to: "home", release: true });
+  const taken = await L.dispatch(item.id, "owner", { to: "home", agent: "codex", model: "gpt-5.5", release: true });
   expect(taken).toMatchObject({ state: "open", owner: null, releasedClaim: { from: A } });
   const released = ((await L.events(item.id)) as unknown as LedgerEvent[]).find((e) => e.kind === "item.released");
   expect(released?.data).toMatchObject({ from: A, note: expect.stringMatching(/^taken back by the developer's dispatch/) });
   // A task nobody holds, or one submitted for review, is dispatched as before.
-  expect((await L.dispatch(item.id, "owner", { to: "home" })).releasedClaim).toBeUndefined();
+  expect((await L.dispatch(item.id, "owner", { to: "home", agent: "codex", model: "gpt-5.5" })).releasedClaim).toBeUndefined();
 });
 
 it("dispatch queues an open task for a kind of runner, and only a matching runner claims it", async () => {
   const L = await setup("dispatch-flow");
   const item = await L.newItem("Tidy the guide", ["docs/**"], "owner");
-  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the developer dispatches/);
+  await refusal(L.dispatch(item.id, A, { to: "home", agent: "codex", model: "gpt-5.5" }), "not_project_owner", /only the developer dispatches/);
 
   const queued = await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "small task" });
   expect(queued.dispatch).toMatchObject({ to: "home", agent: "opencode", model: "glm-5.3-flash", by: "owner", note: "small task" });
@@ -812,7 +819,7 @@ it("a dispatch refuses the claim rules ahead of the claim: refused overlap, and 
   await S.newItem("Live", ["relay/test/**"], "owner");
   await S.claim("t1", A);
   const t2 = (await S.newItem("Queued", ["relay/test/foo.ts"], "owner")).id;
-  await refusal(S.dispatch(t2, "owner", { to: "home" }), "overlap", /t2's scope overlaps live t1 \(claude-code\/opus-5\.5\); this project refuses overlapping claims/);
+  await refusal(S.dispatch(t2, "owner", { to: "home", agent: "codex", model: "gpt-5.5" }), "overlap", /t2's scope overlaps live t1 \(claude-code\/opus-5\.5\); this project refuses overlapping claims/);
   expect((await S.item(t2)).dispatch).toBeNull();
   // The holder of the overlapping item is not refused when named.
   const overlapped = await S.dispatch(t2, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
@@ -828,8 +835,8 @@ it("the owner can dispatch a held task, which releases its holder and queues it 
   await L.submit(item.id, A);
   await L.addReview(review(item.id, B, H1, false));
   expect((await L.item(item.id)).state).toBe("submitted");
-  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the developer dispatches/);
-  const queued = await L.dispatch(item.id, "owner", { to: "home", note: "address the review" });
+  await refusal(L.dispatch(item.id, A, { to: "home", agent: "codex", model: "gpt-5.5" }), "not_project_owner", /only the developer dispatches/);
+  const queued = await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "address the review" });
   expect(queued).toMatchObject({ state: "open", owner: null, head: H1, dispatch: { to: "home", note: "address the review" } });
   expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.released", "item.dispatched"]));
@@ -844,7 +851,7 @@ it("a merge-main dispatch sends a conflicted landing back to its builder, and ne
   const M = "5".repeat(40);
   // No workspace yet: nothing for a builder to merge main into.
   const bare = await L.newItem("Never built", ["docs/**"], "owner");
-  await refusal(L.dispatch(bare.id, "owner", { job: "merge-main", head: M }), "no_fork", /has no workspace yet, so there is nothing for its builder to merge main into/);
+  await refusal(L.dispatch(bare.id, "owner", { job: "merge-main", head: M, agent: "codex", model: "gpt-5.5" }), "no_fork", /has no workspace yet, so there is nothing for its builder to merge main into/);
   await refusal(L.dispatch(bare.id, "owner", { job: "plan" }), "bad_dispatch", /only merge-main is dispatched by hand/);
 
   // A submitted task whose landing conflicted: the holder is released and
@@ -868,9 +875,9 @@ it("the queue lists the oldest dispatch first and skips tasks that are not open"
   const L = await setup("dispatch-order");
   const first = await L.newItem("First", ["a/**"], "owner");
   const second = await L.newItem("Second", ["b/**"], "owner");
-  await L.dispatch(first.id, "owner", { to: "any" });
+  await L.dispatch(first.id, "owner", { to: "any", agent: "codex", model: "gpt-6" });
   await new Promise((ok) => setTimeout(ok, 5));
-  await L.dispatch(second.id, "owner", { to: "cloud" });
+  await L.dispatch(second.id, "owner", { to: "cloud", agent: "codex", model: "gpt-5.5" });
   expect((await L.waiting()).map((i) => i.id)).toEqual([first.id, second.id]);
   await L.claim(first.id, "codex/gpt-6", { runner: "cloud:atelier", kind: "cloud" });
   expect((await L.waiting()).map((i) => i.id)).toEqual([second.id]);
@@ -920,7 +927,7 @@ it("a dispatch is withdrawn only from an open task, and a refusal says why and w
   const L = await setup("undispatch-refusals");
   const item = await L.newItem("Edit", ["a/**"], "owner");
   await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is not queued for a runner, so there is no dispatch to withdraw$`));
-  await L.dispatch(item.id, "owner", { to: "home" });
+  await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash" });
   await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
   await refusal(L.undispatch(item.id, "owner"), "not_dispatched",
     new RegExp(`^${item.id} is claimed by opencode/glm-5.3-flash; its dispatch applies again only if it is released, so withdraw it then$`));
@@ -1205,7 +1212,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
       L.newItem("Back and forth", [], "owner");
       L.claim("t2", A);
       L.release("t2", A, "Not for me"); stamped("t2");
-      L.dispatch("t2", "owner", { to: "home" });
+      L.dispatch("t2", "owner", { to: "home", agent: "codex", model: "gpt-5.5" });
       expect(stamped("t2").dispatch?.at).toBe(L.item("t2").updatedAt);
       L.undispatch("t2", "owner"); stamped("t2");
       L.abandon("t2", "owner", "No longer wanted"); stamped("t2");
@@ -1383,7 +1390,7 @@ it("a blocked task keeps its owner and fork, refuses every move but abandon, and
     [() => L.release(t1, A, "giving up"), "blocked", /Run atelier unblock t1 first/],
     [() => L.claim(t1, A), "blocked", /Run atelier unblock t1 first/],
     [() => L.claim(t1, B), "blocked", /Run atelier unblock t1 first/],
-    [() => L.dispatch(t1, "owner", {}), "not_open", /held by claude-code/],
+    [() => L.dispatch(t1, "owner", { agent: "codex", model: "gpt-5.5" }), "not_open", /held by claude-code/],
     [() => L.block(t1, "owner", "again"), "already_blocked", /already blocked: waiting on the API key/],
     [() => L.unblock(t1, B), "not_owner", /does not hold t1/],
   ];
@@ -1404,7 +1411,7 @@ it("a blocked task keeps its owner and fork, refuses every move but abandon, and
 
   // An open task the owner blocks leaves the runner queue, and is back in it once unblocked.
   const t2 = (await L.newItem("Later", ["docs/**"], "owner")).id;
-  await L.dispatch(t2, "owner", { to: "home" });
+  await L.dispatch(t2, "owner", { to: "home", agent: "codex", model: "gpt-5.5" });
   await refusal(L.block(t2, A, "not mine"), "not_owner", /holder: nobody/);
   expect((await L.block(t2, "owner", "waiting on t1")).blocked).toMatchObject({ by: "owner", from: "open" });
   expect(await L.waiting()).toEqual([]);
@@ -1522,7 +1529,7 @@ it("a task sent back for rework gets the rejecting review's findings in its job 
     { file: "docs/a.md", line: 7, severity: "blocking", text: "guard the empty case" },
     { file: "docs/b.md", line: null, severity: "follow-up", text: "rename the heading" },
   ] });
-  await L.dispatch(item.id, "owner", { to: "home", note: "address the review" });
+  await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "address the review" });
   await L.claim(item.id, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
   const brief = await L.jobBrief(item.id, "opencode/glm-5.3-flash");
   expect(brief.job).toBe("rework");
@@ -1535,6 +1542,9 @@ it("a task sent back for rework gets the rejecting review's findings in its job 
 
 const GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
 const REVIEW_POOL: ModelEntry[] = [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
+// The tier's model joins the pool, for the tier review the developer asks by command (G17: the server asks none).
+const TIER_POOL: ModelEntry[] = [...REVIEW_POOL, { id: "glm-5.3", harness: "zcode", where: "home", provider: "subscription", aliases: [], family: "zai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
+const askTier = (L: Awaited<ReturnType<typeof setup>>, id = "t1") => L.requestTierReview(id, "owner", GLM, TIER_POOL, undefined, true);
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const ONE = ["Nested lists parse"];
 const TWO = ["Nested lists parse", "Errors name the line"];
@@ -1590,6 +1600,7 @@ it("changing criteria withdraws every standing review and live request, keeps th
   // GLM beside it; GLM claims the tier review and rejects; GPT claims the gate's.
   await L.addReview(bound(review("t1", B, H1, true, "fine"), one), undefined, true);
   await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
+  expect(await askTier(L)).toMatchObject({ requested: true, reviewer: GLM });
   const tier = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
   expect(tier).toMatchObject({ tier: true, criteria: one });
   await L.addReview(bound(review("t1", GLM, H1, false, "unsafe"), one, tier.request), undefined, true);
@@ -1599,7 +1610,8 @@ it("changing criteria withdraws every standing review and live request, keeps th
   const evidence = (await L.evidenceFor("t1")).length;
 
   const changed = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
-  expect(changed.criteriaChange).toMatchObject({ from: one, to: two, reviews: 2, requests: 1, acceptance: false, override: false, asked: [GPT] });
+  expect(changed.criteriaChange).toMatchObject({ from: one, to: two, reviews: 2, requests: 1, acceptance: false, override: false, asked: [] });
+  // The change asks nobody again unless the developer's standing reask-on-resubmit stands (G6); the withdrawal is the fact.
   expect(changed).toMatchObject({ state: "submitted", head: H1, accept: TWO });
   // History stays: both reviews are kept, bound to what they judged, marked withdrawn.
   const reviews = await L.reviewsFor("t1");
@@ -1615,12 +1627,14 @@ it("changing criteria withdraws every standing review and live request, keeps th
 
   // Back to the first criteria: the binding is the first one again, and still nothing revives.
   const back = await L.editItem("t1", "owner", { accept: ONE }) as unknown as Item & { criteriaChange: CriteriaChange };
-  expect(back.criteriaChange).toMatchObject({ from: two, to: one, reviews: 0, requests: 2 });
+  expect(back.criteriaChange).toMatchObject({ from: two, to: one, reviews: 0, requests: 0 });
+  // (Nothing was asked again after the first change, so there is no request to withdraw now.)
   expect(await L.criteria("t1")).toBe(one);
   expect((await L.reviewsFor("t1")).every((r) => r.withdrawn)).toBe(true);
   expect(await gateOf(L)).toMatchObject({ ready: false, needsAssessor: true });
   // The old verdict, bound to criteria the task has again, still answers
-  // nothing: its request was withdrawn and replaced.
+  // nothing: its request was withdrawn, and the developer asks again by command.
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   const replacement = await L.claimReview("t1", GPT, RUNNER) as unknown as ReviewClaim;
   expect(replacement.request).not.toBe(gateClaim.request);
   await refusal(L.addReview(bound(review("t1", GPT, H1, true), one, gateClaim.request), undefined, true), "stale_request", /withdrawn or replaced.*refresh/);
@@ -1766,15 +1780,23 @@ it("changing criteria takes back an acceptance and an override, the task claimed
 // tier already asked, or the tier review is never asked again.
 const liveTier = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => (await L.reviewRequests(id)).filter((r) => r.tier && (r.state === "open" || r.state === "claimed"));
 
-it("criteria changed A to B and back to A at one head: the tier is asked again each time, and a live tier request stands", async () => {
+it("criteria changed A to B and back to A at one head: a withdrawn tier request does not stand in for a new one, which the developer asks by command each time", async () => {
   const L = await setup("criteria-tier-aba", { ...policy, reviewTier: [GLM] });
   await submittedWith(L, ONE);
   await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
+  // The server asks no tier review (G17): the developer asks it by command.
+  expect((await liveTier(L)).length).toBe(0);
+  await askTier(L);
   expect((await liveTier(L)).length).toBe(1);
   await L.editItem("t1", "owner", { accept: TWO });
-  expect((await liveTier(L)).length).toBe(1);
+  // The change withdrew the tier request, and the server asks none in its place (G17).
+  expect((await liveTier(L)).length).toBe(0);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
+  await askTier(L);
   await L.editItem("t1", "owner", { accept: ONE });
-  // A's tier request, withdrawn when the criteria first changed, does not stand in for a new one.
+  expect((await liveTier(L)).length).toBe(0);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
+  await askTier(L);
   const tier = await liveTier(L);
   expect(tier).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
   expect((await L.reviewRequests("t1")).filter((r) => r.tier).map((r) => r.state)).toEqual(["withdrawn", "withdrawn", "open"]);
@@ -1794,6 +1816,7 @@ it("requests and reviews made before reviews were bound stop counting as already
     L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
     L.submit("t1", A);
     L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
+    L.requestTierReview("t1", "owner", GLM, TIER_POOL, undefined, true);
     // As a ledger before t326 left them: requests with no criteria, and a
     // tier review with no binding at the head.
     state.storage.sql.exec(`UPDATE review_requests SET criteria = NULL`);
@@ -1801,18 +1824,26 @@ it("requests and reviews made before reviews were bound stop counting as already
     const after = new Ledger(state, env);
     expect(after.reviewRequests("t1").filter((r) => r.tier).map((r) => r.state)).toEqual(["open"]);
     const change = after.editItem("t1", "owner", { accept: [...TWO] });
-    expect(change.criteriaChange).toMatchObject({ requests: 2, asked: [GPT] });
+    expect(change.criteriaChange).toMatchObject({ requests: 2, asked: [] });
     // The legacy review stays in the record, unstamped, withdrawn with the change.
     const legacy = after.reviewsFor("t1")[0];
     expect(legacy).toMatchObject({ withdrawn: { reason: "the acceptance criteria changed" } });
     expect("criteria" in legacy).toBe(false);
+    // Nothing is asked again by the server (G6, G17); the legacy tier review no longer counts as given, so the developer can ask both again.
+    expect(after.reviewRequests("t1").filter((r) => r.state === "open" || r.state === "claimed")).toEqual([]);
+    after.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
+    expect(after.requestTierReview("t1", "owner", GLM, TIER_POOL, undefined, true)).toMatchObject({ needed: true, requested: true });
     const live = after.reviewRequests("t1").filter((r) => r.state === "open" || r.state === "claimed");
     expect(live.map((r) => !!r.tier).sort()).toEqual([false, true]);
   });
 });
 
-it("a gate request the criteria change withdrew is carried at the same head once the gate needs the review", async () => {
+// G6: carried only under the developer's standing reask-on-resubmit (fast mode).
+it("under the standing reask-on-resubmit, a gate request the criteria change withdrew is carried at the same head once the gate needs the review", async () => {
   const L = await setup("criteria-carry");
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  await L.recordDecision({ standing: { key: "reask-on-resubmit", value: "on" }, quote: "ask again" }, "owner", A);
   await submittedWith(L, ONE);
   await L.requestReview("t1", "owner", GPT, REVIEW_POOL);
   // The check fails at the head while the criteria change, so no review is needed and none is asked yet.
@@ -1830,7 +1861,7 @@ for (const terminal of ["abandoned", "merged"] as const) {
   it(`${terminal} clears dispatch and every live review, and refuses all claims`, async () => {
     const L = await setup(`terminal-${terminal}`);
     await L.newItem("Closed work", [], "owner");
-    await L.dispatch("t1", "owner", { to: "home" });
+    await L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-5.5" });
     expect(await L.waiting()).toHaveLength(1);
     await runInDurableObject(L, async (_instance, state) => {
       for (const status of ["open", "claimed"]) {
@@ -1851,7 +1882,7 @@ for (const terminal of ["abandoned", "merged"] as const) {
     });
     for (const actor of [A, "atelier/integrator"]) await refusal(L.claim("t1", actor, null, true), "closed", new RegExp(terminal));
     await refusal(L.claimReview("t1", B, null), "closed", new RegExp(terminal));
-    await refusal(L.dispatch("t1", "owner", { to: "home" }), "closed", new RegExp(terminal));
+    await refusal(L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-5.5" }), "closed", new RegExp(terminal));
     await L.unclaim("t1", A, "not_ready");
     expect((await L.item("t1")).state).toBe(terminal);
   });

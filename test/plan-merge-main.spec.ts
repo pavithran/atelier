@@ -1,11 +1,16 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanPartView, type PlanView } from "../src/plans/show.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+
+// The routes the developer names at an approval (G17: Atelier picks none): every part built by
+// zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.
+const routesOf = async (L: { planView(id: string): Promise<{ plan?: { parts: { key: string }[] } | null }> }, id: string) =>
+  Object.fromEntries(((await L.planView(id)).plan?.parts ?? []).map((p) => [p.key, { builder: "zcode/glm-5.3", reviewer: "codex/gpt-6-astra" }]));
 
 // A refresh that conflicts becomes a part of the plan (docs/orchestrator.md,
 // section 5): the Ledger adds a merge-main part for that main head, once,
@@ -76,7 +81,7 @@ async function behindPlan(L: L, pool: ModelEntry[] = POOL) {
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool, [], await routesOf(L, item.id));
   const [a, b] = [parts[0].id, parts[1].id];
   await submitApproved(L, a, PART_A, "src/a/x.ts");
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
@@ -95,23 +100,35 @@ async function submitApproved(L: L, partId: string, head: string, path: string) 
   await L.addEvidence(observed(partId, head, path));
   await L.submit(partId, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === partId);
-  const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
+  // G17: a part Atelier added has no routed reviewer, so its review is asked by command.
+  if (!waiting.length) await L.requestReview(partId, "owner", "codex/gpt-6-astra", POOL);
+  const asked = (await L.reviewWaiting()).filter((w) => w.id === partId);
+  const reviewer = `${asked[0].dispatch!.agent}/${asked[0].dispatch!.model}`;
   const reviewClaim1 = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
   await L.addReview({ request: reviewClaim1.request, itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
   return { builder, reviewer };
 }
 
-// The integrator takes the refresh for M1 and reports it conflicted.
-async function conflicted(L: L, id: string, reason = CONFLICT) {
+// The integrator takes the refresh for M1 and reports it conflicted. G17: the merge-main part
+// Atelier adds has no builder, so the developer reroutes it to a named one unless `named` is false.
+async function conflicted(L: L, id: string, reason = CONFLICT, named = true) {
   await L.claim(id, INTEGRATOR, RUNNER, true);
   await L.refreshFailed(id, INTEGRATOR, M1, reason, "conflict");
   await L.release(id, INTEGRATOR, "refresh failed");
+  if (named) for (const m of await mergePart(L, id)) await L.reroutePlan(m.id, "owner", "zcode/glm-5.3");
 }
 
 it("a conflicted refresh adds one merge-main part for that main head, routed with a reviewer of another family, dispatched first and holding the others", async () => {
   const L = await setup("mm-conflict");
   const { id, b, hash } = await behindPlan(L);
-  await conflicted(L, id);
+  await conflicted(L, id, CONFLICT, false);
+  const unnamed = await mergePart(L, id);
+  expect(unnamed).toHaveLength(1);
+  // G17: Atelier picks no builder for the part, so it is unrouted with its candidates listed and blocks the plan, with nothing dispatched.
+  expect(unnamed[0].route).toMatchObject({ builder: null, reviewer: null, unrouted: expect.stringMatching(/^no builder is named for it; candidates: .*Name one with atelier plan reroute/) });
+  expect(unnamed[0].dispatch).toBeNull();
+  expect((await L.planView(id)).blocked).toMatch(/part merge-main-11111111 is unrouted/);
+  await L.reroutePlan(unnamed[0].id, "owner", "zcode/glm-5.3");
   const added = await mergePart(L, id);
   expect(added).toHaveLength(1);
   const m = added[0];
@@ -119,12 +136,12 @@ it("a conflicted refresh adds one merge-main part for that main head, routed wit
     key: KEY, title: "Merge main at 11111111 into the plan's branch", scope: ["src/diagrams.ts"], dependsOn: [], state: "open",
     added: { mainHead: M1, by: ORCHESTRATOR },
   });
-  // Routed like any part: a builder, and a reviewer of another family than it.
-  expect(m.route?.unrouted).toBeNull();
-  const builder = m.route!.builder!.actor, reviewer = m.route!.reviewer!.actor;
-  expect(familyOf(reviewer.split("/")[1])).not.toBe(familyOf(builder.split("/")[1]));
+  // Named by the developer as its builder; Atelier names no reviewer (its review is asked by command).
+  const builder = m.route!.builder!.actor;
+  expect(builder).toBe("zcode/glm-5.3");
+  expect(m.route?.reviewer).toBeNull();
   // Dispatched first, as a merge-main job naming main's head; b, whose dependency is integrated, waits for it.
-  expect(m.dispatch).toMatchObject({ job: "merge-main", head: M1, by: ORCHESTRATOR, agent: builder.split("/")[0], model: builder.split("/")[1] });
+  expect(m.dispatch).toMatchObject({ job: "merge-main", head: M1, agent: builder.split("/")[0], model: builder.split("/")[1] });
   expect((await L.item(b)).dispatch).toBeNull();
   // The approved document and hash are as approved; the part is recorded as added, with its own dispatches.
   const view = await L.planView(id);
@@ -132,7 +149,7 @@ it("a conflicted refresh adds one merge-main part for that main head, routed wit
   expect(view.plan?.parts.map((p) => p.key)).toEqual(["a", "b"]);
   expect(view.approval?.limits.maxJobs).toBe(12);
   expect((await events(L, id)).filter((e) => e.kind === "plan.part_added")).toEqual([
-    expect.objectContaining({ actor: ORCHESTRATOR, data: expect.objectContaining({ part: m.id, key: KEY, mainHead: M1, builder, reviewer }) }),
+    expect.objectContaining({ actor: ORCHESTRATOR, data: expect.objectContaining({ part: m.id, key: KEY, mainHead: M1, builder: null, reviewer: null }) }),
   ]);
   // The part's item is a part of the plan, made by the orchestrator.
   expect(await L.item(m.id)).toMatchObject({ kind: "part", plan: id, partKey: KEY, scope: ["src/diagrams.ts"] });
@@ -236,7 +253,7 @@ it("plan refresh --resolve adds the part for main's head without a refresh, to t
   expect(m).toMatchObject({ key: KEY, added: { mainHead: M1, by: "owner" }, scope: ["src/**"] });
   expect(m.dispatch).toMatchObject({ job: "merge-main", head: M1, agent: "zcode", model: "glm-5.3" });
   expect(m.route?.builder?.actor).toBe("zcode/glm-5.3");
-  expect(familyOf(m.route!.reviewer!.actor.split("/")[1])).not.toBe(familyOf("glm-5.3"));
+  expect(m.route?.reviewer).toBeNull();
   expect((await L.item(b)).dispatch).toMatchObject({ by: ORCHESTRATOR });
   expect((await L.planView(id)).refresh?.last).toMatchObject({ state: "failed", kind: "checks" });
   // Once per main head, and one open at a time.
@@ -260,9 +277,10 @@ function artifacts(repos: Record<string, { hash: string; parents: string[] }[]>)
   } as unknown as Artifacts;
 }
 
+// G18: a write as the developer, or as the integrator on the developer token, names the model acting.
 function call(name: string, path: string, actor: string, body: unknown, ARTIFACTS: Artifacts, method = "POST") {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${path}`, {
-    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" || actor === INTEGRATOR ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 }
@@ -349,7 +367,7 @@ it("plan refresh --resolve --to names an entry whose id differs from the routed 
 // with a plain build's offer check, though it is dispatched with the
 // merge-main job; a build assignment preferring Astra, offered only for build
 // and review, routed it to Astra, whom no runner would claim it as.
-it("the merge-main part is routed to a model a runner offers the merge-main job for, whatever a build assignment prefers", async () => {
+it("the merge-main part lists as candidates only the models a runner offers the merge-main job for, whatever a build assignment prefers, and names no builder", async () => {
   const L = await setup("mm-resolve-job");
   const { id } = await behindPlan(L);
   await L.claim(id, INTEGRATOR, RUNNER, true);
@@ -363,8 +381,9 @@ it("the merge-main part is routed to a model a runner offers the merge-main job 
   ];
   await L.planResolve(id, "owner", M1, false, undefined, offers);
   const [m] = await mergePart(L, id);
-  expect(m.route?.builder?.actor).toBe("claude-code/opus-5.5");
-  expect(m.route?.builder?.reasons.join(" ")).toMatch(/Role assignment a1 skipped: no choice is eligible here \(codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
+  // G17: no builder is picked; the candidates are only the model a runner offers the merge-main job for, and the assignment's choice is refused with the reason.
+  expect(m.route).toMatchObject({ builder: null, unrouted: "no builder is named for it; candidates: claude-code/opus-5.5. Name one with atelier plan reroute PART --to H/M" });
+  expect(m.route?.excluded.find((c) => c.actor === "codex/gpt-6-astra")?.reasons.join(" ")).toMatch(/no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
 });
 
 // gpt-6-astra's twenty-second review of t622, finding 2: a --to that the

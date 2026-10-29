@@ -1,11 +1,12 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { beforeAll, expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry, type ModelNote } from "../src/models/pool.ts";
 
 // The owner keeps dated notes under a pool model (t406): the route stores
-// them, the pool read carries them oldest first, and a builder suggestion
-// names the latest one that bears on the task.
+// them, the pool read carries them oldest first, and the builder candidates a
+// dispatch naming none is refused with (G17) carry the latest one that bears
+// on the task.
 
 const TOKEN = "model-notes-test-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
@@ -17,10 +18,15 @@ const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
+// A write on the owner token names the acting model (G18), and once the pool
+// has models it must be one of them: the acting model is in the pool.
+const ACTING = "claude-code/opus-5.5";
+beforeAll(async () => { await index().putModel(entry("opus-5.5", "claude-code")); });
+
 function call(method: string, path: string, body?: unknown, actor = "owner") {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
@@ -51,7 +57,7 @@ it("a note needs a pool model, the owner, text without a key, and a task name", 
   expect((await (await call("GET", "/models")).json() as ModelEntry[]).find((m) => m.id === "refused-model")?.notes).toBeUndefined();
 });
 
-it("a builder suggestion names the latest note that bears on the task in its own project, where another project has the same task id", async () => {
+it("a builder candidate carries the latest note that bears on the task in its own project, where another project has the same task id", async () => {
   const projects = ["notes-alpha", "notes-beta", "notes-gamma"];
   const items: Record<string, string> = {};
   for (const name of projects) {
@@ -62,7 +68,16 @@ it("a builder suggestion names the latest note that bears on the task in its own
   }
   expect(Object.values(items)).toEqual(["t1", "t1", "t1"]);
   await index().putModel(entry("suggest-note-model", "codex"));
-  const suggest = async (name: string) => (await (await call("POST", `/projects/${name}/items/${items[name]}/dispatch`, { suggest: true, model: "suggest-note-model" })).json() as { suggestion: { reasons: string[] } }).suggestion.reasons;
+  // G17: no builder is suggested. A dispatch naming none is refused with the
+  // candidates, each with its line, which carries the latest note bearing on
+  // the task; --model narrows the list.
+  const suggest = async (name: string) => {
+    const res = await call("POST", `/projects/${name}/items/${items[name]}/dispatch`, { suggest: true, model: "suggest-note-model" });
+    expect(res.status).toBe(409);
+    const refused = await res.json() as { error: string; detail: string };
+    expect(refused.error).toBe("builder_needed");
+    return refused.detail;
+  };
   const day = AT.slice(0, 10);
 
   await call("POST", "/models/suggest-note-model/notes", { text: "Stalls on refactors." });
@@ -74,7 +89,7 @@ it("a builder suggestion names the latest note that bears on the task in its own
   expect(await suggest("notes-beta")).toContain(`Latest note, ${day} by owner on notes-beta/t1: Only beta's task is affected.`);
   const gamma = await suggest("notes-gamma");
   expect(gamma).toContain(`Latest note, ${day} by owner: Stalls on refactors.`);
-  expect(gamma.join(" ")).not.toMatch(/Only (alpha|beta)/);
+  expect(gamma).not.toMatch(/Only (alpha|beta)/);
 });
 
 it("a renamed project keeps its task notes under its current name, and a note named by either name bears on the task", async () => {
@@ -86,7 +101,13 @@ it("a renamed project keeps its task notes under its current name, and a note na
   await call("POST", "/models/rename-note-model/notes", { text: "Only the renamed task is affected.", item: id, project: "notes-old" });
   expect((await call("POST", "/projects/notes-old/rename", { to: "notes-new" })).status).toBe(200);
 
-  const suggest = async () => (await (await call("POST", `/projects/notes-new/items/${id}/dispatch`, { suggest: true, model: "rename-note-model" })).json() as { suggestion: { reasons: string[] } }).suggestion.reasons;
+  const suggest = async () => {
+    const res = await call("POST", `/projects/notes-new/items/${id}/dispatch`, { suggest: true, model: "rename-note-model" });
+    expect(res.status).toBe(409);
+    const refused = await res.json() as { error: string; detail: string };
+    expect(refused.error).toBe("builder_needed");
+    return refused.detail;
+  };
   expect(await suggest()).toContain(`Latest note, ${AT.slice(0, 10)} by owner on notes-new/${id}: Only the renamed task is affected.`);
 
   const former = await call("POST", "/models/rename-note-model/notes", { text: "Named by the former name.", item: id, project: "notes-old" });

@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
-import { runInDurableObject } from "cloudflare:test";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
+import { runInDurableObject } from "./support/workers.ts";
 
 // The live Ledger inside its Durable Object, untyped: these tests reach its private reads.
 const inside = runInDurableObject as unknown as (stub: unknown, fn: (instance: any) => unknown) => Promise<any>;

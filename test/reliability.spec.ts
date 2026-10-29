@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
+import { env } from "./support/workers.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
-import { expect, it } from "vitest";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { buildReliability, type ModelReliability, type RunReport } from "../src/models/reliability.ts";
@@ -17,10 +17,11 @@ const OPUS = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra";
 const [H0, H1, H2, H3] = ["0", "1", "2", "3"].map((c) => c.repeat(40));
 const L = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
+// A write on the owner token names the acting model (G18), a runner header or not: only a real runner token skips it.
 function call(method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}, bindings: Env = testEnv) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...headers },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": OPUS } : {}), "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
 }

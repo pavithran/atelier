@@ -10,37 +10,8 @@ import ts from "typescript5";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-// wrangler.jsonc as JSON, its comments removed. Comments are cut only
-// outside strings, so a // inside a value survives.
-function withoutComments(text) {
-  let out = "", quote = null, escape = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quote) {
-      out += c;
-      if (escape) escape = false;
-      else if (c === "\\") escape = true;
-      else if (c === quote) quote = null;
-    } else if (c === '"' || c === "'" || c === "`") {
-      quote = c; out += c;
-    } else if (c === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-      out += "\n";
-    } else if (c === "/" && text[i + 1] === "*") {
-      i += 2;
-      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
-      i++;
-    } else out += c;
-  }
-  return out;
-}
-
-test("the Worker writes Workers Logs: observability is enabled in wrangler.jsonc", () => {
-  const config = JSON.parse(withoutComments(readFileSync(join(root, "wrangler.jsonc"), "utf8")));
-  assert.equal(config.observability?.enabled, true, "wrangler.jsonc must keep observability.enabled true for Workers Logs");
-  const rate = config.observability?.head_sampling_rate;
-  assert.ok(rate === undefined || (rate >= 0 && rate <= 1), "head_sampling_rate, when set, is between 0 and 1");
-});
+// Atelier 2.0 (task 7): the Workers Logs setting went with wrangler.jsonc; the
+// server's logs on the Studio are its process's own (docs/studio.md).
 
 test("the handbook says how a session queries the logs", () => {
   const md = readFileSync(join(root, "docs/orchestrating.md"), "utf8");
