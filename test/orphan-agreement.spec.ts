@@ -7,8 +7,8 @@
 // were dispatched again. A claim that loses that race is now answered 409
 // held, naming the holder, as the queue and stuck show it at that moment, and
 // the runner is offered the task again once the hold clears.
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import type { Item } from "../src/rules.ts";
@@ -16,22 +16,23 @@ import type { Item } from "../src/rules.ts";
 const A = "codex/gpt-6-astra", OWNER = "orphan-agreement-owner";
 const GONE = RUNNER_GONE_MS + OFFER_REFRESH_MS + 60_000;
 const testEnv = { ...env, ATELIER_TOKEN: OWNER } as typeof env;
-// A claim the ledger allows goes on to fork in Artifacts, which this test
-// has none of, so it fails there (artifacts_unavailable) and is rolled back:
-// what counts here is that the ledger did not refuse it.
+// A claim the ledger allows goes on to branch in the project's repository,
+// which this test leaves without a commit, so it fails there (empty_branch,
+// task 5) and is rolled back: what counts here is that the ledger did not
+// refuse it.
 async function notRefused(res: Response) {
   const text = await res.text();
   expect(res.status, text).not.toBe(403);
   expect(text).not.toContain("runner_forbidden");
 }
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
-const api = (path: string, method = "GET", body?: unknown, token = OWNER, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), testEnv);
+const api = (path: string, method = "GET", body?: unknown, token = OWNER, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json", ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }), testEnv);
 const polled = (runner: string, ms: number) => index().putRunnerOffer({ runner, kind: "home", agents: [] }, new Date(Date.now() - ms).toISOString());
 const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
 
 async function setup(name: string) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const record = { name, repo: name, createdAt: new Date().toISOString(), policy: { checks: [], protected: [], coreFiles: ["src/**"] } };
+  const record = { name, repo: name, branch: "main", createdAt: new Date().toISOString(), policy: { checks: [], protected: [], coreFiles: ["src/**"] } };
   await L.setProject(record, "owner");
   await index().registerProject(record);
   await L.newItem("Claimed", ["src/**"], "owner");

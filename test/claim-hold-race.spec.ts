@@ -9,8 +9,8 @@
 // The race is played by Ledger.prototype.claim: the Ledgers run in this
 // isolate, so for the loser's claim it first makes the winner's claim and
 // then refuses the loser's, as the runner token check does.
-import { env } from "cloudflare:workers";
-import { afterEach, expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { afterEach, expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { Ledger } from "../src/ledger.ts";
 import { runnerDenied } from "../src/tokens.ts";
@@ -20,7 +20,7 @@ const A = "codex/gpt-6-astra", OWNER = "claim-hold-race-owner";
 const testEnv = { ...env, ATELIER_TOKEN: OWNER } as typeof env;
 const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
-const api = (path: string, method = "GET", body?: unknown, token = OWNER, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), testEnv);
+const api = (path: string, method = "GET", body?: unknown, token = OWNER, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json", ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }), testEnv);
 
 const proto = Ledger.prototype as unknown as Record<string, unknown>;
 const saved = Object.getOwnPropertyDescriptor(proto, "claim")!;

@@ -2,8 +2,8 @@
 // index records them for /api/runners, reach the project's ledger with every
 // poll, so a claim whose runner stopped polling holds no dispatch, the owner's
 // queue listing names it orphaned, and the runner's return restores the hold.
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import type { Item } from "../src/rules.ts";
@@ -11,7 +11,7 @@ import type { Item } from "../src/rules.ts";
 const A = "codex/gpt-6-astra", TOKEN = "orphaned-claim-token";
 const LIMIT = RUNNER_GONE_MS;
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
-const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, "content-type": "application/json", ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
 
 async function setup(name: string, runner: string | null) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));

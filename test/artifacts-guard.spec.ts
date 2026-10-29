@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it } from "./support/vitest.ts";
 import { bindingsWith, expectNoStrayArtifactsAccess, strayArtifactsAccesses } from "./support/artifacts-fake.ts";
 
 // The guard behind bindingsWith: a member a fake lacks is recorded even when

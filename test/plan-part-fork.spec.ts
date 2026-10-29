@@ -1,26 +1,23 @@
-import { env } from "cloudflare:workers";
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { env, server } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import type { Evidence, Item, ProjectPolicy } from "../src/rules.ts";
-import { setRetryBaseMs } from "../src/transient.ts";
 
-// These tests inject transient Artifacts failures; the retry backoff would
-// otherwise spend seconds waiting (and time out under load). Milliseconds do.
-beforeAll(() => setRetryBaseMs(1));
-afterAll(() => setRetryBaseMs());
+// A part claimed again whose branch holds nothing beyond the commit it
+// started from starts from the plan branch's head when the branch has moved
+// since (docs/orchestrator.md, section 5): the claim route moves the branch
+// t/N to that head (task 5, moveEmptyBranch) and the Ledger records the new
+// base. A part with commits of its own keeps its branch, and a part whose
+// plan has not moved is claimed on its branch as it stands. Claims go through
+// the Worker, over the real branches of the Node server's bare repository.
+// The 1.x cases of an Artifacts fork deleted and forked again, and of the
+// transient failures of those calls, went with the forks.
 
-// A part claimed again whose fork holds nothing beyond the commit it forked
-// from starts from the plan branch's head when the branch has moved since
-// (docs/orchestrator.md, section 5): the claim route forks it again from the
-// plan's fork under the same name, and the Ledger records the new base. A
-// part with commits of its own keeps its fork, and a part whose plan has
-// not moved is claimed on its fork as it stands. Claims go through the
-// Worker, over a stand-in Artifacts that keeps each repository's head.
-
-const H0 = "0".repeat(40), PART_A = "a".repeat(40), MA = "3".repeat(40), PART_B = "b".repeat(40);
+const PART_A = "a".repeat(40);
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const PLANNER = "claude-code/opus-5.5";
 const INTEGRATOR = "atelier/integrator";
@@ -41,53 +38,35 @@ const part = (key: string): PlanPart => ({
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 type L = ReturnType<typeof ledger>;
 
-// A stand-in Artifacts: each repository's head by name, forks copying it,
-// deletes removing it, and a missing repository refused as the binding does.
-// A log reads back from its ref, or the head, along `parents`, the one
-// history every repository here shares.
-function artifacts(heads: Map<string, string>, parents = new Map<string, string>()) {
-  const calls = { forks: [] as string[], deletes: [] as string[] };
-  // The description each repository was made with, which a move reads back
-  // before it takes a fork an earlier attempt made (t641).
-  const descriptions = new Map<string, string | undefined>();
-  const missing = (name: string) => Object.assign(new Error(`repo not found: ${name}`), { code: "NOT_FOUND" });
-  const ARTIFACTS = {
-    get: async (name: string) => {
-      if (!heads.has(name)) throw missing(name);
-      return {
-        info: async () => ({ remote: `https://git.test/${name}.git`, defaultBranch: "main", description: descriptions.get(name) ?? null }),
-        createToken: async () => ({ plaintext: "token", id: `id-${name}-${calls.forks.length}`, expiresAt: "soon" }),
-        revokeToken: async () => true,
-        log: async ({ ref }: { ref?: string } = {}) => {
-          const page = [];
-          for (let at: string | undefined = ref ?? heads.get(name); at; at = parents.get(at)) page.push({ hash: at, parents: parents.has(at) ? [parents.get(at)] : [] });
-          return page;
-        },
-        fork: async (to: string, opts?: { description?: string }) => {
-          if (heads.has(to)) throw Object.assign(new Error(`repo already exists: ${to}`), { code: "ALREADY_EXISTS" });
-          calls.forks.push(to);
-          descriptions.set(to, opts?.description);
-          heads.set(to, heads.get(name)!);
-          return {};
-        },
-        [Symbol.dispose]() {},
-      };
-    },
-    delete: async (name: string) => { calls.deletes.push(name); return heads.delete(name); },
-  } as unknown as Artifacts;
-  return { ARTIFACTS, calls };
+// The project's bare repository on the Node server, and commits made in it
+// with Git plumbing, as pushes would leave them. `commit` answers the new
+// sha; `point` sets a branch (null deletes it); `tip` reads one.
+const author = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+function repoOf(name: string) {
+  const dir = (server as unknown as { git: { repo(key: string, branch: string): string } }).git.repo(name, "main");
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+  let n = 0;
+  return {
+    commit: (parent: string | null, message = `commit ${++n}`) => git("commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", ...(parent ? ["-p", parent] : []), "-m", message),
+    point: (branch: string, sha: string | null) => { if (sha) git("update-ref", `refs/heads/${branch}`, sha); else git("update-ref", "-d", `refs/heads/${branch}`); },
+    tip: (branch: string) => { try { return git("rev-parse", "--verify", "-q", `refs/heads/${branch}`); } catch { return null; } },
+  };
 }
+type Repo = ReturnType<typeof repoOf>;
 
-function claim(name: string, id: string, actor: string, ARTIFACTS: Artifacts, LEDGER = env.LEDGER) {
+// A runner's claim of the item through the Worker, as the actor, with the
+// Ledger binding that is given (a test's own, to fail a call).
+function claim(name: string, id: string, actor: string, LEDGER = env.LEDGER) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/claim`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
-  }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS, LEDGER } as typeof env);
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "x-atelier-acting": actor, "x-atelier-runner": RUNNER.runner, "content-type": "application/json" }, body: "{}",
+  }), { ...env, ATELIER_TOKEN: TOKEN, LEDGER } as typeof env);
 }
 
 // The Ledger binding with its next moveFork failing, as a transient error
-// between the Worker and the Ledger would, after the fork was made again.
+// between the Worker and the Ledger would, after the branch was moved.
 function failingMove() {
-  let failures = 1;
+  // The stub guard retries a transient error, so it fails more often than it tries.
+  let failures = 100;
   return {
     idFromName: (n: string) => env.LEDGER.idFromName(n),
     get: (id: DurableObjectId) => {
@@ -97,6 +76,14 @@ function failingMove() {
           if (key === "moveFork" && failures > 0) {
             failures--;
             return async () => { throw new Error("Network connection lost."); };
+          }
+          // A request naming the acting model (G18) calls every method through actingCall.
+          if (key === "actingCall") {
+            return (acting: string, method: string, args: unknown[]) => {
+              if (method !== "moveFork" || failures <= 0) return (target as unknown as { actingCall: (...a: unknown[]) => unknown }).actingCall(acting, method, args);
+              failures--;
+              return Promise.reject(new Error("Network connection lost."));
+            };
           }
           return Reflect.get(target, key);
         },
@@ -110,40 +97,45 @@ const observed = (itemId: string, head: string, path: string): Evidence => ({
 });
 const actorOf = (item: Item) => `${item.dispatch!.agent}/${item.dispatch!.model}`;
 
-// A plan forked at H0 with independent parts a and b. Part b is claimed
-// through the Worker, so its fork is made from the plan's fork at H0, and
+// A plan branched at M0 with independent parts a and b. Part b is claimed
+// through the Worker, so its branch is made from the plan's branch at M0, and
 // released; part a is then integrated as MA, moving the plan's branch.
 async function setup(name: string, bCommits: boolean) {
-  const record = { name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() };
+  const record = { name, repo: `${name}--baseline`, branch: "main", policy, createdAt: new Date().toISOString() };
   const L = ledger(name);
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const repo = repoOf(name);
+  const M0 = repo.commit(null, "first");
+  repo.point("main", M0);
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
-  const planFork = `fork-${item.id}`;
+  const planBranch = `plan/${item.id.slice(1)}`;
   await L.claim(item.id, PLANNER, RUNNER);
-  await L.setFork(item.id, planFork, H0, PLANNER);
+  await L.setFork(item.id, `${name}/${planBranch}`, M0, PLANNER);
+  repo.point(planBranch, M0);
   const post = await L.postPlan(item.id, PLANNER, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a"), part("b")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
   const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
   const [a, b] = [parts[0].id, parts[1].id];
-  const heads = new Map([[record.repo, H0], [planFork, H0]]);
-  const parents = new Map<string, string>();
-  const art = artifacts(heads, parents);
-  const bFork = `${name}--${b}`;
+  const bBranch = `t/${b.slice(1)}`;
+  const bFork = `${name}/${bBranch}`;
 
   const builderB = actorOf(await L.item(b));
-  expect((await claim(name, b, builderB, art.ARTIFACTS)).status).toBe(200);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: H0, head: H0 });
+  const first = await claim(name, b, builderB);
+  expect(first.status, await first.clone().text()).toBe(200);
+  expect(await L.item(b)).toMatchObject({ fork: bFork, base: M0, head: M0 });
+  let PART_B = "";
   if (bCommits) {
-    heads.set(bFork, PART_B);
+    PART_B = repo.commit(M0, "part b");
+    repo.point(bBranch, PART_B);
     await L.recordPush(b, builderB, PART_B, PART_B);
   }
   await L.release(b, builderB, bCommits ? "checks failed" : "no new commit");
 
   const builderA = actorOf(await L.item(a));
   await L.claim(a, builderA, RUNNER);
-  await L.setFork(a, `fork-${a}`, H0, builderA);
+  await L.setFork(a, `${name}/t/${a.slice(1)}`, M0, builderA);
   await L.recordPush(a, builderA, PART_A, PART_A);
   await L.addEvidence(observed(a, PART_A, "src/a/x.ts"));
   await L.submit(a, builderA);
@@ -152,186 +144,98 @@ async function setup(name: string, bCommits: boolean) {
   const reviewClaim1 = await L.claimReview(a, reviewer, RUNNER) as unknown as ReviewClaim;
   await L.addReview({ request: reviewClaim1.request, itemId: a, criteria: await L.criteria(a), by: reviewer, head: PART_A, approve: true, note: "Good", at: new Date().toISOString() });
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
+  const MA = repo.commit(M0, "part a integrated");
   await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
   await L.release(item.id, INTEGRATOR, "part integrated");
-  heads.set(planFork, MA);
-  parents.set(MA, H0);
-  art.calls.forks.length = 0;
+  repo.point(planBranch, MA);
 
   const again = await L.item(b);
   expect(again.state).toBe("open");
   expect(again.dispatch).not.toBeNull();
-  return { L, b, bFork, heads, parents, art, builder: actorOf(again) };
+  return { L, b, bBranch, bFork, planBranch, repo, M0, MA, PART_B, builder: actorOf(again) };
 }
 
 const moves = async (L: L, id: string) => ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "fork.moved");
 
 it("a part with no commits of its own, dispatched again after the plan's branch moved, starts from the branch's head", async () => {
   const name = "pf-moved";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
-  const res = await claim(name, b, builder, art.ARTIFACTS);
+  const { L, b, bBranch, bFork, repo, M0, MA, builder } = await setup(name, false);
+  expect(repo.tip(bBranch)).toBe(M0);
+  const res = await claim(name, b, builder);
   expect(res.status).toBe(200);
-  expect(heads.get(bFork)).toBe(MA);
-  expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork] });
+  expect(repo.tip(bBranch)).toBe(MA);
   expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: builder, state: "claimed" });
   expect(((await res.json()) as { item: Item }).item).toMatchObject({ base: MA, head: MA });
-  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: H0, base: MA }]);
-  // Claimed again with the branch where it is, the fork stays.
-  expect((await claim(name, b, builder, art.ARTIFACTS)).status).toBe(200);
-  expect(art.calls.deletes).toEqual([bFork]);
+  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: M0, base: MA, acting: builder }]);
+  // Claimed again with the branch where it is, the branch stays.
+  expect((await claim(name, b, builder)).status).toBe(200);
+  expect(repo.tip(bBranch)).toBe(MA);
+  expect((await moves(L, b)).length).toBe(1);
 });
 
-it("a part with commits of its own keeps its fork and head when the plan's branch has moved", async () => {
+it("a part with commits of its own keeps its branch and head when the plan's branch has moved", async () => {
   const name = "pf-own";
-  const { L, b, bFork, heads, art, builder } = await setup(name, true);
-  expect((await claim(name, b, builder, art.ARTIFACTS)).status).toBe(200);
-  expect(heads.get(bFork)).toBe(PART_B);
-  expect(art.calls).toEqual({ forks: [], deletes: [] });
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: H0, head: PART_B });
+  const { L, b, bBranch, bFork, repo, M0, PART_B, builder } = await setup(name, true);
+  expect((await claim(name, b, builder)).status).toBe(200);
+  expect(repo.tip(bBranch)).toBe(PART_B);
+  expect(await L.item(b)).toMatchObject({ fork: bFork, base: M0, head: PART_B });
   expect(await moves(L, b)).toEqual([]);
 });
 
-it("a part whose fork has a commit the Ledger has not recorded keeps it", async () => {
+it("a part whose branch has a commit the Ledger has not recorded keeps it", async () => {
   const name = "pf-unrecorded";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
-  heads.set(bFork, PART_B);
-  expect((await claim(name, b, builder, art.ARTIFACTS)).status).toBe(200);
-  expect(heads.get(bFork)).toBe(PART_B);
-  expect(art.calls.deletes).toEqual([]);
-  expect(await L.item(b)).toMatchObject({ base: H0, head: H0 });
+  const { L, b, bBranch, repo, M0, builder } = await setup(name, false);
+  const PART_B = repo.commit(M0, "unrecorded");
+  repo.point(bBranch, PART_B);
+  expect((await claim(name, b, builder)).status).toBe(200);
+  expect(repo.tip(bBranch)).toBe(PART_B);
+  expect(await L.item(b)).toMatchObject({ base: M0, head: M0 });
 });
 
-it("a part whose fork a failed move left missing is forked again at the branch's head", async () => {
+it("a part whose branch a failed move left missing is branched again at the plan's head", async () => {
   const name = "pf-missing";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
-  heads.delete(bFork);
-  expect((await claim(name, b, builder, art.ARTIFACTS)).status).toBe(200);
-  expect(heads.get(bFork)).toBe(MA);
+  const { L, b, bBranch, bFork, repo, MA, builder } = await setup(name, false);
+  repo.point(bBranch, null);
+  expect((await claim(name, b, builder)).status).toBe(200);
+  expect(repo.tip(bBranch)).toBe(MA);
   expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA });
 });
 
-it("a part first dispatched, and one claimed again while the plan's branch has not moved, is forked once at the branch's head", async () => {
+it("a part first dispatched, and one claimed again while the plan's branch has not moved, is branched once at the plan's head", async () => {
   const name = "pf-first";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
+  const { L, b, bBranch, repo, MA, builder } = await setup(name, false);
   // Move b to MA, release it, and claim it again with the branch still at MA.
-  expect((await claim(name, b, builder, art.ARTIFACTS)).status).toBe(200);
+  expect((await claim(name, b, builder)).status).toBe(200);
   await L.release(b, builder, "no new commit");
   const next = actorOf(await L.item(b));
-  art.calls.forks.length = 0, art.calls.deletes.length = 0;
-  expect((await claim(name, b, next, art.ARTIFACTS)).status).toBe(200);
-  expect(art.calls).toEqual({ forks: [], deletes: [] });
-  expect(heads.get(bFork)).toBe(MA);
+  expect((await claim(name, b, next)).status).toBe(200);
+  expect(repo.tip(bBranch)).toBe(MA);
   expect(await L.item(b)).toMatchObject({ base: MA, head: MA });
   expect((await moves(L, b)).length).toBe(1);
 });
 
-it("a move that forked again but failed to record the new base is finished by the next claim", async () => {
+it("a move that moved the branch but failed to record the new base is finished by the next claim", async () => {
   const name = "pf-unrecorded-move";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
-  expect((await claim(name, b, builder, art.ARTIFACTS, failingMove())).status).toBe(500);
-  // The fork was made again at the branch's head; the Ledger still has H0.
-  expect(heads.get(bFork)).toBe(MA);
-  expect(await L.item(b)).toMatchObject({ base: H0, head: H0 });
+  const { L, b, bBranch, bFork, repo, M0, MA, builder } = await setup(name, false);
+  expect((await claim(name, b, builder, failingMove())).status).toBe(500);
+  // The branch was moved to the plan's head; the Ledger still has M0.
+  expect(repo.tip(bBranch)).toBe(MA);
+  expect(await L.item(b)).toMatchObject({ base: M0, head: M0 });
   const next = actorOf(await L.item(b));
-  art.calls.forks.length = 0, art.calls.deletes.length = 0;
-  expect((await claim(name, b, next, art.ARTIFACTS)).status).toBe(200);
-  expect(art.calls).toEqual({ forks: [], deletes: [] });
+  expect((await claim(name, b, next)).status).toBe(200);
+  expect(repo.tip(bBranch)).toBe(MA);
   expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: next, state: "claimed" });
-  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: H0, base: MA }]);
+  expect((await moves(L, b)).map((e) => e.data)).toEqual([{ fork: bFork, from: M0, base: MA, acting: builder }]);
 });
 
-// The stand-in Artifacts with the first call of each of `ops` failing as a
-// busy Artifacts may (t349); a delete or fork may fail after it is done,
-// its answer lost.
-function flaky(inner: Artifacts, ops: string[], after = false) {
-  const failed = new Set<string>();
-  const unavailable = () => Object.assign(new Error("service unavailable"), { code: "UNAVAILABLE" });
-  const once = async <T>(op: string, run: () => Promise<T>) => {
-    if (!ops.includes(op) || failed.has(op)) return run();
-    failed.add(op);
-    if (after) await run();
-    throw unavailable();
-  };
-  return {
-    get: async (name: string) => {
-      const r = await inner.get(name);
-      return new Proxy(r, {
-        get(target, key) {
-          const v = Reflect.get(target, key);
-          return typeof key === "string" && ops.includes(key) ? (...args: unknown[]) => once(key, () => v.apply(target, args)) : v;
-        },
-      });
-    },
-    delete: (name: string) => once("delete", () => inner.delete(name)),
-  } as unknown as Artifacts;
-}
-
-it("a part's move through transient Artifacts failures, each failing once, still starts from the branch's head", async () => {
-  const name = "pf-flaky";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  try {
-    expect((await claim(name, b, builder, flaky(art.ARTIFACTS, ["log", "delete", "fork", "info"]))).status).toBe(200);
-  } finally {
-    warn.mockRestore();
-  }
-  expect(heads.get(bFork)).toBe(MA);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA, owner: builder, state: "claimed" });
-});
-
-it("a part's move whose delete and fork answers were lost finds them done on retry", async () => {
-  const name = "pf-flaky-lost";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  try {
-    expect((await claim(name, b, builder, flaky(art.ARTIFACTS, ["delete", "fork"], true))).status).toBe(200);
-  } finally {
-    warn.mockRestore();
-  }
-  // The retry reads the fork gone and takes the delete as done.
-  expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork] });
-  expect(heads.get(bFork)).toBe(MA);
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: MA, head: MA });
-});
-
-it("a part's fork pushed to while its delete fails and waits is kept, and nothing is moved", async () => {
-  const name = "pf-flaky-pushed";
-  const { L, b, bFork, heads, art, builder } = await setup(name, false);
-  // The first delete fails before it is done, and the holder, whose token
-  // is still live, pushes before the retry.
-  let failures = 1;
-  const ARTIFACTS = {
-    get: (repo: string) => art.ARTIFACTS.get(repo),
-    delete: async (repo: string) => {
-      if (failures-- > 0) {
-        heads.set(bFork, PART_B);
-        throw Object.assign(new Error("service unavailable"), { code: "UNAVAILABLE" });
-      }
-      return art.ARTIFACTS.delete(repo);
-    },
-  } as unknown as Artifacts;
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  try {
-    expect((await claim(name, b, builder, ARTIFACTS)).status).toBe(200);
-  } finally {
-    warn.mockRestore();
-  }
-  expect(heads.get(bFork)).toBe(PART_B);
-  expect(art.calls).toEqual({ forks: [], deletes: [] });
-  expect(await L.item(b)).toMatchObject({ fork: bFork, base: H0, head: H0, owner: builder, state: "claimed" });
-  expect(await moves(L, b)).toEqual([]);
-});
-
-it("a fork left at an earlier head of the plan's branch is forked again at its head", async () => {
+it("a branch left at an earlier head of the plan's branch is moved to its head", async () => {
   const name = "pf-unrecorded-behind";
-  const { L, b, bFork, heads, parents, art, builder } = await setup(name, false);
-  const MB = "4".repeat(40);
-  heads.set(bFork, MA);
-  heads.set(`fork-${(await L.item(b)).plan}`, MB);
-  parents.set(MB, MA);
-  expect((await claim(name, b, builder, art.ARTIFACTS)).status).toBe(200);
-  expect(heads.get(bFork)).toBe(MB);
-  expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork] });
+  const { L, b, bBranch, planBranch, repo, MA, builder } = await setup(name, false);
+  const MB = repo.commit(MA, "plan moves on");
+  repo.point(bBranch, MA);
+  repo.point(planBranch, MB);
+  expect((await claim(name, b, builder)).status).toBe(200);
+  expect(repo.tip(bBranch)).toBe(MB);
   expect(await L.item(b)).toMatchObject({ base: MB, head: MB });
 });
 
@@ -339,47 +243,44 @@ it("a fork left at an earlier head of the plan's branch is forked again at its h
 // and released with no commits is branchless, which the task refresh leaves
 // for its next claim to start from main as main is then.
 async function ordinary(name: string) {
-  const record = { name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() };
+  const record = { name, repo: `${name}--baseline`, branch: "main", policy, createdAt: new Date().toISOString() };
   const L = ledger(name);
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const repo = repoOf(name);
+  const M0 = repo.commit(null, "first");
+  repo.point("main", M0);
   const { id } = await L.newItem("Work", ["src/**"], "owner");
-  const heads = new Map([[record.repo, H0]]);
-  const parents = new Map<string, string>();
-  const art = artifacts(heads, parents);
-  expect((await claim(name, id, PLANNER, art.ARTIFACTS)).status).toBe(200);
-  const fork = `${name}--${id}`;
-  expect(await L.item(id)).toMatchObject({ fork, base: H0, head: H0 });
-  return { L, id, fork, heads, parents, art, repo: record.repo };
+  expect((await claim(name, id, PLANNER)).status).toBe(200);
+  const branch = `t/${id.slice(1)}`;
+  const fork = `${name}/${branch}`;
+  expect(await L.item(id)).toMatchObject({ fork, base: M0, head: M0 });
+  return { L, id, branch, fork, repo, M0 };
 }
 
 it("a task claimed and released with no commits, claimed again after main moved, starts from main's head", async () => {
   const name = "pf-task-moved";
-  const { L, id, fork, heads, parents, art, repo } = await ordinary(name);
+  const { L, id, branch, fork, repo, M0 } = await ordinary(name);
   await L.release(id, PLANNER, "no new commit");
   expect((await L.refreshQueue()).map((r) => r.item)).toEqual([]);
-  heads.set(repo, MA);
-  parents.set(MA, H0);
+  const MA = repo.commit(M0, "main moves");
+  repo.point("main", MA);
   await L.noteMainHead(MA);
-  art.calls.forks.length = 0;
-  expect((await claim(name, id, PLANNER, art.ARTIFACTS)).status).toBe(200);
-  expect(heads.get(fork)).toBe(MA);
-  expect(art.calls).toEqual({ forks: [fork], deletes: [fork] });
+  expect((await claim(name, id, PLANNER)).status).toBe(200);
+  expect(repo.tip(branch)).toBe(MA);
   expect(await L.item(id)).toMatchObject({ fork, base: MA, head: MA, owner: PLANNER, state: "claimed" });
-  expect((await moves(L, id)).map((e) => e.data)).toEqual([{ fork, from: H0, base: MA }]);
+  expect((await moves(L, id)).map((e) => e.data)).toEqual([{ fork, from: M0, base: MA, acting: PLANNER }]);
 });
 
-it("a task with commits of its own keeps its fork when main has moved", async () => {
+it("a task with commits of its own keeps its branch when main has moved", async () => {
   const name = "pf-task-own";
-  const { L, id, fork, heads, parents, art, repo } = await ordinary(name);
-  heads.set(fork, PART_B);
+  const { L, id, branch, repo, M0 } = await ordinary(name);
+  const PART_B = repo.commit(M0, "own work");
+  repo.point(branch, PART_B);
   await L.recordPush(id, PLANNER, PART_B, PART_B);
   await L.release(id, PLANNER, "stepping away");
-  heads.set(repo, MA);
-  parents.set(MA, H0);
-  art.calls.forks.length = 0;
-  expect((await claim(name, id, PLANNER, art.ARTIFACTS)).status).toBe(200);
-  expect(heads.get(fork)).toBe(PART_B);
-  expect(art.calls).toEqual({ forks: [], deletes: [] });
-  expect(await L.item(id)).toMatchObject({ base: H0, head: PART_B });
+  repo.point("main", repo.commit(M0, "main moves"));
+  expect((await claim(name, id, PLANNER)).status).toBe(200);
+  expect(repo.tip(branch)).toBe(PART_B);
+  expect(await L.item(id)).toMatchObject({ base: M0, head: PART_B });
 });
