@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -113,9 +113,10 @@ function artifacts(commits: Record<string, Commit>, heads: Record<string, string
   } as unknown as Artifacts;
 }
 
+// G18: an owner-token write names the acting model.
 function call(name: string, path: string, body: unknown, ARTIFACTS: Artifacts) {
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as typeof env);
 }
 const errorOf = async (res: Response) => (await res.json()) as { error: string; detail: string };

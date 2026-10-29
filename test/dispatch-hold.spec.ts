@@ -1,6 +1,6 @@
-import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { blockerChains, holdGraph, coreHold, holdText, makeDispatch, CORE_HOLD_WARNING_MS } from "../src/dispatch/rules.ts";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
@@ -80,7 +80,7 @@ it("persists hold starts, preserves them across blockers, warns at exactly 30 mi
 
 it("real authenticated queue routes offer submitted/accepted work unless landing, and report claim refusal separately", async () => {
   const name = "dispatch-hold-route", L = await setup(name);
-  const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   const minted = await api("/tokens", "POST", { actor: A, projects: [name] });
   expect(minted.status, await minted.clone().text()).toBe(201);
   const { token } = await minted.json() as { token: string };

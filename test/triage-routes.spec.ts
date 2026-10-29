@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 // Triage before the review (t475), on the server: the project's triage
@@ -36,7 +36,7 @@ it("init --triage records the project's triage model, keeps it on re-init, clear
   await registered("triage-init");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/triage-init", {
     method: "PUT",
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" },
     body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
   }), initEnv);
   const triageOf = async (fields: Record<string, unknown>) =>

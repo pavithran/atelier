@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
@@ -38,10 +38,11 @@ const part = (key: string, change: Partial<PlanPart> = {}): PlanPart => ({
 });
 const doc = (...parts: PlanPart[]) => ({ schema: "atelier.plan.v1", goal: "Ship the feature", parts });
 
+// G18: an owner-token write names the acting model.
 function call(method: string, path: string, actor: string | null, body?: unknown, token = TOKEN, e = testEnv) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), e);
 }

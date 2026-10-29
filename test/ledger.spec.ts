@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
+import { env } from "./support/workers.ts";
 import { holdLiveOffers, liveOffersFor } from "./helpers/live-offers.ts";
-import { runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { runInDurableObject } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import { briefFor } from "../src/brief.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { Ledger, type CriteriaChange, type LedgerEvent, type ReviewClaim } from "../src/ledger.ts";
@@ -483,8 +483,11 @@ it("the owner returns accepted work to a builder without losing reviews or accep
       : L.dispatch("t1", "owner", { job: "merge-main", head: H2, agent: "codex", model: "gpt-5.5" });
     await refusal(L.handoff("t1", A, B, "Not the developer"), "not_project_owner", /only the developer/);
     await L.beginLanding("t1", "owner", H1);
+    // G3/G4: beginning the landing writes its own event; the refused move adds none.
+    const begun = await L.events("t1") as unknown as LedgerEvent[];
+    expect(begun.map((e) => e.kind)).toEqual(["landing.begun", ...history.map((e) => e.kind)]);
     await refusal(move(), "landing", /holds the landing lease/);
-    expect(await L.events("t1")).toEqual(history);
+    expect(await L.events("t1")).toEqual(begun);
     await L.cancelLanding("t1", "owner");
     await L.checkHandoff("t1", "owner", B, "Resolve main conflict");
     const moved = await move();

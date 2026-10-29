@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { PlanView } from "../src/plans/show.ts";
 import { signIn } from "./signin.ts";
@@ -15,10 +15,11 @@ const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
+// G18: a developer-token write names the acting model (here the pool's first).
 function call(method: string, path: string, actor: string | null, body?: unknown, token = TOKEN, e = testEnv) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), e);
 }
