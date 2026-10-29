@@ -112,7 +112,7 @@ If the Studio's data is lost or untrusted, the restore is made on PAVI's Mac, as
    sudo bash scripts/studio/setup-restore.sh production restore.tar
    ```
 
-   It copies the tar into root-owned storage and checks it there: plain files and directories under `data/` and `repos/` only, every database through SQLite's integrity check, every project the index registers with its Ledger, every repository bare. Then it stops every `atelierd` job and waits until no `atelierd` process runs, and records the undo before the next step: it prints how to undo, and moves the current `data/ENV` and `repos/ENV` aside to `ENV.before-restore-STAMP`, never deleting them. It installs the restored directories as `atelierd`'s and starts again the jobs that ran. On a failure after the move it puts the previous directories back. Moving the two aside directories back undoes the restore.
+   It copies the tar into root-owned storage and checks it there: plain files and directories under `data/` and `repos/` only, every database through SQLite's integrity check, every project the index registers with its Ledger, every repository bare. Then it stops every `atelierd` job, waits until no `atelierd` process runs, and checks the four paths again (data and repos absent or plain directories, never links; both destinations absent, not even a dangling link). It records the undo before the next step: it prints how to undo, and moves the current `data/ENV` and `repos/ENV` aside to `ENV.before-restore-STAMP`, never deleting them. It installs the restored directories as `atelierd`'s and starts again the jobs that ran. Each move aside is recorded as it happens, so on a failure it undoes exactly the moves made, removing any partial copy first and moving nothing over a link or an existing path. Moving the two aside directories back undoes the restore.
 
 Work recorded after the backup was made (at most a day) is lost from the Ledger; commits pushed since are still in the developers' workspaces and are pushed again.
 
@@ -126,5 +126,7 @@ Work recorded after the backup was made (at most a day) is lost from the Ledger;
 - a backup refuses an index that registers a project with no Ledger, and so does a restore; a large object being written is not in a backup;
 - no secret value (the R2 credentials, the identity, the owner token, the override secret) appears in either command's output, the manifest or the archive;
 - with `age` on PATH, a key from `age-keygen` works with this code's encryption, `age -r` output opens with this code, and `cli/backup.mjs keygen`'s keys work with `age`; without it the test is skipped and says so.
+
+`test/setup-restore.test.mjs` sources `setup-restore.sh`'s functions without root and shows that a failed second move aside is undone (data moved back, repos untouched), that a partial placement is removed and both directories moved back, that a link at either directory or anything at either destination, a dangling link included, is refused, and that recovery moves nothing over a link.
 
 `setup-backup.sh` and `setup-restore.sh` have been run only with `DRYRUN=1`; neither has run on the Studio.

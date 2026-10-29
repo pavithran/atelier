@@ -28,6 +28,64 @@ set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 077
 
+fail() { echo "setup: $*" >&2; exit 1; }
+dry() { [ "${DRYRUN:-}" = 1 ]; }
+run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
+
+safe_dir() {
+  local d=$1 owner
+  [ -d "$d" ] && [ ! -L "$d" ] || fail "$d is not a plain directory"
+  owner=$(stat -f %Su "$d")
+  [ "$owner" = root ] || [ "$owner" = "$SVC" ] || fail "$d is owned by $owner"
+  [ $(( 0$(stat -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
+  ! ls -lde "$d" | sed -n '2,$p' | grep -q . || fail "$d carries an ACL"
+}
+# Absent: neither a file nor a link, a dangling one included (-e misses it).
+absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
+# The four paths this script moves or creates: data/ENV and repos/ENV
+# absent or plain safe directories, never links; both destinations of the
+# move aside absent. Run before the jobs stop and again once they have.
+check_paths() {
+  safe_dir "$HOME_DIR"; safe_dir "$HOME_DIR/data"; safe_dir "$HOME_DIR/repos"
+  local p
+  for p in "$D" "$R"; do
+    [ ! -L "$p" ] || fail "$p is a link"
+    absent "$p" || safe_dir "$p"
+  done
+  for p in "$D_OLD" "$R_OLD"; do absent "$p" || fail "$p exists already, or is a link"; done
+}
+# Each move aside, and each placement begun, is recorded the moment it
+# happens, so recovery undoes exactly what was done.
+moved_d= moved_r= placing_d= placing_r=
+move_aside() {
+  if ! absent "$D"; then run mv "$D" "$D_OLD" || fail "could not move $D aside"; moved_d=1; fi
+  if ! absent "$R"; then run mv "$R" "$R_OLD" || fail "could not move $R aside"; moved_r=1; fi
+}
+# Undoes one path: the restored copy begun at CUR removed, then OLD moved
+# back if it was moved aside. Each step is checked first: no link is
+# followed, nothing unknown is removed, nothing is moved over anything.
+undo_one() {
+  local cur=$1 old=$2 moved=$3 placing=$4
+  if [ -L "$cur" ]; then echo "setup: $cur is a link; left as it is" >&2; return 1; fi
+  if [ -n "$placing" ] && [ -e "$cur" ]; then
+    [ -d "$cur" ] || { echo "setup: $cur is not a directory; left as it is" >&2; return 1; }
+    rm -rf "$cur" || { echo "setup: could not remove the restored $cur" >&2; return 1; }
+  fi
+  [ -n "$moved" ] || return 0
+  if [ -L "$old" ] || [ ! -d "$old" ]; then echo "setup: $old is not a plain directory; not moved back" >&2; return 1; fi
+  if ! absent "$cur"; then echo "setup: $cur exists; $old was not moved back" >&2; return 1; fi
+  mv "$old" "$cur" || { echo "setup: could not move $old back to $cur" >&2; return 1; }
+}
+undo_moves() {
+  local rc=0
+  undo_one "$D" "$D_OLD" "$moved_d" "$placing_d" || rc=1
+  undo_one "$R" "$R_OLD" "$moved_r" "$placing_r" || rc=1
+  return $rc
+}
+
+# A test sources the functions above alone (test/setup-restore.test.mjs).
+if [ "${SETUP_RESTORE_LIB:-}" = 1 ]; then return 0; fi
+
 usage="usage: setup-restore.sh staging|production RESTORED.tar"
 ENV=${1:?$usage}
 TAR_SRC=${2:?$usage}
@@ -42,33 +100,13 @@ R="$HOME_DIR/repos/$ENV"
 D_OLD="$D.before-restore-$STAMP"
 R_OLD="$R.before-restore-$STAMP"
 
-fail() { echo "setup: $*" >&2; exit 1; }
-dry() { [ "${DRYRUN:-}" = 1 ]; }
-run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
-
 dry || [ "$(id -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
 [ -f "$TAR_SRC" ] && [ ! -L "$TAR_SRC" ] || fail "no restored tar at $TAR_SRC"
-
-safe_dir() {
-  local d=$1 owner
-  [ -d "$d" ] && [ ! -L "$d" ] || fail "$d is not a plain directory"
-  owner=$(stat -f %Su "$d")
-  [ "$owner" = root ] || [ "$owner" = "$SVC" ] || fail "$d is owned by $owner"
-  [ $(( 0$(stat -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
-  ! ls -lde "$d" | sed -n '2,$p' | grep -q . || fail "$d carries an ACL"
-}
-check_dirs() {
-  safe_dir "$HOME_DIR"; safe_dir "$HOME_DIR/data"; safe_dir "$HOME_DIR/repos"
-  [ ! -e "$D" ] || safe_dir "$D"
-  [ ! -e "$R" ] || safe_dir "$R"
-}
 safe_dir /Library/LaunchDaemons
 if ! dry; then
   dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-staging.sh first"
-  check_dirs
+  check_paths
 fi
-for p in "$D" "$R" "$D_OLD" "$R_OLD"; do [ ! -L "$p" ] || fail "$p is a link"; done
-[ ! -e "$D_OLD" ] && [ ! -e "$R_OLD" ] || fail "$D_OLD or $R_OLD exists already"
 
 WORK=$(mktemp -d /var/tmp/atelier-restore-setup.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
@@ -139,23 +177,13 @@ start_loaded() {
   return $rc
 }
 stopped=
-moved=
 restore() {
   [ -n "$stopped" ] || return 0
   set +e
   echo "setup: putting the previous $ENV data and repositories back" >&2
   if ! stop_all; then echo "setup: nothing was put back" >&2; return 1; fi
-  if ! ( check_dirs ) 2>/dev/null; then echo "setup: a directory of $SVC is not safe to write; nothing was put back" >&2; return 1; fi
-  if [ -n "$moved" ]; then
-    local p
-    for p in "$D:$D_OLD" "$R:$R_OLD"; do
-      local cur=${p%%:*} old=${p#*:}
-      if [ -d "$old" ] && [ ! -L "$old" ]; then
-        [ ! -e "$cur" ] || [ -L "$cur" ] || rm -rf "$cur"
-        mv "$old" "$cur" || echo "setup: could not move $old back to $cur" >&2
-      fi
-    done
-  fi
+  if ! ( safe_dir "$HOME_DIR" && safe_dir "$HOME_DIR/data" && safe_dir "$HOME_DIR/repos" ) 2>/dev/null; then echo "setup: a directory of $SVC is not safe to write; nothing was put back" >&2; return 1; fi
+  undo_moves || echo "setup: not everything was put back; see above" >&2
   start_loaded
 }
 trap 'status=$?; [ $status = 0 ] || restore; rm -rf "$WORK"; exit $status' EXIT
@@ -164,18 +192,18 @@ trap 'status=$?; [ $status = 0 ] || restore; rm -rf "$WORK"; exit $status' EXIT
 if ! dry; then
   stopped=1
   stop_all || fail "the $SVC jobs could not all be stopped"
-  check_dirs
+  check_paths
 fi
 
 # 3. The undo, recorded before the next step, then the move aside.
 echo "to undo this restore: stop the $SVC jobs, then move $D_OLD back to $D and $R_OLD back to $R"
-[ ! -e "$D" ] || run mv "$D" "$D_OLD"
-[ ! -e "$R" ] || run mv "$R" "$R_OLD"
-moved=1
+move_aside
 
 # 4. The restored directories in place, atelierd's, directories 700 and
 #    files 600.
+placing_d=1
 run cp -R "$X/data" "$D"
+placing_r=1
 run cp -R "$X/repos" "$R"
 run chown -R "$SVC:$SVC" "$D" "$R"
 run chmod -R u=rwX,go= "$D" "$R"

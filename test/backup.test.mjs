@@ -554,3 +554,35 @@ test("interop with the age tool: its keys, its encryption and its decryption", {
   execFileSync("age", ["-d", "-i", join(kdir, "backup.key"), "-o", join(root, "k2.out"), join(root, "k2.age")]);
   assert.deepEqual(readFileSync(join(root, "k2.out")), bytes);
 });
+
+test("the age header's grammar is enforced for every stanza, unknown ones included, before a recipient is tried", async () => {
+  const root = scratch();
+  const keys = generateIdentity();
+  const plain = join(root, "plain"), sealed = join(root, "sealed");
+  writeFileSync(plain, "grammar");
+  await encryptFile(plain, sealed, keys.recipient);
+  const good = readFileSync(sealed);
+  const versionEnd = good.indexOf("\n") + 1;
+  const withHeader = (name, edit) => {
+    const text = good.toString("latin1");
+    const macAt = text.indexOf("\n---") + 1;
+    const b = Buffer.from(edit(text.slice(0, versionEnd), text.slice(versionEnd, macAt), text.slice(macAt)), "latin1");
+    writeFileSync(join(root, name), b);
+    return join(root, name);
+  };
+  const opens = (file) => decryptFile(file, join(root, `${file.split("/").pop()}.out`), keys.keyFile);
+  // An unknown stanza with a tab in an argument: refused on grammar.
+  await assert.rejects(opens(withHeader("tab", (v, st, rest) => `${v}-> unknown a\tb\n\n${st}${rest}`)), /not VCHARs/);
+  // Two spaces between arguments (an empty argument), and a non-ASCII byte.
+  await assert.rejects(opens(withHeader("spaces", (v, st, rest) => `${v}-> unknown a  b\n\n${st}${rest}`)), /not VCHARs/);
+  await assert.rejects(opens(withHeader("byte", (v, st, rest) => `${v}-> unknown é\n\n${st}${rest}`)), /not VCHARs/);
+  // A body line with padding, or longer than 64 columns.
+  await assert.rejects(opens(withHeader("pad", (v, st, rest) => `${v}-> unknown a\nYQ==\n${st}${rest}`)), /not base64/);
+  await assert.rejects(opens(withHeader("long", (v, st, rest) => `${v}-> unknown a\n${"A".repeat(65)}\n${st}${rest}`)), /not base64/);
+  // The MAC line without its MAC, or with padding.
+  await assert.rejects(opens(withHeader("nomac", (v, st) => `${v}${st}---\n`)), /MAC line is malformed/);
+  await assert.rejects(opens(withHeader("macpad", (v, st, rest) => `${v}${st}${rest.replace(/^--- (\S+)/, "--- $1=")}`)), /MAC line is malformed/);
+  // A well-formed unknown stanza passes the grammar; the header MAC, which
+  // covers it, then refuses the change.
+  await assert.rejects(opens(withHeader("unknown", (v, st, rest) => `${v}-> unknown a b\nYQ\n${st}${rest}`)), /MAC does not match/);
+});

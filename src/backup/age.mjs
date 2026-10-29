@@ -197,7 +197,8 @@ function openHeader(head) {
     if (nl < 0) throw new Error("the file is not an age file, or its header is cut short");
     const line = text.slice(at, nl);
     if (line.startsWith("---")) {
-      if (!line.startsWith("--- ")) throw new Error("the age header's MAC line is malformed");
+      // "--- " and the MAC: 32 bytes, base64 without padding (43 characters).
+      if (!/^--- [A-Za-z0-9+/]{43}$/.test(line)) throw new Error("the age header's MAC line is malformed");
       return { lines, macLine: line, macStart: at, end: nl + 1 };
     }
     lines.push(line);
@@ -219,16 +220,22 @@ export async function decryptFile(input, output, identityText) {
     if (lines[0] !== VERSION) throw new Error("the file is not an age v1 file");
     // The stanzas: each "-> TYPE ARGS" and its body lines, the last shorter
     // than 64 columns.
+    // Every stanza is checked against the spec's grammar, unknown types
+    // included, before any recipient is tried: arguments of one or more
+    // VCHARs (0x21 to 0x7E) separated by single spaces, a body of canonical
+    // base64 without padding in lines of 64 characters ending with a
+    // shorter one.
     const stanzas = [];
+    if (lines.length < 2) throw new Error("the age header holds no recipient stanza");
     for (let i = 1; i < lines.length;) {
       if (!lines[i].startsWith("-> ")) throw new Error("the age header is malformed");
       const args = lines[i].slice(3).split(" ");
-      if (args.some((a) => !a)) throw new Error("the age header is malformed");
+      if (args.some((a) => !/^[\x21-\x7e]+$/.test(a))) throw new Error("a stanza argument of the age header is not VCHARs separated by single spaces");
       const body = [];
       for (i++; ; i++) {
         if (i >= lines.length) throw new Error("the age header is malformed");
+        if (!/^[A-Za-z0-9+/]*$/.test(lines[i]) || lines[i].length > 64) throw new Error("a stanza body line of the age header is not base64 of at most 64 columns");
         body.push(lines[i]);
-        if (lines[i].length > 64) throw new Error("the age header is malformed");
         if (lines[i].length < 64) { i++; break; }
       }
       stanzas.push({ args, body: unb64(body.join("")) });
@@ -236,7 +243,7 @@ export async function decryptFile(input, output, identityText) {
     let fileKey = null;
     for (const s of stanzas) {
       if (s.args[0] !== "X25519") continue;
-      if (s.args.length !== 2 || s.body.length !== 32) throw new Error("an X25519 stanza is malformed");
+      if (s.args.length !== 2 || s.body.length !== 32 || s.args[1].length !== 43) throw new Error("an X25519 stanza is malformed");
       const share = unb64(s.args[1]);
       if (share.length !== 32) throw new Error("an X25519 stanza is malformed");
       const wrapKey = hkdf(shared(identity.privateKey, share), Buffer.concat([share, identity.publicRaw]), X25519_INFO);
