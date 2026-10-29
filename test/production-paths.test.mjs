@@ -247,3 +247,50 @@ test("a released request and one answered with no readable verdict stay on recor
     }
   } finally { await ns.close(); }
 });
+
+test("a plan part's routed review that lapses, is released or gets no verdict is not asked again at that head by itself; the command reopens it, and a new head asks again", async () => {
+  const { ns, L, offers } = await world("planended");
+  try {
+    const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, POOL);
+    await L.claim(item.id, OPUS, RUNNER);
+    await L.setFork(item.id, `fork-${item.id}`, H0, OPUS);
+    const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [{ key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" }] });
+    await L.release(item.id, OPUS, "proposed");
+    const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, await offers(), { a: { builder: GPT, reviewer: ARGON } });
+    const pid = parts[0].id;
+    await L.claim(pid, GPT, RUNNER);
+    await L.setFork(pid, `fork-${pid}`, H0, GPT);
+    await L.recordPush(pid, GPT, head(5), head(5));
+    await L.addEvidence({ itemId: pid, claim: "npm test", grade: "observed", head: head(5), passed: true, by: GPT, at: iso(Date.now()), changedPaths: ["src/a/x.ts"] });
+    await L.submit(pid, GPT);
+    const states = async () => (await L.reviewRequests(pid)).filter((r) => !r.tier).map((r) => `${r.head.slice(-1)}:${r.state}`);
+    assert.deepEqual(await states(), ["5:open"], "the route's named reviewer is asked");
+    const end = {
+      lapsed: async (c) => { ns.object("project:planended").live.sql.exec(`UPDATE review_requests SET claimedAt = ? WHERE id = ?`, iso(Date.now() - 10 * 60_000), c.request); },
+      released: async (c) => { await L.releaseReview(pid, ARGON, "harness exited 2", true, c.request); },
+      no_verdict: async (c) => { await L.unparsableReview(pid, ARGON, c.head, "no VERDICT line", "Text without a verdict.", true, c.request); },
+    };
+    const seen = ["5:open"];
+    for (const outcome of ["lapsed", "released", "no_verdict"]) {
+      const claim = await L.claimReview(pid, ARGON, RUNNER, true);
+      await end[outcome](claim);
+      // The alarm runs the expiry and the plan's tick; queue reads too.
+      for (let i = 0; i < 2; i++) { await L.alarm(); await L.queued(); }
+      seen[seen.length - 1] = `5:${outcome}`;
+      assert.deepEqual(await states(), seen, `${outcome}: no successor at this head by itself`);
+      // The model asks again by command.
+      const again = await L.requestReview(pid, "owner", ARGON, POOL, true, false, undefined, await offers());
+      assert.equal(again.requested, true, `${outcome}: ${again.reason}`);
+      seen.push("5:open");
+      assert.deepEqual(await states(), seen, `${outcome}: the command reopens it`);
+    }
+    // A new head is a new review: the route asks again by itself.
+    const claim = await L.claimReview(pid, ARGON, RUNNER, true);
+    await L.releaseReview(pid, ARGON, "harness exited 2", true, claim.request);
+    await L.recordPush(pid, GPT, head(6), head(6));
+    await L.addEvidence({ itemId: pid, claim: "npm test", grade: "observed", head: head(6), passed: true, by: GPT, at: iso(Date.now()), changedPaths: ["src/a/x.ts"] });
+    await L.alarm();
+    const latest = (await L.reviewRequests(pid)).filter((r) => !r.tier).at(-1);
+    assert.deepEqual([latest.head, latest.state, latest.reviewer], [head(6), "open", ARGON]);
+  } finally { await ns.close(); }
+});

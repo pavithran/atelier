@@ -8063,6 +8063,13 @@ export class Ledger extends DurableObject<Env> {
         now, owner: this.owner,
       });
       if (!need.needed) continue;
+      // The newest gate request at this head ended with no verdict (its claim
+      // lapsed, its runner released it, or its reply held none): that record
+      // stands, and the tick asks no successor at this head (G6, G11). The
+      // model asks again with atelier review-request ID --reviewer X; a new
+      // head is a new review, which the route asks as before.
+      const newest = this.sql.exec(`SELECT state FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL ORDER BY id DESC LIMIT 1`, p.id, need.head).toArray()[0];
+      if (newest && ["lapsed", "released", "no_verdict"].includes(newest.state as string)) continue;
       // A reviewer whose request at this head the developer withdrew
       // (review-withdraw, t627) is not asked again here: the tick asks
       // another the routing allows, or waits for the developer. Without this
