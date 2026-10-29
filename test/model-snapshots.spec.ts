@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker, { replayModelSnapshot, takeModelSnapshots } from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { ModelComparison } from "../src/models/compare.ts";
@@ -30,8 +30,9 @@ const entry = (id: string, harness: ModelEntry["harness"], extra: Partial<ModelE
 });
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const L = (key = NAME) => env.LEDGER.get(env.LEDGER.idFromName(`project:${key}`));
+// Owner-token writes name the acting model (G18); OPUS is in the pool.
 const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body),
+  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": OPUS, "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body),
 }), testEnv);
 const takes = (from: string, to: string) => index().modelSnapshotTakes(from, to) as unknown as Promise<SnapshotTake[]>;
 // Seven minutes past a UTC midnight `days` days from today, so later runs the

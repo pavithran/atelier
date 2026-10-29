@@ -1,6 +1,7 @@
-import { env } from "cloudflare:workers";
+import { execFileSync } from "node:child_process";
+import { env, server } from "./support/workers.ts";
 import { liveOffersFor } from "./helpers/live-offers.ts";
-import { expect, it } from "vitest";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { Assignment, AssignmentView } from "../src/models/assignments.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -35,10 +36,13 @@ const artifacts = {
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
-function call(method: string, path: string, body?: unknown, actor = "owner", acting?: string) {
+// A write on the owner token names the acting model (G18): opus-5.5, a pool
+// model, unless the call names another; `null` names none.
+const ACTING = "claude-code/opus-5.5";
+function call(method: string, path: string, body?: unknown, actor = "owner", acting?: string | null) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...(acting ? { "x-atelier-acting": acting } : {}) },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...(acting === null ? {} : actor === "owner" || acting ? { "x-atelier-acting": acting ?? ACTING } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
@@ -148,7 +152,7 @@ it("a project initialised after an assignment for every project reads it from th
   try {
     const name = "roles-late-init";
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
-      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"] }),
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"] }),
     }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     const L = ledger(name);
@@ -554,7 +558,7 @@ it("a builder typed under an alias is dispatched as declared; a review tier type
     expect((await L.item(task.id)).dispatch).toMatchObject({ agent: "opencode", model: "qwen-alias" });
     const name = "roles-typed-tier";
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
-      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/qwen-alias", "codex/gpt-6-astra"] }),
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/qwen-alias", "codex/gpt-6-astra"] }),
     }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     expect((await ledger(name).project()).policy.reviewTier).toEqual(["opencode/qwen-3", "codex/gpt-6-astra"]);
@@ -639,7 +643,7 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     expect(String(await (resolving.L.planResolve(resolving.id, "owner", "1".repeat(40), false, ALIAS)).then(() => null, (e: unknown) => e))).toMatch(/model_held\|opencode\/glm-alias is paused since/);
     // init --review-tier: stored as the exact id, marked so.
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/roles-boundary-init`, {
-      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),
     }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     // The tier is converted and marked; the triage model stays as declared,
@@ -703,6 +707,11 @@ it("a runner working under an alias claims, submits and releases as the alias it
     const name = "roles-alias-runner", ALIAS = "opencode/qwen-alias", H = "d".repeat(40);
     const L = await project(name);
     await L.poolChanged(await index().models());
+    // A claim branches from main on the Node server (task 5), so main needs a commit.
+    const dir = (server as unknown as { git: { repo(key: string, branch: string): string } }).git.repo(name, "main");
+    const author = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+    const first = execFileSync("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "first"], { cwd: dir, encoding: "utf8", env: { ...process.env, ...author } }).trim();
+    execFileSync("git", ["update-ref", "refs/heads/main", first], { cwd: dir });
     const forkable = {
       create: async () => ({}),
       get: async () => ({
@@ -792,7 +801,7 @@ it("an agent or runner token's init with an ambiguous tier is refused without na
     }
     // The owner is told it is ambiguous, still without the entries.
     const owner = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
-      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/shared"] }),
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/shared"] }),
     }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
     const said = await owner.text();
     expect(owner.status).toBe(400);
@@ -881,7 +890,7 @@ it("two profiles named in a tier stay two; a retry under another letter case of 
   try {
     const name = "roles-profiles";
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
-      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["codex/primary", "codex/backup"] }),
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["codex/primary", "codex/backup"] }),
     }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
     expect((await ledger(name).project()).policy.reviewTier).toEqual(["codex/gpt-6-nova:a", "codex/gpt-6-nova:b"]);

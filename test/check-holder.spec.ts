@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 // Task t94: any agent whose token reached the project could record an
@@ -11,12 +11,14 @@ import worker from "../src/index.ts";
 const TOKEN = "check-holder-token";
 const A = "claude-code/opus-5.5", B = "codex/gpt-6-astra";
 const H1 = "a".repeat(40);
+// An owner-token write names the acting model (G18): one that holds no task here.
+const ACTING = "antigravity/gemini-4-argon";
 const bindings = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
 
 function call(bearer: string, actor: string | null, method: string, path: string, body?: unknown) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+    headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
 }

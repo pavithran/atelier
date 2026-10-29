@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { beforeAll, expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry, type ModelNote } from "../src/models/pool.ts";
 
@@ -17,10 +17,15 @@ const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
+// A write on the owner token names the acting model (G18), and once the pool
+// has models it must be one of them: the acting model is in the pool.
+const ACTING = "claude-code/opus-5.5";
+beforeAll(async () => { await index().putModel(entry("opus-5.5", "claude-code")); });
+
 function call(method: string, path: string, body?: unknown, actor = "owner") {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }

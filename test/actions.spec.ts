@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { renderActions } from "../src/actions-page.ts";
@@ -37,9 +37,10 @@ async function project(name: string) {
   return ledger(name);
 }
 
+// Owner-token writes name the acting model (G18).
 function api(method: string, path: string, actor: string, body?: unknown, token = TOKEN) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(actor === "owner" ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
@@ -172,15 +173,16 @@ it("the approve route records the developer's words and the acting model, and re
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json", ...(acting ? { "x-atelier-acting": acting } : {}) },
     body: JSON.stringify(body),
   }), testEnv);
+  // G18 refuses any developer-token write with no acting model, words or not, before the route's own no_acting check.
   const bare = await post({ kind: "deploy", commit: H2, quote: "ship it" });
   expect(bare.status).toBe(400);
-  expect(await bare.json()).toMatchObject({ error: "no_acting" });
+  expect(await bare.json()).toMatchObject({ error: "acting_required", next: expect.stringContaining("--as H/M") });
   const ok = await post({ kind: "deploy", commit: H2, quote: "ship it" }, "claude-code/opus-5.5");
   expect(ok.status).toBe(201);
   expect(await ok.json()).toMatchObject({ id: "a1", quote: "ship it", acting: "claude-code/opus-5.5", note: "" });
   const listed = await (await api("GET", "/projects/actions-quote/actions", "owner")).json() as { approvals: { quote?: string }[] };
   expect(listed.approvals[0].quote).toBe("ship it");
-  const plain = await post({ kind: "install", commit: H2 });
+  const plain = await post({ kind: "install", commit: H2 }, "claude-code/opus-5.5");
   expect(plain.status).toBe(201);
   expect(await plain.json()).not.toHaveProperty("quote");
 });

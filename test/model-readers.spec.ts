@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { env } from "./support/workers.ts";
+import { expect, it } from "./support/vitest.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -21,8 +21,9 @@ const [H0, H1, H2] = ["0", "1", "2"].map((c) => c.repeat(40));
 const KEY = "readers-was", NAME = "readers-is";
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const L = () => env.LEDGER.get(env.LEDGER.idFromName(`project:${KEY}`));
+// A write on the owner token names the acting model (G18).
 const call = (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+  method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": OPUS, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
 }), testEnv);
 
 // A project whose model work is reviewed, merged and then found defective,
