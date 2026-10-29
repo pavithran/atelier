@@ -671,12 +671,14 @@ function routable(recorded: readonly SeenOffer[]): readonly SeenOffer[] | undefi
 // routed one (reviewTick), or the owner named, reviews it from now on, with
 // the reason shown.
 // The reroute's reasons say what became of the build assignments too,
-// appended to its own (gpt-6-astra's twenty-second review of t622).
+// appended to its own (gpt-6-astra's twenty-second review of t622). A part
+// left unrouted at approval is routed by its reroute, so the reason it was
+// unrouted goes with it.
 function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "reviewers" | "rerouteReasons">): PartRoute {
   const actor = record.reroutes[route.key];
   const change = record.reviewers?.[route.key];
   let out = route;
-  if (actor) out = { ...out, builder: { actor, reasons: ["Rerouted by the developer", ...(record.rerouteReasons?.[route.key] ?? [])] }, alternates: out.alternates.filter((a) => a.actor !== actor) };
+  if (actor) out = { ...out, builder: { actor, reasons: ["Rerouted by the developer", ...(record.rerouteReasons?.[route.key] ?? [])] }, alternates: out.alternates.filter((a) => a.actor !== actor), unrouted: null };
   if (change) {
     out = {
       ...out,

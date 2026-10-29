@@ -384,6 +384,11 @@ it("the merge-main part lists as candidates only the models a runner offers the 
   // G17: no builder is picked; the candidates are only the model a runner offers the merge-main job for, and the assignment's choice is refused with the reason.
   expect(m.route).toMatchObject({ builder: null, unrouted: "no builder is named for it; candidates: claude-code/opus-5.5. Name one with atelier plan reroute PART --to H/M" });
   expect(m.route?.excluded.find((c) => c.actor === "codex/gpt-6-astra")?.reasons.join(" ")).toMatch(/no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
+  // Its reroute routes it: the reason it was unrouted goes with the reroute,
+  // and the plan view says nothing unrouted of it.
+  await L.reroutePlan(m.id, "owner", "claude-code/opus-5.5");
+  const [after] = await mergePart(L, id);
+  expect(after.route).toMatchObject({ builder: { actor: "claude-code/opus-5.5" }, unrouted: null });
 });
 
 // gpt-6-astra's twenty-second review of t622, finding 2: a --to that the
