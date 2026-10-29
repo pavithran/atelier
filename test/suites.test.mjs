@@ -2,24 +2,23 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { createVitest } from "vitest/node";
 import { assign, discover, longestFirst, parseTimings, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
 // t466: every test file runs in npm test, whichever directory it lives in.
+// Atelier 2.0 (task 7): one runner, node --test, owns every *.test.* and
+// *.spec.* file in .mjs and .ts; the Vitest Workers pool is gone.
 
 const run = resolve("test/run.mjs");
 function tree(t, files) {
-  // The real path: macOS reaches its temp folder through the /var symlink,
-  // and Vitest matches its globs against the resolved root.
+  // The real path: macOS reaches its temp folder through the /var symlink.
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "atelier-suites-test-")));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const file of files) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     writeFileSync(join(dir, file), "");
   }
-  writeFileSync(join(dir, "vitest.config.mjs"), `export default { test: { include: ["test/**/*.spec.ts"] } };`);
   return dir;
 }
 const discoverCli = (dir) => spawnSync(process.execPath, [run, "--discover", dir], { encoding: "utf8" });
@@ -36,9 +35,9 @@ test("in a git work tree discovery lists git's files, dot-directories included, 
 });
 
 test("every file is assigned to exactly one runner", (t) => {
-  const dir = tree(t, ["x.test.mjs", "y/z.test.ts"]);
+  const dir = tree(t, ["x.test.mjs", "y/z.test.ts", "y/w.spec.ts", "v.spec.mjs"]);
   const result = assign(discover(dir), [NODE_RUNNER]);
-  assert.deepEqual(result.byRunner, { node: ["x.test.mjs", "y/z.test.ts"] });
+  assert.deepEqual(result.byRunner, { node: ["v.spec.mjs", "x.test.mjs", "y/w.spec.ts", "y/z.test.ts"] });
   assert.deepEqual(rejections(result), []);
 });
 
@@ -72,14 +71,14 @@ test("npm test's discovery exits nonzero naming each unassigned file, running no
 });
 
 test("the repository's own discovery covers every tracked test file, cli/ included", async () => {
-  const tracked = spawnSync("git", ["ls-files", "*.test.mjs", "*.test.ts"], { encoding: "utf8" });
+  const tracked = spawnSync("git", ["ls-files", "*.test.mjs", "*.test.ts", "*.spec.mjs", "*.spec.ts"], { encoding: "utf8" });
   assert.equal(tracked.status, 0, tracked.stderr);
   const found = new Set(discover("."));
   const missing = tracked.stdout.split("\n").filter(Boolean).filter((file) => !found.has(file));
   assert.deepEqual(missing, []);
   const result = await plan();
   assert.deepEqual(rejections(result), []);
-  for (const file of ["cli/runner-git.test.mjs", "cli/runner-merge-target.test.mjs", "cli/runner-token.test.mjs"]) assert.ok(result.byRunner.node.includes(file), file);
+  for (const file of ["cli/runner-git.test.mjs", "cli/runner-merge-target.test.mjs", "cli/runner-token.test.mjs", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs", "test/routes.spec.ts"]) assert.ok(result.byRunner.node.includes(file), file);
 });
 
 test("both naming conventions discover all eight extensions, rejecting unsupported and stray specs", async (t) => {
@@ -88,7 +87,7 @@ test("both naming conventions discover all eight extensions, rejecting unsupport
   const dir = tree(t, [...files, "x.spec.json", "x.test.mjsx"]);
   assert.deepEqual(discover(dir), files.sort());
   const result = await plan(dir);
-  assert.deepEqual(result.byRunner.node, ["stray/file.test.mjs", "stray/file.test.ts"]);
+  assert.deepEqual(result.byRunner.node, ["stray/file.spec.mjs", "stray/file.spec.ts", "stray/file.test.mjs", "stray/file.test.ts"]);
   assert.deepEqual(result.unassigned, files.filter((f) => !result.byRunner.node.includes(f)));
   const cli = discoverCli(dir);
   assert.equal(cli.status, 1);
@@ -103,30 +102,20 @@ test("Git discovery retains tracked ignored files and new files, but omits ignor
   assert.deepEqual(discover(dir), ["new.spec.ts", "tracked.spec.ts"]);
 });
 
-test("active config changes affect ownership; duplicate and excluded paths stop the CLI before suites start", async (t) => {
-  const dir = tree(t, ["test/ok.spec.ts", "test/excluded.spec.ts", "both.test.mjs"]);
-  writeFileSync(join(dir, "both.test.mjs"), `throw new Error("SUITE_STARTED");`);
-  const config = join(dir, "vitest.config.mjs");
-  writeFileSync(config, `export default { test: {
-    include: ["test/**/*.spec.ts", "**/*.test.mjs"], exclude: ["**/excluded.spec.ts"]
-  } };`);
-  const result = await plan(dir);
-  assert.deepEqual(result.multiple, [{ file: "both.test.mjs", runners: ["node", "vitest"] }]);
-  assert.deepEqual(result.unassigned, ["test/excluded.spec.ts"]);
+test("a file no runner owns stops the CLI before any suite starts", (t) => {
+  const dir = tree(t, ["test/ok.spec.ts", "test/lost.spec.js", "a.test.mjs"]);
+  writeFileSync(join(dir, "a.test.mjs"), `throw new Error("SUITE_STARTED");`);
   const cli = spawnSync(process.execPath, [run], { cwd: dir, encoding: "utf8" });
   assert.equal(cli.status, 1);
-  assert.match(cli.stderr, /both\.test\.mjs.*more than one runner/);
-  assert.match(cli.stderr, /test\/excluded\.spec\.ts.*no runner/);
+  assert.match(cli.stderr, /test\/lost\.spec\.js.*no runner/);
   assert.doesNotMatch(cli.stdout + cli.stderr, /SUITE_STARTED/);
-  writeFileSync(config, `export default { test: { include: ["test/**/*.spec.ts"] } };`);
-  assert.deepEqual(rejections(await plan(dir)), []);
 });
 
 // t658: plan() resolved its root with path.resolve only, so a root reached
 // through a symlink (macOS's /var -> /private/var, where os.tmpdir() lives)
-// matched none of Vitest's globs, which Vitest checks against the real path,
-// and every spec file came back unassigned.
-test("plan() assigns Vitest's files when its root is reached through a symlink", async (t) => {
+// matched none of Vitest's globs, which Vitest checked against the real path,
+// and every spec file came back unassigned. The paths stay the real tree's.
+test("plan() assigns every file when its root is reached through a symlink", async (t) => {
   const dir = tree(t, ["test/a.spec.ts", "b.test.mjs"]);
   const links = mkdtempSync(join(tmpdir(), "atelier-suites-link-"));
   t.after(() => rmSync(links, { recursive: true, force: true }));
@@ -134,19 +123,11 @@ test("plan() assigns Vitest's files when its root is reached through a symlink",
   symlinkSync(dir, link, "dir");
   const result = await plan(link);
   assert.deepEqual(rejections(result), []);
-  assert.deepEqual(result.byRunner, { node: ["b.test.mjs"], vitest: ["test/a.spec.ts"] });
+  assert.deepEqual(result.byRunner, { node: ["b.test.mjs", "test/a.spec.ts"] });
 });
 
-test("assignments equal actual configured Vitest collection and Node executes its assigned files", async (t) => {
-  // Compare to Vitest's independent glob collection, not the ownership matcher.
-  const result = await plan();
-  const vitest = await createVitest("test", { watch: false });
-  try {
-    const selected = (await vitest.globTestSpecifications()).map((s) => relative(process.cwd(), s.moduleId)).sort();
-    assert.deepEqual(result.byRunner.vitest, selected);
-    assert.ok(selected.includes("src/runner-token.spec.mjs"));
-  } finally { await vitest.close(); }
-  const dir = tree(t, ["nested/a.test.mjs", "b.test.ts"]);
+test("Node executes every file assigned to it, spec files included", async (t) => {
+  const dir = tree(t, ["nested/a.test.mjs", "b.test.ts", "c.spec.ts", "d.spec.mjs"]);
   const fixture = await plan(dir);
   for (const file of fixture.byRunner.node) writeFileSync(join(dir, file),
     `import { test } from 'node:test'; test(${JSON.stringify(file)}, () => {});`);
@@ -158,25 +139,28 @@ test("assignments equal actual configured Vitest collection and Node executes it
 });
 
 test("npm test executes real runner-token routes and propagates a failed token assertion to its exit", { timeout: 120_000 }, (t) => {
-  // An isolated local copy exercises the real npm script, run.mjs, config,
-  // workerd routes and issued token. Only the assertion is mutated; no runner,
-  // route or process exit is stubbed. The passing run measures expanded it.each.
+  // An isolated local copy exercises the real npm script, run.mjs, the Node
+  // server's routes and issued token. Only the assertion is mutated; no
+  // runner, route or process exit is stubbed. The passing run measures
+  // expanded it.each.
   const dir = tree(t, []);
-  rmSync(join(dir, "vitest.config.mjs"));
-  for (const file of ["package.json", "vitest.config.ts", "wrangler.jsonc", "tsconfig.json", "src",
-    "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/check-clock.mjs", "cli/load.mjs"]) {
+  for (const file of ["package.json", "tsconfig.json", "src", "hooks", "test/support", "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs",
+    "cli/group.mjs", "cli/check-clock.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file), { recursive: true });
   }
+  // Only the runner-token spec runs in the copy.
+  for (const f of discover(dir).filter((f) => f !== "src/runner-token.spec.mjs")) rmSync(join(dir, f));
   symlinkSync(resolve("node_modules"), join(dir, "node_modules"), "dir");
-  const env = { ...process.env, CI: "1", NO_COLOR: "1", WRANGLER_SEND_METRICS: "false", ATELIER_WORKERS_TESTS: "1" };
+  const env = { ...process.env, CI: "1", NO_COLOR: "1" };
+  delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
   for (const key of Object.keys(env)) if (/^(ATELIER_(TOKEN|RUNNER_TOKEN)|CLOUDFLARE_|CF_API_)/.test(key)) delete env[key];
-  const execute = () => spawnSync("npm", ["test"], { cwd: dir, env, encoding: "utf8", timeout: 55_000 });
+  const execute = () => spawnSync("npm", ["test"], { cwd: dir, env, encoding: "utf8", timeout: 100_000 });
   const passed = execute();
   assert.equal(passed.status, 0, passed.stdout + passed.stderr);
   // At least the 13 tests the spec held when this test was written: a count
   // that only grows as the spec gains cases, and fails if it.each stops expanding.
-  const ran = Number(/Tests\s+(\d+) passed/.exec(passed.stdout)?.[1] ?? 0);
+  const ran = Number(/ℹ pass (\d+)/.exec(passed.stdout)?.[1] ?? 0);
   assert.ok(ran >= 13, `runner-token.spec.mjs ran ${ran} tests\n${passed.stdout}`);
   t.diagnostic(`runner-token.spec.mjs: ${ran} executed tests in isolated npm test`);
   const spec = join(dir, "src/runner-token.spec.mjs");
@@ -187,34 +171,7 @@ test("npm test executes real runner-token routes and propagates a failed token a
   const failed = execute();
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   assert.match(failed.stdout + failed.stderr, /deliberately-wrong-runner/);
-  assert.match(failed.stdout, /1 failed/);
-});
-
-// t568: a failed Node pool used to end npm test before vitest started, so a
-// landing saw only the first pool's failures. Both pools now run, and the
-// exit is the worst status either ended with.
-test("npm test runs the vitest pool after a failed Node pool and exits with the worst status", (t) => {
-  const dir = tree(t, []);
-  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/check-clock.mjs", "cli/load.mjs"]) {
-    mkdirSync(join(dir, file, ".."), { recursive: true });
-    cpSync(file, join(dir, file));
-  }
-  writeFileSync(join(dir, "a.test.mjs"), `import { test } from "node:test"; test("fails", () => { throw new Error("node pool fails"); });`);
-  writeFileSync(join(dir, "test/b.spec.ts"), "");
-  // The real vitest resolves which files it owns; a stand-in for its binary
-  // records that it ran and exits with VITEST_STATUS.
-  mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
-  symlinkSync(resolve("node_modules/vitest"), join(dir, "node_modules/vitest"), "dir");
-  writeFileSync(join(dir, "node_modules/.bin/vitest"), `#!/bin/sh\necho ran > "${join(dir, "vitest-ran")}"\nexit "$VITEST_STATUS"\n`, { mode: 0o755 });
-  const env = { ...process.env, ATELIER_WORKERS_TESTS: "1" };
-  delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
-  for (const [vitestStatus, expected] of [[0, 1], [3, 3]]) {
-    rmSync(join(dir, "vitest-ran"), { force: true });
-    const r = spawnSync(process.execPath, ["test/run.mjs"], { cwd: dir, env: { ...env, VITEST_STATUS: String(vitestStatus) }, encoding: "utf8", timeout: 60_000 });
-    assert.match(r.stdout + r.stderr, /node pool fails/);
-    assert.equal(readFileSync(join(dir, "vitest-ran"), "utf8").trim(), "ran", "vitest ran after the Node pool failed");
-    assert.equal(r.status, expected, r.stdout + r.stderr);
-  }
+  assert.match(failed.stdout, /ℹ fail 1\b/);
 });
 
 // t771: the audit of 2026-10-17 found test/land-lease-workflow.test.mjs, 294 s
@@ -232,18 +189,14 @@ test("files run longest first, those the list does not name before it, each grou
   assert.deepEqual(longestFirst(["b", "a"], new Map()), ["b", "a"]);
 });
 
-function runTree(t, { timings, vitest = "exit 0" } = {}) {
+function runTree(t, { timings } = {}) {
   const dir = tree(t, []);
   for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/check-clock.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file));
   }
   if (timings) writeFileSync(join(dir, "test/timings.txt"), timings);
-  writeFileSync(join(dir, "test/b.spec.ts"), "");
-  mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
-  symlinkSync(resolve("node_modules/vitest"), join(dir, "node_modules/vitest"), "dir");
-  writeFileSync(join(dir, "node_modules/.bin/vitest"), `#!/bin/sh\necho vitest ran > "${join(dir, "vitest-ran")}"\n${vitest}\n`, { mode: 0o755 });
-  const env = { ...process.env, ATELIER_TEST_WORKERS: "1", ATELIER_WORKERS_TESTS: "1" };
+  const env = { ...process.env, ATELIER_TEST_WORKERS: "1" };
   delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
   delete env.NODE_COMPILE_CACHE;
   return { dir, run: () => spawnSync(process.execPath, ["test/run.mjs"], { cwd: dir, env, encoding: "utf8", timeout: 60_000 }) };
@@ -265,19 +218,6 @@ test("npm test runs without a timing list, in discovery order", (t) => {
   const r = run();
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(readFileSync(join(dir, "order.txt"), "utf8").trim().split("\n"), ["a.test.mjs", "b.test.mjs"]);
-});
-
-test("npm test starts the vitest pool beside the node pool, not after it, and prints its output after the node pool's", (t) => {
-  const { dir, run } = runTree(t, { vitest: "echo vitest output" });
-  // The node test passes only if vitest has started while it still runs.
-  writeFileSync(join(dir, "a.test.mjs"), `import { test } from "node:test"; import { existsSync } from "node:fs";
-    test("node pool is still running when vitest starts", async () => {
-      for (let i = 0; i < 400 && !existsSync(${JSON.stringify(join(dir, "vitest-ran"))}); i++) await new Promise((ok) => setTimeout(ok, 25));
-      if (!existsSync(${JSON.stringify(join(dir, "vitest-ran"))})) throw new Error("vitest had not started");
-    });`);
-  const r = run();
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.ok(r.stdout.indexOf("vitest output") > r.stdout.indexOf("node pool is still running when vitest starts"), r.stdout);
 });
 
 test("npm test gives every test process a compile cache in the checkout's node_modules", (t) => {

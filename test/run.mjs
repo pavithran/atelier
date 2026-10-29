@@ -6,17 +6,16 @@
 // test processes, because a test spinning on microtasks dies of a signal
 // before any cleanup of its own runs. Given test files, it runs node --test
 // on those alone; given none, every test file discovery finds (suites.mjs,
-// *.test.* and *.spec.* anywhere but node_modules, cli/ included),
-// then vitest. A test file no runner owns, or more than one, ends the run
-// before anything starts, naming each path. `--discover [DIR]` only prints
+// *.test.* and *.spec.* anywhere but node_modules, cli/ included). A test
+// file no runner owns, or more than one, ends the run before anything starts,
+// naming each path. `--discover [DIR]` only prints
 // that assignment, for DIR or the working directory, and runs nothing.
 // Prerequisites, from a clean clone: Node 24 or later, git, and `npm ci`;
-// then `npm test` and `npm run typecheck` (which generates
-// worker-configuration.d.ts itself). No owner credential, login or live
-// service is needed.
+// then `npm test` and `npm run typecheck`. No owner credential, login or
+// live service is needed.
 import { runGroup } from "../cli/group.mjs";
 import { poolSize } from "../cli/load.mjs";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { join } from "node:path";
 import { longestFirst, parseTimings, plan, rejections } from "./suites.mjs";
@@ -42,35 +41,21 @@ if (listing) {
 // ATELIER_TEST_SLOTS would reach every CLI the tests start, which then warns
 // that it differs from the stored capacity and breaks tests that read output.
 const workers = /^[1-9]\d*$/.test(process.env.ATELIER_TEST_WORKERS ?? "") ? Number(process.env.ATELIER_TEST_WORKERS) : poolSize();
-const node = [process.execPath, "--import", "./test/guard.mjs", "--test", "--test-timeout=180000", `--test-concurrency=${workers}`];
-// The node pool is the long one, so it starts the slowest files first (the
-// timing list, test/timings.txt) and the vitest pool runs beside it, on a few
-// workers of its own, rather than after it (t771). Given test files, only the
-// node pool runs, on those in the order given.
+// The server's sources load under Node through its module hooks
+// (src/runtime/loader.mjs), registered before any test file is linked, so a
+// test can import src/index.ts as the server does (Atelier 2.0, task 7). A
+// tree without them (suites.test.mjs's copies) runs without.
+const loader = existsSync("src/runtime/loader.mjs") ? ["--import", "./src/runtime/loader.mjs"] : [];
+const node = [process.execPath, ...loader, "--import", "./test/guard.mjs", "--test", "--test-timeout=180000", `--test-concurrency=${workers}`];
+// The pool starts the slowest files first (the timing list, test/timings.txt;
+// t771). Given test files, it runs those in the order given.
 let timings;
 try { timings = parseTimings(readFileSync(new URL("./timings.txt", import.meta.url), "utf8")); } catch { timings = new Map(); }
-const vitestWorkers = Math.min(4, workers);
 // node --test sorts the files it is given by name, so a full run goes through
 // test/node-pool.mjs, which keeps the order.
-const pool = [process.execPath, "--import", "./test/guard.mjs", "test/node-pool.mjs", String(workers), "180000"];
+const pool = [process.execPath, ...loader, "--import", "./test/guard.mjs", "test/node-pool.mjs", String(workers), "180000"];
 const nodeCommand = files.length ? [...node, ...files]
   : found.byRunner.node.length ? [...pool, ...longestFirst(found.byRunner.node, timings)] : null;
-// Atelier 2.0 (task 1) runs the server under Node: the Workers tests are
-// skipped by name, every one listed in test/workers-skipped.txt, until task 7
-// rewrites them against the Node server. A Workers test not in the list ends
-// the run, so none is skipped unnoticed. ATELIER_WORKERS_TESTS=1 runs them
-// still, in workerd.
-const workersTests = process.env.ATELIER_WORKERS_TESTS === "1";
-if (!workersTests) {
-  const skipped = new Set(readFileSync(new URL("./workers-skipped.txt", import.meta.url), "utf8").split("\n").map((l) => l.trim()).filter(Boolean));
-  const unlisted = found.byRunner.vitest.filter((f) => !skipped.has(f));
-  if (unlisted.length) {
-    console.error(`test/run.mjs: Workers tests not in test/workers-skipped.txt; run them under Node or list them:\n${unlisted.map((l) => `  ${l}`).join("\n")}`);
-    process.exit(1);
-  }
-  if (!files.length && found.byRunner.vitest.length) console.log(`test/run.mjs: ${found.byRunner.vitest.length} Workers test files skipped by name (test/workers-skipped.txt)`);
-}
-const vitestCommand = files.length || !workersTests ? null : ["node_modules/.bin/vitest", "run", `--maxWorkers=${vitestWorkers}`];
 
 // runGroup SIGKILLs the group on the way out of process.exit.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => process.exit(128 + constants.signals[signal]));
@@ -84,23 +69,13 @@ setInterval(() => { if (process.ppid !== parent) process.exit(129); }, 1000).unr
 // quicker (t771).
 const env = { ...process.env, ATELIER_TEST_RUNNER: String(process.pid),
   NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE ?? join(process.cwd(), "node_modules", ".cache", "atelier-compile") };
-// Every pool runs, the vitest pool after a failed Node pool included, so one
-// run reports every failure rather than hiding the second pool's behind the
-// first's (t568). The exit is the worst status any pool ended with: the
-// highest, and 1 for one that ended with no status (a timeout, a signal, a
-// command that could not start). The vitest pool's output is held until the
-// node pool has ended, so the two do not interleave.
-const held = [];
-const start = (argv, options) => argv && runGroup(argv, { env, timeoutMs: TIMEOUT_MS, ...options });
-const nodeRun = start(nodeCommand, { stdio: "inherit" });
-const vitestRun = start(vitestCommand, { onData: (key, chunk) => held.push([key, chunk]) });
+// runGroup SIGKILLs the group when the command exits; a run that times out,
+// is signalled or cannot start ends with status 1.
 let worst = 0;
-for (const [argv, run] of [[nodeCommand, nodeRun], [vitestCommand, vitestRun]]) {
-  if (!argv) continue;
-  const r = await run;
-  if (argv === vitestCommand) for (const [key, chunk] of held) process[key].write(chunk);
-  if (r.timedOut) console.error(`test/run.mjs: \`${argv.join(" ")}\` ran past ${Math.round(TIMEOUT_MS / 1000)} s; its process group was killed`);
+if (nodeCommand) {
+  const r = await runGroup(nodeCommand, { env, timeoutMs: TIMEOUT_MS, stdio: "inherit" });
+  if (r.timedOut) console.error(`test/run.mjs: \`${nodeCommand.join(" ")}\` ran past ${Math.round(TIMEOUT_MS / 1000)} s; its process group was killed`);
   else if (r.error && r.status === null && !r.signal) console.error(`test/run.mjs: ${r.error.message}`);
-  if (r.status !== 0 || r.error) worst = Math.max(worst, r.status || 1);
+  if (r.status !== 0 || r.error) worst = r.status || 1;
 }
 process.exit(worst);

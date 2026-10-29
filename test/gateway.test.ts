@@ -172,12 +172,9 @@ test("the CLI still reads an older server's view, which has no p90, a pull recor
   assert.deepEqual(describeGateway(old, same), ["AI Gateway, last 7 days:", "  deepseek-v4-flash (deepseek): 1 call, 18k in, 912 out, $0.04, median 2.1 s (n=1)"]);
 });
 
-test("the log pull, its cron and the gateway token are gone", () => {
-  const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-  // The one schedule left is the model snapshots' (t623); the list replaces
-  // whatever an earlier deploy left on the Worker.
-  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*"\*\/5 \* \* \* \*",\s*"\*\/10 \* \* \* \*",\s*"7 \*\/6 \* \* \*"\s*\]\s*\}/);
-  assert.doesNotMatch(wrangler, /AI_GATEWAY_TOKEN/);
+test("the log pull and the gateway token are gone", () => {
+  // Atelier 2.0 (task 7): wrangler.jsonc, whose cron list this read, is gone
+  // with Workers; the schedules are the Node server's timers (task 8).
   // The README quotes t278's receipt, the ledger's own record of the task
   // that built the log pull and lost it; the identifiers it names are quoted
   // history, not live code, so that one fenced block is cut before the scan.
