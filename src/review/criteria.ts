@@ -282,6 +282,33 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
   return none(`no reviewer qualifies to review the acceptance criteria written by ${input.authors.join(", ")}: ${tried}`, passedOver);
 }
 
+// Every model that could review an item's criteria, each with what refuses
+// it (G17): what pickCriteriaReviewer judges, for all of them, so a request
+// naming no reviewer lists them and refuses rather than picking one.
+export function criteriaReviewerCandidates(input: CriteriaPickInput): { actor: string; where: string; line: string; refusal: string | null }[] {
+  const owner = input.owner ?? DEFAULT_OWNER;
+  const single = singleFamily(input.policy);
+  const refused = attributionRefusal(input.authors, owner);
+  const pool = [...input.pool].sort((a, b) => a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b)));
+  return pool.map((entry) => {
+    const actor = actorOf(entry);
+    const failed: string[] = [];
+    if (refused) failed.push(refused);
+    const independence = criteriaIndependenceRefusal(actor, input.authors, owner, single);
+    if (independence) failed.push(independence);
+    const avoided = input.avoid?.find((a) => namesOf(entry).includes(a.actor.toLowerCase()));
+    if (avoided) failed.push(avoided.reason);
+    const refusal = eligibility(actor, input.policy, owner);
+    if (refusal) failed.push(refusal);
+    const standing = standingRefusal(entry, "review");
+    if (standing) failed.push(standing);
+    if (entry.status?.state === "refused") failed.push(`status refused, reported by ${entry.status.by}`);
+    if (PAID.has(entry.provider) && !input.allowPaid) failed.push(`paid per token (${entry.provider})`);
+    const previous = input.previous && namesOf(entry).includes(input.previous.toLowerCase()) ? "reviewed the previous round of these criteria; " : "";
+    return { actor, where: entry.where, line: `${previous}family ${actorFamily(actor)}; ${entry.status ? `status ${entry.status.state}` : "status not checked yet"}`, refusal: failed.length ? failed.join("; ") : null };
+  });
+}
+
 function eligibility(actor: string, policy: ProjectPolicy, owner: string): string | null {
   try {
     assertEligible(actor, policy, owner, "assessor");

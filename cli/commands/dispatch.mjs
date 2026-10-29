@@ -31,7 +31,9 @@ export default async function dispatchCommand() {
       body.retainAt = before.dispatch.at;
     }
   }
-  const suggest = !body.retain && args.agent === undefined && args.job === undefined;
+  // Both --agent and --model, or the server lists the candidates and refuses
+  // (G17); a harness alone is no builder.
+  const suggest = !body.retain && !(typeof args.agent === "string" && args.agent && typeof args.model === "string" && args.model);
   if (suggest) body.suggest = true;
   const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
   const d = item.dispatch;

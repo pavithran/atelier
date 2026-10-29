@@ -64,12 +64,12 @@ import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { privatePath } from "./rules.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
-import { routeParts, standingRoute, type PartRoute } from "./plans/route.ts";
+import { routeParts, standingRoute, type Choice, type PartRoute } from "./plans/route.ts";
 import { conflictedParts, integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
 import { historyEntries, type HistoryRead } from "./review/history.ts";
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
-  cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
+  cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, plannerCandidates, planInboxEntries,
   byPartKey, mainTakenOf, plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, refreshDecision, RUN_LIMITS, tickEvents, waitingParts,
   addedPart, maxJobsOf, mergeMainKey, mergeMainPart, mergeMainScope, planWithAdded, routesOf,
   type PlanApproval, type PlanRecord, type PlanRefresh,
@@ -94,9 +94,9 @@ import { buildPrecision, precisionLine, precisionOf, precisionWindow, type Preci
 import { independenceRefusal } from "./review/independence.ts";
 import {
   attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, CRITERIA_SKIPPED_FAST, familyDeadlock, lapsedClaim,
-  pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
+  criteriaReviewerCandidates, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
-import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick } from "./review/tier.ts";
+import { gateServesTier, reviewTarget, tierCandidates, tierEligible, tierIds } from "./review/tier.ts";
 import { GAVE_UP, offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
@@ -2183,6 +2183,18 @@ export class Ledger extends DurableObject<Env> {
   // Each run of the tick is a tick.ran row on the index instance: its time and
   // how many projects it did and did not read completely. Rows older than a
   // week are dropped. The latest-run lookup reads the newest row.
+  // The server's timers (src/runtime/timers.mjs) on the index instance: the
+  // last moment each job started, so a moment runs once across restarts.
+  timerLast(job: string): number | null {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS timer_runs (job TEXT PRIMARY KEY, at INTEGER NOT NULL)`);
+    const r = this.sql.exec(`SELECT at FROM timer_runs WHERE job = ?`, job).toArray()[0];
+    return r ? Number(r.at) : null;
+  }
+  timerRan(job: string, at: number): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS timer_runs (job TEXT PRIMARY KEY, at INTEGER NOT NULL)`);
+    this.sql.exec(`INSERT INTO timer_runs (job, at) VALUES (?, ?) ON CONFLICT(job) DO UPDATE SET at = MAX(at, excluded.at)`, job, at);
+  }
+
   recordTickRan(at: string, read: number, unread: number): void {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL DEFAULT 'tick.ran', at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
     this.sql.exec(`INSERT INTO tick_runs (kind, at, read, unread) VALUES ('tick.ran', ?, ?, ?)`, at, read, unread);
@@ -2771,7 +2783,11 @@ export class Ledger extends DurableObject<Env> {
   // gate request a change of criteria withdrew: the same reviewer and
   // `wanted`, at the same head, where the gate still needs the review, as
   // reaskReview carries a request when the head moves. Returns who was asked.
+  // It runs only under the developer's standing reask-on-resubmit
+  // instruction (G6), as reaskReview does; without it the withdrawal is the
+  // fact, and the model asks again.
   private reaskForCriteria(id: string, withdrawn: Row[], at: string): string[] {
+    if (this.standing().get("reask-on-resubmit") !== "on") return [];
     const item = this.item(id);
     if (item.kind === "part" || item.state !== "submitted" || !item.head) return [];
     const asked: string[] = [];
@@ -3235,6 +3251,10 @@ export class Ledger extends DurableObject<Env> {
     // job and head are not carried over (t517).
     const waiting = waitingDispatch(item);
     const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waiting);
+    // Every dispatch names its agent and its model (G17): one that leaves
+    // either to the runner is a pick the server does not make, by the API,
+    // the pages or any other path. The route lists the candidates first.
+    if (!d.agent || !d.model) throw new RuleError("builder_needed", `${id}'s dispatch names ${d.agent ? `the agent ${d.agent} but no model` : d.model ? `the model ${d.model} but no agent` : "no agent and no model"}, which leaves the runner to choose; Atelier picks no builder`, 409, `run atelier dispatch ${id} without --agent to list the candidates, then atelier dispatch ${id} --agent H --model M`);
     // Under single-family mode a dispatch names only the company's models:
     // one for another company's model would hand the work to a builder no
     // reviewer of the company could then be shown independent of (t394).
@@ -5470,9 +5490,9 @@ export class Ledger extends DurableObject<Env> {
       if (!item.head || item.state === "merged" || item.state === "abandoned") throw new RuleError("not_queued", `${id} has no head to pre-review, or is closed`, 409, `run atelier show ${id}`);
       const lease = this.projectLanding();
       if (lease && lease.item === id && this.landingLive(lease, at)) throw new RuleError("not_queued", `${id} holds the landing lease: its landing reviews it now, so there is nothing to pre-review`, 409, `run atelier land ${id} --queue --status`);
-      if (!this.projectLandingQueue().some((w) => w.item === id)) throw new RuleError("not_queued", `${id} is not waiting in the landing queue; a pre-review reviews a queued landing`, 409, `run atelier land ${id} --queue, then atelier prereview ${id} --reviewer H/M`);
       const fence = this.prereviewFence(id);
       if (fence) throw new RuleError("prereview_fenced", fenceText(id, fence), 409, `address the findings, then run atelier unblock ${id}`);
+      if (!this.projectLandingQueue().some((w) => w.item === id)) throw new RuleError("not_queued", `${id} is not waiting in the landing queue; a pre-review reviews a queued landing`, 409, `run atelier land ${id} --queue, then atelier prereview ${id} --reviewer H/M`);
       if (this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND tier IS NULL LIMIT 1`, id).toArray().length) {
         throw new RuleError("review_requested", `a gate review of ${id} is asked, and it goes first; no pre-review is asked beside it`, 409, `wait for its verdict: atelier show ${id}`);
       }
@@ -6957,7 +6977,7 @@ export class Ledger extends DurableObject<Env> {
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
     const lastDeploy = this.lastDeploy();
-    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id) };
+    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), tierReview: this.tierReviewNow(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -7120,10 +7140,11 @@ export class Ledger extends DurableObject<Env> {
       this.assertStanding(chosen, "plan", pool);
       reasons = ["Named by the developer", ...aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["plan"]), "the developer's named planner").lines];
     } else {
-      const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers(), this.heldAssignments());
-      if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model.${pick.reasons.length > 1 ? ` ${pick.reasons.slice(1).join(" ")}` : ""}`, 409, "add a model with atelier models add, or name one with --planner H/M");
-      chosen = pick.actor;
-      reasons = pick.reasons;
+      // No planner named (G17): the server picks none; it lists the
+      // candidates and refuses, and the model names one.
+      const candidates = plannerCandidates(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers());
+      const first = candidates.find((c) => !c.refusal);
+      throw new RuleError("planner_needed", candidatesText("The plan names no planner", candidates), 409, first ? `name one: atelier plan "GOAL" --planner ${first.actor}, or another of the eligible` : "add a model with atelier models add, then name it with --planner H/M");
     }
     const at = new Date().toISOString();
     const d = this.planDispatch(chosen, actor, at, pool);
@@ -7300,7 +7321,13 @@ export class Ledger extends DurableObject<Env> {
   // approving it would only block the plan. The part items are created in
   // plan order, the tick dispatches what may start, all in one transaction,
   // and the alarm is set for the deadline.
-  async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[], offers: readonly SeenOffer[] | null = null): Promise<{ item: Item; parts: Item[] }> {
+  // The routes are the model's (G17): `named` gives each part's builder and
+  // reviewer (atelier plan approve --route KEY=BUILDER:REVIEWER). Without
+  // them the approval is refused, listing each part's candidates as the
+  // routing read them; the server binds no route of its own choosing. Each
+  // named builder must be eligible to build and each reviewer eligible to
+  // review, independent of its part's builder, and both in good standing.
+  async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[], offers: readonly SeenOffer[] | null = null, named: Record<string, { builder?: unknown; reviewer?: unknown }> | null = null): Promise<{ item: Item; parts: Item[] }> {
     offers = this.ownOffers(offers);
     this.keepOffers(offers);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer approves a plan", 403, `only the developer can: atelier plan approve ${id} --hash HASH`);
@@ -7324,14 +7351,27 @@ export class Ledger extends DurableObject<Env> {
     // which is undefined when no runner is live and routing then falls back
     // to the whole pool.
     const routing = offers !== null ? offers : await this.routingOffers();
-    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing, precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments(), namesExact: newest.namesExact });
-    const unrouted = routes.filter((r) => r.unrouted !== null);
-    if (unrouted.length) {
-      const why = unrouted.map((r) => `part ${r.key} has no ${r.builder ? "reviewer" : "builder"}: ${r.unrouted}`).join("; ");
-      // Runners have asked, so what they offer is known: say the fix that is.
-      const runner = routing ? ", or start a runner that offers them" : "";
-      throw new RuleError("unrouted", `${id} was not approved: ${why}. Add models to the pool${allowPaid ? "" : ", or approve with --allow-paid if a paid model would qualify"}${runner}, then approve again`, 409, "add models to the pool, or approve with --allow-paid");
+    const preview = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing, precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments(), namesExact: newest.namesExact });
+    if (!named) {
+      const lines = preview.map((r) => `part ${r.key}: builders ${[r.builder, ...r.alternates].filter((c): c is Choice => !!c).map((c) => c.actor).join(", ") || "none"}; reviewer ${r.reviewer?.actor ?? "none"}${r.unrouted ? ` (${r.unrouted})` : ""}${r.excluded.length ? `; refused: ${r.excluded.map((c) => `${c.actor} (${c.reasons.join("; ")})`).join(", ")}` : ""}`);
+      const all = preview.every((r) => r.builder && r.reviewer);
+      throw new RuleError("routes_needed", [`${id}'s approval names no routes, and Atelier picks none. The routing's candidates:`, ...lines.map((l) => `  ${l}`)].join("\n"), 409,
+        all ? `name each part's builder and reviewer: atelier plan approve ${id} --hash ${hash} ${preview.map((r) => `--route ${r.key}=${r.builder!.actor}:${r.reviewer!.actor}`).join(" ")}, or others of the candidates` : `add models to the pool${allowPaid ? "" : " or approve with --allow-paid"}, then atelier plan approve ${id} --hash ${hash} --route KEY=BUILDER:REVIEWER for each part`);
     }
+    const single = singleFamily(policy);
+    const routes: PartRoute[] = newest.plan.parts.map((part) => {
+      const n = named[part.key];
+      if (!n) throw new RuleError("routes_needed", `${id}'s approval names no route for part ${part.key}`, 409, `atelier plan approve ${id} --hash ${hash} --route ${part.key}=BUILDER:REVIEWER, with the other parts' routes`);
+      const builder = namedActor(n.builder, policy, "executor", this.owner);
+      const reviewer = namedActor(n.reviewer, policy, "assessor", this.owner);
+      this.assertStanding(builder, "build", pool);
+      this.assertStanding(reviewer, "review", pool);
+      const refusal = independenceRefusal(reviewer, [builder], single);
+      if (refusal) throw new RuleError("not_independent", `part ${part.key}: ${reviewer} cannot review ${builder}'s build: ${refusal}`, 409, `name another reviewer for part ${part.key} with --route ${part.key}=${builder}:H/M`);
+      return { key: part.key, builder: { actor: builder, reasons: ["Named by the developer at the plan's approval"] }, alternates: [], reviewer: { actor: reviewer, reasons: ["Named by the developer at the plan's approval"] }, excluded: [], unrouted: null };
+    });
+    const extra = Object.keys(named).filter((k) => !newest.plan.parts.some((p) => p.key === k));
+    if (extra.length) throw new RuleError("bad_route", `${id}'s plan has no part ${extra.join(", ")}`, 400, `run atelier plan show ${id} for its parts' keys`);
     const now = new Date();
     const at = now.toISOString();
     const limits = limitsFor(newest.plan.parts.length, allowPaid);
@@ -8031,58 +8071,31 @@ export class Ledger extends DurableObject<Env> {
       const withdrawnHere = this.sql.exec(`SELECT dispatch, developerWithdrawnAt FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND developerWithdrawnAt IS NOT NULL`, p.id, need.head).toArray()
         .map((r) => { const d = JSON.parse(r.dispatch as string) as Dispatch; return { actor: d.agent && d.model ? `${d.agent}/${d.model}` : "", at: r.developerWithdrawnAt as string }; })
         .filter((w) => w.actor);
-      // The reviewer the owner named is asked first, in or out of the pool,
-      // while it is independent of every contributor, may review under the
-      // policy, and was not withdrawn by the developer at this head since it
-      // was named.
+      // The tick asks only a reviewer the model named (G17): the one named
+      // for this part (atelier plan reroute on a submitted part), else the one
+      // the approval named on its route, while it is independent of every
+      // contributor, may review under the policy and the developer's
+      // standing, has no lapsed claim or counted approval here, and was not
+      // withdrawn by the developer at this head since it was named. With
+      // none, the tick picks nobody: it records once per head that the part
+      // needs a review, with the candidates (plan.review_needed), and the
+      // model asks it by command.
       const change = record.reviewers?.[p.partKey!];
-      const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !(need.counted ?? []).some((c) => modelKey(c) === modelKey(change.actor)) && !independenceRefusal(change.actor, contributors, single)
-        && mayAssess(change.actor, policy, this.owner) && !actorStanding(standing, change.actor, "review")
-        && !withdrawnHere.some((w) => sameActor(w.actor, change.actor) && (change.at ?? "") <= w.at) ? change.actor : null;
-      // pickReviewer passes over every contributor and every model of a
-      // contributor's family, the routed reviewer included, and asks the
-      // alternates and then the pool.
-      const pick = named ? null : pickReviewer({
-        item: p, pool, policy, allowPaid: approval.allowPaid,
-        part, route,
-        // The request goes home, so the offer is judged there. A routed part
-        // is not blocked for want of a runner: with none live, availability
-        // is not judged here and the part waits for one (the plan's own
-        // choice, said explicitly since the selector reads no live runner
-        // as no reviewer).
-        offers: liveOffers(tickOffers, now).length ? tickOffers : null, destination: () => "home",
-        previous: need.previousReviewer,
-        counted: need.counted,
-        // A protected part's review goes to the tier first, so one review
-        // serves the gate and the tier (src/review/tier.ts).
-        tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
-        avoid: [
-          ...need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
-          ...withdrawnHere.map((w) => ({ actor: w.actor, reason: `the developer withdrew its review request at ${need.head.slice(0, 8)}` })),
-        ],
-        owner: this.owner,
-        precision: this.reviewPrecision(at),
-        assigned: this.reviewAssigned(p, part, need.changedPaths),
-      });
-      // With no other reviewer than the ones the developer withdrew, the
-      // part waits for the developer to name one rather than being blocked.
-      if (pick && !pick.reviewer && withdrawnHere.length) continue;
-      if (pick && !pick.reviewer) {
-        this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name ${single ? independentReviewerText(single) : "one of another family than every contributor"}, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
+      const usable = (actor: string | null | undefined, since = ""): actor is string => !!actor && !need.lapsed.some((a) => sameActor(a, actor)) && !(need.counted ?? []).some((c) => modelKey(c) === modelKey(actor)) && !independenceRefusal(actor, contributors, single)
+        && mayAssess(actor, policy, this.owner) && !actorStanding(standing, actor, "review")
+        && !withdrawnHere.some((w) => sameActor(w.actor, actor) && since <= w.at);
+      const ownNamed = change?.by && usable(change.actor, change.at ?? "") ? change.actor : null;
+      const routedNamed = !ownNamed && !change?.by && usable(route?.reviewer?.actor) ? route!.reviewer!.actor : null;
+      const named = ownNamed ?? routedNamed;
+      if (!named) {
+        const noted = this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'plan.review_needed' AND json_extract(data, '$.head') = ? LIMIT 1`, p.id, need.head).toArray().length;
+        if (!noted) {
+          const candidates = this.reviewerCandidates(p, pool, liveOffers(tickOffers, now).length ? tickOffers : undefined, undefined, "review", !liveOffers(tickOffers, now).length, () => "home", need.lapsed, need.counted ?? [], at);
+          this.log(p.id, ORCHESTRATOR, "plan.review_needed", { head: need.head, plan: id, candidates: candidates.map((c) => ({ actor: c.actor, refusal: c.refusal })), next: `atelier plan reroute ${p.id} --to H/M` }, at);
+        }
         continue;
       }
-      const reviewer = named ?? pick!.reviewer!.actor;
-      // The routed reviewer that can no longer review is replaced on the
-      // part's routing, so plan show and the plan page name the reviewer
-      // asked and why, and later rounds ask that reviewer first.
-      const routed = route?.reviewer?.actor ?? null;
-      const why = routed ? independenceRefusal(routed, contributors, single) ?? actorStanding(standing, routed, "review") : null;
-      // The routed reviewer and the selector's choice are exact ids.
-      if (routed && why && routed !== reviewer) {
-        (record.reviewers ??= {})[p.partKey!] = { actor: reviewer, from: routed, reason: why, at };
-        this.savePlanRecord(id, record);
-        this.log(p.id, ORCHESTRATOR, "plan.reviewer_changed", { from: routed, to: reviewer, reason: why }, at);
-      }
+      const reviewer = named;
       const slash = reviewer.indexOf("/");
       const dispatch = { ...this.standingDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
       const brief = reviewBrief({
@@ -8099,9 +8112,9 @@ export class Ledger extends DurableObject<Env> {
       // Why this reviewer, the assignment applied or skipped included, kept
       // on the request as a standalone review keeps it (gpt-6-astra's third
       // review of t622, finding 5).
-      const namedOutcome = named ? aheadOfAssignments(this.reviewAssigned(p, part, need.changedPaths), "the developer's named reviewer") : null;
-      const reason = namedOutcome ? ["Named by the developer for this part", ...namedOutcome.lines].join(" ") : pick!.reviewer!.reasons.join(" ");
-      const assignment = namedOutcome ?? pick?.assignment;
+      const namedOutcome = aheadOfAssignments(this.reviewAssigned(p, part, need.changedPaths), "the developer's named reviewer");
+      const reason = [ownNamed ? "Named by the developer for this part" : "Named on the part's route at the plan's approval", ...namedOutcome.lines].join(" ");
+      const assignment = namedOutcome;
       this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, role: this.reviewRoleOf(p, part, need.changedPaths), reason, ...(assignment ? { assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
       // The tier is the project's, judged against the developer's pool as it is
       // now (the default), with the offers the tick read.
@@ -8844,54 +8857,85 @@ export class Ledger extends DurableObject<Env> {
   // tier model remains.
   // `offers`: the live offers a tier model must be offered by; a caller that
   // read none passes the ones this ledger holds (heldOffers), the default.
-  private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers: readonly SeenOffer[] | undefined = this.heldOffers()): void {
+  // Whether a protected change needs a separate tier review at `head`, beside
+  // the gate's reviewer `gateReviewer`, and the tier models that could give
+  // it, each with what refuses it (tierCandidates). Null when none is needed:
+  // no tier, not protected, two or more independent reviews needed, the
+  // gate's reviewer serves the tier, or a tier request or review stands for
+  // the item's criteria at this head.
+  private tierNeed(item: Item, head: string, changedPaths: readonly string[], gateReviewer: string, pool: readonly ModelEntry[] = this.poolStanding(), offers: readonly SeenOffer[] | undefined = this.heldOffers()): { candidates: { actor: string; refusal: string | null }[] } | null {
     const policy = this.project().policy;
-    if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
-    // A change that needs two or more independent reviews asks no separate
-    // tier review; the independent reviews are the second opinion (t277).
-    if ((riskNeed(need.changedPaths, policy)?.reviews ?? 0) >= 2) return;
-    if (this.gateIsTier(item, need, gateReviewer, pool)) return;
-    // A request or review for criteria the item no longer has does not count:
-    // the tier is asked again for the new ones. A request superseded by a
-    // change of criteria never counts, even when the criteria return to the
-    // ones it recorded; one made before requests recorded their criteria
-    // counts until the criteria first change, so none is asked twice.
+    if (!policy.reviewTier?.length || changeClass([...changedPaths], policy) !== "protected") return null;
+    if ((riskNeed([...changedPaths], policy)?.reviews ?? 0) >= 2) return null;
+    if (gateServesTier(tierIds(policy, pool), gateReviewer, contributorsOf(item), singleFamily(policy), pool)) return null;
     const criteria = criteriaOf(item);
-    if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1 AND superseded IS NULL AND (criteria IS NULL OR criteria = ?)`, item.id, need.head, criteria).toArray().length) return;
-    if (this.reviewsFor(item.id).some((r) => r.head === need.head && !r.withdrawn && (r.criteria === undefined || r.criteria === criteria) && (r.tier || r.topTier))) return;
-    const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
+    if (this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND head = ? AND tier = 1 AND superseded IS NULL AND state IN ('open', 'claimed', 'answered') AND (criteria IS NULL OR criteria = ?)`, item.id, head, criteria).toArray().length) return null;
+    if (this.reviewsFor(item.id).some((r) => r.head === head && !r.withdrawn && (r.criteria === undefined || r.criteria === criteria) && (r.tier || r.topTier))) return null;
+    const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
       .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));
-    // A tier model is judged as the gate's selector judges a reviewer before
-    // any assignment orders it (gpt-6-astra's second review of t622, finding
-    // 3): in the pool, the project's policy, the developer's standing, not
-    // refused, not paid per token, and offered by a live runner for the
-    // review job where it runs. The request goes where the model runs. A
-    // tier model outside the pool is the project's explicit choice and is
-    // asked as before, home, but no assignment moves it ahead
-    // (tierReviewerPick).
-    // The pool entry a tier name is, its eligibility and the dispatch all
-    // come from the one check (tierEligible, reviewTarget in
-    // src/review/tier.ts; poolEligibility in src/models/pool.ts), so an
-    // alias another entry lists never lends its standing, and the request
-    // names the entry a runner offers (gpt-6-astra's and gemini-4-argon's
-    // fourth reviews of t622).
     const mayReview = (a: string): true | string => mayAssess(a, policy, this.owner) ? tierEligible(pool, offers, a) : "may not review under the project's policy";
-    const pick = tierReviewerPick(tierIds(policy, pool), contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
-    // No tier model remains: nothing is asked, as before; when assignments
-    // bear on the tier, what became of them is recorded, so the failure is
-    // explained as every selector's is (gpt-6-astra's nineteenth review).
-    if (!pick.actor) {
-      if (pick.reasons.length) this.log(item.id, actor, "review.tier_unasked", { head: need.head, reason: pick.reasons.join(" ") }, at, proved);
-      return;
-    }
-    const target = reviewTarget(pool, pick.actor);
-    const reviewer = target.actor;
-    const dispatch = { ...this.standingDispatch({ to: target.where, agent: target.agent, model: target.model }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
-    // What the role assignments said of this choice, kept on the request
-    // (gpt-6-astra's review of t622, finding 7).
-    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), tier: true, ...(pick.reasons.length ? { reason: pick.reasons.join(" ") } : {}) }, at, proved);
+    return { candidates: tierCandidates(tierIds(policy, pool), contributorsOf(item), [gateReviewer, ...asked], mayReview, singleFamily(policy), pool) };
+  }
+
+  // A separate tier review is needed (G17): the server asks none. It records
+  // the need once per head and criteria (review.tier_needed, with the
+  // candidates), which `show` prints, and the model asks it with
+  // atelier review-request ID --reviewer H/M --tier-review.
+  private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers: readonly SeenOffer[] | undefined = this.heldOffers()): void {
+    const t = this.tierNeed(item, need.head, need.changedPaths, gateReviewer, pool, offers);
+    if (!t) return;
+    const criteria = criteriaOf(item);
+    const noted = this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'review.tier_needed' AND json_extract(data, '$.head') = ? AND json_extract(data, '$.criteria') = ? LIMIT 1`, item.id, need.head, criteria).toArray().length;
+    if (noted) return;
+    this.log(item.id, actor, "review.tier_needed", { head: need.head, criteria, gate: gateReviewer, candidates: t.candidates, next: `atelier review-request ${item.id} --reviewer H/M --tier-review` }, at, proved);
+  }
+
+  // The tier review now, for `show` (G17): needed or not, and its candidates.
+  tierReviewNow(id: string): { head: string; gate: string; candidates: { actor: string; refusal: string | null }[] } | null {
+    const item = this.item(id);
+    if (!item.head || item.state === "merged" || item.state === "abandoned") return null;
+    const gate = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND state IN ('open', 'claimed', 'answered') ORDER BY id DESC LIMIT 1`, id, item.head).toArray()
+      .map((r) => JSON.parse(r.dispatch as string) as Dispatch).map((d) => (d.agent && d.model ? `${d.agent}/${d.model}` : null))[0];
+    if (!gate) return null;
+    const changed = evidenceAt(this.project().policy, this.evidenceFor(id), item.head).changedPaths ?? [];
+    const t = this.tierNeed(item, item.head, changed, gate);
+    return t ? { head: item.head, gate, candidates: t.candidates } : null;
+  }
+
+  // atelier review-request ID --reviewer H/M --tier-review (G17): the separate tier
+  // review, of the tier model the model names, once the gate's review is
+  // asked at this head. Refused, naming the candidates, when none is named or
+  // the one named is refused, and with the reason when none is needed.
+  requestTierReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], offers: readonly SeenOffer[] | undefined, hand = false, proved = false): ReviewAsked {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403, `only the developer can: atelier review-request ${id} --reviewer H/M --tier-review`);
+    offers = this.ownOffers(offers);
+    this.keepOffers(offers);
+    this.keepPool(pool);
+    return this.ctx.storage.transactionSync(() => {
+      const item = this.item(id);
+      const at = new Date().toISOString();
+      if (!item.head || item.state !== "submitted") throw new RuleError("review_blocked", `${id} is ${item.state}${item.head ? "" : " with no push"}; a tier review is asked of a submitted change`, 409, `run atelier show ${id}`);
+      const gate = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND state IN ('open', 'claimed', 'answered') ORDER BY id DESC LIMIT 1`, id, item.head).toArray()
+        .map((r) => JSON.parse(r.dispatch as string) as Dispatch).map((d) => (d.agent && d.model ? `${d.agent}/${d.model}` : null))[0];
+      if (!gate) throw new RuleError("review_blocked", `no gate review of ${id} is asked at ${item.head.slice(0, 8)}; the tier review is asked beside it`, 409, `ask the gate review first: atelier review-request ${id} --reviewer H/M`);
+      const changed = evidenceAt(this.project().policy, this.evidenceFor(id), item.head).changedPaths ?? [];
+      const mayOffer = hand ? undefined : offers;
+      const t = this.tierNeed(item, item.head, changed, gate, pool, mayOffer);
+      if (!t) return { needed: false, reason: `no separate tier review is needed at ${item.head.slice(0, 8)}: the project has no tier, the change is not protected, ${gate} serves the tier, or a tier review is asked or given already` };
+      const first = t.candidates.find((c) => !c.refusal);
+      const list = candidatesText(`${id}'s tier review names no reviewer`, t.candidates.map((c) => ({ ...c, where: "tier", line: "a tier model" })));
+      const nextOne = first ? `name one: atelier review-request ${id} --reviewer ${first.actor} --tier-review` : `start a runner that offers a tier model the review job, then atelier review-request ${id} --reviewer H/M --tier-review`;
+      if (reviewer === null) throw new RuleError("reviewer_needed", list, 409, nextOne);
+      const named = t.candidates.find((c) => sameActor(c.actor, reviewer));
+      if (!named) throw new RuleError("not_tier", `${reviewer} is not one of the project's review tier\n${list}`, 409, nextOne);
+      if (named.refusal) throw new RuleError("tier_refused", `${named.actor} cannot give ${id}'s tier review: ${named.refusal}\n${list}`, 409, nextOne);
+      const target = reviewTarget(pool, named.actor);
+      const dispatch = { ...this.standingDispatch({ to: target.where, agent: target.agent, model: target.model }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
+      const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?) RETURNING id`, id, item.head, JSON.stringify(dispatch), null, criteriaOf(item)).one();
+      this.log(id, actor, "review.requested", { head: item.head, reviewer: target.actor, role: this.reviewRoleOf(item, null, changed), tier: true, reason: "Named by the developer" }, at, proved);
+      return { needed: true, requested: true, reason: "Named by the developer", at, head: item.head, reviewer: target.actor, request: made.id as number };
+    });
   }
 
   // Withdraws an item's live tier requests (open ones only, with `only`), so
@@ -9311,15 +9355,14 @@ export class Ledger extends DurableObject<Env> {
       chosen = reviewer;
       reasons = ["Named by the developer"];
     } else {
-      const pick = pickCriteriaReviewer({
+      // No reviewer named (G17): the server picks none. The candidates, each
+      // with what refuses it, and a refusal; the model names one.
+      const candidates = criteriaReviewerCandidates({
         authors, pool: withStanding(pool, standing), policy, owner: this.owner, allowPaid, previous: status.previousReviewer,
         avoid: status.lapsed.map((actor) => ({ actor, reason: "its claim on a review of these criteria lapsed" })),
       });
-      if (!pick.reviewer) {
-        throw new RuleError("no_criteria_reviewer", `no reviewer can review ${item.id}'s acceptance criteria: ${pick.unpicked}. Name ${singleFamily(policy) ? `a different ${singleFamily(policy)} model from every model author` : "one of another family than every model author"} with atelier criteria-review ${item.id} --reviewer H/M, or add a model with atelier models add`, 409);
-      }
-      chosen = pick.reviewer.actor;
-      reasons = pick.reviewer.reasons;
+      const first = candidates.find((c) => !c.refusal);
+      throw new RuleError("reviewer_needed", candidatesText(`${item.id}'s criteria review names no reviewer`, candidates), 409, first ? `name one: atelier criteria-review ${item.id} --reviewer ${first.actor}, or another of the eligible` : `add a model with atelier models add, then atelier criteria-review ${item.id} --reviewer H/M`);
     }
     const slash = chosen.indexOf("/");
     // Made by the standing check, as every dispatch is: a named reviewer the
@@ -9654,11 +9697,17 @@ export class Ledger extends DurableObject<Env> {
     const status = this.criteriaReviewStatus(p.id, new Date(at));
     if (status.approved) return false;
     if (status.need === "review") {
-      try {
-        this.askCriteriaReview(p, ORCHESTRATOR, null, approval.pool, approval.allowPaid, at);
-      } catch (err) {
-        if (!(err instanceof RuleError)) throw err;
-        this.blockPart(p, planId, `${Ledger.CRITERIA_BLOCK} of part ${p.partKey} cannot be reviewed: ${err.message}. Name a reviewer with atelier criteria-review ${p.id} --reviewer H/M`, at);
+      // The tick asks no review (G17): it records once per revision that the
+      // part needs one, with the candidates, and the model asks it with
+      // atelier criteria-review ID --reviewer H/M.
+      const noted = this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'criteria_review.needed' AND json_extract(data, '$.rev') = ? LIMIT 1`, p.id, status.rev).toArray().length;
+      if (!noted) {
+        const standing = this.poolStanding();
+        const candidates = criteriaReviewerCandidates({
+          authors: authorsOf(this.criteriaRevisions(p.id)), pool: withStanding(approval.pool, standing), policy: this.project().policy, owner: this.owner, allowPaid: approval.allowPaid, previous: status.previousReviewer,
+          avoid: status.lapsed.map((actor) => ({ actor, reason: "its claim on a review of these criteria lapsed" })),
+        });
+        this.log(p.id, ORCHESTRATOR, "criteria_review.needed", { rev: status.rev, plan: planId, candidates: candidates.map((c) => ({ actor: c.actor, refusal: c.refusal })), next: `atelier criteria-review ${p.id} --reviewer H/M` }, at);
       }
     } else if (status.need === "owner" || status.need === "none") {
       this.blockPart(p, planId, `${Ledger.CRITERIA_BLOCK} of part ${p.partKey} wait for the developer: ${status.reason}`, at);
@@ -9987,11 +10036,20 @@ export class Ledger extends DurableObject<Env> {
     const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the developer with plan refresh --resolve" } } : spec;
     // The part is dispatched with the merge-main job (dispatchPart), so its
     // builder is routed only to a model a runner offers that job for.
-    const [route] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
+    // The routing's candidates are kept on the part (excluded, alternates),
+    // but its builder is only the one the model named (`to`), and its
+    // reviewer none (G17): a part with no builder is unrouted, which blocks
+    // the plan until atelier plan reroute names one; its review is asked by
+    // command once it is submitted (reviewTick records the need).
+    const [candidates] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
       buildJob: "merge-main",
       pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers: offers !== null ? offers : await this.routingOffers(),
       precision: this.reviewPrecision(at), assignments: this.heldAssignments(),
     });
+    const listed = [candidates.builder, ...candidates.alternates].filter((c): c is Choice => !!c).map((c) => c.actor);
+    const route: PartRoute = to
+      ? { key, builder: { actor: to, reasons: ["Named by the developer"] }, alternates: [], reviewer: null, excluded: candidates.excluded, unrouted: null }
+      : { key, builder: null, alternates: [], reviewer: null, excluded: candidates.excluded, unrouted: `no builder is named for it; candidates: ${listed.join(", ") || "none"}. Name one with atelier plan reroute PART --to H/M` };
     const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [], acceptance: spec.acceptance, author: ORCHESTRATOR },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });
     record.added = [...(record.added ?? []), { id: partId, part: spec, route, mainHead, by, at, reason }];
@@ -10001,10 +10059,10 @@ export class Ledger extends DurableObject<Env> {
     // An explicit --to overriding the routing names each build assignment
     // skipped for it, on the reroute and on the event (gpt-6-astra's
     // twenty-second review of t622, finding 2).
-    const toAhead = to && route.builder?.actor !== to ? aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["build"]), "the developer's --to") : null;
-    if (to && toAhead) {
+    const toAhead = to && candidates.builder?.actor !== to ? aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["build"]), "the developer's --to") : null;
+    if (to) {
       record.reroutes[key] = to;
-      (record.rerouteReasons ??= {})[key] = toAhead.lines;
+      (record.rerouteReasons ??= {})[key] = toAhead?.lines ?? [];
     }
     this.savePlanRecord(id, record);
     this.log(id, by, "plan.part_added", { part: partId, key, mainHead, reason, builder: to ?? route.builder?.actor ?? null, reviewer: route.reviewer?.actor ?? null, ...(toAhead?.lines.length ? { assignment: toAhead } : {}) }, at);

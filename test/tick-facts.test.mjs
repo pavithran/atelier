@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServer } from "../src/runtime/server.mjs";
-import { postMergeNotes } from "../src/rules.ts";
 
 const OWNER = "atl_00112233445566778899aabbccddeeff";
 const ACTING = "claude-code/opus-5.5";
@@ -138,16 +137,17 @@ test("criterion 2: a review request unclaimed past 10 minutes stays as asked, wi
   assert.deepEqual((await L().detail(built)).openRequests.map((r) => r.reviewer), ["codex/gpt-6-astra"]);
 });
 
-test("criterion 3: a blocking post-merge finding is a goal note; file-fix files a task from it, once however often it is asked; the server files none", async () => {
-  const id = await newTask("Merged with a defect");
+test("criterion 3: a review's finding is a goal note, which show numbers; file-fix files a task from it, once however often it is asked; the server files none (the post-merge path: test/production-paths.test.mjs)", async () => {
+  assert.ok(built, "the runner built a task above");
+  const id = built;
   const before = (await L().items()).length;
-  // What a rejected post-merge review leaves (addReview, src/ledger.ts): its
-  // blocking findings as notes on the goal, and no task.
-  const notes = postMergeNotes(id, { by: "codex/gpt-6", head: "a".repeat(40), note: "breaks the parser", request: 7, findings: [{ file: "src/p.ts", line: 3, severity: "blocking", text: "null deref" }] });
-  await L().log(id, "orchestrator", "goal.notes", { itemId: id, head: "a".repeat(40), by: "codex/gpt-6", request: 7, notes, postMerge: true }, new Date().toISOString());
+  // A real review through the Ledger's own path: the reviewer the model asked
+  // claims the request and gives its verdict with a finding.
+  const claim = await L().claimReview(id, "codex/gpt-6-astra", { runner: "home:hand", kind: "home" }, true);
+  await L().addReview({ itemId: id, by: "codex/gpt-6-astra", head: claim.head, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine.", at: new Date().toISOString(), findings: [{ file: "src/p.ts", line: 3, severity: "follow-up", text: "null deref" }] }, undefined, true, "api");
   assert.equal((await L().items()).length, before, "no task filed by the server");
   const shown = await cli(["show", id, "--project", "demo"]);
-  assert.match(shown.stdout, /Notes \(atelier file-fix t\d+ --from-note N files one\):\n  1\. \[blocking\] src\/p\.ts:3: null deref \(codex\/gpt-6 at aaaaaaaa\)/, said(shown));
+  assert.match(shown.stdout, /Notes \(atelier file-fix t\d+ --from-note N files one\):\n  1\. src\/p\.ts:3: null deref \(codex\/gpt-6-astra at [0-9a-f]{8}\)/, said(shown));
   const filed = await cli(["file-fix", id, "--from-note", "1", "--project", "demo"]);
   assert.equal(filed.code, 0, said(filed));
   const fix = /^(t\d+): filed from note 1/.exec(filed.stdout)?.[1];

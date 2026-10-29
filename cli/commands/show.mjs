@@ -74,8 +74,8 @@ export default async function showCommand() {
   // The goal's notes, numbered as atelier file-fix takes them, and the review
   // requests nobody has claimed, with when each was asked (G6): facts the
   // model acts on by command, since the server files and re-points nothing.
-  const notes = d.notes ?? [], unclaimed = d.openRequests ?? [];
-  if (args.json) return console.log(JSON.stringify({ ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
+  const notes = d.notes ?? [], unclaimed = d.openRequests ?? [], tier = d.tierReview ?? null;
+  if (args.json) return console.log(JSON.stringify({ ...(tier ? { tierReview: tier } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
@@ -88,6 +88,7 @@ export default async function showCommand() {
   // it failed, with the last lines of the failing step's own output.
   if (d.landing) blocks.push(`Landing: attempt ${d.landing.attempt}, ${d.landing.failedStep ? `failed at ${d.landing.failedStep}${d.landing.files?.length ? ` (${d.landing.files.map(flat).join(", ")})` : ""}` : `at ${d.landing.step}`}, ${String(d.landing.at).slice(0, 16).replace("T", " ")} UTC${d.landing.failedStep && d.landing.tail ? `\n  ${String(d.landing.tail).split("\n").map(flat).join("\n  ")}` : ""}`);
   if (deploy) blocks.push(`Last deploy: ${deployText(deploy)}`);
+  if (tier) blocks.push(tierLine(id, tier));
   if (unclaimed.length) blocks.push(unclaimed.map((r) => unclaimedLine(id, r)).join("\n"));
   if (notes.length) blocks.push(["Notes (atelier file-fix " + id + " --from-note N files one):", ...notes.map(noteLine)].join("\n"));
   if (acted.length) blocks.push(["Acts on the developer token:", ...acted.map(actedLine)].join("\n"));
@@ -122,4 +123,12 @@ export function unclaimedLine(id, r, now = Date.now()) {
 export function noteLine(n) {
   const where = n.file ? `${flat(n.file)}${n.line === null || n.line === undefined ? "" : `:${n.line}`}: ` : "";
   return `  ${n.n}. ${n.blocking ? "[blocking] " : ""}${where}${flat(n.text)} (${flat(n.by)} at ${String(n.head).slice(0, 8)})${n.filed ? `; filed as ${n.filed}` : ""}`;
+}
+
+// A separate tier review the change needs and nobody has asked (G17): its
+// candidates, each refused one with why, and the command that asks it.
+export function tierLine(id, t) {
+  const eligible = t.candidates.filter((c) => !c.refusal).map((c) => flat(c.actor));
+  const refused = t.candidates.filter((c) => c.refusal).map((c) => `${flat(c.actor)} (${flat(c.refusal)})`);
+  return `Tier review needed at ${String(t.head).slice(0, 8)} beside ${flat(t.gate)}'s gate review; candidates: ${eligible.join(", ") || "none"}${refused.length ? `; refused: ${refused.join(", ")}` : ""}. Ask it with atelier review-request ${id} --reviewer H/M --tier-review`;
 }

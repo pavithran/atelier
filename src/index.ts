@@ -2911,12 +2911,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // and any gate filter that refuses it, and refuses; the model names one.
       // An overlap override of an existing dispatch keeps its builder, so it
       // asks for nothing.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && waitingDispatch(await L.item(id)))) {
+      // Every new dispatch names both its agent and its model, whatever the
+      // client sent: a harness alone, a model alone or neither leaves the
+      // runner to choose, which is a pick the server does not make. An
+      // overlap override of a waiting dispatch that names both keeps it.
+      const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
+      const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
+      const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
+      if (!named && !keptNamed) {
         requireOwner(env, actor);
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
         const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
         const first = candidates.find((c) => !c.refusal);
-        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
+        const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
+        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
       }
       // A merge-main dispatch names the main head its job merges. The owner
       // names none after a landing conflicted, so the head is main's as the
@@ -3144,6 +3152,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
+      // The separate tier review, of the tier model named (G17): never asked
+      // by the server itself.
+      if (body.tier === true) return json(await L.requestTierReview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), body.hand === true));
       const track = reviewer === null ? { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
@@ -3738,7 +3749,9 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
       // The runner offers come with the pool, so the routing an approval
       // fixes counts a reviewer only when a live runner offers it for the
       // review job (routeParts in src/plans/route.ts).
-      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers());
+      // The routes are the model's (G17): { KEY: { builder, reviewer } }.
+      if (body.routes !== undefined && (typeof body.routes !== "object" || body.routes === null || Array.isArray(body.routes))) throw new RuleError("bad_route", "routes maps each part's key to { builder, reviewer }", 400, `atelier plan approve ${id} --hash HASH --route KEY=BUILDER:REVIEWER`);
+      await L.approvePlan(id, actor, String(body.hash ?? ""), body.allowPaid === true, await index(env).models(), await index(env).runnerOffers(), (body.routes as Record<string, { builder?: unknown; reviewer?: unknown }> | undefined) ?? null);
       return json(await L.planView(id));
     }
     case "revise":

@@ -81,6 +81,18 @@ test("criterion 1: dispatch with no --agent --model exits non-zero and prints th
   assert.match(out, new RegExp(`next: name one: atelier dispatch ${id} --agent codex --model gpt-6`));
   const item = await L().item(id);
   assert.equal(item.dispatch ?? null, null, "the one eligible candidate was not chosen: nothing was dispatched");
+  // A harness alone is no builder: the CLI is refused with the candidates.
+  const partial = await cli(["dispatch", id, "--to", "home", "--agent", "codex", "--project", "demo"]);
+  assert.notEqual(partial.code, 0, said(partial));
+  assert.match(said(partial), /names no builder \(it names the agent codex alone, which leaves the runner to choose the rest\), and Atelier picks none\./);
+  // A direct API call with neither, or a model alone, is refused too.
+  const neither = await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home" });
+  assert.equal(neither.status, 409);
+  assert.equal(neither.body.error, "builder_needed");
+  const modelOnly = await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", model: "gpt-6" });
+  assert.equal(modelOnly.status, 409);
+  assert.match(modelOnly.body.detail, /names the model gpt-6 alone/);
+  assert.equal((await L().item(id)).dispatch ?? null, null);
   // Naming it dispatches it.
   const named = await cli(["dispatch", id, "--to", "home", "--agent", "codex", "--model", "gpt-6", "--project", "demo"]);
   assert.equal(named.code, 0, said(named));

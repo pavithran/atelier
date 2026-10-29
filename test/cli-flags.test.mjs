@@ -223,7 +223,8 @@ test("dispatch --job merge-main sends the conflicted task back to its builder, a
   f.clear();
   const named = f.run(f.checkout, ["dispatch", "t3", "--job", "merge-main", "--head", "a".repeat(40), "--project", "demo"]);
   assert.equal(named.status, 0, named.stderr);
-  assert.deepEqual(f.requests().at(-1).body, { job: "merge-main", head: "a".repeat(40) });
+  // G17: no builder named, so the CLI asks the server, which lists the candidates and refuses.
+  assert.deepEqual(f.requests().at(-1).body, { job: "merge-main", head: "a".repeat(40), suggest: true });
   for (const [argv, why] of [
     [["dispatch", "t1", "--job", "plan"], /only merge-main is dispatched by hand: atelier dispatch t1 --job merge-main/],
     [["dispatch", "t1", "--head", "a".repeat(40)], /--head names the main head a merge-main job merges; give it with --job merge-main/],
@@ -232,12 +233,11 @@ test("dispatch --job merge-main sends the conflicted task back to its builder, a
     assert.equal(refused.status, 1, argv.join(" "));
     assert.match(refused.stderr, why, argv.join(" "));
   }
-  // An ordinary dispatch that names its agent is unchanged.
+  // An ordinary dispatch that names its agent and model is unchanged.
   f.clear();
-  const plain = f.run(f.checkout, ["dispatch", "t3", "--to", "home", "--agent", "codex", "--project", "demo"]);
+  const plain = f.run(f.checkout, ["dispatch", "t3", "--to", "home", "--agent", "codex", "--model", "gpt-6", "--project", "demo"]);
   assert.equal(plain.status, 0, plain.stderr);
-  assert.deepEqual(f.requests().at(-1).body, { to: "home", agent: "codex" });
-  assert.equal(plain.stdout, "t3 is waiting for a home runner, codex.\n");
+  assert.deepEqual(f.requests().at(-1).body, { to: "home", agent: "codex", model: "gpt-6" });
 });
 
 

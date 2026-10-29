@@ -127,10 +127,10 @@ test("the review code is called by the ledger and the runner, and the page says 
 
 test("the plan flow the orchestrator section states is the code's", () => {
   const prose = read("src/how.ts");
-  // The approval is refused while a part is unrouted: approvePlan in
-  // src/ledger.ts throws on the unrouted routes routeParts returns.
-  assert.match(read("src/ledger.ts"), /RuleError\("unrouted"/, "approvePlan no longer refuses an approval while a part is unrouted");
-  assert.ok(prose.includes("the approval is refused while any part has no builder or no such reviewer"), "the orchestrator section no longer says what an unrouted part does to an approval");
+  // The approval names every part's route (G17): approvePlan in
+  // src/ledger.ts refuses one without them, listing routeParts' candidates.
+  assert.match(read("src/ledger.ts"), /RuleError\("routes_needed"/, "approvePlan no longer refuses an approval that names no routes");
+  assert.ok(prose.includes("without them the approval is refused, listing the candidates"), "the orchestrator section no longer says an approval names its routes");
   // The tick runs again after each change to a part (afterPlanChange).
   assert.match(read("src/ledger.ts"), /private afterPlanChange\(/, "the ledger no longer runs a plan's tick again after a part changes");
   assert.ok(prose.includes("after each push, check, review, submit, release, merge or abandon of a part"), "the orchestrator section no longer lists when the tick runs again");

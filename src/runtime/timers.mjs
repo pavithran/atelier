@@ -14,6 +14,13 @@
 // the job goes on. `stop()` clears every timer and waits for the runs in
 // flight, so nothing runs after the server's databases close.
 //
+// A timer that fires before its moment (a Node timer can, by a millisecond)
+// waits out the rest, as the runtime's alarms do. Each moment runs once
+// across restarts too: `store` keeps the last moment each job started
+// (the index Ledger, on the server), and a moment at or before it is passed
+// over, so a server started again a moment early, or twice, does not run a
+// moment twice.
+//
 // The clock is injected, so the tests drive the jobs without waiting real
 // minutes: `now()`, `setTimeout(fn, ms)` and `clearTimeout(handle)`.
 
@@ -42,8 +49,11 @@ export class Timers {
 
   // jobs: [{ name, every, offset?, run(at: Date) }]. log: where a failed run
   // is told (console.error by default).
-  constructor({ jobs, clock = realClock, log = (line) => console.error(line) }) {
+  #store;
+  // store: { last(name) -> Promise<number|null>, ran(name, at) -> Promise }, or null.
+  constructor({ jobs, clock = realClock, log = (line) => console.error(line), store = null }) {
     this.#clock = clock;
+    this.#store = store;
     this.#log = log;
     this.#jobs = jobs.map((j) => ({ ...j, offset: j.offset ?? 0, timer: null, busy: false, runs: 0, passed: 0 }));
   }
@@ -55,7 +65,7 @@ export class Timers {
 
   // What each job has done, for the tests and for a status read.
   get state() {
-    return this.#jobs.map(({ name, runs, passed, busy, due }) => ({ name, runs, passed, busy, due }));
+    return this.#jobs.map(({ name, runs, passed, busy, due, skipped = 0 }) => ({ name, runs, passed, busy, due, skipped }));
   }
 
   #arm(job, from) {
@@ -68,16 +78,22 @@ export class Timers {
   #fire(job, due) {
     job.timer = null;
     if (this.#stopped) return;
-    // A timer may fire a moment early (the runtime's alarms met it, G18's
-    // note); the next moment is counted from the one it was due at, so the
-    // same moment never runs twice.
+    // Early: wait out the rest of the moment before anything runs.
+    const left = due - this.#clock.now();
+    if (left > 0) { job.timer = this.#clock.setTimeout(() => this.#fire(job, due), left); return; }
     this.#arm(job, Math.max(this.#clock.now(), due));
     if (job.busy) { job.passed++; return; }
     job.busy = true;
     const run = (async () => {
-      try { await job.run(new Date(due)); }
-      catch (err) { this.#log(`${job.name} at ${new Date(due).toISOString()} failed: ${err?.message ?? err}`); }
-      finally { job.busy = false; job.runs++; }
+      try {
+        const last = this.#store ? await this.#store.last(job.name) : null;
+        if (last !== null && last >= due) { job.skipped = (job.skipped ?? 0) + 1; return; }
+        if (this.#store) await this.#store.ran(job.name, due);
+        try { await job.run(new Date(due)); }
+        catch (err) { this.#log(`${job.name} at ${new Date(due).toISOString()} failed: ${err?.message ?? err}`); }
+        job.runs++;
+      } catch (err) { this.#log(`${job.name} at ${new Date(due).toISOString()} was not started: ${err?.message ?? err}`); }
+      finally { job.busy = false; }
     })();
     this.#running.add(run);
     run.finally(() => this.#running.delete(run));

@@ -19,18 +19,20 @@ function fakeClock(start) {
   const pending = new Map();
   return {
     now: () => now,
-    setTimeout: (fn, ms) => { const id = ++seq; pending.set(id, { at: now + Math.max(0, ms), fn }); return id; },
+    setTimeout: (fn, ms) => { const id = ++seq; pending.set(id, { at: now + Math.max(0, ms), ms, fn }); return id; },
     clearTimeout: (id) => { pending.delete(id); },
     pending: () => pending.size,
-    // Runs the timers due by `now + ms`; `early` makes each fire that many
-    // milliseconds before its moment, as a Node timer sometimes does.
+    // Runs the timers due by `now + ms`; `early` makes each timer longer
+    // than it fire that many milliseconds before its moment, as a Node timer
+    // sometimes does.
     async advance(ms, { early = 0, settle = async () => {} } = {}) {
       const until = now + ms;
+      const fireAt = (t) => (t.ms > early ? t.at - early : t.at);
       for (;;) {
-        const next = [...pending].map(([id, t]) => ({ id, ...t })).filter((t) => t.at - early <= until).sort((a, b) => a.at - b.at || a.id - b.id)[0];
+        const next = [...pending].map(([id, t]) => ({ id, ...t })).filter((t) => fireAt(t) <= until).sort((a, b) => fireAt(a) - fireAt(b) || a.id - b.id)[0];
         if (!next) break;
         pending.delete(next.id);
-        now = Math.max(now, next.at - early);
+        now = Math.max(now, fireAt(next));
         next.fn();
         await settle();
       }
@@ -49,12 +51,13 @@ test("nextRun keeps the crons' wall-clock moments: */5, */10 and 7 past every si
   assert.equal(new Date(nextRun(Date.parse("2026-10-28T00:06:59.999Z"), 6 * HOUR, 7 * MIN)).toISOString(), "2026-10-28T00:07:00.000Z");
 });
 
-test("each job runs at its moments and is given the moment it was due; a timer that fires early runs nothing twice", async () => {
+test("each job runs at its moments and is given the moment it was due; a timer that fires early waits out the rest and runs nothing twice", async () => {
   const clock = fakeClock(Date.parse("2026-10-28T13:02:30.000Z"));
   const seen = [];
-  const timers = new Timers({ clock, jobs: [{ name: "five", every: 5 * MIN, run: async (at) => { seen.push(at.toISOString()); } }] }).start();
-  await clock.advance(16 * MIN, { early: 1 });
-  assert.deepEqual(seen, ["2026-10-28T13:05:00.000Z", "2026-10-28T13:10:00.000Z", "2026-10-28T13:15:00.000Z"]);
+  const timers = new Timers({ clock, jobs: [{ name: "five", every: 5 * MIN, run: async (at) => { seen.push([at.toISOString(), new Date(clock.now()).toISOString()]); } }] }).start();
+  await clock.advance(16 * MIN, { early: 7 });
+  assert.deepEqual(seen.map(([at]) => at), ["2026-10-28T13:05:00.000Z", "2026-10-28T13:10:00.000Z", "2026-10-28T13:15:00.000Z"]);
+  for (const [at, ranAt] of seen) assert.ok(ranAt >= at, `ran at ${ranAt}, before its moment ${at}`);
   await timers.stop();
   assert.equal(clock.pending(), 0, "stop clears every timer");
   await clock.advance(HOUR);
@@ -87,6 +90,27 @@ test("a run still going lets the next moment pass; a failed run is logged and th
   await stopping;
   assert.equal(stopped, true);
   assert.equal(clock.pending(), 0);
+});
+
+test("a moment runs once across a restart: a store that has it run passes it over, even when the new timers start a moment early", async () => {
+  const runs = new Map();
+  const store = { last: async (job) => runs.get(job) ?? null, ran: async (job, at) => { runs.set(job, Math.max(runs.get(job) ?? 0, at)); } };
+  const seen = [];
+  const job = { name: "five", every: 5 * MIN, run: async (at) => { seen.push(at.toISOString()); } };
+  const first = fakeClock(Date.parse("2026-10-28T13:02:30.000Z"));
+  const a = new Timers({ clock: first, store, jobs: [job] }).start();
+  const flush = async () => { await new Promise((ok) => setImmediate(ok)); };
+  await first.advance(3 * MIN, { settle: flush });
+  await a.stop();
+  assert.deepEqual(seen, ["2026-10-28T13:05:00.000Z"]);
+  // Started again with its clock a little behind, the 13:05 moment is due
+  // again by the clock, and fires early on top: it is not run twice.
+  const second = fakeClock(Date.parse("2026-10-28T13:04:59.990Z"));
+  const b = new Timers({ clock: second, store, jobs: [job] }).start();
+  await second.advance(6 * MIN, { early: 5, settle: flush });
+  await b.stop();
+  assert.deepEqual(seen, ["2026-10-28T13:05:00.000Z", "2026-10-28T13:10:00.000Z"]);
+  assert.equal(b.state[0].skipped, 1);
 });
 
 const OWNER = "atl_00112233445566778899aabbccddeeff";
@@ -132,6 +156,26 @@ test("the server starts the stage tick, the stuck episodes and the model snapsho
     await server.close();
   }
   assert.equal(clock.pending(), 0, "closing the server stops its timers");
+});
+
+test("across a server restart the index Ledger keeps each job's last moment, so a restarted server a moment behind runs no moment twice", async () => {
+  const dir = join(root, "restart");
+  const t0 = Date.parse("2026-10-28T13:02:30.000Z");
+  const settleOf = (server) => async () => { await new Promise((ok) => setImmediate(ok)); while (server.timers.state.some((j) => j.busy)) await new Promise((ok) => setTimeout(ok, 5)); };
+  const first = fakeClock(t0);
+  const a = await startServer({ env: "test", dataDir: dir, host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, timers: { clock: first } });
+  try { await first.advance(3 * MIN, { settle: settleOf(a) }); } finally { await a.close(); }
+  assert.equal(a.timers.state.find((j) => j.name === "stage tick").runs, 1, "13:05 ran");
+  const second = fakeClock(Date.parse("2026-10-28T13:04:59.995Z"));
+  const b = await startServer({ env: "test", dataDir: dir, host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, timers: { clock: second } });
+  try {
+    await second.advance(MIN, { early: 3, settle: settleOf(b) });
+    const tick = b.timers.state.find((j) => j.name === "stage tick");
+    assert.deepEqual([tick.runs, tick.skipped], [0, 1], "13:05 is passed over after the restart");
+    await second.advance(5 * MIN, { settle: settleOf(b) });
+    assert.equal(b.timers.state.find((j) => j.name === "stage tick").runs, 1, "13:10 runs");
+    assert.equal(await b.namespace.get(b.namespace.idFromName("__index")).timerLast("stage tick"), Date.parse("2026-10-28T13:10:00.000Z"));
+  } finally { await b.close(); }
 });
 
 test("a test server has no timers unless asked, and false turns them off anywhere", async () => {

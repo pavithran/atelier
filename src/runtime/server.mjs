@@ -199,8 +199,10 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   // The Worker's crons (wrangler.jsonc gave scheduled() three), at the
   // periods src/limits.ts names, each given the moment it was due, as
   // scheduledTime was.
+  const indexStub = () => namespace.get(namespace.idFromName("__index"));
   const ticking = timing ? new Timers({
     clock: timing.clock ?? realClock,
+    store: { last: (job) => indexStub().timerLast(job), ran: (job, at) => indexStub().timerRan(job, at) },
     jobs: [
       { name: "stage tick", every: LIMITS.timers.stageTickMs, run: (at) => recordStageTicks(workerEnv, at) },
       { name: "stuck episodes", every: LIMITS.timers.stuckEpisodesMs, run: (at) => recordStuckEpisodes(workerEnv, at) },

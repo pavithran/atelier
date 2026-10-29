@@ -84,7 +84,8 @@ test("a plan's planner and a part's builder are named only through namedActor, w
   // addMergeMain's `to` is the builder resolveAllowed named.
   passes("resolveAllowed", "namedActor(");
   passes("newPlan", "namedActor(");
-  passes("newPlan", "pickPlanner(");
+  // Without --planner, newPlan lists the candidates and refuses (G17).
+  passes("newPlan", "plannerCandidates(");
   const state = readFileSync(join(SRC, "plans/state.ts"), "utf8");
   for (const fn of ["export function namedActor(", "export function pickPlanner("]) {
     const from = state.indexOf(fn);
@@ -109,8 +110,12 @@ test("a review request is bound to its reviewer only by bindReview, which judges
   // here once it is shown to ask only a reviewer the mode allows, or to
   // leave the company to the bind. (The tick's repointReview went with G6.)
   assert.deepEqual([...new Set(sites(/INSERT INTO review_requests/))].sort(), [
-    "askReview", "askTierReview", "reaskForCriteria", "reaskReview", "replaceReviewClaim", "reviewTick",
+    "askReview", "reaskForCriteria", "reaskReview", "replaceReviewClaim", "requestTierReview", "reviewTick",
   ], "a new path makes a review request; list it here once its reviewer is checked for the mode");
+  // The tier review is asked only by the model's command (G17), of a tier
+  // model tierNeed judged under the mode (tierCandidates).
+  passes("requestTierReview", "this.tierNeed(");
+  passes("tierNeed", "tierCandidates(");
   passes("reaskForCriteria", "companyRefusal(");
   passes("reaskReview", "companyRefusal(");
   passes("initProject", "this.withdrawForeignRequests(");

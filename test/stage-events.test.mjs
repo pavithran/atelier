@@ -233,7 +233,7 @@ test("the release a dispatch takes back carries a stage, as every event of a tas
   const id = await newTask("Replayed");
   const claim = await L().claim(id, AGENT);
   await L().recordToken(id, AGENT, claim.generation, null, null);
-  await L().dispatch(id, "owner", { to: "home", release: true, note: "again" });
+  await L().dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6", release: true, note: "again" });
   const released = await lastOf(id, "item.released");
   assert.equal(typeof released.stage, "string");
   assert.equal((await lastOf(id, "item.dispatched")).stage, "queued");

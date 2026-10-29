@@ -1,0 +1,199 @@
+// Atelier 2.0, G6 and G17, through the Ledger's production paths (the real
+// Ledger under the Node runtime, called as the routes call it): a rejected
+// post-merge review leaves a goal note and files no task; a blocking
+// pre-review verdict fences the landing, and a verdict whose binding drifted
+// fences nothing; no tier review, criteria review or plan review is asked by
+// itself; a dispatch that names a harness alone is refused.
+import { strict as assert } from "node:assert";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import "../src/runtime/loader.mjs";
+import { Namespace } from "../src/runtime/namespace.mjs";
+
+const dirs = [];
+after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+const iso = (ms) => new Date(ms).toISOString();
+const GPT = "codex/gpt-6-astra", OPUS = "claude-code/opus-5.5", ARGON = "antigravity/gemini-4-argon";
+const RUNNER = { runner: "home:a", kind: "home" };
+const MAIN = "c".repeat(40), H0 = "0".repeat(40), TREE = "e".repeat(40);
+const head = (n) => n.toString(16).padStart(40, "a");
+const model = (id, harness, family) => ({ id, harness, where: "home", provider: "subscription", aliases: [], family, note: "", addedBy: "owner", addedAt: iso(Date.now()) });
+const POOL = [model("gpt-6-astra", "codex", "openai"), model("opus-5.5", "claude-code", "anthropic"), model("gemini-4-argon", "antigravity", "google")];
+
+async function world(name, policy = {}) {
+  const { Ledger } = await import("../src/index.ts");
+  const env = {};
+  const d = mkdtempSync(join(tmpdir(), "atelier-production-paths-"));
+  dirs.push(d);
+  const ns = new Namespace({ dir: join(d, "data"), Class: Ledger, env });
+  env.LEDGER = ns;
+  const L = ns.get(ns.idFromName(`project:${name}`));
+  const index = ns.get(ns.idFromName("__index"));
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], ...policy }, createdAt: iso(Date.now()) };
+  await L.setProject(record, "owner");
+  await index.registerProject(record);
+  for (const m of POOL) await index.putModel(m);
+  await index.putRunnerOffer({ runner: RUNNER.runner, kind: "home", jobs: ["build", "review", "prereview"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["opus-5.5"] }, { agent: "antigravity", models: ["gemini-4-argon"] }] }, iso(Date.now()));
+  // A task built by Opus and submitted at head h, its checks passed.
+  const submitted = async (h, paths = ["src/a.ts"], title = `Task ${h.slice(-2)}`) => {
+    const id = (await L.newItem(title, ["src/**"], "owner", { accept: ["It works"] })).id;
+    await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+    await L.claim(id, OPUS, RUNNER);
+    await L.setFork(id, `fork-${id}`, H0, OPUS);
+    await L.recordPush(id, OPUS, h, h);
+    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: h, passed: true, by: OPUS, at: iso(Date.now()), changedPaths: paths });
+    await L.submit(id, OPUS);
+    return id;
+  };
+  return { ns, L, index, submitted, offers: () => index.runnerOffers() };
+}
+const kinds = async (L, id, kind) => (await L.events(id, 1000)).filter((e) => e.kind === kind);
+
+test("a real rejected post-merge review of a fast landing leaves blocking goal notes and files no task; file-fix files one, once", async () => {
+  const { ns, L, submitted, offers } = await world("postmerge");
+  try {
+    await L.setMode("owner", "fast", "product work", OPUS, "go fast");
+    const id = await submitted(head(1));
+    await L.accept(id, "owner", head(1));
+    const merge = "d".repeat(40);
+    await L.merged(id, "owner", merge, true);
+    assert.equal((await L.item(id)).state, "merged");
+    assert.deepEqual(await kinds(L, id, "review.requested"), [], "no standing post-merge-reviewer: nothing is asked by itself");
+    // The model asks the post-merge review; the reviewer claims it and rejects it.
+    const asked = await L.requestReview(id, "owner", GPT, POOL, true, false, undefined, await offers());
+    assert.equal(asked.requested, true);
+    const claim = await L.claimReview(id, GPT, RUNNER, true);
+    const items = (await L.items()).length;
+    const finding = { file: "src/a.ts", line: 4, severity: "blocking", text: "null deref on an empty list" };
+    await L.addReview({ itemId: id, by: GPT, head: claim.head, criteria: claim.criteria, request: claim.request, approve: false, note: "It breaks.", at: iso(Date.now()), findings: [finding] }, undefined, true, "api");
+    assert.equal((await L.items()).length, items, "no task filed by the server");
+    assert.deepEqual(await kinds(L, id, "item.fix_filed"), []);
+    const notes = await L.goalNotes(id);
+    assert.deepEqual(notes.map((n) => [n.file, n.line, n.text, n.blocking, n.fast, n.request]), [["src/a.ts", 4, "null deref on an empty list", true, true, claim.request]]);
+    // file-fix files one task, and the same note again files nothing more.
+    const filed = await L.fileFix(id, "owner", 1, OPUS);
+    assert.equal(filed.already, false);
+    assert.deepEqual(filed.item.accept, ["Resolve src/a.ts:4: null deref on an empty list"]);
+    const again = await L.fileFix(id, "owner", 1, OPUS);
+    assert.deepEqual([again.already, again.item.id], [true, filed.item.id]);
+    assert.equal((await L.items()).length, items + 1);
+    assert.deepEqual((await kinds(L, id, "item.fix_filed")).map((e) => e.data.foundIn), [filed.item.id], "fast status links the fix the model filed");
+  } finally { await ns.close(); }
+});
+
+test("a real blocking pre-review verdict fences the landing; a verdict whose binding drifted fences nothing", async () => {
+  const { ns, L, submitted, offers } = await world("prereview");
+  try {
+    const t1 = await submitted(head(1)), t2 = await submitted(head(2));
+    await L.beginProjectLanding(t1, "owner");
+    await L.queueProjectLanding(t2, "owner");
+    assert.deepEqual(await kinds(L, t2, "prereview.requested"), [], "the queue asks no pre-review by itself");
+    const asked = await L.requestPrereview(t2, "owner", GPT, POOL, await offers());
+    const claim = await L.claimReview(t2, GPT, RUNNER, true, MAIN);
+    assert.equal(claim.request, asked.request);
+    const envelope = (findings) => ({ prereview: { main: MAIN, tree: TREE }, findings });
+    await L.addReview({ itemId: t2, by: GPT, head: claim.head, criteria: claim.criteria, request: claim.request, approve: false, note: "It breaks.", at: iso(Date.now()), findings: envelope([{ file: "src/a.ts", line: 1, severity: "blocking", text: "breaks the parser" }]), mainNow: MAIN }, undefined, true, "api");
+    const fence = (await L.detail(t2)).prereviewFence;
+    assert.ok(fence, "the blocking verdict fenced the landing");
+    await assert.rejects(L.queueProjectLanding(t2, "owner"), /fenc|pre-review/i, "a fenced landing takes no place in the queue");
+    await assert.rejects(L.requestPrereview(t2, "owner", GPT, POOL, await offers()), /prereview_fenced/);
+    // Binding drift: the fence lifted, a new pre-review asked and claimed,
+    // then the criteria change before the verdict: the verdict is stale and
+    // fences nothing.
+    await L.unblock(t2, "owner", true, { quote: "try again", acting: OPUS });
+    await L.queueProjectLanding(t2, "owner");
+    const second = await L.requestPrereview(t2, "owner", GPT, POOL, await offers());
+    const claim2 = await L.claimReview(t2, GPT, RUNNER, true, MAIN);
+    assert.equal(claim2.request, second.request);
+    await L.editItem(t2, "owner", { accept: ["It works", "And it is fast"] });
+    await L.addReview({ itemId: t2, by: GPT, head: claim2.head, criteria: claim2.criteria, request: claim2.request, approve: false, note: "It breaks.", at: iso(Date.now()), findings: envelope([{ file: "src/a.ts", line: 1, severity: "blocking", text: "breaks the parser" }]), mainNow: MAIN }, undefined, true, "api");
+    assert.equal((await L.detail(t2)).prereviewFence ?? null, null, "a drifted binding fences nothing");
+    const latest = (await L.detail(t2)).prereviews[0];
+    assert.equal(latest.state, "stale");
+    assert.match(latest.detail, /criteria changed/);
+  } finally { await ns.close(); }
+});
+
+test("no tier review is inserted by itself: the need is a fact with its candidates, and the model asks it with --tier-review", async () => {
+  const { ns, L, submitted, offers } = await world("tier", { protected: ["src/**"], reviewTier: [ARGON], exactNames: ["reviewTier"] });
+  try {
+    const id = await submitted(head(1));
+    // The gate's reviewer, named by the model, is outside the tier.
+    const gate = await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, await offers());
+    assert.equal(gate.requested, true);
+    const tierRows = async () => (await L.reviewRequests(id)).filter((r) => r.tier);
+    assert.deepEqual(await tierRows(), [], "no tier request was inserted");
+    const needed = await kinds(L, id, "review.tier_needed");
+    assert.equal(needed.length, 1);
+    assert.deepEqual(needed[0].data.candidates.map((c) => [c.actor, c.refusal]), [[ARGON, null]]);
+    assert.deepEqual((await L.detail(id)).tierReview.candidates.map((c) => c.actor), [ARGON]);
+    await assert.rejects(L.requestTierReview(id, "owner", null, POOL, await offers()), (e) => { assert.match(e.message, /reviewer_needed/); assert.match(e.message, /antigravity\/gemini-4-argon/); return true; });
+    await assert.rejects(L.requestTierReview(id, "owner", OPUS, POOL, await offers()), /not_tier/);
+    const asked = await L.requestTierReview(id, "owner", ARGON, POOL, await offers());
+    assert.equal(asked.reviewer, ARGON);
+    assert.equal((await tierRows()).length, 1);
+    assert.equal((await L.detail(id)).tierReview, null, "asked: no longer needed");
+  } finally { await ns.close(); }
+});
+
+test("a criteria review naming no reviewer refuses with the candidates; a dispatch naming a harness alone is refused", async () => {
+  const { ns, L } = await world("criteria");
+  try {
+    const id = (await L.newItem("Has criteria", ["src/**"], "owner", { accept: ["It works"] })).id;
+    await assert.rejects(L.requestCriteriaReview(id, "owner", null, POOL), (e) => {
+      assert.match(e.message, /reviewer_needed/);
+      assert.match(e.message, /criteria review names no reviewer, and Atelier picks none/);
+      assert.match(e.message, /codex\/gpt-6-astra/);
+      return true;
+    });
+    assert.deepEqual((await L.criteriaReviewsFor(id)), [], "nothing was asked");
+    await assert.rejects(L.dispatch(id, "owner", { to: "home", agent: "codex" }), /builder_needed\|.*names the agent codex but no model/);
+    await assert.rejects(L.dispatch(id, "owner", { to: "home" }), /builder_needed\|.*no agent and no model/);
+    assert.equal((await L.item(id)).dispatch ?? null, null);
+  } finally { await ns.close(); }
+});
+
+test("a plan names its planner and every part's route; the plan tick asks only a named reviewer, and records the need when none is usable", async () => {
+  const { ns, L, offers } = await world("plan");
+  try {
+    await assert.rejects(L.newPlan("Ship the feature", ["src/**"], "owner", null, POOL), (e) => { assert.match(e.message, /planner_needed\|The plan names no planner, and Atelier picks none\./); return true; });
+    const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, POOL);
+    await L.claim(item.id, OPUS, RUNNER);
+    await L.setFork(item.id, `fork-${item.id}`, H0, OPUS);
+    const part = (key) => ({ key, title: `Part ${key}`, kind: "build", taskKind: "feature", scope: [`src/${key}/**`], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" });
+    const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part("a")] });
+    assert.ok(post.valid, JSON.stringify(post.errors));
+    await L.release(item.id, OPUS, "proposed");
+    // No routes named: refused with the routing's candidates; nothing approved.
+    await assert.rejects(L.approvePlan(item.id, "owner", post.hash, false, POOL, await offers()), (e) => {
+      assert.match(e.message, /routes_needed\|.*names no routes, and Atelier picks none\. The routing's candidates:\n {2}part a: builders /);
+      return true;
+    });
+    assert.equal((await L.planParts(item.id)).length, 0);
+    // A reviewer of the builder's own family is refused at approval.
+    await assert.rejects(L.approvePlan(item.id, "owner", post.hash, false, POOL, await offers(), { a: { builder: GPT, reviewer: GPT } }), /not_independent/);
+    const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, await offers(), { a: { builder: GPT, reviewer: OPUS } });
+    const pid = parts[0].id;
+    assert.deepEqual([(await L.item(pid)).dispatch.agent, (await L.item(pid)).dispatch.model], ["codex", "gpt-6-astra"], "the part goes to the builder named");
+    // The named reviewer, Opus, has since become a contributor (it claims the
+    // part by handoff here): the tick asks nobody else in its place.
+    await L.claim(pid, GPT, RUNNER);
+    await L.setFork(pid, `fork-${pid}`, H0, GPT);
+    await L.recordPush(pid, GPT, head(5), head(5));
+    await L.addEvidence({ itemId: pid, claim: "npm test", grade: "observed", head: head(5), passed: true, by: GPT, at: iso(Date.now()), changedPaths: ["src/a/x.ts"] });
+    await L.handoff(pid, GPT, OPUS, "take it");
+    await L.submit(pid, OPUS);
+    const asked = (await L.events(pid, 1000)).filter((e) => e.kind === "review.requested");
+    assert.deepEqual(asked, [], "no reviewer was picked in the named one's place");
+    const needed = (await L.events(pid, 1000)).filter((e) => e.kind === "plan.review_needed");
+    assert.equal(needed.length, 1);
+    assert.ok(needed[0].data.candidates.some((c) => c.actor === ARGON && c.refusal === null), JSON.stringify(needed[0].data.candidates));
+    assert.ok(needed[0].data.candidates.some((c) => c.actor === OPUS && /contribut|famil/.test(c.refusal ?? "")));
+    assert.match(needed[0].data.next, /atelier plan reroute t\d+ --to H\/M/);
+    // The model names one; the tick asks it.
+    await L.reroutePlan(pid, "owner", ARGON);
+    assert.deepEqual((await L.events(pid, 1000)).filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer), [ARGON]);
+  } finally { await ns.close(); }
+});

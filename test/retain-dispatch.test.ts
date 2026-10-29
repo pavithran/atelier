@@ -112,7 +112,10 @@ async function cli(args: Record<string, unknown>, response: unknown, before: unk
 for (const [input, agent, model] of cases) {
   test(`CLI forwards explicit clears and omitted fields: ${JSON.stringify(input)}`, async () => {
     const r = await cli({ "overlap-ok": true, ...input }, { retainedDispatch: true, dispatch: { ...prior, agent, model, overlapOk: true } });
-    assert.deepEqual(r.body, { ...input, overlapOk: true, ...(!("agent" in input) ? { suggest: true } : {}) });
+    // G17: a dispatch not naming both agent and model asks the server, which
+    // lists the candidates and refuses unless a fully named waiting dispatch is kept.
+    const both = typeof (input as { agent?: unknown }).agent === "string" && (input as { agent: string }).agent !== "" && typeof (input as { model?: unknown }).model === "string" && (input as { model: string }).model !== "";
+    assert.deepEqual(r.body, { ...input, overlapOk: true, ...(!both ? { suggest: true } : {}) });
     assert.equal(r.lines[0], "t2: overlap override recorded.");
     assert.equal(r.lines[1], `t2 is waiting for a home runner${agent ? `, ${agent}` : ""}${model ? ` with ${model}` : ""}.`);
     assert.ok(!r.lines.some(s => /Warning|released/.test(s)));
@@ -139,8 +142,10 @@ test("CLI reports only the override for a fresh dispatch without a core hold", a
   const r = await cli({ "overlap-ok": true, agent: "" }, {
     dispatch: makeDispatch({ overlapOk: true }, "owner", "now"),
   });
-  assert.deepEqual(r.body, { agent: "", overlapOk: true });
-  assert.deepEqual(r.lines, ["t2: overlap override recorded.", "t2 is waiting for any runner."]);
+  // G17: no builder named, so the CLI asks the server, which refuses unless it keeps one.
+  assert.deepEqual(r.body, { agent: "", overlapOk: true, suggest: true });
+  // An older server that answered with an unnamed dispatch is told of.
+  assert.match(r.lines[0], /^Warning: the dispatch names no builder/);
 });
 
 test("CLI hold-only release forwards explicit clears and names the released hold before the kept builder", async () => {
