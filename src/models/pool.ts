@@ -252,26 +252,32 @@ const KEY_WITH_PARTS = /[A-Za-z0-9]{24,}(?:\.[A-Za-z0-9_-]{6,})*/g;
 // An assignment whose name holds TOKEN, KEY, SECRET or PASSWORD (API_TOKEN=abc,
 // PASSWORD="x y", written without spaces around the =) loses its value; the name
 // stays so the note still reads. Spaced assignments are left, as code has them.
-const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*=)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
+// The name starts a word, never mid-path (/srv/keys=prod/app.log stays), and
+// a value that is a path (KEY_FILE=/etc/atelier/k.pem) is kept.
+const SECRET_ASSIGNMENT = /(?<![A-Za-z0-9_/.~-])([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Za-z0-9_.-]*=)("[^"]*"|'[^']*'|[^\s"',;&]+)/gi;
+const PATH_VALUE = /^(?:\/|~\/|\.\.?\/)/;
 
 // A credential header (Authorization:, Proxy-Authorization:, X-Api-Key:, any
-// case) loses everything after its colon to the end of the line, so every
-// quoted value of a Digest credential (response="...", nonce="...") goes
-// with it; a quoted key naming a credential ("x-api-key": "...",
+// case) loses everything after its colon: to the quote that closes it when
+// the header stands in a quoted argument (-H 'Authorization: ...'), else to
+// the end of the line, so every quoted value of a Digest credential
+// (response="...", nonce="...") goes with it; a quoted key naming a credential ("x-api-key": "...",
 // 'authorization': '...', "token": "...") loses its quoted value; a bearer
 // or basic credential, any case and any shape, its token, unless the token is
 // a placeholder (${VAR}, {env:NAME}, <token>, [key removed]).
-const CREDENTIAL_HEADER = /\b((?:proxy-)?authorization|x-api-key|x-auth-token|api-key)(\s*:\s*)[^\r\n]*/gi;
+const HEADER_NAME = "((?:proxy-)?authorization|x-api-key|x-auth-token|api-key)";
+const CREDENTIAL_HEADER = new RegExp(`(['"])${HEADER_NAME}(\\s*:\\s*)(?:(?!\\1)[^\\r\\n])*|\\b${HEADER_NAME}(\\s*:\\s*)[^\\r\\n]*`, "gi");
 const QUOTED_SECRET_KEY = /(["'])([A-Za-z0-9_.-]*(?:TOKEN|KEY|SECRET|PASSWORD|AUTHORIZATION|COOKIE|CREDENTIAL)[A-Za-z0-9_.-]*)\1(\s*:\s*)(["'])((?:\\.|(?!\4)[^\\])*)\4/gi;
 const SCHEME_TOKEN = /\b(bearer|basic)(\s+)([^\s"',;]+)/gi;
-// "basic" is also a word: only a base64 credential after it (eight or more
-// characters, with a digit, + / =, or both cases) is taken for one.
-const BASIC_TOKEN = (t: string) => /^[A-Za-z0-9+/=]{8,}$/.test(t) && (/[0-9+/=]/.test(t) || (/[a-z]/.test(t) && /[A-Z]/.test(t)));
+// "basic" is also a word: a base64 credential of four or more characters
+// after it is taken for one, any case, unless it is all lowercase letters,
+// as the words after "basic" in prose are ("basic auth failed").
+const BASIC_TOKEN = (t: string) => /^[A-Za-z0-9+/=]{4,}$/.test(t) && !/^[a-z]+$/.test(t);
 export function redactKeys(s: string): string {
   return s.replace(QUOTED_SECRET_KEY, (_m, q: string, name: string, colon: string, vq: string) => `${q}${name}${q}${colon}${vq}[key removed]${vq}`)
-    .replace(CREDENTIAL_HEADER, (_m, name: string, colon: string) => `${name}${colon}[key removed]`)
+    .replace(CREDENTIAL_HEADER, (_m, q: string | undefined, qname: string | undefined, qcolon: string | undefined, name: string | undefined, colon: string | undefined) => q ? `${q}${qname}${qcolon}[key removed]` : `${name}${colon}[key removed]`)
     .replace(SCHEME_TOKEN, (m, scheme: string, space: string, token: string) => /^[[{$<]/.test(token) || (scheme.toLowerCase() === "basic" && !BASIC_TOKEN(token)) ? m : `${scheme}${space}[key removed]`)
-    .replace(SECRET_ASSIGNMENT, "$1[key removed]")
+    .replace(SECRET_ASSIGNMENT, (m, name: string, value: string) => PATH_VALUE.test(value) ? m : `${name}[key removed]`)
     .replace(new RegExp(KEY_PREFIX.source, "g"), "[key removed]")
     .replace(KEY_WITH_PARTS, (whole) => (hasKeyRun(whole.split(".")[0]) ? "[key removed]" : whole));
 }
