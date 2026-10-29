@@ -7,6 +7,7 @@
 // this same process. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -342,4 +343,36 @@ test("a Git remote is given at the tailnet or loopback address the connection wa
   assert.equal(gitOrigin({ localAddress: "127.0.0.1", localPort: 4100, headers: { "cf-connecting-ip": "203.0.113.9" } }), null);
   assert.equal(gitOrigin({ localAddress: "127.0.0.1", localPort: 4100, headers: { "x-forwarded-for": "203.0.113.9" } }), null);
   for (const localAddress of ["192.168.1.5", "100.128.0.1", "10.0.0.1", undefined]) assert.equal(gitOrigin({ localAddress, localPort: 4100 }), null, String(localAddress));
+});
+
+// The tunnel connects to the tailnet listener, so a request through
+// next.atelier.zone arrives on the tailnet address: its Host, PUBLIC_ORIGIN's
+// host, is what says it came through the tunnel. Both remotes are the
+// server's own, so a made-up Host only picks which one the caller is told.
+test("a request whose Host is PUBLIC_ORIGIN's host is given the public remote, on the tailnet listener too, and any other Host the tailnet one", () => {
+  const publicOrigin = "https://next.atelier.zone";
+  const at = (host) => gitOrigin({ localAddress: "100.99.0.102", localPort: 4101, headers: host === undefined ? {} : { host }, publicOrigin });
+  for (const host of ["next.atelier.zone", "NEXT.atelier.zone", "next.atelier.zone."]) assert.equal(at(host), null, host);
+  for (const host of [undefined, "", "100.99.0.102:4101", "atelier.zone", "next.atelier.zone:8443", "next.atelier.zone.example.com", "evil.example"]) assert.equal(at(host), "http://100.99.0.102:4101", String(host));
+  assert.equal(gitOrigin({ localAddress: "127.0.0.1", localPort: 4101, headers: { host: "next.atelier.zone" }, publicOrigin }), null);
+  // No PUBLIC_ORIGIN, or one that does not parse: the socket decides alone.
+  for (const bad of [undefined, "", "not a url", "ftp://next.atelier.zone"]) assert.equal(gitOrigin({ localAddress: "100.99.0.102", localPort: 4101, headers: { host: "next.atelier.zone" }, publicOrigin: bad }), "http://100.99.0.102:4101", String(bad));
+});
+
+test("the server tells a request with PUBLIC_ORIGIN's Host the public remote, and one with its own address the address's remote", async () => {
+  const { port } = new URL(base);
+  const asked = (host) => new Promise((ok, fail) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path: "/api/projects/demo", method: "PUT", headers: { host, authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" } }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (c) => { text += c; }).on("end", () => ok({ status: res.statusCode, body: JSON.parse(text) }));
+    });
+    req.on("error", fail);
+    req.end("{}");
+  });
+  // The test server's PUBLIC_ORIGIN is http://localhost:PORT.
+  const viaPublic = await asked(`localhost:${port}`);
+  assert.equal(viaPublic.status, 200, JSON.stringify(viaPublic.body));
+  assert.equal(viaPublic.body.baseline.remote, `http://localhost:${port}/git/demo.git`);
+  const direct = await asked(`127.0.0.1:${port}`);
+  assert.equal(direct.body.baseline.remote, `http://127.0.0.1:${port}/git/demo.git`);
 });

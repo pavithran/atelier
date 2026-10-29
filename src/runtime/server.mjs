@@ -1,3 +1,4 @@
+import { gitCommand } from "../git/command.mjs";
 // The Atelier server under Node (Atelier 2.0, task 1; design section 4.2):
 // one process serving `src/index.ts`'s `fetch` over Node's `http`, with the
 // Ledger Durable Objects as SQLite files under the environment's data
@@ -43,9 +44,19 @@ export function readSecrets(dir) {
   return out;
 }
 
-function deployedMain() {
+// The commit this server's code is, which GET /api/version reports: the
+// COMMIT file a release holds (written by scripts/studio/install-server.sh,
+// as root, from the commit atelier ship verified), or, in a development
+// checkout with no such file, the checkout's HEAD.
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+export function deployedMain(root = new URL("../..", import.meta.url)) {
+  let recorded;
+  try { recorded = readFileSync(new URL("COMMIT", root), "utf8"); }
+  catch (error) { if (error.code !== "ENOENT") return undefined; }
+  if (recorded !== undefined) return COMMIT_ID.test(recorded.trim()) ? recorded.trim() : undefined;
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: new URL("../..", import.meta.url), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const head = execFileSync(gitCommand(), ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return COMMIT_ID.test(head) ? head : undefined;
   } catch { return undefined; }
 }
 
@@ -60,14 +71,20 @@ export function settings({ env, port, secretsDir, vars = {}, processEnv = proces
 // The origin a Git remote is given at for a request that reached this
 // process directly on its tailnet or loopback address: http://ADDRESS:PORT,
 // the address the connection was accepted on (design section 4.3: builders
-// push over the tailnet, which WireGuard encrypts). It is read from the
-// socket, never from the Host header the caller chose. A loopback request
+// push over the tailnet, which WireGuard encrypts). The address is read from
+// the socket, never from the Host header the caller chose. A loopback request
 // that came through the tunnel (cloudflared, on this machine, names the
 // caller in cf-connecting-ip or x-forwarded-for) and any other request are
 // given the public origin (null here).
+// The tunnel connects to the tailnet listener, so a request through
+// next.atelier.zone arrives on the tailnet address too. A request whose Host
+// is PUBLIC_ORIGIN's host is given the public origin: both remotes are this
+// server's own, so a Host the caller made up only picks which of the two it
+// is told.
 export const GIT_ORIGIN_HEADER = "x-atelier-git-origin";
-export function gitOrigin({ localAddress, localPort, headers = {} } = {}) {
+export function gitOrigin({ localAddress, localPort, headers = {}, publicOrigin } = {}) {
   if (typeof localAddress !== "string" || !Number.isInteger(localPort)) return null;
+  if (isPublicHost(headers.host, publicOrigin)) return null;
   const address = localAddress.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, "");
   const tailnet = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
   if (tailnet && Number(tailnet[1]) >= 64 && Number(tailnet[1]) <= 127) return `http://${address}:${localPort}`;
@@ -76,13 +93,21 @@ export function gitOrigin({ localAddress, localPort, headers = {} } = {}) {
   return `http://${address === "::1" ? "[::1]" : address}:${localPort}`;
 }
 
+function isPublicHost(host, publicOrigin) {
+  if (typeof host !== "string" || !host || typeof publicOrigin !== "string") return false;
+  let url;
+  try { url = new URL(publicOrigin); } catch { return false; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  return host.trim().toLowerCase().replace(/\.$/, "") === url.host.toLowerCase();
+}
+
 async function toRequest(req, origin) {
   const url = new URL(req.url ?? "/", origin);
   const headers = new Headers();
   for (let i = 0; i < req.rawHeaders.length; i += 2) {
     if (req.rawHeaders[i].toLowerCase() !== GIT_ORIGIN_HEADER) headers.append(req.rawHeaders[i], req.rawHeaders[i + 1]);
   }
-  const git = gitOrigin({ localAddress: req.socket?.localAddress, localPort: req.socket?.localPort, headers: req.headers });
+  const git = gitOrigin({ localAddress: req.socket?.localAddress, localPort: req.socket?.localPort, headers: req.headers, publicOrigin: origin });
   if (git) headers.set(GIT_ORIGIN_HEADER, git);
   const body = req.method === "GET" || req.method === "HEAD" ? undefined : Readable.toWeb(req);
   return new Request(url, { method: req.method, headers, body, duplex: body ? "half" : undefined });

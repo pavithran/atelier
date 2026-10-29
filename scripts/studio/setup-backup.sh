@@ -2,7 +2,7 @@
 # Atelier 2.0 on the Studio: the nightly encrypted backup of one environment
 # to Cloudflare R2 (design-branches-2026-10-28.md, section 4.9, with R2 in
 # place of the home server on PAVI's decision; plan task 12; docs/studio.md).
-# Run as root on the Studio, after setup-staging.sh has installed a server
+# Run as root on the Studio, after setup-server.sh has installed a server
 # release holding cli/backup.mjs, by the developer, who types the
 # administrator password at sudo's prompt:
 #
@@ -20,7 +20,7 @@
 #
 # DRYRUN=1 prints what would change and needs no root.
 #
-# As in setup-staging.sh and setup-tunnel.sh, the developer's sudo is the
+# As in setup-server.sh and setup-tunnel.sh, the developer's sudo is the
 # decision to trust these bytes once: they are copied into root-owned
 # storage, checked there, and never run as root. What it makes:
 # - /Users/atelierd/secrets/backup/: the R2 settings and the recipient, one
@@ -62,7 +62,7 @@ LABEL=zone.atelier.backup.$ENV
 PLIST=/Library/LaunchDaemons/$LABEL.plist
 # Every job that runs as atelierd, in the order they start: the servers,
 # then the tunnel in front of them, then the backups.
-JOBS="zone.atelier.server.staging zone.atelier.server.production zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
+JOBS="zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
 TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/zone.atelier.backup.plist.template"
 B="$HOME_DIR/secrets/backup"
 W="$HOME_DIR/backup-work"
@@ -96,10 +96,10 @@ check_dirs() {
 }
 safe_dir /Library/LaunchDaemons
 if ! dry; then
-  dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-staging.sh first"
+  dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-server.sh first"
   check_dirs
   [ -f "$HOME_DIR/server/cli/backup.mjs" ] && [ -f "$HOME_DIR/server/src/backup/age.mjs" ] \
-    || fail "the installed server has no cli/backup.mjs; install a release holding task 12 with setup-staging.sh first"
+    || fail "the installed server has no cli/backup.mjs; install a release holding task 12 with atelier ship first"
   [ "$(stat -f %Su "$HOME_DIR/server/cli/backup.mjs")" = root ] || fail "the installed server is not root's"
 fi
 

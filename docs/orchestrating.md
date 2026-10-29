@@ -308,12 +308,7 @@ right now can still be watched live — `wrangler tail` from a checkout of this
 repository, or the dashboard's Logs → Live — but the tail shows only what
 arrives while it runs; read the stored logs first.
 
-When only the Worker's errors matter, the developer runs `atelier server-errors
-[--minutes N]` from a checkout of this repository. It tails the Worker
-(`wrangler tail --format json`) for N minutes, 2 by default, and prints one
-line for each event that logged an error or threw: its time, method, path and
-error text. It never prints a header, a query string or a body. It sees only
-what arrives while it runs, so it sits beside the dashboard, not in place of it.
+On Atelier 2.0 the server's errors are in its log on the Studio; `docs/studio.md` (Reading the logs) says how to read it. `atelier server-errors`, which tailed the Worker, is gone.
 
 When the queue is slow, `GET /api/queue` (and a runner's POST of the same
 route) answers with a `server-timing` header — `index`, `projects`, `total`,

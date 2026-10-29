@@ -1,3 +1,4 @@
+import { gitCommand } from "./command.mjs";
 // A task's branch in its project's bare repository (Atelier 2.0, task 5;
 // design section 4.5). The claim makes refs/heads/t/N at the project
 // branch's tip unless it exists, and moves a branch that holds nothing of its
@@ -13,7 +14,7 @@ const ZERO = "0".repeat(40);
 export const TASK_BRANCH = /^(?:t|plan)\/[1-9][0-9]*$/;
 
 function git(dir, args) {
-  return new Promise((ok, fail) => execFile("git", args, { cwd: dir, encoding: "utf8" }, (err, stdout, stderr) => {
+  return new Promise((ok, fail) => execFile(gitCommand(), args, { cwd: dir, encoding: "utf8" }, (err, stdout, stderr) => {
     if (err) return fail(Object.assign(new Error(`git ${args[0]} failed in ${dir}: ${String(stderr || err.message).trim().slice(0, 300)}`), { status: err.code }));
     ok(stdout.trim());
   }));

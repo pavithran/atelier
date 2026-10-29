@@ -131,7 +131,7 @@ case "$ENV" in staging|production) ;; *) echo "setup: ENV is staging or producti
 
 SVC=atelierd
 HOME_DIR=/Users/$SVC
-JOBS="zone.atelier.server.staging zone.atelier.server.production zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
+JOBS="zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 D="$HOME_DIR/data/$ENV"
 R="$HOME_DIR/repos/$ENV"
@@ -142,7 +142,7 @@ dry || [ "$(id -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
 [ -f "$TAR_SRC" ] && [ ! -L "$TAR_SRC" ] || fail "no restored tar at $TAR_SRC"
 safe_dir /Library/LaunchDaemons
 if ! dry; then
-  dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-staging.sh first"
+  dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-server.sh first"
   check_paths
 fi
 

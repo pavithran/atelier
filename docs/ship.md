@@ -121,8 +121,7 @@ The class gives the order:
 The optional steps in the ship file are added to that order: `typecheck`
 goes just before the first of install, deploy or wrap, `scan` just before
 push, and `baseline` then `studio` just after it. Atelier's own web order is
-therefore commit, typecheck, deploy, verify-delivery, wrap, scan, push,
-baseline, studio. The `scan` and `baseline` steps are Atelier's own commands
+therefore commit, typecheck, deploy, verify-delivery, wrap, scan, push. The `scan` and `baseline` steps are Atelier's own commands
 and run with the developer's whole environment, `ATELIER_TOKEN`,
 `ATELIER_CONFIG_DIR` and `ATELIER_SERVER` included, as wrap does; the other
 command steps run without the `ATELIER_` variables.
@@ -133,7 +132,8 @@ request to the live site, before `atelier ship` runs for it.
 
 ### From `docs/atelier/ship.json`
 
-Atelier's own, as main holds it. Main deploys and verifies the staging Worker; release/1.0's copy deploys with no `--env`, compares with and verifies at `https://atelier.zone/api/version`, and scans, pushes and fast-forwards `release/1.0` under the project `atelier-1.0`.
+Atelier's own, as main holds it. Main deploys and verifies the staging
+server on the Studio (`docs/studio.md`).
 
 ```json
 {
@@ -143,17 +143,16 @@ Atelier's own, as main holds it. Main deploys and verifies the staging Worker; r
   "description": "Atelier's own delivery.",
   "typecheck": { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 },
   "deploy": {
-    "run": ["node", "scripts/ship-worker.mjs", "deploy", "--env", "staging"], "timeout_seconds": 1200, "retries": 1,
+    "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--version-url", "https://next.atelier.zone/api/version", "--host", "ai-studio"],
+    "terminal": true, "timeout_seconds": 1200,
     "if_changed": {
-      "paths": ["src/**", "wrangler.jsonc", "package.json", "package-lock.json", "worker-configuration.d.ts", "tsconfig.json"],
+      "paths": ["src/**", "cli/serve.mjs", "cli/private-guard.mjs", "hooks/**", "package.json", "package-lock.json"],
       "since": "https://next.atelier.zone/api/version"
     }
   },
-  "verify-deploy": { "run": ["node", "scripts/ship-worker.mjs", "verify", "--version-url", "https://next.atelier.zone/api/version"], "timeout_seconds": 45 },
+  "verify-deploy": { "run": ["node", "scripts/ship-studio.mjs", "verify", "--version-url", "https://next.atelier.zone/api/version"], "timeout_seconds": 90 },
   "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"], "timeout_seconds": 300 },
-  "push": { "remote": "github", "branch": "main" },
-  "baseline": { "run": ["node", "cli/atelier.mjs", "sync", "--project", "atelier"], "timeout_seconds": 300 },
-  "studio": { "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main", "--checkout", "/path/to/studio/checkout", "--host", "studio"], "timeout_seconds": 120 }
+  "push": { "remote": "github", "branch": "main" }
 }
 ```
 
@@ -192,6 +191,10 @@ the revision last delivered, and the revision being shipped; when the URL or
 that commit cannot be read the run happens, and its record says why; a run
 skipped this way takes no approval, is recorded as passed with the reason, and
 a verify step whose delivery was skipped throughout is skipped with it),
+`"terminal": true` (a command only: it gets ship's terminal and runs in
+ship's own process group, so a password prompt such as sudo's reads the
+password from the terminal itself; its output is shown, not kept, and its
+record says so),
 and `"timeout_seconds"` (20 minutes for a command and 30 seconds for
 a request unless given) and `"approval"`: the kind of approval the run needs.
 An install or deploy run needs the approval of its step's kind unless it
@@ -199,55 +202,39 @@ names another; a verify run needs none unless it names one. A field the
 schema does not list, a run field for a step the class has no place for, or
 a class outside the four is refused before anything runs.
 
-Atelier's own helper checks that the checkout is still clean at
-`ATELIER_SHIP_HEAD` before and after deployment. It passes
-`--keep-vars --var DEPLOYED_MAIN:HEAD` to Wrangler, preserving existing
-variables while updating that source binding. Verification refuses redirects
-and requires HTTP 200 from `https://atelier.zone/api/version` with `commit`
-equal to the captured HEAD. The ship file can point both at another Worker:
-`deploy --env NAME` passes `--env NAME` to Wrangler, deploying that
-environment of `wrangler.jsonc`, and `verify --version-url URL` reads an https
-URL in place of production's. Without them the helper deploys and verifies
-production, as above; it still passes `--env` to Wrangler, with an empty value
-that names the top-level Worker, so a `CLOUDFLARE_ENV` left in the shell cannot
-send a production ship elsewhere; ship strips the `ATELIER_` variables from the steps, so
-the ship file's arguments are the only way to choose. The endpoint's `main` field describes the ledger,
-so it cannot establish which source was deployed. Failure stops the ship
-before wrap or push. Tests use local process and response fixtures; live
-variable preservation and source readback are checked at an authorised release.
+Atelier's own deploy, `scripts/ship-studio.mjs deploy --env ENV --version-url
+URL --host HOST`, checks that the checkout is still clean at
+`ATELIER_SHIP_HEAD` before and after, and that the branch head the live
+server reports (`main` at the version URL) holds that commit. It then runs
+root's installer, `/Library/Atelier/install-server.sh --env ENV COMMIT`,
+under `sudo` with `ssh -t`, passing nothing else. The developer types the
+administrator password at sudo's own prompt. The installer builds the release
+itself from the Studio's repository, checks the commit is on the project's
+branch, installs it, restarts the environment's LaunchDaemon and waits for
+`/api/version` to report the commit; when it does not, it puts the previous
+release back and says so, and the deploy fails. `verify --version-url URL`
+refuses redirects and requires HTTP 200 with `commit` equal to the captured
+HEAD. `docs/studio.md` says more. Failure stops the ship before wrap or push.
 
 ## Production and staging
 
-Since the release split (PAVI, 2026-10-26), Atelier runs as two Workers that
-share no state: production at `atelier.zone`, frozen at 1.0, and a staging
-copy at `next.atelier.zone`, where 1.1 is built. The staging copy is the
-`env.staging` block of `wrangler.jsonc`: the Worker `atelier-staging`, the
-Artifacts namespace `atelier-staging`, the R2 bucket `atelier-large-staging`,
-the workflow `landing-staging`, its own Ledger objects, and no cron triggers.
-Its vars `PUBLIC_ORIGIN` and `ARTIFACTS_NAMESPACE` give the origin the stuck
-notices link to and the namespace whose push events the queue takes.
+Atelier 2.0 runs as two servers on the Studio that share no state: staging at
+`next.atelier.zone` (port 4101) and, from the cut-over, production at
+`atelier.zone` (port 4100). Until then production is the 1.0 Worker, shipped
+from `release/1.0` with that branch's own ship file. `docs/studio.md`
+describes both.
 
-Each line ships from its own branch with its own ship file, and ship reads
-only `docs/atelier/ship.json`:
-
-- **Production ships from `release/1.0`.** That branch keeps
-  `docs/atelier/ship.json` as it is: deploy the top-level Worker, verify at
-  `https://atelier.zone/api/version`, then, with `--push`, scan, push,
-  baseline and studio. Run `atelier ship` in a checkout of `release/1.0`.
 - **Main ships to staging.** Main's `docs/atelier/ship.json` deploys with
-  `node scripts/ship-worker.mjs deploy --env staging`, checks for Worker
-  changes against `https://next.atelier.zone/api/version` and verifies there
-  with `verify --version-url https://next.atelier.zone/api/version`; with
-  `--push` it then scans, pushes main to GitHub, updates the baseline and
-  fast-forwards the Studio checkout. `npm run deploy` on main names
-  `--env staging` too. Neither ever deploys production.
+  `node scripts/ship-studio.mjs deploy --env staging --version-url
+  https://next.atelier.zone/api/version --host ai-studio`, checks
+  for server changes against `https://next.atelier.zone/api/version` and
+  verifies there; with `--push` it then scans and pushes main to GitHub. It
+  never deploys production.
+- **At the cut-over** the ship file names `--env production` and
+  `https://atelier.zone/api/version` instead.
 - **`docs/atelier/ship-staging.json`** is the staging order without the
-  push steps (`"push": false`, no scan, baseline or studio), for shipping
-  staging from a checkout that must not push.
-
-Before the first staging deploy the owner creates its R2 bucket with `npx
-wrangler r2 bucket create atelier-large-staging`; Wrangler adds the
-`next.atelier.zone` custom domain on deploy.
+  push steps (`"push": false`, no scan), for shipping staging from a
+  checkout that must not push.
 
 ## What a ship does, in order
 
@@ -282,16 +269,11 @@ It then prints the steps and runs them:
   and updates the baseline; a failing check stops the ship there.
 - **typecheck** runs Atelier's `npm run typecheck` before the deploy, so a
   failing type-check stops the ship before an approval is spent.
-- **deploy** runs only when Worker code changed since the commit the
-  `if_changed.since` URL reports as live (on main staging's, on
-  `release/1.0` production's; `src/**`, the Wrangler
-  config, `package.json` and the lock file, the generated types and
-  `tsconfig.json`), and is tried once more if it fails. This replaces the old
-  `last-deployed` marker file: the live site says what was last deployed.
-  The skill's `postmerge.sh` and `last-deployed` live outside this
-  repository, so this change cannot move them. The orchestrator moves them
-  aside (not deletes them) after this lands, since every step they ran is now
-  a step of this file, and `atelier ship --dry-run` lists them all.
+- **deploy** runs only when the server's code changed since the commit the
+  `if_changed.since` URL reports as live (`src/**`, `cli/serve.mjs` and what
+  the server loads from `cli/`, the hooks, `package.json` and the lock
+  file). The live server says what was last deployed.
+  It is not retried: a second try would ask for the password again.
 - **scan** (`scripts/privacy-scan.mjs`), with `--push`, reads the commits the
   GitHub remote lacks and refuses on a hit: an author or committer that is
   not a GitHub no-reply address, an added line that looks like a key
@@ -304,14 +286,11 @@ It then prints the steps and runs them:
   --no-force --no-follow-tags REMOTE refs/heads/BRANCH:refs/heads/TARGET`,
   then reads the remote back and fails unless it holds the new HEAD. Without
   `--push` the ship ends after wrap and prints the command that pushes.
-- **baseline** (`atelier sync`) and **studio** (`scripts/studio-ff.mjs`) run
-  after the push, with `--push`. `atelier sync` pushes the branch to a
-  baseline that holds the whole history the way a flagless `atelier init`
-  does, and does nothing when the baseline already holds the branch's head.
-  The Studio script fast-forwards the checkout named by `--checkout` (over ssh
-  to `--host` when given) to the pushed branch, and leaves a checkout that is
-  dirty, off the branch or diverged as it is. Both come from the ship file, not
-  the caller's environment, and a host that names this Mac is refused.
+- **baseline** and **studio**, when a ship file names them, run after the
+  push, with `--push`. Atelier's own names neither: on the Node server the
+  project's repository is the baseline, which only a landing moves, so ship
+  skips a baseline step; and the Studio runs the release `deploy` installs,
+  not a checkout.
 
 The first step that fails stops the ship. The message names the step, what
 ran before it and what did not run, and, when the step had spent an

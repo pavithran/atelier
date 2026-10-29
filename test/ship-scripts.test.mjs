@@ -5,9 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { privacyScan } from "../scripts/privacy-scan.mjs";
-import { studioFastForward } from "../scripts/studio-ff.mjs";
 
-// The privacy scan and the Studio fast-forward run in temporary repositories.
+// The privacy scan runs in temporary repositories.
 // The key below is built from pieces so this file holds no key itself.
 
 const PUBLIC = "1+owner@users.noreply.github.com";
@@ -64,56 +63,13 @@ test("the privacy scan refuses a private file, in the commits and in the tree", 
   assert.match(problems[0], new RegExp(`^private files: PROJECT\\.md in ${bad.slice(0, 12)}`));
 });
 
-test("the Studio fast-forward pulls only a clean checkout on the branch, and says what it did", () => {
-  const calls = [];
-  const answers = { "status --porcelain --untracked-files=all": "", "branch --show-current": "main", "rev-parse HEAD": ["aaaaaaaa11", "bbbbbbbb22"], "pull --ff-only --quiet github main": "" };
-  const run = (cmd, args) => {
-    const key = args.slice(2).join(" ");
-    calls.push([cmd, ...args]);
-    let v = answers[key];
-    if (Array.isArray(v)) v = v.shift();
-    return v === undefined ? { status: 1, stderr: `unexpected ${key}` } : { status: 0, stdout: `${v}\n` };
-  };
-  const r = studioFastForward({ path: "/studio/atelier", remote: "github", branch: "main", run });
-  assert.deepEqual(r, { before: "aaaaaaaa11", after: "bbbbbbbb22" });
-  assert.deepEqual(calls[0], ["git", "-C", "/studio/atelier", "status", "--porcelain", "--untracked-files=all"]);
-});
-
-test("the Studio fast-forward leaves a dirty or off-branch checkout alone and refuses a bad path or host", () => {
-  const dirty = () => ({ status: 0, stdout: " M file\n" });
-  assert.throws(() => studioFastForward({ path: "/s", remote: "github", branch: "main", run: dirty }), /uncommitted changes/);
-  const off = (cmd, args) => ({ status: 0, stdout: args.includes("--show-current") ? "other\n" : "\n" });
-  assert.throws(() => studioFastForward({ path: "/s", remote: "github", branch: "main", run: off }), /not on main/);
-  assert.throws(() => studioFastForward({ remote: "github", branch: "main" }), /--checkout/);
-  assert.throws(() => studioFastForward({ path: "/s", host: "-oProxyCommand=x", remote: "github", branch: "main" }), /not a host name/);
-  const failing = () => ({ status: 128, stderr: "fatal: Not possible to fast-forward\n" });
-  assert.throws(() => studioFastForward({ path: "/s", remote: "github", branch: "main", run: failing }), /status in the Studio checkout failed/);
-});
-
-test("the Studio fast-forward refuses a host that names this Mac, and runs over ssh for another", () => {
-  const never = () => { throw new Error("ran"); };
-  for (const host of ["localhost", "127.0.0.1", "me@mac.local", "mac"]) {
-    assert.throws(() => studioFastForward({ path: "/s", host, remote: "github", branch: "main", local: "mac.local", run: never }), /this Mac/, host);
-  }
-  const calls = [];
-  const run = (cmd, args) => { calls.push([cmd, ...args]); return { status: 0, stdout: args.includes("--show-current") ? "main\n" : "\n" }; };
-  studioFastForward({ path: "/s", host: "studio", remote: "github", branch: "main", local: "mac.local", run });
-  assert.ok(calls.every((c) => c[0] === "ssh" && c[1] === "studio"));
-});
-
-test("the Studio script takes its checkout and host from its arguments, not the environment", () => {
-  const env = { ...process.env, STUDIO_CHECKOUT: "/env/checkout", STUDIO_HOST: "env-host" };
-  const bare = spawnSync(process.execPath, ["scripts/studio-ff.mjs", "--remote", "github", "--branch", "main"], { encoding: "utf8", env });
-  assert.equal(bare.status, 1);
-  assert.match(bare.stderr, /Usage|--checkout/);
-  const local = spawnSync(process.execPath, ["scripts/studio-ff.mjs", "--remote", "github", "--branch", "main", "--checkout", "/s", "--host", "localhost"], { encoding: "utf8", env });
-  assert.equal(local.status, 1);
-  assert.match(local.stderr, /this Mac/);
-});
-
-test("the ship file gives the studio step its checkout and host", () => {
+// The Studio runs the release the deploy installs, not a checkout
+// (Atelier 2.0, task 9): Atelier's own ship file has no studio step, and its
+// deploy names the Studio's host.
+test("Atelier's ship file has no studio step, and its deploy names the Studio's host", () => {
   const ship = JSON.parse(readFileSync("docs/atelier/ship.json", "utf8"));
-  const argv = ship.studio.run;
-  assert.match(argv[argv.indexOf("--checkout") + 1], /^\//);
-  assert.ok(argv[argv.indexOf("--host") + 1]);
+  assert.equal(ship.studio, undefined);
+  assert.equal(ship.baseline, undefined);
+  const argv = ship.deploy.run;
+  assert.equal(argv[argv.indexOf("--host") + 1], "ai-studio");
 });

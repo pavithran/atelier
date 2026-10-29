@@ -1,9 +1,10 @@
+import { gitCommand } from "./command.mjs";
 // The bare repositories the Node server hosts (design section 4.3): one per
 // project, REPOS/KEY.git, its hooks the server's own (core.hooksPath names
 // HOOKS), never a hook from a pushed tree.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
@@ -17,9 +18,13 @@ export function repoDir(reposDir, key) {
 // directory is picked up.
 export function ensureRepo({ reposDir, hooksDir, key, branch }) {
   const dir = repoDir(reposDir, key);
-  const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
-  if (!existsSync(join(dir, "HEAD"))) execFileSync("git", ["init", "--bare", "--quiet", "--template=", `--initial-branch=${branch}`, dir], { stdio: ["ignore", "ignore", "pipe"] });
-  git("config", "core.hooksPath", hooksDir);
+  const git = (...args) => execFileSync(gitCommand(), args, { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
+  if (!existsSync(join(dir, "HEAD"))) execFileSync(gitCommand(), ["init", "--bare", "--quiet", "--template=", `--initial-branch=${branch}`, dir], { stdio: ["ignore", "ignore", "pipe"] });
+  // Git executes the shared hooks by absolute path, honoring each hook's
+  // interpreter. Production installs this directory in the root-owned release;
+  // the daemon can execute it but cannot rewrite it. backendEnv supplies the
+  // trusted Node directory on PATH for hooks whose shebang is `env node`.
+  git("config", "core.hooksPath", resolve(hooksDir));
   git("config", "receive.fsckObjects", "true");
   git("config", "receive.denyNonFastForwards", "false");
   git("config", "uploadpack.allowFilter", "true");

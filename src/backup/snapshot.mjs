@@ -1,3 +1,4 @@
+import { gitCommand } from "../git/command.mjs";
 // What a nightly backup holds and how it is put back (Atelier 2.0, task 12;
 // design section 4.9). A snapshot is a directory:
 //
@@ -42,7 +43,7 @@ export async function sha256File(path) {
 }
 
 function git(args, opts = {}) {
-  return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, ...opts });
+  return execFileSync(gitCommand(), args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, ...opts });
 }
 
 // A consistent copy of a live SQLite database, through SQLite itself.
