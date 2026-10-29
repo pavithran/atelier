@@ -127,6 +127,18 @@ DEV=${SUDO_USER:-}
 
 dry() { [ "${DRYRUN:-}" = 1 ]; }
 # The LaunchDaemon's plist, written to $1.
+# The public origin the installed plist already names (setup-tunnel.sh sets it to
+# the tunnel's https hostname), kept so that running setup again does not undo
+# the tunnel step. Only a plain https://HOST is kept; anything else falls back to
+# the tailnet address.
+kept_origin() {
+  local file=$1 value
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  value=$("$PLUTIL" -extract EnvironmentVariables.PUBLIC_ORIGIN raw -o - "$file" 2>/dev/null) || return 1
+  [[ "$value" =~ ^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
+  printf '%s' "$value"
+}
+
 write_plist() {
   "$CAT" > "$1" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -152,7 +164,7 @@ write_plist() {
     <key>PATH</key><string>$HOME_DIR/bin:/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>ATELIER_GIT</key><string>$GIT</string>
     <key>HOME</key><string>$HOME_DIR</string>
-    <key>PUBLIC_ORIGIN</key><string>http://$BIND:$PORT</string>
+    <key>PUBLIC_ORIGIN</key><string>${ORIGIN:-http://$BIND:$PORT}</string>
   </dict>
   <key>WorkingDirectory</key><string>$HOME_DIR</string>
   <key>Umask</key><integer>63</integer>
@@ -579,6 +591,7 @@ else
 fi
 
 # 7. The LaunchDaemon.
+ORIGIN=$(kept_origin "$PLIST") || ORIGIN="http://$BIND:$PORT"
 write_plist "$WORK/plist"
 "$PLUTIL" -lint "$WORK/plist" >/dev/null || fail "the plist does not parse"
 [ ! -L "$PLIST" ] || fail "$PLIST is a link"

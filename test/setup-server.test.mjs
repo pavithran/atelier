@@ -102,6 +102,20 @@ test("the staging LaunchDaemon keeps its settings and uses the verified Command 
   assert.equal(readFileSync(out, "utf8"), expected.replace("bin:/usr/bin:", "bin:/Library/Developer/CommandLineTools/usr/bin:/usr/bin:").replace("    <key>HOME</key>", "    <key>ATELIER_GIT</key><string>/Library/Developer/CommandLineTools/usr/bin/git</string>\n    <key>HOME</key>"));
 });
 
+test("running setup again keeps the https public origin the tunnel step set, and nothing else", { skip: darwin }, () => {
+  const d = mkdtempSync(join(root, "origin-"));
+  const plist = (origin) => `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>EnvironmentVariables</key><dict><key>PUBLIC_ORIGIN</key><string>${origin}</string></dict></dict></plist>\n`;
+  for (const [origin, kept] of [["https://next.atelier.zone", "https://next.atelier.zone"], ["http://100.99.0.102:4101", ""], ["https://evil.example/path", ""], ["https://x.zone\n", "https://x.zone"]]) {
+    const f = join(d, "in.plist"); writeFileSync(f, plist(origin));
+    const out = join(d, "out.plist");
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c && { ORIGIN=$(kept_origin "$1") || ORIGIN="http://$BIND:$PORT"; } && write_plist "$2"`, SETUP, f, out], { env: env(), encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(readFileSync(out, "utf8").includes(`<key>PUBLIC_ORIGIN</key><string>${kept || "http://100.99.0.102:4101"}</string>`), origin);
+  }
+  const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c && kept_origin "$1"`, SETUP, join(d, "missing.plist")], { env: env(), encoding: "utf8" });
+  assert.notEqual(r.status, 0);
+});
+
 test("production is set up the same way with port 4100, zone.atelier.server, server-production and its own data, repositories, secrets, token and log", { skip: darwin }, () => {
   const i = inputs();
   const now = dry(SETUP, ["--env", "production", i.tar, i.bin, i.token]);
