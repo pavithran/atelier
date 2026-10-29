@@ -203,9 +203,10 @@ start_others() {
 health() {
   local attempt
   for attempt in $("$SEQ" 1 30); do
+    # plutil cannot read a JSON null, and the reply holds "main": null, so the reply is
+    # not converted whole: only the commit is extracted, as install-server.sh does.
     if "$LSOF" -nP -a -u "$SVC" -iTCP@"$BIND":"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
-      && "$CURL" -q -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" > "$WORK/version.json" 2>/dev/null \
-      && "$PLUTIL" -convert xml1 -o /dev/null "$WORK/version.json" >/dev/null 2>&1; then
+      && "$CURL" -q -fsS --connect-timeout 1 --max-time 2 "http://$BIND:$PORT/api/version" > "$WORK/version.json" 2>/dev/null; then
       if [ ! -f "$HOME_DIR/$SERVER/COMMIT" ] || [ "$("$PLUTIL" -extract commit raw -o - "$WORK/version.json" 2>/dev/null)" = "$("$CAT" "$HOME_DIR/$SERVER/COMMIT")" ]; then return 0; fi
     fi
     "$SLEEP" 1

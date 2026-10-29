@@ -476,12 +476,12 @@ recover`, SETUP, h], { encoding: "utf8" });
   }
 });
 
-test("setup health checks /api/version and the restored commit", { skip: darwin }, () => {
+test("setup health checks /api/version and the restored commit, with the nulls the real reply holds", { skip: darwin }, () => {
   const h = mkdtempSync(join(root, "health-"));
   mkdirSync(join(h, "server"));
   const commit = "a".repeat(40);
   writeFileSync(join(h, "server/COMMIT"), commit);
-  for (const [body, expected] of [[`{"commit":"${commit}"}`, 0], ['{"commit":"wrong"}', 1], ["not json", 1]]) {
+  for (const [body, expected] of [[`{"commit":"${commit}"}`, 0], [`{"commit":"${commit}","main":null,"capabilities":["a"]}`, 0], ['{"commit":"wrong"}', 1], ["not json", 1]]) {
     const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env staging a b c
 HOME_DIR="$1" WORK="$1" CURL=fake_curl
 LSOF=fake_lsof SEQ=fake_seq SLEEP=fake_sleep
