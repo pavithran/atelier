@@ -226,7 +226,7 @@ it("is linked from the sign-in page, which stays free of signed-in links", async
 it("the How page draws where Atelier runs, layer by layer", async () => {
   const how = (await page()).body;
   expect(how).toContain('class="lay-fig"');
-  expect(how).toContain("normally reach Cloudflare through the CLI");
+  expect(how).toContain("normally reach the Studio through the CLI");
   expect(how).toContain("its token limits what it can do");
   expect(how).not.toContain("one path to Cloudflare");
   expect(how).not.toContain("internet off;");

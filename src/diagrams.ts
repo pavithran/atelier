@@ -1,5 +1,5 @@
 // Where Atelier runs, layer by layer: who acts, the owner's Mac, the agents,
-// their model providers, and Cloudflare. Inline SVG drawn here, not by a
+// their model providers, and the Studio that runs the server. Inline SVG drawn here, not by a
 // script; every colour is a site token through the lay-* classes in
 // layout.css, so it follows light and dark. Shown on /how.
 
@@ -16,7 +16,7 @@ const BANDS: { label: string; y: number; h: number; cloud?: boolean }[] = [
   { label: "Your Mac", y: 104, h: 152 },
   { label: "Agents", y: 268, h: 76 },
   { label: "Model providers", y: 356, h: 76 },
-  { label: "Cloudflare", y: 444, h: 160, cloud: true },
+  { label: "The Studio", y: 444, h: 160 },
 ];
 
 // Four columns share one grid, so a column's arrows run straight down.
@@ -28,7 +28,7 @@ const NODES: Node[] = [
   { x: COL[1], y: 32, w: CW, name: "Terminal", sub: 'atelier plan "goal"' },
   { x: COL[2], y: 32, w: CW, name: "Orchestrator", sub: "a session; starts agents" },
   { x: COL[3], y: 32, w: CW, name: "Home runner", sub: "build, plan and review jobs" },
-  { x: COL[1], y: 118, w: COL[3] + CW - COL[1], name: "atelier CLI, in the checkout and in each workspace", sub: "the usual path to Cloudflare; runs checks in a fresh clone of the pushed head" },
+  { x: COL[1], y: 118, w: COL[3] + CW - COL[1], name: "atelier CLI, in the checkout and in each workspace", sub: "the usual path to the Studio; runs checks in a fresh clone of the pushed head" },
   { x: 512, y: 196, w: 300, name: "Workspaces", sub: "one per task: a clone of its branch" },
   { x: COL[0], y: 284, w: CW, name: "opencode", sub: "GLM, DeepSeek, OpenRouter" },
   { x: COL[1], y: 284, w: CW, name: "Antigravity", sub: "Gemini, GPT-OSS" },
@@ -38,11 +38,15 @@ const NODES: Node[] = [
   { x: COL[1], y: 372, w: CW, name: "Google", sub: "Gemini plan" },
   { x: COL[2], y: 372, w: CW, name: "OpenAI", sub: "Codex plan" },
   { x: COL[3], y: 372, w: CW, name: "Anthropic", sub: "Claude plan" },
-  { x: 512, y: 460, w: 300, name: "Worker at atelier.zone", sub: "the pages, the API and the gate", cloud: true },
+  // Cloudflare's part is the Tunnel with Access in front of the pages, and R2
+  // for the nightly backups; the rest runs on the Studio.
+  { x: COL[0], y: 460, w: 300, name: "Cloudflare Tunnel and Access", sub: "Access guards the developer's pages", cloud: true },
+  { x: 512, y: 460, w: 300, name: "Node server on the Studio", sub: "the pages, the API and the gate" },
   // The Ledger spans two columns: a goal enters it as a plan, and it
   // dispatches the plan's parts and the jobs runners take.
-  { x: COL[0], y: 540, w: COL[1] + CW - COL[0], name: "Durable Objects: a Ledger per project", sub: "holds each plan and dispatches its parts and jobs", cloud: true },
-  { x: COL[3], y: 540, w: CW, name: "Git repositories", sub: "each project's branch and its task branches", cloud: true },
+  { x: COL[0], y: 540, w: COL[1] + CW - COL[0], name: "SQLite: a Ledger per project", sub: "holds each plan and dispatches its parts and jobs" },
+  { x: COL[2], y: 540, w: CW, name: "Backups in R2", sub: "nightly, encrypted with age", cloud: true },
+  { x: COL[3], y: 540, w: CW, name: "Git repositories", sub: "task branches, behind a hook" },
 ];
 
 // Connectors: [path, kind]. A flow is the main direction of work; a rail
@@ -54,24 +58,28 @@ const FLOWS: string[] = [
   `M662 ${118 + NH}V${196 - 2}`,
   // Each agent calls its own provider.
   ...COL.map((x) => `M${mid(x)} ${284 + NH}V${372 - 2}`),
-  // Inside Cloudflare: the Worker writes the Ledger.
+  // The tunnel carries the browser's requests to the server.
+  `M${COL[0] + 300} 482H${512 - 2}`,
+  // On the Studio: the server writes the Ledger.
   `M620 ${460 + NH}V522H${mid(COL[1])}V${540 - 2}`,
-  `M662 ${460 + NH}V${540 - 2}`,
-  // The Worker makes each task's branch and mints its scoped Git token.
+  // The server makes each task's branch and mints its scoped Git grant.
   `M760 ${460 + NH}V522H${mid(COL[3])}V${540 - 2}`,
+  // The backup reads the Ledgers and the repositories.
+  `M${COL[1] + CW + 2} 562H${COL[2] - 2}`,
+  `M${COL[3] - 2} 562H${COL[2] + CW + 2}`,
 ];
 const RAILS: string[] = [
-  // The browser reaches the Worker directly.
-  `M${COL[0]} 54H146V482H${512 - 2}`,
-  // The CLI's API calls reach the Worker.
+  // The browser reaches the tunnel, and through it the server.
+  `M${COL[0]} 54H146V482H${COL[0] - 2}`,
+  // The CLI's API calls reach the server.
   `M${COL[3] + CW} 150H972V482H${812 + 2}`,
   // The CLI's git pushes reach the repository.
   `M${COL[3] + CW} 130H988V562H${COL[3] + CW + 2}`,
 ];
 
-export const LAYERS_LABEL = "Where Atelier runs, in five layers. The developer works through a browser and the terminal, where atelier plan \"goal\" enters a goal as a plan. An orchestrating session or a home runner can act for them, and a home runner takes build, plan and review jobs. All three act through the atelier CLI, which makes one workspace per task, a clone of the task's branch. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach the repository, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, which holds each plan and dispatches its parts and jobs; the Worker makes each task's branch in the repository.";
+export const LAYERS_LABEL = "Where Atelier runs, in five layers. The developer works through a browser and the terminal, where atelier plan \"goal\" enters a goal as a plan. An orchestrating session or a home runner can act for them, and a home runner takes build, plan and review jobs. All three act through the atelier CLI, which makes one workspace per task, a clone of the task's branch. An agent works in its own workspace and calls its own model provider. Agents normally reach the Studio through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the server and its git pushes reach the repositories, and the browser reaches the server through the Cloudflare Tunnel, behind Access. The server is one Node process on the Studio. It keeps each project's Ledger in a SQLite file of its own, which holds each plan and dispatches its parts and jobs, and calls to one Ledger never interleave. Each project's plain Git repository has a pre-receive hook, so a task's grant writes only its own branch. Each night an encrypted backup of the Ledgers and repositories goes to R2.";
 
-export const LAYERS_CAPTION = "A goal enters as a plan: atelier plan \"goal\" reaches the Worker through the CLI, and the project's Ledger holds the plan and dispatches its parts. A home runner takes the build and plan jobs, and review jobs when its config offers them; a runner started with --integrate runs no model and takes the integrate and refresh jobs instead, and the refresh that keeps each waiting task merged with main. Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach the repository. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's branch alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them. The result is recorded against that head, and the Worker's gate reads it.";
+export const LAYERS_CAPTION = "A goal enters as a plan: atelier plan \"goal\" reaches the server through the CLI, and the project's Ledger holds the plan and dispatches its parts. A home runner takes the build and plan jobs, and review jobs when its config offers them; a runner started with --integrate runs no model and takes the integrate and refresh jobs instead, and the refresh that keeps each waiting task merged with main. Dashed lines cross the layers: the browser reaches the server through the Cloudflare Tunnel, where Access signs the developer in, and the CLI's API calls reach the server and its git pushes reach the repositories, directly from a machine on the Studio's tailnet, a private network that encrypts them, and through the tunnel from anywhere else. An agent normally reaches the Studio through the CLI; its token limits what it can do, and its Git write access is a grant the server minted that covers its own task's branch, t/N, alone, because the repository's pre-receive hook refuses every other ref, so the grant also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them. The result is recorded against that head, and the server's gate reads it. Each night the Ledgers and repositories are packed, encrypted and uploaded to R2.";
 
 export function layersDiagram(): string {
   const p: string[] = [];
