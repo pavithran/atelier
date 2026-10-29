@@ -54,6 +54,20 @@ const dry = (script, args) => {
   return { status: r.status, out: norm(r.stdout), err: norm(r.stderr) };
 };
 
+// The Studio's first run stopped at "atelierd can authenticate": atelierd has no
+// AuthenticationAuthority, and dscl says so with exit status 0. The check must
+// read dscl's words.
+test("an attribute a record lacks is reported by dscl's output, with exit status 0, and the setup reads the output", { skip: darwin }, () => {
+  const r = spawnSync("/usr/bin/dscl", [".", "-read", "/Users/nobody", "AtelierNoSuchAttribute"], { encoding: "utf8" });
+  assert.equal(r.status, 0, "dscl's exit status does not say the attribute is missing");
+  assert.equal(r.stdout.trim() + r.stderr.trim(), "No such key: AtelierNoSuchAttribute");
+  const text = readFileSync(SETUP, "utf8");
+  const line = text.split("\n").find((l) => l.includes("AuthenticationAuthority") && l.includes("fail"));
+  assert.ok(line, "the setup checks AuthenticationAuthority");
+  assert.match(line, /No such key: AuthenticationAuthority/);
+  assert.doesNotMatch(line, />\/dev\/null/, "the answer is read from the output, not the exit status");
+});
+
 test("every Studio script parses", () => {
   for (const name of readdirSync("scripts/studio").filter((n) => n.endsWith(".sh"))) {
     const r = spawnSync("/bin/bash", ["-n", join("scripts/studio", name)], { encoding: "utf8" });

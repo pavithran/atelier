@@ -425,7 +425,9 @@ if "$DSCL" . -read /Users/$SVC >/dev/null 2>&1 || "$DSCL" . -read /Groups/$SVC >
   [ "$("$DSCL" . -list /Users UniqueID | "$AWK" -v u="$uid" '$2==u' | "$WC" -l | "$TR" -d ' ')" = 1 ] || fail "uid $uid is shared"
   [ "$("$DSCL" . -list /Groups PrimaryGroupID | "$AWK" -v g="$uid" '$2==g' | "$WC" -l | "$TR" -d ' ')" = 1 ] || fail "gid $uid is shared"
   [ "$("$DSCL" . -read /Users/$SVC Password 2>/dev/null | "$AWK" '{print $2}')" = '*' ] || fail "$SVC has a password"
-  ! "$DSCL" . -read /Users/$SVC AuthenticationAuthority >/dev/null 2>&1 || fail "$SVC can authenticate"
+  # dscl exits 0 and prints "No such key" for an attribute the record lacks, so the
+  # answer is read from its output, never from its exit status.
+  [ "$("$DSCL" . -read /Users/$SVC AuthenticationAuthority 2>&1 || true)" = "No such key: AuthenticationAuthority" ] || fail "$SVC can authenticate"
 else
   ID=450
   while "$DSCL" . -list /Users UniqueID | "$AWK" '{print $2}' | "$GREP" -qx "$ID" || "$DSCL" . -list /Groups PrimaryGroupID | "$AWK" '{print $2}' | "$GREP" -qx "$ID"; do ID=$((ID+1)); done
