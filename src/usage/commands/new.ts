@@ -30,7 +30,7 @@ const spec: CommandSpec = {
       "--stop-when TEXT": "what tells the holder to stop and ask; once per entry",
       "--next-gate TEXT": "the gate the task goes to next",
     },
-    example: 'atelier new "Fix the parser" --brief "Nested lists fail to parse; make them parse" --accept "A nested list parses" --scope "src/parser/**" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier new "Fix the parser" --brief "Nested lists fail to parse; make them parse" --accept "A nested list parses" --scope "src/parser/**" --project demo',
   },
 };
 

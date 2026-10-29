@@ -19,7 +19,7 @@ const spec: CommandSpec = {
       "--item ID": "the task the run was on",
       "--detail TEXT": "what happened",
     },
-    example: 'atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --project atelier --item t114 --detail "stopped after a refused read"',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier run-report --actor opencode/glm-5.3 --role build --outcome early_stop --project atelier --item t114 --detail "stopped after a refused read"',
   },
 };
 

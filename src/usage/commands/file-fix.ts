@@ -12,7 +12,7 @@ const spec: CommandSpec = {
   flags: { "from-note": "--from-note names the note by its number: atelier file-fix ID --from-note N" },
   help: {
     flags: { "--from-note N": "the note's number, as atelier show ID lists the notes" },
-    example: "atelier file-fix t3 --from-note 2 --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier file-fix t3 --from-note 2 --project demo",
   },
 };
 

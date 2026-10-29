@@ -1,5 +1,17 @@
 # Landing and merging
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
@@ -23,7 +35,7 @@ the workspace remains unchanged.
 Once a part of a plan is submitted, if the gate needs an independent review, the server queues a review request automatically as a `review` job, and a runner that offers review jobs claims it. Approval moves the part to integration. For a single task outside a plan, nothing is queued automatically; its review is requested when the developer lands it whole (see Landing a task whole, below), or they can complete an exact revision by hand with:
 
 ```sh
-atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
+ATELIER_ACTING=claude-code/opus-5.5 atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
 ```
 
 `--approve` records the developer's own review, which is not the independent
@@ -104,8 +116,8 @@ abandon.
 
 An earlier CLI kept the journal in the Git directory as `atelier-landing.json`,
 with its lock, `atelier-landing.lock`, beside it. A landing interrupted under
-it is picked up where it was left: the next `atelier merge`, `merge --cancel`
-or `sync` moves the journal under the cache unchanged and goes on from it, and
+it is picked up where it was left: the next `atelier merge` or
+`merge --cancel` moves the journal under the cache unchanged and goes on from it, and
 removes the lock once the process its owner record names (`pid`, or the `pid 2`
 copy iCloud makes) is gone. A live owner still blocks, a lock with no owner
 record waits for a human, and a journal found in both places is refused with
@@ -118,7 +130,7 @@ to its own remotes remain separate decisions.
 
 ## Landing a task whole
 
-`atelier land t9` runs the whole second half in one command, for the project
+`atelier land t9 --reviewer H/M` runs the whole second half in one command, for the project
 developer in the registered checkout. Since Atelier 2.0 (lessons gaps G1 and
 G2) it lands the head the task was checked and reviewed at, and never pushes
 to the task's branch: the landing push already is a merge of the accepted
@@ -357,7 +369,7 @@ Details of the steps:
    generator must run, otherwise a rebase through the clone's merge
    drivers), a runner's merge-main, integrate and refresh merges, and the
    speculative merge `atelier check --merged` checks in its clean clone.
-   The Worker makes no Git merge: the item page's merge preview, a plan's
+   The server makes no Git merge: the item page's merge preview, a plan's
    and a part's mergeability read the same declarations through
    `src/merge-declarations.ts`, uniting record files by key and listing
    regenerable outputs apart from source conflicts. No generator runs
@@ -391,8 +403,9 @@ Details of the steps:
    on the merged tree.
 4. If the gate needs an independent review, the landing requests one through the
    review-request routes: the reviewer is the one named with
-   `--reviewer H/M`, or a model of another family than every contributor
-   picked from the pool, still without the lease. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection stops the landing (the request stays open and the task stays submitted). `--no-review` leaves the task submitted for the developer to settle by hand.
+   `--reviewer H/M`. Without a named reviewer, a needed review is refused
+   with candidates. It records a land request and stops without waiting
+   when approval is missing. Run it again after approval. A rejection keeps the task submitted. `--no-review` leaves the task submitted for the developer to settle by hand.
 5. With the head checked and approved, the landing takes the lease, accepts
    through the CLI's own `accept`, and merges through `atelier merge t9
    --landing`, each run as this CLI's child, so their checks and their
@@ -422,17 +435,14 @@ be in the pool, not refused, and not paid per token. It runs on the developer's
 Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
 minutes (`ATELIER_LAND_TRIAGE_TIMEOUT` milliseconds).
 
-The triage runs after the push and before the required checks. A
-submission asks for the review, and so does the checks' passing evidence for
-a task already submitted at an older head: the push withdraws its open
-review request, and that evidence asks it again at the pushed head. Since
-the triage runs first, one that stops has asked nothing of a reviewer. If the task was
-submitted before the landing, the stop says it stays submitted, with any
-request already open at the pushed head left open.
+The triage reads the task's recorded head before the review request.
+`atelier land` never pushes to the task branch. A claimed task must have
+its workspace changes committed and pushed before landing; the command
+runs its required checks and submits that recorded head. A submitted task
+keeps its recorded head and any review already open there.
 
-The triage reads the pushed head — after the merge of main and the
-regeneration — as a diff against its merge base with main, with the task's
-acceptance criteria (and a part's, numbered after them) as they are now.
+The triage compares that head with its merge base with main and reads the
+task's acceptance criteria (and a part's, numbered after them) as they are now.
 For each criterion it answers met, not-met or unsure, with its evidence and
 a file and line, or the reason no location applies. Its brief has it trace
 the production request paths the change touches and list the runtime
@@ -448,7 +458,7 @@ Only every criterion met goes on. A criterion not met or unsure, a task with
 no criteria, a reply that cannot be read, a timeout, or a model that is
 unavailable stops the landing before the task is submitted: the
 findings are printed with the command to run again, the lease is never
-taken, and the task stays with its holder, its merged head pushed. The project
+taken, and the recorded task head stays unchanged. The project
 developer can skip the triage with `--no-triage "REASON"`, or go past a stop with
 `--override-triage "REASON"`; either is recorded with the head and the
 criteria binding before the landing goes on, and a record the server
@@ -464,4 +474,4 @@ needed, an approval already covers the change, or `--no-review` was given.
 
 ## Integration basis
 
-The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts fork from an updated basis. For a single task, `atelier land` merges the accepted head into the project's branch in the registered checkout and runs the checks on that merged tree before it pushes. Local verification does not establish a successful production container run.
+The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts branch from an updated basis. For a single task, `atelier land` merges the accepted head into the project's branch in the registered checkout and runs the checks on that merged tree before it pushes. Local verification does not establish a successful production container run.

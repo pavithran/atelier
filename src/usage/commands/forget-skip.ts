@@ -15,7 +15,7 @@ const spec: CommandSpec = {
     flags: {
       "--runner home:NAME": "the runner that forgets the task's skip; every runner when absent",
     },
-    example: "atelier forget-skip t13 --runner home:studio --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier forget-skip t13 --runner home:studio --project demo",
   },
 };
 

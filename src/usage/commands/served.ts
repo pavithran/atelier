@@ -19,7 +19,7 @@ const spec: CommandSpec = {
       "--note TEXT": "how the developer knows which model served them",
       "--apply": "records the annotations; without it, only lists the matches",
     },
-    example: "atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-01T00:00 --to 2026-10-03T00:00 --apply",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-01T00:00 --to 2026-10-03T00:00 --apply",
   },
 };
 

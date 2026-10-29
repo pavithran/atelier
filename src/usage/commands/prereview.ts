@@ -12,7 +12,7 @@ const spec: CommandSpec = {
   flags: { reviewer: false },
   help: {
     flags: { "--reviewer H/M": "the reviewer whose runner pre-reviews the queued landing; a live runner must offer it the prereview job" },
-    example: "atelier prereview t3 --reviewer codex/gpt-6-astra --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier prereview t3 --reviewer codex/gpt-6-astra --project demo",
   },
 };
 

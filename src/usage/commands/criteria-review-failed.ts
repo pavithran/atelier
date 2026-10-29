@@ -16,7 +16,7 @@ const spec: CommandSpec = {
       "--request N": "the criteria review's number, as the claim gave it; required",
       "--note TEXT": "why no verdict was reached; kept with the review",
     },
-    example: 'atelier criteria-review-failed t3 --request 4 --note "The harness timed out" --project demo',
+    example: 'atelier criteria-review-failed t3 --request 4 --note "The harness timed out" --project demo --as claude-code/opus-5.5',
   },
 };
 

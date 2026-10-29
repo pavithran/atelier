@@ -1,8 +1,13 @@
 # The developer's reference
 
+For developer-token writes, set `export ATELIER_ACTING=H/M` to your
+registered harness/model. Owner commands keep the owner actor; use
+`ATELIER_ACTING` for `ship`, `wrap`, `branch push|fetch` and `plan show`.
+Builder and reviewer commands use `--as H/M` to name their actor.
+
 What only the developer does, or sees: sessions of direct work in the
 registered checkout, the signed-in pages, projects that need special care
-when they join (Git LFS, a history too large for Artifacts), removing and
+when they join (Git LFS, a baseline rebuilt from part of the history), removing and
 renaming projects, the operations toolkit, and cleaning the local cache.
 
 ## Sessions
@@ -34,15 +39,16 @@ pop leaves them with nothing else to show), and on a branch other than the
 registered branch. Only the developer records a session: the server
 refuses one from any other actor or any agent token.
 
-Wrap then updates the Atelier baseline through `sync` for fresh history or
-a push of the registered branch for full history. `--push` also pushes the checkout branch to every
+Wrap then reports how the checkout stands against the server's repository,
+the baseline, and publishes nothing there: only a landing moves the project's
+branch. `--push` also pushes the checkout branch to every
 configured checkout remote, without force, continuing after a remote fails.
 These are the developer's own remotes, so each is a normal push that uploads the
 project's Git LFS objects; only pushes to Atelier skip the upload, because
-Artifacts holds pointer files. Without `--push`, checkout remotes are not
+the server's repository holds pointer files. Without `--push`, checkout remotes are not
 pushed. Wrap never deploys or publishes a release. The note records the commit
 and each remote result. A remote that fails is named in the relay line, and
-wrap exits 1 once the note and the baseline are recorded.
+wrap exits 1 once the note is recorded.
 
 A remote the registered project's commit identity declares a public mirror
 (`atelier init --public-mirror REMOTE`) takes only commits whose author and
@@ -96,7 +102,7 @@ from that record and cannot go stale or be written wrongly by hand.
 - `atelier status --project NAME` prints it as plain text, one line per item,
   ready to paste into a chat. Text a person or agent wrote is flattened to one
   line. It ends by saying whether this machine's checkout is in step with
-  Atelier: for a project set up with `--history-since`, whether the checkout's
+  Atelier: for a project with a rebuilt baseline, whether the checkout's
   head is the commit the baseline's head is paired with; otherwise whether the
   baseline's head is in the checkout. `atelier status` with no project keeps
   its developer's queue output.
@@ -165,7 +171,7 @@ merged and closed tasks with their evidence. Holders and Git details
 remain available inside each task.
 
 Approval, acceptance and override forms carry the revision displayed on the page.
-The server checks both the ledger and Artifacts before accepting that
+The server checks both the ledger and the repository before accepting that
 revision. A stale page must be refreshed. Each reviewer's latest verdict
 at a revision replaces their earlier verdict; another reviewer's rejection
 still blocks acceptance.
@@ -177,13 +183,13 @@ banded by who has held it, each band and the thread along it in the
 holder's family colour as the Flow graph draws a thread, with a mark for
 every claim, push, check, handoff, submission and review. A handoff is a
 visible change of band and colour, and every check mark says where it ran,
-on a runner or, for a result recorded before t768, in a Cloudflare container. The page refreshes every fifteen seconds. The Decisions page
+on a runner or, for a result recorded before t768 (1.x), in a Cloudflare container. The page refreshes every fifteen seconds. The Decisions page
 shows the same agents in brief before anything is opened. `DESIGN.md`
 describes the marks.
 
 ## Projects that use Git LFS
 
-Artifacts has no Git LFS. The `atelier` command pushes to Atelier with LFS uploads
+The server's repository has no Git LFS. The `atelier` command pushes to Atelier with LFS uploads
 turned off, so the baseline and every workspace hold LFS pointer files, and
 clones a workspace or a check run without downloading what they point to. A
 merge into the developer's checkout writes real LFS files, as git-lfs would. A project whose required
@@ -193,38 +199,21 @@ objects: `atelier wrap --push` pushes to them with LFS uploads on, even when
 `GIT_LFS_SKIP_PUSH` is set in the environment, and a remote whose upload fails
 is reported as failed, never as pushed.
 
-## Projects too large for Artifacts
+## Projects with a rebuilt baseline
 
-Artifacts can refuse a long history as one push, for its size or the time it
-takes. `atelier init` then pushes the branch's first-parent history in steps of
-about 700 commits, oldest first, and prints a line for each step. If a step
-fails, init says which commit the baseline holds, and running the same
-`atelier init` again carries on from there: what is left is pushed whole, and
-if that is refused too, the steps begin after the commit the baseline holds.
-Each step runs the checkout's pre-push hook, as the whole push does. The
-baseline's branch holds only part of the history until the last step has
-pushed.
-
-Artifacts holds at most 1 GB per repository and 32 MB per file. A project
-whose history is larger can join with its recent history only:
-
-```bash
-atelier init --history-since 2026-09-05 --check "…"
-```
-
-The baseline then starts with one commit holding the project as it was at
-the start of that day, followed by each commit on the branch's first-parent
-line since, rebuilt with the same files, authors, dates and messages. The
-project's own history is not pushed and not changed. The checkout keeps the
-pairs of baseline and project commits in `.git/atelier-baseline-map.json`.
+A project moved here from 1.x may have a baseline that starts partway through
+its history, as 1.x's `atelier init --history-since` made it (the option is
+gone). The baseline then holds one commit with the project as it was at the
+start of that day, followed by each commit on the branch's first-parent line
+since, rebuilt with the same files, authors, dates and messages. The project's
+own history is not changed. The checkout keeps the pairs of baseline and
+project commits in `.git/atelier-baseline-map.json`.
 
 `atelier merge` carries an accepted task's commits onto the paired project
 commit, so each has exactly the files the agent committed, then merges them
 as usual, and publishes to the baseline a twin of the merge commit with the
 same files. It refuses when the branch has moved since the baseline last
-matched it; `atelier sync` carries commits made in the checkout outside
-Atelier to the baseline first. Merging and syncing need this checkout, which
-holds the pairs.
+matched it. Merging needs this checkout, which holds the pairs.
 
 ## Removing a project
 
@@ -236,7 +225,7 @@ The local config entry is deleted whole, and the command lists what it held,
 such as the checkout path, branch and `notesRemote`, so a setting made by hand
 can be restored.
 
-Removal retains the Artifacts repository and all project Ledger data,
+Removal retains the project's repository and all project Ledger data,
 including items, evidence and history. Deleting a repository requires a
 separate, deliberate action by the developer. Reinitialising the same project,
 under any name it has had, registers its retained Ledger again.
@@ -245,9 +234,9 @@ under any name it has had, registers its retained Ledger again.
 
 `atelier projects rename OLD NEW` gives a project a new name on the server
 and moves the local config entry to it. Task references become `NEW/t43`
-and pages `/p/NEW/...`. The project's Ledger, its baseline repository and
-every task fork stay where they are, under the name the project was created
-with, its key; new forks are named from that key too. Nothing is copied.
+and pages `/p/NEW/...`. The project's Ledger and its baseline repository
+stay where they are, under the name the project was created with, its key.
+Nothing is copied.
 
 The old name keeps working. `/api/projects/OLD/...` serves the project as
 before, in place rather than by redirect, so an agent whose token is limited
@@ -305,11 +294,11 @@ every eligible one and names each it keeps, with a count of finished tasks'
 workspaces kept; `--dry-run` previews. `atelier gc --project NAME` is the same
 pass previewing by default: add `--apply` to remove.
 The command uses the configured cache (`ATELIER_CACHE` when set) and never
-deletes Artifacts repositories or changes the project's checkout.
+deletes repositories or changes the project's checkout.
 
 Removal is permanent: the folder is deleted, not moved to the Trash. A
 workspace is eligible only when the server confirms that its item merged or
-was abandoned, its HEAD is a head Atelier recorded (the fork's last head or
+was abandoned, its HEAD is a head Atelier recorded (the task branch's last head or
 the accepted head of the merge) or is in main (an ancestor of the registered
 branch in the project's checkout), and it has no changed or untracked files,
 no commit in refs or reflogs that neither a recorded head nor main holds, no

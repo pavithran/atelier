@@ -22,7 +22,7 @@ const spec: CommandSpec = {
       "--findings JSON": "a JSON list of findings, each {file, line, severity, text}, the file naming the criterion as criterion-N or criteria",
       "--checks JSON": "a JSON list of checks after deploy, each {criterion, by, text}: the criterion's number, owner or orchestrator, and what is checked once deployed",
     },
-    example: 'atelier criteria-verdict t3 --approve --rev 1 --criteria 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --request 4 --note "Each criterion names a test" --project demo',
+    example: 'atelier criteria-verdict t3 --approve --rev 1 --criteria 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --request 4 --note "Each criterion names a test" --project demo --as claude-code/opus-5.5',
   },
 };
 

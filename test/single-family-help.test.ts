@@ -10,9 +10,10 @@ test("init's main description explains single-family gate and optional tier revi
   const tier = about.slice(about.indexOf("`--review-tier`"));
   assert.match(tier, /By default.*another company than every contributor/);
   assert.match(tier, /single-family mode.*different model of the selected company from every contributor/);
-  assert.match(tier, /separate tier review only when a tier model qualifies/);
+  assert.match(tier, /records the need and candidates/);
+  assert.match(tier, /requests it with `atelier review-request ID --reviewer H\/M --tier-review`/);
   assert.match(tier, /must not have contributed.*single-family mode.*selected company/);
-  assert.match(tier, /If no tier model qualifies, no separate tier review is requested/);
+  assert.match(tier, /No separate tier review is requested automatically/);
   assert.ok(commandUsage("init").includes(about));
 });
 

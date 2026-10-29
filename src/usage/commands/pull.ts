@@ -6,12 +6,12 @@ const spec: CommandSpec = {
     {
       group: "Setup", line: 1, slot: 37,
       form: "pull",
-      about: "Brings this Mac's checkout up to the project's baseline, which another Mac may have moved on: fetches the baseline's main and its receipts with a read token it mints and keeps nowhere, with every Git hook off, merges the receipts on `refs/notes/atelier` into the checkout's own (a receipt not yet pushed is kept), then fast-forwards main, or merges it with the local commits, and says what it brought. A merge that conflicts changes nothing and names the paths. For a baseline built with `--history-since`, the baseline's new commits are carried into the checkout through its baseline map first. A grafts file or a shallow history is refused, and replacement refs are not read. `sync`, `wrap` and `merge` refuse while main does not hold the baseline's main, and name this command.",
+      about: "On the developer token, set `ATELIER_ACTING=H/M` to name the acting model for the read grant. Brings this Mac's checkout up to the project's baseline, which another Mac may have moved on: fetches the baseline's main and its receipts with a read token it mints and keeps nowhere, with every Git hook off, merges the receipts on `refs/notes/atelier` into the checkout's own (a receipt not yet pushed is kept), then fast-forwards main, or merges it with the local commits, and says what it brought. A merge that conflicts changes nothing and names the paths. A grafts file or a shallow history is refused, and replacement refs are not read. On 2.0, `sync` always refuses; `wrap` reports the baseline without refusing when main is behind it.",
     },
   ],
   flags: {},
   help: {
-    example: "atelier pull --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier pull --project demo",
   },
 };
 

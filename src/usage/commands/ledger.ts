@@ -8,12 +8,12 @@ const spec: CommandSpec = {
     {
       group: "Developer", line: 8, slot: 10,
       form: "ledger bookmark [--project P]",
-      about: "Records a point-in-time bookmark of the project's Ledger and of the index (which holds every project's registration, the tokens and the pool) and prints them with the id that restores them. Record one before a switch of the server.",
+      about: "Records a point-in-time bookmark of the project's Ledger and of the index (which holds every project's registration, the tokens and the pool) and prints them with the id that restores them. Record one before a switch of the server. A 1.x server only: the Node server keeps no point-in-time history and refuses it (`not_supported`); its backups take its place.",
     },
     {
       group: "Developer", line: 8, slot: 20,
       form: "ledger restore --bookmark ID [--project P]",
-      about: "Restores the project's Ledger and the index to a bookmark `atelier ledger bookmark` recorded, when each next starts; each is asked to restart at once. The index is every project's, so every project returns to that time for what the index holds. Records a bookmark that undoes the restore. A bookmark it did not record is refused.",
+      about: "Restores the project's Ledger and the index to a bookmark `atelier ledger bookmark` recorded, when each next starts; each is asked to restart at once. The index is every project's, so every project returns to that time for what the index holds. Records a bookmark that undoes the restore. A bookmark it did not record is refused. A 1.x server only: the Node server refuses it (`not_supported`); restore a 2.0 server from its nightly backup (`cli/restore.mjs`, `scripts/studio/setup-restore.sh`).",
     },
     {
       group: "Developer", line: 8, slot: 30,
@@ -51,7 +51,7 @@ const spec: CommandSpec = {
       "--abort ID": "with import, takes back the import that stopped",
       "--project NAME": "the project; this checkout's or workspace's project unless given",
     },
-    example: "atelier ledger bookmark --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier ledger bookmark --project demo",
   },
 };
 

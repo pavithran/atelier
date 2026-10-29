@@ -12,7 +12,7 @@ const spec: CommandSpec = {
   ],
   flags: {},
   help: {
-    example: "atelier revert t7",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier revert t7",
   },
   usage: `usage: atelier revert ID
 

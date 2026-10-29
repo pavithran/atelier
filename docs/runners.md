@@ -1,7 +1,20 @@
 # Runners and dispatch
 
-A runner is a program that asks Atelier for work and runs a coding agent's
-harness on it. This document holds the dispatch protocol and the home
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
+A runner is a program that asks the Atelier server for work and runs a coding
+agent's harness on it. It reaches the server over HTTP and the task's Git
+branch through the same server (see Git access, below). This document holds the dispatch protocol and the home
 runner's full reference. The README's "Runners" section gives the outline
 and a configuration to start from.
 
@@ -10,8 +23,8 @@ and a configuration to start from.
 The developer can send an open task to a kind of runner instead of
 waiting for an agent to choose it: `atelier dispatch t11 --to home --agent
 opencode --model glm-5.3-flash`, or "Send to an agent" on the task's page.
-`--to` is `home` (a runner on one of your machines), `cloud` (a Cloudflare
-container) or `any`; the agent and model are optional. Model names may carry a
+`--to` is `home` (a runner on one of your machines), `cloud` (a runner
+named `cloud:NAME`, started elsewhere) or `any`. The dispatch names both the agent and the model; without them the server picks no builder, and refuses, printing every candidate with its reliability (G17). Model names may carry a
 `:profile` suffix, as the AI Studio's do. `atelier runner` is the home runner
 (see Home runner, below). No cloud runner ships: a task sent to `cloud` waits for a
 runner named `cloud:NAME`, which can be any program that speaks the two
@@ -81,7 +94,7 @@ Failed preparation is an infrastructure failure and is never cached.
 Issue a runner credential **on the developer's machine**:
 
 ```sh
-atelier token issue --runner home:studio --project demo --days 30
+ATELIER_ACTING=claude-code/opus-5.5 atelier token issue --runner home:studio --project demo --days 30
 ```
 
 `Studio` also means `home:studio`; names are normalized to lower case.
@@ -94,7 +107,7 @@ One runner can serve several projects with one token. Name each project with
 its own `--project`:
 
 ```sh
-atelier token issue --runner home:studio --project demo --project site --days 30
+ATELIER_ACTING=claude-code/opus-5.5 atelier token issue --runner home:studio --project demo --project site --days 30
 ```
 
 The runner stores and uses this token exactly as a one-project token, below;
@@ -112,7 +125,7 @@ prepared on the developer's machine, and configure the server. Do not run develo
 login on this machine. Store the issued value at the hidden prompt:
 
 ```sh
-export ATELIER_SERVER=https://YOUR-WORKER-ADDRESS
+export ATELIER_SERVER=http://TAILNET-ADDRESS:PORT
 atelier token store --runner home:studio
 atelier runner --name home:studio --config ./runner.json --once
 ```
@@ -160,38 +173,51 @@ token from `tokens`; integration still uses its dedicated integrator token.
 Developer-only setup/discovery and usage administration stay on the developer's
 machine.
 
-### Revocable Git access and deployment smoke check
+### Git access and a remote smoke check
 
-Runner workspace remotes use `/git/runner/PROJECT/ITEM.git`. Each Git HTTP
-request validates a separate opaque Git credential, its parent runner token
-and the current claim before forwarding to Artifacts. Expiry/revocation,
-release, reassignment and a later claim invalidate old write access even for
-plain `git push`. The upstream Artifacts write credential stays inside the
-Worker, lasts 60 seconds and is revoked after the response is read. Requests
-already authorized may finish; subsequent requests must authenticate again.
+A runner's Git credential is the task grant its claim returns, not the
+runner's token. The claim's answer names the remote (`ORIGIN/git/PROJECT.git`),
+the branch `t/N`, the base and the grant; the runner clones with
+`git clone --single-branch --branch t/N` and pushes `HEAD:refs/heads/t/N`
+straight to the server, which serves Git itself through `git http-backend`.
+There is no relay: the `/git/runner/PROJECT/ITEM.git` remotes of 1.x are gone.
+The grant writes `t/N` and no other branch (the server's pre-receive hook
+refuses the rest, [branches.md](branches.md)), and it counts only while the
+task's Ledger records it as the task's write token. Release, handoff,
+reassignment, abandonment, a merge and a later claim end it, and so do the
+revocation and expiry of the runner token that asked for it. Requests already
+authorized may finish; later requests must authenticate again. A review job
+clones the part's branch with a read grant.
 
-This depends on deployed Workers forwarding Artifacts smart HTTP correctly.
-The gateway currently buffers a Git request/response, so Worker memory and
-request-size limits also apply; local Artifacts doubles cannot reproduce
-those platform limits. **Before and after deploying this change**, the developer
-must run this remote smoke check on a disposable project using a runner
-machine with no developer token:
+The remote is on the tailnet address (100.64.0.0/10) when the runner reached
+the server there, on the server's own loopback address when it runs on that
+machine, and on the public origin (`PUBLIC_ORIGIN`, through the tunnel)
+otherwise. Over the tailnet the remote is plain `http://`, which WireGuard
+encrypts, and the CLI accepts it; any other address must be `https://`. The
+server picks the remote from the address the request reached, never from its
+Host header (`gitOrigin` in `src/runtime/server.mjs`).
+
+The tests run the runner against the real server and the real Git hook
+(`test/claim-branch-runner.test.mjs`, `src/runner-token.spec.mjs`, run by
+`npm test`). After a change to the server or to a tunnel, check it once from
+a runner machine with no developer token, on a disposable project:
 
 1. Dispatch one build and one plan on the developer machine. Run the runner to
    submission and plan posting, including a restart with held work.
-2. Clone the returned gateway remote and make a real Git commit/push through
-   its Git credential. Check a representative maximum-size repository too.
+2. Clone the returned remote and make a real Git commit and push with its
+   grant. Check a representative large repository too.
 3. Revoke the parent token on the developer machine. Verify both polling and
    plain Git push fail. Repeat with expiration, release and reassignment;
-   the baseline and another job must never accept this credential.
+   the project's branch and another task's branch must never accept this
+   grant.
 4. Try a developer action and a mismatched runner/actor; verify 403 includes
    only the runner name/token ID. Try the model review and dedicated
    integration credentials separately to confirm those flows still work.
 
-Do not promote the deployment if this smoke check fails. Local validation:
-`npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
-`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
-tests live in `src/` and `cli/` to stay within this task's scope.
+Do not promote the change if this check fails. Local validation: `npm test`
+and `npm run typecheck`; to run only the runner's tests, `node --import
+./src/runtime/loader.mjs --test cli/runner-token.test.mjs
+src/runner-token.spec.mjs`.
 
 ## Setting up a runner
 
@@ -209,15 +235,16 @@ harnesses themselves and the credentials, which live in the credential store
 
 ### Developer machine setup (legacy developer-backed setup)
 
-1. Install Node 22 or newer and clone this repository; `npm ci` in it. Put
+1. Install Node 24 or newer and clone this repository; `npm ci` in it. Put
    `cli/atelier.mjs` on the PATH as `atelier` (`npm link`, or an alias).
 2. Install the harnesses this machine will run, any of: Claude Code
    (`claude`, signed in to its plan), Codex (`codex`, signed in), opencode
    (`opencode`) and Antigravity (`agy`, signed in to a Google account with
    Gemini). Setup finds each by its command on the PATH.
-3. `atelier login --server https://YOUR-WORKER-ADDRESS` as the developer, the
-   address of the Atelier server the runner takes work from (Setup in
-   [setup.md](setup.md)); it asks for the developer's token without echo.
+3. `atelier login --server http://TAILNET-ADDRESS:PORT` as the developer, the
+   address of the Atelier server the runner takes work from: the tailnet
+   address of the Studio's server, or its public `https://` origin from a
+   machine off the tailnet (Setup in [setup.md](setup.md)); it asks for the developer's token without echo.
 4. Store the keys opencode's providers need, each by the name setup prints
    (the pool entry's `--keychain` name when it gives one): `zai.API_KEY`,
    `deepseek.API_KEY` and `openrouter.API_KEY`, and `CF_AIG_TOKEN` (a
@@ -237,6 +264,7 @@ harnesses themselves and the credentials, which live in the credential store
    it as `agent.MODEL` (Reviewers post under their own agent token, below):
 
    ```sh
+   ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where home
    atelier token issue --as codex/gpt-6-astra --project atelier --days 90 --label "home:NAME reviews"
    security add-generic-password -U -T /usr/bin/security -s atelier.agent.gpt-6-astra -a "$USER" -w
    ```
@@ -428,7 +456,7 @@ The Studio's runner configs gain `"land"` in `jobs` as an ops step: edit each co
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` and `criteria-review` when its config lists them. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. A criteria-review job (t438, `runCriteriaReview`) judges a task's acceptance criteria before it is built, so there is no change to clone: the runner claims the review with `criteria-review-claim`, writes the brief the server built into an empty folder of its own, hands the harness a `{diff_file}` that says there is no diff and a `{verdict_file}`, and posts the verdict with `criteria-verdict`, bound to the criteria revision, binding and review number the claim gave, so a verdict on criteria that changed while the harness ran is refused rather than counted. A harness that fails, times out or writes a reply no verdict can be read from records the failure with `criteria-review-failed`, which approves nothing, and the review may be asked for again. The queue offers open criteria reviews beside code reviews, each under its own `request` number, and the runner takes them ahead of builds as it takes reviews. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route; the criteria-review job needs the criteria-review routes, `reviews.criteria-review.v1`; every other job, the integrator's included, needs the run skip it reports a job it gives up to, `runners.run-skip.v1`), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` and `criteria-review` when its config lists them. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. A criteria-review job (t438, `runCriteriaReview`) judges a task's acceptance criteria before it is built, so there is no change to clone: the runner claims the review with `criteria-review-claim`, writes the brief the server built into an empty folder of its own, hands the harness a `{diff_file}` that says there is no diff and a `{verdict_file}`, and posts the verdict with `criteria-verdict`, bound to the criteria revision, binding and review number the claim gave, so a verdict on criteria that changed while the harness ran is refused rather than counted. A harness that fails, times out or writes a reply no verdict can be read from records the failure with `criteria-review-failed`, which approves nothing, and the review may be asked for again. The queue offers open criteria reviews beside code reviews, each under its own `request` number, and the runner takes them ahead of builds as it takes reviews. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route; the criteria-review job needs the criteria-review routes, `reviews.criteria-review.v1`; every other job, the integrator's included, needs the run skip it reports a job it gives up to, `runners.run-skip.v1`), naming the missing capabilities and the server update to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
 its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
 however it ends: opencode processes sharing
 `~/.local/share/opencode/opencode.db` deadlock on it. The shipped
@@ -494,21 +522,22 @@ once and exits.
 
 ### Reload on deploy
 
-Runners no longer need restarting after a deploy (t265), nor after a merge
-that changes only `cli/**` (t556), which deploys nothing. Between jobs, after
+Runners no longer need restarting after the server runs new code (t265), nor
+after a merge that changes only `cli/**` (t556), which changes nothing the
+server runs. Between jobs, after
 a poll that claimed nothing, a runner (build, review or the integrator) reads
-`GET /api/version`. Beside the deployed commit (`commit`) it names `main`:
-main's head of the project the Worker is built from (the Worker var
+`GET /api/version`. Beside the commit the server runs (`commit`) it names `main`:
+main's head of the project the server is built from (the server setting
 `SOURCE_PROJECT`, `atelier` when unset), as that project's ledger last
 observed it, which moves with every merge; `null` when that project is not
 registered or its ledger has seen no main. The runner's target is `main`,
-or the deployed commit from a server that names no main. When the commit it
+or the server's commit from a server that names no main. When the commit it
 started from does not contain the target, and the checkout it runs from (the
 folder holding `cli/atelier.mjs`) now does, it logs `runner: reloading:
 started from OLD, main is at NEW; starting replacement runner …` (`the server
-runs NEW` when the target is the deployed commit) and runs the same command
-line with the same environment, in place of itself. A checkout that holds the deployed commit but
-not yet main's head reloads to the deployed one, and again once it holds
+runs NEW` when the target is the server's commit) and runs the same command
+line with the same environment, in place of itself. A checkout that holds the server's commit but
+not yet main's head reloads to that one, and again once it holds
 main's. The replacement keeps the pid and the terminal, so Ctrl-C and session end
 stop it as they stopped the old process.
 The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
@@ -520,8 +549,8 @@ under `--once`. A process started from a commit that contains the target
 never reloads, so a reloaded runner, or one whose checkout is ahead of main,
 does not reload again. A version endpoint that does not answer or names no
 commit means no reload. A re-exec that fails logs `runner: reload failed: …`
-and the old process runs on; it is tried again only once main or the deploy
-moves, or restart it by hand.
+and the old process runs on; it is tried again only once main or the server's
+commit moves, or restart it by hand.
 
 Without a supervisor the idle runner replaces itself in place with
 `process.execve` (Node 24 and later): the same pid and terminal, no parent
@@ -604,7 +633,7 @@ is empty.
 
 A runner's builds run under the developer token the machine holds (`atelier
 login`). Its reviews do not: each review job claims the request, reads the
-fork and records its verdict with the reviewing model's own agent token, so
+task's branch and records its verdict with the reviewing model's own agent token, so
 the ledger, the task page and `atelier receipt` show the reviewer itself as
 the recorder ("recorded by codex/gpt-6-astra with its own token") and the
 gate counts the review as proved. A verdict the developer token recorded in a
@@ -645,11 +674,13 @@ or as `~/.config/atelier/...`), which must be readable by the user alone
 }
 ```
 
-The lead developer issues and stores each reviewer's token once, as the
-developer, on the machine that runs the reviews:
+The lead developer registers each reviewer, then issues and stores its token
+on the machine that runs the reviews. `token issue --as H/M` also sends H/M
+as the acting model, overriding `ATELIER_ACTING`:
 
 ```sh
 # Issue: bound to one actor and, here, one project; shown once.
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where home
 atelier token issue --as codex/gpt-6-astra --project atelier --days 90 --label "home:studio reviews"
 
 # Store the value it printed, by the name the config gives. In the macOS
@@ -729,14 +760,14 @@ opencode's `message` table records by served model, the tokens Claude Code's
 session logs record by model (counts only, printed per day as well), each over
 the last 5 hours, 24 hours and 7 days, and the DeepSeek account's balance. Each tool
 goes to `POST /api/usage/TOOL` under the runner's name, the Usage page
-shows them, and the Worker alerts at the developer's thresholds (see [Usage, limits and balances](models-and-usage.md#usage-limits-and-balances)). It is a one-shot command, not a step in the runner
+shows them, and the server alerts at the developer's thresholds (see [Usage, limits and balances](models-and-usage.md#usage-limits-and-balances)). It is a one-shot command, not a step in the runner
 loop: the loop polls every 30 seconds and must stay cheap, while this reads
 logs that can be gigabytes and asks DeepSeek for a balance, and it is just
 as useful on a machine that runs the tools but no runner. Schedule it
 hourly, for example from a LaunchAgent, with `--dry-run` to see what it
 would report first. Claude's plan percent, Antigravity and Gemini's spend
 have no readable record on the machine, so each is listed under Not reported
-with the reason and the best figure there is, and the Worker and
+with the reason and the best figure there is, and the server and
 `atelier status` warn when a window is at 80 percent used or, at its pace so
 far, will run out before it resets.
 
@@ -771,8 +802,9 @@ A review runner reads the recorded merge from the baseline (a merged plan
 part from its integration branch), compares it with its original first parent,
 and judges it against the task's criteria. A fast-forward is compared with the
 fork point. Today's main is never the comparison base. The verdict and findings
-stay on the merged task and count on Models. Blocking findings create a bugfix
-task linked to the original task and the review request; the original task and
+stay on the merged task and count on Models. The server files no fix task for
+a blocking finding: the finding is recorded, and a fix is filed by command
+(`atelier file-fix ID --from-note N`). The original task and
 its override remain as historical records. Reposting an answered request's
 verdict is refused, so retries do not file duplicate defects.
 
@@ -834,14 +866,14 @@ workspace as it is. A work-in-progress
 commit whose push fails stays in the workspace under the claim, as any other
 commit does.
 
-Committed work remains local. A `.git/atelier-validation-blocked` marker,
-naming the actor and the unverified head, stops a restarted runner from
-automatically finishing it as an interrupted build. It holds back only that
-actor at that head: another builder dispatched to the task, or the same one
-after the head moved, runs its harness and the checks as usual.
-After fixing the harness and running the required checks successfully, the
-operator can remove this marker to resume. Changing the command configuration
-alone does not clear a blocked validation report or prove that checks passed.
+Committed work remains local. The server's `validationBlockedAt` and
+`unblockedAt` decide whether a validation block remains unanswered (G5).
+The local `.git/atelier-validation-blocked` marker only keeps the actor,
+head and task revision for that report. With no unanswered server block,
+the runner ignores and clears the marker and runs the builder. The marker
+alone cannot block another actor, head or task revision. Fix the cause and
+use `atelier unblock tN` to answer a server block; deleting the marker or
+changing the command configuration alone does not clear that record.
 
 ### Harnesses that are not signed in
 

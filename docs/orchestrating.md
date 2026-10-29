@@ -1,11 +1,24 @@
 # Running Atelier for a project
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
 criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
+models qualify. Atelier records the need and candidates for a separate tier
+review; the developer or orchestrator must request it.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
@@ -73,8 +86,10 @@ points at it and states the review path (it does not edit the file).
   criteria yourself. Your reading does not count at the gate; it catches the
   plain misses before the expensive review does.
 - Land with `atelier land ID --reviewer H/M`, where `H/M` names a reviewer
-  of another family than every contributor; the command merges main, checks,
-  submits, waits for the independent review, then accepts and merges. When no
+  of another family than every contributor; the command checks and submits a
+  claimed task, asks the independent review, and once it approves accepts,
+  merges main, checks the merged tree and merges (run it again after the
+  verdict when the review was still open). When no
   live runner offers that reviewer, the landing runs a one-shot review on this
   Mac: it claims the request and runs the reviewer's model from this Mac's
   runner config, so the reviewer records its own verdict under its own token,
@@ -86,6 +101,19 @@ points at it and states the review path (it does not edit the file).
   merge into main at a time. An override while accepting is the developer's
   last resort when no reviewer qualifies, and never the way to land another
   agent's work.
+- Atelier gives facts and commands and makes no pick of its own (G6, G17).
+  A dispatch, a review request, a criteria review, a landing or a plan's
+  routes without a named model print the candidates with their reliability
+  and refuse. Past a limit the server records the task as stuck and
+  reroutes, re-asks, releases and files nothing. You choose, and act by
+  command. The only actions the server takes by itself are the developer's
+  standing instructions in fast mode ("Standing instructions" under "Fast
+  mode").
+- Every refusal names its next step (G8): the CLI prints `next:` on a line of
+  its own with the exact command that resolves it, or "only the developer
+  can: ..." when the step is theirs. Under `--json` or `ATELIER_JSON=1` the
+  error is one object on stderr, `{code, detail, next}`. Run the `next`
+  rather than guessing.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or
@@ -167,26 +195,27 @@ A task moves through five hands:
 4. **A reviewer from another model family** than everyone who worked on the
    task reads the diff and approves or rejects with findings.
    A project with a review tier (`atelier init --review-tier H/M,H/M`)
-   has a protected change's review asked of a tier model of another family
-   first, and that one review serves both. Only when the gate's reviewer is
-   outside the tier does one tier model that did not build the change
-   review it as well, at the same time, whatever its family in the default mode (only the selected company in single-family mode): its rejection
-   sends the change back like any rejection, its approval never stands in
-   for the cross-family review, and a landing never waits for it.
+   records when a separate tier review is needed, with its candidates.
+   Ask it explicitly with `atelier review-request tN --reviewer H/M
+   --tier-review`. It is never requested automatically. Its approval does
+   not replace an independent gate approval.
 5. **The developer** accepts that exact revision and merges it into the
    registered checkout with `atelier merge`.
 
-Several builders can work at once, each on its own task and fork, except on
-the project's core files: the queue does not start two pieces of work whose
-scopes overlap in one. Name them with `atelier init --core GLOB`, once per
+Several builders can work at once, each on its own task and branch, `t/N`,
+except on the project's core files: the queue does not start two pieces of
+work that overlap in one. Overlap is judged on the files each task has
+changed since its merge base, on both sides (G13); a task with no commits
+yet, or one past 5,000 changed files, is judged by its scope glob instead. Name them with `atelier init --core GLOB`, once per
 glob (for Atelier: `cli/runner.mjs`, `src/ledger.ts`,
 `src/dispatch/rules.ts`, the files where a dozen tasks built at once left
-half the landings on merge conflicts). A dispatch whose scope overlaps,
-within a core file, a claimed item's or that of the item a live landing
-lease names waits in the queue until each claimed blocker submits or is
+half the landings on merge conflicts). A dispatch that overlaps,
+within a core file, a claimed item or the item a live landing
+lease names waits in the queue, naming its blocker, until each claimed blocker submits or is
 released and each landing ends; a submitted or accepted item that is not
 landing holds nothing. `atelier status` names every item it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
-overlap is known to be harmless. Parts of one plan never hold each other,
+overlap is known to be harmless. Dispatching again a held task that overlaps
+is refused, so no claim ends for a dispatch that cannot run. Parts of one plan never hold each other,
 since the plan orders overlapping parts already. Landings run beside one
 another (a wave's `--parallel` bounds how many), but merges into main take the
 project's landing lease one at a time ("Landing a wave" below).
@@ -196,8 +225,11 @@ project's landing lease one at a time ("Landing a wave" below).
 A session that takes over has no memory of the last one; everything it needs
 is in Atelier, the repository and this handbook. Before dispatching anything:
 
-1. `atelier status` for what waits for the developer, and `atelier ls --project
-   P` for every live task and who holds it.
+1. `atelier situation --project P` (with `--json` for a model) for the
+   project as the record has it: every live task with its stage, holder,
+   progress line and holds, open review requests, runners, landings and
+   blocks. `atelier status` for what waits for the developer across
+   projects.
 2. For each claimed task, look at its workspace: uncommitted changes, a
    `COMMIT_MSG.txt` an agent left, a merge in progress, or an agent's log in
    `.scratch/`. Check whether the agent's process still runs before starting
@@ -264,14 +296,14 @@ that file, with the new measurement.
 
 ## Registering workspace preparation
 
-After deploying the Worker and updating the runner's CLI, the developer registers
-Atelier's preparation policy once, from the project checkout:
+After updating the server and the runner's CLI, the developer registers
+the project's preparation policy once, from the project checkout. For
+Atelier:
 
 ```sh
-atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund && npm run types" \
+ATELIER_ACTING=claude-code/opus-5.5 atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund" \
   --prepare-input package.json --prepare-input package-lock.json \
-  --prepare-input wrangler.jsonc \
-  --prepare-output node_modules --prepare-output worker-configuration.d.ts
+  --prepare-output node_modules
 ```
 
 This is a developer rollout step; a task build does not register the project.
@@ -284,42 +316,36 @@ into the review clone, including nested packages. Otherwise it installs
 package dependencies on the host, using npm ci when a lockfile exists.
 The reviewer’s sandbox remains read-only.
 
-The declared inputs are the manifest, lockfile and Wrangler configuration;
-`src` is not an input. A cached success also depends on the command and runtime,
-and both declared outputs must still exist. Once preparation succeeds, an old
+The declared inputs are the manifest and the lockfile; `src` is not an
+input. A cached success also depends on the command and runtime, and every
+declared output must still exist. Once preparation succeeds, an old
 validation blocker written before successful preparation no longer holds the
 build back. Omit `--prepare` on later init calls to preserve the policy, or
 pass `--prepare ""` to clear it.
 
 ## Reading the server's logs
 
-The Worker writes Workers Logs (`observability` in wrangler.jsonc): every
-invocation — a fetch, a queue delivery, the five-minute cron tick — and every
-`console.error` it prints is kept for seven days, three on the free plan, and
-can be queried after the fact. That is the first tool for diagnosing the
-server, not `wrangler tail`: on 7 October 2026 the queue's timeouts had to be
-caught with ninety seconds of tail by hand, and the same lines sat in the
-stored logs all along. In the Cloudflare dashboard, open Workers & Pages,
-select the `atelier` Worker, and open **Observability**; filter by time, by
-outcome (an invocation that errored), or by message text — a task or run id,
-or one of the Worker's own lines: `AI Gateway pull failed`, `Atelier plan
-tick failed`, `Artifacts could not revoke a write token`. What is happening
-right now can still be watched live — `wrangler tail` from a checkout of this
-repository, or the dashboard's Logs → Live — but the tail shows only what
-arrives while it runs; read the stored logs first.
+The server on the Studio is one Node process per environment, run by a
+LaunchDaemon as the service user `atelierd`. Its standard output and error go
+to `/Users/atelierd/log/ENV.log` (`staging.log` for staging; `docs/studio.md`
+has the layout). Every `console.error` the server prints lands there: a
+failed timer run, a failed AI Gateway pull, a hook that could not record its
+report. Only `atelierd` and an administrator can read the folder, so an
+agent cannot; the developer reads it on the Studio, and the session asks for
+the lines it needs.
 
 On Atelier 2.0 the server's errors are in its log on the Studio; `docs/studio.md` (Reading the logs) says how to read it. `atelier server-errors`, which tailed the Worker, is gone.
 
 When the queue is slow, `GET /api/queue` (and a runner's POST of the same
-route) answers with a `server-timing` header — `index`, `projects`, `total`,
-in milliseconds — so a slow poll can be measured while it happens.
+route) answers with a `server-timing` header (`index`, `projects`, `total`,
+in milliseconds), so a slow poll can be measured while it happens.
 
-Anything the Worker logs is kept in the account's logs, so no log may carry
-a token or a key. The Worker logs error codes and messages only — the AI
-Gateway token travels in the authorization header, never in a logged URL or
-message (src/usage/gateway.ts) — and test/workers-logs.test.mjs fails the
-suite if a `console.*` call in `src/` names one. Add logs the same way:
-messages and identifiers, never a bearer token, a cookie, or a secret.
+No log may carry a token or a key. The server logs error codes and messages
+only; the AI Gateway token travels in the authorization header, never in a
+logged URL or message (`src/usage/gateway.ts`), and
+`test/workers-logs.test.mjs` fails the suite if a `console.*` call in `src/`
+names one. Add logs the same way: messages and identifiers, never a bearer
+token, a cookie or a secret.
 
 ## Briefing an agent
 
@@ -407,58 +433,72 @@ differently or to use elsewhere.
 
 ## Landing
 
-Every task forks from main as it was when the task was claimed. By the time
-it is approved, main has usually moved, and the merge conflicts or, worse,
-merges cleanly into something broken. On 6 October two tasks merged cleanly
-one after the other and together broke main's type check; another pair broke
-a test neither had touched.
+Every task branches from main as it was when the task was claimed. By the
+time it is approved, main has usually moved, and the merge conflicts or,
+worse, merges cleanly into something broken. On 6 October two tasks merged
+cleanly one after the other and together broke main's type check; another
+pair broke a test neither had touched.
 
-So every landing does these steps in this order, and only one task merges
-into main at a time:
+So a landing tests the tree it will push, and only one task merges into main
+at a time. `atelier land ID --reviewer H/M` (`cli/land.mjs`) is the default
+way to land a task, in two halves ([Landing](landing.md#the-order-of-a-landing-g2)
+has every step):
 
-1. Merge main into the task's workspace. Resolve conflicts keeping both
-   sides' behaviour; regenerate generated files (the CLI's help fixtures)
-   from the merged code rather than merging them by hand.
-2. Push and run the checks at that head.
-3. Get the independent review at that head. An approval is bound to the
-   revision it read; any later push, a merge of main included, needs a new
-   one.
-   Where the project has a tier, the server asks a qualifying tier model
-   for this review first, and it serves as the tier review too. A
-   `--reviewer` outside the tier gets a separate tier review alongside only
-   when a tier model qualifies under the family policy;
-   `atelier land` waits only for the independent review, stops on a tier
-   rejection, and the acceptance withdraws a tier request still open.
-4. Accept and merge under the landing lease, so that nothing else merges
-   between the check that main has not moved and the merge.
-5. Run the type check on main after every merge, and the full suite before
-   pushing main to its own remotes. These two steps stay outside
-   `atelier land` ("What stays outside Atelier" below).
+1. **Before any lease**, beside other tasks' landings: the preflight and the
+   comparison with code main moved to another file; for a claimed task, the
+   checks at its recorded head in a clean clone and the submit; the triage;
+   the independent review the gate needs (`--reviewer H/M` names the
+   reviewer, `--no-review` leaves the task submitted); and the gate. The
+   review is asked, not waited for (t264): when no verdict is in yet, the
+   landing stops before the lease with the task submitted, and you run the
+   same command again once the review approves (`atelier wait ID --for
+   reviewed`). An approval is bound to the revision it read.
+   Where the project has a tier, a gate review by a qualifying tier model
+   serves both. When a separate tier review is needed, the server records
+   the need and candidates. Ask it with `atelier review-request ID
+   --reviewer H/M --tier-review`; it is never requested automatically.
+   A tier rejection blocks, and acceptance withdraws a tier request still open.
+2. **Under the project's landing lease and the registered checkout's lease**:
+   accept, then `atelier merge ID --landing` in the registered checkout. It
+   merges the accepted head onto main as it stands, folds the project's
+   regenerate step into the merge commit, runs the required checks once on
+   that merged tree, pushes the merge alone to the project's branch with a
+   landing grant ([Branches](branches.md#the-landing)), pushes the provenance
+   notes and records the merge.
 
-`atelier land` (task t187, `cli/land.mjs`) is the default way to land a
-task: `atelier land ID --reviewer H/M` does these steps. Since t550 it
-merges main, regenerates the project's fixtures when its policy declares
-how, pushes, runs the checks, submits, asks the server for the
-independent review the gate needs and waits for the verdict (`--reviewer
-H/M` names the reviewer, `--no-review` leaves the task submitted) without
-the project's landing lease, beside any other task's landing. Only once
-the head is checked and approved does it take the lease, for the merge
-alone, so two sessions never merge at once: a second landing that reaches
-that point queues behind the first and merges in its turn. Under the
-lease it confirms main is still the commit the head was checked and
-reviewed against (if not, it releases the lease and goes round again from
-the merge of main), then accepts and merges. Each step and how long it
-took are recorded on the task as `land.*` events, and a landing stopped
-partway is resumed by running the same command again. `atelier land`
+Nothing is pushed to `t/N` during a landing, so the approvals for the
+reviewed head stand. If main moves between the checks and the push, the push
+is refused and the merge and checks are made again, twice at most. Each step
+and how long it took are recorded on the task as `land.*` events, readable
+with `atelier show ID --json`, and a landing stopped partway is resumed by
+running the same command again.
+
+Two steps stay outside `atelier land`: the type check on main after every
+merge, and the full suite before main goes to its own remotes ("What stays
+outside Atelier" below). On a task, `atelier check` runs only the tests the
+project's affected-tests map selects for the changed paths (G20, `atelier
+init --affected-tests PATH`), and runs the full suite, saying why, when a
+changed path is unmapped or the measurement fails; a landing's checks on the
+merged tree and `atelier ship` run the full suite.
+
+The registered checkout has one lease (G9, `src/checkout-lease.ts`), beside
+the landing lease. `atelier merge` (which `land` runs), `merge --cancel` and
+`atelier ship` take it before touching the checkout and release it at the
+end; a second caller waits, naming the holder. A holder silent for 15
+minutes is taken over, and the one taken over stops at its next step with a
+fact and a `next`. A commit made by hand in the checkout is refused as
+unreviewed at the next landing.
+
+`atelier land`
 does not push commits that exist only in the task's workspace: a builder
 dispatched by hand (a script that runs an agent which commits but holds no
 token to push) leaves its work unpushed, and an orchestrator's own fix
 committed in the workspace is work the ledger has not seen. Landing stops
-before the lease with "holds N commits the recorded head lacks" and
-changes nothing. Run `atelier push` in the workspace first, then land;
+before the lease with "workspace is not at its recorded head" and changes
+nothing. Run `atelier push` in the workspace first, then land;
 the push is a deliberate step so that nothing reaches review unseen. The same
-lease guards every merge, a plan's included (`POST items/tP/landing` in
-`cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
+landing lease guards every merge, a plan's included (`POST .../landing-lease`
+in `cli/commands/merge.mjs`). To wait on a landing, a runner's build or an agent, use
 `atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
 loop, which matches its own command line and cannot see a death:
 `--for merged` (the default) ends when the task merges, `--for submitted`
@@ -508,6 +548,13 @@ one is merged. An abandoned blocker keeps it waiting and listed, never
 released, until the developer drops it from the list; a cycle is refused
 when it is set. `atelier show` and `atelier situation` list the blockers with
 their states.
+
+Edit a task without destroying what it held (G12). `atelier edit ID
+--add-accept TEXT` and `--add-brief TEXT` append to the criteria and the
+brief. A change of criteria says which review it withdrew. A replacement
+(`--accept`, `--brief` and the other plain flags) prints what it dropped, and
+`atelier edit ID --restore EVENT` puts that back. A text over its limit is
+refused, naming the limit.
 When the
 review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
@@ -518,11 +565,11 @@ A request for an admitted reviewer is refused `no_runner` while no live runner o
 
 A runner is offered the oldest review request it can serve, whatever older ones it cannot; a request whose reviewer no live runner offers for 15 minutes shows in `atelier stuck` as `review-unoffered`: reroute it with `atelier review-request ID --reviewer H/M` to a reviewer a live runner offers, or withdraw it with `atelier review-withdraw ID --reason TEXT` (t220).
 
-The stage tick records facts and acts on no judgment of its own (Atelier 2.0, G6). A queued dispatch no live runner offers is `stage.stuck` at once with the note "no live runner offers H/M", and keeps its model; one left unclaimed past 10 minutes is `stage.stuck` too. Nothing reroutes it: dispatch it again with the model you choose. A claim still replaces a task fork preparing over 30 minutes with no commit recorded, until forks are removed (t254, t378). The limits are named in `src/limits.ts`.
+The stage tick records facts and acts on no judgment of its own (Atelier 2.0, G6). A queued dispatch no live runner offers is `stage.stuck` at once with the note "no live runner offers H/M", and keeps its model; one left unclaimed past 10 minutes is `stage.stuck` too. Nothing reroutes it: dispatch it again with the model you choose. The limits are named in `src/limits.ts`.
 
 A review claim unanswered for 2 hours (`reviewAnswerHours`) shows in `atelier stuck`; the tick releases nothing. A checked task whose review request stays unclaimed 10 minutes is `stage.stuck` with the request, its reviewer and the time it was asked, and `atelier show ID` prints its age; withdraw it with `atelier review-withdraw` and ask another reviewer with `atelier review-request ID --reviewer H/M`. The only automatic actions are the standing instructions the developer records for a project in fast mode, `atelier decide --standing KEY VALUE` (queue-landable, reask-on-resubmit, post-merge-reviewer, notice-delay). A blocking post-merge finding is a note on the goal, which `atelier file-fix ID --from-note N` files as a task; the server files none.
 
-The stage tick queues one land job (`stage.land-queued`), keyed by task and head, for a task left landable over 5 minutes that is accepted or in a project in fast mode, with no landing lease held. A lease lapsed for 15 minutes queues it again; main moving queues it again at most twice. A landable task not yet accepted is `stage.told` naming `atelier accept`, and with no live runner that lists `land` and holds the checkout it is `stage.stuck` and `stage.told` (t253).
+Only under the developer's standing `queue-landable on` does the stage tick queue a land job (`stage.land-queued`, keyed by task and head) for a task left landable over 5 minutes that is accepted or in a project in fast mode, with no landing lease held. A lease lapsed for 15 minutes queues it again; main moving queues it again at most twice. Without the instruction, or with no live runner that lists `land` and holds the checkout, the task is `stage.stuck` with a note saying why, and `atelier land ID` (or `--queue`) lands it (t253).
 
 To serve a review by hand, claim it as the reviewer with `atelier
 review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
@@ -609,10 +656,13 @@ Restart a runner when:
   its log when the checkout is behind; update the checkout (the post-merge
   steps do on this Mac and the Studio) rather than restarting. A reload
   starts a fresh process, which forgets the tasks it gave up on;
-- **its log says `atelier/tN needs the developer's attention after 2 failures;
-  skipped for this process`**: the runner will not take tN again until it
-  restarts. First read the two failures above that line and fix their cause;
-  restarting without a fix only repeats them;
+- **never for a skip.** When its log says `atelier/tN needs the developer's
+  attention after 2 failures; skipped for this process`, the runner will not
+  take tN again. The server keeps that skip, with the runner's waits and
+  failure counts (G5), and gives them back after a restart, so restarting
+  changes nothing. Read the two failures above that line and fix their
+  cause, then clear the skip with `atelier forget-skip tN` (`--runner
+  home:NAME` for one runner);
 - **a review runner has printed nothing for a long time while a review
   waits**: restart it (t351, t353). A review it had claimed may need
   `atelier review-release ID`.
@@ -632,18 +682,24 @@ failure. Check both whenever a harness is updated.
 
 Watch every runner's output, and the output of the `atelier land` command you
 started (kept in a file), together, for these lines only (t434 makes this a
-command):
+command). A runner reports facts only to the server (G3, G4): the outcome,
+the exit code or signal, the program, line and byte counts, and the path and
+host of its run log, a mode-600 file that stays on the runner's machine
+(`src/run-facts.ts`). The server refuses a runner report that carries
+anything else (`not_facts`). So a run's failure text, and the files or
+checks an integration or refresh failure names, are read in that log, not in
+`atelier show`.
 
 ```sh
 tail -n0 -F RUNNER-OUTPUTS... LAND-OUTPUT... | grep -E --line-buffered \
-  "^t[0-9]+ (landed|failed)|^t[0-9]+ submitted|^runner: failed: harness|needs the owner's attention|Error loading config"
+  "^t[0-9]+ (landed|failed)|^t[0-9]+ submitted|^runner: failed: harness|needs the developer's attention|Error loading config"
 ```
 
 | Line | Meaning | Next step |
 | --- | --- | --- |
 | `tN submitted` | A build finished, pushed and passed its own checks | Triage its diff against every criterion, then land it (below) |
 | `runner: failed: harness …` | A run ended without a commit or with an error | Read the run's lines above it; `atelier run-report` if the model stopped early |
-| `… needs the owner's attention after 2 failures` | The runner gave up on that task | Read both failures, fix the cause, restart the runner |
+| `… needs the developer's attention after 2 failures` | The runner gave up on that task | Read both failures, fix the cause, then `atelier forget-skip tN` |
 | `Error loading config` | A harness's own configuration is broken | Fix it before anything else: every run of that harness fails |
 | `tN landed.` or `tN failed (…)` | One landing of a wave ended | See "Landing outcomes" |
 
@@ -655,13 +711,14 @@ developer in `NTFY_TOPIC` messages per project (a large batch is split into seve
 recurrence after it cleared is told again.
 
 Before starting an agent in a fresh workspace on another machine, run
-`npm ci` and `npm run types` there. If either fails, fix the dependency or
-configuration failure before starting the agent. A stale
-`.git/atelier-validation-blocked` marker strands an otherwise finished build:
-read it with `cat .git/atelier-validation-blocked`, fix the reported cause,
-run `npm test` and `npm run typecheck`, then remove the stale marker with
-`rm .git/atelier-validation-blocked` only after both pass and retry
-`atelier finish`. A remaining failure stays blocked.
+`npm ci` there. If it fails, fix the dependency or
+configuration failure before starting the agent. A local
+`.git/atelier-validation-blocked` marker does not decide whether work is
+blocked. The runner reads the server's `validationBlockedAt` and
+`unblockedAt`. With no unanswered server block, it ignores and clears the
+marker and runs the builder. Fix the reported cause, then use
+`atelier unblock tN` to answer a server block. Removing a marker alone does
+not clear that record.
 
 ### Choosing a reviewer
 
@@ -737,16 +794,21 @@ starts several of them at once and keeps the order.
   landing takes the project's landing lease only once its head is checked
   and approved, and the server hands the lease to the waiting landings in the
   order they queued. The flags you give (`--reviewer`, `--triage`,
-  `--no-review` and the rest) go to every landing of the wave. Leave out
-  `--reviewer` and the server suggests a reviewer for each task, of another
-  company than every contributor to that task; name one only when every task
-  of the wave may be reviewed by that model.
+  `--no-review` and the rest) go to every landing of the wave, so name a
+  reviewer only when every task of the wave may be reviewed by that model.
+  Where no review is recorded yet and you name none, the server picks none:
+  the review request is refused with the candidates and their reliability
+  (`reviewer_needed`), and that landing stops.
 - **How many reviews.** A project with risk reviews (`atelier init
   --risk-reviews`) sets how many independent approvals a change needs by its
-  class: docs or tests, other, core. `atelier land` asks only for the
-  approvals the gate still lacks, one reviewer after another, and never asks
-  a model that has already approved (under any name or harness). A rejection
-  ends that landing at once and prints the reviewer's note and each blocking
+  class: docs or tests, other, core. Ask every review the gate needs together,
+  at one head, before landing (G11): `atelier review-request ID --reviewer
+  H/M --reviewer H/M` asks each named reviewer in one step, none replacing
+  another's request, so the reviews run side by side; each request ends only
+  with its own verdict, and a refusal for any of them asks none. Then land; an
+  approval the gate counts at the head settles the landing's review step
+  with no new request. A rejection
+  recorded at the head ends the landing at once and prints the reviewer's note and each blocking
   finding. The landing stops after a few asks (`REVIEW_PASSES` in
   `cli/land.mjs`) and says how many approvals are missing; `atelier show ID`
   says what the gate counts. A project without risk reviews needs the one
@@ -759,7 +821,8 @@ starts several of them at once and keeps the order.
   asks no separate tier review: two approvals from different families, none
   a contributor's, clear it, and a tier model's approval counts as
   independent when its family is not a contributor's. Name two reviewers of
-  different families with `--reviewer`; a tier model may be one of them.
+  different families on one `atelier review-request`; a tier model may be one
+  of them.
   A change that needs none or one independent review keeps the tier as
   before: a separate tier review's approval is never the independent one.
   Finding, on 2026-10-25: t265 sat an hour with approvals from astra and
@@ -814,7 +877,7 @@ Wait for a landing started elsewhere with `atelier wait tN --project atelier
 review use `--for reviewed`, and to observe the next task change use `--for
 any-change`. Add `--timeout 600` to bound the wait, including a stalled
 server read. The command prints the outcome and exits 0 when reached, 1 when
-the task fails, 3 on timeout, or 4 when it cannot read the task. A merge does
+the task fails, 3 on timeout, 4 when abandoned, or 5 when it cannot read the task. A merge does
 not confirm deployment or publishing; check the post-merge step's outcome
 separately.
 
@@ -832,13 +895,13 @@ steps that follow, and the developer has not yet decided to move them:
   decision and is open; the cost of a per-task suite is measured by `atelier
   flow`, which a wave's landings feed. Until it is decided, run the suite on
   main after each wave.
-- **The deploy and the push to the public mirror.** The same script deploys
-  main and pushes it to the `public` remote after the audit under "After
-  each merge". Atelier can run named post-merge steps for a project (`atelier
-  init --post-merge`, with `atelier land ID --post-merge` to read and resolve
-  a run), but a deploy and a push to a remote the project does not host need
-  the developer's decision, so they stay a script a session runs, once after
-  the wave and not once per task.
+- **The push to the public mirror.** The same script pushes main to the
+  `public` remote after the audit under "After each merge". Atelier can run
+  named post-merge steps for a project (`atelier init --post-merge`, with
+  `atelier land ID --post-merge` to read and resolve a run), but a push to a
+  remote the project does not host needs the developer's decision, so it
+  stays a script a session runs, once after the wave and not once per task.
+  The script deploys nothing; `atelier ship` deploys (docs/ship.md).
 
 `bin/orchestrate/review.sh` also stays: a session without a runner reviews by
 hand with it until the replacement is confirmed in use.
@@ -875,40 +938,37 @@ review.
 
 ### Pre-review while the lease is busy
 
-While one landing holds the project's lease, Atelier pre-reviews the next
-two landings queued behind it (t524; `src/dispatch/prereview.ts`), so a
-defect is found before a task's turn rather than after it spends the lease.
-This replaces the orchestrator's hand-run `prereview.brief`. Every ask of the
-landing queue, by an `atelier land` (every landing queues, `--wait` or
-not), and every
-renewal of the lease asks what is missing: one request per waiter and
-binding (its recorded head, the criteria binding, its contributors, main's
-actual SHA and how many merges main has had), never a second for the same
-binding. Polling reads the baseline again, so a push without a recorded
-merge gives a settled pre-review a fresh binding. If that read is unavailable,
-the last observation remains; claims and verdicts still require a fresh read.
-A waiter whose landing stops asking, gives up its place or closes is no longer
-pre-reviewed: the queue's list of jobs and the claim check this themselves,
+While one landing holds the project's lease, a task queued behind it can be
+pre-reviewed (t524; `src/dispatch/prereview.ts`), so a defect is found
+before the task's turn rather than after it spends the lease. Nothing asks
+one by itself (G6): `atelier prereview tN --reviewer H/M` asks it, once per
+call, of the reviewer named. Without `--reviewer`, or with one a gate filter
+refuses (a contributor, a family match, no live runner offering the
+`prereview` job), it refuses, listing every candidate with its figures. A
+request is bound to the waiter's recorded head, the criteria binding, its
+contributors, main's actual SHA and how many merges main has had, and a
+second for the same binding is not made. A waiter whose landing stops
+asking, gives up its place or closes is no longer pre-reviewed: the queue's list of jobs and the claim check this themselves,
 so a waiter that expired is never offered to a runner even when no landing
 call has come since. While no lease is live, a pending pre-review waits.
 
-The reviewer is picked as a gate reviewer is picked: from the pool's models
-(an admitted reviewer included), of another family than every contributor,
-or a different model of the one company in single-family mode. Only models
-that a live runner offers for the `prereview` job count. A runner whose config takes
-`review` advertises `prereview` too. While no live runner advertises it,
-nothing is asked. A task with a gate review request open gets no
+The reviewer you name must qualify as a gate reviewer would: a model of the
+pool (an admitted reviewer included), of another family than every
+contributor, or a different model of the one company in single-family mode,
+that a live runner offers for the `prereview` job. A runner whose config
+takes `review` advertises `prereview` too. A task with a gate review request open gets no
 pre-review, and a runner takes the gate's reviews before any pre-review.
 Pool changes withdraw open pre-reviews for models held from reviewing;
 claims and verdicts recheck that standing before they can affect the queue.
 
 The claim binds the request to main's head as the server reads it from the
-baseline then; a claim made while it cannot be read is refused and the
+project's repository then; a claim made while it cannot be read is refused and the
 request stays open. The runner clones the task's recorded head into a
-scratch folder of its own, merges that main into it as `atelier land` does
-(a baseline that moved before the merge makes the pre-review stale), raising the route level
-and regenerating the fixtures, and records the main head it merged and the
-tree it prepared. The reviewer's brief names the merged tree's tests for the
+scratch folder of its own and merges that main into it
+(main moving before the merge makes the pre-review stale). It regenerates
+the declared fixtures and records the main head it merged and the tree it
+prepared. `ROUTE_LEVEL` stays frozen for named capabilities. A landing
+merges the task's head into the registered checkout. The reviewer's brief names the merged tree's tests for the
 changed files, the project's required checks to run there, the task's
 recorded results (from its own tree, not the merged one) and the evidence
 that is missing. Nothing is pushed, and the builder's workspace is never touched.
@@ -918,9 +978,8 @@ gate, answer a review request or count a round, and the landing never waits
 for it. It is checked before it is applied: a verdict whose head, main,
 criteria or contributors moved, or that came after its claim was lost, is
 recorded as stale and changes nothing. Main counts as moved when the
-baseline's head, read again when the verdict arrives, is not the main the
-tree was prepared from, whatever moved it (a merge, or `atelier sync`
-pushing without one). A rejection that names no blocking finding, or an
+project branch's head, read again when the verdict arrives, is not the main
+the tree was prepared from. A rejection that names no blocking finding, or an
 approval that names one, is a malformed reply, however it was posted.
 
 | Result | What it does | Next step |
@@ -929,7 +988,7 @@ approval that names one, is a malformed reply, however it was posted.
 | blocking findings | The task leaves the queue and its landing is fenced (`prereview_blocked`). The builder and head stay; a runner's builder gets the claim back with the findings in its rework brief | Once they are fixed, `atelier unblock tN`, then `atelier land tN` again |
 | blocking, builder unavailable | As above, but the inbox says developer action is needed | Hand the task over (`atelier handoff`) or dispatch it, then unblock |
 | conflict, preparation failed | Recorded apart from a result; the task keeps its place | The landing will meet the same conflict or failure: resolve it ahead |
-| unavailable (no reviewer, skipped, timed out, malformed reply, runner failure) | Nothing: the task keeps its place and lands normally | None; it is tried at most three times in all, and after no reviewer qualified, not again for five minutes |
+| unavailable (skipped, timed out, malformed reply, runner failure) | Nothing: the task keeps its place and lands normally | Ask again with `atelier prereview tN --reviewer H/M` if it is still worth it |
 | task took the lease first | The result is kept as evidence and controls nothing | None |
 
 The task detail (`GET /api/projects/P/items/tN`) carries `prereviews`, each
@@ -945,7 +1004,7 @@ waiting row's newest `prereview`.
 | A merge that stops on conflicts, naming the files | Main has moved and the merge conflicts | "Conflicts" |
 | `… rejected tN at SHA: …` | The reviewer asked for changes; the landing printed the note and each blocking finding | "Judging a review" |
 | `tN still needs N more approvals at SHA after N reviews` | Every ask was answered with an approval and the gate still lacks some | `atelier show tN` says what the gate counts; look for an approver the gate sets aside (a contributor, or one model asked under two names) |
-| `main moved under the lease N times` | Other landings kept merging first; the task stays submitted | Run the same command once main settles |
+| `main moved from … to … between the checks and the push` | Main raced the checked merge push three times; the task stays accepted with its approvals | Run the same command once main settles |
 | `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then land the task again |
 | `Starting no more landings: …` | A failed landing left post-merge work open, so a wave starts nothing more | `atelier land tN --post-merge status`, resolve it, then run the same command |
 | `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head | Run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
@@ -981,8 +1040,8 @@ The same files conflict almost every time on Atelier: `cli/atelier.mjs`,
 merge-main job merges main as it is when a runner claims it (t429), so the
 job needs no redispatch to pick up a newer main.
 
-A build job, a fix after findings included, submits the head it built on
-the fork's old base without merging main first, so on 10 October nearly
+On 1.x a build job, a fix after findings included, submitted the head it
+built on its old base without merging main first, so on 10 October nearly
 every resubmitted task stopped at the conflict stage and cost a further
 round; t435 has the runner merge main before submitting.
 
@@ -1012,19 +1071,19 @@ Run `bin/orchestrate/post-merge.sh tN` in the project checkout once a wave
 has landed (after each task when you land one by one) and wait for it. It
 works on main as the checkout pulls it, so one run covers every task the wave
 merged; `tN` names the last. It requires a clean `main`, pulls with
-`--ff-only`, runs `npm run typecheck` and `npm test`, deploys, audits
-outgoing history and publishes: the steps that stay outside Atelier. Any
+`--ff-only`, runs `npm run typecheck` and `npm test`, audits outgoing
+history and publishes: the steps that stay outside Atelier. Any
 failed command stops it and holds the next wave. The steps below explain
 those operations and manual diagnosis; start no further landing while this
 step is pending.
 The script runs the full suite in the clean checkout; a clean clone below
 can reproduce failures independently.
 
-For a task whose platform/runtime behaviour needs a remote smoke check, set
-`POST_MERGE_SMOKE=/absolute/path/to/check`; the executable receives `before`
-and `after` around deployment and must return zero for each. A failure
-holds the next landing. Include the orchestrator's signed-in browser criterion in
-that verification after deployment; a local pass cannot stand in for it.
+A task whose platform or runtime behaviour needs a remote smoke check is
+checked against the deployed server once `atelier ship` has deployed (the
+ship order's `verify-deploy` run, docs/ship.md), and so is the
+orchestrator's signed-in browser criterion; a local pass cannot stand in for
+either.
 
 1. Update and type check:
 
@@ -1055,13 +1114,18 @@ that verification after deployment; a local pass cannot stand in for it.
 
    ```sh
    git diff $PREVIOUS HEAD -- src/capability-declarations.ts
-   npm run deploy
    ```
 
    The diff shows whether a capability was declared; if one was, queue
-   again every landing refused for lacking it once the deploy is done. `npm run deploy`
-   does not run tests, which is why step 2 comes first. If it fails, report
-   the error and queue no landing that needs the new route.
+   again every landing refused for lacking it once the deploy is done. The
+   deploy itself is the developer's step on the Studio: the server runs from
+   a release installed under `/Users/atelierd/server`, which only an
+   administrator can replace (`scripts/studio/setup-staging.sh` installs
+   one; `docs/studio.md`). `post-merge.sh` deploys nothing; the deploy step
+   the project's ship order still names (`scripts/ship-worker.mjs`) is the
+   1.x Worker's and does not reach the Studio. The deploy runs no tests,
+   which is why step 2 comes first. If it fails, report the error and queue
+   no landing that needs the new route.
 4. Publish main to the public mirror once it is checked (t433 makes this a
    command). Name the mirror's remote `public` (`git remote -v` lists them;
    `git remote add public URL` once) and run:
@@ -1103,7 +1167,7 @@ that verification after deployment; a local pass cannot stand in for it.
    `$(git rev-parse --git-path public-audit)` and stops until
    `PUBLIC_AUDIT_HEAD` names the exact audited head. Setting it acknowledges
    that human inspection; it cannot bypass bad addresses or private paths.
-   On restart, the pending step repeats checks and deployment before pushing;
+   On restart, the pending step repeats the checks before pushing;
    it takes the next task only after the push succeeds. If the push is rejected as
    non-fast-forward, the mirror has a commit main does not: fetch, find it,
    and never force the push.
@@ -1112,64 +1176,44 @@ that verification after deployment; a local pass cannot stand in for it.
 
 ### After a deploy
 
-A Durable Object keeps running the code it started with until it goes
-idle, so a deploy leaves a busy Ledger on the older code. On 2026-10-13
-from 09:35 to 10:05 EDT, after the deploys of t578 and t585, the atelier
-Ledger answered "The RPC receiver does not implement the method" for
-`showcaseCounts` and `mode`, and the showcase showed zeros. Stopping every
-runner for about 70 s let it go idle and start again on the new code.
+On the Studio each environment is one Node process, and a deploy restarts it
+on the new release, so every Ledger runs the new code from the first call
+after the restart. Calls in flight finish before the process stops
+(`cli/serve.mjs` ends on SIGTERM once they settle), and a CLI call that
+meets the restart retries a read, a push or a write that provably never
+left, three times (G10), and otherwise stops with "may have applied: run
+...".
 
-Since t586 the Worker handles this itself (src/ledger-stub.ts):
-
-- The first time a Worker isolate addresses a Ledger, it sends its own
-  `DEPLOYED_MAIN` (`ledgerVersion`). A Ledger reads the `DEPLOYED_MAIN` of
-  the deploy whose code it runs, so a Ledger on older code sees the two
-  differ and restarts (`ctx.abort()`) once no call is in flight
-  (src/restart-gate.ts), or after 30 s if it is never idle. New methods are
-  served within a minute, with the runners left running.
-- A call the Ledger lacks asks it to restart (`restartForUpdate`) and
-  answers 503 `server_updating`, "the server is updating; try again in a
-  minute", instead of a 500. The showcase says "The server is updating" and
-  is kept for ten seconds only.
-- A Ledger restarts at most once a minute (`ledgerRestart` in
-  src/rules.ts), and not again for a Worker whose restart brought the same
-  code back, so an old Worker isolate lingering after a deploy cannot keep
-  restarting it. `npm run deploy` sets `DEPLOYED_MAIN`; a deploy without it
-  restarts a Ledger only when a method is missing.
-- The Worker log says which Ledger restarted and why (`Ledger restarting
-  for an update: ...`).
-
-The first deploy of t586 still needs the manual step once. A Ledger built
-before t586 has no `ledgerVersion` and no `restartForUpdate`, and nothing it
-already does resets it safely: it never calls `ctx.abort()` or
-`blockConcurrencyWhile`, and an error from a call, the missing-method error
-included, does not reset a Durable Object. The only other
-resets are its running out of memory or CPU, which are not safe to provoke.
-So after deploying t586, if a page or the CLI says the server is updating,
-or the Worker log says a Ledger "predates ledgerVersion", stop every runner
-for 70 s and start them again. From then on every Ledger runs code that
-restarts itself on the first call after a deploy.
+On 1.x a Durable Object kept running the code it started with until it went
+idle, and t586 taught the Ledger to restart itself after a deploy
+(`src/ledger-stub.ts`, `ledgerVersion`, `restartForUpdate`). That code
+remains, and a call the Ledger lacks still answers 503 `server_updating`,
+but a Node server never runs two versions at once.
 
 ### Before a switch of the server
 
-The Ledger's schema only moves forward: a deploy adds tables and columns
-(src/ledger.ts, the constructor) and never takes them away, and
+The Ledger's schema only moves forward: a new release adds tables and
+columns (src/ledger.ts, the constructor) and never takes them away, and
 `atelier events` exports the events alone, not the items, reviews, plans,
 tokens and models the other tables hold. A switch of the server, such as
-1.0 to 1.1, therefore needs a way back recorded before it starts. Since
-t342 the developer has four commands for it, each refused with 403 to an
-agent's or a runner's token, or a request without one.
+1.x on Cloudflare to 2.0 on the Studio, therefore needs a way back recorded
+before it starts. Each command below is the developer's, refused with 403 to
+an agent's or a runner's token, or a request without one.
 
 Before the switch:
 
 1. Stop the runners, so nothing writes while you read.
-2. Record a bookmark of each project:
+2. On a 1.x server only, record a bookmark of each project:
    `atelier ledger bookmark --project P`. It records the point-in-time
    bookmark of the project's Ledger and of the index (which holds every
-   project's registration, the tokens and the pool), prints both, and
-   prints the id, `b1` say, that restores them. Keep the id with the
-   switch's notes. Cloudflare keeps a Durable Object's history for 30
-   days, so a bookmark is a way back for 30 days.
+   project's registration, the tokens and the pool) and prints the id, `b1`
+   say, that restores them with `atelier ledger restore --project P
+   --bookmark b1@SERVER`. Cloudflare keeps a Durable Object's history for 30
+   days. Both commands belong to 1.x: the Node server keeps no
+   point-in-time history and refuses them with `not_supported`. On 2.0 the
+   nightly encrypted backups take their place, restored with
+   `cli/restore.mjs` on the developer's Mac and installed on the Studio with
+   `scripts/studio/setup-restore.sh` (`docs/studio.md`).
 3. Dump each project: `atelier ledger dump --project P --file P.json`.
    The file holds every table of the project's Ledger with its rows, the
    schema version (a hash of every table's columns) and the commit that
@@ -1179,58 +1223,37 @@ Before the switch:
    dump checks each one's rows against a checksum of the table as it stands
    then, and fails, writing nothing, if the rows it read differ from that
    final state, even when the count held. It does not catch every write
-   made while it read: a row added to a page not yet read is read with the
-   rest and passes, since the dump then matches the Ledger as it stood at
-   the end, and a change undone before the check goes unseen. So stop the
-   runners before you dump, and if the dump fails, dump again. The file is the project's whole record: keep it as you would
-   the owner token.
+   made while it read, so stop the runners before you dump, and if the dump
+   fails, dump again. The file is the project's whole record: keep it as you
+   would the owner token.
 
 Rehearse the switch on staging before production:
 
-1. On a staging server that runs the same code as production, import the
-   dump: `ATELIER_SERVER=https://staging… atelier ledger import --project
-   P --file P.json`. The import refuses a Ledger that already holds
-   anything, a dump of another project, and a dump whose tables have
-   other columns than the server's (`schema_mismatch`: import into a
-   server running the code that wrote the dump, then deploy the new code
-   there). It registers the project when staging does not list it yet.
-   An import that stops halfway leaves its rows behind, and a second one
-   is refused; rehearse again under a project staging has not had.
-2. Deploy the new version to staging and watch the Ledger migrate the
-   imported rows: open the project's pages, run `atelier status --project
-   P` and `atelier stuck --project P`, and compare what they show with
-   production.
+1. Import the dump into staging: `ATELIER_SERVER=https://staging…
+   atelier ledger import --project P --file P.json`. A dump written by older
+   code (1.0) is migrated to the server's schema as a start of the new code
+   would migrate it; a dump from newer code is refused (`schema_mismatch`),
+   as are a Ledger that already holds anything and a dump of another
+   project. The rows stored are checked against the dump's counts and
+   checksums before the import finishes, and it registers the project when
+   staging does not list it yet. An import that stops partway is resumed
+   with `--resume ID` or taken back with `atelier ledger import --abort ID`.
+2. Open the project's pages, run `atelier situation --project P` and
+   `atelier stuck --project P`, and compare what they show with production.
 3. Switch production only when staging shows nothing missing.
 
-To roll back production after the switch:
-
-1. Deploy the version you switched from.
-2. Restore each project: `atelier ledger restore --project P --bookmark
-   b1@SERVER`. The command prints the server and waits for its name to be
-   typed back. A bookmark id names the server that recorded it, and another
-   server refuses it. Only a bookmark `atelier ledger bookmark` recorded for
-   that project is taken. Each Ledger restores to it on its next start, which it is
-   asked to make at once; the command says which. Everything written since
-   the bookmark is gone, in the project's Ledger and in the index, and the
-   index is every project's: restore every project to bookmarks recorded
-   together, or the other projects lose what the index gained for them
-   since.
-3. The restore records a bookmark of the state just before it, and prints
-   the command that returns to it, should the rollback itself be the
-   mistake.
-
-The local runtime keeps no history, so the tests cannot restore a
-bookmark: they stand in for the storage's restore call. Try a restore on
-staging before the first switch that may need one.
+Moving a project's repository and its open tasks from 1.x (`atelier projects
+move-host`, `atelier migrate tN`), and keeping the old baselines current
+during the bake, are in [Branches](branches.md#moving-a-project-here).
 
 ## Fast mode
 
 Atelier has two modes. Full mode is the default: every task is claimed,
-built on its fork, checked, reviewed and landed one at a time, as above.
-Fast mode is the developer's, for when that path cannot run. On 2026-10-13
-Artifacts failed every new fork, so no task could be claimed, and four
-finished tasks (t575 to t578) were merged by hand, outside the record. Fast
-mode makes that path a recorded one.
+built on its branch, checked, reviewed and landed one at a time, as above.
+Fast mode is the developer's, for when that path cannot run. On 2026-10-13,
+under 1.x, Artifacts failed every new fork, so no task could be claimed, and
+four finished tasks (t575 to t578) were merged by hand, outside the record.
+Fast mode makes that path a recorded one.
 
 Only the developer switches. `atelier mode fast --reason TEXT` puts the project
 in fast mode; the switch is recorded as a standing decision with the
@@ -1244,7 +1267,7 @@ token, on any project (t629, the developer's decision of 2026-10-13: their
 recorded direction suffices):
 
 ```text
-atelier mode fast --reason "Artifacts fails every new fork" --quote "go to fast mode" --as claude-code/opus-5.5 --project demo
+atelier mode fast --reason "no reviewer can run today" --quote "go to fast mode" --as claude-code/opus-5.5 --project demo
 ```
 
 Both are required and both are recorded: on the mode, its standing
@@ -1266,39 +1289,65 @@ mode stands.
 
 ### Runner builds in fast mode
 
-A runner's build in fast mode claims with a fork, as every build does. The
-fork-less build (t589), which took a dispatched build with `atelier fast
-take` and reported its commit with `atelier fast ready`, was removed in
-t228: forks work since t772, and t18 and t181 handle a stuck one. Fast mode
-is a flag on the one path, and on that path fast mode lands now and reviews
+A runner's build in fast mode claims its task and branch, as every build
+does. The fork-less build of 1.x (t589), which took a dispatched build with
+`atelier fast take` and reported its commit with `atelier fast ready`, was
+removed in t228. Fast mode is a flag on the one path, and on that path fast mode lands now and reviews
 after (t300). The gate counts a task ready when its required checks pass at
 its head and no secret flag stands; the independent review is not required
 before the merge, so `atelier land` (and the lander that runs it for a
 queued task) asks none, and merges. A rejection already standing at the head
 still blocks, as does a failed check. The criteria review is skipped.
 
-Once the merge is recorded, `atelier land` asks the post-merge review, of
-`--reviewer` or the reviewer the server picks, and it is owed until a
-verdict stands. That reviewer may share the builder's family; the review
-records `same-family (fast mode)`. A rejection files a fix task. If the ask
-fails, the landing says the review is owed and the task stays merged; ask it
-with `atelier review-request tN --reviewer H/M`. A merge made in fast mode by
+Once the merge is recorded, the post-merge review is owed until a verdict
+stands. The server asks it as it records the merge only under the
+developer's standing `post-merge-reviewer` instruction, of the reviewer it
+names; otherwise `atelier land --reviewer H/M` asks it of that reviewer, and
+without one the landing says the review is owed and how to ask it. The task
+stays merged either way; ask it with `atelier review-request tN --reviewer
+H/M`. That reviewer may share the builder's family; the review records
+`same-family (fast mode)`. A blocking finding is a note on the task, and
+`atelier file-fix tN --from-note N` files it as a task; the server files
+none. A merge made in fast mode by
 `land`, the lander or `atelier merge` is listed by `atelier fast status` and
 by the switch back to full mode, as a landing with a receipt is, and the
-review it is owed may come from the builder's family when the server picks
-the reviewer too. Full mode is unchanged:
+review it is owed may come from the builder's family. Full mode is unchanged:
 the review comes before the merge.
 
 - The queue marks no build fast. The routes `POST items/tN/fast-take` and
   `fast-ready` remain only for a runner older than t228: each answers 409
   `not_fast_build` and records nothing, and that runner falls back to the
-  claim with a fork.
+  claim.
 - The server writes no `item.fast_taken` or `item.fast_ready`. Events
   already recorded still replay: a standing `item.fast_ready` shows its task
   as built, in `atelier fast status` as a `tN=SHA` line and on the task
   page, until the task lands. Record its merge as before.
 - The route group is the named capability `runners.fast-build.v1`, kept so
   `atelier fast status` can name what it reads.
+
+### Standing instructions
+
+In fast mode, and only there, the developer may let the server act by itself
+in four named ways (G6, `src/standing.ts`). Each is a standing decision
+recorded with the developer's words, `atelier decide --standing KEY VALUE
+--quote "…" --as H/M`, listed by `atelier decisions` and withdrawn as any
+decision is (`atelier decisions withdraw dN --note "…"`):
+
+- `queue-landable on`: the stage tick queues the land job of a task found
+  landable past its limit, for a live lander runner.
+- `reask-on-resubmit on`: a review request withdrawn because the task's head
+  moved is asked again of the same reviewer at the new head, once the gate
+  needs it.
+- `post-merge-reviewer H/M`: the post-merge review of a fast landing is asked
+  of that reviewer as its merge is recorded.
+- `notice-delay MINUTES`: a stuck episode is sent to the developer's channel
+  once it has been open that long (60 minutes without it).
+
+A project that leaves fast mode keeps the records, and none of them acts
+until it is in fast mode again. Without them nothing happens by itself: a
+landable task is a fact that `atelier land` acts on, a withdrawn review is
+asked again by `atelier review-request`, and a post-merge review stays owed
+until it is asked.
 
 There is no command that lands a batch. The developer merges a reported
 build in their own checkout of main, runs the checks they trust, publishes
@@ -1369,8 +1418,8 @@ developer it read as a defect. The other half were real, and some were serious.
   its own, while a finding that the new code opened a fresh path would still
   block at any round. The developer set that stopping rule after the tenth.
 - When a confirmed finding names a case the criteria did not state, add the
-  case to the criteria (`atelier edit tN --accept "…"`, all criteria
-  restated) before sending the task back, so the review that follows, and the
+  case to the criteria (`atelier edit tN --add-accept "…"`, which appends;
+  G12) before sending the task back, so the review that follows, and the
   next task like it, start with the case written down.
 - Read a review's findings with `atelier show tN --json` (the `reviews`
   list, each with its `head` and `findings`); the text summary shortens them.

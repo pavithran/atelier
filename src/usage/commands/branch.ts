@@ -27,7 +27,7 @@ const spec: CommandSpec = {
     flags: {
       "--force": "push or fetch a branch that does not fast-forward, replacing the other side's",
     },
-    example: "atelier branch push dev/idea --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier branch push dev/idea --project demo",
   },
 };
 

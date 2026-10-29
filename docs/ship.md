@@ -1,5 +1,17 @@
 # Protected actions and `atelier ship`
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 A protected action runs only with the developer's approval for one exact
 revision of the project's main line, and each approval is used by one run.
 `atelier ship`, run by the developer in the registered checkout, composes the
@@ -20,7 +32,7 @@ taken back by a revert:
 
 | Kind | What it is |
 |---|---|
-| `deploy` | publishing the project to where its users reach it, such as `npx wrangler deploy` |
+| `deploy` | publishing the project to where its users reach it, such as `npm run deploy` |
 | `install` | installing a build on a device |
 | `paid-run` | a model or service run that is paid for |
 | `photos-writeback` | writing to a Photos library |
@@ -33,7 +45,7 @@ needs no approval (PAVI's decision of 2026-10-06); `deploy`, `install`,
 
 A project's ship file may name further kinds: an approval kind given in
 `docs/atelier/ship.json`. `atelier approve` refuses any
-other kind, since nothing would use it. The Worker accepts any kind written in
+other kind, since nothing would use it. The server accepts any kind written in
 lower-case letters, digits and dashes, because it does not read the
 project's files.
 
@@ -48,7 +60,7 @@ yet.
 The developer approves one kind at one revision:
 
 ```bash
-atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --expires 24h
+ATELIER_ACTING=claude-code/opus-5.5 atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --quote "Deploy release 12" --expires 24h
 ```
 
 When the developer approves in chat, the model records their words with
@@ -64,19 +76,20 @@ The approval then holds the words as its `quote` field and the model as its
 and a run that used the approval carries them on its `action.ran` event and in
 the record the runs route returns. Those are the places to read them:
 `atelier status` and `atelier receipt` list no action approvals or runs.
-`--quote` without `--as` is refused.
+`--quote` needs an acting model, from `--as` or `ATELIER_ACTING`.
 
 Run in the registered checkout at the revision to ship, or with the form
 under "Protected actions" on the project's page, which binds the approval to
-the main line's head as the page read it. For a project set up with
-`--history-since`, the revision is the baseline's commit, which `atelier ship
---dry-run` prints.
+the main line's head as the page read it. For a project with a rebuilt
+baseline (1.x's `--history-since`), the revision is the baseline's commit,
+which `atelier ship --dry-run` prints.
 
-- **The revision is a commit the baseline holds.** The baseline in Artifacts
-  is the main line as Atelier sees it. The Worker refuses a revision that is
-  not the baseline's head or in its history, so a commit that exists only in
-  a task's fork, or nowhere, cannot be approved. For a project set up with
-  `atelier init --history-since`, whose baseline holds rebuilt commits, the
+- **The revision is a commit the baseline holds.** The baseline, the project's
+  repository on the server, is the main line as Atelier sees it. The server
+  refuses a revision that is not the baseline's head or in its history, so a
+  commit that exists only on a task's branch, or nowhere, cannot be approved.
+  For a project with a rebuilt baseline (1.x's `--history-since`), whose
+  baseline holds rebuilt commits, the
   revision is the baseline's commit, and `atelier ship` finds the checkout
   commit it stands for through the checkout's pairs.
 - **The full revision is required**, 40 or 64 hex digits. `atelier ship
@@ -169,7 +182,7 @@ server on the Studio (`docs/studio.md`).
 | `push` | `{"remote": NAME, "branch": NAME}`; left out, the push goes to the branch's tracked upstream; `false`, the order has no push step, `scan`, `baseline` and `studio` are refused, and `--push` is refused |
 | `typecheck` | optional: runs before the first delivery step (or before wrap, with none) |
 | `scan` | optional: runs just before the push, with `--push`; a failure stops the ship before anything is pushed |
-| `baseline` | optional: runs just after the push, with `--push` |
+| `baseline` | optional: runs just after the push, with `--push`; skipped on the Node server, where the project's repository is the baseline |
 | `studio` | optional: runs after `baseline`, with `--push` |
 
 Each of `install`, `verify-install`, `deploy`, `verify-deploy`, `typecheck`,
@@ -245,8 +258,8 @@ Before anything runs, `atelier ship` refuses, saying what to do next, unless:
   registered branch, with no merge, rebase, cherry-pick, revert or landing in
   progress;
 - the checkout is clean, untracked files included;
-- HEAD is the baseline's head, or for a `--history-since` project the commit
-  the baseline's head is paired with;
+- HEAD is the baseline's head, or for a project with a rebuilt baseline the
+  commit the baseline's head is paired with;
 - the order composes with nothing missing, and the push target, when
   `--push` is given, is a remote the checkout already has;
 - every approval the steps need is present and active at the baseline's
@@ -266,7 +279,8 @@ It then prints the steps and runs them:
   commit. Its output is shown as it comes.
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
-  and updates the baseline; a failing check stops the ship there.
+  and reports how the checkout stands against the server's branch; a failing
+  check stops the ship there.
 - **typecheck** runs Atelier's `npm run typecheck` before the deploy, so a
   failing type-check stops the ship before an approval is spent.
 - **deploy** runs only when the server's code changed since the commit the
@@ -315,7 +329,7 @@ Each is an event in the project's ledger, with no task id:
 There is one `action.ran` for every command, request or step that ran,
 passing or failing, and none for a step that did not run. The ship id is the
 same on every step of one ship. The output tail is the last 3,500 characters,
-cut after redaction: the developer's Atelier token, any Artifacts token in the
+cut after redaction: the developer's Atelier token, any Git token in the
 checkout's Git settings, and the value of every environment variable whose
 name says it holds a token, a key, a secret, a password or a credential are
 replaced with `[redacted]`, as `atelier check` redacts check output.
@@ -346,20 +360,24 @@ records the deploy as failed. `--dry-run` takes no lease.
 
 While a merged revision's declared protected actions have not run, the
 developer's inbox carries a reminder. The kinds the order needs unconditionally
-(install, deploy and the kinds runs name; push needs one only with `--push`)
-are recorded with the project's policy at `atelier init` and `atelier sync`,
+(install, deploy and the kinds runs name) are recorded with the project's
+policy at `atelier init`,
 and for each merged item the entry stands from its `item.merged` event until
 an `action.ran` event of that kind follows it in the ledger, at any revision:
 a ship at a later head delivers an older merge, so its runs retire the older
 reminders too. `atelier status` names `atelier ship --dry-run` as the entry's
 next command.
 
+`atelier sync` is `not_supported` in 2.0. Use `atelier init` to record a
+changed ship order, `atelier pull` to update the checkout, and a landing to
+publish task commits.
+
 ## What ship runs is protected
 
 `docs/atelier/**` is guarded in every project, and the files the composed
 order's commands execute are guarded exactly as the files a check executes
-are: `atelier init` and `atelier sync` read the order from the checkout and
-record its commands in the project's policy, and the gate derives the same
+are: `atelier init` reads the order from the checkout and
+records its commands in the project's policy, and the gate derives the same
 files from them it derives from a check's line (`checkFiles` in
 `src/rules.ts`): a script run directly, the recipe files `make` and `just`
 read, the manifest a package manager runs scripts from, the local binary

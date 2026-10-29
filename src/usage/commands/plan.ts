@@ -50,7 +50,7 @@ const spec: CommandSpec = {
     },
   ],
   flags: {
-    scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry',
+    scope: '--scope needs text: atelier plan "goal" --planner H/M --scope "GLOB", once per entry',
     planner: false,
     json: true,
     hash: false,
@@ -72,7 +72,7 @@ const spec: CommandSpec = {
       "--to H/M": "with reroute, the model that builds from now on, reviews a submitted part, or plans before approval; with refresh --resolve, the model that builds the merge-main part",
       "--resolve": "with refresh, adds a part that merges main's head into the branch and resolves its conflicts, instead of queuing a refresh",
     },
-    example: 'atelier plan "Move the parser to the new grammar" --scope "src/parser/**" --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier plan "Move the parser to the new grammar" --scope "src/parser/**" --planner claude-code/opus-5.5 --project demo',
   },
   subcommands: {
     "": { takes: ["scope", "planner"] },

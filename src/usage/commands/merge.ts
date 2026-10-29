@@ -43,7 +43,7 @@ const spec: CommandSpec = {
       "--cancel": "ends an interrupted merge, so the task's holder can push again",
       "--discard-local": "with --cancel, removes the unpublished merge commit from the checkout",
     },
-    example: "atelier merge t3 --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier merge t3 --project demo",
   },
 };
 

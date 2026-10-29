@@ -90,15 +90,15 @@ it("marks each orchestrator part built or not built yet, as the data says", asyn
   for (const part of ORCHESTRATOR) expect(body).toContain(escapeText(part.name));
 });
 
-it("the orchestrator section describes the flow as it runs: plans, routing, automatic reviews by home runners, the integration branch and atelier land", async () => {
+it("the orchestrator section describes the flow as it runs: plans, routing the developer names, reviews by home runners, the integration branch and atelier land", async () => {
   const { body } = await page();
   const section = /<section id="the-orchestrator"[\s\S]*?<\/section>/.exec(body)?.[0] ?? "";
   expect(section).not.toBe("");
   const prose = /<p>[\s\S]*?<\/p>/.exec(section)?.[0] ?? "";
   for (const said of [
-    '<code>atelier plan "goal"</code>', "plan job", "by its hash, once", "<code>routeParts</code>", "another model family",
+    '<code>atelier plan "goal" --planner H/M</code>', "plan job", "by its hash, once", "<code>routeParts</code>", "another model family",
     "review request", "<code>runReview</code>", "<code>cli/agy-review.mjs</code>", "integration branch", "<code>atelier runner --integrate</code>",
-    "developer's acceptance and merge", "<code>atelier land</code>", "landing lease",
+    "developer's acceptance and merge", "<code>atelier land ID --reviewer H/M</code>", "landing lease",
     "Every home runner offers build and plan jobs", "A rejection with blocking findings", "the integrator submits the plan task",
   ]) expect(prose, said).toContain(said);
   for (const stale of ["nothing else calls it", "pure functions with tests", "by hand"]) expect(prose).not.toContain(stale);
@@ -226,7 +226,7 @@ it("is linked from the sign-in page, which stays free of signed-in links", async
 it("the How page draws where Atelier runs, layer by layer", async () => {
   const how = (await page()).body;
   expect(how).toContain('class="lay-fig"');
-  expect(how).toContain("normally reach Cloudflare through the CLI");
+  expect(how).toContain("normally reach the Studio through the CLI");
   expect(how).toContain("its token limits what it can do");
   expect(how).not.toContain("one path to Cloudflare");
   expect(how).not.toContain("internet off;");

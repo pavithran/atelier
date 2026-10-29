@@ -15,7 +15,7 @@ const spec: CommandSpec = {
       "--to H/M": "the agent that takes the task",
       "--note TEXT": "why; kept with the handoff and shown to the next holder",
     },
-    example: 'atelier handoff t3 --to codex/gpt-6-astra --note "Out of time; the tests are in test/parser"',
+    example: 'atelier handoff t3 --to codex/gpt-6-astra --note "Out of time; the tests are in test/parser" --as claude-code/opus-5.5',
   },
 };
 

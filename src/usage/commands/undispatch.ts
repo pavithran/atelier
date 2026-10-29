@@ -11,7 +11,7 @@ const spec: CommandSpec = {
   ],
   flags: {},
   help: {
-    example: "atelier undispatch t3 --project demo",
+    example: "ATELIER_ACTING=claude-code/opus-5.5 atelier undispatch t3 --project demo",
   },
 };
 

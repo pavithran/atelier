@@ -15,7 +15,7 @@ const spec: CommandSpec = {
       "--item ID": "the task the claim goes on, when it is not the workspace's",
       "--project P": "with an ID, records the claim there even from another task's workspace",
     },
-    example: 'atelier report "Ran the app by hand; the parser takes the new form"',
+    example: 'atelier report "Ran the app by hand; the parser takes the new form" --as claude-code/opus-5.5',
   },
 };
 

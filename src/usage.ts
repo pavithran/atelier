@@ -132,14 +132,25 @@ export function commandUsage(cmd: string): string {
 export const COMMAND_USAGE: Record<string, string> = Object.fromEntries(Object.keys(COMMAND_HELP).map((cmd) => [cmd, commandUsage(cmd)]));
 
 // Shared owner path for init's project section and every built-in guide.
-export const OWNER_LANDING = `The developer runs \`atelier land ID --reviewer H/M\` in the registered
-checkout to land a submitted task: it updates from main, runs checks, obtains
-an independent review, then accepts and merges. Choose a reviewer of another
-family than every contributor. Manual fallback: the reviewer runs
+export const OWNER_LANDING = `For developer-token writes below, set \`export ATELIER_ACTING=H/M\` to the
+registered model acting for you. Owner commands such as \`ship\`, \`wrap\`,
+\`branch push|fetch\`, \`plan show\`, \`projects\` and \`import-tasks\` keep
+the owner actor; do not give them
+\`--as\`. Builder and reviewer commands name their actor with \`--as H/M\`.
+Leave ATELIER_ACTING unset with agent and runner tokens.
+
+The developer runs \`atelier land ID --reviewer H/M\` in the registered
+checkout to land a submitted task at its recorded head. It asks the named
+reviewer and records a land request. If approval is missing, it stops without
+waiting; run it again after approval. Under the lease it accepts, merges
+into the checkout, regenerates when declared, checks the merged tree and
+pushes only the merge. It never writes the task branch. A raced task stays
+accepted with its approvals after the retries end. Choose an independent
+reviewer. Manual fallback: the reviewer runs
 \`atelier diff ID\` and \`atelier review ID --approve|--reject --as H/M --note "…"\`;
-after approval and passing checks, the developer runs \`atelier accept ID\`, then
-\`atelier merge ID\`. For an already accepted task, run \`atelier merge ID\`,
-not land. Builders and reviewers do not accept or merge their own work.`;
+after approval and passing checks, the developer runs \`atelier accept ID --as H/M\`,
+then \`atelier merge ID --as H/M\`. An accepted task can use either merge or land.
+Builders and reviewers do not accept or merge their own work.`;
 
 // The text `atelier guide` prints.
 export function guideText(): string {
@@ -176,25 +187,28 @@ task with exactly one holder. Never edit the project checkout directly.
    never reviews its own work.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
 9. Every 5 minutes the server records a task stuck at a stage past its limit.
-   A review claimed and unanswered for 2 hours is released and asked again once; a request unclaimed for 10 minutes moves once to another reviewer a live runner offers.
+   It records the fact and acts on nothing: a stalled review, an unclaimed
+   request or a lapsed claim waits for a command (\`atelier review-request\`,
+   \`atelier handoff\`, \`atelier release\`). Every refusal ends with a
+   \`next:\` line naming the command that resolves it.
 
 ${OWNER_LANDING}
 \`atelier land ID --queue\` queues the landing for a runner that lists the land job and holds the registered checkout.
-\`atelier land ID\` no longer waits for a review: it asks for one, records the land request (\`--quote TEXT\` names who asked), and the land job runs once the gate counts an approval; \`--no-wait\` records the request and returns.
-The stage tick queues a land job for an accepted task, or any task in fast mode, that stays landable 5 minutes, and tells when it cannot.
-Land retries a recorded commit the server cannot yet serve for up to 5 minutes, printing a line per wait, then stops with the elapsed time.
-A branch not ready in 30 minutes is replaced twice under new names; if the last stalls too, the task shows in \`atelier stuck\` and \`atelier status\`: release it with \`atelier release ID\`, then claim it again with \`atelier start ID\`, which makes a fresh branch and keeps the task's history.
-A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in \`atelier stuck\`, to reroute with \`atelier review-request ID --reviewer H/M\` or withdraw with \`atelier review-withdraw ID --reason TEXT\`.
+\`atelier land ID\` no longer waits for a review: it asks for one, records the land request (\`--quote TEXT\` names who asked), and stops; run it again once the review approves (a land job runs it by itself only under the standing queue-landable instruction); \`--no-wait\` records the request and returns.
+In fast mode, the developer's standing instruction \`atelier decide --standing queue-landable on\` lets the stage tick queue a land job for a task that stays landable 5 minutes; without it the tick records the fact and queues nothing.
+A claim makes the task's branch, \`t/N\`, in the project's repository on the Atelier server at once; a pre-receive hook there lets the task's credential write that branch alone.
+A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in \`atelier stuck\`, to ask again with \`atelier review-request ID --reviewer H/M\` or withdraw with \`atelier review-withdraw ID --reason TEXT\`.
 
 For each session the developer runs in the registered checkout:
 
 1. Start a session with \`atelier unwrap --project NAME\`; relay its short paragraph.
-2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout. It runs the registered checks, commits, and always updates Atelier's own copy of the project, the baseline. A failing check stops it before anything is committed: fix the check, or add \`--allow-failing\` to commit anyway and record in the note which checks failed. It never pushes the project's own remotes unless \`--push\` is given; add \`--push\` only with the developer's approval for that session. It never deploys or publishes a release.
+2. End with \`atelier wrap "summary" --next "what is next"\` in the registered checkout. It runs the registered checks, commits, and reports how the checkout stands against the project's branch on the Atelier server; commits reach that branch only through a landing. A failing check stops it before anything is committed: fix the check, or add \`--allow-failing\` to commit anyway and record in the note which checks failed. It never pushes the project's own remotes unless \`--push\` is given; add \`--push\` only with the developer's approval for that session. It never deploys or publishes a release.
 3. ${FILING_RELAY} Use repeatable \`--found TEXT\` on wrap to file tasks in this project.
 
 A protected action (a deploy, a device install, a paid model run or a Photos
 writeback) runs only with the developer's approval for one exact revision
-of the main line, given with \`atelier approve KIND --head SHA\` and used once.
+of the main line, given with \`atelier approve KIND --head SHA --quote "the developer's words"\`
+and used once. ATELIER_ACTING names the model relaying those words.
 \`atelier ship\`, run in the registered checkout when the developer asks, runs the
 project's ship order, uses those approvals and records every step; its
 \`--push\` pushes the branch to the project's own remotes and needs no
@@ -291,7 +305,18 @@ their reviews and land their work for the developer. Start with \`atelier situat
 their stages, holds, review requests, runners, landings, blocks, limits), and
 \`atelier status\` across projects. File a task
 with \`atelier new "title" --accept "TEXT" --scope GLOB\` and dispatch it with
-\`atelier dispatch ID\`.
+\`atelier dispatch ID --agent A --model M\`.
+
+Atelier gives facts and commands; it makes no pick of its own. A dispatch, a
+review request, a criteria review, a landing or a plan's routes without a
+named model print the candidates with their reliability and refuse; past a
+limit the server records the task as stuck and reroutes, re-asks, releases
+and files nothing. You choose and act by command. Every refusal ends with a
+\`next:\` line, the exact command that resolves it (\`next\` in the JSON error
+under \`--json\`). In fast mode, the developer's standing instructions
+(\`atelier decide --standing KEY VALUE --quote "…"\`: queue-landable,
+reask-on-resubmit, post-merge-reviewer, notice-delay) are the only actions the
+server takes by itself.
 
 ${OWNER_LANDING}
 
@@ -333,9 +358,11 @@ Standing rules:
   \`Agent:\` line: you become a contributor, so the reviewer must be of another
   company than you too, or in single-family mode a different model of the
   selected company from every contributor. Send a conflict that changes behaviour back to its
-  builder with \`atelier dispatch ID --job merge-main\`.
-- Land with \`atelier land ID --reviewer H/M\`, which merges main, checks,
-  submits, waits for the independent review, then accepts and merges;
+  builder with \`atelier dispatch ID --job merge-main --agent H --model M\`.
+- Land with \`atelier land ID --reviewer H/M\`, which checks and submits
+  a claimed task, asks the independent review, and once it approves accepts,
+  merges the accepted head into the checkout, checks and pushes the merge (run it again after the
+  verdict when the review was still open);
   \`--reviewer H/M\` names a reviewer of another family than every
   contributor, or in single-family mode a different model of the selected
   company from every contributor. When no live runner offers that reviewer,
@@ -347,7 +374,7 @@ Standing rules:
   is refused as before; the one-shot runner exits after one verdict and holds
   no claim. Land a wave with \`atelier land ID ID…\`:
   it runs several landings side by side (\`--parallel N\` bounds them),
-  asks only the approvals the project's risk reviews still lack, and takes
+  asks the named reviewer and stops if required approvals are missing, and takes
   the landing lease for one merge at a time. Land retries a transient
   failure of the merge step's fetch (a 5xx, or a revision other than the
   approved one, once), and merges a task it finds already accepted. An override while accepting is
@@ -358,8 +385,8 @@ Standing rules:
   review that rejects ends that landing with the reviewer's findings. An
   approval may carry over a merge of main that leaves the task's files
   alone, and the server alone decides; when main moves under the lease the
-  landing merges main again and asks only what is still missing, and stops
-  after a few rounds with the task submitted. After a failure with
+  landing merges the accepted head onto the new main and checks again. It
+  stops after three refused pushes with the task accepted and its approvals intact. After a failure with
   post-merge work open, no further task starts: read it with \`atelier land
   ID --post-merge status\`, then run the same command again, which resumes
   from the ledger. The suite on main after a wave, the deploy and the push
@@ -371,10 +398,26 @@ Standing rules:
   --for merged\` (or \`--any\`, a stage such as \`--for checked\`, \`--for
   answered\` for a review request, \`--runner home:NAME --silent N\`). It holds
   no lock and rides through a server restart; it exits 0 met, 1 cannot be met,
-  3 at \`--timeout\`, 4 naming a task that was abandoned. Order work with
+  3 at \`--timeout\`, 4 naming a task that was abandoned, 5 when unread. Order work with
   \`atelier edit ID --blocked-by tA,tB\`: the task is not offered, claimed or
   landed until each is merged.
 - Report every run that ended without a result with \`atelier run-report\`.
+- A runner reports facts only: outcome, exit code, program, line and byte
+  counts, and where its log is. The output stays in that log on the runner's
+  machine; read a failure there, not in \`show\`. \`situation\` and \`show\`
+  carry each running build's progress line (program, commits, step, last
+  check, elapsed time).
+- Ask every review the gate needs together at one head: \`atelier
+  review-request ID --reviewer H/M --reviewer H/M\`. Edit a task without
+  losing anything: \`atelier edit ID --add-accept TEXT\` and \`--add-brief
+  TEXT\` append, a replacement prints what it dropped, and \`--restore EVENT\`
+  puts it back.
+- Overlap is judged on the files each task changed since its merge base; a
+  dispatch that would overlap stays queued and names its blocker. On a task,
+  \`atelier check\` runs the tests the project's \`--affected-tests\` map
+  selects; a landing and \`atelier ship\` run the full suite.
+- \`atelier merge\` (and so \`land\`) and \`atelier ship\` take the registered
+  checkout's lease; a second caller waits, naming the holder.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then \`atelier handoff\` the task to another model or
   \`atelier release\` it. Do not start the same work twice.

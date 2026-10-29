@@ -20,7 +20,7 @@ const spec: CommandSpec = {
       "--found-in ID": "the task the defect was found or fixed in",
       "--contradicts SEQ#N": "the verdict event (its number, as atelier finding and atelier receipt print it) and the finding it judged, which the defect shows was wrong; also tN@SEQ#N or PROJECT/tN@SEQ#N, naming this task and project",
     },
-    example: 'atelier defect t3 --note "It drops the last row" --found-in t9 --contradicts 42#1 --project demo',
+    example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier defect t3 --note "It drops the last row" --found-in t9 --contradicts 42#1 --project demo',
   },
 };
 

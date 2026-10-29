@@ -16,7 +16,9 @@ timeline: `npm run build -- --theme dark` writes `atelier-v7-dark.mp4`, the
 Night theme with two scenes on the light ground, and `--theme bright` writes
 `atelier-v7-bright.mp4`, the light theme throughout, with the terminal and
 the captured pages kept as dark insets; each build also writes a 720p copy.
-The earlier cuts are in the history of this file. The voice
+The earlier cuts are in the history of this file. The script and its evidence
+table record what was filmed of Atelier 1.x, which ran on Cloudflare; they do
+not describe Atelier 2.0. The voice
 is OpenAI's `marin`, chosen by the lead developer on 2026-10-08 from four
 samples; the delivery instructions and the score are the fourth cut's. Unstretched
 (tempo 1), marin reads this script at 149 words a minute, near the fifth

@@ -23,7 +23,7 @@ const spec: CommandSpec = {
       "--renew": "renews the lease on the claimed request rather than claiming one",
       "--request N": "with --renew, the request to renew, as the claim gave it; defaults to the one this machine last claimed for the task",
     },
-    example: "atelier review-claim t3 --runner home:studio --project demo",
+    example: "atelier review-claim t3 --runner home:studio --project demo --as claude-code/opus-5.5",
   },
 };
 

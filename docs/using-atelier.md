@@ -1,5 +1,17 @@
 # Using Atelier well
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
@@ -16,7 +28,7 @@ split is right, and whether finished work is accepted. Everything below is
 about making those decisions well and leaving the rest to the system.
 
 Every task goes through the same five steps: **Claim** (one holder per
-task), **Fork** (every task its own fork), **Prove** (the checks run on
+task), **Branch** (every task its own branch), **Prove** (the checks run on
 the exact head), **Review** (another company reviews, or in single-family mode another
 model) and **Land** (one merge at a time, with a receipt). A task's page shows which step it is at. The developer's
 decisions sit at either end: what is claimed, and what lands. What lands is
@@ -55,18 +67,18 @@ always safe; a session can run it for you.
 Something with several parts becomes a plan:
 
 ```sh
-atelier plan "what should be true when this is done" --scope "src/**" --planner claude-code/opus-5.5
+ATELIER_ACTING=claude-code/opus-5.5 atelier plan "what should be true when this is done" --scope "src/**" --planner claude-code/opus-5.5
 ```
 
-A planner proposes parts, Atelier routes each to a model from the pool, and
-nothing is dispatched until the developer approves. For now the CLI refuses a
+A named planner proposes parts. The developer names each part's builder and
+reviewer at approval. Nothing is dispatched until that approval. For now the CLI refuses a
 goal longer than 500 characters, because the plan job carries the goal as its
 dispatch note, which is capped there (task t198).
 
 One clear change becomes a task:
 
 ```sh
-atelier new "short title" --brief "the whole task" --accept "what must be true" --scope "path/**"
+ATELIER_ACTING=claude-code/opus-5.5 atelier new "short title" --brief "the whole task" --accept "what must be true" --scope "path/**"
 ```
 
 The title, at most 80 characters, is what every list shows; the brief and the
@@ -89,7 +101,7 @@ accepted), and an unscoped task overlaps every other. The refusal names the
 overlapping task and points to `atelier edit --scope`.
 
 Give it to a session ("get this done"), or queue it for a runner with
-`atelier dispatch ID`.
+`atelier dispatch ID --agent H --model M`.
 
 A good goal or title says what should be true afterwards, names the files it
 may touch, and asks that every claim match the code. Keep scopes narrow: two
@@ -106,8 +118,9 @@ Check that the parts are sensible and ordered, interfaces first; that each
 part went to a model you want doing it; and that nothing in the split
 contradicts what you asked. Then:
 
-- `atelier plan approve ID --hash HASH` approves the split, by the hash of
-  its newest proposal. Add `--allow-paid` when a part is routed to a paid
+- `atelier plan approve ID --hash HASH --route KEY=BUILDER:REVIEWER` approves the split, by the hash of
+  its newest proposal. Repeat `--route` for every part; no alternates are
+  stored. Without the routes, Atelier refuses and lists candidates. Add `--allow-paid` when a part is routed to a paid
   model.
 - `atelier plan revise ID --note "what to change"` asks the planner again.
 - `atelier plan reroute ID --to H/M` sends the planning or a part to another
@@ -133,14 +146,16 @@ Before accepting anything, look at three things:
 A single task lands with:
 
 ```sh
-atelier land ID --reviewer antigravity/gemini-3.1-pro
+ATELIER_ACTING=claude-code/opus-5.5 atelier land ID --reviewer antigravity/gemini-3.1-pro
 ```
 
-which merges main into the task, regenerates fixtures if the project
-declares how, pushes, checks, submits and waits for the independent review
-a runner serves, all without the project's landing lease; only then does it
-take the lease, for the merge alone (a second landing queues behind it),
-confirm main has not moved, and accept and merge.
+The command checks and submits a claimed task at its recorded head, then
+asks the named reviewer before taking the lease. If approval is missing,
+it records a land request and stops without waiting. Run it again after
+approval. With the gate satisfied, it takes the lease, accepts the head,
+merges it into the registered checkout, regenerates when declared, checks
+the merged tree and pushes only the merge. It never writes the task's
+branch. After three raced pushes, the task stays accepted with its approvals.
 `atelier land` never overrides a review. When no model of another family can
 review a change, `atelier accept` and `atelier merge` take
 `--override-review` with the reason; the override is recorded where everyone
@@ -182,8 +197,9 @@ that is how Atelier improves.
 - Do not edit inside an agent's workspace while its agent runs. Wait for it,
   or hand the task off with `atelier handoff ID --to H/M`.
 - `atelier wrap "summary"` is for work done directly in your own checkout:
-  it runs the checks, commits, updates the baseline and leaves a session
-  note. Work that goes through tasks and plans does not need it.
+  it runs the checks, commits and leaves a session note. It reports the
+  baseline without updating it; only a landing moves the server branch.
+  Work that goes through tasks and plans does not need it.
 - When something breaks, ask what task it becomes, not only how to get past
   it.
 
@@ -198,7 +214,7 @@ that is how Atelier improves.
 | start something large | `atelier plan "goal" --scope GLOB --planner H/M` |
 | review a plan | `atelier plan show ID`, then `approve`, `revise` or `reroute` |
 | file one task | `atelier new "title" --scope GLOB` |
-| queue it for a runner | `atelier dispatch ID` |
+| queue it for a runner | `atelier dispatch ID --agent H --model M` |
 | land one task | `atelier land ID --reviewer H/M` |
 | close a session of direct edits | `atelier wrap "summary"` |
 | clear finished workspaces | `atelier clean --project NAME` |

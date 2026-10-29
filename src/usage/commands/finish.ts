@@ -16,7 +16,7 @@ const spec: CommandSpec = {
     flags: {
       "--summary TEXT": "a summary of the change, stored with the submission",
     },
-    example: 'atelier finish --summary "The parser takes the new form"',
+    example: 'atelier finish --summary "The parser takes the new form" --as claude-code/opus-5.5',
   },
   localCheck: true,
 };

@@ -8,11 +8,8 @@ git pull --ff-only
 head=$(git rev-parse HEAD)
 npm run typecheck
 npm test
-# Owner decision d6: deploy every checked landing. If a task declares a
-# remote smoke check, supply an executable that accepts before/after.
-if [ -n "${POST_MERGE_SMOKE:-}" ]; then "$POST_MERGE_SMOKE" before; fi
-npm run deploy
-if [ -n "${POST_MERGE_SMOKE:-}" ]; then "$POST_MERGE_SMOKE" after; fi
+# No deploy here: on Atelier 2.0 the server runs a release installed on the
+# Studio, and `atelier ship` deploys (docs/ship.md).
 [ "$(git rev-parse HEAD)" = "$head" ] || { echo 'Main moved during checks'; exit 1; }
 : "${NOREPLY:?Set the recorded public no-reply address}"
 git fetch public

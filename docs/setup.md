@@ -1,9 +1,29 @@
 # Setup in detail
 
+For developer-token examples, set the acting model for the session:
+
+```sh
+export ATELIER_ACTING=claude-code/opus-5.5
+```
+
+Use your own registered harness/model. Owner commands such as `ship`,
+`wrap`, `branch push|fetch`, `plan show`, `projects` and `import-tasks` keep
+the owner actor and use `ATELIER_ACTING`; do not add `--as` to them.
+Commands that act as a builder or reviewer use `--as H/M` to name that actor. Agent and runner tokens
+name their own actors; leave `ATELIER_ACTING` unset with those tokens.
+
 The README's "Quickstart" section gives the steps that take a fresh clone to a
-deployed Worker and a registered project. This document holds the rest: how
+running server and a registered project. This document holds the rest: how
 the CLI stores its token and talks to the server, what agent tokens may do,
 the developer's settings, notifications, push events and local development.
+Where the server runs on the Studio, [studio.md](studio.md) holds its layout
+and `scripts/studio/` its installation.
+
+A setting of the server is a file named for it in the directory given with
+`--secrets` to `node cli/serve.mjs`, or an environment variable of the same
+name; the names are `SETTINGS` in `src/runtime/server.mjs`. The server reads
+them when it starts, so a changed setting needs a restart. On the Studio the
+directory is `/Users/atelierd/secrets/ENV`, which only `atelierd` can write. `SECRETS` in the commands below stands for that directory.
 
 ## Signing in
 
@@ -23,10 +43,13 @@ holds a token, without showing it. The server is an `https://` address:
 the token goes with every request, so a plain `http://` server, named by
 `login --server`, `ATELIER_SERVER` or `config.json`, is refused before any
 request is made, except on this machine (`localhost`, `127.0.0.1` or
-`[::1]`), which a request never leaves.
+`[::1]`), which a request never leaves, and on the tailnet (an address in
+100.64.0.0/10), where WireGuard encrypts it. A machine off the tailnet names
+the public origin, `https://`, which reaches the server through the tunnel.
 
 ```bash
 atelier login --server https://atelier.example.com
+atelier login --server http://100.99.0.102:4101
 ```
 
 The token is kept in the first of these that applies:
@@ -50,22 +73,30 @@ command line argument, and login prints no token.
 
 The developer's pages can also sit behind Cloudflare Access, so the person
 reaching them has signed in with whatever the Zero Trust account asks (a
-one-time code, a passkey, an identity provider) before the Worker is reached
-at all. The domain's root is the public front door (`/` answers 302 to the
+one-time code, a passkey, an identity provider) before the server is reached
+at all. On the Studio the server is not on the internet. `cloudflared` runs
+there as `atelierd` and carries the public hostname (next.atelier.zone for
+staging) to the server on the tailnet address; Access sits in front of that
+hostname, and the server checks Access's assertion itself.
+`scripts/studio/setup-tunnel.sh` installs the tunnel and writes the Access
+settings (below); [studio.md](studio.md) holds the rest of the layout.
+
+The hostname's root is the public front door (`/` answers 302 to the
 developer's Home at `/home`), and Access cannot exempt the root path alone,
-so the arrangement is the other way round: the whole domain is public at the
-edge, and the developer's paths are listed for Access. Access picks the
+so the arrangement is the other way round: the whole hostname is public at
+the edge, and the developer's paths are listed for Access. Access picks the
 application whose path is most specific, and a policy applies to its whole
 application, so this takes two self-hosted applications in the Zero Trust
-dashboard, made before the secrets below so the developer is never locked out:
+dashboard, made before the settings below so the developer is never locked out:
 
-1. One for the server's domain with no path, covering everything, with a
+1. One for the server's hostname with no path, covering everything, with a
    single Bypass policy that includes Everyone. The front door, `/how`,
-   `/live.js`, the sign-out form and `/api/*` (the CLI and the runners send
-   bearer tokens that never pass Access) reach the Worker without a prompt.
+   `/live.js`, the sign-out form, `/api/*` (the CLI and the runners send
+   bearer tokens that never pass Access) and `/git/*` (Git sends a grant)
+   reach the server without a prompt.
 2. One for the developer's pages, with an Allow policy that includes their
-   email, whose destinations are these paths (with the server's own domain in
-   place of atelier.zone):
+   email, whose destinations are these paths (with the server's own hostname
+   in place of atelier.zone):
 
    ```text
    atelier.zone/home
@@ -88,32 +119,29 @@ dashboard, made before the secrets below so the developer is never locked out:
    atelier.zone/p/*
    ```
 
-   These are every path the Worker serves to the signed-in developer: Home, the
-   sign-in page, Decisions, Studio, Flow, History, the
+   These are every path the server serves to the signed-in developer: Home,
+   the sign-in page, Decisions, Studio, Flow, History, the
    Models and Usage pages and the Models form, the old `/projects` address,
    the task forms under `/ui`, and each project's
    area under `/p`. A new developer page needs its path added here.
 
 Those paths then meet the sign-in at the edge. A path the list misses is
-still refused by the Worker (below), with a 401 instead of Access's prompt.
-Last, give the Worker the team's URL (`https://TEAM.cloudflareaccess.com`,
-shown under Zero Trust's settings), the second application's audience tag (on
-its overview) and the developer's email as the identity provider reports it, each
-pasted at wrangler's prompt:
+still refused by the server (below), with a 401 instead of Access's prompt.
+Last, give the server three settings (`src/access.ts` reads them): the team's
+URL (`CF_ACCESS_ISS`, `https://TEAM.cloudflareaccess.com`, shown under Zero
+Trust's settings), the second application's audience tag (`CF_ACCESS_AUD`, on
+its overview) and the developer's email as the identity provider reports it
+(`CF_ACCESS_OWNER_EMAIL`). On the Studio, `setup-tunnel.sh` writes the three
+files into `/Users/atelierd/secrets/staging` and restarts the server; elsewhere
+create the files in the secrets directory and restart it:
 
 ```bash
-npx wrangler secret put CF_ACCESS_ISS
+printf 'https://TEAM.cloudflareaccess.com' > SECRETS/CF_ACCESS_ISS
+printf 'AUDIENCE-TAG' > SECRETS/CF_ACCESS_AUD
+printf 'you@example.com' > SECRETS/CF_ACCESS_OWNER_EMAIL
 ```
 
-```bash
-npx wrangler secret put CF_ACCESS_AUD
-```
-
-```bash
-npx wrangler secret put CF_ACCESS_OWNER_EMAIL
-```
-
-With all three set, the Worker itself checks the `Cf-Access-Jwt-Assertion`
+With all three set, the server itself checks the `Cf-Access-Jwt-Assertion`
 header Access adds to a request it let through. The token is verified with
 jose against the keys the team publishes at
 `https://TEAM.cloudflareaccess.com/cdn-cgi/access/certs`; its issuer and
@@ -125,7 +153,7 @@ even if the Access application stops covering the server. `/login` is behind
 the check too, and takes no server token there, which closes the open token
 form the 2026-10-06 audit noted.
 The public paths (`/`, `/showcase`, `/how`, `/live.js`), the sign-out form and
-the `/api` routes stay open in the Worker. Behind Access the developer's verified
+the `/api` routes stay open in the server. Behind Access the developer's verified
 assertion is the sign-in: `/login`, or any developer page opened without a session,
 starts the thirty-day session at once, with no token form. A request from
 another site starts none; the hop back from Access's own prompt gets a page
@@ -133,7 +161,7 @@ that reloads the address from the server's origin, where the session starts.
 Sign out ends the session; the next developer page opened under the same Access
 sign-in starts a new one. With none of the three set the server stands as
 it always has, without the second check. Partial configuration is refused:
-with one or two of the three set, or a value the Worker cannot use (an issuer
+with one or two of the three set, or a value the server cannot use (an issuer
 that is not the team's `https://` URL, an email with no `@`), every route
 Access would guard answers 503 with a page naming which setting is missing or
 unusable, never its value, until all three are set or all three removed. The
@@ -158,10 +186,12 @@ The server takes one of two factors:
 
   ```bash
   openssl rand -hex 32
-  npx wrangler secret put OVERRIDE_SECRET
   ```
 
-  The developer types it into the task page's override form; the Worker compares
+  Put the value in a file named `OVERRIDE_SECRET` in the secrets directory
+  and restart the server.
+
+  The developer types it into the task page's override form; the server compares
   it in constant time and refuses a wrong or missing one with a 403.
 
 A server with neither confirms no override, and its refusal says so. To
@@ -176,19 +206,21 @@ way.
 Give each agent its own token from a developer session:
 
 ```sh
+ATELIER_ACTING=claude-code/opus-5.5 atelier models add gpt-6-astra --harness codex --where cloud
 atelier token issue --as codex/gpt-6-astra --project my-project --days 30 --label "Task runner"
 atelier token ls
-atelier token revoke ID
+ATELIER_ACTING=claude-code/opus-5.5 atelier token revoke ID
 ```
 
+`token issue --as H/M` uses H/M for both the new token actor and the
+acting header, overriding `ATELIER_ACTING`; register H/M before issuing.
 Issuing prints the token once. Set `ATELIER_TOKEN` to that value in the
 agent's session. The issue command never writes it to a file. The CLI
 obtains the bound actor from the server, so `--as` is optional and must
 match when supplied. Tokens expire after 30 days by default; `--days`
 accepts 1 through 365. Repeat `--project` to grant several projects; omitting
-it grants all projects. Revocation prevents later API requests. Existing
-Artifacts Git credentials have their own lifetime and are not revoked by
-revoking an API token.
+it grants all projects. Revocation prevents later API requests. The Git grants the token
+asked for are revoked with it.
 
 Only the SHA-256 hash and token metadata are stored on the server. Lists
 never contain the token or its hash. Agent tokens can read their projects,
@@ -211,7 +243,7 @@ developer token. Agent tokens cannot sign in to the browser. On a server without
 Cloudflare Access, signing in to the browser means pasting the developer token at
 `/login`; behind Access the developer's Access sign-in starts the session itself
 (above). Either way the session is a random id, sent only in the
-cookie, whose hash the Worker stores with a thirty day expiry it enforces.
+cookie, whose hash the server stores with a thirty day expiry it enforces.
 Sign out, in the rail of every page, ends the session at once. The token
 itself is never a cookie. Events from agent
 requests show `token proved` beside the actor; this proves identity, not the
@@ -221,26 +253,25 @@ truth of a reported result.
 
 The developer acts as the actor `owner`, and the inbox asks "What needs
 you now?". To use your own actor and name, set `OWNER_ACTOR` and
-`OWNER_NAME`, either as `vars` in `wrangler.jsonc` or as secrets, which keeps
-them out of the configuration:
+`OWNER_NAME`, each a file in the secrets directory:
 
 ```bash
-printf jo | npx wrangler secret put OWNER_ACTOR
+printf jo > SECRETS/OWNER_ACTOR
 ```
 
 ```bash
-printf Jo | npx wrangler secret put OWNER_NAME
+printf Jo > SECRETS/OWNER_NAME
 ```
 
 Pages show times in UTC until `TIMEZONE` names the developer's zone, as an IANA
 name; an unknown name falls back to UTC:
 
 ```bash
-printf America/New_York | npx wrangler secret put TIMEZONE
+printf America/New_York > SECRETS/TIMEZONE
 ```
 
 `atelier login` asks the server for the developer's actor, so the CLI follows
-whatever the Worker is set to.
+whatever the server is set to.
 
 ## Registering a project
 
@@ -277,7 +308,7 @@ name, even if the folder has a different name. A different `--name NAME` is
 refused. `atelier init --name NAME --rename-local` changes only that local
 config entry and then returns. It does not rename a server project (see
 [Renaming a project](owner.md#renaming-a-project)), update its title or policy, or
-push a baseline. The server refuses a new project when its baseline
+push to the server. The server refuses a new project when its
 repository belongs to another registered project.
 
 ## Commit identity
@@ -286,7 +317,7 @@ A project's policy names the identity its commits carry (t451,
 `src/commit-identity.ts`):
 
 ```sh
-atelier init --commit-name "Project Owner" --commit-email 123+owner@users.noreply.github.com \
+ATELIER_ACTING=claude-code/opus-5.5 atelier init --commit-name "Project Owner" --commit-email 123+owner@users.noreply.github.com \
   --agent-email agents@example.com --private-email owner@personal.example
 ```
 
@@ -373,7 +404,7 @@ Set `NTFY_TOPIC` to receive an ntfy notification when submission, review or
 check results put a submitted task in the developer's inbox:
 
 ```sh
-printf 'TOPIC' | npx wrangler secret put NTFY_TOPIC
+printf 'TOPIC' > SECRETS/NTFY_TOPIC
 ```
 
 Topics on ntfy.sh are readable by anyone who knows the name. Use a long,
@@ -394,58 +425,45 @@ that fails after ntfy received it, such as a timeout, is repeated too, so
 the message may arrive twice. An episode that cleared before the hour is not
 sent, and a recurrence is a new episode that is told again.
 
-## Push event setup
+## Push events
 
-The Worker has a Queues consumer for `cf.artifacts.repo.pushed` notices in
-the `atelier` namespace. It acts on pushes to the project's branch, the one
-init registered, ignores other branches and duplicate events, and retries
-failed reads.
-A new push invalidates acceptance and evidence for the previous revision.
-The CLI's push observation remains available when event delivery is delayed.
-
-`bin/setup-push-events` prints what provisioning needs and nothing else. With
-`--apply` it creates two queues, `atelier-push-events` and its dead-letter
-queue `atelier-push-events-dead-letter`, and runs nothing more: it never
-deploys the Worker and never edits `wrangler.jsonc`.
-
-The consumer belongs in the release configuration. Add this to
-`wrangler.jsonc`, alongside the other top-level keys, then deploy:
-
-```json
-"queues": { "consumers": [{ "queue": "atelier-push-events", "max_batch_size": 10, "max_retries": 5, "dead_letter_queue": "atelier-push-events-dead-letter" }] }
-```
-
-Events reach the queue only through a subscription, and a repository-level
-subscription selects one repository. Every item's workspace is a separate fork
-repository, so each fork needs its own subscription under the `atelier`
-namespace; a fork without one has no event delivery, and only the CLI's push
-observation covers it. The installed wrangler (4.147.0) has no flag for a
-subscription's namespace or repository, so create those subscriptions in the
-Cloudflare dashboard or through the API. `bin/setup-push-events` prints this
-as a TODO rather than guessing at a command.
-
-Queue provisioning, subscription creation, and deployment are release actions;
-adding the consumer handler alone does not activate event delivery. See
-[Artifacts event subscriptions](https://developers.cloudflare.com/artifacts/guides/event-subscriptions/).
+Nothing is provisioned for push events. Each repository names
+`hooks/post-receive` (through `core.hooksPath`), and once a ref has moved the
+hook POSTs the push (`project`, `ref`, `before`, `after` and the grant's id) to
+the server's internal listener on the loopback address, with a secret the
+server gave that push alone. The server takes the pusher from its own record
+of the grant, never from the body. A push of a task's branch, `t/N`, or of a
+plan's, `plan/N`, with its own grant is recorded as the holder's push, after
+the pre-receive scan of the pushed files; a push of any other ref records
+nothing. A new push invalidates acceptance and evidence for the previous
+revision. The hook cannot undo the push: if the server does not answer, the
+hook says so on the pusher's terminal, and the next `atelier push` records the
+head. [branches.md](branches.md) describes the hooks and the grants.
 
 ## Local development
 
-`npm run dev` serves the Worker on localhost. The Artifacts binding always
-reaches the real account, even locally, so local runs create real
-repositories. Pass a throwaway token with
-`npx wrangler dev --var ATELIER_TOKEN:localtest`; do not write `.dev.vars`
-into an iCloud project.
+Run the server on your own machine with a throwaway data directory and
+token; never put secrets inside a project checkout:
 
-`npm test` runs two pools. The pure functions in `src/rules.ts` and
-`src/diff.ts` are tested by `node --test` (`test/*.test.ts`). The
-`test/*.spec.ts` files run inside the Workers runtime through the Workers
-test pool, against the Ledger Durable Object with its real SQLite storage
-and no network access; `tsc -p test` typechecks them against the types
-`wrangler types` generates. Workerd logs each refusal those tests assert as
-an uncaught promise rejection (`uncaught exception … 403`, `… 409`,
-`… owned` and the like); those lines are the refusals under test, not
-failures. The README's Quickstart gives how long the suite took on
-recent landings.
+```bash
+mkdir -m 700 /tmp/atelier-dev-secrets
+printf localtest > /tmp/atelier-dev-secrets/ATELIER_TOKEN
+node cli/serve.mjs --env staging --data /tmp/atelier-dev --secrets /tmp/atelier-dev-secrets --host 127.0.0.1
+```
+
+It listens on port 4101 and needs `git` on the PATH, because it serves the
+repositories through `git http-backend`. Nothing in it reaches a Cloudflare
+account.
+
+`npm test` runs every test under Node, with `node --test` (`test/run.mjs`
+finds the `*.test.*` and `*.spec.*` files and starts them with the server's
+module hooks, `src/runtime/loader.mjs`, so a test imports `src/index.ts` as the
+server does). The pure functions in `src/rules.ts` and `src/diff.ts` are
+tested directly; the Ledger tests use real SQLite files, and the git tests push
+with the real client against the real hooks. There is no workerd, no
+wrangler and no miniflare, and `test/no-cloudflare-imports.test.mjs` fails on
+an import of one. `npm run typecheck` runs `tsc -p . && tsc -p test`. The
+README's Quickstart gives how long the suite took on recent landings, on 1.x.
 
 ## Local visual review
 

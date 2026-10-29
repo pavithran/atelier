@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Tokens", line: 1, slot: 10,
       form: "token issue --as H/M [--project P]... [--days N] [--label TEXT]",
-      about: "The developer issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them.",
+      about: "For token issue, --as names both the token actor and the acting model, overriding ATELIER_ACTING. Register that harness/model first on a non-empty pool. The developer issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them.",
     },
     {
       group: "Tokens", line: 1, slot: 20,
@@ -27,7 +27,7 @@ const spec: CommandSpec = {
       "--days N": "how many days the token lasts, 1 to 365; 30 unless given",
       "--label TEXT": "a label kept with the token's record, to tell tokens apart in token ls",
     },
-    example: "atelier token issue --as codex/gpt-6-astra --project demo --days 7",
+    example: "atelier token issue --as claude-code/opus-5.5 --project demo --days 7",
   },
   subcommands: {
     issue: {
