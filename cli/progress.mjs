@@ -22,13 +22,19 @@ const oneLine = (text) => String(text ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]
 // argument, path, pattern or description is ever kept, so no key can leak
 // through one, whatever form it takes. A call that runs no command (an edit,
 // a read) keeps no summary: its tool's name says what it was.
-export const PROGRAM = /^[A-Za-z0-9._+-]{1,64}$/;
+// Shell quoting or escaping before (or in) the program word could hide
+// where an assignment's value ends (API_KEY="a b" npm), so such a command
+// is kept as the fixed name sh, and no word of it is read further.
+export const PROGRAM = /^[A-Za-z0-9._+-]{1,40}$/;
 export function summaryOf(name, input = {}) {
   if (typeof input?.command !== "string") return null;
-  const words = oneLine(input.command).split(" ").filter(Boolean);
-  const first = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? "";
-  const program = first.replace(/^["']|["']$/g, "").split("/").pop() ?? "";
-  return PROGRAM.test(program) ? program : null;
+  for (const word of oneLine(input.command).split(" ").filter(Boolean)) {
+    if (/["'\\`$]/.test(word)) return "sh";
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
+    const program = word.split("/").pop() ?? "";
+    return PROGRAM.test(program) ? program : "sh";
+  }
+  return null;
 }
 
 // A fresh reading of one run's log.

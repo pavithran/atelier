@@ -285,7 +285,8 @@ test("the progress line keeps only program names: no command text in any form re
     [`curl -H 'authorization: Digest username="u", response="${TOKEN}"' x`, "curl"],
     [`/usr/local/bin/deploy --token ${TOKEN}`, "deploy"],
     [`node -e 'fetch(u, {headers: {"x-api-key": "${TOKEN}"}})'`, "node"],
-    [`A=1 B="${TOKEN}" npm test -- --grep ${TOKEN}`, "npm"],
+    [`A=1 B="${TOKEN}" npm test -- --grep ${TOKEN}`, "sh"],
+    [`A=1 B=${TOKEN} npm test -- --grep ${TOKEN}`, "npm"],
   ];
   for (const [c, name] of commands) assert.equal(summaryOf("Bash", { command: c }), name, c);
   assert.equal(summaryOf("Grep", { pattern: TOKEN }), null, "a call that runs no command keeps nothing");
@@ -336,4 +337,20 @@ test("the shared redactor takes bearer and basic credentials in any case and sha
   }
   assert.equal(redactKeys(`{"name": "demo", "x-api-key": "${SECRET}"}`), '{"name": "demo", "x-api-key": "[key removed]"}', "other values stay");
   assert.equal(redactKeys("a basic test failed"), "a basic test failed", "the word basic alone is prose");
+});
+
+test("a command whose assignments are quoted or escaped is kept as sh, never any part of a value", async () => {
+  const V = "secretvalue";
+  for (const [c, name] of [
+    [`API_KEY="prefix ${V}" npm test`, "sh"], [`API_KEY='prefix ${V}' npm test`, "sh"], [`API_KEY=prefix\\ ${V} npm test`, "sh"],
+    [`A="x" B='${V}' node run.js`, "sh"], [`"npm" test ${V}`, "sh"], [`API_KEY=$(cat ${V}) npm`, "sh"], [`TOKEN=\`cat ${V}\` npm`, "sh"],
+    [`env X=${V} npm test`, "env"], [`sudo -u ${V} npm test`, "sudo"], [`X=${V} Y=${V} git push`, "git"], [`/opt/bin/${V}dir/../npm ci`, "npm"],
+  ]) {
+    assert.equal(summaryOf("Bash", { command: c }), name, c);
+  }
+  // The server keeps strict names alone, and none the redactor would touch.
+  const at = "2026-10-28T12:00:00.000Z";
+  const keep = (summary) => parseProgress({ task: "t1", actor: BUILDER, startedAt: at, current: { name: "Bash", summary } }).current.summary;
+  assert.equal(keep("npm"), "npm");
+  for (const bad of [V + " ", "a".repeat(41), `prefix ${V}`, "sk-abcdefghijklmnop", "0123456789abcdef0123456789abcdef"]) assert.equal(keep(bad), null, bad);
 });

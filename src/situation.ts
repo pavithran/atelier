@@ -79,7 +79,8 @@ const RUNS_KEPT = 20;
 const text = (v: unknown, max: number): string | null => typeof v === "string" && v ? redactKeys(v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")).slice(0, max) : null;
 // A command is kept as its program's name alone (npm, git), never its
 // arguments; anything else a runner sends in its place is dropped.
-const program = (v: unknown): string | null => typeof v === "string" && /^[A-Za-z0-9._+-]{1,64}$/.test(v) ? v : null;
+// The shared redactor runs over it too, as a second line of defence.
+const program = (v: unknown): string | null => typeof v === "string" && /^[A-Za-z0-9._+-]{1,40}$/.test(v) && redactKeys(v) === v ? v : null;
 const time = (v: unknown): string | null => typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
 const count = (v: unknown): number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 1e9 ? v : 0;
 const amount = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1e6 ? v : null;
