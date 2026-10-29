@@ -1859,6 +1859,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // poll is, and passed to every project, it keeps the claim it is
     // building under holding. It reads no queue and is offered nothing. A
     // server from before it answers as to a poll, which the runner ignores.
+    // The builds' progress lines a runner sends with its poll or heartbeat
+    // (G21), each kept by its task's project; a runner token's alone.
+    if (c.token?.runner && offer && Array.isArray(body.progress) && body.progress.length) {
+      const reports = body.progress.slice(0, 8) as { project?: unknown }[];
+      await Promise.all(projects.map((p) => {
+        const mine = reports.filter((r) => typeof r?.project === "string" && namesOf(p).includes(r.project));
+        return mine.length ? ledgerOf(env, p).recordProgress(c.token!.runner!, mine).catch((e: unknown) => console.error("progress not recorded", String(e))) : null;
+      }));
+    }
     if (offer && body.heartbeat === true) {
       await Promise.all(projects.map((p) => ledgerOf(env, p).recordRunnerPolls(polls).catch(() => {})));
       return json([]);

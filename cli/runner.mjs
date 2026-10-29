@@ -41,6 +41,7 @@ import { mergeMainAndRegenerate } from "./land.mjs";
 import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
+import { progressTracker } from "./progress.mjs";
 import { checkLimits, limitMs, minutesText, stopLine, stopOf } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
@@ -414,9 +415,9 @@ export const testSlotNote = slotNote(SLOT_WRAPPER);
 // Starts a harness once node is known to be on its PATH (requireNode).
 // Always capture stderr for the adapter limit marker; keep streaming it
 // unless the caller requested private capture (for example, a review).
-export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs } = {}, executeChild = execute) {
+export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs, onSpawn } = {}, executeChild = execute) {
   requireNode(env, cwd);
-  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), captureError: true, streamError: !captureError });
+  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), captureError: true, streamError: !captureError, ...(onSpawn ? { onSpawn } : {}) });
 }
 
 // Throws unless `node` resolves on the PATH a harness will run with, since its
@@ -468,7 +469,7 @@ export function killGroups() {
 // `timeoutMs` is its hard ceiling; given `fromSlot`, `argv` is the test-slot
 // wrapper and both count from when it reports the slot held. The result then
 // carries `stopped`, {kind: "timeout" | "silent", ms}, with `timedOut` set.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000, onSpawn } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const clocked = silenceMs !== undefined || startupMs !== undefined || fromSlot;
@@ -477,6 +478,9 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
       stdio: ["ignore", capture ? "pipe" : "inherit", captureError ? "pipe" : "inherit", ...(fromSlot ? ["pipe"] : [])] });
     const pid = child.pid;
     if (pid) liveGroups.add(pid);
+    // The harness's pid goes to the progress tracker (G21), which reads the
+    // processes below it.
+    if (pid) onSpawn?.(pid);
     let output = "", stderr = "", error, timedOut = false, stopped, closed, ending = false, ended = !pid;
     // A signal to every process in the group; false once none is left.
     const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
@@ -2038,7 +2042,16 @@ export async function runTask(assignment, config, name, io) {
         if (refused.length) throw Object.assign(new Error(`commit identity refused before the builder started: ${refused.join("; ")}`), { infrastructure: true });
         advance({ type: "start" });
         taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, runEnv, { capture: true, stream: true });
+        // The task's progress line (G21): the claude-code adapter writes the
+        // builder's stream-json log beside the workspace, which the tracker
+        // reads with the branch and the harness's processes for each poll.
+        const progressLog = io.progress ? `${workspace}.progress.jsonl` : null;
+        if (progressLog) {
+          rmSync(progressLog, { force: true });
+          io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog });
+        }
+        try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
+        finally { io.progress?.end(); }
       } finally {
         if (dataHome) {
           try { await io.removeDataHome(dataHome); }
@@ -4357,6 +4370,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // What the runner remembers of the tasks it passes by goes with every poll
   // and heartbeat, and is read back at start (runnerMemory, G5).
   const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, notReady, pauses: limits.pauses }) });
+  // The running build's progress line (G21, cli/progress.mjs) goes with every
+  // poll and heartbeat while a build runs, and once more when it has ended.
+  const progress = progressTracker({ now });
+  const progressReport = () => { const p = progress.report(); return p.length ? { progress: p } : {}; };
   const missing = new Map();
   // Post-merge reviews whose baseline could not be fetched (t591), by
   // missingKey: the commit, the failures so far and the poll the next try
@@ -4522,6 +4539,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     for (const args of [["reset", "--hard", target], ["clean", "-ffd"]]) await git(args);
   };
   const io = {
+    progress,
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
@@ -5040,7 +5058,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()) }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+          // The ended build's last progress (its cost among it) is sent at once,
+          // so the server keeps the run's final line even under --once.
+          if (heartbeat && progress.active()) {
+            try { await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); progress.sent(); }
+            catch (error) { if (!controller.signal.aborted) line(`the build's last progress was not sent: ${error.message}`); }
+          }
           if (controller.signal.aborted) break;
           if (task.item.dispatch?.job === "land") { landOutcome(task, state); continue; }
           if (state.providerLimit) {

@@ -26,7 +26,7 @@ export function situationText(s) {
     `        scope ${t.scope.length ? t.scope.map(flat).join(", ") : "not specified"}${t.dispatch ? `; dispatched (${t.dispatch.job}) to ${[t.dispatch.agent, t.dispatch.model].filter(Boolean).join("/") || t.dispatch.to || "any"}` : ""}`,
     ...(t.blockedBy?.length ? [`        blocked by ${t.blockedBy.map((b) => `${b.id} (${b.state})`).join(", ")}${t.blockedBy.some((b) => b.state === "abandoned") ? "; an abandoned blocker keeps it waiting: edit --blocked-by to drop it" : ""}`] : []),
     ...(t.lastCheck ? [`        last check: ${flat(t.lastCheck.claim)} ${t.lastCheck.stopped ? `stopped (${t.lastCheck.stopped.kind}, ${t.lastCheck.stopped.minutes} min)` : t.lastCheck.passed ? "passed" : "failed"} at ${short(t.lastCheck.head)}, ${t.lastCheck.at}`] : []),
-    ...(t.progress ? [`        progress: ${progressText(t.progress)}`] : []),
+    ...(t.progress ? [`        progress: ${progressText(t.progress, t.lastCheck)}${t.progress.stall ? `  STALL: ${flat(t.progress.stall)}` : ""}`] : []),
   ].join("\n")), "no live task");
 
   section("Holds", s.holds.map((h) => h.kind === "blocked-by"
@@ -75,14 +75,16 @@ export function situationText(s) {
 }
 
 // One task's live progress line (G21), as the runner last reported it.
-export function progressText(p) {
+export function progressText(p, lastCheck = null) {
   if (!p) return "none reported";
+  const check = lastCheck ? `last check ${flat(lastCheck.claim)} ${lastCheck.stopped ? "stopped" : lastCheck.passed ? "passed" : "failed"} at ${short(lastCheck.head)}` : "no check yet";
   const current = p.current ? `running ${flat(p.current.name)}${p.current.summary ? ` (${flat(p.current.summary)})` : ""} for ${span(p.current.ageMs)}` : "between commands";
   return [
     `${p.commands.completed} command${p.commands.completed === 1 ? "" : "s"} run`,
     `${p.commits} commit${p.commits === 1 ? "" : "s"} on t/${String(p.task).slice(1)}`,
     current,
-    p.childAlive ? "a child process is alive" : "no child process",
+    p.childAlive === null ? "child processes not readable" : p.childAlive ? "a child process is alive" : "no child process",
+    check,
     `elapsed ${span(p.elapsedMs)}`,
     p.costUsd !== null && p.costUsd !== undefined ? `$${Number(p.costUsd).toFixed(2)}` : p.tokens ? `${p.tokens} tokens` : "cost not reported",
     p.ended ? "run ended" : `reported ${span(p.reportedAgoMs)} ago`,

@@ -654,13 +654,30 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
+  // A claude-code build the runner follows (G21, cli/progress.mjs) writes its
+  // stream-json events to ATELIER_PROGRESS_LOG, which the runner reads for
+  // the task's progress line; the final answer is printed as text after, as
+  // --output-format text would have printed it.
+  const progressLog = harness === "claude-code" && kind === "build" && typeof env.ATELIER_PROGRESS_LOG === "string" && env.ATELIER_PROGRESS_LOG ? env.ATELIER_PROGRESS_LOG : null;
+  const argvFor = progressLog ? streamJsonArgv(harnessArgv) : harnessArgv;
+  let logFd = null;
+  if (progressLog) {
+    try { logFd = openSync(progressLog, "a", 0o600); } catch (error) { return fail(`could not open the progress log ${progressLog}: ${error.message}`); }
+  }
   const options = {
     cwd: setup?.scratch ?? args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-    stdio: ["pipe", capture ? "pipe" : "inherit", "inherit"],
+    stdio: ["pipe", capture ? "pipe" : logFd ?? "inherit", "inherit"],
+    ...(progressLog ? { progressLog } : {}),
   };
   const limit = harness === "opencode" && kind === "build" ? RUN_LIMITS[setup.providerModel] : null;
   const err = io.stderr ?? ((text) => process.stderr.write(text));
-  const result = limit ? runLimited(spawn, exe, harnessArgv, options, { ms: io.limitMs ?? limit.ms, err, harness }) : spawn(exe, harnessArgv, options);
+  let result;
+  try { result = limit ? runLimited(spawn, exe, argvFor, options, { ms: io.limitMs ?? limit.ms, err, harness }) : spawn(exe, argvFor, options); }
+  finally { if (logFd !== null) closeSync(logFd); }
+  if (progressLog) {
+    const answer = streamResult(progressLog);
+    if (answer) (io.stdout ?? ((text) => process.stdout.write(text)))(`${answer}\n`);
+  }
   if (result.error) return fail(result.error.code === "ETIMEDOUT" && limit ? `${exe} was stopped after its time limit of ${Math.round((io.limitMs ?? limit.ms) / 1000)} s` : `could not run ${exe}: ${result.error.message}`);
   if (result.status !== 0) return result.status ?? 1;
   if (!capture) return verdictFrom === "file" && kind === "review" ? askAgainFromFile(harness, args, setup, brief, { spawn, exe, childEnv, io }) : 0;
@@ -773,4 +790,26 @@ export function joinReplies(first, more) {
 function noVerdict(answer) {
   const parsed = parseVerdict(answer);
   return !parsed.ok && parsed.error === NO_VERDICT;
+}
+
+// The claude-code argv with its output as stream-json events (G21): every
+// tool call and result is a line the runner can count. --verbose is what
+// claude -p needs for stream-json.
+export function streamJsonArgv(argv) {
+  const out = [...argv];
+  const at = out.indexOf("--output-format");
+  if (at === -1) return [...out, "--output-format", "stream-json", "--verbose"];
+  out.splice(at, 2, "--output-format", "stream-json", "--verbose");
+  return out;
+}
+
+// The final answer a stream-json log ends with (its result line), or null.
+export function streamResult(path) {
+  let text;
+  try { text = readFileSync(path, "utf8"); } catch { return null; }
+  for (const line of text.split("\n").reverse()) {
+    if (!line.trim()) continue;
+    try { const e = JSON.parse(line); if (e?.type === "result") return typeof e.result === "string" ? e.result : null; } catch { /* not a whole event */ }
+  }
+  return null;
 }

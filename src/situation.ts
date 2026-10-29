@@ -22,6 +22,12 @@ export const RUNNER_SILENT_MS = 5 * 60_000;
 // Free disk under this share of the volume the server's data lives on is
 // shown as a warning.
 export const DISK_WARN_PERCENT = 10;
+// A running build whose progress has not changed for this long while no
+// child process of its model is alive is flagged as a stall (G21, miqra's
+// rule); one that has completed no command this long after it started, as
+// stuck at its start (the launchd privacy prompt that hangs claude -p).
+export const STALL_MS = 30 * 60_000;
+export const STARTUP_MS = 5 * 60_000;
 
 // What the project Ledger records, read in one call (Ledger.situationFacts).
 export interface SituationFacts {
@@ -41,6 +47,80 @@ export interface SituationFacts {
   standing: Decision[];
   // Each listed task's blockers (G3), merged ones included, with their states.
   blockers: Record<string, Blocker[]>;
+  // Each listed task's progress line as its runner last reported it (G21).
+  progress?: Record<string, ProgressRecord>;
+}
+
+// A build's progress as the runner reports it with its poll (cli/progress.mjs)
+// and the Ledger keeps it (Ledger.recordProgress): the runner's figures, the
+// time the server received them and the time they last changed, and the
+// spend of each run of the task.
+export interface ProgressRecord {
+  task: string; actor: string; runner: string;
+  startedAt: string; endedAt: string | null; at: string;
+  commands: { started: number; completed: number };
+  current: { name: string; summary: string | null; since: string } | null;
+  last: { name: string; summary: string | null; at: string; error: boolean } | null;
+  childAlive: boolean | null;
+  commits: number; changedFiles: number; logBytes: number;
+  tokens: number | null; costUsd: number | null;
+  receivedAt: string; changedAt: string;
+  runs: { actor: string; startedAt: string; costUsd: number | null; tokens: number | null }[];
+}
+
+const RUNS_KEPT = 20;
+const text = (v: unknown, max: number): string | null => typeof v === "string" && v ? v.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").slice(0, max) : null;
+const time = (v: unknown): string | null => typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
+const count = (v: unknown): number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 1e9 ? v : 0;
+const amount = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1e6 ? v : null;
+
+// One report from a runner's poll, checked and bounded, or null when it is not
+// one: a task id, an actor and a start time are required.
+export function parseProgress(raw: unknown): Omit<ProgressRecord, "runner" | "receivedAt" | "changedAt" | "runs"> | null {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const task = typeof r.task === "string" && /^t[1-9][0-9]*$/.test(r.task) ? r.task : null;
+  const actor = text(r.actor, 128), startedAt = time(r.startedAt);
+  if (!task || !actor || !startedAt) return null;
+  const c = (r.commands ?? {}) as Record<string, unknown>, cur = r.current as Record<string, unknown> | null, last = r.last as Record<string, unknown> | null;
+  return {
+    task, actor, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
+    commands: { started: count(c.started), completed: count(c.completed) },
+    current: cur && typeof cur === "object" && text(cur.name, 64) ? { name: text(cur.name, 64)!, summary: text(cur.summary, 120), since: time(cur.since) ?? startedAt } : null,
+    last: last && typeof last === "object" && text(last.name, 64) ? { name: text(last.name, 64)!, summary: text(last.summary, 120), at: time(last.at) ?? startedAt, error: last.error === true } : null,
+    childAlive: typeof r.childAlive === "boolean" ? r.childAlive : null,
+    commits: count(r.commits), changedFiles: count(r.changedFiles), logBytes: count(r.logBytes),
+    tokens: amount(r.tokens), costUsd: amount(r.costUsd),
+  };
+}
+
+// The record kept after a report: what changed is dated now, and the run's
+// spend is kept beside earlier runs' (by start time, newest RUNS_KEPT).
+export function nextProgress(prev: ProgressRecord | null, report: NonNullable<ReturnType<typeof parseProgress>>, runner: string, now: string): ProgressRecord {
+  const sig = (p: Pick<ProgressRecord, "commands" | "commits" | "changedFiles" | "logBytes" | "current" | "endedAt">) => JSON.stringify([p.commands, p.commits, p.changedFiles, p.logBytes, p.current?.name ?? null, p.current?.since ?? null, p.endedAt]);
+  const same = !!prev && prev.startedAt === report.startedAt && sig(prev) === sig(report);
+  const runs = [...(prev?.runs ?? []).filter((x) => x.startedAt !== report.startedAt), { actor: report.actor, startedAt: report.startedAt, costUsd: report.costUsd, tokens: report.tokens }]
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt)).slice(-RUNS_KEPT);
+  return { ...report, runner, receivedAt: now, changedAt: same ? prev!.changedAt : now, runs };
+}
+
+// How a progress record reads now: its figures, its ages and the stall it shows.
+export function progressView(p: ProgressRecord, now: Date) {
+  const ended = !!p.endedAt;
+  const quietMs = ageMs(p.changedAt, now) ?? 0;
+  const runMs = Math.max(0, (ended ? Date.parse(p.endedAt!) : now.getTime()) - Date.parse(p.startedAt));
+  const stall = ended ? null
+    : p.commands.completed === 0 && runMs >= STARTUP_MS ? `no command completed in ${Math.floor(runMs / 60_000)} minutes since the build started`
+    : quietMs >= STALL_MS && p.childAlive === false ? `no change in ${Math.floor(quietMs / 60_000)} minutes and no child process alive`
+    : null;
+  return {
+    task: p.task, actor: p.actor, runner: p.runner, startedAt: p.startedAt, endedAt: p.endedAt, ended,
+    commands: p.commands, commits: p.commits, changedFiles: p.changedFiles,
+    current: p.current && !ended ? { ...p.current, ageMs: ageMs(p.current.since, now) } : null,
+    last: p.last, childAlive: ended ? false : p.childAlive,
+    elapsedMs: runMs, tokens: p.tokens, costUsd: p.costUsd, logBytes: p.logBytes,
+    reportedAt: p.receivedAt, reportedAgoMs: ageMs(p.receivedAt, now), changedAt: p.changedAt, quietMs,
+    stall,
+  };
 }
 
 // A task another waits on (G3), as the waiting task lists it.
@@ -86,6 +166,7 @@ export function situationOf(input: SituationInput) {
       dispatch: dispatchJson(i.dispatch),
       blockedBy: (facts.blockers?.[i.id] ?? []).map((b) => ({ id: b.id, state: b.state })),
       lastCheck: facts.lastChecks[i.id] ?? null,
+      progress: facts.progress?.[i.id] ? progressView(facts.progress[i.id], now) : null,
     };
   });
   const holds = [
@@ -127,15 +208,33 @@ export function situationOf(input: SituationInput) {
     server: { commit: input.commit, disk },
     tasks, holds, reviewRequests, runners, landings, blocks, limits,
     standing: facts.standing.map((d) => ({ id: d.id, text: d.text, quote: d.quote, by: d.by, at: d.at, ...(d.acting ? { acting: d.acting } : {}) })),
-    // Spend is recorded per run once runners report it (G21); none is
-    // recorded for any task yet, so the list is empty, never guessed.
-    spend: [] as { task: string; model: string; costUsd: number | null; tokens: number | null }[],
+    // What each task's runs cost per model, as the runners reported it from
+    // the builder's log (G21); a run that reported none is null, never guessed.
+    spend: spendOf(facts),
+    // Running builds whose progress shows a stall (G21), with the rule met.
+    stalls: tasks.flatMap((t) => t.progress?.stall ? [{ task: t.id, reason: t.progress.stall, runner: t.progress.runner, childAlive: t.progress.childAlive }] : []),
     // A source that could not be read, said, so nothing missing reads as nothing there.
     unavailable: [...(input.offers === null ? ["runner offers"] : []), ...(input.tokens === null ? ["runner tokens"] : []), ...(input.disk === null ? ["free disk"] : [])],
   };
 }
 
 export type Situation = ReturnType<typeof situationOf>;
+
+function spendOf(facts: SituationFacts) {
+  const out: { task: string; model: string; runs: number; costUsd: number | null; tokens: number | null }[] = [];
+  for (const [task, p] of Object.entries(facts.progress ?? {})) {
+    const byModel = new Map<string, typeof out[number]>();
+    for (const r of p.runs) {
+      const row = byModel.get(r.actor) ?? { task, model: r.actor, runs: 0, costUsd: null, tokens: null };
+      row.runs++;
+      if (r.costUsd !== null) row.costUsd = (row.costUsd ?? 0) + r.costUsd;
+      if (r.tokens !== null) row.tokens = (row.tokens ?? 0) + r.tokens;
+      byModel.set(r.actor, row);
+    }
+    out.push(...byModel.values());
+  }
+  return out;
+}
 
 // The runners that serve this project: every offer whose projects include
 // one of its names (or that names none), and every live runner token scoped

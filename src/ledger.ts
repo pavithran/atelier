@@ -50,7 +50,7 @@ import { ago } from "./floor.ts";
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
-import type { Blocker, SituationFacts } from "./situation.ts";
+import { nextProgress, parseProgress, type Blocker, type ProgressRecord, type SituationFacts } from "./situation.ts";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
   PREREVIEW_ATTEMPTS, PREREVIEW_DEPTH, PREREVIEW_JOB, PREREVIEW_RETRY_MS,
@@ -3136,11 +3136,40 @@ export class Ledger extends DurableObject<Env> {
     const held = waiting.flatMap((w) => "held" in w && w.held ? [{ id: w.id, held: w.held }] : []);
     // Every listed task's blockers with their states (G3), merged ones too.
     const blockers: SituationFacts["blockers"] = Object.fromEntries(items.filter((i) => i.blockedBy?.length).map((i) => [i.id, i.blockedBy!.map((b) => this.blockerOf(b))]));
+    // Each listed task's progress line, as its runner last reported it (G21).
+    const progress: Record<string, ProgressRecord> = {};
+    for (const i of items) { const p = this.progressOf(i.id); if (p) progress[i.id] = p; }
     const reviewRequests = this.sql.exec(`SELECT id, item, head, state, dispatch, claimedBy, runner, claimedAt, tier FROM review_requests WHERE state IN ('open', 'claimed') ORDER BY id`).toArray()
       .map((r) => ({ id: Number(r.id), item: r.item as string, head: r.head as string, state: r.state as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch, claimedBy: (r.claimedBy as string | null) ?? null, runner: (r.runner as string | null) ?? null, claimedAt: (r.claimedAt as string | null) ?? null, tier: r.tier === 1 }));
     const landJobs = this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at`).toArray().map((r) => ({ item: r.item as string, by: r.by as string, at: r.at as string }));
     const project = this.project();
-    return { project: { name: project.name, policy: project.policy }, mode: this.mode(), items, stages, held, reviewRequests, landingLease: this.projectLanding(), landJobs, landings, lastChecks, standing: this.standingDecisions(), blockers };
+    return { project: { name: project.name, policy: project.policy }, mode: this.mode(), items, stages, held, reviewRequests, landingLease: this.projectLanding(), landJobs, landings, lastChecks, standing: this.standingDecisions(), blockers, progress };
+  }
+
+  // ── a live progress line per task (G21) ───────────────────────────────────
+
+  // The runner's reports of the builds it runs, sent with its poll and
+  // heartbeat (cli/progress.mjs). Each is kept for its task while the task
+  // names that runner as its claim's, so a runner reports only its own
+  // builds; what changed is dated as received, and each run's spend is kept.
+  // Answers how many were kept.
+  recordProgress(runner: string, reports: unknown[]): number {
+    let kept = 0;
+    const now = new Date().toISOString();
+    for (const raw of reports.slice(0, 8)) {
+      const report = parseProgress(raw);
+      if (!report) continue;
+      const row = this.sql.exec(`SELECT runner, owner FROM items WHERE id = ?`, report.task).toArray()[0];
+      if (!row || typeof row.runner !== "string" || row.runner.toLowerCase() !== runner.toLowerCase() || row.owner !== report.actor) continue;
+      const next = nextProgress(this.progressOf(report.task), report, runner.toLowerCase(), now);
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `task-progress:${report.task}`, JSON.stringify(next));
+      kept++;
+    }
+    return kept;
+  }
+
+  progressOf(id: string): ProgressRecord | null {
+    return this.runnerMeta<ProgressRecord>(`task-progress:${id}`);
   }
 
   // ── tasks that wait on tasks (G3) ─────────────────────────────────────────
@@ -7244,7 +7273,7 @@ export class Ledger extends DurableObject<Env> {
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
     const lastDeploy = this.lastDeploy();
-    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)) };
+    return { item, ...(preparing ? { preparing } : {}), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {

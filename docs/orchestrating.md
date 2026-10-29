@@ -486,6 +486,26 @@ stays claimed, so pair a long wait with `--timeout` and read `atelier
 situation` when it ends: its progress line says whether the builder still
 runs a command.
 
+`atelier situation --project P` (`--json` for a model) is one read of the
+project from recorded facts: each live task with its state, holder, runner,
+head, scope, recorded stage and how long it has been at it, its last check
+and its progress line; core-file and blocked-by holds; open review requests
+with reviewer and age; runners with their last poll, current job, served
+projects, offered models and the commit they run, flagged when silent five
+minutes, on a commit other than the server's, or never polled; landings;
+blocks and whose words lift them; the check limits and mode; standing
+decisions; free disk where the server runs (a warning under 10 percent); and
+spend per task and model where a run reported it. Under `--json` every error
+is `{code, detail, next}`.
+
+A build's progress line (G21) comes from its runner with each poll and
+heartbeat: commands run so far and the one running now (from the builder's
+stream-json log, which the Claude Code adapter writes beside the workspace),
+whether a process the model started is alive, commits on `t/N`, elapsed
+time, tokens and cost. `situation` flags a stall: no change for 30 minutes
+with no child process alive, or no command completed five minutes after the
+build started (the `claude -p` that hangs on a privacy prompt under launchd).
+
 A task can wait on others: `atelier edit ID --blocked-by tA,tB` (`""`
 clears the list). The queue offers it to no runner, a claim is refused
 (`blocked_by`, naming the wait) and a landing will not accept it until every
