@@ -20,7 +20,7 @@ taken back by a revert:
 
 | Kind | What it is |
 |---|---|
-| `deploy` | publishing the project to where its users reach it, such as `npx wrangler deploy` |
+| `deploy` | publishing the project to where its users reach it, such as `npm run deploy` |
 | `install` | installing a build on a device |
 | `paid-run` | a model or service run that is paid for |
 | `photos-writeback` | writing to a Photos library |
@@ -33,7 +33,7 @@ needs no approval (PAVI's decision of 2026-10-06); `deploy`, `install`,
 
 A project's ship file may name further kinds: an approval kind given in
 `docs/atelier/ship.json`. `atelier approve` refuses any
-other kind, since nothing would use it. The Worker accepts any kind written in
+other kind, since nothing would use it. The server accepts any kind written in
 lower-case letters, digits and dashes, because it does not read the
 project's files.
 
@@ -68,15 +68,16 @@ the record the runs route returns. Those are the places to read them:
 
 Run in the registered checkout at the revision to ship, or with the form
 under "Protected actions" on the project's page, which binds the approval to
-the main line's head as the page read it. For a project set up with
-`--history-since`, the revision is the baseline's commit, which `atelier ship
---dry-run` prints.
+the main line's head as the page read it. For a project with a rebuilt
+baseline (1.x's `--history-since`), the revision is the baseline's commit,
+which `atelier ship --dry-run` prints.
 
-- **The revision is a commit the baseline holds.** The baseline in Artifacts
-  is the main line as Atelier sees it. The Worker refuses a revision that is
-  not the baseline's head or in its history, so a commit that exists only in
-  a task's fork, or nowhere, cannot be approved. For a project set up with
-  `atelier init --history-since`, whose baseline holds rebuilt commits, the
+- **The revision is a commit the baseline holds.** The baseline, the project's
+  repository on the server, is the main line as Atelier sees it. The server
+  refuses a revision that is not the baseline's head or in its history, so a
+  commit that exists only on a task's branch, or nowhere, cannot be approved.
+  For a project with a rebuilt baseline (1.x's `--history-since`), whose
+  baseline holds rebuilt commits, the
   revision is the baseline's commit, and `atelier ship` finds the checkout
   commit it stands for through the checkout's pairs.
 - **The full revision is required**, 40 or 64 hex digits. `atelier ship
@@ -122,7 +123,8 @@ The optional steps in the ship file are added to that order: `typecheck`
 goes just before the first of install, deploy or wrap, `scan` just before
 push, and `baseline` then `studio` just after it. Atelier's own web order is
 therefore commit, typecheck, deploy, verify-delivery, wrap, scan, push,
-baseline, studio. The `scan` and `baseline` steps are Atelier's own commands
+baseline, studio. On the Node server the `baseline` step is skipped (see
+below). The `scan` and `baseline` steps are Atelier's own commands
 and run with the developer's whole environment, `ATELIER_TOKEN`,
 `ATELIER_CONFIG_DIR` and `ATELIER_SERVER` included, as wrap does; the other
 command steps run without the `ATELIER_` variables.
@@ -133,7 +135,7 @@ request to the live site, before `atelier ship` runs for it.
 
 ### From `docs/atelier/ship.json`
 
-Atelier's own, as main holds it. Main deploys and verifies the staging Worker; release/1.0's copy deploys with no `--env`, compares with and verifies at `https://atelier.zone/api/version`, and scans, pushes and fast-forwards `release/1.0` under the project `atelier-1.0`.
+Atelier's own, as main holds it. Main's file still deploys and verifies the staging Worker of 1.x through `scripts/ship-worker.mjs`, which runs wrangler; the tree has no `wrangler.jsonc`, so that step cannot run here until the file changes. release/1.0's copy deploys with no `--env`, compares with and verifies at `https://atelier.zone/api/version`, and scans, pushes and fast-forwards `release/1.0` under the project `atelier-1.0`.
 
 ```json
 {
@@ -170,7 +172,7 @@ Atelier's own, as main holds it. Main deploys and verifies the staging Worker; r
 | `push` | `{"remote": NAME, "branch": NAME}`; left out, the push goes to the branch's tracked upstream; `false`, the order has no push step, `scan`, `baseline` and `studio` are refused, and `--push` is refused |
 | `typecheck` | optional: runs before the first delivery step (or before wrap, with none) |
 | `scan` | optional: runs just before the push, with `--push`; a failure stops the ship before anything is pushed |
-| `baseline` | optional: runs just after the push, with `--push` |
+| `baseline` | optional: runs just after the push, with `--push`; skipped on the Node server, where the project's repository is the baseline |
 | `studio` | optional: runs after `baseline`, with `--push` |
 
 Each of `install`, `verify-install`, `deploy`, `verify-deploy`, `typecheck`,
@@ -199,7 +201,7 @@ names another; a verify run needs none unless it names one. A field the
 schema does not list, a run field for a step the class has no place for, or
 a class outside the four is refused before anything runs.
 
-Atelier's own helper checks that the checkout is still clean at
+Atelier's own helper for a Cloudflare Worker, `scripts/ship-worker.mjs`, checks that the checkout is still clean at
 `ATELIER_SHIP_HEAD` before and after deployment. It passes
 `--keep-vars --var DEPLOYED_MAIN:HEAD` to Wrangler, preserving existing
 variables while updating that source binding. Verification refuses redirects
@@ -218,14 +220,14 @@ variable preservation and source readback are checked at an authorised release.
 
 ## Production and staging
 
-Since the release split (PAVI, 2026-10-26), Atelier runs as two Workers that
-share no state: production at `atelier.zone`, frozen at 1.0, and a staging
-copy at `next.atelier.zone`, where 1.1 is built. The staging copy is the
-`env.staging` block of `wrangler.jsonc`: the Worker `atelier-staging`, the
-Artifacts namespace `atelier-staging`, the R2 bucket `atelier-large-staging`,
-the workflow `landing-staging`, its own Ledger objects, and no cron triggers.
-Its vars `PUBLIC_ORIGIN` and `ARTIFACTS_NAMESPACE` give the origin the stuck
-notices link to and the namespace whose push events the queue takes.
+Since the release split (PAVI, 2026-10-26), Atelier runs as two environments
+that share no state: production at `atelier.zone`, still the v1.0 Cloudflare
+Worker until the cut-over, and staging at `next.atelier.zone`, where 2.0 is
+built. As of 2026-10-29 staging is a Node server on the Studio, started with
+`node cli/serve.mjs --env staging` and installed by
+`scripts/studio/setup-staging.sh` (see [studio.md](studio.md)); the 1.x staging
+Worker, which was the `env.staging` block of `wrangler.jsonc`, is not in this
+tree.
 
 Each line ships from its own branch with its own ship file, and ship reads
 only `docs/atelier/ship.json`:
@@ -238,16 +240,13 @@ only `docs/atelier/ship.json`:
   `node scripts/ship-worker.mjs deploy --env staging`, checks for Worker
   changes against `https://next.atelier.zone/api/version` and verifies there
   with `verify --version-url https://next.atelier.zone/api/version`; with
-  `--push` it then scans, pushes main to GitHub, updates the baseline and
-  fast-forwards the Studio checkout. `npm run deploy` on main names
-  `--env staging` too. Neither ever deploys production.
+  `--push` it then scans, pushes main to GitHub, runs its `baseline` step
+  (skipped on the Node server) and fast-forwards the Studio checkout. This
+  describes the file as it stands: its deploy step needs wrangler, which this
+  tree no longer has. Neither ever deploys production.
 - **`docs/atelier/ship-staging.json`** is the staging order without the
   push steps (`"push": false`, no scan, baseline or studio), for shipping
   staging from a checkout that must not push.
-
-Before the first staging deploy the owner creates its R2 bucket with `npx
-wrangler r2 bucket create atelier-large-staging`; Wrangler adds the
-`next.atelier.zone` custom domain on deploy.
 
 ## What a ship does, in order
 
@@ -258,8 +257,8 @@ Before anything runs, `atelier ship` refuses, saying what to do next, unless:
   registered branch, with no merge, rebase, cherry-pick, revert or landing in
   progress;
 - the checkout is clean, untracked files included;
-- HEAD is the baseline's head, or for a `--history-since` project the commit
-  the baseline's head is paired with;
+- HEAD is the baseline's head, or for a project with a rebuilt baseline the
+  commit the baseline's head is paired with;
 - the order composes with nothing missing, and the push target, when
   `--push` is given, is a remote the checkout already has;
 - every approval the steps need is present and active at the baseline's
@@ -279,11 +278,12 @@ It then prints the steps and runs them:
   commit. Its output is shown as it comes.
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
-  and updates the baseline; a failing check stops the ship there.
+  and reports how the checkout stands against the server's branch; a failing
+  check stops the ship there.
 - **typecheck** runs Atelier's `npm run typecheck` before the deploy, so a
   failing type-check stops the ship before an approval is spent.
-- **deploy** runs only when Worker code changed since the commit the
-  `if_changed.since` URL reports as live (on main staging's, on
+- **deploy** in Atelier's own file runs only when Worker code changed since the
+  commit the `if_changed.since` URL reports as live (on main staging's, on
   `release/1.0` production's; `src/**`, the Wrangler
   config, `package.json` and the lock file, the generated types and
   `tsconfig.json`), and is tried once more if it fails. This replaces the old
@@ -304,10 +304,10 @@ It then prints the steps and runs them:
   --no-force --no-follow-tags REMOTE refs/heads/BRANCH:refs/heads/TARGET`,
   then reads the remote back and fails unless it holds the new HEAD. Without
   `--push` the ship ends after wrap and prints the command that pushes.
-- **baseline** (`atelier sync`) and **studio** (`scripts/studio-ff.mjs`) run
-  after the push, with `--push`. `atelier sync` pushes the branch to a
-  baseline that holds the whole history the way a flagless `atelier init`
-  does, and does nothing when the baseline already holds the branch's head.
+- **baseline** and **studio** (`scripts/studio-ff.mjs`) run after the push,
+  with `--push`. On the Node server the baseline step is skipped, and ship
+  prints why: the server's repository is the baseline, which only a landing
+  moves (`atelier sync` refuses and names `atelier pull` and a landing).
   The Studio script fast-forwards the checkout named by `--checkout` (over ssh
   to `--host` when given) to the pushed branch, and leaves a checkout that is
   dirty, off the branch or diverged as it is. Both come from the ship file, not
@@ -336,7 +336,7 @@ Each is an event in the project's ledger, with no task id:
 There is one `action.ran` for every command, request or step that ran,
 passing or failing, and none for a step that did not run. The ship id is the
 same on every step of one ship. The output tail is the last 3,500 characters,
-cut after redaction: the developer's Atelier token, any Artifacts token in the
+cut after redaction: the developer's Atelier token, any Git token in the
 checkout's Git settings, and the value of every environment variable whose
 name says it holds a token, a key, a secret, a password or a credential are
 replaced with `[redacted]`, as `atelier check` redacts check output.

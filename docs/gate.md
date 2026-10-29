@@ -22,14 +22,14 @@ five verbs. They are labels: the commands keep their own names.
 | Step | Its line | Commands |
 | --- | --- | --- |
 | Claim | One holder per task. | `atelier start`, `atelier claim`, `atelier handoff`, `atelier release` |
-| Fork | Every task its own fork. | `atelier push`, `atelier update` |
+| Branch | Every task its own branch. | `atelier push`, `atelier update` |
 | Prove | The checks run on the exact head. | `atelier check`, `atelier submit` |
 | Review | Another company reviews, or in single-family mode another model. | `atelier review` |
 | Land | One merge at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
 
 A task's page shows the five as its progress, the current one marked, read
 from the task's recorded state: open is at Claim; claimed with nothing pushed,
-a fresh fork whose head is still its base among them, is at Fork; claimed with
+a fresh branch whose head is still its base among them, is at Branch; claimed with
 a pushed head, or submitted without every required check
 observed passing, is at Prove; submitted with them all passing is at Review;
 accepted is at Land; merged has done all five. What lands is **Proven.
@@ -37,28 +37,30 @@ Reviewed. Recorded.** Git keeps the code. Atelier brings the receipts.
 
 ## How it works
 
-In outline: a project's main branch is copied into an Artifacts repository,
-the *baseline*. Each item is a fork of the baseline, its *workspace*. Agents
-work in their workspace, push to it, and run checks against it. The developer merges
-accepted work into the real checkout, and the baseline follows.
+In outline: a project lives in one bare Git repository on the server, the
+*baseline*, whose project branch is main. Each item is a branch of that
+repository, `t/N`, and its clone is the item's *workspace*. Agents work in their
+workspace, push to the item's branch, and run checks against it. The developer
+merges accepted work into the real checkout, and the landing pushes the merge to
+the project's branch.
 
 In detail:
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init [--title TEXT]` | the developer, in the project checkout | Creates the baseline repository and pushes the current branch to it. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. Every check must be read-only (see [Check classes](#check-classes)). |
+| `atelier init [--title TEXT]` | the developer, in the project checkout | Creates the baseline repository on the server and pushes the current branch to the empty repository with the server token; later commits reach it only through a landing. Records that branch as the project's branch, the required checks and the protected paths, and an optional display title. Every check must be read-only (see [Check classes](#check-classes)). |
 | `atelier new "title" --scope 'src/**'` | the developer | Creates an item with a short title (at most 80 characters). The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. `--brief` holds the whole task and `--accept` its acceptance criteria, which the review brief numbers and a reviewer blocks on. `--non-goal`, `--stop-when` and `--next-gate` frame it, and `atelier edit` changes all of these later; the brief, `atelier start` and the item's page show them. |
 | `atelier block t3 "reason"` | the item's holder or the developer | Blocks the item with what it is waiting on. It keeps its holder and workspace, leaves the runner queue and stuck detection, cannot be pushed or submitted, and sits in the inbox with the reason until `atelier unblock t3` returns it to the state it was in. `atelier unblock t3` also lifts the fence a blocking pre-review left on the task's landing, once its findings are dealt with, so `atelier land t3` can queue it again. |
-| `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants the item atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the holder alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
-| `atelier push` | the item's holder; the developer for an open, unclaimed task | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the developer's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. The developer may also push an open, unclaimed task's workspace (`atelier push --as owner`), as an orchestrator's port or merge before the next builder claims: the push asks the Worker for a five-minute write token for that task's fork alone (`items.owner-port.v1`), recorded as the developer's, which the next claim revokes. |
-| `atelier update` | the item's holder | Brings the workspace up to date with the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the push that follows keeps them. Each step is previewed first (`previewMerge` in `cli/merge-pipeline.mjs`); a declaration problem the result would hold, such as a registry key both sides declare, stops it with nothing moved. A step that needs a generator `bin/merge-manifest.json` declares, because both sides changed what it reads, merges through the merge pipeline, which regenerates the outputs and commits the merge with its provenance, and names `atelier push`. Any other step rebases through the clone's merge drivers and names `atelier push --force`, whose lease keeps the commits Atelier recorded. |
-| `atelier check` | the item's holder | Clones the workspace afresh at that head, runs each required check, and records the results as Observed. A result is recorded only for the item's holder, since the gate counts it on the caller's word. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A check runs with the caller's file access, and Atelier has no sandbox for it (t768 removed the container check), so do not check code you do not trust. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed. A check that does not apply to the change is not run merged either. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
+| `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Ledger grants the item atomically, so a second claimant is refused. The server makes `refs/heads/t/N` at the project branch's tip, with no copy, records the base, and mints a task grant for the holder alone (see [branches.md](branches.md)). The CLI clones that branch alone (`--single-branch --branch t/N`, one remote, `origin`) into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the task's branch has moved past, as when a task handed off comes back, fast-forwards it to what the branch holds, or stops and names the commits to integrate when the two have diverged. |
+| `atelier push` | the item's holder | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the developer's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the task's own branch, `t/N`, since Atelier reads only that one. Otherwise pushes `HEAD:refs/heads/t/N`, then asks the server to read the branch head from its repository. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A branch whose history runs deeper than the server reads to tell is refused as unverified, not taken for a rewrite. The pre-receive hook refuses a push the grant does not cover; the owner credential never writes `t/N`, so the developer claims or hands off a task to push to it. |
+| `atelier update` | the item's holder | Brings the workspace up to date with the baseline's current head. The task's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the push that follows keeps them. Each step is previewed first (`previewMerge` in `cli/merge-pipeline.mjs`); a declaration problem the result would hold, such as a registry key both sides declare, stops it with nothing moved. A step that needs a generator `bin/merge-manifest.json` declares, because both sides changed what it reads, merges through the merge pipeline, which regenerates the outputs and commits the merge with its provenance, and names `atelier push`. Any other step rebases through the clone's merge drivers and names `atelier push --force`, whose lease keeps the commits Atelier recorded. |
+| `atelier check` | the item's holder | Clones the workspace afresh at that head, runs each required check, and records the results as Observed. A result is recorded only for the item's holder, since the gate counts it on the caller's word. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from the repository; a list the caller sends is ignored. A result for a head that has since moved is refused. A check runs with the caller's file access, and Atelier has no sandbox for it (t768 removed the container check), so do not check code you do not trust. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed. A check that does not apply to the change is not run merged either. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's holder | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's holder or the developer; the developer only when accepted | Moves the item to a new holder and revokes the old write token. An accepted task returns to claimed and must be submitted and accepted again. The workspace, reviews and acceptance history carry over; a merge holding the landing lease must finish or be cancelled first. |
 | `atelier review t3 --approve --criteria BINDING` | an agent that did not work on the item | Required when the item changes a protected path. Only a model of another family than every recorded contributor counts. The developer may review too, and their rejection blocks, but their approval is not this review. A review names the binding of the acceptance criteria it judged (`atelier show` prints it; a review claim gives it), and counts only while the item's head and criteria are still the ones it judged; changing the criteria withdraws it for good. |
 | `atelier accept t3` | the developer, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. With `--override-review "reason"`, overrides a missing independent review when no reviewer qualifies (see below). |
-| `atelier merge t3` | the developer, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
+| `atelier merge t3` | the developer, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the project's branch on the server with a landing grant. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
 
 The gate for acceptance is a pure function in [`src/rules.ts`](../src/rules.ts):
 every required check that applies to the change observed passing at the
@@ -124,10 +126,10 @@ The changed paths are measured against main as it is now: every path whose
 content at the item's head differs from main's head. That is the set a merge
 could change on main whatever base git picks, since git keeps a path both
 sides agree on, and no history an agent pushes can shrink it; a merge commit
-that makes an older main commit the fork point hides nothing. A workspace
+that makes an older main commit the merge base hides nothing. A workspace
 behind main lists main's newer changes too, until `atelier update` brings them
 in. The item page's diff is measured the same way. The merge preview beneath
-it works from the fork's own first-parent history, says how far main has moved
+it works from the task branch's own first-parent history, says how far main has moved
 and whether the item would merge, and is advisory.
 
 Beside the preview stand the checks run on that merge. `atelier check
@@ -138,7 +140,7 @@ merge the preview finds conflicts in has no tree to check, and the command
 says so. The preview and that tree read the project's merge declarations
 (`bin/merge-manifest.json`, `src/merge-declarations.ts`): a declared record
 file unites by key, and declared generated outputs are listed apart as
-regenerable, never as conflicts. No generator runs in the Worker;
+regenerable, never as conflicts. No generator runs in the server;
 `atelier check --merged` merges through the merge pipeline in the
 clean clone and regenerates them. Each result names the main head it merged with; the page marks it
 stale once main moves past that commit, and a new head retires it. A merged
@@ -431,7 +433,7 @@ check runs with the caller's file access; Atelier has no sandbox for it.
 A required check may apply only when an item changes a path its globs match,
 as ControlPlane's `change_rules` once said which checks a change needs. The gate
 requires such a check exactly when one of the item's changed paths, measured
-by the Worker against main's head, matches its globs, whatever the letter
+by the server against main's head, matches its globs, whatever the letter
 case or Unicode form, so a variant spelling of a path still needs the check.
 Otherwise the check is not applicable: the task page lists it as such, the
 decision brief counts it, and it never blocks. Until the changed paths are
@@ -439,8 +441,8 @@ measured, a check with globs may apply, so it waits like any other.
 
 `atelier check` measures the changed paths in its clean clone against
 main's head and does not run a check whose globs none of them match. It
-records the check as not applicable instead, and the Worker accepts that
-record only when the paths it measures itself from Artifacts show the same;
+records the check as not applicable instead, and the server accepts that
+record only when the paths it measures itself from the repository show the same;
 otherwise it refuses, saying which changed path the check applies to, and
 the check must be run. The record carries no result and measures the
 changed paths, so a change that no check applies to can still be accepted.

@@ -31,7 +31,7 @@ per caller but cannot prevent admission; an absent value silently uses stored
 capacity.
 
 Inside a slot, `npm test` (test/run.mjs) gives its Node pool
-(`--test-concurrency`) and its Vitest pool (`--maxWorkers`) each the cores
+(`--test-concurrency`) the cores
 divided by the slot capacity, at least one, read from `ATELIER_TEST_SLOTS`;
 without it a quarter of the cores, so a pool still holding several slots from
 before the default became one is not loaded several times over. Slots busy together then keep the machine's load near its

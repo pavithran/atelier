@@ -357,7 +357,7 @@ Details of the steps:
    generator must run, otherwise a rebase through the clone's merge
    drivers), a runner's merge-main, integrate and refresh merges, and the
    speculative merge `atelier check --merged` checks in its clean clone.
-   The Worker makes no Git merge: the item page's merge preview, a plan's
+   The server makes no Git merge: the item page's merge preview, a plan's
    and a part's mergeability read the same declarations through
    `src/merge-declarations.ts`, uniting record files by key and listing
    regenerable outputs apart from source conflicts. No generator runs
@@ -464,4 +464,4 @@ needed, an approval already covers the change, or `--no-review` was given.
 
 ## Integration basis
 
-The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts fork from an updated basis. For a single task, `atelier land` merges the accepted head into the project's branch in the registered checkout and runs the checks on that merged tree before it pushes. Local verification does not establish a successful production container run.
+The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts branch from an updated basis. For a single task, `atelier land` merges the accepted head into the project's branch in the registered checkout and runs the checks on that merged tree before it pushes. Local verification does not establish a successful production container run.

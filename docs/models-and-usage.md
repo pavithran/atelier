@@ -171,8 +171,8 @@ and the role assignments are.
 
 ## Atelier's record over time
 
-Every six hours the Worker's scheduled handler (`takeModelSnapshots` in
-`src/index.ts`, the cron in `wrangler.jsonc`) takes each ended UTC day of
+Every six hours a timer in the server (`takeModelSnapshots` in
+`src/index.ts`, scheduled in `src/runtime/server.mjs`) takes each ended UTC day of
 the last `BACKFILL_DAYS` that has no complete snapshot, and keeps on the
 index Ledger the figures the comparison above gives each pool model, role by
 role, as of the end of that day (`src/models/snapshot.ts`, t623). A snapshot
@@ -224,7 +224,7 @@ rework turnaround from a rejection to the next submission, shown per model
 as medians. Builder honesty counts a reported check an observed check
 contradicted at the same head, and a submission whose changed paths ran
 outside the task's scope. Integration cost counts the pushes that folded a
-moved main into the task's fork. The Models page and the JSON route show
+moved main into the task's branch. The Models page and the JSON route show
 these measures by model and by the kind of work each item asked for, from
 its plan part when there is one, else unknown.
 
@@ -312,16 +312,19 @@ name in `X-Atelier-Runner`, and keeps one report per tool and runner.
 
 Alerts go through the `NTFY_TOPIC` notification already used for decisions,
 once per crossing: when a report first shows a figure past its threshold
-the Worker sends one message and records the crossing; later reports
+the server sends one message and records the crossing; later reports
 showing the same figure still past it send nothing, and a report showing it
 back under clears the crossing, so the next time it is passed alerts
-again. The thresholds are settings with defaults, each a number or `off`:
+again. The thresholds are settings with defaults, each a number or `off`.
+The server reads each setting at start, from the process environment or from a
+file named for it in its secrets directory (`--secrets`; see
+[studio.md](studio.md)), holding the value alone:
 
-```sh
-printf 80 | npx wrangler secret put USAGE_WEEKLY_PERCENT    # a weekly window past this percent
-printf 90 | npx wrangler secret put USAGE_WINDOW_PERCENT    # a 5-hour window past this percent
-printf 10 | npx wrangler secret put USAGE_DAILY_SPEND       # a tool's spend over 24 hours above this, in dollars
-printf 10 | npx wrangler secret put USAGE_BALANCE_FLOOR     # a balance below this, in its own currency
+```text
+USAGE_WEEKLY_PERCENT    80    a weekly window past this percent
+USAGE_WINDOW_PERCENT    90    a 5-hour window past this percent
+USAGE_DAILY_SPEND       10    a tool's spend over 24 hours above this, in dollars
+USAGE_BALANCE_FLOOR     10    a balance below this, in its own currency
 ```
 
 A window that has already reset does not alert, whatever its last reading
@@ -333,7 +336,7 @@ clearing is recorded as an event on the index Ledger.
 
 Calls that runners send through Cloudflare AI Gateway are counted by
 Cloudflare, not by a tool's record on a machine. Each time the Models page
-or `GET /api/usage` is asked for, the Worker sends one query to the GraphQL
+or `GET /api/usage` is asked for, the server sends one query to the GraphQL
 Analytics API (`POST https://api.cloudflare.com/client/v4/graphql`, with
 `ANALYTICS_TOKEN` as a Bearer token), over the dataset
 `aiGatewayRequestsAdaptiveGroups` for the gateway `AI_GATEWAY_ID` in the

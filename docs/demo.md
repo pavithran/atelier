@@ -14,21 +14,21 @@ cross-family review and the integration branch all show up once.
 ## Before you start
 
 **Sign in and register the project.** In the project's checkout, sign in
-to your own Worker, the address you deployed in the README's
+to your own Atelier server, the address you set up in the README's
 [Quickstart](../README.md#quickstart) (atelier.zone is the project's own
 server and takes only its developer's token):
 
 ```sh
-atelier login --server https://YOUR-WORKER-ADDRESS
+atelier login --server https://YOUR-SERVER-ADDRESS
 atelier init --title "Demo" --check "npm test" --protect "src/rules.ts"
 ```
 
-`init` creates the baseline repository in Artifacts, pushes the current
+`init` creates the project's bare repository on the server, the baseline, pushes the current
 branch to it, and records the branch, the checks and the protected paths.
 It prints the policy it recorded:
 
 ```text
-Demo (demo): baseline demo now holds main @ 5ebb64e9.
+Demo (demo): demo's repository on this server now holds main @ 5ebb64e9.
 Checks:     npm test
   npm test: read-only, a known build or test command
 Ship:       0 protected commands
@@ -139,8 +139,8 @@ runner: plan posted: 3f9c…e21b
 runner: released: the plan job is done
 ```
 
-What happened: the runner claimed the plan item as the planner, which forks
-the baseline. That fork is the plan's integration branch. It fetched the
+What happened: the runner claimed the plan item as the planner, which makes the
+branch `plan/N` at the project branch's tip. That branch is the plan's integration branch. It fetched the
 planner's brief from the server (the goal, the scope, and the schema to
 write), ran the harness with the brief and the plan file, posted the file
 the harness wrote to the plan item, and released the claim.
@@ -174,7 +174,7 @@ demo/t10  Add JSON output to the export script and document it
 Phase: proposed.
 Proposal 1: 2 parts, 3f9c2a7b1d4e, by claude-code/opus-5.5.
 Recommendation: decide. Read the split with atelier plan show t10, then approve it by its hash or send it back with a note.
-https://YOUR-WORKER-ADDRESS/p/demo/t10
+https://YOUR-SERVER-ADDRESS/p/demo/t10
 ```
 
 `atelier show t10 --project demo` prints the same brief. The split itself:
@@ -239,8 +239,8 @@ another family; `--allow-paid` lets models paid per token build and review.
 ## 4. The parts are built
 
 The runner takes `t11` on its next poll, claiming it as `opencode/glm-5.3`
-with `--runner home:studio`. A part forks from the plan's fork, not from the
-baseline, and is measured against it. The runner fetches the part's brief
+with `--runner home:studio`. A part's branch starts at the plan's branch, not at the
+project's, and is measured against it. The runner fetches the part's brief
 from the server: the plan's goal, the part's spec, acceptance criteria and
 interfaces, the heads its dependencies landed at, its scope, and the
 project's required checks. It runs the harness in the part's workspace,
@@ -294,10 +294,10 @@ and its last line is `Ready for the developer` or what still blocks the part.
 
 ## 5. Checks
 
-Each required check runs in a clean clone of exactly the head Artifacts
-holds, never in the agent's workspace, and is recorded as Observed with the
+Each required check runs in a clean clone of exactly the head the server
+holds for the task's branch, never in the agent's workspace, and is recorded as Observed with the
 paths that changed since the part's base. A line per check, then the paths
-the Worker measured:
+the server measured:
 
 ```text
 PASS  npm test  @ 8c44da71
@@ -319,7 +319,7 @@ runner: reviewed: approve
 ```
 
 The runner claimed the request with `review-claim`, which gives it the
-part, the brief's inputs and a read token for the fork. It cloned the head
+part, the brief's inputs and a read grant for the task's branch. It cloned the head
 read-only into a folder of its own, wrote the diff to the diff file, built
 the reviewer's brief (the goal, the part's spec and acceptance criteria,
 the scope and any paths outside it, the builder's summary, the observed
@@ -370,13 +370,13 @@ takes it. Its log is quiet when an integration succeeds; it prints
 `runner: failed: …` when one does not, and one line after the last part
 (below).
 
-It claimed the plan item (the Worker first checks that the part's head
+It claimed the plan item (the server first checks that the part's head
 merges cleanly onto the plan's branch, and sends it back to the builder if
 not), fetched the part's head with `read-token`, merged it with `--no-ff`,
 pushed, and ran the plan's checks on the branch with `atelier check t10`.
 The plan item's checks compare against the baseline, which is right for
 the whole branch. Then it reported `atelier integrated t10 --part
-export-json --merge-commit SHA`; the Worker verifies the commit is on the
+export-json --merge-commit SHA`; the server verifies the commit is on the
 branch's log with the part's head among its parents before the part
 becomes `integrated`. Had the merge conflicted or the checks failed, the
 integrator would have rolled the branch back to its previous head and
@@ -391,7 +391,7 @@ Integration branch at 9b2e4c10.
 ```
 
 With `t11` on the branch, `t12`'s dependency has landed and the tick
-dispatches it. `t12` forks from the plan's branch as it is now, so it sees
+dispatches it. `t12`'s branch starts from the plan's branch as it is now, so it sees
 the new output. It is built, checked, reviewed and integrated the same way.
 After the last part integrates, the integrator submits the plan item:
 
@@ -471,7 +471,7 @@ dispatches it to a runner or lets an agent take it:
 
 ```sh
 atelier new "Show the time each check took on its row" --scope "src/ui.ts" --project demo
-atelier dispatch t13 --to home --agent opencode --project demo
+atelier dispatch t13 --to home --agent opencode --model glm-5.3 --project demo
 ```
 
 The runner builds it as in step 4, and the agent's `done` leaves it
@@ -482,34 +482,33 @@ atelier land t13 --project demo
 ```
 
 ```text
-Merged main at 1e0f77a2 into t13's workspace (4 commits from main).
-Pushed 5d31b9c0 to t13's fork.
-Review requested for claude-code/opus-5.5: …. Waiting for the verdict…
-claude-code/opus-5.5 approved t13 at 5d31b9c0.
+Landing t13 from recorded source 5d31b9c0….
 Landing lease taken for t13 (submitted) for its merge alone; one merge at a time in demo.
-5d31b9c0 was merged with main, checked and reviewed in 9 min without the lease.
-main is still at 1e0f77a2, the commit 5d31b9c0 was checked and reviewed against.
-t13 landed: t13 merged as 2b8d41e7 in /Users/pavi/Projects/demo; baseline and ledger agree.
+t13 landed: merged as 2b8d41e7.
 t13 spent 9 min landing without the lease and held it 20 s.
 The landing lease for demo is released; another task may merge.
 ```
 
-`land` merges main into the task's workspace, stopping on conflicts and
-naming the files for the developer to resolve by hand; runs the project's
-regenerate command when `init --regenerate` declared one; pushes; runs the
-required checks; submits; and asks the server for the independent review
-the gate needs and waits for the verdict, all without the project's
-landing lease, beside any other task's landing. Only with the head
-checked and approved does it take the lease on the server, for the merge
-alone, so two sessions never race main (a second landing queues behind
-it); it confirms main is still the commit the head was checked against,
-then accepts and merges through the CLI's own `accept` and `merge`, run as
-its children, whose output it prints only when one fails. Each step and its duration are
-recorded on the task as `land.*` events. `--reviewer H/M`
-names the reviewer, `--no-review` leaves the task submitted for the developer
-to settle by hand, and `--dry-run` prints the steps and the refusals
-without changing anything. A landing stopped partway is resumed by running
-the same command again.
+`land` lands the head the task was checked and reviewed at, and pushes nothing
+to the task's branch. Without the project's landing lease, beside any other
+task's landing, it compares the task's edits with code main moved, submits the
+task after running its required checks in a clean clone if it is still
+claimed, and asks the server for the independent review the gate needs. Only
+with the head checked and approved does it take the lease, for the merge
+alone, so two sessions never race main (a second landing queues behind it).
+Under the lease it accepts and merges through the CLI's own `accept` and
+`merge --landing`, run as its children, whose output it prints only when one
+fails: the accepted head is merged into the project's branch in the registered
+checkout, the project's regenerate command (declared with `init --regenerate`)
+runs on the merged tree and its changes join the merge commit, the required
+checks run once on that tree, and the merge commit goes to the project's branch
+with a landing grant. If main moved meanwhile, Git and the hook refuse the push
+and the merge and checks are made again, twice at most. Each step and its
+duration are recorded on the task as `land.*` events. `--reviewer H/M` names
+the reviewer, `--no-review` leaves the task submitted for the developer to
+settle by hand, and `--dry-run` prints the steps and the refusals without
+changing anything. A landing stopped partway is resumed by running the same
+command again. [landing.md](landing.md) gives the order step by step.
 
 ## What this walk does not show
 
@@ -517,9 +516,9 @@ the same command again.
 relies on them:
 
 - A web page for plans. This walk reads a plan with `atelier plan show`.
-- Merging in Cloudflare. Every merge, the integrator's and the developer's,
-  runs in local git on a Mac, because the Artifacts binding can read a
-  repository but not write it.
+- Merging inside the server. Every merge, the integrator's and the developer's,
+  runs in local git on a Mac, and the server's repository changes only through
+  a push that a grant allows.
 - A second model reviewing the plan document before the developer sees it.
   The developer reads the split and decides alone.
 - More than one active plan per project, and re-planning after approval.

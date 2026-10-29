@@ -2,7 +2,7 @@
 
 A developer who works on one project from several Macs keeps a checkout of it
 on each, outside iCloud. Git carries code, history and work in progress
-between them, through the project's baseline and its branches repository;
+between them, through the project's repository on the server, the baseline;
 dependencies, data and secrets stay on the Mac that made them. This page says where each lives, how
 to set up a new Mac, how to move work from one Mac to another, and what
 happens when two Macs disagree. The commands below name the project with
@@ -14,7 +14,7 @@ happens when two Macs disagree. The commands below name the project with
 | --- | --- | --- |
 | Code and history | The project's checkout, `~/ai-projects/PROJECT` unless `atelier clone` is given another folder | Git, through the baseline: `atelier pull` brings what another Mac carried there |
 | Receipts | `refs/notes/atelier` in the checkout, which `git log` shows beside the commits | Fetched by `atelier clone` and merged by `atelier pull` |
-| Work in progress | Branches named `wip/NAME` in the checkout | The project's branches repository, through `atelier branch push` and `atelier branch fetch` |
+| Work in progress | Branches named `dev/NAME` in the checkout | The project's repository on the server, through `atelier branch push` and `atelier branch fetch` |
 | Project data | `~/Documents/ai-project-data/PROJECT` | No Atelier command carries it |
 | Dependencies | `node_modules` in each checkout, which Git ignores | None: each checkout installs its own |
 | The Atelier token | The macOS Keychain, item `atelier.API_TOKEN` | None: `atelier login` on each Mac |
@@ -22,7 +22,7 @@ happens when two Macs disagree. The commands below name the project with
 
 ## The baseline as the shared remote
 
-The project's baseline, the Git repository in Cloudflare Artifacts that
+The project's baseline, the bare Git repository on the server that
 Atelier lands work into, is the one remote every Mac shares. `atelier clone`
 makes the checkout from it with the baseline's main, its whole history and its
 receipts, and keeps it as `origin`.
@@ -30,7 +30,7 @@ receipts, and keeps it as `origin`.
 No checkout keeps a token. Each Atelier command that reaches the baseline
 (`clone`, `pull`, `sync`, `wrap`, `merge`) mints its own token, passes it
 only to the Git commands that need it and keeps it nowhere; the
-`atelier branch` commands do the same for the branches repository. `clone`,
+`atelier branch` commands do the same for the developer's `dev/` branches. `clone`,
 `pull` and `branch` run every Git command with every Git hook off, so no hook
 in the checkout sees the token. A plain `git push` or `git pull` against `origin` has no
 token and is not how a checkout reaches the baseline.
@@ -41,7 +41,7 @@ every Mac. When the policy names none, clone says so and the Mac's global Git
 identity is used.
 
 Git LFS files are kept as pointers, as every clone of a baseline keeps them:
-Artifacts holds the pointers alone.
+the repository holds the pointers alone.
 
 ## Setting up a new Mac
 
@@ -72,17 +72,16 @@ Artifacts holds the pointers alone.
 
 ## Moving work between Macs
 
-Work moves one of two ways. Commits on main go to the baseline and come back
-down with `atelier pull`. Work that is not ready for main goes on a `wip/`
-branch.
+Work moves one of two ways. Commits on main reach the baseline through a
+landing and come back down with `atelier pull`. Work that is not ready for main
+goes on a `dev/` branch.
 
 ### Commits on main
 
-On the Mac where the work was done, the commits reach the baseline through
-`atelier wrap` (which ends by updating the baseline) or the next
-`atelier merge`; for a baseline built from part of the project's history
-(`atelier init --history-since`), `atelier sync` carries them. On the other
-Mac:
+Only a landing moves the baseline's main: commits made outside Atelier reach
+it as a task (`atelier new`, claim it, push the commits to its branch, then
+`atelier land tN`), and `atelier wrap` and `atelier sync` say so instead of
+pushing. On the other Mac:
 
 ```bash
 atelier pull --project PROJECT
@@ -93,8 +92,8 @@ baseline's main and receipts, merges the receipts into the checkout's own (a
 receipt made here and not yet pushed is kept), then fast-forwards main, or
 merges it with the local commits under the project's commit identity, and
 names the commits it brought. When main and the baseline each hold commits
-the other lacks, the local commits reach the baseline at the next `wrap`,
-`merge` or `sync`.
+the other lacks, the local commits reach the baseline only as a task that
+lands.
 
 ### Work in progress
 
@@ -103,37 +102,38 @@ the command refuses before it does anything and names the deploy it lacks. On th
 Mac where the work is:
 
 ```bash
-git switch -c wip/idea
+git switch -c dev/idea
 git commit -am "Half of the idea"
 atelier branch push --project PROJECT
 ```
 
 `branch push` pushes the current branch, or the one named, to the project's
-branches repository beside the baseline, with a token only the developer is
-given, and records its last commit and the Mac's name. Only names under
-`wip/` are taken: main, the project's branch and a task's id are refused
-before a token is minted, and the baseline's main is never reached. On the
+repository on the server, with the server token, and records its last commit
+and the Mac's name. Only names under `dev/` are taken: main, the project's
+branch and a task's id are refused before anything is sent, and the baseline's
+main is never reached. On the
 other Mac:
 
 ```bash
 atelier branch ls --project PROJECT
 atelier branch fetch idea --project PROJECT
-git switch wip/idea
+git switch dev/idea
 ```
 
 `branch ls` lists the developer's branches, newest push first, each with its
 last commit and the Mac it was pushed from. `branch fetch` refuses the branch
 that is checked out, so to bring a branch back to a Mac where it is checked
-out, switch to main first. Work on a `wip/` branch reaches main as any other
-branch does: merged into main in the checkout, then carried to the baseline.
+out, switch to main first. Work on a `dev/` branch reaches main as any other
+branch does: merged into main in the checkout, then carried to the baseline as
+a task that lands.
 
 ## Conflicts and refusals
 
-**A Mac that is behind.** `sync` and `merge` read the baseline's main first
-and refuse, with nothing sent, while the checkout's main does not hold it;
-each names `atelier pull`. `wrap` commits first and then refuses when it
-updates the baseline, so the commit stays in the checkout until a pull and a
-later `wrap` carry it.
+**A Mac that is behind.** `merge` reads the baseline's main first and refuses,
+with nothing sent, while the checkout's main does not hold it; it names
+`atelier pull`. `wrap` commits first and then reports that the checkout is
+behind the server's branch, so the commit stays in the checkout until a pull
+and a landing carry it.
 
 **A merge that conflicts.** `atelier pull` makes its merge with
 `git merge-tree`, which writes no file. When the two sides conflict, main, the
@@ -169,7 +169,7 @@ It refuses after fetching and after merging the baseline's receipts into
   aside.
 
 **Branches.** A `branch push` that would not fast-forward the branch in the
-branches repository is refused by Git; `--force` replaces the other side's.
+repository is refused by Git; `--force` replaces the other side's.
 When another Mac has pushed and recorded the branch since, the push says so
 and its own push is not recorded over the other. A `branch fetch` that would
 not fast-forward the local branch is refused the same way, and `--force`
@@ -189,9 +189,8 @@ a checkout and ignores through `.git/info/exclude` is the developer's own.
 
 What Atelier does is refuse to push them. `atelier clone` and a successful
 `atelier pull` keep a copy of the list in this Mac's configuration, and every
-Atelier push goes through the push guard: `sync`, `merge`, `wrap --push` and
-its baseline update, `ship --push`, `init`, a task's `push`, `branch push` and
-the task refresh. Before pushing, the guard reads every commit the destination
+Atelier push goes through the push guard: `merge`, `wrap --push`, `init`, a
+task's `push`, `branch push` and the task refresh. Before pushing, the guard reads every commit the destination
 does not already hold, and refuses, with nothing pushed, when one of those
 commits adds, changes or retypes a private path, or when a private path is in
 the tree of the commit pushed or of any commit pushed whose parent the
@@ -215,6 +214,6 @@ Clone does not run it.
 **Secrets.** The developer's Atelier token is in each Mac's Keychain, put
 there by `atelier login`; the `ATELIER_TOKEN` environment variable overrides
 it. `~/.config/atelier/config.json` holds the server and this Mac's
-registrations, not the token. The tokens Atelier mints for the baseline and
-the branches repository are kept nowhere. No secret belongs in the
+registrations, not the token. The grants Atelier mints for the baseline and
+for `dev/` branches are kept nowhere. No secret belongs in the
 repository.

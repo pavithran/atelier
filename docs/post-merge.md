@@ -21,7 +21,7 @@ atelier init \
   --post-merge 'verify=npm test' \
   --post-merge-options 'verify={"class":"check","when":"always","protect":["package.json","test/**"]}' \
   --post-merge 'deploy=npm run deploy' \
-  --post-merge-options 'deploy={"class":"deploy","when":{"paths":["src/**","wrangler.*","package*.json"]},"protect":["package.json","wrangler.*","src/**"],"versionUrl":"https://atelier.example/api/version"}' \
+  --post-merge-options 'deploy={"class":"deploy","when":{"paths":["src/**","package*.json"]},"protect":["package.json","src/**"],"versionUrl":"https://atelier.example/api/version"}' \
   --post-merge-approval 'Owner: authorize these checks and deployment with my credentials'
 ```
 
@@ -112,11 +112,11 @@ lines remain visible. This is not a detector for arbitrary unlabelled secrets;
 approved scripts must avoid printing private content.
 
 Deploy commands are exactly `npm run deploy`. A command exit of zero is not
-proof of deployment: the Worker independently fetches the configured HTTPS
+proof of deployment: the server independently fetches the configured HTTPS
 `versionUrl` without credentials or redirects, and requires the pinned commit
 and a route level at least its own and the constant in the pinned src/route-level.ts when present. Command outcomes are persisted before this observation. A mismatched version records failure;
 an interrupted outcome report remains blocked for reconciliation. Keep the
-developer's Cloudflare credentials available in the executor environment. Recovery
+credentials the deploy command needs available in the executor environment. Recovery
 may require a manual bootstrap deployment if the currently deployed server
 cannot serve the new routes. Init and production deploy are developer rollout
 steps, not something tests perform.
@@ -162,7 +162,7 @@ still checked; the cache is never reused across attempts or policies.
 ## Required developer rollout smoke
 
 Local tests cover Git history and SQLite state transitions. They do
-not reproduce production Artifacts history availability, Cloudflare deployment
+not reproduce production repository history availability, deployment
 propagation, credential access or remote Git lease behavior.
 Before and after deployment, run this smoke in a developer-controlled project:
 

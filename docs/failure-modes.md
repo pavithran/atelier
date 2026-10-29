@@ -18,7 +18,7 @@ and only during a full run.
 
 Atelier removes the precondition: it ships no test suite into any project. A
 project's required checks run from the item's own head. The `check` command in
-cli/atelier.mjs clones the fork Artifacts holds into a throwaway directory
+cli/atelier.mjs clones the task's branch from the server into a throwaway directory
 (`cleanClone`, `runCheck`) and runs each command there, and `atelier finish`
 runs push and then check in one command, so a test authored against a path the
 head lacks fails immediately after the push. A check command
@@ -57,21 +57,21 @@ being corrected. Checking that a thing exists is not checking that it works by
 the path the reader took.
 
 Atelier reads the fact back through the path that matters before using it.
-Accept and review verify the revision against the fork as Artifacts reports it
-(`verifyRevision` and `headOf` in src/index.ts, `assertRevision` in
-src/rules.ts); the review route re-reads the fork's head and refuses when it
-moved. The links a reader is handed are built from the origin that actually
-reached the Worker (`setNotificationOrigin` in src/ledger.ts,
+Accept and review verify the revision against the task's branch as the server's
+repository reports it (`verifyRevision` and `headOf` in src/index.ts,
+`assertRevision` in src/rules.ts); the review route re-reads the branch's head
+and refuses when it moved. The links a reader is handed are built from the origin that actually
+reached the server (`setNotificationOrigin` in src/ledger.ts,
 `notificationRequest` in src/notify.ts), and every former project name still
 resolves and redirects (`resolveProject` in src/ledger.ts, `movedTo` in
 src/index.ts). Tests: test/ledger.spec.ts, "HTTP approval rejects missing and
-stale revisions before reading Artifacts"; test/notify.spec.ts, "cloud results
+stale revisions before reading the repository"; test/notify.spec.ts, "cloud results
 notify after a waiting submission using the saved origin"; test/notify.test.ts,
 "notification uses the existing decision brief, encoded title and absolute task
 URL"; test/rename.spec.ts, "pages under a former name redirect to the current
-one with their path and query, and a form posted under it acts". Not covered by a test: the comparison against Artifacts in
-`verifyRevision` and the review route's re-read of the fork's head; the tests
-above stop at `assertRevision`, before Artifacts is read.
+one with their path and query, and a form posted under it acts". Not covered by a test: the comparison against the repository in
+`verifyRevision` and the review route's re-read of the branch's head; the tests
+above stop at `assertRevision`, before the repository is read.
 
 ## A4. Committing and pushing a finding that was wrong
 
@@ -175,7 +175,7 @@ later run from the same side.
 Partly prevented. The CLI's usage text is data in src/usage.ts that the CLI
 imports, so help and parser share one source. The handoff routes return the exact next command
 for the new holder ("${to} runs: atelier claim ${id} --project ${project}", the
-handoff cases in src/index.ts), built in the Worker apart from the CLI that
+handoff cases in src/index.ts), built in the server apart from the CLI that
 parses it, and the real binary is tested to print its usage, so a command
 named in help is a command that exists and prints its usage without contacting a
 server. Tests: test/cli-text.test.mjs, "every command the CLI defines is in
@@ -197,16 +197,14 @@ only by checking state afterwards. Verify state, not output.
 Atelier's recording path verifies state, with one stated exception: a check's
 pass or fail is the caller's word, recorded as observed (the evidence route in src/index.ts says so). The
 push route reads the head from
-Artifacts itself (`headOf` in src/index.ts), and `recordPush` in src/ledger.ts
-records what the Worker saw, logging a mismatch flag when the caller's claim
+the task's branch in the server's repository itself (`headOf` in src/index.ts), and `recordPush` in src/ledger.ts
+records what the server saw, logging a mismatch flag when the caller's claim
 differs; the CLI dies rather than accept a silent disagreement, with a message
 naming both heads (`push` in cli/atelier.mjs), and `finish` re-reads the item
 after the checks and refuses if the remote revision moved. A rewrite of the
-fork's history is detected, not assumed: `pushLineage` and `holdsCommit` in
-src/index.ts walk the fork's history, and `recordPush` refuses an undeclared
-rewrite. Tests: test/agent-commands.test.mjs, "push refuses a branch the fork
-does not read, and a claim refresh corrects the workspace", which asserts the
-recorded head is the one Artifacts reports; test/push-lineage.spec.ts, "the
+branch's history is detected, not assumed: `pushLineage` and `holdsCommit` in
+src/index.ts walk the branch's history, and `recordPush` refuses an undeclared
+rewrite. Tests: test/push-lineage.spec.ts, "the
 Ledger refuses a head that does not hold the recorded one unless the push
 declares the rebase from it"; test/update-force-push.test.mjs, "push --force
 refuses to drop commits Atelier recorded, whatever the lease would allow".
@@ -236,20 +234,20 @@ one call and fails closed to the whole set. The pattern is asserting a
 computable fact instead of computing it.
 
 Atelier prevents it wherever the fact gates something. The paths a change
-touched are measured by the Worker from Artifacts (`measureWorkspace` in
+touched are measured by the server from the repository (`measureWorkspace` in
 src/diff.ts, called by the evidence route in src/index.ts, which never reads
 the caller's changedPaths), and the change class is derived from those paths
 (`changeClass` in src/rules.ts), so an agent cannot assert its own class or
 its own radius; the same measurement runs against the baseline head, so a
 crafted merge cannot hide a reverted file. Revision facts cannot be typed:
-acceptance and review are refused unless the revision matches what Artifacts
+acceptance and review are refused unless the revision matches what the repository
 holds (`assertRevision`, `verifyRevision`). Tests: test/routes.spec.ts, "the
 item's own agent cannot name the paths its check changed: the Worker measures
 them, so a protected change needs its independent review" and "the evidence
 route measures against main's head, so a crafted merge cannot hide a reverted
 protected file from the gate"; test/rules.test.ts, "changed paths take the
 strictest class and retain implicit check protection"; test/ledger.spec.ts,
-"HTTP approval rejects missing and stale revisions before reading Artifacts".
+"HTTP approval rejects missing and stale revisions before reading the repository".
 Not prevented: counts inside narratives, summaries, notes and reports remain
 what their author typed (`cleanSummary` in src/brief.ts cleans and caps text,
 it does not measure it). Nothing derives a narrative count, and a count in a
@@ -291,10 +289,10 @@ a mechanism rather than a rule.
 Atelier removes the boundary itself: it ships no suite into other
 repositories. Each project keeps its own repository and its own checks, which
 run in a clean clone of that repository's exact head (`cleanClone` in
-cli/atelier.mjs, a full clone of the fork detached at the head Artifacts
-holds), so there is no second layout for a test to reach outside of. Atelier's
-own suite runs in this repository: `node --test` for the pure functions and
-vitest inside workerd for the Durable Object (package.json, vitest.config.ts).
+cli/atelier.mjs, a clone of the task's branch from the server, detached at the head
+the server records), so there is no second layout for a test to reach outside of. Atelier's
+own suite runs in this repository: every test runs under `node --test` (`npm test`, test/run.mjs), the Ledger's
+through a Node server (test/support/workers.ts).
 Tests: test/check-env.test.mjs, "a passing local check sees no credentials and
 uploads none" and "a check still runs its toolchain: node and git from PATH, a
 temporary folder, its own HOME", which execute the real check path in a clean
