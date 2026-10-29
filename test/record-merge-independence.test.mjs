@@ -46,7 +46,7 @@ const ledger = (project) => server.namespace.get(server.namespace.idFromName(`pr
 function api(method, path, body) {
   return fetch(`${server.url}/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner" },
+    headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }

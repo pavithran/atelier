@@ -891,7 +891,7 @@ export function directionArg(form) {
   const quote = args.quote;
   if (quote === undefined) return {};
   if (typeof quote !== "string" || !quote.trim()) die(`--quote needs the developer's words: atelier ${form} --quote "what the developer said"`);
-  if (!actingHeaders()["x-atelier-acting"]) die(`--quote needs the model acting on the developer's words: add --as H/M or set ATELIER_ACTOR, such as claude-code/opus-5.5`);
+  if (!actingHeaders()["x-atelier-acting"]) die(`--quote needs the model acting on the developer's words: add --as H/M or set ATELIER_ACTOR or ATELIER_ACTING, such as claude-code/opus-5.5`);
   return { quote: quote.trim() };
 }
 
@@ -934,8 +934,22 @@ export async function resolveTokenActor() {
 // override. It is --as, or ATELIER_ACTOR, sent beside the owner's actor; the
 // server refuses a name that is not a harness/model, and with none the event
 // records no acting model.
-export function actingHeaders(as = args.as ?? process.env.ATELIER_ACTOR) {
+export function actingHeaders(as = args.as ?? process.env.ATELIER_ACTOR ?? process.env.ATELIER_ACTING) {
   return typeof as === "string" && as.trim() ? { "x-atelier-acting": as.trim() } : {};
+}
+
+// G18: every write on the developer token names the model acting, and the
+// server refuses one that names none (ownerWriteRefusal in
+// src/models/judgement.ts). Every write on the developer token carries --as,
+// ATELIER_ACTOR or ATELIER_ACTING as the acting model, whatever actor it is
+// sent under; the server judges the name. Reads, and an agent's or runner's
+// own token, send nothing. ATELIER_ACTING names the acting model for
+// these writes alone, for a session that acts for the developer without
+// taking a model's actor on the commands that take one (new, show), as --as
+// and ATELIER_ACTOR do.
+export function ownerActing(method) {
+  if (method === "GET" || method === "HEAD" || tokenActor || tokenRunner) return {};
+  return actingHeaders();
 }
 
 export async function call(method, path, body, as, extra = {}) {
@@ -1044,7 +1058,7 @@ export async function request(method, path, body, as, extra = {}, signal) {
         // A write is never sent on to another address: an error from a
         // redirect target would look like one from the original URL.
         ...(read ? {} : { redirect: "manual" }),
-        headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
+        headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), ...ownerActing(method), "content-type": "application/json", ...extra },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       text = await res.text();
@@ -2050,9 +2064,11 @@ export function wrapReady(name, cwd) {
 // review skip goes as the review job's actor (t353).
 export async function postAsRunner(path, body, runner, signal, as = OWNER) {
   refuseSpawnedHelper("postAsRunner");
+  // On the developer's credential the report names the model acting (G18).
+  await resolveTokenActor();
   const res = await serverFetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, ...ownerActing("POST"), "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   let data = null;

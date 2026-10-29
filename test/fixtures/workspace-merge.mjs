@@ -21,7 +21,7 @@ const itemPath = `/projects/${name}/items/${id}`;
 const dir = `${process.env.ATELIER_CACHE}/work/${name}/${id}`;
 const print = (line) => console.log(line);
 const request = async (method, path, body) => {
-  const res = await fetch(`${server}/api${path}`, { method, headers: { authorization: `Bearer ${process.env.ATELIER_TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(`${server}/api${path}`, { method, headers: { authorization: `Bearer ${process.env.ATELIER_TOKEN}`, "x-atelier-actor": "owner", ...(method === "GET" ? {} : { "x-atelier-acting": process.env.ATELIER_ACTING ?? "claude-code/opus-5.5" }), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(`${data.error ?? res.status}: ${data.detail ?? ""}`), { status: res.status });
   return data;

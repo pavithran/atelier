@@ -66,6 +66,9 @@ export function ledgerLocks(git, stub) {
     }
   };
   return async (name, method, args, call) => {
+    // A call made on a model's word (G18) reaches the Ledger as actingCall
+    // (acting, method, args): its locks are the method's own.
+    if (method === "actingCall" && typeof args?.[1] === "string") [method, args] = [args[1], Array.isArray(args[2]) ? args[2] : []];
     const scope = GRANT_LOCKS[method];
     if (!scope || !name.startsWith("project:")) return call();
     const key = name.slice("project:".length);

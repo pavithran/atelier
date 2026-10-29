@@ -179,6 +179,10 @@ class Obj {
   }
   fire(gen) {
     this.timer = null;
+    // A timer can run a millisecond or so early; an alarm never fires before
+    // its time, so an early one waits out the rest.
+    const due = this.row();
+    if (due.gen === gen && due.at !== null && due.at > Date.now()) { this.arm(due.at, gen); return; }
     // The alarm takes the locks `around` names for it before it joins the
     // object's queue, as a call does (src/runtime/ledger-locks.mjs).
     const around = this.ns.around ?? ((name, method, args, go) => go());

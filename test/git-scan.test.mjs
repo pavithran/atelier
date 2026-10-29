@@ -45,7 +45,7 @@ const tip = async (ref) => (await tryGit("ls-remote", remote(OWNER), ref)).stdou
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
 function api(method, path, body, token = OWNER, actor = "owner") {
-  return fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+  return fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 // A commit on `parent` (and any `more` parents) that writes `files`
 // ({ path: text }) to its tree.

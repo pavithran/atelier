@@ -80,8 +80,13 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
     }
     if (call.actor === "none") { if (actor !== undefined) throw new Error(`${name} names no actor: the token answers for itself`); }
     else if (call.credential !== "public" && (typeof actor !== "string" || !actor)) throw new Error(`${name} needs the actor it is sent as`);
+    // A write on the developer's credential names the model acting (G18):
+    // ATELIER_ACTING, sent only once the identity read shows the developer's
+    // token, since an agent's or runner's own token names its actor itself.
+    const acting = process.env.ATELIER_ACTING?.trim();
+    const owner = acting && call.method === "POST" && call.credential !== "public" && name !== "config" ? await identityOf(signal) : null;
     const headers = call.credential === "public" ? {}
-      : { authorization: `Bearer ${credential}`, ...(call.actor === "none" ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" };
+      : { authorization: `Bearer ${credential}`, ...(call.actor === "none" ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), ...(owner && !owner.runner && !owner.actor ? { "x-atelier-acting": acting } : {}), "content-type": "application/json" };
     const timeout = AbortSignal.timeout(timeoutMs);
     const res = await fetch(`${base}/api${callPath(call, params)}`, {
       method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(redirect ? { redirect } : {}),
@@ -91,7 +96,8 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
     try { data = await res.json(); } catch { /* an answer that is not JSON carries no detail */ }
     return { status: res.status, ok: res.ok, data, incomplete: res.headers.get("x-atelier-incomplete") };
   };
-  return {
+  const identityOf = (signal) => self.identity(signal);
+  const self = {
     send,
     async identity(signal) {
       if (identity) return identity;
@@ -103,6 +109,7 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
       return identity;
     },
   };
+  return self;
 }
 
 // The atelier command a job helper runs, checked against the commands

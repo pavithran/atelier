@@ -300,13 +300,13 @@ async function serve() {
   writeFileSync(join(secrets, "OVERRIDE_SECRET"), "override-secret-4f1c9e", { mode: 0o600 });
   const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets });
   const api = async (method, path, body, actor = "owner") => {
-    const res = await fetch(`${server.url}/api${path}`, { method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const res = await fetch(`${server.url}/api${path}`, { method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": actor, "x-atelier-acting": "claude-code/opus-5.5" }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: res.status, body: await res.json() };
   };
   const config = join(root, "config");
   mkdirSync(config);
   const cli = async (argv) => {
-    const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1" };
+    const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5" };
     delete env.ATELIER_PROJECT; delete env.ATELIER_ACTOR;
     try { const { stdout, stderr } = await run(process.execPath, ["cli/atelier.mjs", ...argv], { env, timeout: 60_000 }); return { code: 0, stdout, stderr }; }
     catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }

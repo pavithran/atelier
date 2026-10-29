@@ -30,7 +30,7 @@ import { reviewerRecords, suggestionRecords } from "./models/suggestion-records.
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
-import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
+import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, isModel, ownerWriteRefusal, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability, type RunReport } from "./models/reliability.ts";
@@ -438,6 +438,17 @@ const html = (body: string, status = 200, nonce?: string) =>
 // How often a live page refreshes itself, in seconds.
 const LIVE_REFRESH = 15;
 
+// The acting model of a developer-token write (G18), carried on the
+// request's own env (actingEnv), so each Ledger it calls records the model on
+// every event: see ownerWriteRefusal in src/models/judgement.ts.
+const ACTING_OF = new WeakMap<object, string>();
+function actingEnv(env: Env, acting: string | null): Env {
+  if (!acting) return env;
+  const scoped = Object.create(env) as Env;
+  ACTING_OF.set(scoped, acting);
+  return scoped;
+}
+
 // A project's Ledger is the Durable Object named after its key: the name it
 // was created with, which a rename keeps. Routes that take a project name
 // resolve it once (resolveProject) and address storage by the key only.
@@ -446,13 +457,13 @@ const LIVE_REFRESH = 15;
 // answers that the server is updating instead of failing.
 function ledger(env: Env, key: string) {
   const name = `project:${key}`;
-  return guardLedger(env.LEDGER.get(env.LEDGER.idFromName(name)), name, (env as unknown as Settings).DEPLOYED_MAIN);
+  return guardLedger(env.LEDGER.get(env.LEDGER.idFromName(name)), name, (env as unknown as Settings).DEPLOYED_MAIN, Date.now, ACTING_OF.get(env) ?? null);
 }
 function ledgerOf(env: Env, p: ProjectRecord) {
   return ledger(env, p.key ?? p.name);
 }
 function index(env: Env) {
-  return guardLedger(env.LEDGER.get(env.LEDGER.idFromName("__index")), "__index", (env as unknown as Settings).DEPLOYED_MAIN);
+  return guardLedger(env.LEDGER.get(env.LEDGER.idFromName("__index")), "__index", (env as unknown as Settings).DEPLOYED_MAIN, Date.now, ACTING_OF.get(env) ?? null);
 }
 // Sends the pool to every project's Ledger after the owner changes it, so the
 // ticks that run there without the index (tier reviews, a plan's reviews)
@@ -4874,6 +4885,16 @@ export default {
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
           return json({ error: "bad_body", detail: "the request body must be a JSON object" }, 400);
+        }
+        // A write on the developer token names the model acting (G18), and
+        // every Ledger call it makes records that model on its events.
+        if (!token) {
+          const refused = ownerWriteRefusal(req.method, actor, ownerActor(env), declaredActing);
+          if (refused) throw refused;
+          // The developer token naming a model's own actor records that
+          // model as acting too, so every such write is listed alike.
+          const recorded = acting ?? (declaredActing === null && isModel(actor, ownerActor(env)) ? actor : null);
+          if (recorded && req.method !== "GET" && req.method !== "HEAD") env = actingEnv(env, recorded);
         }
         // The project a path names is resolved here, once: a former name
         // reaches the project as the current one does, for a token limited to

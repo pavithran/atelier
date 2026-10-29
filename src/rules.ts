@@ -833,7 +833,12 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     }
     if (event.kind === "push.observed") {
       const by = event.actor === "atelier/events" ? holder : event.actor;
-      if (by) actors.add(by);
+      // A push made with the developer token on a model's word records
+      // that model as acting (G18): the push is the model's work, and the
+      // developer's own actor, which is no model, does not stand for it.
+      const acting = typeof event.data.acting === "string" && event.data.acting.includes("/") && validActor(event.data.acting) ? event.data.acting : null;
+      if (acting) actors.add(acting);
+      if (by && (!acting || by.includes("/"))) actors.add(by);
       // A pushed commit whose final Agent line names someone else than the
       // holder, as the Worker read it from the fork (pushAuthors), is that
       // actor's work: it joins the contributors the gate compares.

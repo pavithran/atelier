@@ -37,7 +37,7 @@ const config = { agents: [entry] };
 let server, base, agentToken;
 const remote = (token) => `${base.replace("http://", `http://x:${token}@`)}/git/demo.git`;
 const L = () => server.namespace.get(server.namespace.idFromName("project:demo"));
-const api = (method, path, body, token = OWNER, actor = "owner") => fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+const api = (method, path, body, token = OWNER, actor = "owner") => fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
 const tip = async (item) => (await tryGit(root, "ls-remote", remote(OWNER), `refs/heads/t/${item.slice(1)}`)).stdout.split("\t")[0];
 
 before(async () => {

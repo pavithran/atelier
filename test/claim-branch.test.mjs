@@ -40,12 +40,12 @@ const remote = () => `${base}/git/demo.git`;
 const cache = join(root, "cache");
 const L = () => server.namespace.get(server.namespace.idFromName("project:demo"));
 const api = async (method, path, body, token = OWNER, actor = "owner") => {
-  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, body: await res.json() };
 };
 // The real CLI, as the developer (the owner token) or as an agent.
 const cli = (argv, { token = OWNER, cwd = root, env = {} } = {}) => run(process.execPath, [join(process.cwd(), "cli/atelier.mjs"), ...argv], {
-  cwd, env: { ...gitEnv, ATELIER_CONFIG_DIR: join(root, "config"), ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ...env },
+  cwd, env: { ...gitEnv, ATELIER_CONFIG_DIR: join(root, "config"), ATELIER_CACHE: cache, ATELIER_TOKEN: token, ATELIER_SERVER: base, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5", ...env },
 });
 const tip = async (ref) => (await tryGit(root, ...withToken(OWNER), "ls-remote", remote(), ref)).stdout.split("\t")[0];
 const workspace = (id) => join(cache, "work", "demo", id);

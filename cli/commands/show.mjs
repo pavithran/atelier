@@ -67,7 +67,11 @@ export default async function showCommand() {
   // The project's newest deploy, as atelier ship recorded it, shipped or
   // failed (G9); every one is a ship.recorded event (atelier events).
   const deploy = d.lastDeploy ?? null;
-  if (args.json) return console.log(JSON.stringify({ ...brief, ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
+  // The acts made with the developer token on a model's word (G18): each
+  // event naming its acting harness/model, with the developer's words where
+  // the verb needs them.
+  const acted = actedThroughOwner(d.events ?? [], id);
+  if (args.json) return console.log(JSON.stringify({ ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
@@ -80,7 +84,22 @@ export default async function showCommand() {
   // it failed, with the last lines of the failing step's own output.
   if (d.landing) blocks.push(`Landing: attempt ${d.landing.attempt}, ${d.landing.failedStep ? `failed at ${d.landing.failedStep}${d.landing.files?.length ? ` (${d.landing.files.map(flat).join(", ")})` : ""}` : `at ${d.landing.step}`}, ${String(d.landing.at).slice(0, 16).replace("T", " ")} UTC${d.landing.failedStep && d.landing.tail ? `\n  ${String(d.landing.tail).split("\n").map(flat).join("\n  ")}` : ""}`);
   if (deploy) blocks.push(`Last deploy: ${deployText(deploy)}`);
+  if (acted.length) blocks.push(["Acts on the developer token:", ...acted.map(actedLine)].join("\n"));
   if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [], d?.reviewClaims ?? []));
   if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));
   console.log(blocks.join("\n\n"));
+}
+
+// The task's events that name an acting model (G18), oldest first: who the
+// event is recorded under, the model acting and, for a verb that needs the
+// developer's words, those words.
+export function actedThroughOwner(events, id) {
+  return events
+    .filter((e) => e.itemId === id && typeof e.data?.acting === "string" && e.data.acting)
+    .map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, actor: e.actor, acting: e.data.acting, ...(typeof e.data.quote === "string" && e.data.quote ? { quote: e.data.quote } : {}) }))
+    .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+}
+
+export function actedLine(a) {
+  return `  ${String(a.at ?? "").slice(0, 16).replace("T", " ")} ${a.kind} by ${flat(a.actor)}, acting ${flat(a.acting)}${a.quote ? `, on the developer's words: \u201c${flat(a.quote)}\u201d` : ""}`;
 }

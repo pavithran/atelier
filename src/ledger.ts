@@ -859,6 +859,32 @@ const GATES = new WeakMap<object, RestartGate>();
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
   #ownerAssignment = false;
+  // The harness/model acting for the developer on the call running now
+  // (G18), set by actingCall for the length of one call: every event that
+  // call logs records it, and criteria it writes are that model's.
+  #acting: string | null = null;
+
+  // A call made with the developer token on a model's word (G18): the
+  // Worker sends every Ledger call of such a request through here
+  // (guardLedger in src/ledger-stub.ts), so each event the call logs carries
+  // `acting` and criteria it stores are recorded as the model's. Calls to
+  // one Ledger never interleave (src/runtime/namespace.mjs), so the name
+  // set here is the call's alone. Only the Ledger's own methods are called;
+  // a name it lacks fails as the runtime fails a missing method, so the
+  // Worker's update path (missingLedgerMethod) still reads it.
+  actingCall(acting: string, method: string, args: unknown[]): unknown {
+    const fn = method !== "actingCall" && method !== "constructor" && Object.prototype.hasOwnProperty.call(Ledger.prototype, method)
+      ? (this as unknown as Record<string, unknown>)[method] : undefined;
+    if (typeof fn !== "function") throw new Error(`The RPC receiver does not implement the method "${method}"`);
+    const before = this.#acting;
+    this.#acting = acting;
+    let result: unknown;
+    try { result = (fn as (...a: unknown[]) => unknown).apply(this, Array.isArray(args) ? args : []); }
+    catch (err) { this.#acting = before; throw err; }
+    if (result instanceof Promise) return result.finally(() => { this.#acting = before; });
+    this.#acting = before;
+    return result;
+  }
 
   private get owner(): string {
     return (this.env as unknown as { OWNER_ACTOR?: string }).OWNER_ACTOR || DEFAULT_OWNER;
@@ -9275,6 +9301,9 @@ export class Ledger extends DurableObject<Env> {
   // when a task is filed with criteria, when the owner changes them, and when
   // a part is made from an approved plan or added by the Ledger.
   private recordCriteriaRevision(id: string, by: string, at: string): number {
+    // Criteria the developer token stores on a model's word are that
+    // model's (G18, t16): the criteria review then refuses the same model.
+    if (by === this.owner && this.#acting) by = this.#acting;
     const item = this.item(id);
     const rev = this.criteriaRevision(id) + 1;
     const criteria = criteriaOf(item);
@@ -11137,6 +11166,9 @@ export class Ledger extends DurableObject<Env> {
     // exact pool id, marked so: the judgement record reads it as it is and
     // only an unmarked one, from before, through the aliases (canonicalModel;
     // gpt-6-astra's ninth review of t622, finding 3).
+    // Every event a call made with the developer token on a model's word
+    // logs names that model (G18), unless the event names its own already.
+    if (this.#acting && data.acting === undefined) data = { ...data, acting: this.#acting };
     if (typeof data.acting === "string" && (ACTING_EVENTS as readonly string[]).includes(kind)) data = { ...data, actingExact: true };
     // The stage is read from the item as it stands, so a caller logs after it
     // has changed the item.

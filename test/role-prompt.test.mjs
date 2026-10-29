@@ -58,6 +58,7 @@ const ORCHESTRATE_RULES = [
   /two rejections on the same\s+point/,
   /edge cases it\s+implies/,
   /mechanical\s+(merge\s+)?conflict/,
+  /Name yourself on every write you make with the developer token/,
 ];
 
 test("the orchestrate guide states each standing rule and names docs/orchestrating.md", () => {

@@ -37,7 +37,7 @@ let server, base, seed, agentToken, otherToken;
 const remote = () => `${base}/git/demo.git`;
 const L = () => server.namespace.get(server.namespace.idFromName("project:demo"));
 const api = async (method, path, body, token = OWNER, actor = "owner", extra = {}) => {
-  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(`${base}/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-atelier-actor": actor, ...(token === OWNER ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, body: await res.json() };
 };
 // What the Git host answers a credential's read at info/refs.
@@ -158,7 +158,7 @@ test("handoff, abandon and unclaim each leave the old task grant answered 401", 
 
   const dropped = await newTask("Abandoned");
   const g2 = await claim(dropped);
-  const a = await api("POST", `/projects/demo/items/${dropped}/abandon`, { note: "not needed" });
+  const a = await api("POST", `/projects/demo/items/${dropped}/abandon`, { note: "not needed", quote: "abandon it" });
   assert.equal(a.status, 200, JSON.stringify(a.body));
   assert.equal(await L().tokenId(dropped), null);
   assert.equal(await infoRefs(g2), 401, "abandon");
@@ -192,7 +192,7 @@ test("revoking the agent token revokes the task grant and the read grant minted 
 function raw(path, headers, body, target = null) {
   return new Promise((ok, fail) => {
     const url = new URL(path, base);
-    const req = httpRequest({ host: url.hostname, port: url.port, path: target ?? url.pathname, method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", ...headers } }, (res) => {
+    const req = httpRequest({ host: url.hostname, port: url.port, path: target ?? url.pathname, method: "PUT", headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", ...headers } }, (res) => {
       let text = "";
       res.on("data", (d) => { text += d; });
       res.on("end", () => { let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; } ok({ status: res.statusCode, body: parsed }); });
@@ -265,7 +265,7 @@ test("a change that ends a grant waits for the push in flight on its task, and t
   for (const [what, stop] of [
     ["released", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/release`, { note: "mid-push" }, agentToken, BUILDER)).status, 200)],
     ["handed over", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/handoff`, { to: OTHER, note: "mid-push" }, agentToken, BUILDER)).status, 200)],
-    ["abandoned", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/abandon`, { note: "mid-push" })).status, 200)],
+    ["abandoned", async (id) => assert.equal((await api("POST", `/projects/demo/items/${id}/abandon`, { note: "mid-push", quote: "abandon it" })).status, 200)],
   ]) {
     const id = await newTask(`Held push, ${what}`);
     const grant = await claim(id);
