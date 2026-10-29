@@ -8,7 +8,7 @@
 // items, events and Git refs. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
 import { execFile, execFileSync } from "node:child_process";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -18,11 +18,12 @@ import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { startServer } from "../src/runtime/server.mjs";
 import { ensureRepo } from "../src/git/repos.mjs";
-import { decryptFile, encryptFile, generateKeys, privateKeyOf } from "../src/backup/envelope.mjs";
-import { refsOf } from "../src/backup/snapshot.mjs";
+import { bech32Decode, bech32Encode, decryptFile, encryptFile, generateIdentity, parseIdentity, parseRecipient } from "../src/backup/age.mjs";
+import { makeSnapshot, refsOf, restoreSnapshot } from "../src/backup/snapshot.mjs";
 import { S3Client } from "../src/backup/s3.mjs";
 import { prune } from "../src/backup/backup.mjs";
-import { objectKey } from "../src/backup/config.mjs";
+import { objectKey, prefixFor } from "../src/backup/config.mjs";
+import { DatabaseSync } from "node:sqlite";
 
 const run = promisify(execFile);
 const OWNER = "atl_00112233445566778899aabbccddeeff";
@@ -162,6 +163,9 @@ async function allEvents(server, key) {
   }
 }
 
+// Asynchronous, for the writers that run beside the server in this process.
+const gitAsync = (cwd, ...args) => run("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], { cwd });
+
 function gitIn(cwd, ...args) {
   return execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
@@ -177,10 +181,11 @@ test("a backup of a server under writes restores into fresh directories with the
   const dataDir = join(root, "data"), reposDir = join(root, "repos");
   const server = await startServer({ env: "staging", dataDir, reposDir, hooksDir: hooks, host: "127.0.0.1", secretsDir: serverSecrets, bindings: { ARTIFACTS: artifacts } });
   const stub = await s3stub();
-  const keys = generateKeys();
+  const keys = generateIdentity();
   const keyFile = join(root, "backup.key");
-  writeFileSync(keyFile, keys.privateKey, { mode: 0o600 });
-  const backupSecrets = secretsDir(root, stub.endpoint, keys.publicKey);
+  writeFileSync(keyFile, keys.keyFile, { mode: 0o600 });
+  const secretLine = keys.keyFile.split("\n").find((l) => l.startsWith("AGE-SECRET-KEY-1"));
+  const backupSecrets = secretsDir(root, stub.endpoint, keys.recipient);
   let writing = true;
   let restored;
   try {
@@ -200,6 +205,8 @@ test("a backup of a server under writes restores into fresh directories with the
     gitIn(work, "add", "b.txt");
     gitIn(work, "commit", "--quiet", "-m", "two");
     gitIn(work, "push", "--quiet", bare, "main", "t/1");
+    gitIn(work, "checkout", "--quiet", "main");
+    const before = refsOf(bare);
     await server.settings.LARGE.put("diffs/t1/review", "a large text kept beside the Ledger");
 
     // Retention's field: this environment's own old and recent backups, an
@@ -218,19 +225,56 @@ test("a backup of a server under writes restores into fresh directories with the
       stub.objects.set(k, { body: Buffer.from(name), lastModified: new Date(name === "ownRecent" || name === "ownNameOldButModifiedRecently" ? now - 5 * DAY : now - 40 * DAY) });
     }
 
-    // Writes keep landing while the backup runs, in its own process.
-    let written = 0;
-    const writer = (async () => {
-      while (writing) {
-        const r = await api(server, "POST", "/projects/demo/items", { title: `During the backup ${written}` });
-        assert.equal(r.status, 201);
-        written++;
-      }
-    })();
+    // While the backup runs, in its own process: items keep landing, new
+    // projects are registered, commits, notes and new t/N branches are
+    // pushed, and large objects are written.
+    const counts = { items: 0, projects: 0, pushes: 0, large: 0 };
+    const large = new Map();
+    const writers = [
+      (async () => {
+        while (writing) {
+          assert.equal((await api(server, "POST", "/projects/demo/items", { title: `During the backup ${counts.items}` })).status, 201);
+          counts.items++;
+        }
+      })(),
+      (async () => {
+        while (writing) {
+          assert.equal((await api(server, "PUT", `/projects/mid${counts.projects}`, {})).status, 200);
+          counts.projects++;
+        }
+      })(),
+      (async () => {
+        while (writing) {
+          // Every third push carries a new commit on main and a new note;
+          // every push makes a new t/N branch.
+          const n = counts.pushes + 2;
+          if (n % 3 === 2) {
+            writeFileSync(join(work, "a.txt"), `main ${n}\n`);
+            await gitAsync(work, "commit", "--quiet", "-am", `main ${n}`);
+            await gitAsync(work, "notes", "add", "-f", "-m", `note ${n}`, "HEAD");
+          }
+          await gitAsync(work, "push", "--quiet", bare, "main", `HEAD:refs/heads/t/${n}`, "refs/notes/commits");
+          counts.pushes++;
+        }
+      })(),
+      (async () => {
+        while (writing) {
+          const k = `burst/${counts.large}`, text = `large object ${counts.large} `.repeat(500);
+          await server.settings.LARGE.put(k, text);
+          large.set(k, text);
+          counts.large++;
+        }
+      })(),
+    ];
+    // The backup starts once every kind of write has landed at least once,
+    // and they go on through it.
+    while (Object.values(counts).some((n) => n === 0)) await new Promise((r) => setTimeout(r, 10));
+    const atStart = { ...counts };
     const backup = await run(process.execPath, ["cli/backup.mjs", "--env", "staging", "--data", dataDir, "--repos", reposDir, "--secrets", backupSecrets, "--work", root], { timeout: 120_000 });
+    const atEnd = { ...counts };
     writing = false;
-    await writer;
-    assert.ok(written > 0, "writes landed while the backup ran");
+    await Promise.all(writers);
+    for (const what of Object.keys(counts)) assert.ok(atEnd[what] > atStart[what], `${what} written while the backup ran`);
     assert.match(backup.stdout, /backup of staging: data .*, repositories /);
     assert.match(backup.stdout, /uploaded \d+ encrypted bytes to atelier-backups\/atelier\/staging\/atelier-staging-\d{8}T\d{6}Z\.backup at 127\.0\.0\.1:\d+/);
 
@@ -261,24 +305,24 @@ test("a backup of a server under writes restores into fresh directories with the
     assert.equal(uploaded.length, 1);
     const sealed = stub.objects.get(uploaded[0]).body;
 
-    // Criterion 2: what R2 holds is unreadable without the private key. It
-    // is not an archive, holds none of the data in the clear, and another
-    // key, or a changed byte, does not open it.
+    // Criterion 2: what R2 holds is unreadable without the age identity. It
+    // is an age file, not an archive, holds none of the data in the clear,
+    // and another identity, a changed byte or a cut does not open it.
     const sealedFile = join(root, "sealed");
     writeFileSync(sealedFile, sealed);
+    assert.ok(sealed.subarray(0, 22).equals(Buffer.from("age-encryption.org/v1\n")));
     assert.throws(() => execFileSync("tar", ["-tzf", sealedFile], { stdio: "ignore" }));
     for (const plain of ["SQLite format 3", "manifest", "Before the backup", "a large text"]) assert.ok(!sealed.includes(Buffer.from(plain)), `"${plain}" is not in the clear`);
-    const other = generateKeys();
-    await assert.rejects(decryptFile(sealedFile, join(root, "nope1"), privateKeyOf(other.privateKey)), /encrypted to another key/);
+    await assert.rejects(decryptFile(sealedFile, join(root, "nope1"), generateIdentity().keyFile), /not encrypted to this key/);
     const tampered = Buffer.from(sealed);
     tampered[tampered.length - 40] ^= 1;
     writeFileSync(join(root, "tampered"), tampered);
-    await assert.rejects(decryptFile(join(root, "tampered"), join(root, "nope2"), privateKeyOf(keys.privateKey)), /does not open/);
+    await assert.rejects(decryptFile(join(root, "tampered"), join(root, "nope2"), keys.keyFile), /does not open/);
     const cut = join(root, "cut");
     writeFileSync(cut, sealed.subarray(0, sealed.length - 100));
-    await assert.rejects(decryptFile(cut, join(root, "nope3"), privateKeyOf(keys.privateKey)), /does not open|cut short/);
+    await assert.rejects(decryptFile(cut, join(root, "nope3"), keys.keyFile), /does not open|cut short/);
     const opened = join(root, "opened.tgz");
-    await decryptFile(sealedFile, opened, privateKeyOf(keys.privateKey));
+    await decryptFile(sealedFile, opened, keys.keyFile);
     const tarBytes = gunzipSync(readFileSync(opened));
     const manifestText = execFileSync("tar", ["-xzOf", opened, "manifest.json"], { encoding: "utf8" });
     const manifest = JSON.parse(manifestText);
@@ -286,18 +330,35 @@ test("a backup of a server under writes restores into fresh directories with the
     assert.ok(manifest.files.some((f) => f.path === `data/${"ledgers/" + projectFile}` && /^[0-9a-f]{64}$/.test(f.sha256) && f.size > 0));
     assert.ok(manifest.files.some((f) => f.path === "data/ledgers/__index.sqlite"));
     assert.ok(manifest.files.some((f) => f.kind === "large"));
-    assert.deepEqual(manifest.repos.find((r) => r.key === key).refs, refsOf(bare));
+    assert.ok(!manifest.files.some((f) => f.path.endsWith(".tmp")), "no large object's file being written is in the backup");
+    // Projects registered while the backup ran: every one the copied index
+    // registers has its Ledger in the backup.
+    const mids = manifest.registered.filter((p) => p.name.startsWith("mid"));
+    assert.ok(mids.length > 0, "a project registered during the backup is in it");
+    for (const p of manifest.registered) assert.ok(manifest.files.some((f) => f.path === `data/ledgers/project%3A${encodeURIComponent(p.key)}.sqlite`), `${p.name} has its Ledger`);
 
-    // Restore (criterion 1): fetched from the stub, decrypted with the key,
-    // checked, restored into fresh directories, and a server started on it.
+    // The repository: the refs from before are there or have moved forward,
+    // with notes and t/N branches pushed during the backup.
+    const bundled = manifest.repos.find((r) => r.key === key).refs;
+    for (const ref of Object.keys(before)) assert.ok(bundled[ref], `${ref} is in the bundle`);
+    const now2 = refsOf(bare);
+    for (const [ref, sha] of Object.entries(bundled)) {
+      assert.ok(now2[ref], `${ref} exists in the source`);
+      execFileSync("git", ["merge-base", "--is-ancestor", sha, now2[ref]], { cwd: bare });
+    }
+
+    // Restore (criterion 1): fetched from the stub, decrypted with the
+    // identity, checked, restored into fresh directories, and a server
+    // started on it that answers for every project the index registers.
     const newData = join(root, "restored-data"), newRepos = join(root, "restored-repos");
     const restore = await run(process.execPath, ["cli/restore.mjs", "--env", "staging", "--secrets", backupSecrets, "--key", keyFile, "--data", newData, "--repos", newRepos, "--check", "--work", root], { timeout: 120_000 });
     assert.match(restore.stdout, /restoring into .*restored-data and .*restored-repos, fresh directories: removing both undoes this restore/);
     assert.match(restore.stdout, /the restored server answers \/api\/version/);
     assert.match(restore.stdout, new RegExp(`${key}: \\d+ items, \\d+ events, as the backup counted`));
+    for (const p of mids) assert.match(restore.stdout, new RegExp(`  ${p.name}: \\d+ items, \\d+ events, as the backup counted`));
 
     // Criterion 4: no secret value in any log or in the archive.
-    const secretValues = [SECRET_ACCESS_KEY, ACCESS_KEY_ID, keys.privateKey.split("\n")[1], OWNER, OVERRIDE];
+    const secretValues = [SECRET_ACCESS_KEY, ACCESS_KEY_ID, secretLine, OWNER, OVERRIDE];
     for (const [what, text] of [["backup output", backup.stdout + backup.stderr], ["restore output", restore.stdout + restore.stderr], ["manifest", manifestText]]) {
       for (const s of secretValues) assert.ok(!text.includes(s), `${what} holds no secret value`);
     }
@@ -308,7 +369,7 @@ test("a backup of a server under writes restores into fresh directories with the
 
     // The restored server against the live one: the project, every restored
     // item and event the same as the source's at the backup's moment, and as
-    // many as the manifest counted; the refs equal.
+    // many as the manifest counted; the refs those of the bundle.
     restored = await startServer({ env: "staging", dataDir: newData, reposDir: newRepos, hooksDir: hooks, host: "127.0.0.1", secretsDir: serverSecrets, bindings: { ARTIFACTS: artifacts } });
     const [src, dst] = await Promise.all([api(server, "GET", "/projects/demo"), api(restored, "GET", "/projects/demo")].map(async (p) => (await p).json()));
     assert.deepEqual(dst.project, src.project);
@@ -321,9 +382,15 @@ test("a backup of a server under writes restores into fresh directories with the
     assert.equal(dstEvents.length, want.events);
     assert.equal(dstEvents[0].seq, want.lastSeq);
     assert.deepEqual(dstEvents, srcEvents.filter((e) => e.seq <= want.lastSeq));
-    assert.deepEqual(refsOf(join(newRepos, `${key}.git`)), refsOf(bare));
+    const restoredRefs = refsOf(join(newRepos, `${key}.git`));
+    assert.deepEqual(restoredRefs, Object.fromEntries(Object.entries(bundled).sort(([a], [b]) => (a < b ? -1 : 1))));
+    assert.ok(restoredRefs["refs/notes/commits"] && Object.keys(restoredRefs).some((r) => /^refs\/heads\/t\/([2-9]|\d\d+)$/.test(r)), "notes and a new t/N branch are restored");
     assert.equal(execFileSync("git", ["symbolic-ref", "HEAD"], { cwd: join(newRepos, `${key}.git`), encoding: "utf8" }).trim(), "refs/heads/main");
     assert.equal(await (await restored.settings.LARGE.get("diffs/t1/review")).text(), "a large text kept beside the Ledger");
+    for (const f of manifest.files.filter((f) => f.path.startsWith("data/large/burst"))) {
+      const k = decodeURIComponent(f.path.slice("data/large/".length));
+      assert.equal(await (await restored.settings.LARGE.get(k)).text(), large.get(k), `${k} restored whole`);
+    }
   } finally {
     writing = false;
     await restored?.close();
@@ -348,22 +415,142 @@ test("prune deletes nothing outside its prefix, whatever the listing answers", a
   } finally { await stub.close(); }
 });
 
-test("the envelope opens with its key alone, for an empty file and one of exact chunk size", async () => {
+test("a prefix with an empty, '.' or '..' segment is refused", () => {
+  assert.equal(prefixFor("staging"), "atelier/staging/");
+  assert.equal(prefixFor("staging", { R2_PREFIX: "backups/v.1/" }), "backups/v.1/");
+  for (const bad of ["a/../b/", "../b/", "a/./b/", "./", "a//b/", "/a/", "a", "a/b", "", "a/ b/"]) {
+    assert.throws(() => prefixFor("staging", { R2_PREFIX: bad }), /R2_PREFIX/, bad);
+  }
+});
+
+test("a listed key with odd characters is signed, sent and deleted exactly, never a normalised neighbour", async () => {
+  const stub = await s3stub();
+  try {
+    const client = new S3Client({ endpoint: stub.endpoint, bucket: BUCKET, accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY });
+    const odd = "atelier/staging/../x/./odd key+%2F ü#?&=.backup";
+    const neighbours = ["atelier/x/odd key+%2F ü#?&=.backup", "atelier/staging/x/odd key+/ ü#?&=.backup", "x/odd key+%2F ü#?&=.backup"];
+    for (const k of [odd, ...neighbours]) stub.objects.set(k, { body: Buffer.from(k), lastModified: new Date() });
+    const listed = (await client.list("atelier/staging/")).map((o) => o.key);
+    assert.ok(listed.includes(odd));
+    await client.delete(listed.find((k) => k === odd));
+    assert.ok(!stub.objects.has(odd));
+    for (const k of neighbours) assert.ok(stub.objects.has(k), `${k} is untouched`);
+    assert.deepEqual(stub.log.filter((r) => r.problem), []);
+    assert.equal(stub.log.at(-1).key, odd);
+  } finally { await stub.close(); }
+});
+
+test("a large object being written, or gone before its copy, is not in the snapshot", async () => {
   const root = scratch();
-  const keys = generateKeys();
-  for (const size of [0, 65536, 65536 * 2 + 7]) {
+  const data = join(root, "data");
+  mkdirSync(join(data, "ledgers"), { recursive: true });
+  const idx = new DatabaseSync(join(data, "ledgers", "__index.sqlite"));
+  idx.exec("CREATE TABLE projects (name TEXT PRIMARY KEY, json TEXT NOT NULL)");
+  idx.close();
+  mkdirSync(join(data, "large", "k"), { recursive: true });
+  writeFileSync(join(data, "large", "k", "whole"), "whole");
+  writeFileSync(join(data, "large", "k", "whole.4242.abc123.tmp"), "half");
+  const manifest = await makeSnapshot({ dataDir: data, reposDir: join(root, "repos"), out: join(root, "snap"), env: "staging" });
+  assert.deepEqual(manifest.files.filter((f) => f.kind === "large").map((f) => f.path), ["data/large/k/whole"]);
+});
+
+test("a backup refuses an index that registers a project whose Ledger is missing, and so does a restore", async () => {
+  const root = scratch();
+  const data = join(root, "data");
+  mkdirSync(join(data, "ledgers"), { recursive: true });
+  const idx = new DatabaseSync(join(data, "ledgers", "__index.sqlite"));
+  idx.exec("CREATE TABLE projects (name TEXT PRIMARY KEY, json TEXT NOT NULL)");
+  idx.prepare("INSERT INTO projects VALUES (?, ?)").run("ghost", JSON.stringify({ name: "ghost", key: "ghost" }));
+  idx.close();
+  await assert.rejects(makeSnapshot({ dataDir: data, reposDir: join(root, "repos"), out: join(root, "snap"), env: "staging" }), /the index registers ghost, whose Ledger is not in/);
+  // The same index in a backup made without the Ledger: the restore refuses.
+  writeFileSync(join(data, "ledgers", "project%3Aghost.sqlite"), "");
+  const snap = join(root, "snap2");
+  const manifest = await makeSnapshot({ dataDir: data, reposDir: join(root, "repos"), out: snap, env: "staging" });
+  const ghost = manifest.files.findIndex((f) => f.path === "data/ledgers/project%3Aghost.sqlite");
+  rmSync(join(snap, "data", "ledgers", "project%3Aghost.sqlite"));
+  manifest.files.splice(ghost, 1);
+  writeFileSync(join(snap, "manifest.json"), JSON.stringify(manifest));
+  await assert.rejects(restoreSnapshot({ from: snap, dataDir: join(root, "r-data"), reposDir: join(root, "r-repos") }), /registers ghost, whose Ledger the backup lacks/);
+});
+
+// ---- age v1 ------------------------------------------------------------------
+
+test("bech32 meets BIP 173's vectors, and an age identity gives RFC 7748's public key", () => {
+  for (const valid of ["A12UEL5L", "a12uel5l", "abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxw", "split1checkupstagehandshakeupstreamerranterredcaperred2y9e3w"]) bech32Decode(valid);
+  for (const invalid of ["a12uel5m", "A12uEL5L", "abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxx"]) assert.throws(() => bech32Decode(invalid));
+  // RFC 7748, section 6.1: Alice's private scalar and public key.
+  const alice = Buffer.from("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "hex");
+  const id = parseIdentity(bech32Encode("age-secret-key-", alice).toUpperCase());
+  assert.equal(id.publicRaw.toString("hex"), "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
+  assert.ok(id.recipient.startsWith("age1") && id.recipient.length === 62);
+  assert.deepEqual(parseRecipient(id.recipient), id.publicRaw);
+  assert.throws(() => parseIdentity(id.recipient), /not an age identity/);
+  assert.throws(() => parseRecipient(bech32Encode("age-secret-key-", alice).toUpperCase()), /not an age recipient/);
+});
+
+test("age files open with their identity alone; a changed header MAC, a changed stanza or a cut does not", async () => {
+  const root = scratch();
+  const keys = generateIdentity();
+  for (const size of [0, 1, 65536, 65536 * 2 + 7]) {
     const plain = join(root, `p${size}`), sealed = join(root, `s${size}`), back = join(root, `b${size}`);
-    const bytes = Buffer.alloc(size, 7);
+    const bytes = randomBytes(size);
     writeFileSync(plain, bytes);
-    await encryptFile(plain, sealed, keys.publicKey);
-    await decryptFile(sealed, back, privateKeyOf(keys.privateKey));
+    await encryptFile(plain, sealed, keys.recipient);
+    await decryptFile(sealed, back, keys.keyFile);
     assert.deepEqual(readFileSync(back), bytes);
   }
+  const sealed = readFileSync(join(root, `s${65536 * 2 + 7}`));
+  const text = sealed.toString("latin1");
+  const macAt = text.indexOf("\n--- ") + 5;
+  const flip = (at, name) => { const b = Buffer.from(sealed); b[at] = b[at] === 0x41 ? 0x42 : 0x41; writeFileSync(join(root, name), b); return join(root, name); };
+  await assert.rejects(decryptFile(flip(macAt + 2, "mac"), join(root, "o1"), keys.keyFile), /MAC does not match/);
+  await assert.rejects(decryptFile(flip(text.indexOf("-> X25519 ") + 12, "share"), join(root, "o2"), keys.keyFile), /not encrypted to this key|malformed|base64/);
   // Cut at a chunk boundary: the chunk now last was not sealed as last.
-  const twoChunks = join(root, "two"), sealed = join(root, "two.sealed");
-  writeFileSync(twoChunks, Buffer.alloc(65536 * 2, 1));
-  await encryptFile(twoChunks, sealed, keys.publicKey);
-  const whole = readFileSync(sealed);
+  const two = join(root, "two"), twoSealed = join(root, "two.sealed");
+  writeFileSync(two, randomBytes(65536 * 2));
+  await encryptFile(two, twoSealed, keys.recipient);
+  const whole = readFileSync(twoSealed);
   writeFileSync(join(root, "two.cut"), whole.subarray(0, whole.length - (65536 + 16)));
-  await assert.rejects(decryptFile(join(root, "two.cut"), join(root, "two.back"), privateKeyOf(keys.privateKey)), /does not open at chunk 1/);
+  await assert.rejects(decryptFile(join(root, "two.cut"), join(root, "o3"), keys.keyFile), /does not open at chunk 1/);
+  writeFileSync(join(root, "two.cut2"), whole.subarray(0, whole.length - 10));
+  await assert.rejects(decryptFile(join(root, "two.cut2"), join(root, "o4"), keys.keyFile), /does not open/);
+});
+
+function ageOnPath() {
+  try { execFileSync("age", ["--version"], { stdio: "ignore" }); execFileSync("age-keygen", ["--version"], { stdio: "ignore" }); return true; } catch { return false; }
+}
+
+test("interop with the age tool: its keys, its encryption and its decryption", { skip: ageOnPath() ? false : "age and age-keygen are not on PATH; the interop check is skipped" }, async () => {
+  const root = scratch();
+  const plain = join(root, "plain");
+  const bytes = randomBytes(65536 * 3 + 123);
+  writeFileSync(plain, bytes);
+  // 1. A key from age-keygen; this code encrypts, age -d -i decrypts.
+  const ageKey = join(root, "age.key");
+  execFileSync("age-keygen", ["-o", ageKey], { stdio: "ignore" });
+  const ageRecipient = /# public key: (age1\w+)/.exec(readFileSync(ageKey, "utf8"))[1];
+  await encryptFile(plain, join(root, "ours.age"), ageRecipient);
+  execFileSync("age", ["-d", "-i", ageKey, "-o", join(root, "ours.out"), join(root, "ours.age")]);
+  assert.deepEqual(readFileSync(join(root, "ours.out")), bytes);
+  // 2. age -r encrypts; this code decrypts, for several sizes.
+  for (const size of [0, 65536, 65536 * 3 + 123]) {
+    const p = join(root, `in${size}`);
+    writeFileSync(p, bytes.subarray(0, size));
+    execFileSync("age", ["-r", ageRecipient, "-o", `${p}.age`, p]);
+    await decryptFile(`${p}.age`, `${p}.out`, readFileSync(ageKey, "utf8"));
+    assert.deepEqual(readFileSync(`${p}.out`), bytes.subarray(0, size));
+  }
+  // 3. Keys from `cli/backup.mjs keygen` work with age, both ways.
+  const kdir = join(root, "keys");
+  const made = execFileSync(process.execPath, ["cli/backup.mjs", "keygen", "--out", kdir], { encoding: "utf8" });
+  const recipient = readFileSync(join(kdir, "backup.pub"), "utf8").trim();
+  assert.match(made, new RegExp(`Public key: ${recipient}`));
+  assert.equal(execFileSync("age-keygen", ["-y", join(kdir, "backup.key")], { encoding: "utf8" }).trim(), recipient);
+  execFileSync("age", ["-r", recipient, "-o", join(root, "k.age"), plain]);
+  execFileSync("age", ["-d", "-i", join(kdir, "backup.key"), "-o", join(root, "k.out"), join(root, "k.age")]);
+  assert.deepEqual(readFileSync(join(root, "k.out")), bytes);
+  await encryptFile(plain, join(root, "k2.age"), recipient);
+  execFileSync("age", ["-d", "-i", join(kdir, "backup.key"), "-o", join(root, "k2.out"), join(root, "k2.age")]);
+  assert.deepEqual(readFileSync(join(root, "k2.out")), bytes);
 });

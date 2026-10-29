@@ -13,8 +13,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { R2_NAMES, clientFrom, ownObject, prefixFor, readBackupSecrets } from "./config.mjs";
-import { decryptFile, privateKeyOf } from "./envelope.mjs";
-import { restoreSnapshot } from "./snapshot.mjs";
+import { decryptFile, parseIdentity } from "./age.mjs";
+import { registeredProjects, restoreSnapshot } from "./snapshot.mjs";
 
 // The archive holds plain files and directories under manifest.json, data/
 // and repos/, and nothing that names a path outside itself.
@@ -68,21 +68,25 @@ export async function checkRestored({ dataDir, reposDir, manifest, log = () => {
     const version = await get("/api/version");
     log(`  the restored server answers /api/version`);
     const projects = {};
-    for (const [key, want] of Object.entries(manifest.projects ?? {})) {
-      const p = await get(`/api/projects/${encodeURIComponent(key)}`);
+    // Every project the restored index registers, each answered by name and
+    // matched with the counts the backup took from its Ledger.
+    for (const { name, key } of registeredProjects(join(dataDir, "ledgers", "__index.sqlite"))) {
+      const want = manifest.projects?.[key];
+      if (!want) throw new Error(`the restored index registers ${name}, which the backup counted nothing for`);
+      const p = await get(`/api/projects/${encodeURIComponent(name)}`);
       let events = 0, last = 0, before = null;
       for (;;) {
-        const page = await get(`/api/projects/${encodeURIComponent(key)}/events${before === null ? "" : `?before=${before}`}`);
+        const page = await get(`/api/projects/${encodeURIComponent(name)}/events${before === null ? "" : `?before=${before}`}`);
         events += page.events.length;
         if (!last && page.events.length) last = page.events[0].seq;
         if (page.next === null || page.next === undefined) break;
         before = page.next;
       }
       if (p.items.length !== want.items || events !== want.events || last !== want.lastSeq) {
-        throw new Error(`${key} on the restored server holds ${p.items.length} items and ${events} events to #${last}; the backup counted ${want.items} and ${want.events} to #${want.lastSeq}`);
+        throw new Error(`${name} on the restored server holds ${p.items.length} items and ${events} events to #${last}; the backup counted ${want.items} and ${want.events} to #${want.lastSeq}`);
       }
-      projects[key] = { items: p.items.length, events };
-      log(`  ${key}: ${p.items.length} items, ${events} events, as the backup counted`);
+      projects[name] = { items: p.items.length, events };
+      log(`  ${name}: ${p.items.length} items, ${events} events, as the backup counted`);
     }
     return { version, projects };
   } finally { await server.close(); }
@@ -90,10 +94,9 @@ export async function checkRestored({ dataDir, reposDir, manifest, log = () => {
 
 // One restore. `file` is a local backup, or `object` (default the newest)
 // is fetched from R2 with the secrets in secretsDir.
-export async function runRestore({ env, file, object, secretsDir, keyFile, passphraseFile, dataDir, reposDir, check = false, workDir, log = console.log }) {
-  if (!keyFile) throw new Error("--key FILE names the private key");
-  const passphrase = passphraseFile ? readFileSync(passphraseFile, "utf8").replace(/\r?\n$/, "") : undefined;
-  const privateKey = privateKeyOf(readFileSync(keyFile, "utf8"), passphrase);
+export async function runRestore({ env, file, object, secretsDir, keyFile, dataDir, reposDir, check = false, workDir, log = console.log }) {
+  if (!keyFile) throw new Error("--key FILE names the age identity file");
+  const identity = parseIdentity(readFileSync(keyFile, "utf8"));
   const data = resolve(dataDir), repos = resolve(reposDir);
   const work = mkdtempSync(join(workDir ?? tmpdir(), "atelier-restore-"));
   try {
@@ -109,7 +112,7 @@ export async function runRestore({ env, file, object, secretsDir, keyFile, passp
       log(`fetched ${client.bucket}/${key} from ${new URL(client.origin).host}`);
     }
     const archive = join(work, "backup.tgz");
-    await decryptFile(sealed, archive, privateKey);
+    await decryptFile(sealed, archive, identity);
     checkArchive(archive);
     const snap = join(work, "snapshot");
     mkdirSync(snap, { mode: 0o700 });

@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KEEP_DAYS, R2_NAMES, clientFrom, objectKey, ownObject, prefixFor, readBackupSecrets } from "./config.mjs";
-import { encryptFile } from "./envelope.mjs";
+import { encryptFile } from "./age.mjs";
 import { makeSnapshot, sha256File } from "./snapshot.mjs";
 
 const DAY = 86_400_000;

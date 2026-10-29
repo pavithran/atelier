@@ -15,16 +15,16 @@
 #               R2_ACCESS_KEY_ID=...        (an R2 API token's S3 key id)
 #               R2_SECRET_ACCESS_KEY=...    (and its secret)
 #               R2_PREFIX=atelier/ENV/      (optional)
-# BACKUP.pub  the X25519 public key the backups are encrypted to; the
-#             private key stays with the developer and never comes here
+# BACKUP.pub  the age recipient (age1...) the backups are encrypted to; the
+#             identity stays on the developer's Mac and never comes here
 #
 # DRYRUN=1 prints what would change and needs no root.
 #
 # As in setup-staging.sh and setup-tunnel.sh, the developer's sudo is the
 # decision to trust these bytes once: they are copied into root-owned
 # storage, checked there, and never run as root. What it makes:
-# - /Users/atelierd/secrets/backup/: the R2 settings and the public key,
-#   one file each, atelierd's alone (700, files 600). A directory apart from
+# - /Users/atelierd/secrets/backup/: the R2 settings and the recipient, one
+#   file each, atelierd's alone (700, files 600). A directory apart from
 #   secrets/ENV, so the server never reads the R2 credentials.
 # - /Users/atelierd/backup-work/: atelierd's, 700, where a backup is packed
 #   and encrypted before upload, and emptied after.
@@ -32,11 +32,16 @@
 #   zone.atelier.backup.plist.template beside this script: node
 #   server/cli/backup.mjs as atelierd, production at 03:00 local, staging at
 #   03:30, so the two never run together.
-# Then it runs the backup once, as atelierd through launchd, and waits for
-# it to report the upload, so a wrong credential shows tonight and not at
-# the first restore. No secret value is printed; the copies the developer
-# gave are left for the developer to remove: root deletes nothing in a path
-# the developer's user controls.
+#
+# The order is setup-tunnel.sh's: everything is prepared and checked first;
+# then every atelierd job stops and no atelierd process may run while root
+# writes in its directories, which are checked again once it is quiet; a
+# failure from then on puts back what was there, under the same rules. The
+# jobs that ran are started again, and one backup runs at once, as atelierd
+# through launchd, so a wrong credential shows tonight and not at the first
+# restore. No secret value is printed; the copies the developer gave are left
+# for the developer to remove: root deletes nothing in a path the developer's
+# user controls.
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 077
@@ -55,6 +60,9 @@ case "$ENV" in
 esac
 LABEL=zone.atelier.backup.$ENV
 PLIST=/Library/LaunchDaemons/$LABEL.plist
+# Every job that runs as atelierd, in the order they start: the servers,
+# then the tunnel in front of them, then the backups.
+JOBS="zone.atelier.server.staging zone.atelier.server.production zone.atelier.tunnel zone.atelier.backup.staging zone.atelier.backup.production"
 TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/zone.atelier.backup.plist.template"
 B="$HOME_DIR/secrets/backup"
 W="$HOME_DIR/backup-work"
@@ -67,7 +75,7 @@ run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
 
 dry || [ "$(id -u)" = 0 ] || fail "run as root (sudo), or DRYRUN=1"
 [ -f "$R2_SRC" ] && [ ! -L "$R2_SRC" ] || fail "no R2 settings file at $R2_SRC"
-[ -f "$PUB_SRC" ] && [ ! -L "$PUB_SRC" ] || fail "no public key file at $PUB_SRC"
+[ -f "$PUB_SRC" ] && [ ! -L "$PUB_SRC" ] || fail "no recipient file at $PUB_SRC"
 [ -f "$TEMPLATE" ] && [ ! -L "$TEMPLATE" ] || fail "no plist template at $TEMPLATE"
 
 safe_dir() {
@@ -78,12 +86,19 @@ safe_dir() {
   [ $(( 0$(stat -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
   ! ls -lde "$d" | sed -n '2,$p' | grep -q . || fail "$d carries an ACL"
 }
+# The directories this script writes in or relies on, existing ones only for
+# the two it creates.
+check_dirs() {
+  safe_dir "$HOME_DIR"; safe_dir "$HOME_DIR/bin"; safe_dir "$HOME_DIR/server"; safe_dir "$HOME_DIR/secrets"; safe_dir "$HOME_DIR/log"
+  safe_dir "$HOME_DIR/data/$ENV"; safe_dir "$HOME_DIR/repos/$ENV"
+  [ ! -e "$B" ] || safe_dir "$B"
+  [ ! -e "$W" ] || safe_dir "$W"
+}
 safe_dir /Library/LaunchDaemons
 if ! dry; then
   dscl . -read /Users/$SVC >/dev/null 2>&1 || fail "$SVC does not exist; run setup-staging.sh first"
-  safe_dir "$HOME_DIR"; safe_dir "$HOME_DIR/bin"; safe_dir "$HOME_DIR/server"; safe_dir "$HOME_DIR/secrets"; safe_dir "$HOME_DIR/log"
-  safe_dir "$HOME_DIR/data/$ENV"; safe_dir "$HOME_DIR/repos/$ENV"
-  [ -f "$HOME_DIR/server/cli/backup.mjs" ] && [ -f "$HOME_DIR/server/src/backup/backup.mjs" ] \
+  check_dirs
+  [ -f "$HOME_DIR/server/cli/backup.mjs" ] && [ -f "$HOME_DIR/server/src/backup/age.mjs" ] \
     || fail "the installed server has no cli/backup.mjs; install a release holding task 12 with setup-staging.sh first"
   [ "$(stat -f %Su "$HOME_DIR/server/cli/backup.mjs")" = root ] || fail "the installed server is not root's"
 fi
@@ -94,7 +109,7 @@ trap 'rm -rf "$WORK"' EXIT
 # 1. Inputs into root-owned storage, then checked there. Values are never
 #    echoed: a failure names the setting, not what it held.
 cp "$R2_SRC" "$WORK/r2.env"
-cp "$PUB_SRC" "$WORK/BACKUP_PUBLIC_KEY"
+cp "$PUB_SRC" "$WORK/recipient"
 cp "$TEMPLATE" "$WORK/template"
 [ "$(LC_ALL=C tr -d '\000' < "$WORK/r2.env" | wc -c)" = "$(wc -c < "$WORK/r2.env")" ] || fail "the R2 settings hold a NUL byte"
 mkdir "$WORK/values"
@@ -116,18 +131,16 @@ LC_ALL=C grep -qxE 'https://[0-9a-f]{32}(\.(eu|fedramp))?\.r2\.cloudflarestorage
 LC_ALL=C grep -qxE '[a-z0-9][a-z0-9-]{1,61}[a-z0-9]' "$WORK/values/R2_BUCKET" || fail "R2_BUCKET is not a bucket name"
 LC_ALL=C grep -qxE '[0-9a-f]{32}' "$WORK/values/R2_ACCESS_KEY_ID" || fail "R2_ACCESS_KEY_ID is not an R2 access key id (32 hex characters)"
 LC_ALL=C grep -qxE '[0-9a-f]{64}' "$WORK/values/R2_SECRET_ACCESS_KEY" || fail "R2_SECRET_ACCESS_KEY is not an R2 secret access key (64 hex characters)"
-if [ -e "$WORK/values/R2_PREFIX" ]; then LC_ALL=C grep -qxE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/' "$WORK/values/R2_PREFIX" || fail "R2_PREFIX is not a path ending in /"; fi
-# The public key: a PEM X25519 public key, and nothing private.
-! LC_ALL=C grep -q 'PRIVATE KEY' "$WORK/BACKUP_PUBLIC_KEY" || fail "$PUB_SRC holds a private key; the private key never comes to the Studio. Give the .pub file"
-# The system's LibreSSL knows no X25519, so the PEM is checked by its shape:
-# an X25519 public key's DER is a fixed 12-byte prefix and 32 bytes, which in
-# base64 is MCowBQYDK2VuAyEA, 43 more characters and one "=".
-[ "$(sed -n '1p' "$WORK/BACKUP_PUBLIC_KEY")" = "-----BEGIN PUBLIC KEY-----" ] \
-  && [ "$(sed -n '3p' "$WORK/BACKUP_PUBLIC_KEY")" = "-----END PUBLIC KEY-----" ] \
-  && [ "$(wc -l < "$WORK/BACKUP_PUBLIC_KEY" | tr -d ' ')" = 3 ] \
-  && sed -n '2p' "$WORK/BACKUP_PUBLIC_KEY" | LC_ALL=C grep -qxE 'MCowBQYDK2VuAyEA[A-Za-z0-9+/]{43}=' \
-  || fail "$PUB_SRC is not an X25519 public key in PEM (node cli/backup.mjs keygen makes one)"
-mv "$WORK/BACKUP_PUBLIC_KEY" "$WORK/values/BACKUP_PUBLIC_KEY"
+# The prefix: segments of letters, digits, '.', '_' and '-', none "." or "..".
+if [ -e "$WORK/values/R2_PREFIX" ]; then
+  LC_ALL=C grep -qxE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/' "$WORK/values/R2_PREFIX" \
+    && ! LC_ALL=C grep -qE '(^|/)\.{1,2}/' "$WORK/values/R2_PREFIX" || fail "R2_PREFIX is not a path of plain segments ending in /"
+fi
+# The recipient: one age1 line, and nothing secret.
+! LC_ALL=C grep -qi 'AGE-SECRET-KEY' "$WORK/recipient" || fail "$PUB_SRC holds an age identity; the identity never comes to the Studio. Give the .pub file"
+[ "$(grep -cv '^#' "$WORK/recipient" || true)" = 1 ] && grep -v '^#' "$WORK/recipient" | LC_ALL=C grep -qxE 'age1[02-9ac-hj-np-z]{58}' \
+  || fail "$PUB_SRC is not an age recipient (age1..., as cli/backup.mjs keygen writes it)"
+grep -v '^#' "$WORK/recipient" > "$WORK/values/BACKUP_PUBLIC_KEY"
 
 # 2. The plist, from the template, checked field by field.
 sed -e "s|@ENV@|$ENV|g" -e "s|@HOME@|$HOME_DIR|g" -e "s|@HOUR@|$HOUR|g" -e "s|@MINUTE@|$MINUTE|g" "$WORK/template" > "$WORK/plist"
@@ -135,56 +148,82 @@ plutil -lint "$WORK/plist" >/dev/null || fail "the backup plist does not parse"
 x() { plutil -extract "$1" raw -o - "$WORK/plist" 2>/dev/null; }
 [ "$(x Label)" = "$LABEL" ] && [ "$(x UserName)" = "$SVC" ] && [ "$(x GroupName)" = "$SVC" ] \
   && [ "$(x ProgramArguments.0)" = "$HOME_DIR/bin/node" ] && [ "$(x ProgramArguments.1)" = "$HOME_DIR/server/cli/backup.mjs" ] \
-  && [ "$(x ProgramArguments.3)" = "$ENV" ] && [ "$(x ProgramArguments.5)" = "$HOME_DIR/data/$ENV" ] && [ "$(x ProgramArguments.7)" = "$HOME_DIR/repos/$ENV" ] && [ "$(x ProgramArguments.9)" = "$B" ] \
+  && [ "$(x ProgramArguments.3)" = "$ENV" ] && [ "$(x ProgramArguments.5)" = "$HOME_DIR/data/$ENV" ] \
+  && [ "$(x ProgramArguments.7)" = "$HOME_DIR/repos/$ENV" ] && [ "$(x ProgramArguments.9)" = "$B" ] && [ "$(x ProgramArguments.11)" = "$W" ] \
   && [ "$(x StartCalendarInterval.Hour)" = "$HOUR" ] && [ "$(x StartCalendarInterval.Minute)" = "$MINUTE" ] \
   && ! grep -q '@' "$WORK/plist" || fail "the plist made from the template is not the expected one"
 [ ! -L "$PLIST" ] || fail "$PLIST is a link"
+for job in $JOBS; do [ ! -L "/Library/LaunchDaemons/$job.plist" ] || fail "/Library/LaunchDaemons/$job.plist is a link"; done
 
-# 3. The backup job is stopped, and no backup of the service user's runs,
-#    while root writes. What was there is kept, so a failure puts it back.
+# What was there, recorded before recovery is armed: the previous plist, and
+# which jobs were loaded, so recovery starts the same ones again.
+had_plist=
+if [ -f "$PLIST" ]; then cp "$PLIST" "$WORK/old.plist"; had_plist=1; fi
+loaded=
+if ! dry; then
+  for job in $JOBS; do
+    if launchctl print "system/$job" >/dev/null 2>&1; then
+      [ -f "/Library/LaunchDaemons/$job.plist" ] || fail "$job is loaded but /Library/LaunchDaemons/$job.plist is missing; it could not be started again"
+      loaded="$loaded $job"
+    fi
+  done
+fi
+
+# 3. Stop every atelierd job and confirm nothing of the service user's runs.
+stop_all() {
+  local job
+  for job in $JOBS; do
+    launchctl print "system/$job" >/dev/null 2>&1 || continue
+    launchctl bootout "system/$job" 2>/dev/null
+    for _ in $(seq 1 20); do launchctl print "system/$job" >/dev/null 2>&1 || break; sleep 0.5; done
+    if launchctl print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop" >&2; return 1; fi
+  done
+  for _ in $(seq 1 60); do pgrep -u "$SVC" >/dev/null || break; sleep 0.5; done
+  if pgrep -u "$SVC" >/dev/null; then echo "setup: a process of $SVC is still running" >&2; return 1; fi
+}
+# Starts the jobs that were loaded, in order, from their plists as they are.
+start_loaded() {
+  local job rc=0
+  for job in $JOBS; do
+    case " $loaded " in *" $job "*) launchctl bootstrap system "/Library/LaunchDaemons/$job.plist" || { echo "setup: $job did not start; sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist" >&2; rc=1; } ;; esac
+  done
+  return $rc
+}
 stopped=
 snapshot=
-was_loaded=
 restore() {
   [ -n "$stopped" ] || return 0
+  # Recovery decides by its own checks, not by set -e, and writes only
+  # under the install's rules: everything stopped, nothing of the service
+  # user's running, its directories safe. Short of that it changes nothing
+  # and says so.
   set +e
   echo "setup: putting the previous backup settings back" >&2
-  launchctl print "system/$LABEL" >/dev/null 2>&1 && launchctl bootout "system/$LABEL" 2>/dev/null
-  for _ in $(seq 1 20); do launchctl print "system/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
-  if launchctl print "system/$LABEL" >/dev/null 2>&1; then echo "setup: $LABEL would not stop; nothing was restored" >&2; return 1; fi
-  if pgrep -u "$SVC" -f "cli/backup.mjs" >/dev/null; then echo "setup: a backup of $SVC is running; nothing was restored" >&2; return 1; fi
-  if ! ( safe_dir "$HOME_DIR" && safe_dir "$HOME_DIR/secrets" && safe_dir "$B" ) 2>/dev/null; then echo "setup: $B is not safe to write; nothing was restored" >&2; return 1; fi
+  if ! stop_all; then echo "setup: nothing was restored" >&2; return 1; fi
+  if ! ( check_dirs ) 2>/dev/null; then echo "setup: a directory of $SVC is not safe to write; nothing was restored" >&2; return 1; fi
   if [ -n "$snapshot" ]; then
     local name
     for name in $NAMES; do
       if [ -f "$WORK/old/$name" ]; then install -o "$SVC" -g "$SVC" -m 600 "$WORK/old/$name" "$B/$name" || echo "setup: could not restore $B/$name" >&2
-      elif [ ! -L "$B/$name" ]; then rm -f "$B/$name" || echo "setup: could not remove $B/$name" >&2; fi
+      elif [ -d "$B" ] && [ ! -L "$B/$name" ]; then rm -f "$B/$name" || echo "setup: could not remove $B/$name" >&2; fi
     done
   fi
-  if [ -f "$WORK/old.plist" ]; then
-    install -o root -g wheel -m 644 "$WORK/old.plist" "$PLIST" || echo "setup: could not restore $PLIST" >&2
-    [ -z "$was_loaded" ] || launchctl bootstrap system "$PLIST" || echo "setup: the previous backup job did not load; sudo launchctl bootstrap system $PLIST" >&2
-  else
-    [ ! -f "$PLIST" ] || [ -L "$PLIST" ] || rm -f "$PLIST"
-  fi
+  if [ -n "$had_plist" ]; then install -o root -g wheel -m 644 "$WORK/old.plist" "$PLIST" || echo "setup: could not restore $PLIST" >&2
+  elif [ -f "$PLIST" ] && [ ! -L "$PLIST" ]; then rm -f "$PLIST"; fi
+  start_loaded
 }
 trap 'status=$?; [ $status = 0 ] || restore; rm -rf "$WORK"; exit $status' EXIT
 if ! dry; then
   stopped=1
-  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
-    was_loaded=1
-    launchctl bootout "system/$LABEL" || fail "$LABEL would not stop"
-    for _ in $(seq 1 20); do launchctl print "system/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
-    ! launchctl print "system/$LABEL" >/dev/null 2>&1 || fail "$LABEL is still loaded"
-  fi
-  for _ in $(seq 1 60); do pgrep -u "$SVC" -f "cli/backup.mjs" >/dev/null || break; sleep 1; done
-  ! pgrep -u "$SVC" -f "cli/backup.mjs" >/dev/null || fail "a backup of $SVC is still running; try again when it ends"
-  [ ! -f "$PLIST" ] || cp "$PLIST" "$WORK/old.plist"
+  stop_all || fail "the $SVC jobs could not all be stopped"
 fi
 
-# 4. Install. Directories are checked again now, and every target is
-#    refused if it is a link.
-for d in "$B" "$W"; do [ ! -L "$d" ] || fail "$d is a link"; done
+# 4. Install, the service user stopped. Its directories are checked again
+#    now that nothing of it runs, and every target is refused if it is a link.
+if ! dry; then
+  check_dirs
+  for d in "$B" "$W"; do [ ! -L "$d" ] || fail "$d is a link"; done
+fi
 run mkdir -p "$B" "$W"
 run chown "$SVC:$SVC" "$B" "$W"
 run chmod 700 "$B" "$W"
@@ -205,10 +244,15 @@ for f in "$LOG" "$LOG.prev"; do [ ! -L "$f" ] || fail "$f is a link"; done
 # This run's log starts empty, so the check below reads this run alone.
 [ ! -e "$LOG" ] || run mv -f "$LOG" "$LOG.prev"
 run install -o root -g wheel -m 644 "$WORK/plist" "$PLIST"
-run launchctl bootstrap system "$PLIST"
 
-# 5. One backup now, as atelierd through launchd, bounded: the upload
-#    reported, or the failure line shown.
+# 5. The jobs that ran start again, and this backup job loads; then one
+#    backup runs now, bounded: the upload reported, or the failure shown.
+if dry; then
+  echo "+ (start again the atelierd jobs that were loaded)"
+else
+  start_loaded || fail "a job that was running did not start again"
+fi
+case " $loaded " in *" $LABEL "*) ;; *) run launchctl bootstrap system "$PLIST" ;; esac
 run launchctl kickstart "system/$LABEL"
 if ! dry; then
   ok=

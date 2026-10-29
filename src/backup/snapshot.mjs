@@ -7,8 +7,12 @@
 //   data/large/...           the large objects, files written whole
 //   repos/KEY.bundle         `git bundle create --all` of each repository
 //
-// Order matters for a server under writes: the databases are copied first,
-// then the repositories, so a restored Ledger never names a commit its
+// Order matters for a server under writes. The index (__index.sqlite) is
+// copied first, and the ledgers/ folder is listed only after it: a project is
+// registered in the index only once its own Ledger exists (the init route
+// makes the Ledger, then registers it), so every project the copied index
+// registers has a file in the listing, and the backup checks that it does.
+// The other databases follow, then the repositories, so a restored Ledger never names a commit its
 // repository lacks; a repository may hold commits the Ledger has not yet
 // recorded, which the server tolerates as it does a push in flight.
 //
@@ -57,7 +61,8 @@ function filesUnder(dir) {
   const walk = (d) => {
     for (const name of readdirSync(d).sort()) {
       const p = join(d, name);
-      const st = lstatSync(p);
+      let st;
+      try { st = lstatSync(p); } catch (err) { if (err.code === "ENOENT") continue; throw err; }
       if (st.isDirectory()) walk(p);
       else if (st.isFile()) out.push(relative(dir, p).split(sep).join("/"));
       else throw new Error(`${p} is neither a file nor a directory`);
@@ -66,6 +71,24 @@ function filesUnder(dir) {
   if (existsSync(dir)) walk(dir);
   return out;
 }
+
+// The projects an index database registers: [{ name, key }].
+export function registeredProjects(indexFile) {
+  const db = new DatabaseSync(indexFile, { readOnly: true });
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get()) return [];
+    return db.prepare("SELECT name, json FROM projects ORDER BY name").all().map((r) => {
+      let rec = {};
+      try { rec = JSON.parse(r.json); } catch { /* the name stands */ }
+      return { name: r.name, key: typeof rec.key === "string" && rec.key ? rec.key : r.name };
+    });
+  } finally { db.close(); }
+}
+export const ledgerFileOf = (key) => `project${encodeURIComponent(":")}${encodeURIComponent(key).replace(/\./g, "%2E").replace(/\*/g, "%2A")}.sqlite`;
+
+// LocalLarge's file being written, beside its name until renamed over it
+// (src/runtime/large.mjs): NAME.PID.RANDOM.tmp.
+const LARGE_TMP = /\.\d+\.[a-z0-9]*\.tmp$/;
 
 // Counts of what each project's Ledger holds, read from its copy, so the
 // restore can check the restored server answers the same.
@@ -88,14 +111,22 @@ export async function makeSnapshot({ dataDir, reposDir, out, env, now = new Date
   mkdirSync(join(out, "repos"), { recursive: true, mode: 0o700 });
   const files = [];
   const projects = {};
-  // 1. The databases.
+  // 1. The databases: the index first, then the listing of the rest.
+  const INDEX = "ledgers/__index.sqlite";
+  if (!existsSync(join(dataDir, INDEX))) throw new Error(`${dataDir} has no ${INDEX}; is it the environment's data directory?`);
+  copyDatabase(join(dataDir, INDEX), join(out, "data", INDEX));
+  const registered = registeredProjects(join(out, "data", INDEX));
+  const listed = readdirSync(join(dataDir, "ledgers")).filter((n) => SQLITE.test(n) && n !== "__index.sqlite").sort();
+  const missing = registered.filter((p) => !listed.includes(ledgerFileOf(p.key))).map((p) => p.name);
+  if (missing.length) throw new Error(`the index registers ${missing.join(", ")}, whose Ledger is not in ${dataDir}/ledgers`);
   const dbs = [
-    ...readdirSync(join(dataDir, "ledgers")).filter((n) => SQLITE.test(n)).sort().map((n) => `ledgers/${n}`),
+    INDEX,
+    ...listed.map((n) => `ledgers/${n}`),
     ...readdirSync(dataDir).filter((n) => SQLITE.test(n) && statSync(join(dataDir, n)).isFile()).sort(),
   ];
   for (const rel of dbs) {
     const dest = join(out, "data", rel);
-    copyDatabase(join(dataDir, rel), dest);
+    if (rel !== INDEX) copyDatabase(join(dataDir, rel), dest);
     files.push({ path: `data/${rel}`, kind: "sqlite", size: statSync(dest).size, sha256: await sha256File(dest) });
     const m = /^ledgers\/project%3A(.+)\.sqlite$/.exec(rel);
     if (m) {
@@ -106,15 +137,19 @@ export async function makeSnapshot({ dataDir, reposDir, out, env, now = new Date
   log(`copied ${dbs.length} databases`);
   // 2. The large objects: each was written beside its name and renamed over
   //    it (src/runtime/large.mjs), so a plain copy reads it whole.
-  const large = filesUnder(join(dataDir, "large"));
+  //    Its files being written are left out, and a file gone between the
+  //    listing and the copy is skipped.
+  const large = filesUnder(join(dataDir, "large")).filter((rel) => !LARGE_TMP.test(rel));
+  let copiedLarge = 0;
   for (const rel of large) {
     const dest = join(out, "data", "large", ...rel.split("/"));
     mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
-    copyFileSync(join(dataDir, "large", ...rel.split("/")), dest);
+    try { copyFileSync(join(dataDir, "large", ...rel.split("/")), dest); } catch (err) { if (err.code === "ENOENT") continue; throw err; }
+    copiedLarge++;
     chmodSync(dest, 0o600);
     files.push({ path: `data/large/${rel}`, kind: "large", size: statSync(dest).size, sha256: await sha256File(dest) });
   }
-  log(`copied ${large.length} large objects`);
+  log(`copied ${copiedLarge} large objects`);
   // 3. The repositories, after the databases.
   const repos = [];
   const names = existsSync(reposDir) ? readdirSync(reposDir).filter((n) => REPO.test(n)).sort() : [];
@@ -137,7 +172,7 @@ export async function makeSnapshot({ dataDir, reposDir, out, env, now = new Date
     repos.push({ key, head, path: `repos/${key}.bundle`, refs, size: statSync(bundle).size, sha256: await sha256File(bundle) });
   }
   log(`bundled ${repos.length} repositories`);
-  const manifest = { format: FORMAT, env, createdAt: now.toISOString(), files, repos, projects };
+  const manifest = { format: FORMAT, env, createdAt: now.toISOString(), registered, files, repos, projects };
   writeFileSync(join(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 });
   return manifest;
 }
@@ -189,6 +224,11 @@ export async function restoreSnapshot({ from, dataDir, reposDir, log = () => {} 
       } finally { db.close(); }
     }
   }
+  // Every project the restored index registers has its Ledger.
+  const indexFile = join(dataDir, "ledgers", "__index.sqlite");
+  if (!existsSync(indexFile)) throw new Error("the backup holds no index (ledgers/__index.sqlite)");
+  const missing = registeredProjects(indexFile).filter((p) => !existsSync(join(dataDir, "ledgers", ledgerFileOf(p.key)))).map((p) => p.name);
+  if (missing.length) throw new Error(`the restored index registers ${missing.join(", ")}, whose Ledger the backup lacks`);
   log(`restored ${manifest.files.length} files into ${dataDir}`);
   for (const r of manifest.repos) {
     if (!REPO.test(`${r.key}.git`)) throw new Error(`not a repository name: ${String(r.key).slice(0, 80)}`);

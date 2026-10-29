@@ -8,7 +8,7 @@
 //   R2_BUCKET             the bucket's name
 //   R2_ACCESS_KEY_ID      an R2 API token's access key id
 //   R2_SECRET_ACCESS_KEY  and its secret
-//   BACKUP_PUBLIC_KEY     the X25519 public key (PEM) backups are encrypted to
+//   BACKUP_PUBLIC_KEY     the age recipient (age1...) backups are encrypted to
 //   R2_PREFIX             optional; default atelier/ENV/
 // It is a directory of its own, not the server's secrets/ENV, so the server
 // never reads the R2 credentials into its settings.
@@ -21,7 +21,12 @@ export const ENVS = new Set(["production", "staging"]);
 
 export function prefixFor(env, secrets = {}) {
   const prefix = secrets.R2_PREFIX ?? `atelier/${env}/`;
-  if (!/^[A-Za-z0-9._\-/]+\/$/.test(prefix) || prefix.startsWith("/") || prefix.includes("//")) throw new Error("R2_PREFIX is a path of letters, digits, '.', '_', '-' and '/', ending in '/'");
+  // Segments of letters, digits, '.', '_' and '-', none empty, "." or "..",
+  // so no prefix can name another under a path's normalisation.
+  const segments = prefix.split("/");
+  if (segments.pop() !== "" || !segments.length || segments.some((s) => !/^[A-Za-z0-9._-]+$/.test(s) || s === "." || s === "..")) {
+    throw new Error("R2_PREFIX is a path of segments of letters, digits, '.', '_' and '-', none of them '.' or '..', ending in '/'");
+  }
   return prefix;
 }
 
@@ -58,7 +63,7 @@ export function readBackupSecrets(dir, required, optional = []) {
       if (err.code === "ENOENT") { if (required.includes(name)) throw new Error(`${dir} lacks ${name}`); continue; }
       throw err;
     }
-    out[name] = name === "BACKUP_PUBLIC_KEY" ? text : text.trim();
+    out[name] = text.trim();
     if (!out[name]) throw new Error(`${path} is empty`);
   }
   return out;

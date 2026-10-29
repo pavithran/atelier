@@ -8,18 +8,19 @@
 // --secrets the backup's own directory (src/backup/config.mjs names its
 // files). The Ledgers are copied through SQLite while the server runs, the
 // repositories bundled, the large objects copied, all packed with a manifest
-// of sizes and SHA-256 sums, encrypted to the public key, uploaded, and
+// of sizes and SHA-256 sums, encrypted to the age recipient, uploaded, and
 // backups of this environment older than --keep-days (30) deleted.
 // Prints what it acted on; never a secret.
 //   node cli/backup.mjs keygen --out DIR
-// makes a key pair, DIR/backup.key (the private key, for PAVI alone, never
-// the Studio) and DIR/backup.pub.
+// makes an age key pair, as age-keygen does: DIR/backup.key, the identity
+// (AGE-SECRET-KEY-1..., for PAVI alone, never the Studio), and
+// DIR/backup.pub, the recipient (age1...), which it also prints.
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { runBackup } from "../src/backup/backup.mjs";
 import { ENVS, KEEP_DAYS } from "../src/backup/config.mjs";
-import { generateKeys } from "../src/backup/envelope.mjs";
+import { generateIdentity } from "../src/backup/age.mjs";
 
 const usage = "usage: node cli/backup.mjs --env production|staging --data DIR --repos DIR --secrets DIR [--work DIR] [--keep-days N]\n       node cli/backup.mjs keygen --out DIR";
 const { values, positionals } = parseArgs({
@@ -34,10 +35,11 @@ if (positionals[0] === "keygen") {
   const priv = join(values.out, "backup.key"), pub = join(values.out, "backup.pub");
   if (existsSync(priv) || existsSync(pub)) { console.error(`${values.out} already holds backup.key or backup.pub; nothing was written`); process.exit(1); }
   mkdirSync(values.out, { recursive: true, mode: 0o700 });
-  const { privateKey, publicKey } = generateKeys();
-  writeFileSync(priv, privateKey, { mode: 0o600, flag: "wx" });
-  writeFileSync(pub, publicKey, { mode: 0o644, flag: "wx" });
-  console.log(`wrote ${priv} (the private key: keep it off the Studio, where only you can read it) and ${pub} (for setup-backup.sh)`);
+  const { keyFile, recipient } = generateIdentity();
+  writeFileSync(priv, keyFile, { mode: 0o600, flag: "wx" });
+  writeFileSync(pub, `${recipient}\n`, { mode: 0o600, flag: "wx" });
+  console.log(`Public key: ${recipient}`);
+  console.log(`wrote ${priv} (the age identity: keep it on this Mac, where only you can read it, never on the Studio) and ${pub} (the recipient, for setup-backup.sh)`);
   process.exit(0);
 }
 

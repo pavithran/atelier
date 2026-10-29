@@ -1,25 +1,29 @@
 #!/usr/bin/env node
 // atelier restore: puts a backup back into fresh directories (Atelier 2.0,
-// task 12; docs/studio.md, "The monthly restore rehearsal").
-//   node cli/restore.mjs --key PRIVATE.pem [--passphrase-file F]
+// task 12; docs/studio.md, "The monthly restore rehearsal"). Run it on the
+// developer's Mac, where the age identity is: the identity never goes to the
+// Studio, and so neither does decryption. A restore meant for the Studio is
+// made here and moved there with scripts/studio/setup-restore.sh.
+//   node cli/restore.mjs --key IDENTITY
 //     (--file BACKUP | --env ENV --secrets DIR [--object KEY])
 //     --data NEWDIR --repos NEWDIR [--check]
 //   node cli/restore.mjs list --env ENV --secrets DIR
 // The backup is the file given, or the object named (default the newest of
-// the environment) fetched from R2. It is decrypted with the private key, its
-// manifest's sizes, sums and refs checked, and restored into --data and
+// the environment) fetched from R2. It is decrypted with the age identity
+// (AGE-SECRET-KEY-1..., as cli/backup.mjs keygen or age-keygen writes it),
+// its manifest's sizes, sums and refs checked, and restored into --data and
 // --repos, which must be absent or empty. --check then starts a server on
 // them, on 127.0.0.1 and a free port, and checks /api/version and every
-// project's items and events against the manifest.
+// project the index registers against the manifest's counts.
 import { parseArgs } from "node:util";
 import { ENVS } from "../src/backup/config.mjs";
 import { listBackups, runRestore } from "../src/backup/restore.mjs";
 
-const usage = "usage: node cli/restore.mjs --key PRIVATE.pem [--passphrase-file F] (--file BACKUP | --env ENV --secrets DIR [--object KEY]) --data NEWDIR --repos NEWDIR [--check]\n       node cli/restore.mjs list --env ENV --secrets DIR";
+const usage = "usage (on the developer's Mac): node cli/restore.mjs --key IDENTITY (--file BACKUP | --env ENV --secrets DIR [--object KEY]) --data NEWDIR --repos NEWDIR [--check]\n       node cli/restore.mjs list --env ENV --secrets DIR";
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
-    key: { type: "string" }, "passphrase-file": { type: "string" }, file: { type: "string" }, env: { type: "string" }, secrets: { type: "string" }, object: { type: "string" },
+    key: { type: "string" }, file: { type: "string" }, env: { type: "string" }, secrets: { type: "string" }, object: { type: "string" },
     data: { type: "string" }, repos: { type: "string" }, work: { type: "string" }, check: { type: "boolean" }, help: { type: "boolean", short: "h" },
   },
 });
@@ -32,7 +36,7 @@ try {
     process.exit(0);
   }
   if (positionals.length || !values.key || !values.data || !values.repos || (!values.file && (!ENVS.has(values.env ?? "") || !values.secrets))) { console.error(usage); process.exit(2); }
-  await runRestore({ env: values.env, file: values.file, object: values.object, secretsDir: values.secrets, keyFile: values.key, passphraseFile: values["passphrase-file"], dataDir: values.data, reposDir: values.repos, check: values.check === true, workDir: values.work });
+  await runRestore({ env: values.env, file: values.file, object: values.object, secretsDir: values.secrets, keyFile: values.key, dataDir: values.data, reposDir: values.repos, check: values.check === true, workDir: values.work });
   process.exit(0);
 } catch (error) {
   console.error(`restore failed: ${error.message}`);

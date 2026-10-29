@@ -31,16 +31,17 @@ const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
 const sha256hex = (data) => createHash("sha256").update(data).digest("hex");
 
 // The headers that sign one request: { authorization, "x-amz-date",
-// "x-amz-content-sha256" }. `query` is a plain object; `payloadHash` the hex
-// SHA-256 of the body.
-export function signV4({ method, url, query = {}, payloadHash = EMPTY_SHA256, accessKeyId, secretAccessKey, region = "auto", service = "s3", now = new Date() }) {
-  const u = new URL(url);
+// "x-amz-content-sha256" }. `host` is the endpoint's host[:port]; `path` the
+// request path exactly as sent, already encoded: S3 signs it as it is, with
+// no normalisation, so a key holding "." or ".." segments stays that key.
+// `query` is a plain object; `payloadHash` the hex SHA-256 of the body.
+export function signV4({ method, host, path, query = {}, payloadHash = EMPTY_SHA256, accessKeyId, secretAccessKey, region = "auto", service = "s3", now = new Date() }) {
   const amzDate = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
   const day = amzDate.slice(0, 8);
   const canonicalQuery = Object.keys(query).sort().map((k) => `${uriEncode(k)}=${uriEncode(query[k])}`).join("&");
-  const headers = { host: u.host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate };
+  const headers = { host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate };
   const signedHeaders = Object.keys(headers).sort().join(";");
-  const canonical = [method, uriEncode(decodeURIComponent(u.pathname), true), canonicalQuery,
+  const canonical = [method, path, canonicalQuery,
     Object.keys(headers).sort().map((k) => `${k}:${headers[k]}\n`).join(""), signedHeaders, payloadHash].join("\n");
   const scope = `${day}/${region}/${service}/aws4_request`;
   const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256hex(canonical)].join("\n");
@@ -75,28 +76,35 @@ export class S3Client {
     if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket ?? "")) throw new Error("the R2 bucket name is not a bucket name");
     if (!accessKeyId || !secretAccessKey) throw new Error("the R2 access key id and secret are both needed");
     this.origin = u.origin;
+    this.host = u.host;
+    this.hostname = u.hostname.replace(/^\[|\]$/g, "");
+    this.port = u.port || undefined;
+    this.protocol = u.protocol;
     this.bucket = bucket;
     this.region = region;
     this.#accessKeyId = accessKeyId;
     this.#secretAccessKey = secretAccessKey;
   }
 
-  #url(key) { return `${this.origin}/${this.bucket}${key === undefined ? "" : `/${uriEncode(key, true)}`}`; }
+  // The request path: the bucket, then the key byte for byte, every byte
+  // but the unreserved ones and "/" percent-encoded. It is never passed
+  // through a URL parser, which would resolve "." and ".." segments.
+  #path(key) { return `/${this.bucket}${key === undefined ? "" : `/${uriEncode(key, true)}`}`; }
 
   // One signed request. body: a file path to stream (with its hash given) or
   // nothing. Resolves to { status, headers, res } with the response unread
   // when `stream`, else { status, headers, text }.
   #send(method, key, { query = {}, file, payloadHash, stream = false } = {}) {
-    const url = this.#url(key);
-    const signed = signV4({ method, url, query, payloadHash: payloadHash ?? EMPTY_SHA256, accessKeyId: this.#accessKeyId, secretAccessKey: this.#secretAccessKey, region: this.region });
+    if (key !== undefined && (typeof key !== "string" || !key)) throw new Error("an object key is a non-empty string");
+    const path = this.#path(key);
+    const signed = signV4({ method, host: this.host, path, query, payloadHash: payloadHash ?? EMPTY_SHA256, accessKeyId: this.#accessKeyId, secretAccessKey: this.#secretAccessKey, region: this.region });
     const qs = Object.keys(query).sort().map((k) => `${uriEncode(k)}=${uriEncode(query[k])}`).join("&");
-    const u = new URL(url);
     const headers = { ...signed };
     if (file) headers["content-length"] = String(statSync(file).size);
     else if (method === "PUT") headers["content-length"] = "0";
-    const request = u.protocol === "https:" ? httpsRequest : httpRequest;
+    const request = this.protocol === "https:" ? httpsRequest : httpRequest;
     return new Promise((resolve, reject) => {
-      const req = request({ method, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port || undefined, path: `${u.pathname}${qs ? `?${qs}` : ""}`, headers, timeout: 600_000 }, (res) => {
+      const req = request({ method, hostname: this.hostname, port: this.port, path: `${path}${qs ? `?${qs}` : ""}`, headers, timeout: 600_000 }, (res) => {
         if (stream && res.statusCode === 200) return resolve({ status: res.statusCode, headers: res.headers, res });
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
