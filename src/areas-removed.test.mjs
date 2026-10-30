@@ -33,9 +33,16 @@ function setup(t) {
 }
 const columns = (db, table) => db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
 
-test('a new ledger keeps no areas table or area column', t => {
-  const { db } = setup(t);
-  assert.ok(!columns(db, 'items').includes('area'));
+test('a new ledger keeps a retired nullable area column, left NULL by task writes, and no areas table', t => {
+  const { ledger, db } = setup(t);
+  const area = db.prepare('PRAGMA table_info(items)').all().find(c => c.name === 'area');
+  assert.ok(area);
+  assert.equal(area.type, 'TEXT');
+  assert.equal(area.notnull, 0);
+  assert.equal(area.dflt_value, null);
+  ledger.newItem('Without an area', [], 'owner');
+  ledger.editItem('t1', 'owner', { nextGate: 'review' });
+  assert.equal(db.prepare("SELECT area FROM items WHERE id = 't1'").get().area, null);
   assert.deepEqual(columns(db, 'areas'), []);
 });
 
@@ -43,7 +50,7 @@ test('a ledger written with areas still reads, edits and shows its tasks without
   const { ledger: first, db, storage } = setup(t);
   first.newItem('Recorded in an area', [], 'owner');
   first.newItem('Recorded in a removed area', [], 'owner');
-  db.exec(`ALTER TABLE items ADD COLUMN area TEXT; CREATE TABLE areas (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, purpose TEXT NOT NULL)`);
+  db.exec(`CREATE TABLE areas (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, purpose TEXT NOT NULL)`);
   db.exec(`INSERT INTO areas (id, name, purpose) VALUES ('a1', 'Core', 'Foundations'); UPDATE items SET area = 'a1' WHERE id = 't1'; UPDATE items SET area = 'a9' WHERE id = 't2'`);
   first.log(null, 'owner', 'area.saved', { id: 'a1', name: 'Core', purpose: 'Foundations' }, '2026-10-02T00:00:00.000Z');
   first.log('t1', 'owner', 'item.edited', { area: 'a1' }, '2026-10-02T00:00:00.000Z');
