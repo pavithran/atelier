@@ -1,4 +1,4 @@
-import { INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
+import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
 import { decideLandQueue, findStageOverrun, landerLive, olderThan, openStages, reconcileStages, REVIEW_TIER_STAGE, STAGE_EVENT_KINDS, type LandQueued, type LandQueueVerdict, type StageFinding } from "./stage-tick.ts";
 import { LIMITS } from "./limits.ts";
@@ -61,7 +61,7 @@ import {
 } from "./dispatch/prereview.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
-import { sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
+import { addDays, sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
 import { matchServed, SERVED, SERVED_LIMIT, servedActor, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { privatePath } from "./rules.ts";
@@ -1580,24 +1580,28 @@ export class Ledger extends DurableObject<Env> {
   exportIndex(): IndexDump {
     // Ensure the lazily created assignment table exists, including on a fresh server.
     this.assignmentStore.records();
+    this.snapshotTables();
     const tables = Object.fromEntries(Object.entries(INDEX_TABLES).map(([name, columns]) =>
-      [name, this.sql.exec(`SELECT ${columns.join(", ")} FROM ${name} ORDER BY ${name === "model_assignments" ? "n" : "id"}`).toArray()])) as IndexDump["tables"];
-    return safeIndex(indexDump(tables, this.deployed));
+      [name, this.sql.exec(`SELECT ${columns.join(", ")} FROM ${name} ORDER BY ${INDEX_KEYS[name as IndexTable].join(", ")}`).toArray()])) as IndexDump["tables"];
+    const limitations = tables.model_snapshots.some((r) => r.role === "@trend")
+      ? ["Some model_snapshots rows carry 1.0 trend projections, not original snapshots: take cutoffs, cohorts and full earlier revisions were unavailable; only the exported span is preserved."] : [];
+    return safeIndex(indexDump(tables, this.deployed, limitations));
   }
 
   importIndex(input: unknown): { added: number; held: number } {
     const dump = validateIndex(input);
     this.assignmentStore.records();
+    this.snapshotTables();
     return this.ctx.storage.transactionSync(() => {
       const conflicts: string[] = [], missing: [IndexTable, IndexRow][] = [];
       let held = 0;
       const same = (r: IndexRow) => canonical({ ...r, json: JSON.parse(r.json as string) });
       for (const name of Object.keys(INDEX_TABLES) as IndexTable[]) {
-        const key = name === "model_assignments" ? "n" : "id";
+        const keys = INDEX_KEYS[name];
         for (const row of dump.tables[name]) {
-          const existing = this.sql.exec(`SELECT ${INDEX_TABLES[name].join(", ")} FROM ${name} WHERE ${key} = ?`, row[key]).toArray()[0] as IndexRow | undefined;
+          const existing = this.sql.exec(`SELECT ${INDEX_TABLES[name].join(", ")} FROM ${name} WHERE ${keys.map((k) => `${k} = ?`).join(" AND ")}`, ...keys.map((k) => row[k])).toArray()[0] as IndexRow | undefined;
           if (!existing) missing.push([name, row]);
-          else if (same(existing) !== same(row)) conflicts.push(`${name}:${name === "model_assignments" ? row.id : row[key]}`);
+          else if (same(existing) !== same(row)) conflicts.push(`${name}:${keys.map((k) => row[k]).join(":")}`);
           else held++;
         }
       }
@@ -2119,6 +2123,7 @@ export class Ledger extends DurableObject<Env> {
     this.snapshotTables();
     return this.ctx.storage.transactionSync(() => {
       const last = this.sql.exec(`SELECT rev FROM snapshot_takes WHERE day = ? AND schema = ? ORDER BY rev DESC LIMIT 1`, s.take.day, s.take.schema).toArray()[0];
+      if (this.modelProjectionDays(s.take.day, s.take.day).length) return { day: s.take.day, rev: last ? last.rev as number : 1, stored: false };
       if (last) {
         const kept = this.modelSnapshot(s.take.day, last.rev as number)!;
         if (kept.take.complete || sameSnapshot(kept, s)) return { day: s.take.day, rev: kept.take.rev, stored: false };
@@ -2139,7 +2144,7 @@ export class Ledger extends DurableObject<Env> {
       : this.sql.exec(`SELECT json FROM snapshot_takes WHERE day = ? AND schema = ? AND rev = ?`, day, schema, rev).toArray()[0];
     if (!row) return null;
     const take = JSON.parse(row.json as string) as SnapshotTake;
-    const rows = this.sql.exec(`SELECT json FROM model_snapshots WHERE day = ? AND schema = ? AND rev = ? ORDER BY model, role`, day, schema, take.rev).toArray().map((r) => JSON.parse(r.json as string) as SnapshotRow);
+    const rows = this.sql.exec(`SELECT json FROM model_snapshots WHERE day = ? AND schema = ? AND rev = ? AND role != '@trend' ORDER BY model, role`, day, schema, take.rev).toArray().map((r) => JSON.parse(r.json as string) as SnapshotRow);
     return { take, rows };
   }
 
@@ -2150,9 +2155,23 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM snapshot_takes WHERE day >= ? AND day <= ? ORDER BY day, rev`, from, to).toArray().map((r) => JSON.parse(r.json as string) as SnapshotTake);
   }
 
+  // Projection points with a recorded revision already hold that day's history.
+  modelProjectionDays(from: string, to: string): string[] {
+    this.snapshotTables();
+    const days = new Set<string>();
+    for (const r of this.sql.exec(`SELECT json FROM model_snapshots WHERE role = '@trend' AND schema = ?`, SNAPSHOT_SCHEMA).toArray()) {
+      const projection = (JSON.parse(r.json as string) as SnapshotRow).projection!;
+      for (const m of projection.measures) for (const p of m.points) {
+        if (p.rev === null) continue;
+        for (let day = p.day; day <= (p.through ?? p.day); day = addDays(day, 1)) if (day >= from && day <= to) days.add(day);
+      }
+    }
+    return [...days].sort();
+  }
+
   modelSnapshotRows(model: string, from: string, to: string): (SnapshotRow & { day: string; rev: number })[] {
     this.snapshotTables();
-    return this.sql.exec(`SELECT day, rev, json FROM model_snapshots WHERE model = ? AND day >= ? AND day <= ? AND schema = ? ORDER BY day, rev, role`, model, from, to, SNAPSHOT_SCHEMA).toArray()
+    return this.sql.exec(`SELECT day, rev, json FROM model_snapshots WHERE model = ? AND (day >= ? AND day <= ? OR role = '@trend') AND schema = ? ORDER BY day, rev, role`, model, from, to, SNAPSHOT_SCHEMA).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as SnapshotRow), day: r.day as string, rev: r.rev as number }));
   }
 
