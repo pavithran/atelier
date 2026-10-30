@@ -163,7 +163,10 @@ the record keeps as declared; the rule stops only the omission.
 
 **What is recorded.** The name is checked against the model pool and
 recorded as the pool's exact entry (an empty pool, on a fresh server, keeps
-it as typed). Every event the write records carries `acting`; the event's
+it as typed). Index imports check the pool including the imported models;
+model registration also accepts the acting name when it resolves to the
+entry being added.
+Every event the write records carries `acting`; the event's
 actor stays the developer's, the model beside it. The verbs that need the
 developer's words (block, unblock, abandon, clear-secret, an override, fast
 mode, an approval on their words) also carry `quote`, and without the words
