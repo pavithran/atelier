@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FLAGS, HANDLERS, registerHandlers } from "../cli/atelier.mjs";
 import { COMMANDS, COMMAND_USAGE, REGISTRY, commandFor } from "../cli/help.mjs";
-import { orderedForms, registerCommands } from "../src/usage/command.ts";
+import { commandModuleName, orderedForms, registerCommands } from "../src/usage/command.ts";
 import { regenerate, runs } from "../cli/regenerate.mjs";
 
 // Each command owns two modules: its declaration, src/usage/commands/NAME.ts
@@ -28,15 +28,16 @@ test("every declared command has a handler and every handler a declaration, and 
   assert.deepEqual(handled, declared);
   assert.deepEqual(indexed(`${SPECS}/index.ts`), declared.map((n) => `${SPECS}/${n}.ts`), "src/usage/commands/index.ts is stale: run node cli/regenerate.mjs");
   assert.deepEqual(indexed(`${HANDLER_DIR}/index.mjs`), handled.map((n) => `${HANDLER_DIR}/${n}.mjs`), "cli/commands/index.mjs is stale: run node cli/regenerate.mjs");
-  assert.deepEqual(Object.keys(COMMANDS), declared);
-  assert.deepEqual([...HANDLERS.keys()].sort(), declared);
-  assert.deepEqual(Object.keys(FLAGS).sort(), declared);
+  assert.deepEqual(Object.keys(COMMANDS).sort(), declared.map((n) => commandModuleName(`${n}.ts`)).sort());
+  assert.deepEqual([...HANDLERS.keys()].sort(), declared.map((n) => commandModuleName(`${n}.ts`)).sort());
+  assert.deepEqual(Object.keys(FLAGS).sort(), declared.map((n) => commandModuleName(`${n}.ts`)).sort());
 });
 
 test("each module declares its own command: its forms, its flags, its help and its handler", async () => {
-  for (const name of declared) {
-    const { default: spec } = await import(pathToFileURL(join(root, SPECS, `${name}.ts`)).href);
-    const { default: handler } = await import(pathToFileURL(join(root, HANDLER_DIR, `${name}.mjs`)).href);
+  for (const moduleName of declared) {
+    const name = commandModuleName(`${moduleName}.ts`);
+    const { default: spec } = await import(pathToFileURL(join(root, SPECS, `${moduleName}.ts`)).href);
+    const { default: handler } = await import(pathToFileURL(join(root, HANDLER_DIR, `${moduleName}.mjs`)).href);
     assert.equal(spec.name, name, `${SPECS}/${name}.ts declares atelier ${spec.name}`);
     assert.equal(COMMANDS[name], spec, `${name}: the registry holds another declaration`);
     assert.equal(FLAGS[name], spec.flags, `${name}: the parser reads other flags than its module declares`);

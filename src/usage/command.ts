@@ -147,7 +147,12 @@ export interface Registry {
 }
 
 const NAME = /^[a-z][a-z-]*$/;
-const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]*$/, "");
+// index.ts and index.mjs are generated registries. The public index command
+// therefore lives in server-index.ts and server-index.mjs in those folders.
+export function commandModuleName(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]*$/, "");
+  return name === "server-index" ? "index" : name;
+}
 
 // The registry of the modules given, in any order. A module whose file name
 // is not its command, a word two modules claim, a form or subcommand of another
@@ -161,7 +166,7 @@ export function registerCommands(modules: CommandModule[]): Registry {
     if (!spec || typeof spec.name !== "string") throw new Error(`${path}: declares no command; export default a CommandSpec`);
     const { name } = spec;
     if (!NAME.test(name)) throw new Error(`${path}: "${name}" is not a command name: lower-case words joined by hyphens`);
-    if (baseName(path) !== name) throw new Error(`${path}: declares atelier ${name}; a command lives in a module named after it, ${name}`);
+    if (commandModuleName(path) !== name) throw new Error(`${path}: declares atelier ${name}; a command lives in a module named after it, ${name}`);
     for (const word of [name, ...(spec.aliases ?? [])]) {
       if (!NAME.test(word)) throw new Error(`${path}: alias "${word}" is not a command word`);
       const earlier = owner.get(word);

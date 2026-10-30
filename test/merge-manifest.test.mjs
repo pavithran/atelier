@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { MANIFEST_PATH, parseManifest, readRecords } from "../cli/merge-driver.mjs";
 import { CAPABILITY_DECLARATIONS } from "../src/capability-declarations.ts";
 import { mergeConfigProblems, mergeThrough, previewMerge } from "../cli/merge-pipeline.mjs";
+import { commandModuleName } from "../src/usage/command.ts";
 import { commandFiles } from "../cli/regenerate.mjs";
 import { root, SPECS, HANDLERS, git, fixture, sides, counting, addCommands, declaration, handler } from "./merge-manifest-shared.mjs";
 // t463 on this repository's own declarations: bin/merge-manifest.json names
@@ -34,7 +35,7 @@ test("this repository declares node cli/regenerate.mjs with every output it writ
     assert.deepEqual(registries[dir].exclude, [`index${ext}`]);
     const names = commandFiles(root, dir, ext);
     assert.ok(names.length > 60);
-    for (const name of names) assert.equal(registries[dir].pattern.exec(readFileSync(join(root, dir, `${name}${ext}`), "utf8"))?.[1], name, `${dir}/${name}${ext}`);
+    for (const name of names) assert.equal(registries[dir].pattern.exec(readFileSync(join(root, dir, `${name}${ext}`), "utf8"))?.[1], commandModuleName(`${name}${ext}`), `${dir}/${name}${ext}`);
   }
 });
 

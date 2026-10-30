@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { commandModuleName } from "../src/usage/command.ts";
 import { COMMAND_USAGE, HELP_FOOTER, HELP_FORMS, HELP_GROUPS, guideText, helpText } from "../cli/help.mjs";
 
 // The CLI extends the shared web reference through cli/help.mjs. Fixtures
@@ -65,7 +66,7 @@ test("the help module renders the pinned CLI text", () => {
 // for a command that does not exist, fails here.
 // The commands the CLI defines: one handler module each in cli/commands/.
 function cliCommands() {
-  return readdirSync(resolve("cli/commands")).filter((f) => f.endsWith(".mjs") && f !== "index.mjs").map((f) => f.slice(0, -".mjs".length));
+  return readdirSync(resolve("cli/commands")).filter((f) => f.endsWith(".mjs") && f !== "index.mjs").map(commandModuleName);
 }
 
 test("every command the CLI defines is in the help, and every help entry is a command", () => {

@@ -158,6 +158,11 @@ test("no claim, push, submit, land or record-merge code is exempt, and each rais
 test("the counts: strict codes, codes with a next, exempt codes", () => {
   const withNext = [...sites].filter(([, list]) => list.some((x) => x.next)).length;
   console.log(`# strict ${STRICT.length}, with next ${withNext}, exempt ${exempt.size}, codes ${sites.size}`);
+  // Server-index validation and conflicts add two guided refusals (t7).
+  assert.equal(STRICT.length, 78);
+  assert.equal(withNext, 227);
+  assert.equal(exempt.size, 125);
+  assert.equal(sites.size, 352);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });

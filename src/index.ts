@@ -1458,6 +1458,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req, actor, body } = c;
   const m = req.method;
 
+  if (parts[0] === "index") {
+    requireOwner(env, actor);
+    if (parts.length === 2 && parts[1] === "export" && m === "GET") return json(await index(env).exportIndex());
+    if (parts.length === 2 && parts[1] === "import" && m === "POST") {
+      const result = await index(env).importIndex(body.dump);
+      const I = index(env), pool = await I.models();
+      const unreached = await unreachedOf(await I.projects(), async (p) => {
+        await ledgerOf(env, p).importIndexSnapshot(pool, await I.assignmentSnapshotFor(p.key ?? p.name));
+      });
+      return json({ ...result, unreached });
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   if (parts[0] === "tokens") {
     requireOwner(env, actor);
     const I = index(env);
@@ -4536,7 +4549,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 // A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
 // task 8; design section 4.4): what queue() did for a push event from
@@ -4671,7 +4684,7 @@ export default {
           if (!API_PATHS.has(parts[1] ?? "")) return json({ error: "not_found", detail: "no such route" }, 404);
           // The Ledger's way back (t342) answers 403 to a request without
           // the developer's token, as it does to an agent's or a runner's.
-          if (parts[1] === "projects" && parts[3] === "ledger") return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
+          if (parts[1] === "index" || parts[1] === "projects" && parts[3] === "ledger") return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
           return json({ error: "unauthorised" }, 401);
         }
         const token = typeof how === "object" && how ? how : undefined;
