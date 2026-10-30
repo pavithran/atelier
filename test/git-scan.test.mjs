@@ -39,7 +39,7 @@ const tryGit = (...args) => new Promise((ok) => execFile("git", ["-c", "credenti
 let server, base, work, t5;
 const errors = [];
 const L = () => server.namespace.get(server.namespace.idFromName("project:demo"));
-const remote = (token) => `${base.replace("http://", `http://x:${token}@`)}/git/demo.git`;
+const remote = (token, project = "demo") => `${base.replace("http://", `http://x:${token}@`)}/git/${project}.git`;
 const push = (token, refspec) => tryGit("push", "--porcelain", remote(token), refspec);
 const tip = async (ref) => (await tryGit("ls-remote", remote(OWNER), ref)).stdout.split("\t")[0];
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -245,6 +245,44 @@ test("a push adding more commits than the scan reads is refused, naming the cap"
   execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: stream });
   c = git("rev-parse", "refs/heads/long");
   refused(await push(t5, `+${c}:refs/heads/t/5`), /adds more than 1000 commits, more than the scan reads/);
+});
+
+test("owner creation scans only the tip of a long history; other pushes keep their restrictions", async () => {
+  // The first commit holds a secret; the final tip holds only clean text.
+  const stream = `blob\nmark :1\ndata ${Buffer.byteLength(KEY) + 1}\n${KEY}\n\n`
+    + `blob\nmark :2\ndata 6\nclean\n\n`
+    + Array.from({ length: 1001 }, (_, i) => `commit refs/heads/imported\ncommitter t <t@example.test> ${1700100000 + i} +0000\ndata 1\nx\n${i === 0 ? "deleteall\nM 100644 :1 config.env\n" : i === 1000 ? "M 100644 :2 config.env\n" : ""}\n`).join("");
+  execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: stream });
+  const clean = git("rev-parse", "imported");
+  assert.equal(git("rev-list", "--count", clean), "1001");
+  const initialPush = async (project, head, privates = []) => {
+    assert.equal((await api("PUT", `/projects/${project}`, {})).status, 200);
+    if (privates.length) {
+      const ledger = server.namespace.get(server.namespace.idFromName(`project:${project}`));
+      await ledger.setPrivatePaths(privates);
+    }
+    return tryGit("push", "--porcelain", remote(OWNER, project), `${head}:refs/heads/main`);
+  };
+  const ok = await initialPush("import-clean", clean);
+  assert.equal(ok.status, 0, ok.stderr);
+  refused(await push(t5, `+${clean}:refs/heads/t/5`), /adds more than 1000 commits/);
+  refused(await push(OWNER, `${clean}:refs/heads/dev/imported`), /adds more than 1000 commits/);
+  const next = commit("next", clean, { "a.txt": "hello\n" });
+  refused(await tryGit("push", "--porcelain", remote(OWNER, "import-clean"), `${next}:refs/heads/main`), /main moves only by a landing/);
+
+  const secret = commit("secret at tip", clean, { "config.env": `MODE=test\nOPENAI_API_KEY=${KEY}\n` });
+  refused(await initialPush("import-secret", secret), new RegExp(`secret scan found a key-shaped line: config\\.env:2 in ${secret.slice(0, 12)}`));
+  const privateTip = commit("private at tip", clean, { "Notes/plan.md": "private\n" });
+  refused(await initialPush("import-private", privateTip, ["notes"]), /would carry private files: Notes\/plan\.md in [0-9a-f]{12}/);
+  const privateRemoved = git("commit-tree", git("rev-parse", `${clean}^{tree}`), "-p", privateTip, "-m", "remove private file");
+  assert.equal((await initialPush("import-private-removed", privateRemoved, ["notes"])).status, 0);
+
+  const unread = commit("unreadable tip", clean, unreadable);
+  refused(await initialPush("import-unreadable", unread), /could not read (?=.*big\.txt)(?=.*blob\.bin)(?=.*sub).*no task to record/s);
+  const tooMany = `blob\nmark :1\ndata 2\nx\n\ncommit refs/heads/large-tree\ncommitter t <t@example.test> 1700200000 +0000\ndata 1\nx\ndeleteall\n`
+    + Array.from({ length: 20001 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
+  execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: tooMany });
+  refused(await initialPush("import-large", git("rev-parse", "large-tree")), /tip tree has more than 20000 files/);
 });
 
 test("abandoning a task drops the reports kept for it", async () => {

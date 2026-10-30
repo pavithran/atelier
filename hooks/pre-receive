@@ -20,9 +20,10 @@
 // Then, for a push those four allow, the two rules that read the pushed
 // files (src/git/scan.mjs), with the policy the server wrote for this push
 // (ATELIER_POLICY, src/git/policy.mjs):
-//   5. The secret scan of the commits the push adds; a key-shaped line the
+//   5. The secret scan of the commits the push adds (only the tip tree for
+//      owner creation in an empty repository); a key-shaped line the
 //      owner has not cleared refuses the push, naming file and line.
-//   6. The private-file guard: no commit adds a private path.
+//   6. The private-file guard over the same commits or tip tree.
 //   7. The grant is still live, asked of the server at hook time.
 import { gitCommand } from "../src/git/command.mjs";
 import { execFileSync } from "node:child_process";
@@ -72,7 +73,7 @@ if (kind === "landing" && ref === `refs/heads/${branch}`) {
 if (!policy) refuse("this push has no scan policy from the server; nothing was pushed");
 await import("../src/runtime/loader.mjs");
 const { checkPush } = await import("../src/git/scan.mjs");
-const refusal = await checkPush({ old, sha, ref, branch, task, policyPath: policy, reportPath: report });
+const refusal = await checkPush({ old, sha, ref, branch, task, kind, policyPath: policy, reportPath: report });
 if (refusal) refuse(refusal);
 // 7. Last, the grant is asked about again, at the server: a push let in
 // while its grant was live is refused when the grant was revoked, or its task

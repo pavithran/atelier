@@ -1,7 +1,8 @@
 import { gitCommand } from "./command.mjs";
 // Rules 5 and 6 of the pre-receive hook (Atelier 2.0, design section 4.4):
 // the secret scan and the private-file guard over the commits a push adds,
-// before the ref moves. The hook imports this after src/runtime/loader.mjs,
+// or only the tip tree for owner creation in an empty repository, before
+// the ref moves. The hook imports this after src/runtime/loader.mjs,
 // so the scans are the ones the rest of Atelier runs, not copies:
 // scanHistory and the allowance list from src/secret-scan.ts, privateCommits
 // from cli/private-guard.mjs.
@@ -17,9 +18,28 @@ import { TASK_COMMITS, readAllowanceList, scanHistory, withEmptyTree } from "../
 import { readPolicy, writeReport } from "./policy.mjs";
 import { openReader } from "./reader.mjs";
 import { repoReader } from "../diff.ts";
+import { privatePathsAmong } from "../rules.ts";
 
 const ZERO = /^0+$/;
 const LISTED = 20;
+const TIP_FILES = 20_000;
+const TIP_BYTES = 256 * 1024 * 1024;
+
+// Bound the inventory before scanning any file, including symlinks and gitlinks.
+function tipPaths(sha) {
+  let out;
+  try {
+    out = execFileSync(gitCommand(), ["ls-tree", "-r", "-z", "--full-tree", "--name-only", sha], {
+      env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    if (error.code === "ENOBUFS") throw new Error("the tip tree exceeds the 8388608-byte file inventory limit");
+    throw error;
+  }
+  const paths = out.split("\0").filter(Boolean);
+  if (paths.length > TIP_FILES) throw new Error(`the tip tree has more than ${TIP_FILES} files, more than the scan reads`);
+  return paths;
+}
 
 // Git as the scans read history: no replacement refs rewrite a commit.
 const env = { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" };
@@ -60,12 +80,21 @@ const more = (list) => (list.length > LISTED ? `, and ${list.length - LISTED} mo
 // push may go on. Writes the secret scan's report to `reportPath` whenever
 // the scan completed. Throws nothing: a scan that cannot read the push
 // refuses it.
-export async function checkPush({ old, sha, ref, branch, task, policyPath, reportPath }) {
-  let policy, base, commits, trees;
+export async function checkPush({ old, sha, ref, branch, task, kind, policyPath, reportPath }) {
+  let policy, base, commits, trees, paths;
+  let tipOnly = false;
   try {
     policy = readPolicy(policyPath);
     base = baseOf({ old, ref, branch });
-    ({ commits, trees } = commitsOf(sha, base));
+    tipOnly = kind === "owner" && ZERO.test(old) && ref === `refs/heads/${branch}`
+      && !git("for-each-ref", "--count=1", "--format=%(refname)");
+    if (tipOnly) {
+      paths = tipPaths(sha);
+      // A synthetic root uses the normal scanner over every line of the tip.
+      const treeHash = git("rev-parse", "--verify", `${sha}^{tree}`);
+      commits = [{ hash: sha, treeHash, parents: [] }];
+      trees = new Map([[sha, treeHash]]);
+    } else ({ commits, trees } = commitsOf(sha, base));
   } catch (error) {
     return `the push could not be read for the secret scan (${error.message.split("\n")[0]}); nothing was pushed`;
   }
@@ -76,7 +105,17 @@ export async function checkPush({ old, sha, ref, branch, task, policyPath, repor
   // (same file, same fingerprint) is reported and does not refuse.
   const repo = openReader(process.cwd(), { env });
   try {
-    const r = withEmptyTree(repoReader(repo));
+    const reader = repoReader(repo);
+    let bytes = 0;
+    const r = withEmptyTree(tipOnly ? {
+      tree: (h) => reader.tree(h),
+      blob: async (h) => {
+        const blob = await reader.blob(h);
+        bytes += blob?.length ?? 0;
+        if (bytes > TIP_BYTES) throw new Error(`the tip tree exceeds the ${TIP_BYTES}-byte scan limit`);
+        return blob;
+      },
+    } : reader);
     const head = commits.find((c) => c.hash === sha);
     const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, head.treeHash));
     const cleared = (h) => policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint);
@@ -99,10 +138,12 @@ export async function checkPush({ old, sha, ref, branch, task, policyPath, repor
   } finally {
     repo[Symbol.dispose]();
   }
-  // Rule 6: no commit adds, changes or retypes a private path.
+  // Rule 6: no scanned commit or initialization tip holds a private path.
   if (policy.private.length) {
     try {
-      const found = privateCommits(process.cwd(), policy.private, sha, base);
+      const found = tipOnly
+        ? privatePathsAmong(paths, policy.private).map((path) => ({ path, commit: sha }))
+        : privateCommits(process.cwd(), policy.private, sha, base);
       if (found.length) refusals.push(`the push would carry private files: ${privateCommitsText(found)}. They never leave the developer's Macs; take them out of those commits and push again`);
     } catch (error) {
       refusals.push(error.message);

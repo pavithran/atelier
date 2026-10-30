@@ -40,7 +40,7 @@ A task refresh's lease (t462, the job that merges main's new head into a waiting
 
 For a push those four allow, the hook then reads the pushed files (`src/git/scan.mjs`):
 
-5. The secret scan. It reads the lines every added commit adds, with the patterns and fingerprints of `src/secret-scan.ts`, and honours `docs/atelier/privacy-allow.json` at the pushed head. A key-shaped line refuses the push, naming file, line and commit, never the value. A line the owner cleared with `atelier clear-secret` (same file, same fingerprint) passes.
+5. The secret scan. It reads the lines every added commit adds, with the patterns and fingerprints of `src/secret-scan.ts`, and honours `docs/atelier/privacy-allow.json` at the pushed head. A key-shaped line refuses the push, naming file, line and commit, never the value. A line the owner cleared with `atelier clear-secret` (same file, same fingerprint) passes. When the owner creates the project's branch in an empty repository, both guards read every file at the pushed tip instead of its history, with the same rules and file size limits; a tree over 20,000 files, an 8 MiB file inventory or 256 MiB of scanned content is refused. Every other push scans each added commit and is refused above 1,000 commits.
 6. The private-file guard. A commit that adds, changes or retypes one of the project's private paths refuses the push (`privateCommits` in `cli/private-guard.mjs`).
 
 The added commits are those the new head reaches and the old tip does not, for the project's branch. For any other branch they are those the new head reaches and the project's branch does not, on every push. So the scan of a task's head always covers the whole task, and a later push cannot drop a finding an earlier one recorded.
