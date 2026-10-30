@@ -1,5 +1,6 @@
 // Local receive-pack exercises quarantine and the real hook without an HTTP listener.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,9 +28,9 @@ test("owner initialization scans the bounded tip tree and preserves other hook r
     git("-C", dir, "config", "core.hooksPath", resolve("hooks"));
     return dir;
   };
-  const push = (repo, sha, ref = "main", kind = "owner") => {
+  const push = (repo, sha, ref = "main", kind = "owner", extra = []) => {
     rmSync(report, { force: true });
-    return spawnSync("git", ["push", "--porcelain", repo, `${sha}:refs/heads/${ref}`], { cwd: work,
+    return spawnSync("git", ["push", "--porcelain", repo, `${sha}:refs/heads/${ref}`, ...extra], { cwd: work,
       env: { ...env, ATELIER_KIND: kind, ATELIER_TASK: kind === "task" ? "t1" : "" }, encoding: "utf8" });
   };
   const refused = (r, pattern) => {
@@ -63,6 +64,27 @@ test("owner initialization scans the bounded tip tree and preserves other hook r
     assert.deepEqual(found.hits.map(({ file, line, commit }) => ({ file, line, commit })), [{ file: "config.env", line: 2, commit: secret }]);
     assert.equal(JSON.stringify(found).includes(KEY), false);
     assert.equal(git("-C", secretRepo, "for-each-ref"), "");
+    // The allowance names the older commit that added the retained line.
+    const line = `OPENAI_API_KEY=${KEY}`;
+    const fixture = git("commit-tree", git("rev-parse", `${secret}^{tree}`), "-m", "fixture root");
+    const allowance = JSON.stringify({ allowances: [{ commit: fixture, file: "config.env",
+      sha256: createHash("sha256").update(line).digest("hex"), reason: "a dummy fixture" }] });
+    const allowed = add(fixture, "docs/atelier/privacy-allow.json", allowance);
+    assert.equal(push(repository("allowed"), allowed).status, 0);
+    const allowedTask = push(repository("allowed-task"), allowed, "t/1", "task");
+    assert.equal(allowedTask.status, 0, allowedTask.stderr);
+    const wrongCommit = add(fixture, "docs/atelier/privacy-allow.json", allowance.replace(fixture, clean));
+    refused(push(repository("wrong-commit-task"), wrongCommit, "t/1", "task"), /config\.env:2/);
+    refused(push(repository("allowed-other-path"), add(allowed, "other.env", `${line}\n`)), /other\.env:1/);
+    refused(push(repository("allowed-other-line"), add(allowed, "config.env", `${line}\n${KEY.replace("TESTONLY", "UNLISTED")}\n`)), /config\.env:2/);
+    refused(push(repository("landing-empty"), clean, "main", "landing"), /landing merges onto main, which has no tip yet/);
+    refused(push(repository("agent-empty"), clean, "main", "read"), /this credential writes nothing here/);
+    refused(push(repository("task-main-empty"), clean, "main", "task"), /this credential writes t\/1 only/);
+    refused(push(repository("two-refs-empty"), clean, "main", "owner", [`${clean}:refs/heads/dev/other`]), /one ref per push/);
+    // '+' has no wire representation when creating a ref. It must still scan
+    // the entire tip, so a key at that tip refuses the forced creation too.
+    refused(push(repository("force-empty"), `+${secret}`), /secret scan found a key-shaped line/);
+    refused(push(repository("delete-empty"), ""), /no deletes: main stays/);
     const privateTip = add(clean, "Notes/plan.md", "private\n", "120000");
     refused(push(repository("private"), privateTip), /would carry private files: Notes\/plan\.md in/);
     const removed = git("commit-tree", git("rev-parse", `${clean}^{tree}`), "-p", privateTip, "-m", "removed");
@@ -85,6 +107,12 @@ test("owner initialization scans the bounded tip tree and preserves other hook r
       + Array.from({ length: 20001 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
     execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env, input: largeTree });
     refused(push(repository("too-many"), git("rev-parse", "large-tree")), /tip tree has more than 20000 files/);
+    // Long path components need no checkout. Stay below the file-count cap
+    // while exceeding the production inventory buffer with a tiny blob.
+    const inventory = `blob\nmark :1\ndata 2\nx\n\ncommit refs/heads/inventory\ncommitter t <t@example.test> 1700200002 +0000\ndata 1\nx\ndeleteall\n`
+      + Array.from({ length: 2100 }, (_, i) => `M 100644 :1 ${"p".repeat(4000)}-${i}\n`).join("") + "\n";
+    execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env, input: inventory });
+    refused(push(repository("inventory-limit"), git("rev-parse", "inventory")), /tip tree exceeds the 8388608-byte file inventory limit/);
     // Repeated objects count once per file read, so deduplication cannot bypass the byte cap.
     const content = "a".repeat(8 * 1024 * 1024);
     const byteTree = `blob\nmark :1\ndata ${content.length}\n${content}\ncommit refs/heads/byte-tree\ncommitter t <t@example.test> 1700200001 +0000\ndata 1\nx\ndeleteall\n`

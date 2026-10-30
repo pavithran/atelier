@@ -272,6 +272,14 @@ test("owner creation scans only the tip of a long history; other pushes keep the
 
   const secret = commit("secret at tip", clean, { "config.env": `MODE=test\nOPENAI_API_KEY=${KEY}\n` });
   refused(await initialPush("import-secret", secret), new RegExp(`secret scan found a key-shaped line: config\\.env:2 in ${secret.slice(0, 12)}`));
+  const fixture = git("commit-tree", git("rev-parse", `${secret}^{tree}`), "-m", "fixture root");
+  const line = `OPENAI_API_KEY=${KEY}`;
+  const allowed = commit("allow older fixture", fixture, { "docs/atelier/privacy-allow.json": JSON.stringify({ allowances: [
+    { commit: fixture, file: "config.env", sha256: sha256(line), reason: "a dummy fixture" },
+  ] }) });
+  const initialized = await initialPush("import-allowed", allowed);
+  assert.equal(initialized.status, 0, initialized.stderr);
+  refused(await initialPush("import-unlisted", commit("another key", allowed, { "other.env": `${line}\n` })), /other\.env:1/);
   const privateTip = commit("private at tip", clean, { "Notes/plan.md": "private\n" });
   refused(await initialPush("import-private", privateTip, ["notes"]), /would carry private files: Notes\/plan\.md in [0-9a-f]{12}/);
   const privateRemoved = git("commit-tree", git("rev-parse", `${clean}^{tree}`), "-p", privateTip, "-m", "remove private file");
@@ -283,6 +291,51 @@ test("owner creation scans only the tip of a long history; other pushes keep the
     + Array.from({ length: 20001 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
   execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: tooMany });
   refused(await initialPush("import-large", git("rev-parse", "large-tree")), /tip tree has more than 20000 files/);
+  // Exercise both production byte caps without thousands of distinct blobs.
+  const inventory = `blob\nmark :1\ndata 2\nx\n\ncommit refs/heads/inventory\ncommitter t <t@example.test> 1700200002 +0000\ndata 1\nx\ndeleteall\n`
+    + Array.from({ length: 2100 }, (_, i) => `M 100644 :1 ${"p".repeat(4000)}-${i}\n`).join("") + "\n";
+  execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: inventory });
+  refused(await initialPush("import-inventory", git("rev-parse", "inventory")), /tip tree exceeds the 8388608-byte file inventory limit/);
+  const content = "a".repeat(8 * 1024 * 1024);
+  const bytes = `blob\nmark :1\ndata ${content.length}\n${content}\ncommit refs/heads/byte-tree\ncommitter t <t@example.test> 1700200001 +0000\ndata 1\nx\ndeleteall\n`
+    + Array.from({ length: 33 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
+  execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: bytes });
+  refused(await initialPush("import-bytes", git("rev-parse", "byte-tree")), /tip tree exceeds the 268435456-byte scan limit/);
+});
+
+test("empty-repository initialization keeps credential, ref-count, force and delete guards", async (t) => {
+  const project = "empty-guards";
+  assert.equal((await api("PUT", `/projects/${project}`, {})).status, 200);
+  const url = (token) => remote(token, project);
+  const send = (token, ...refs) => tryGit("push", "--porcelain", url(token), ...refs);
+  const head = main();
+  const { stillLanding } = server.git;
+  server.git.stillLanding = async () => true;
+  t.after(() => { server.git.stillLanding = stillLanding; });
+  const landing = server.git.grants.mint({ project, kind: "landing", task: "t1", actor: AGENT,
+    accepted: head, lease: "test-empty-lease" });
+  refused(await send(landing.token, `${head}:refs/heads/main`), /landing merges onto main, which has no tip yet/);
+  const agent = (await (await api("POST", "/tokens", { actor: AGENT, projects: [project] })).json()).token;
+  refused(await send(agent, `${head}:refs/heads/main`), /401|Authentication failed/);
+  const read = server.git.grants.mint({ project, kind: "read", actor: AGENT });
+  refused(await send(read.token, `${head}:refs/heads/main`), /403/);
+  assert.equal((await api("POST", `/projects/${project}/items`, { title: "Empty task" })).status, 201);
+  const ledger = server.namespace.get(server.namespace.idFromName(`project:${project}`));
+  await ledger.claim("t1", AGENT);
+  const grantResponse = await api("POST", `/projects/${project}/git-token`, { kind: "task", item: "t1" }, agent, AGENT);
+  assert.equal(grantResponse.status, 200, await grantResponse.clone().text());
+  const task = (await grantResponse.json()).token;
+  refused(await send(task, `${head}:refs/heads/main`), /this credential writes t\/1 only/);
+  refused(await send(OWNER, `${head}:refs/heads/main`, `${head}:refs/heads/dev/other`), /one ref per push/);
+  // Force is a client option, absent from the creation sent to receive-pack.
+  // A forced creation must run the same tip scan and refuse a present key.
+  const secret = commit("forced secret", head, { "force.env": `${KEY}\n` });
+  refused(await send(OWNER, `+${secret}:refs/heads/main`), /secret scan found a key-shaped line: force\.env:1/);
+  refused(await send(OWNER, ":refs/heads/main"), /no deletes: main stays/);
+  // Nothing above may create even the second ref in the multi-ref push.
+  const refs = await tryGit("ls-remote", url(OWNER));
+  assert.equal(refs.status, 0, refs.stderr);
+  assert.equal(refs.stdout.trim(), "");
 });
 
 test("abandoning a task drops the reports kept for it", async () => {

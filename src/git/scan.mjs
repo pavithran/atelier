@@ -117,7 +117,7 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
       },
     } : reader);
     const head = commits.find((c) => c.hash === sha);
-    const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, head.treeHash));
+    const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, head.treeHash), tipOnly ? "tree" : "commit");
     const cleared = (h) => policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint);
     const standing = scan.hits.filter((h) => !cleared(h));
     // A push to a task's or a plan's branch records an unscanned file on its

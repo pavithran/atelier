@@ -375,10 +375,10 @@ export async function readAllowanceList(reader: Reader, tree: string): Promise<P
 // of a merge with every side's findings kept once each, each named with the
 // commit. A line an allowance permits for this commit is left out; the list
 // is asked for only when a key-shaped line is found.
-async function scanAdded(r: Reader, commit: Commit, trees: Map<string, string>, allowances: () => Promise<PrivacyAllowance[]>): Promise<PushScan> {
+async function scanAdded(r: Reader, commit: Commit, trees: Map<string, string>, allowances: () => Promise<PrivacyAllowance[]>, allowanceScope: "commit" | "tree"): Promise<PushScan> {
   const parents = commit.parents?.length ? commit.parents : [null];
   const allowed = async (file: string, text: string) => {
-    const mine = (await allowances()).filter((a) => commit.hash.startsWith(a.commit));
+    const mine = (await allowances()).filter((a) => allowanceScope === "tree" || commit.hash.startsWith(a.commit));
     if (!mine.some((a) => a.file === file)) return false;
     const digest = await sha256(text);
     return mine.some((a) => a.file === file && a.sha256 === digest);
@@ -397,13 +397,14 @@ async function scanAdded(r: Reader, commit: Commit, trees: Map<string, string>, 
 // in the result. `trees` holds the tree of every commit named and of every
 // parent of one; `allowances` are the push scan's (parseAllowances), or a
 // function that reads them, called at most once and only when a key-shaped
-// line is found.
-export async function scanHistory(r: Reader, commits: Commit[], trees: Map<string, string>, allowances: PrivacyAllowance[] | (() => Promise<PrivacyAllowance[]>)): Promise<PushScan> {
+// line is found. A tip-tree scan matches allowances by file and exact line
+// digest alone; history scans also require the commit that added the line.
+export async function scanHistory(r: Reader, commits: Commit[], trees: Map<string, string>, allowances: PrivacyAllowance[] | (() => Promise<PrivacyAllowance[]>), allowanceScope: "commit" | "tree" = "commit"): Promise<PushScan> {
   const scan: PushScan = { hits: [], unscanned: [] };
   let list: Promise<PrivacyAllowance[]> | null = null;
   const read = () => (list ??= typeof allowances === "function" ? allowances() : Promise.resolve(allowances));
   for (const c of oldestFirst(commits)) {
-    const added = await scanAdded(r, c, trees, read);
+    const added = await scanAdded(r, c, trees, read, allowanceScope);
     scan.hits.push(...added.hits);
     scan.unscanned.push(...added.unscanned);
   }
