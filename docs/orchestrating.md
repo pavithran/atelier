@@ -1263,11 +1263,16 @@ ids are named and refuse the entire import in one transaction. References
 to models outside the pool remain as history. Runner offers start fresh;
 tokens are reissued separately.
 
-A 1.0 export reports its limits in the file and on the command line:
-`/api/runs` exposes only the newest 1,000 reports, and `/api/models` exposes
+A 1.0 export reports its limits in the file and on the command line.
+When `/api/version` advertises `runs.paging.v1`, the export walks
+`/api/runs?limit=1000` and each `before=ID` cursor until `next` is null,
+carrying every report with its original run SQL id. Every page uses the
+same developer-token and actor headers as the other export reads. Without
+that capability, `/api/runs` exposes only the newest 1,000 reports and their
+missing SQL ids receive transfer ids in source order. `/api/models` exposes
 notes only for models still in the pool. Cards have no server-wide listing;
 the export reads cards for names found in the pool (including aliases),
-assignments, reports and registry, so cards under undiscoverable names cannot move. Note and run SQL
+assignments, reports and registry, so cards under undiscoverable names cannot move. Note SQL
 ids are absent from those answers and receive transfer ids in source order;
 their dates, actors and text remain intact. Assignment withdrawal views omit
 `actingDeclared`, which cannot move. The export also reads the owner-only
@@ -1290,8 +1295,8 @@ revision cannot be replaced with its earlier figure in a historical review.
 A 2.0 source exports every row of all seven tables with its original SQL key. The file records the 1.0 answers
 beside the importable rows so the available history can be inspected.
 `models show ID --trend` reads the carried points alongside daily snapshots.
-New snapshots use the imported records. Older five-table index files remain
-importable, with no snapshots added.
+New snapshots use the imported records. Index files exported before run
+paging remain importable. Older five-table files add no snapshots.
 
 Moving a project's repository and its open tasks from 1.x (`atelier projects
 move-host`, `atelier migrate tN`), and keeping the old baselines current

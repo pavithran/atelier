@@ -39,6 +39,8 @@ test("1.0 read answers carry notes, ended cards, withdrawals, absent-model assig
   assert.equal(d.commit, fixture["/version"].commit);
   assert.deepEqual(d.counts, { models: 1, model_notes: 1, model_cards: 2, model_assignments: 2, runs: 2, snapshot_takes: 0, model_snapshots: 0 });
   assert.equal(d.limitations.length, 6);
+  assert.deepEqual(d.tables.runs.map((r) => r.id), [1, 2]);
+  assert.deepEqual(d.answers.runs, fixture["/runs"]);
   assert.deepEqual(d.answers.roles, fixture["/model-roles"]);
   assert.equal(JSON.parse(d.tables.model_cards[0].json).state, undefined);
   assert.equal(d.tables.model_cards[0].id, 7);
@@ -55,6 +57,72 @@ test("1.0 read answers carry notes, ended cards, withdrawals, absent-model assig
     items: [{ id: "t1", title: "Work", state: "open", scope: [], createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z" }], events: [], lease: null, reviews: [],
   }, [], await I.runs(), []);
   assert.match(JSON.stringify(report), /runner-give-up/);
+});
+
+function pagedSource(page, seen = []) {
+  return async (path) => {
+    seen.push(path);
+    if (path === "/version") return { commit: "936ed2bd", capabilities: ["runs.paging.v1"] };
+    if (path.startsWith("/runs?")) return page(new URL(path, "http://localhost").searchParams);
+    if (path === "/models") return [];
+    if (path === "/model-roles") return { assignments: [] };
+    if (path.endsWith("/trend")) return { model: decodeURIComponent(path.split("/")[2]), from: "2026-10-16", to: "2026-10-29", days: 14, snapshots: 0, measures: [] };
+    assert.match(path, /^\/models\/[^/]+\/cards$/);
+    return { cards: [], withdrawals: [] };
+  };
+}
+
+test("paged 1.0 export carries all 10,549 reports with sparse SQL ids and discovers oldest actors", async () => {
+  const report = fixture["/runs"][0], seen = [];
+  const rows = Array.from({ length: 10549 }, (_, i) => ({ id: (10549 - i) * 3,
+    report: i === 10548 ? { ...report, actor: "codex/oldest-only", model: "retired-only" } : report }));
+  const dump = validateIndex(await collectIndex(pagedSource((params) => {
+    assert.equal(params.get("limit"), "1000");
+    const available = rows.filter((r) => !params.has("before") || r.id < Number(params.get("before")));
+    const runs = available.slice(0, 1000);
+    return { runs, next: available.length > runs.length ? runs.at(-1).id : null };
+  }, seen)));
+  assert.equal(seen.filter((p) => p.startsWith("/runs?")).length, 11);
+  assert.deepEqual(dump.tables.runs, rows.slice().reverse().map((r) => ({ id: r.id, json: JSON.stringify(r.report) })));
+  assert.deepEqual(dump.answers.runs, rows);
+  assert.equal(dump.counts.runs, 10549);
+  assert.ok(seen.includes("/models/codex%2Foldest-only/cards"));
+  assert.ok(seen.includes("/models/retired-only/trend"));
+  assert.ok(!dump.limitations.some((s) => /newest 1000|run database ids/.test(s)));
+  assert.ok(dump.limitations.some((s) => /note database ids/.test(s)));
+  const { I } = fresh();
+  assert.deepEqual(await I.importIndex(dump), { added: 10549, held: 0 });
+  assert.deepEqual(await I.importIndex(dump), { added: 0, held: 10549 });
+  assert.deepEqual((await I.exportIndex()).tables.runs, dump.tables.runs);
+  const conflict = structuredClone(dump);
+  conflict.tables.runs[0].json = JSON.stringify({ ...report, reason: "changed" });
+  conflict.tables.runs.push({ id: 99999, json: JSON.stringify(report) }); conflict.counts.runs++;
+  await assert.rejects(I.importIndex(conflict), /runs:3.*nothing imported/);
+  assert.deepEqual((await I.exportIndex()).tables.runs, dump.tables.runs);
+});
+
+test("paged 1.0 export accepts empty history and an exact page boundary", async () => {
+  const empty = await collectIndex(pagedSource(() => ({ runs: [], next: null })));
+  assert.deepEqual(empty.tables.runs, []);
+  const seen = [], report = fixture["/runs"][0];
+  const dump = await collectIndex(pagedSource(() => ({ runs: Array.from({ length: 1000 }, (_, i) => ({ id: 1000 - i, report })), next: null }), seen));
+  assert.equal(dump.counts.runs, 1000);
+  assert.equal(seen.filter((p) => p.startsWith("/runs?")).length, 1);
+});
+
+test("paged 1.0 export refuses malformed pages, repeated ids and stalled cursors", async () => {
+  const report = fixture["/runs"][0];
+  for (const page of [[], { runs: [], next: 1 }, { runs: [] },
+    { runs: [{ id: 0, report }], next: null }, { runs: [{ id: 1, report: null }], next: null },
+    { runs: [{ id: 2, report }, { id: 2, report }], next: null },
+    { runs: [{ id: 2, report }], next: 3 }]) {
+    await assert.rejects(collectIndex(pagedSource(() => page)), /unexpected 1.0 run page/);
+  }
+  await assert.rejects(collectIndex(pagedSource(() => ({ runs: [{ id: 2, report }], next: 2 }))), /unexpected 1.0 run page/);
+  await assert.rejects(collectIndex(pagedSource((params) => {
+    if (params.has("before")) throw new Error("page read failed");
+    return { runs: [{ id: 2, report }], next: 2 };
+  })), /page read failed/);
 });
 
 test("2.0 export keeps all raw ids, and a conflict refuses even unrelated rows", async () => {
@@ -281,6 +349,42 @@ test("CLI file failures use clean errors for existing exports, missing imports a
   execFileSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(process.cwd(), "cli/atelier.mjs"), "index", "export", "--file", created], { env: childEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   assert.equal(statSync(created).mode & 0o777, 0o600);
   assert.ok(!readFileSync(created, "utf8").includes(OWNER));
+});
+
+test("CLI paged export sends the existing developer headers on every page", () => {
+  const file = join(root, "paged-index.json"), report = fixture["/runs"][0];
+  const preload = `
+    import assert from "node:assert/strict";
+    let headers;
+    globalThis.fetch = async (url, options) => {
+      const path = new URL(url).pathname, params = new URL(url).searchParams;
+      if (path === "/api/config") return Response.json({});
+      if (path === "/api/version") {
+        headers = options.headers;
+        assert.equal(headers.authorization, "Bearer ${OWNER}");
+        assert.equal(headers["x-atelier-actor"], "owner");
+        return Response.json({ capabilities: ["runs.paging.v1"] });
+      }
+      assert.deepEqual(options.headers, headers);
+      if (path === "/api/runs") {
+        assert.equal(params.get("limit"), "1000");
+        assert.ok(params.get("before") === null || params.get("before") === "20");
+        return Response.json({ runs: [{ id: params.has("before") ? 5 : 20, report: ${JSON.stringify(report)} }], next: params.has("before") ? null : 20 });
+      }
+      if (path === "/api/models") return Response.json([]);
+      if (path === "/api/model-roles") return Response.json({ assignments: [] });
+      if (path.endsWith("/trend")) return Response.json({ model: decodeURIComponent(path.split("/")[3]), from: "2026-10-16", to: "2026-10-29", days: 14, snapshots: 0, measures: [] });
+      assert.ok(path.endsWith("/cards"));
+      return Response.json({ cards: [], withdrawals: [] });
+    };
+  `;
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith("ATELIER_")) delete env[k];
+  Object.assign(env, { ATELIER_TOKEN: OWNER, ATELIER_OWNER: "owner", ATELIER_SERVER: "http://localhost:1", ATELIER_CONFIG_DIR: join(root, "paged-cli-config"), ATELIER_SECRET_STORE: "file", NO_COLOR: "1" });
+  const output = execFileSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(process.cwd(), "cli/atelier.mjs"), "index", "export", "--file", file], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const dump = validateIndex(JSON.parse(readFileSync(file, "utf8")));
+  assert.deepEqual(dump.tables.runs.map((r) => r.id), [5, 20]);
+  assert.doesNotMatch(output, /newest 1000|run database ids/);
 });
 
 test("legacy trends preserve every printed point, discover card names, and refuse changed alias reads", async () => {
