@@ -1277,11 +1277,17 @@ take cutoffs, cohorts, full earlier revisions, older days and other schemas;
 it cannot rebuild the stored snapshot rows exactly. The file carries the
 visible points as labelled projections in `model_snapshots`, preserving their
 values, gaps, breaks and revision text. When the trend window advances,
-those points expire normally; native snapshots supply new days and take
-precedence on days they cover. For a model with no measures, the projection
-has a snapshot count but no snapshot dates; that count can be preserved only
-for its original span before combining it with native takes. A 2.0 source exports every row of all seven tables
-with its original SQL key. The file records the 1.0 answers
+those points expire normally. Days with carried snapshot points are complete
+for the timer's backfill. Native snapshots supply new days; on overlapping
+days, native figures take precedence, but an empty native take cannot hide a
+carried figure. This also applies to empty takes recorded before import.
+For a model with no measures, the projection has a snapshot count but no
+snapshot dates; that count can be preserved only
+for its original span before combining it with native takes. Model reviews
+admit each carried point only when its recording time precedes the review
+time. Full figures for earlier revisions are unavailable, so a later
+revision cannot be replaced with its earlier figure in a historical review.
+A 2.0 source exports every row of all seven tables with its original SQL key. The file records the 1.0 answers
 beside the importable rows so the available history can be inspected.
 `models show ID --trend` reads the carried points alongside daily snapshots.
 New snapshots use the imported records. Older five-table index files remain

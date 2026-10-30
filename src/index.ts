@@ -3747,6 +3747,7 @@ export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ 
   const I = index(env);
   const last = addDays(utcDay(now), -1);
   const complete = new Set((await I.modelSnapshotTakes(addDays(last, -(BACKFILL_DAYS - 1)), last)).filter((t) => t.schema === SNAPSHOT_SCHEMA && t.complete).map((t) => t.day));
+  for (const day of await I.modelProjectionDays(addDays(last, -(BACKFILL_DAYS - 1)), last)) complete.add(day);
   const due = daysDue(now, complete);
   if (!due.length) return [];
   const [projects, pool, assignmentRows] = await Promise.all([I.projects(), I.models(), I.assignmentEvents()]);

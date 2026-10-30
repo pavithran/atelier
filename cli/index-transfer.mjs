@@ -3,7 +3,7 @@ import { cleanCardModel } from "../src/models/cards.ts";
 import { indexDump, canonical } from "../src/index-transfer.ts";
 
 export const V1_LIMITATIONS = [
-  "1.0 trends expose only the current 14-day projection, not stored snapshot rows, take cutoffs, cohorts or full earlier revisions. Visible points are carried as projections in model_snapshots; older days, other schemas and undiscoverable models cannot be recovered. Snapshot dates for a model with no measures are unavailable outside the original span.",
+  "1.0 trends expose only the current 14-day projection, not stored snapshot rows, take cutoffs, cohorts or full earlier revisions. Visible points are carried as projections in model_snapshots; older days, other schemas and undiscoverable models cannot be recovered. Snapshot dates for a model with no measures are unavailable outside the original span. Historical reviews cannot recover an earlier revision's full figures when the carried revision was recorded after the review time.",
   "1.0 GET /api/runs returns only the newest 1000 reports; older reports have no public read route.",
   "1.0 GET /api/models exposes notes only for models still in the pool; orphan notes have no read route.",
   "1.0 has no card listing: cards are read for names found in the pool (including aliases), assignments, runs and registry; cards under other names cannot be discovered.",
@@ -38,7 +38,8 @@ export async function collectIndex(get, registryNames = []) {
   for (const view of roles.assignments) {
     const { status, supersededBy, withdrawal, ...record } = view;
     tables.model_assignments.push({ n: Number(record.id.slice(1)), id: record.id, json: JSON.stringify(record) });
-    for (const choice of record.choices) names.add(choice.actor);
+    for (const choice of record.choices) { names.add(choice.actor); if (choice.model) names.add(choice.model); }
+    for (const name of [record.acting, record.actingDeclared, withdrawal?.acting]) if (name) names.add(name);
     if (withdrawal) {
       const { id, ...fields } = withdrawal;
       tables.model_assignments.push({ n: Number(id.slice(1)), id, json: JSON.stringify({ id, kind: "withdrawn", withdraws: record.id, scope: record.scope, role: record.role, ...fields }) });

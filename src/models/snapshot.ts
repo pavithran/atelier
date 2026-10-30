@@ -299,7 +299,7 @@ function valueText(f: Pick<SnapshotFigure, "kind" | "state" | "value" | "numerat
 // them. The latest revision of a day is shown, and the earlier ones are
 // kept beside it.
 export function trendOf(model: string, takes: readonly SnapshotTake[], rows: readonly (SnapshotRow & { day: string; rev: number })[], to: string, days = TREND_DAYS): ModelTrend {
-  const projections = rows.filter((r) => r.model === model && r.projection).map((r) => r.projection!);
+  const projections = rows.filter((r) => r.model === model && r.projection && r.projection.from <= to && r.projection.to >= addDays(to, -(days - 1))).map((r) => r.projection!);
   if (projections.length) {
     const native = trendOf(model, takes, rows.filter((r) => !r.projection), to, days);
     return carriedTrend(native, projections, takes);
@@ -366,12 +366,20 @@ export function trendOf(model: string, takes: readonly SnapshotTake[], rows: rea
   return { model, from, to, days, snapshots: latest.size, measures: trends };
 }
 
-// Native takes win for their days. Projection points keep their original gaps,
+// Native figures win for their days. Projection points keep their original gaps,
 // revision text and break reasons; absent cohorts cannot establish a new join.
 function carriedTrend(native: ModelTrend, projections: readonly ModelTrend[], takes: readonly SnapshotTake[]): ModelTrend {
   const latest = [...projections].sort((a, b) => b.to.localeCompare(a.to))[0];
   const nativeDays = new Set(takes.filter((t) => t.schema === SNAPSHOT_SCHEMA && t.day >= native.from && t.day <= native.to).map((t) => t.day));
-  if (!nativeDays.size && latest.from === native.from && latest.to === native.to && latest.days === native.days) return structuredClone(latest);
+  if (!nativeDays.size && latest.from === native.from && latest.to === native.to && latest.days === native.days) {
+    const carried = structuredClone(latest);
+    for (const m of carried.measures) {
+      const first = m.points.find((p) => !p.gap);
+      if (first) first.breaks = null;
+    }
+    carried.measures.sort((a, b) => COMPARE_ROLES.indexOf(a.role) - COMPARE_ROLES.indexOf(b.role));
+    return carried;
+  }
   const expand = (points: readonly TrendPoint[]) => points.flatMap((p) => {
     const out: TrendPoint[] = [];
     for (let day = p.day; day <= (p.through ?? p.day); day = addDays(day, 1)) {
@@ -394,20 +402,29 @@ function carriedTrend(native: ModelTrend, projections: readonly ModelTrend[], ta
       measures.set(key, { ...measure, points: [...points.values()] });
     }
   }
+  const selectedNative = new Set<string>();
   for (const measure of native.measures) {
     const key = `${measure.role} ${measure.measure}`, kept = measures.get(key);
-    if (!kept) { measures.set(key, measure); continue; }
+    if (!kept) {
+      measures.set(key, structuredClone(measure));
+      for (const p of expand(measure.points)) if (p.state !== null) selectedNative.add(`${key} ${p.day}`);
+      continue;
+    }
     const points = new Map(kept.points.map((p) => [p.day, p]));
-    for (const p of expand(measure.points)) if (nativeDays.has(p.day) || !points.has(p.day)) points.set(p.day, p);
+    for (const p of expand(measure.points)) {
+      if ((nativeDays.has(p.day) && p.state !== null) || !points.has(p.day) || points.get(p.day)!.rev === null) {
+        points.set(p.day, p);
+        if (p.state !== null) selectedNative.add(`${key} ${p.day}`);
+      }
+    }
     measures.set(key, { ...measure, points: [...points.values()] });
   }
-  const nativeMeasures = new Set(native.measures.map((m) => `${m.role} ${m.measure}`));
   for (const measure of measures.values()) {
     const points = new Map(expand(measure.points).map((p) => [p.day, p]));
     // A native take can omit a model or a formerly exposed measure.
     for (let day = native.from; day <= native.to; day = addDays(day, 1)) {
       const take = takes.filter((t) => t.schema === SNAPSHOT_SCHEMA && t.day === day).sort((a, b) => b.rev - a.rev)[0];
-      if (!points.has(day) || (take && !nativeMeasures.has(`${measure.role} ${measure.measure}`))) points.set(day, {
+      if (!points.has(day)) points.set(day, {
         day, rev: take?.rev ?? null, origin: take?.origin ?? null, takenAt: take?.takenAt ?? null, value: null, recorded: null,
         numerator: null, denominator: null, n: null, minSamples: null, window: null, version: null, state: null, breaks: null, earlier: [],
         gap: take ? "the model was not in the pool, or had no figure for this measure" : "no snapshot was taken",
@@ -417,15 +434,23 @@ function carriedTrend(native: ModelTrend, projections: readonly ModelTrend[], ta
     let preceding: TrendPoint | undefined;
     for (const p of [...points.values()].sort((a, b) => a.day.localeCompare(b.day))) {
       const previous = measure.points.at(-1);
-      if (!p.gap && nativeDays.has(p.day) && preceding && !nativeDays.has(preceding.day)) {
-        p.breaks = [p.breaks, "the imported projection does not expose its cohort"].filter(Boolean).join("; ");
+      if (!p.gap) {
+        if (!preceding) p.breaks = null;
+        else if (selectedNative.has(`${measure.role} ${measure.measure} ${p.day}`) !== selectedNative.has(`${measure.role} ${measure.measure} ${preceding.day}`)) {
+          p.breaks = [
+            preceding.version !== p.version ? `measure version ${preceding.version} to ${p.version}` : "",
+            preceding.window?.days !== p.window?.days ? `window ${preceding.window?.days ?? "all history"} to ${p.window?.days ?? "all history"} days` : "",
+            preceding.minSamples !== p.minSamples ? `threshold ${preceding.minSamples} to ${p.minSamples}` : "",
+            "the imported projection does not expose its cohort",
+          ].filter(Boolean).join("; ");
+        }
       }
       if (!p.gap) preceding = p;
       if (previous?.gap === "no snapshot was taken" && p.gap === previous.gap && !p.rev && !previous.rev) previous.through = p.day;
       else measure.points.push(p);
     }
   }
-  return { ...native, snapshots: snapshotDays.size, measures: [...measures.values()] };
+  return { ...native, snapshots: snapshotDays.size, measures: [...measures.values()].sort((a, b) => COMPARE_ROLES.indexOf(a.role) - COMPARE_ROLES.indexOf(b.role)) };
 }
 
 // ── words, for the page and the CLI alike ─────────────────────────────────

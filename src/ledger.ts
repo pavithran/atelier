@@ -61,7 +61,7 @@ import {
 } from "./dispatch/prereview.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
-import { sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
+import { addDays, sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
 import { matchServed, SERVED, SERVED_LIMIT, servedActor, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { privatePath } from "./rules.ts";
@@ -2123,6 +2123,7 @@ export class Ledger extends DurableObject<Env> {
     this.snapshotTables();
     return this.ctx.storage.transactionSync(() => {
       const last = this.sql.exec(`SELECT rev FROM snapshot_takes WHERE day = ? AND schema = ? ORDER BY rev DESC LIMIT 1`, s.take.day, s.take.schema).toArray()[0];
+      if (this.modelProjectionDays(s.take.day, s.take.day).length) return { day: s.take.day, rev: last ? last.rev as number : 1, stored: false };
       if (last) {
         const kept = this.modelSnapshot(s.take.day, last.rev as number)!;
         if (kept.take.complete || sameSnapshot(kept, s)) return { day: s.take.day, rev: kept.take.rev, stored: false };
@@ -2154,9 +2155,23 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM snapshot_takes WHERE day >= ? AND day <= ? ORDER BY day, rev`, from, to).toArray().map((r) => JSON.parse(r.json as string) as SnapshotTake);
   }
 
+  // Projection points with a recorded revision already hold that day's history.
+  modelProjectionDays(from: string, to: string): string[] {
+    this.snapshotTables();
+    const days = new Set<string>();
+    for (const r of this.sql.exec(`SELECT json FROM model_snapshots WHERE role = '@trend' AND schema = ?`, SNAPSHOT_SCHEMA).toArray()) {
+      const projection = (JSON.parse(r.json as string) as SnapshotRow).projection!;
+      for (const m of projection.measures) for (const p of m.points) {
+        if (p.rev === null) continue;
+        for (let day = p.day; day <= (p.through ?? p.day); day = addDays(day, 1)) if (day >= from && day <= to) days.add(day);
+      }
+    }
+    return [...days].sort();
+  }
+
   modelSnapshotRows(model: string, from: string, to: string): (SnapshotRow & { day: string; rev: number })[] {
     this.snapshotTables();
-    return this.sql.exec(`SELECT day, rev, json FROM model_snapshots WHERE model = ? AND day >= ? AND day <= ? AND schema = ? ORDER BY day, rev, role`, model, from, to, SNAPSHOT_SCHEMA).toArray()
+    return this.sql.exec(`SELECT day, rev, json FROM model_snapshots WHERE model = ? AND (day >= ? AND day <= ? OR role = '@trend') AND schema = ? ORDER BY day, rev, role`, model, from, to, SNAPSHOT_SCHEMA).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as SnapshotRow), day: r.day as string, rev: r.rev as number }));
   }
 

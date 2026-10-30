@@ -54,7 +54,7 @@ export function validateIndex(value: unknown): IndexDump {
       }
       const key = table === "model_assignments" ? "n" : "id";
       if (!snapshot && (table === "models" ? typeof r.id !== "string" || !r.id : !Number.isSafeInteger(r[key]) || Number(r[key]) < 1)) fail(`${table}: invalid row id`);
-      if (seen.has(identity)) fail(`${table}: repeated id ${r[key]}`);
+      if (seen.has(identity)) fail(`${table}: repeated id ${snapshot ? identity : r[key]}`);
       seen.add(identity);
       if ("model" in r && typeof r.model !== "string") fail(`${table}: invalid model`);
       if (table === "model_assignments" && (typeof r.id !== "string" || r.id !== `a${r.n}`)) fail(`${table}: invalid assignment id`);
