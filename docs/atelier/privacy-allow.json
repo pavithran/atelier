@@ -59,6 +59,228 @@
       "file": "test/runner-same-exit.test.mjs",
       "sha256": "ee29a678abba9dce796421308c357e90c7515364c4c11717f47b88efc89c65a8",
       "reason": "PAVI 2026-10-27: the made-up key in t323's test, cleared on t323"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "bin/orchestrate/review-bake.sh",
+      "sha256": "853c3af2240772faca189587cedd65a388d921a44c51a76c09b15e35a1838b09",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "bin/orchestrate/review-bake.sh",
+      "sha256": "84167dd27d68a8f40fbb1a935f8a0363c8929ac65a4158ade343591cc84085f2",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "bin/orchestrate/review-bake.sh",
+      "sha256": "48560bb817c9c7eb0461cc58c7050bb30958c7d185438ba468e43157ca193b79",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "885b7c50cfd3501aa42849fab2c2ca2b59dfa81d193c0b17753a6a62191ee56a",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-backup.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-backup.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-restore.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-restore.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a tool or folder path, not a key"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "ce53eec6fbb503684b4a7d88150fbbe2b3d64666cd25aae1b8898737173fac2c",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; the public Access audience tag of next.atelier.zone"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/discover.test.mjs",
+      "sha256": "7ef76e1dfc137beaf5d230a5bfadf3252ab7504bb55700bac14f28c6689e5518",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/fixtures/studio/setup-tunnel-2026-10-28.sh",
+      "sha256": "17848a559b3ee29a81e5e46fac6fad0a55865416a3d879ef7d9748fd3edd4ff7",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; the public Access audience tag of next.atelier.zone"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/gateway.test.ts",
+      "sha256": "0be20e51e0b740c0721f6e2207f00c91fbd53fce79bf0349891fbf8590f4c50c",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/land-node-2.test.mjs",
+      "sha256": "2765cddec54e7e0e7859b2f94268cd169aa4e545418f26fe9b99eb36818a9d48",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/model-cards.test.ts",
+      "sha256": "5799ea5cab4229120fa243ac90814dde0e0c9afdae532ba6078c2335b50484bc",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/model-cards.test.ts",
+      "sha256": "51d281938fe709c582b741e0475e95b896fbaf8dbd94bbd9a5be1e8729b0956d",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/pool.test.ts",
+      "sha256": "b46bfa9aa8e5f3b77a47eed406fa452553eba4e697fe268b51030178a823517f",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/pool.test.ts",
+      "sha256": "67563f958dff4c9e0fed014a823f437ffee0b20b2b1b6d87f6e7323b70147a18",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/pool.test.ts",
+      "sha256": "c50bcd9dfcd7ac3fe964bbd886386cc8307338eeca981f6aab31e8b6fedfa0cf",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/pool.test.ts",
+      "sha256": "348bf4f2129dfa8f715daec951546478b94f355e03fa7f538d4064bd6a5959d7",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/progress.test.mjs",
+      "sha256": "0e6bd7e0e70eff89c186233f9837439c96272003efed421204210dea026492f1",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/reliability.test.ts",
+      "sha256": "a36fbdf986dbec56efeb7494174fb942c1169955941ba738a125d0ee1088c68e",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/reliability.test.ts",
+      "sha256": "265d24622ebb6f2591b52be9cf76db3ca4f12151cd4587119eeb95a6f9e000fe",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/review-requests.spec.ts",
+      "sha256": "69468d7890ef0e35eb00733ebfc93688e8fec9bbb2613ae77311dab8dc67c306",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/reviews-together.test.mjs",
+      "sha256": "92a27d926a0887ac2e141d4a1f34afb85a2c71fb1fb2dceed0149ca4bd312f31",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/secret-scan.test.ts",
+      "sha256": "d16602dee804a8315f46511c301753a7f3399151ec8c6957b7e77bef29291793",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/secret-scan.test.ts",
+      "sha256": "9e4049adfc36dae71e7a8de770d2404248faa44c9e26804c5f0da92858a86b55",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/secret-scan.test.ts",
+      "sha256": "8557a0900d642168350a1449dcf0b9087624b5d5d84f23c91689623afedf24d1",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/secret-scan.test.ts",
+      "sha256": "286e4777ba5aeabf948996b1baa900217f52aafe11d3669a895e63942f343776",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/usage-cli.test.mjs",
+      "sha256": "a8d05cef835b96a2e0de841b0c372a91be8488a342d57d39b704878f435f9e53",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/usage-cli.test.mjs",
+      "sha256": "91829de6095491f10c44e3447e22e2c2b95f2374fe298e40d1c8292ac7d3e36c",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/usage-cli.test.mjs",
+      "sha256": "7f7d8f716f4c972eeca2589d59d449df2f021ad93a3ec28a27907445d97086cf",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/usage.test.ts",
+      "sha256": "d1e769fd8fe7521342905022f83573f2ea1d0664c5d504041d7d5a9ef53405cb",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "d04b6ac4",
+      "file": "test/usage.test.ts",
+      "sha256": "0fee9b2fd255dd3d375070be2f8d2ec9acf2140f8888cd4c5b870a3b4db47f08",
+      "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
     }
   ]
 }
