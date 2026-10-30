@@ -2,14 +2,36 @@ import { validTrendProjection } from "../src/models/snapshot.ts";
 import { cleanCardModel } from "../src/models/cards.ts";
 import { indexDump, canonical } from "../src/index-transfer.ts";
 
+const RUN_LIMIT = "1.0 GET /api/runs returns only the newest 1000 reports; older reports have no public read route.";
+const ROW_IDS_LIMIT = "1.0 does not expose note or run database ids; those rows receive transfer ids in source order. Their timestamps, actors and text are preserved.";
 export const V1_LIMITATIONS = [
   "1.0 trends expose only the current 14-day projection, not stored snapshot rows, take cutoffs, cohorts or full earlier revisions. Visible points are carried as projections in model_snapshots; older days, other schemas and undiscoverable models cannot be recovered. Snapshot dates for a model with no measures are unavailable outside the original span. Historical reviews cannot recover an earlier revision's full figures when the carried revision was recorded after the review time.",
-  "1.0 GET /api/runs returns only the newest 1000 reports; older reports have no public read route.",
+  RUN_LIMIT,
   "1.0 GET /api/models exposes notes only for models still in the pool; orphan notes have no read route.",
   "1.0 has no card listing: cards are read for names found in the pool (including aliases), assignments, runs and registry; cards under other names cannot be discovered.",
-  "1.0 does not expose note or run database ids; those rows receive transfer ids in source order. Their timestamps, actors and text are preserved.",
+  ROW_IDS_LIMIT,
   "1.0 GET /api/model-roles omits actingDeclared on withdrawals; that field cannot be carried.",
 ];
+async function collectRunPages(get) {
+  const runs = [];
+  let before = null;
+  do {
+    const page = await get(`/runs?limit=1000${before === null ? "" : `&before=${before}`}`);
+    if (!page || !Array.isArray(page.runs) || page.runs.length > 1000 ||
+        !(page.next === null || Number.isSafeInteger(page.next) && page.next > 0)) throw new Error("unexpected 1.0 run page shape");
+    let previous = before ?? Infinity;
+    for (const row of page.runs) {
+      if (!row || !Number.isSafeInteger(row.id) || row.id < 1 || row.id >= previous ||
+          !row.report || typeof row.report !== "object" || Array.isArray(row.report)) throw new Error("unexpected 1.0 run page row or order");
+      previous = row.id;
+      runs.push(row);
+    }
+    if (page.next !== null && (!page.runs.length || page.next !== previous)) throw new Error("unexpected 1.0 run page cursor");
+    before = page.next;
+  } while (before !== null);
+  return runs;
+}
+
 // The 1.0 read routes return projections rather than SQL rows. Keep their
 // answers beside the rows so the export states precisely what was available.
 export async function collectIndex(get, registryNames = []) {
@@ -18,12 +40,13 @@ export async function collectIndex(get, registryNames = []) {
     const d = await get("/index/export");
     return { ...d, commit: version.commit ?? null };
   }
-  const pool = await get("/models"), roles = await get("/model-roles"), runs = await get("/runs");
+  const pagedRuns = version.capabilities?.includes("runs.paging.v1");
+  const pool = await get("/models"), roles = await get("/model-roles"), runs = pagedRuns ? await collectRunPages(get) : await get("/runs");
   if (!Array.isArray(pool) || !Array.isArray(roles.assignments) || !Array.isArray(runs)) throw new Error("unexpected 1.0 index read shape");
   const tables = { models: [], model_notes: [], model_cards: [], model_assignments: [], runs: [], snapshot_takes: [], model_snapshots: [] };
   const names = new Set(registryNames), cards = new Map(), answers = { pool, roles, runs, cards: [], trends: [] };
-  // 1.0 omits SQL ids. Assign transfer ids in the order the source stored
-  // the exposed rows, preserving ordering and duplicate reports on import.
+  // Assign transfer ids where 1.0 omits SQL ids, preserving source order
+  // and duplicate reports on import.
   const next = { model_notes: 0, runs: 0 };
   const transferId = (table) => ++next[table];
   for (const entry of pool) {
@@ -45,10 +68,11 @@ export async function collectIndex(get, registryNames = []) {
       tables.model_assignments.push({ n: Number(id.slice(1)), id, json: JSON.stringify({ id, kind: "withdrawn", withdraws: record.id, scope: record.scope, role: record.role, ...fields }) });
     }
   }
-  for (const report of runs.slice().reverse()) {
+  for (const run of runs.slice().reverse()) {
+    const report = pagedRuns ? run.report : run;
     if (report.actor) names.add(report.actor);
     if (report.model) names.add(report.model);
-    tables.runs.push({ id: transferId("runs"), json: JSON.stringify(report) });
+    tables.runs.push({ id: pagedRuns ? run.id : transferId("runs"), json: JSON.stringify(report) });
   }
   for (const name of names) {
     // Historical actors can be valid run names but invalid card names in 1.0.
@@ -82,7 +106,9 @@ export async function collectIndex(get, registryNames = []) {
   }
   tables.model_cards = [...cards.values()].sort((a, b) => a.id - b.id);
   tables.model_assignments.sort((a, b) => a.n - b.n);
-  return { ...indexDump(tables, version.commit ?? null, V1_LIMITATIONS), answers };
+  const limitations = pagedRuns ? V1_LIMITATIONS.filter((s) => s !== RUN_LIMIT).map((s) => s === ROW_IDS_LIMIT
+    ? "1.0 does not expose note database ids; those rows receive transfer ids in source order. Their timestamps, actors and text are preserved." : s) : V1_LIMITATIONS;
+  return { ...indexDump(tables, version.commit ?? null, limitations), answers };
 }
 
 export { safeIndex } from "../src/index-transfer.ts";
