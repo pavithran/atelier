@@ -334,7 +334,8 @@ const ownerOnly = (store: AssignmentStore, actor: string, what: string) => {
 };
 const same = (a: AssignmentRecord, scope: string, role: AssignmentRole) => a.scope === scope && a.role === role;
 const scopeText = (scope: string, names?: ReadonlyMap<string, string>) => (scope === ALL_PROJECTS ? "every project" : names?.get(scope) ?? scope);
-const nextId = (records: readonly AssignmentRecord[]) => `a${records.length + 1}`;
+const assignmentVersion = (records: readonly AssignmentRecord[]) => records.reduce((max, r) => Math.max(max, Number(r.id.slice(1))), 0);
+const nextId = (records: readonly AssignmentRecord[]) => `a${assignmentVersion(records) + 1}`;
 
 // The assignment standing for a scope and role, or null: the latest record
 // for them, when it is an assignment rather than a withdrawal.
@@ -440,11 +441,11 @@ export function currentAssignments(records: readonly AssignmentRecord[]): Assign
 }
 
 // What a project's ledger is sent: the assignments standing now and the
-// version of the record they were read at, the number of records written.
+// version of the record they were read at, the highest sequence carried.
 export interface AssignmentSnapshot { version: number; assignments: Assignment[] }
 
 export function assignmentSnapshot(records: readonly AssignmentRecord[], bears: (a: Assignment) => boolean = () => true): AssignmentSnapshot {
-  return { version: records.length, assignments: currentAssignments(records).filter(bears) };
+  return { version: assignmentVersion(records), assignments: currentAssignments(records).filter(bears) };
 }
 
 // Whether a copy holding `held` takes `incoming`: never an older snapshot,

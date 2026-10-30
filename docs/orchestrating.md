@@ -1242,6 +1242,37 @@ Rehearse the switch on staging before production:
    `atelier stuck --project P`, and compare what they show with production.
 3. Switch production only when staging shows nothing missing.
 
+#### Move the server index after the project imports
+
+With writers stopped, use the developer token to export the old server's
+index, then import it into 2.0 after importing the project ledgers:
+
+```sh
+ATELIER_SERVER=https://atelier.zone atelier index export --file index.json
+ATELIER_SERVER=https://next.atelier.zone atelier index import --file index.json
+```
+
+The file carries the model pool, notes, vendor cards, role assignments and
+run reports, with counts and the source commit. It is created with mode
+0600, never overwrites a file, and redacts credentials. The import keeps the
+carried ids, dates, actors and text. Repeating it adds nothing. Conflicting
+ids are named and refuse the entire import in one transaction. References
+to models outside the pool remain as history. Runner offers start fresh;
+tokens are reissued separately.
+
+A 1.0 export reports its limits in the file and on the command line:
+`/api/runs` exposes only the newest 1,000 reports, and `/api/models` exposes
+notes only for models still in the pool. Cards have no server-wide listing;
+the export reads cards for names found in the pool (including aliases),
+assignments, reports and registry, so cards under undiscoverable names cannot move. Note and run SQL
+ids are absent from those answers and receive transfer ids in source order;
+their dates, actors and text remain intact. Assignment withdrawal views omit
+`actingDeclared`, which cannot move. A 2.0 source exports every row of all
+five tables with its original SQL id. The file records the 1.0 answers
+beside the importable rows so the available history can be inspected.
+`models show ID --trend` continues to read daily snapshots, which this
+transfer does not reconstruct. New snapshots use the imported records.
+
 Moving a project's repository and its open tasks from 1.x (`atelier projects
 move-host`, `atelier migrate tN`), and keeping the old baselines current
 during the bake, are in [Branches](branches.md#moving-a-project-here).

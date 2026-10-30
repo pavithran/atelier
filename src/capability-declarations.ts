@@ -3,6 +3,7 @@
 // additions by name where Atelier merges, and plain Git merges this file as
 // text; buildCapabilities validates names either way.
 export const CAPABILITY_DECLARATIONS = [
+  { name: "index.transfer.v1", summary: "Export and atomically import the server model index and run reports" },
   { name: "reviews.post-merge.v1", summary: "review requests and verdicts audit recorded merges and file linked defects for blocking findings" },
   { name: "plans.integration.v1", level: 6, summary: "the integrated, integration-failed, refreshed and refresh-failed routes a plan's integrator posts" },
   { name: "plans.refresh.v1", level: 6, summary: "the plan refresh route, which atelier plan refresh and atelier merge post to take main into a plan's branch" },
