@@ -39,7 +39,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { startServer } from "../src/runtime/server.mjs";
-import { agentRoute, callParts, callPath, declaredCall, OWNER_INDEX_ROUTES, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute, sha256, tokenOptions } from "../src/tokens.ts";
+import { agentRoute, callParts, callPath, declaredCall, OWNER_INDEX_ROUTES, OWNER_MODEL_ROUTES, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute, sha256, tokenOptions } from "../src/tokens.ts";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { helperCommand, runnerTransport } from "../cli/runner.mjs";
@@ -68,7 +68,7 @@ const SPARE_READS = [
 // or a runner, as method and path; "(write)" marks a token request for a
 // write token. runnerRoute is judged over all of them.
 const API_ROUTES = [
-  ...OWNER_INDEX_ROUTES.map((r) => `${r.method} ${r.path}`),
+  ...[...OWNER_INDEX_ROUTES, ...OWNER_MODEL_ROUTES].map((r) => `${r.method} ${r.path}`),
   ...["GET /config", "GET /tokens", "POST /tokens", "DELETE /tokens/x", "GET /inbox", "GET /projects", "GET /queue", "POST /queue", "GET /runs", "POST /runs", "GET /runners", "GET /runners/me",
     "GET /reliability", "GET /models", "PUT /models/m", "DELETE /models/m", "POST /models/m/notes", "POST /models/m/status", "GET /usage", "POST /usage/codex", "GET /version"],
   ...["PUT /projects/p", "DELETE /projects/p", "GET /projects/p", "POST /projects/p/rename", "GET /projects/p/sessions", "POST /projects/p/sessions", "GET /projects/p/baseline-head",
@@ -1109,7 +1109,7 @@ test("owner-only operations and write-token requests are refused by runnerRoute 
   await claimed(p, token, id);
   const base = p.base(id), P = `/projects/${p.name}`;
   const ownerOnly = [
-    ...OWNER_INDEX_ROUTES.map(({ method, path }) => [method, path, ...(method === "POST" ? [{ dump: {} }] : [])]),
+    ...[...OWNER_INDEX_ROUTES, ...OWNER_MODEL_ROUTES].map(({ method, path }) => [method, path, ...(method === "POST" ? [{ dump: {} }] : [])]),
     ["GET", "/tokens"], ["POST", "/tokens", { actor: ACTOR }], ["DELETE", `/tokens/${token.id}`], ["GET", "/inbox"], ["GET", "/projects"], ["GET", "/queue"], ["GET", "/runs"], ["GET", "/runners"],
     ["GET", "/models"], ["POST", "/models/x/status", { status: "ok" }], ["POST", "/usage/codex", {}], ["GET", "/usage"], ["GET", "/reliability"],
     ["PUT", P, {}], ["DELETE", P, {}], ["POST", `${P}/rename`, { to: "x" }], ["GET", `${P}/owners`], ["GET", `${P}/standing`], ["GET", `${P}/items`], ["POST", `${P}/items`, { title: "x" }],

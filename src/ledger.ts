@@ -1638,7 +1638,8 @@ export class Ledger extends DurableObject<Env> {
       notes.set(r.model as string, list);
     }
     return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => {
-      const entry: ModelEntry = JSON.parse(r.json as string);
+      const raw: ModelEntry = JSON.parse(r.json as string);
+      const entry = { ...raw, aliases: raw.aliases ?? [] };
       const mine = notes.get(entry.id);
       return mine ? { ...entry, notes: mine } : entry;
     });

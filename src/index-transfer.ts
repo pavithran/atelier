@@ -43,6 +43,10 @@ export function validateIndex(value: unknown): IndexDump {
       let record;
       try { record = JSON.parse(r.json as string); } catch { fail(`${table}: invalid JSON`); }
       if (!record || typeof record !== "object" || Array.isArray(record)) fail(`${table}: record must be an object`);
+      if (table === "models") {
+        if (typeof record.harness !== "string" || !record.harness.trim()) fail("models: harness must be a non-empty string");
+        if (record.aliases !== undefined && (!Array.isArray(record.aliases) || record.aliases.some((alias: unknown) => typeof alias !== "string"))) fail("models: aliases must be a list of strings");
+      }
       if ((table === "models" || table === "model_assignments") && record.id !== r.id) fail(`${table}: record id differs from row id`);
     }
   }

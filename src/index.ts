@@ -1467,7 +1467,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const combined = new Map((await index(env).models()).map((entry) => [entry.id, entry]));
       // importIndex keeps existing rows and parses incoming model JSON as stored.
       for (const row of dump.tables.models) {
-        if (!combined.has(row.id as string)) combined.set(row.id as string, JSON.parse(row.json as string) as ModelEntry);
+        if (!combined.has(row.id as string)) {
+          const entry = JSON.parse(row.json as string) as ModelEntry;
+          combined.set(entry.id, { ...entry, aliases: entry.aliases ?? [] });
+        }
       }
       const acting = c.declaredActing ? registeredActing(c.declaredActing, [...combined.values()]) : null;
       const scoped = actingEnv(env, acting), I = index(scoped);
@@ -1543,8 +1546,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 1 && m === "POST" || parts.length === 2 && m === "PUT") {
       requireOwner(env, actor);
       const input = cleanEntry(parts.length === 1 ? body : { ...body, id }, actor, new Date().toISOString());
+      const current = await I.models();
+      const resulting = current.length ? [...current.filter((entry) => entry.id !== input.id), input]
+        : c.declaredActing && entryNamed([input], c.declaredActing) ? [input] : [];
       const acting = c.declaredActing
-        ? registeredActing(c.declaredActing, entryNamed([input], c.declaredActing) ? [input] : await I.models())
+        ? registeredActing(c.declaredActing, resulting)
         : null;
       const scoped = actingEnv(env, acting);
       const entry = await index(scoped).putModel(input);
