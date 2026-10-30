@@ -228,7 +228,22 @@ export function reviewModels(input: ReviewInput): ModelReview {
   // its rows go with the revision that wrote them.
   const takes = input.takes.filter((t) => t.day <= to && before(t.takenAt));
   const admitted = new Set(takes.map((t) => `${t.day} ${t.rev}`));
-  const rows = input.rows.filter((r) => r.day <= to && admitted.has(`${r.day} ${r.rev}`));
+  const rows = input.rows.flatMap((r) => {
+    if (!r.projection) return r.day <= to && admitted.has(`${r.day} ${r.rev}`) ? [r] : [];
+    const projection = structuredClone(r.projection);
+    const held = new Set<string>();
+    for (const m of projection.measures) for (const p of m.points) {
+      p.earlier = p.earlier.filter((e) => before(e.takenAt));
+      if (p.takenAt && !before(p.takenAt)) {
+        Object.assign(p, { rev: null, origin: null, takenAt: null, value: null, recorded: null,
+          numerator: null, denominator: null, n: null, minSamples: null, window: null,
+          version: null, state: null, breaks: null, gap: "no snapshot was taken" });
+      }
+      if (p.rev !== null && p.day <= to) held.add(p.day);
+    }
+    projection.snapshots = held.size;
+    return [{ ...r, projection }];
+  });
   const view = new Map<string, { cmp: ModelComparison; cards: CardView; trend: ModelTrend; notes: ModelNote[] }>();
   for (const n of named) {
     const cards = modelCardView(cardRecords, pool, n);

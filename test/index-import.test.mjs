@@ -24,7 +24,7 @@ test("CLI export from one Node server imports into a fresh server, preserves rea
   const target = await startServer({ env: "test", dataDir: join(root, "target"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, timers: false });
   servers.push(target);
   const fixture = JSON.parse(readFileSync(new URL("./fixtures/index-v1.0-answers.json", import.meta.url), "utf8"));
-  const dump = await collectIndex(async (path) => fixture[path] ?? (path.includes("astra") ? fixture["/models/gpt-6-astra/cards"] : { cards: [], withdrawals: [] }));
+  const dump = await collectIndex(async (path) => fixture[path] ?? (path.endsWith("/trend") ? { model: decodeURIComponent(path.split("/")[2]).split("/").at(-1), from: "2026-10-16", to: "2026-10-29", days: 14, snapshots: 0, measures: [] } : path.includes("astra") ? fixture["/models/gpt-6-astra/cards"] : { cards: [], withdrawals: [] }));
   const sourceIndex = source.namespace.get(source.namespace.idFromName("__index"));
   await sourceIndex.importIndex(dump);
   const sourceUrl = source.url.replace("localhost", "127.0.0.1"), targetUrl = target.url.replace("localhost", "127.0.0.1");

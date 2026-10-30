@@ -275,12 +275,14 @@ test("no module that routes work imports the snapshots", () => {
   const routing = ["../src/models/routing.ts", "../src/models/suggest.ts", "../src/models/suggestion-records.ts", "../src/review/suggest.ts", "../src/plans/route.ts", "../src/dispatch/rules.ts", "../src/models/assignments.ts", "../src/models/precision.ts", "../src/models/reliability.ts", "../src/models/speed.ts"];
   for (const f of routing) assert.doesNotMatch(readFileSync(new URL(f, import.meta.url), "utf8"), /snapshot\.ts|models\/snapshot/, f);
   // The Ledger keeps the snapshots in tables of their own, read only by the
-  // snapshot methods; its routing reads (review precision, the dispatch
+  // snapshot methods and index transfer; its routing reads (review precision, the dispatch
   // selectors) read its events and runs tables.
   const ledger = readFileSync(new URL("../src/ledger.ts", import.meta.url), "utf8");
   const start = ledger.indexOf("// ── model snapshots"), end = ledger.indexOf("// ── runner offers");
   assert.ok(start > 0 && end > start);
-  const outside = ledger.slice(0, start) + ledger.slice(end);
+  const transferStart = ledger.indexOf("  exportIndex():"), transferEnd = ledger.indexOf("  models():", transferStart);
+  assert.ok(transferStart > 0 && transferEnd > transferStart && transferEnd < start);
+  const outside = ledger.slice(0, transferStart) + ledger.slice(transferEnd, start) + ledger.slice(end);
   assert.doesNotMatch(outside, /snapshot_takes|model_snapshots|modelSnapshot|putModelSnapshot|snapshotTables/);
   // And the Worker reads them only to take, replay and show them.
   const worker = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
