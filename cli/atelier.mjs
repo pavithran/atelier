@@ -405,9 +405,13 @@ const commandOf = (argv) => {
   }
 };
 // `wait --all tA,tB` and `--any tA,tB` (G3) take task ids, where `ls --all` is a switch.
+// Refresh lease renew/release take lease ids; review-claim renew and dispatch release are switches.
 const switchesFor = (argv) => {
   const cmd = commandFor(commandOf(argv) ?? "");
-  return new Set([...SWITCHES].filter((flag) => (flag !== "brief" || cmd === "status") && !(cmd === "wait" && (flag === "all" || flag === "any"))));
+  return new Set([...SWITCHES].filter((flag) =>
+    (flag !== "brief" || cmd === "status") &&
+    !(cmd === "wait" && (flag === "all" || flag === "any")) &&
+    !(cmd === "refresh-lease" && (flag === "renew" || flag === "release"))));
 };
 
 export function parseArgs(argv, switches = switchesFor(argv)) {
