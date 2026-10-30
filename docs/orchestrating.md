@@ -1256,7 +1256,7 @@ ATELIER_SERVER=https://next.atelier.zone atelier index import --file index.json
 ```
 
 The file carries the model pool, notes, vendor cards, role assignments and
-run reports, with counts and the source commit. It is created with mode
+run reports, daily model snapshots and snapshot takes, with counts and the source commit. It is created with mode
 0600, never overwrites a file, and redacts credentials. The import keeps the
 carried ids, dates, actors and text. Repeating it adds nothing. Conflicting
 ids are named and refuse the entire import in one transaction. References
@@ -1270,11 +1270,22 @@ the export reads cards for names found in the pool (including aliases),
 assignments, reports and registry, so cards under undiscoverable names cannot move. Note and run SQL
 ids are absent from those answers and receive transfer ids in source order;
 their dates, actors and text remain intact. Assignment withdrawal views omit
-`actingDeclared`, which cannot move. A 2.0 source exports every row of all
-five tables with its original SQL id. The file records the 1.0 answers
+`actingDeclared`, which cannot move. The export also reads the owner-only
+`/api/models/:id/trend` route for every discovered model name, including
+names on cards. This exposes only the current 14-day projection. It omits
+take cutoffs, cohorts, full earlier revisions, older days and other schemas;
+it cannot rebuild the stored snapshot rows exactly. The file carries the
+visible points as labelled projections in `model_snapshots`, preserving their
+values, gaps, breaks and revision text. When the trend window advances,
+those points expire normally; native snapshots supply new days and take
+precedence on days they cover. For a model with no measures, the projection
+has a snapshot count but no snapshot dates; that count can be preserved only
+for its original span before combining it with native takes. A 2.0 source exports every row of all seven tables
+with its original SQL key. The file records the 1.0 answers
 beside the importable rows so the available history can be inspected.
-`models show ID --trend` continues to read daily snapshots, which this
-transfer does not reconstruct. New snapshots use the imported records.
+`models show ID --trend` reads the carried points alongside daily snapshots.
+New snapshots use the imported records. Older five-table index files remain
+importable, with no snapshots added.
 
 Moving a project's repository and its open tasks from 1.x (`atelier projects
 move-host`, `atelier migrate tN`), and keeping the old baselines current

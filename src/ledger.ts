@@ -1,4 +1,4 @@
-import { INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
+import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
 import { decideLandQueue, findStageOverrun, landerLive, olderThan, openStages, reconcileStages, REVIEW_TIER_STAGE, STAGE_EVENT_KINDS, type LandQueued, type LandQueueVerdict, type StageFinding } from "./stage-tick.ts";
 import { LIMITS } from "./limits.ts";
@@ -1580,24 +1580,28 @@ export class Ledger extends DurableObject<Env> {
   exportIndex(): IndexDump {
     // Ensure the lazily created assignment table exists, including on a fresh server.
     this.assignmentStore.records();
+    this.snapshotTables();
     const tables = Object.fromEntries(Object.entries(INDEX_TABLES).map(([name, columns]) =>
-      [name, this.sql.exec(`SELECT ${columns.join(", ")} FROM ${name} ORDER BY ${name === "model_assignments" ? "n" : "id"}`).toArray()])) as IndexDump["tables"];
-    return safeIndex(indexDump(tables, this.deployed));
+      [name, this.sql.exec(`SELECT ${columns.join(", ")} FROM ${name} ORDER BY ${INDEX_KEYS[name as IndexTable].join(", ")}`).toArray()])) as IndexDump["tables"];
+    const limitations = tables.model_snapshots.some((r) => r.role === "@trend")
+      ? ["Some model_snapshots rows carry 1.0 trend projections, not original snapshots: take cutoffs, cohorts and full earlier revisions were unavailable; only the exported span is preserved."] : [];
+    return safeIndex(indexDump(tables, this.deployed, limitations));
   }
 
   importIndex(input: unknown): { added: number; held: number } {
     const dump = validateIndex(input);
     this.assignmentStore.records();
+    this.snapshotTables();
     return this.ctx.storage.transactionSync(() => {
       const conflicts: string[] = [], missing: [IndexTable, IndexRow][] = [];
       let held = 0;
       const same = (r: IndexRow) => canonical({ ...r, json: JSON.parse(r.json as string) });
       for (const name of Object.keys(INDEX_TABLES) as IndexTable[]) {
-        const key = name === "model_assignments" ? "n" : "id";
+        const keys = INDEX_KEYS[name];
         for (const row of dump.tables[name]) {
-          const existing = this.sql.exec(`SELECT ${INDEX_TABLES[name].join(", ")} FROM ${name} WHERE ${key} = ?`, row[key]).toArray()[0] as IndexRow | undefined;
+          const existing = this.sql.exec(`SELECT ${INDEX_TABLES[name].join(", ")} FROM ${name} WHERE ${keys.map((k) => `${k} = ?`).join(" AND ")}`, ...keys.map((k) => row[k])).toArray()[0] as IndexRow | undefined;
           if (!existing) missing.push([name, row]);
-          else if (same(existing) !== same(row)) conflicts.push(`${name}:${name === "model_assignments" ? row.id : row[key]}`);
+          else if (same(existing) !== same(row)) conflicts.push(`${name}:${keys.map((k) => row[k]).join(":")}`);
           else held++;
         }
       }
@@ -2139,7 +2143,7 @@ export class Ledger extends DurableObject<Env> {
       : this.sql.exec(`SELECT json FROM snapshot_takes WHERE day = ? AND schema = ? AND rev = ?`, day, schema, rev).toArray()[0];
     if (!row) return null;
     const take = JSON.parse(row.json as string) as SnapshotTake;
-    const rows = this.sql.exec(`SELECT json FROM model_snapshots WHERE day = ? AND schema = ? AND rev = ? ORDER BY model, role`, day, schema, take.rev).toArray().map((r) => JSON.parse(r.json as string) as SnapshotRow);
+    const rows = this.sql.exec(`SELECT json FROM model_snapshots WHERE day = ? AND schema = ? AND rev = ? AND role != '@trend' ORDER BY model, role`, day, schema, take.rev).toArray().map((r) => JSON.parse(r.json as string) as SnapshotRow);
     return { take, rows };
   }
 

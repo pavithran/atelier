@@ -18,6 +18,7 @@ const fixture = JSON.parse(readFileSync(new URL("./fixtures/index-v1.0-answers.j
 export async function legacyDump() {
   return collectIndex(async (path) => {
     if (fixture[path]) return structuredClone(fixture[path]);
+    if (path.endsWith("/trend")) return { model: decodeURIComponent(path.split("/")[2]).split("/").at(-1), from: "2026-10-16", to: "2026-10-29", days: 14, snapshots: 0, measures: [] };
     assert.match(path, /^\/models\/[^/]+\/cards$/);
     return path.includes("astra") ? structuredClone(fixture["/models/gpt-6-astra/cards"]) : { cards: [], withdrawals: [] };
   });
@@ -36,8 +37,8 @@ function fresh() {
 test("1.0 read answers carry notes, ended cards, withdrawals, absent-model assignments and duplicate reports", async () => {
   const d = validateIndex(await legacyDump());
   assert.equal(d.commit, fixture["/version"].commit);
-  assert.deepEqual(d.counts, { models: 1, model_notes: 1, model_cards: 2, model_assignments: 2, runs: 2 });
-  assert.equal(d.limitations.length, 5);
+  assert.deepEqual(d.counts, { models: 1, model_notes: 1, model_cards: 2, model_assignments: 2, runs: 2, snapshot_takes: 0, model_snapshots: 0 });
+  assert.equal(d.limitations.length, 6);
   assert.deepEqual(d.answers.roles, fixture["/model-roles"]);
   assert.equal(JSON.parse(d.tables.model_cards[0].json).state, undefined);
   assert.equal(d.tables.model_cards[0].id, 7);
@@ -236,6 +237,7 @@ test("legacy card discovery includes aliases and skips names 1.0 cannot store as
   answers["/model-roles"].assignments[0].choices.push({ actor: "claude/opus-4", model: "opus-4" });
   const dump = await collectIndex(async (path) => {
     if (answers[path] && !path.endsWith("/cards")) return answers[path];
+    if (path.endsWith("/trend")) return { model: decodeURIComponent(path.split("/")[2]).split("/").at(-1), from: "2026-10-16", to: "2026-10-29", days: 14, snapshots: 0, measures: [] };
     const name = decodeURIComponent(path.slice("/models/".length, -"/cards".length));
     cleanCardModel(name); // The real 1.0 route's validation, before reading cards.
     queried.push(name);
@@ -279,4 +281,122 @@ test("CLI file failures use clean errors for existing exports, missing imports a
   execFileSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(process.cwd(), "cli/atelier.mjs"), "index", "export", "--file", created], { env: childEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   assert.equal(statSync(created).mode & 0o777, 0o600);
   assert.ok(!readFileSync(created, "utf8").includes(OWNER));
+});
+
+test("legacy trends preserve every printed point, discover card names, and refuse changed alias reads", async () => {
+  const { computeSnapshot, trendOf, trendLines, addDays } = await import("../src/models/snapshot.ts");
+  const to = addDays(new Date().toISOString().slice(0, 10), -1);
+  const computed = computeSnapshot({ day: to, takenAt: `${addDays(to, 1)}T00:05:00Z`, owner: "owner",
+    pool: fixture["/models"], ledgers: [], runs: { through: 0, reports: [] }, index: { through: 0, events: [] } });
+  const takes = [], rows = [];
+  for (let n = 0; n < 14; n++) {
+    const day = addDays(to, n - 13);
+    takes.push({ ...computed.take, day, takenAt: `${addDays(day, 1)}T00:05:00Z`, rev: 2, revises: 1,
+      complete: n !== 7, coverage: { projects: 1, events: n, unread: n === 7 ? ["unread-project"] : [] } });
+    for (const source of computed.rows) {
+      const row = structuredClone(source);
+      const f = row.figures[0];
+      if (f.kind === "share") Object.assign(f, { value: n === 4 ? null : 0.5, numerator: 3, denominator: 6, n: 6, minSamples: 5, state: n === 4 ? "too-few" : "measured" });
+      rows.push({ ...row, day, rev: 2 });
+    }
+  }
+  const projected = trendOf("gpt-6-astra", takes, rows, to);
+  assert.ok(projected.measures.length);
+  const point = projected.measures[0].points.at(-1);
+  point.breaks = "the names its figures are read under changed";
+  point.earlier = [{ rev: 1, takenAt: `${to}T01:00:00Z`, origin: "reconstructed", complete: false, text: "0 of 1; under 5, too few for a share" }];
+  const queried = [];
+  const get = async (path) => {
+    if (path.endsWith("/trend")) {
+      const name = decodeURIComponent(path.split("/")[2]); queried.push(name);
+      return name.includes("astra") ? structuredClone(projected) : { ...projected, model: name, snapshots: 0, measures: [] };
+    }
+    if (fixture[path]) {
+      const answer = structuredClone(fixture[path]);
+      if (path.endsWith("/cards")) answer.cards[0].named = "card-only";
+      return answer;
+    }
+    const answer = path.endsWith("/cards") && path.includes("astra") ? structuredClone(fixture["/models/gpt-6-astra/cards"]) : { cards: [], withdrawals: [] };
+    if (answer.cards.length) answer.cards[0].named = "card-only";
+    return answer;
+  };
+  const dump = validateIndex(await collectIndex(get));
+  assert.ok(queried.includes("codex/removed-model"));
+  assert.ok(queried.includes("card-only"));
+  assert.ok(queried.includes("codex/gpt-6-astra"));
+  assert.equal(dump.counts.model_snapshots, 1, "aliases deduplicate by canonical model");
+  assert.match(dump.limitations.join(" "), /not stored snapshot rows/);
+  const { I, request } = fresh();
+  const imported = await I.importIndex(dump);
+  assert.deepEqual(await I.importIndex(dump), { added: 0, held: imported.added });
+  const shown = await (await request("GET", "/models/gpt-6-astra/trend")).json();
+  assert.deepEqual(shown, projected);
+  assert.deepEqual(trendLines(shown), trendLines(projected));
+  const target = fresh();
+  await target.I.importIndex(await I.exportIndex());
+  assert.deepEqual(await (await target.request("GET", "/models/gpt-6-astra/trend")).json(), projected);
+  const shifted = trendOf(projected.model, [], await I.modelSnapshotRows(projected.model, projected.from, addDays(to, 1)), addDays(to, 1));
+  assert.deepEqual(shifted.measures[0].points.find((p) => p.day === to), point);
+  assert.equal(shifted.measures[0].points.at(-1).gap, "no snapshot was taken");
+  assert.equal(trendOf(projected.model, [], await I.modelSnapshotRows(projected.model, addDays(to, 1), addDays(to, 14)), addDays(to, 14)).measures.length, 0);
+  const nativeTake = { ...takes.at(-1), day: addDays(to, 1) };
+  const nativeRows = computed.rows.map((r) => ({ ...r, day: nativeTake.day, rev: nativeTake.rev }));
+  const mixed = trendOf(projected.model, [nativeTake], [...await I.modelSnapshotRows(projected.model, projected.from, nativeTake.day), ...nativeRows], nativeTake.day);
+  assert.equal(mixed.snapshots, 14);
+  assert.equal(mixed.measures[0].points.at(-1).day, nativeTake.day);
+  const before = await I.exportIndex(), conflict = structuredClone(dump);
+  const conflictingRow = JSON.parse(conflict.tables.model_snapshots[0].json);
+  conflictingRow.projection.measures[0].points.at(-1).note = "different projection";
+  conflict.tables.model_snapshots[0].json = JSON.stringify(conflictingRow);
+  conflict.tables.runs.push({ id: 99, json: dump.tables.runs[0].json }); conflict.counts.runs++;
+  await assert.rejects(I.importIndex(conflict), /model_snapshots:.*nothing imported/);
+  assert.deepEqual(await I.exportIndex(), before);
+  await assert.rejects(collectIndex(async (path) => {
+    const answer = await get(path);
+    if (path === "/models/codex%2Fgpt-6-astra/trend") answer.measures[0].points.at(-1).note = "changed during export";
+    return answer;
+  }), /changed while exporting/);
+  await assert.rejects(collectIndex(async (path) => {
+    if (path.endsWith("/trend")) throw new Error("trend unavailable");
+    return get(path);
+  }), /trend unavailable/);
+  const malformed = structuredClone(dump);
+  const invalidRow = JSON.parse(malformed.tables.model_snapshots[0].json);
+  invalidRow.projection.measures[0].points[0].through = "9999-12-31";
+  malformed.tables.model_snapshots[0].json = JSON.stringify(invalidRow);
+  await assert.rejects(I.importIndex(malformed), /invalid trend projection/);
+  await I.putModelSnapshot(computed);
+  assert.ok((await I.modelSnapshot(to)).rows.every((r) => !r.projection));
+  assert.equal((await I.putModelSnapshot(computed)).stored, false);
+});
+
+test("native snapshot takes and composite keys round trip, validate and conflict atomically", async () => {
+  const { computeSnapshot } = await import("../src/models/snapshot.ts");
+  const source = fresh();
+  await source.I.importIndex(await legacyDump());
+  const computed = computeSnapshot({ day: "2026-10-29", takenAt: "2026-10-30T00:05:00Z", owner: "owner",
+    pool: fixture["/models"], ledgers: [], runs: { through: 0, reports: [] }, index: { through: 0, events: [] } });
+  await source.I.putModelSnapshot(computed);
+  const dump = validateIndex(await source.I.exportIndex()), target = fresh();
+  assert.equal(dump.counts.snapshot_takes, 1);
+  assert.ok(dump.counts.model_snapshots > 1);
+  const result = await target.I.importIndex(dump);
+  assert.deepEqual(await target.I.importIndex(dump), { added: 0, held: result.added });
+  assert.deepEqual(await target.I.modelSnapshot("2026-10-29"), await source.I.modelSnapshot("2026-10-29"));
+  assert.deepEqual((await target.I.exportIndex()).tables, dump.tables);
+  for (const table of ["snapshot_takes", "model_snapshots"]) {
+    const invalid = structuredClone(dump);
+    invalid.tables[table].push(invalid.tables[table][0]); invalid.counts[table]++;
+    assert.throws(() => validateIndex(invalid), /repeated id/);
+    const bad = structuredClone(dump); bad.tables[table][0].rev = 0;
+    assert.throws(() => validateIndex(bad), /invalid snapshot key/);
+    const conflict = structuredClone(dump);
+    conflict.tables[table][0].json = JSON.stringify({ ...JSON.parse(conflict.tables[table][0].json), extra: true });
+    await assert.rejects(target.I.importIndex(conflict), /nothing imported/);
+    assert.deepEqual((await target.I.exportIndex()).tables, dump.tables);
+  }
+  const old = await legacyDump();
+  delete old.tables.snapshot_takes; delete old.tables.model_snapshots;
+  delete old.counts.snapshot_takes; delete old.counts.model_snapshots;
+  assert.deepEqual(validateIndex(old).tables.model_snapshots, []);
 });

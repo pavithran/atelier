@@ -111,6 +111,8 @@ export interface SnapshotRow {
   entries: string[];      // its pool entries, harness/id
   leftOut: string[];      // reader rows left out, with why
   figures: SnapshotFigure[];
+  // A 1.0 read projection preserves visible points without inventing cutoffs or cohorts.
+  projection?: ModelTrend;
 }
 
 export interface SnapshotTake {
@@ -245,6 +247,31 @@ export interface ModelTrend {
   measures: MeasureTrend[];
 }
 
+// The legacy endpoint is a bounded projection. Reject malformed spans before
+// expanding compressed gaps or storing a response as transferable history.
+export function validTrendProjection(value: unknown): value is ModelTrend {
+  if (!value || typeof value !== "object") return false;
+  const t = value as ModelTrend;
+  const day = (d: unknown): d is string => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && Number.isFinite(Date.parse(d)) && new Date(d).toISOString().slice(0, 10) === d;
+  if (typeof t.model !== "string" || !t.model || !day(t.from) || !day(t.to) || t.days !== TREND_DAYS || addDays(t.from, t.days - 1) !== t.to ||
+      !Number.isSafeInteger(t.snapshots) || t.snapshots < 0 || t.snapshots > t.days || !Array.isArray(t.measures)) return false;
+  const keys = new Set<string>();
+  return t.measures.every((m) => {
+    if (!m || !COMPARE_ROLES.includes(m.role) || typeof m.measure !== "string" || typeof m.label !== "string" || typeof m.source !== "string" ||
+        !["share", "count", "median"].includes(m.kind) || typeof m.overlap !== "string" || !Array.isArray(m.points) || keys.has(`${m.role} ${m.measure}`)) return false;
+    keys.add(`${m.role} ${m.measure}`);
+    let expected = t.from;
+    for (const p of m.points) {
+      if (!p || !day(p.day) || p.day !== expected || (p.through !== undefined && (!day(p.through) || p.through < p.day)) || (p.through ?? p.day) > t.to ||
+          !Array.isArray(p.earlier) || (p.rev !== null && (!Number.isSafeInteger(p.rev) || p.rev < 1)) ||
+          (p.rev !== null && (typeof p.takenAt !== "string" || !Number.isFinite(Date.parse(p.takenAt)))) ||
+          (p.gap !== null && typeof p.gap !== "string")) return false;
+      expected = addDays(p.through ?? p.day, 1);
+    }
+    return expected === addDays(t.to, 1);
+  });
+}
+
 // The cohort a figure was read over: the names and entries the model's rows
 // were read under and the rows left out. A design decision: a pool alias
 // added or moved changes whose work a figure holds, so the points either
@@ -272,6 +299,11 @@ function valueText(f: Pick<SnapshotFigure, "kind" | "state" | "value" | "numerat
 // them. The latest revision of a day is shown, and the earlier ones are
 // kept beside it.
 export function trendOf(model: string, takes: readonly SnapshotTake[], rows: readonly (SnapshotRow & { day: string; rev: number })[], to: string, days = TREND_DAYS): ModelTrend {
+  const projections = rows.filter((r) => r.model === model && r.projection).map((r) => r.projection!);
+  if (projections.length) {
+    const native = trendOf(model, takes, rows.filter((r) => !r.projection), to, days);
+    return carriedTrend(native, projections, takes);
+  }
   const from = addDays(to, -(days - 1));
   const span = Array.from({ length: days }, (_, i) => addDays(from, i));
   const ours = takes.filter((t) => t.schema === SNAPSHOT_SCHEMA && t.day >= from && t.day <= to);
@@ -332,6 +364,68 @@ export function trendOf(model: string, takes: readonly SnapshotTake[], rows: rea
     return { role, measure: first.measure, label: first.label, source: first.source, kind: first.kind, overlap: overlapText(first.window), points };
   });
   return { model, from, to, days, snapshots: latest.size, measures: trends };
+}
+
+// Native takes win for their days. Projection points keep their original gaps,
+// revision text and break reasons; absent cohorts cannot establish a new join.
+function carriedTrend(native: ModelTrend, projections: readonly ModelTrend[], takes: readonly SnapshotTake[]): ModelTrend {
+  const latest = [...projections].sort((a, b) => b.to.localeCompare(a.to))[0];
+  const nativeDays = new Set(takes.filter((t) => t.schema === SNAPSHOT_SCHEMA && t.day >= native.from && t.day <= native.to).map((t) => t.day));
+  if (!nativeDays.size && latest.from === native.from && latest.to === native.to && latest.days === native.days) return structuredClone(latest);
+  const expand = (points: readonly TrendPoint[]) => points.flatMap((p) => {
+    const out: TrendPoint[] = [];
+    for (let day = p.day; day <= (p.through ?? p.day); day = addDays(day, 1)) {
+      const { through: _through, ...point } = p;
+      out.push({ ...point, day });
+    }
+    return out;
+  });
+  const measures = new Map<string, MeasureTrend>();
+  const snapshotDays = new Set(nativeDays);
+  for (const trend of [...projections].sort((a, b) => a.to.localeCompare(b.to))) {
+    for (const measure of trend.measures) {
+      const key = `${measure.role} ${measure.measure}`;
+      const kept = measures.get(key);
+      const points = new Map(kept?.points.map((p) => [p.day, p]));
+      for (const p of expand(measure.points)) if (p.day >= native.from && p.day <= native.to) {
+        points.set(p.day, p);
+        if (p.rev !== null) snapshotDays.add(p.day);
+      }
+      measures.set(key, { ...measure, points: [...points.values()] });
+    }
+  }
+  for (const measure of native.measures) {
+    const key = `${measure.role} ${measure.measure}`, kept = measures.get(key);
+    if (!kept) { measures.set(key, measure); continue; }
+    const points = new Map(kept.points.map((p) => [p.day, p]));
+    for (const p of expand(measure.points)) if (nativeDays.has(p.day) || !points.has(p.day)) points.set(p.day, p);
+    measures.set(key, { ...measure, points: [...points.values()] });
+  }
+  const nativeMeasures = new Set(native.measures.map((m) => `${m.role} ${m.measure}`));
+  for (const measure of measures.values()) {
+    const points = new Map(expand(measure.points).map((p) => [p.day, p]));
+    // A native take can omit a model or a formerly exposed measure.
+    for (let day = native.from; day <= native.to; day = addDays(day, 1)) {
+      const take = takes.filter((t) => t.schema === SNAPSHOT_SCHEMA && t.day === day).sort((a, b) => b.rev - a.rev)[0];
+      if (!points.has(day) || (take && !nativeMeasures.has(`${measure.role} ${measure.measure}`))) points.set(day, {
+        day, rev: take?.rev ?? null, origin: take?.origin ?? null, takenAt: take?.takenAt ?? null, value: null, recorded: null,
+        numerator: null, denominator: null, n: null, minSamples: null, window: null, version: null, state: null, breaks: null, earlier: [],
+        gap: take ? "the model was not in the pool, or had no figure for this measure" : "no snapshot was taken",
+      });
+    }
+    measure.points = [];
+    let preceding: TrendPoint | undefined;
+    for (const p of [...points.values()].sort((a, b) => a.day.localeCompare(b.day))) {
+      const previous = measure.points.at(-1);
+      if (!p.gap && nativeDays.has(p.day) && preceding && !nativeDays.has(preceding.day)) {
+        p.breaks = [p.breaks, "the imported projection does not expose its cohort"].filter(Boolean).join("; ");
+      }
+      if (!p.gap) preceding = p;
+      if (previous?.gap === "no snapshot was taken" && p.gap === previous.gap && !p.rev && !previous.rev) previous.through = p.day;
+      else measure.points.push(p);
+    }
+  }
+  return { ...native, snapshots: snapshotDays.size, measures: [...measures.values()] };
 }
 
 // ── words, for the page and the CLI alike ─────────────────────────────────
