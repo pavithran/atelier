@@ -1,3 +1,4 @@
+import { INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
 import { decideLandQueue, findStageOverrun, landerLive, olderThan, openStages, reconcileStages, REVIEW_TIER_STAGE, STAGE_EVENT_KINDS, type LandQueued, type LandQueueVerdict, type StageFinding } from "./stage-tick.ts";
 import { LIMITS } from "./limits.ts";
@@ -1576,6 +1577,54 @@ export class Ledger extends DurableObject<Env> {
     return { added, held };
   }
 
+  exportIndex(): IndexDump {
+    // Ensure the lazily created assignment table exists, including on a fresh server.
+    this.assignmentStore.records();
+    const tables = Object.fromEntries(Object.entries(INDEX_TABLES).map(([name, columns]) =>
+      [name, this.sql.exec(`SELECT ${columns.join(", ")} FROM ${name} ORDER BY ${name === "model_assignments" ? "n" : "id"}`).toArray()])) as IndexDump["tables"];
+    return safeIndex(indexDump(tables, this.deployed));
+  }
+
+  importIndex(input: unknown): { added: number; held: number } {
+    const dump = validateIndex(input);
+    this.assignmentStore.records();
+    return this.ctx.storage.transactionSync(() => {
+      const conflicts: string[] = [], missing: [IndexTable, IndexRow][] = [];
+      let held = 0;
+      const same = (r: IndexRow) => canonical({ ...r, json: JSON.parse(r.json as string) });
+      for (const name of Object.keys(INDEX_TABLES) as IndexTable[]) {
+        const key = name === "model_assignments" ? "n" : "id";
+        for (const row of dump.tables[name]) {
+          const existing = this.sql.exec(`SELECT ${INDEX_TABLES[name].join(", ")} FROM ${name} WHERE ${key} = ?`, row[key]).toArray()[0] as IndexRow | undefined;
+          if (!existing) missing.push([name, row]);
+          else if (same(existing) !== same(row)) conflicts.push(`${name}:${name === "model_assignments" ? row.id : row[key]}`);
+          else held++;
+        }
+      }
+      if (conflicts.length) throw new RuleError("index_conflict", `conflicting rows: ${conflicts.join(", ")}; nothing imported`, 409, "atelier index export --file target-index.json");
+      for (const [name, row] of missing) {
+        const cols = INDEX_TABLES[name];
+        this.sql.exec(`INSERT INTO ${name} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, ...cols.map((c) => row[c]));
+      }
+      // Rebuild assignment events for judgement readers. Use carried actors and
+      // dates directly: log() would attach the importing request's acting model.
+      // Check held rows too, repairing an earlier import without duplicating
+      // events already present on this server.
+      const eventIds = new Set(this.assignmentEvents().map((e) => e.data.id));
+      for (const row of dump.tables.model_assignments) {
+        if (eventIds.has(row.id)) continue;
+        const r = JSON.parse(row.json as string) as AssignmentRecord;
+        const data = r.kind === "assigned"
+          ? { id: r.id, scope: r.scope, role: r.role, choices: r.choices.map((c) => c.actor), reason: r.reason, quote: r.quote, evidence: r.evidence, ...(r.supersedes ? { supersedes: r.supersedes } : {}) }
+          : { id: r.id, withdraws: r.withdraws, scope: r.scope, role: r.role, note: r.note };
+        this.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES (NULL, ?, ?, ?, ?)`, r.at, r.by,
+          r.kind === "assigned" ? "assignment.recorded" : "assignment.withdrawn",
+          JSON.stringify({ ...data, ...(r.acting ? { acting: r.acting, actingExact: true } : {}) }));
+      }
+      return { added: missing.length, held };
+    });
+  }
+
   // The model pool, on the index instance like the project list: shared by
   // every project, written by the owner, read by runners.
   // Each entry carries its notes, oldest first (src/models/pool.ts).
@@ -1589,7 +1638,8 @@ export class Ledger extends DurableObject<Env> {
       notes.set(r.model as string, list);
     }
     return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => {
-      const entry: ModelEntry = JSON.parse(r.json as string);
+      const raw: ModelEntry = JSON.parse(r.json as string);
+      const entry = { ...raw, aliases: raw.aliases ?? [] };
       const mine = notes.get(entry.id);
       return mine ? { ...entry, notes: mine } : entry;
     });
@@ -1652,7 +1702,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS model_assignments (n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, json TEXT NOT NULL)`);
     return {
       records: () => this.sql.exec(`SELECT json FROM model_assignments ORDER BY n`).toArray().map((r) => JSON.parse(r.json as string) as AssignmentRecord),
-      insert: (record) => { this.sql.exec(`INSERT INTO model_assignments (id, json) VALUES (?, ?)`, record.id, JSON.stringify(record)); },
+      insert: (record) => { this.sql.exec(`INSERT INTO model_assignments (n, id, json) VALUES (?, ?, ?)`, Number(record.id.slice(1)), record.id, JSON.stringify(record)); },
       owner: this.owner,
       log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()),
     };
@@ -1790,6 +1840,20 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Notes are read with the pool and never stored on an entry, so the copy drops them.
+  // Restore the project selectors' copies without advancing plans or
+  // withdrawing work. Equal copies cause no writes on a repeated import.
+  importIndexSnapshot(pool: ModelEntry[], assignments: AssignmentSnapshot): void {
+    const values = { pool: pool.map(({ notes: _notes, ...entry }) => entry), assignments };
+    this.ctx.storage.transactionSync(() => {
+      for (const [key, value] of Object.entries(values)) {
+        const held = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).toArray()[0];
+        if (held && canonical(JSON.parse(held.value as string)) === canonical(value)) continue;
+        if (key === "assignments" && !snapshotApplies(this.heldSnapshot(), assignments)) continue;
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, key, JSON.stringify(value));
+      }
+    });
+  }
+
   private keepPool(pool: readonly ModelEntry[]): void {
     const kept = pool.map(({ notes: _notes, ...entry }) => entry);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('pool', ?)`, JSON.stringify(kept));

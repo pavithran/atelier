@@ -1,0 +1,123 @@
+{
+  "_provenance": "Synthetic answers matching the GET routes in release/1.0 src/index.ts and the Ledger read methods; not a production capture.",
+  "/version": {
+    "commit": "debb259bee600c1b6df47d32c09b80455d1cc71d",
+    "capabilities": [
+      "models.card.v1"
+    ]
+  },
+  "/models": [
+    {
+      "id": "gpt-6-astra",
+      "harness": "codex",
+      "where": "cloud",
+      "provider": "openai",
+      "family": "openai",
+      "aliases": [],
+      "addedAt": "2026-10-30T10:00:00.000Z",
+      "addedBy": "owner",
+      "notes": [
+        {
+          "at": "2026-10-30T10:00:00.000Z",
+          "by": "owner",
+          "text": "Keep this dated note."
+        }
+      ]
+    }
+  ],
+  "/model-roles": {
+    "assignments": [
+      {
+        "id": "a3",
+        "kind": "assigned",
+        "scope": "*",
+        "role": "build",
+        "choices": [
+          {
+            "actor": "codex/removed-model",
+            "model": "removed-model"
+          }
+        ],
+        "reason": "Keep this history.",
+        "quote": "Move them",
+        "evidence": [],
+        "by": "owner",
+        "at": "2026-10-30T10:00:00.000Z",
+        "status": "withdrawn",
+        "withdrawal": {
+          "id": "a4",
+          "by": "owner",
+          "at": "2026-10-30T10:00:00.000Z",
+          "note": "Stopped",
+          "acting": "codex/gpt-6-astra"
+        }
+      }
+    ],
+    "names": {},
+    "fallback": {},
+    "inPool": [
+      "codex/gpt-6-astra"
+    ]
+  },
+  "/runs": [
+    {
+      "at": "2026-10-30T10:00:00.000Z",
+      "actor": "codex/gpt-6-astra",
+      "runner": "home:old",
+      "project": "p",
+      "item": "t1",
+      "role": "build",
+      "outcome": "timed-out"
+    },
+    {
+      "at": "2026-10-30T10:00:00.000Z",
+      "actor": "codex/gpt-6-astra",
+      "runner": "home:old",
+      "project": "p",
+      "item": "t1",
+      "role": "build",
+      "outcome": "timed-out"
+    }
+  ],
+  "/models/gpt-6-astra/cards": {
+    "model": "gpt-6-astra",
+    "pool": [
+      "codex/gpt-6-astra"
+    ],
+    "cards": [
+      {
+        "id": "c7",
+        "kind": "card",
+        "model": "gpt-6-astra",
+        "named": "codex/gpt-6-astra",
+        "at": "2026-10-30T10:00:00.000Z",
+        "by": "owner",
+        "source": "https://example.com/model",
+        "published": null,
+        "read": "2026-10-30",
+        "claims": [],
+        "limitations": [
+          "Historical limitation"
+        ],
+        "state": "withdrawn",
+        "endedBy": "c8",
+        "endedAt": "2026-10-30T10:00:00.000Z",
+        "endReason": "Outdated"
+      }
+    ],
+    "withdrawals": [
+      {
+        "id": "c8",
+        "kind": "withdrawal",
+        "model": "gpt-6-astra",
+        "named": "codex/gpt-6-astra",
+        "at": "2026-10-30T10:00:00.000Z",
+        "by": "owner",
+        "withdraws": "c7",
+        "reason": "Outdated"
+      }
+    ],
+    "disagreements": [],
+    "priors": []
+  }
+}

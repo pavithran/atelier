@@ -47,6 +47,7 @@ import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pip
 import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
+import { commandModuleName } from "../src/usage/command.ts";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { serverFetch } from "./server-fetch.mjs";
@@ -2158,7 +2159,7 @@ export function tokenExpiryWarningsText(text) {
 export function registerHandlers(modules, commands = COMMANDS) {
   const handlers = new Map();
   for (const { path, run } of modules) {
-    const name = path.slice(path.lastIndexOf("/") + 1).replace(/\.mjs$/, "");
+    const name = commandModuleName(path);
     if (!Object.hasOwn(commands, name)) throw new Error(`${path}: handles atelier ${name}, which no module in src/usage/commands declares`);
     if (handlers.has(name)) throw new Error(`atelier ${name} has two handlers: ${handlers.get(name).path} and ${path}`);
     if (typeof run !== "function") throw new Error(`${path}: its default export is not the command's handler`);

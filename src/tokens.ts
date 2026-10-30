@@ -215,6 +215,16 @@ const CRITERIA: readonly RunnerJob[] = ["criteria-review"];
 // The task refresh (t462) runs as the integrator, under its token.
 const TASK_REFRESH: readonly RunnerJob[] = ["task-refresh", "task-resolve"];
 
+// Server index transfer routes accept only the developer credential.
+export const OWNER_MODEL_ROUTES = [
+  { method: "POST", path: "/models", credential: "owner" },
+] as const;
+
+export const OWNER_INDEX_ROUTES = [
+  { method: "GET", path: "/index/export", credential: "owner" },
+  { method: "POST", path: "/index/import", credential: "owner" },
+] as const;
+
 export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The runner's own calls, before and between jobs.
   { name: "version", method: "GET", path: "/version", credential: "public", body: [], via: "runner", jobs: [] },

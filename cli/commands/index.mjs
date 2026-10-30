@@ -83,6 +83,7 @@ import command_review_withdraw from "./review-withdraw.mjs";
 import command_run_report from "./run-report.mjs";
 import command_runner from "./runner.mjs";
 import command_served from "./served.mjs";
+import command_server_index from "./server-index.mjs";
 import command_ship from "./ship.mjs";
 import command_show from "./show.mjs";
 import command_situation from "./situation.mjs";
@@ -185,6 +186,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/run-report.mjs", run: command_run_report },
   { path: "cli/commands/runner.mjs", run: command_runner },
   { path: "cli/commands/served.mjs", run: command_served },
+  { path: "cli/commands/server-index.mjs", run: command_server_index },
   { path: "cli/commands/ship.mjs", run: command_ship },
   { path: "cli/commands/show.mjs", run: command_show },
   { path: "cli/commands/situation.mjs", run: command_situation },

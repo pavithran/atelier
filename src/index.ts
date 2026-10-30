@@ -1,4 +1,5 @@
 import { stuckBatchRequests } from "./notify.ts";
+import { validateIndex } from "./index-transfer.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
 import { readRetention } from "./retention.ts";
@@ -32,7 +33,7 @@ import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { validBranch } from "./branch-name.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, isModel, ownerWriteRefusal, registeredActing } from "./models/judgement.ts";
-import { typedActor, typedModel } from "./models/identity.ts";
+import { entryNamed, typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability, type RunReport } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
@@ -1458,6 +1459,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const { env, req, actor, body } = c;
   const m = req.method;
 
+  if (parts[0] === "index") {
+    requireOwner(env, actor);
+    if (parts.length === 2 && parts[1] === "export" && m === "GET") return json(await index(env).exportIndex());
+    if (parts.length === 2 && parts[1] === "import" && m === "POST") {
+      const dump = validateIndex(body.dump);
+      const combined = new Map((await index(env).models()).map((entry) => [entry.id, entry]));
+      // importIndex keeps existing rows and parses incoming model JSON as stored.
+      for (const row of dump.tables.models) {
+        if (!combined.has(row.id as string)) {
+          const entry = JSON.parse(row.json as string) as ModelEntry;
+          combined.set(entry.id, { ...entry, aliases: entry.aliases ?? [] });
+        }
+      }
+      const acting = c.declaredActing ? registeredActing(c.declaredActing, [...combined.values()]) : null;
+      const scoped = actingEnv(env, acting), I = index(scoped);
+      const result = await I.importIndex(dump);
+      const pool = await I.models();
+      const unreached = await unreachedOf(await I.projects(), async (p) => {
+        await ledgerOf(scoped, p).importIndexSnapshot(pool, await I.assignmentSnapshotFor(p.key ?? p.name));
+      });
+      return json({ ...result, unreached });
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   if (parts[0] === "tokens") {
     requireOwner(env, actor);
     const I = index(env);
@@ -1518,10 +1543,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const I = index(env);
     if (parts.length === 1 && m === "GET") return json(await I.models());
     const id = parts[1] ?? "";
-    if (parts.length === 2 && m === "PUT") {
+    if (parts.length === 1 && m === "POST" || parts.length === 2 && m === "PUT") {
       requireOwner(env, actor);
-      const entry = await I.putModel(cleanEntry({ ...body, id }, actor, new Date().toISOString()));
-      const unreached = await sendPool(env);
+      const input = cleanEntry(parts.length === 1 ? body : { ...body, id }, actor, new Date().toISOString());
+      const current = await I.models();
+      const resulting = current.length ? [...current.filter((entry) => entry.id !== input.id), input]
+        : c.declaredActing && entryNamed([input], c.declaredActing) ? [input] : [];
+      const acting = c.declaredActing
+        ? registeredActing(c.declaredActing, resulting)
+        : null;
+      const scoped = actingEnv(env, acting);
+      const entry = await index(scoped).putModel(input);
+      const unreached = await sendPool(scoped);
       return json({ ...entry, unreached });
     }
     if (parts.length === 2 && m === "DELETE") {
@@ -4536,7 +4569,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 // A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
 // task 8; design section 4.4): what queue() did for a push event from
@@ -4671,7 +4704,7 @@ export default {
           if (!API_PATHS.has(parts[1] ?? "")) return json({ error: "not_found", detail: "no such route" }, 404);
           // The Ledger's way back (t342) answers 403 to a request without
           // the developer's token, as it does to an agent's or a runner's.
-          if (parts[1] === "projects" && parts[3] === "ledger") return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
+          if (parts[1] === "index" || parts[1] === "projects" && parts[3] === "ledger") return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
           return json({ error: "unauthorised" }, 401);
         }
         const token = typeof how === "object" && how ? how : undefined;
@@ -4695,8 +4728,11 @@ export default {
         // it is kept as declared, since the owner token cannot prove it.
         // A role assignment's routes check it themselves, after a retry is
         // matched to its record (gpt-6-astra's third review of t622, finding 4).
+        // Pool imports and model registration check against the entries they add.
         const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
-        const deferActing = parts[1] === "model-roles" && req.method === "POST";
+        const deferActing = parts[1] === "model-roles" && req.method === "POST"
+          || parts.length === 3 && parts[1] === "index" && parts[2] === "import" && req.method === "POST"
+          || parts[1] === "models" && (parts.length === 2 && req.method === "POST" || parts.length === 3 && req.method === "PUT");
         const acting = declaredActing === null || deferActing ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
