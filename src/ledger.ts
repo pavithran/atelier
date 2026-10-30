@@ -1087,6 +1087,10 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
     if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
+    // t769 retired area behaviour, but old ledgers still carry this column.
+    // The schema only moves forward: keep it for imports of 1.0 dumps,
+    // without reading or writing it in any task behaviour.
+    if (!columns.includes("area")) this.sql.exec(`ALTER TABLE items ADD COLUMN area TEXT`);
     // The owner's standing permission for an override from the command line (t371).
     if (!columns.includes("override_confirmation")) this.sql.exec(`ALTER TABLE items ADD COLUMN override_confirmation TEXT`);
     // The claim generation: one more on every claim and every change of
