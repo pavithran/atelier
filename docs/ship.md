@@ -255,8 +255,16 @@ checkout at the landed main revision, with its deploy approval. A review
 recorded only in staging does not satisfy production's review gate. The
 [production release procedure](studio.md#shipping-a-release) gives the steps.
 
-The landing refuses a head without the required review approval. Ship
-refuses a head that production's main does not hold, before SSH or sudo;
+This release path requires production's `atelier` project to protect every
+release path and run in normal mode, without a review override. Production
+protects `**` (every path, as configured by `atelier init --protect "**"`)
+and runs in normal, non-`fast` mode. Under that policy, landing refuses a
+head without the required review approval, including the first reviewed
+release after setup. Default protection after setup and init alone does not
+cover every server release path, and fast mode defers review until after
+merge.
+
+Ship refuses a head that production's main does not hold, before SSH or sudo;
 root's installer checks ancestry again in the Studio's production repository
 and builds the release there. Ship neither carries commits nor lands them.
 `setup-server.sh` is for initial setup and repair only, including replacing

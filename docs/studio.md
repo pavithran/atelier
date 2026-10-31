@@ -84,11 +84,31 @@ inputs remain available for repair.
 
 ## Shipping a release
 
-Agents run as `pavi`, so nothing `pavi` can write is ever run as root or as `atelierd`. The release is built on the Studio, by root, from the Studio's own repository of the project, which only reviewed, landed commits reach.
+Agents run as `pavi`, so nothing `pavi` can write is ever run as root or as `atelierd`. The release is built on the Studio, by root, from the Studio's own repository of the project.
+
+The reviewed release path below requires production's `atelier` project to
+protect every release path and run in normal mode, with no review override.
+Production meets that precondition: it protects `**` (every path, as
+configured by `atelier init --protect "**"`) and runs in normal, non-`fast`
+mode. Default protection after setup and init alone does not cover every
+server release path; fast mode defers review until after merge. Neither
+configuration provides this pre-merge review guarantee.
 
 Since the 2026-10-31 cut-over, production's own `atelier` main is the release source. Staging at `next.atelier.zone` ships from the separate `atelier-trial` project. A commit reviewed in staging or held on another branch must reach production through a production task before it can ship.
 
 When production's main lacks the release commits, use this path. Use the CLI's production connection for all task and ship commands below:
+
+For these developer-token commands, export the acting model for the session,
+replacing `H/M` with your registered harness/model:
+
+```sh
+export ATELIER_ACTING=H/M
+```
+
+Keep it set for `land`, its child `accept` and `merge` commands, `approve`
+and `ship`. Developer-token API writes require an acting model even from a
+human terminal. `ship` keeps the developer actor and rejects `--as` and
+`ATELIER_ACTOR`; `land` does not forward `--as` to its child commands.
 
 1. Create and claim a task in production's `atelier` project. In that task's workspace, fetch the source commits and carry them on the task's branch: fast-forward when its history permits, otherwise merge or cherry-pick them. The branch must contain every change the release needs; a task that only names a commit elsewhere does not carry it.
 2. Push that production task, run its required checks, submit it, and obtain the review approval production's gate requires at the exact task head. Review the whole diff against production's main, including the carried commits. A staging review does not approve this production task. Have the developer land the task with `atelier land TASK --project atelier`, replacing `TASK` with its production task id. Landing checks the review and acceptance gates before moving production's main; an unapproved head is refused. Do not override the review gate for this path.
@@ -98,13 +118,13 @@ When production's main lacks the release commits, use this path. Use the CLI's p
    atelier ship --project atelier --dry-run
    ```
 
-   Record any missing deploy approval at that revision with the command the dry run prints, after PAVI authorizes it, then run:
+   Record any missing deploy approval at that revision with the command the dry run prints, after PAVI authorizes it. When an agent records PAVI's verbal authorization, append `--quote "PAVI's exact words"` to that approval command, replacing the quoted text with his actual words. Keep `ATELIER_ACTING` set, then run:
 
    ```sh
    atelier ship --project atelier
    ```
 
-This is the release path even for the first reviewed release after setup. It needs no hand-built tar and no rerun of `setup-server.sh`; that script is for initial setup and repair only. The releases installed with hand-built tars during the cut-over are historical, not a release procedure. [Setup and repair](#setup-and-repair) also covers replacing the root-owned installer.
+With the protection and normal-mode precondition above, this is the release path even for the first reviewed release after setup. It needs no hand-built tar and no rerun of `setup-server.sh`; that script is for initial setup and repair only. The releases installed with hand-built tars during the cut-over are historical, not a release procedure. [Setup and repair](#setup-and-repair) also covers replacing the root-owned installer.
 
 Ship does not transfer commits from staging or land a task. Its deploy step is `node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio`:
 
