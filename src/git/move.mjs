@@ -149,15 +149,24 @@ const SCAN_RUN = fileURLToPath(new URL("./scan-run.mjs", import.meta.url));
 const STEP = 400;
 async function scanMove({ dir, scan, old, sha, ref, branch, collect }) {
   const rows = (await git(dir, ["rev-list", "--topo-order", "--reverse", "--parents", sha, ...(/^0+$/.test(old) ? [] : ["--not", old])])).split("\n").filter(Boolean).map((l) => l.split(" "));
+  const hits = [], refusals = [];
   for (let i = 0; i < rows.length; i += STEP) {
     const batch = rows.slice(i, i + STEP);
     const tips = batch.map(([hash]) => hash);
     const inside = new Set(tips);
     const base = [...new Set(batch.flatMap(([, ...parents]) => parents).filter((p) => !inside.has(p)))];
     const refused = await scanStep({ dir, scan, old, sha, ref, branch, moveRange: { tips, base }, collect });
-    if (refused) return refused;
+    // A refusal must name findings from every batch so one clearance covers
+    // the history. Keep scan failures and private-file refusals as well.
+    if (refused) {
+      hits.push(...refused.hits);
+      refusals.push(refused.detail);
+    }
   }
-  return null;
+  return refusals.length ? {
+    detail: `${hits.length ? `the secret scan found ${hits.length} key-shaped line${hits.length === 1 ? "" : "s"} in total. ` : ""}${refusals.join(" ")}`,
+    hits,
+  } : null;
 }
 async function scanStep({ dir, scan, old, sha, ref, branch, moveRange, collect }) {
   const files = openScan(scan.root, scan.policy);

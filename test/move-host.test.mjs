@@ -367,7 +367,8 @@ test("moved history meets the push's checks: a key-shaped line refuses the move 
   const KEY = ["sk", "proj", "TESTONLY", "d".repeat(28)].join("-");
   const keyedHistory = join(root, "keyed-history");
   makeV1History(keyedHistory);
-  writeFileSync(join(keyedHistory, "config.env"), `MODE=test\nOPENAI_API_KEY=${KEY}\n`);
+  const keyLines = [`OPENAI_API_KEY=${KEY}`, ...Array.from({ length: 24 }, (_, i) => `EXTRA_TOKEN_${i}=${KEY}`)];
+  writeFileSync(join(keyedHistory, "config.env"), `MODE=test\n${keyLines.join("\n")}\n`);
   git(keyedHistory, "add", "config.env");
   git(keyedHistory, "commit", "-q", "-m", "add config");
   const keyed = join(root, "artifacts", "keyed.git");
@@ -377,6 +378,7 @@ test("moved history meets the push's checks: a key-shaped line refuses the move 
 
   const refused = await cli(["projects", "move-host", "keyed", "--from", keyed, "--project", "keyed"]);
   assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /the secret scan found 25 key-shaped lines in total\./);
   assert.match(refused.stderr, /scan_refused: .*the secret scan found a key-shaped line: config\.env:2 in [0-9a-f]{12}/);
   assert.match(refused.stderr, /next: take the line out of the old baseline's history, or only the developer can clear it: .*--clear-secret/);
   assert.doesNotMatch(refused.stderr, new RegExp(KEY), "the value is never named");
@@ -391,7 +393,11 @@ test("moved history meets the push's checks: a key-shaped line refuses the move 
   assert.equal(cleared.code, 0, `${cleared.stdout}\n${cleared.stderr}`);
   assert.equal(tipOf(keyedBare, "refs/heads/main"), git(keyedHistory, "rev-parse", "HEAD"));
   const events = (await kept.dumpRows("events")).rows.map((r) => ({ kind: r[4], data: JSON.parse(r[5]) }));
+  const refusals = events.filter((e) => e.kind === "project.host_move_refused");
+  assert.equal(refusals.length, 1);
+  assert.deepEqual(refusals[0].data.flags.map((h) => [h.file, h.line]), keyLines.map((_, i) => ["config.env", i + 2]));
   const clear = events.find((e) => e.kind === "project.host_move_cleared");
+  assert.equal(clear.data.flags.length, keyLines.length);
   assert.equal(clear.data.quote, "clear it, it is a dummy");
   assert.equal(clear.data.acting, ACTING);
 });
