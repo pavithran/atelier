@@ -63,11 +63,12 @@ async function imported(t, { server = true, moved = false, name = "relic", ledge
   return {
     ledger,
     index,
+    object: (name = "project:relic") => ns.object(name),
     env,
     request,
     restart: async () => {
       await ns.close(); ns = new Namespace({ dir, Class: Ledger, env }); env.LEDGER = ns;
-      // The same pre-listen reconciliation startServer runs, without sockets.
+      // The same startup reconciliation startServer runs, without sockets.
       await index().repairHostedProjectRepos();
     },
     api: async (path, method = "GET", body) => request(`/api/projects/relic/${path}`, method, body),
@@ -207,4 +208,47 @@ test("ledger import: a canonical hosted record does not probe move events on eac
   assert.equal(await w.probes(), 0);
   await w.index().setProject({ ...V1.record, repo: "relic-2" }, "owner");
   assert.equal(await w.probes("__index"), 0, "non-project Ledgers skip the events probe too");
+});
+
+
+test("startup repair continues past missing and unavailable Ledgers and a bad key", async (t) => {
+  const w = await imported(t, { moved: true });
+  for (const name of ["a-missing", "b-unavailable", "c-bad"]) {
+    await w.index().registerProject({ ...V1.record, name, repo: `${name}-2` });
+  }
+  // Simulate a corrupt key already present in the index.
+  w.object("__index").db.prepare("UPDATE projects SET json = json_set(json, '$.name', ?) WHERE name = ?").run("///", "c-bad");
+  const get = w.env.LEDGER.get.bind(w.env.LEDGER);
+  t.mock.method(w.env.LEDGER, "get", (id) => {
+    if (id.name === "project:b-unavailable") throw new Error("cannot open ledger");
+    return get(id);
+  });
+  const errors = t.mock.method(console, "error", () => {});
+  await w.index().repairHostedProjectRepos();
+  assert.equal((await w.stored()).repo, "relic");
+  assert.equal((await w.index().projects()).find((p) => p.name === "relic").repo, "relic");
+  assert.equal((await w.repairs()).length, 1);
+  assert.equal(errors.mock.callCount(), 3);
+});
+
+test("a rolled-back move leaves both the Ledger and the index unrepaired", async (t) => {
+  const w = await imported(t);
+  w.object().db.exec("CREATE TRIGGER refuse_move BEFORE INSERT ON events WHEN NEW.kind = 'project.host_moved' BEGIN SELECT RAISE(ABORT, 'move failed'); END");
+  await assert.rejects(w.ledger().hostMoved("owner", "project.host_moved", {}), /move failed/);
+  assert.equal((await w.stored()).repo, "relic-2");
+  assert.equal((await w.index().projects())[0].repo, "relic-2");
+  assert.equal((await w.repairs()).length, 0);
+});
+
+test("a failed index update is logged after the move has committed", async (t) => {
+  const w = await imported(t);
+  const errors = t.mock.method(console, "error", () => {});
+  w.object("__index").db.exec("CREATE TRIGGER refuse_update BEFORE UPDATE ON projects BEGIN SELECT RAISE(ABORT, 'index failed'); END");
+  await w.ledger().hostMoved("owner", "project.host_moved", {});
+  await w.index().projects();
+  // Let the rejected RPC reach the waitUntil catch.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await w.stored()).repo, "relic");
+  assert.equal((await w.repairs()).length, 1);
+  assert.ok(errors.mock.calls.some((call) => call.arguments[0] === "repository index update failed for relic:"));
 });

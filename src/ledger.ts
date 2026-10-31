@@ -1431,28 +1431,32 @@ export class Ledger extends DurableObject<Env> {
   // Repository identity follows the stable key, including after a rename.
   // Updating just this field preserves index-owned names and revisions.
   setHostedProjectRepo(key: string): void {
-    if (!(this.env as unknown as { GIT?: unknown }).GIT || this.ctx.id.name !== "__index") return;
+    if (!(this.env as unknown as { GIT?: unknown }).GIT || this.ctx.id?.name !== "__index") return;
     const record = this.projects().find((p) => (p.key ?? p.name) === key);
     if (record && record.repo !== repoName(key)) {
       this.sql.exec(`UPDATE projects SET json = json_set(json, '$.repo', ?) WHERE name = ?`, repoName(key), record.name);
     }
   }
 
-  // Before the Node server serves reads, reconcile the index as well as the
+  // At Node server startup, reconcile the index as well as the
   // project Ledgers. This also catches moves repaired by an older release,
   // whose Ledger already has the right repo but whose index still does not.
   // Passing a key does the same reconciliation after move-host succeeds.
   async repairHostedProjectRepos(onlyKey?: string): Promise<void> {
-    if (!(this.env as unknown as { GIT?: unknown }).GIT || this.ctx.id.name !== "__index") return;
+    if (!(this.env as unknown as { GIT?: unknown }).GIT || this.ctx.id?.name !== "__index") return;
     for (const record of this.projects()) {
-      const key = record.key ?? record.name;
-      if ((onlyKey !== undefined && key !== onlyKey) || record.repo === repoName(key)) continue;
-      const L = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${key}`));
-      const project = await L.project();
-      if (project.repo !== repoName(key)) continue; // never moved here, or still importing
-      // Keep the index's revision, policy and name metadata. Its projects
-      // table is also the source of assertRepoAvailable's collision checks.
-      this.setHostedProjectRepo(key);
+      try {
+        const key = record.key ?? record.name;
+        if ((onlyKey !== undefined && key !== onlyKey) || record.repo === repoName(key)) continue;
+        const L = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${key}`));
+        const project = await L.project(false);
+        if (project.repo !== repoName(key)) continue; // never moved here, or still importing
+        // Keep the index's revision, policy and name metadata. Its projects
+        // table is also the source of assertRepoAvailable's collision checks.
+        this.setHostedProjectRepo(key);
+      } catch (error) {
+        console.error(`repository repair failed for ${record.key ?? record.name}:`, error);
+      }
     }
   }
 
@@ -2599,26 +2603,30 @@ export class Ledger extends DurableObject<Env> {
     this.log(null, actor, "project.set", { policy: record.policy, ...(record.policy.approval ? { approval: record.policy.approval } : {}) }, at);
   }
 
-  project(): ProjectRecord {
+  // The startup index sweep owns its index writes, so it disables the
+  // background update to avoid calling back into the waiting index Ledger.
+  project(updateIndex = true): ProjectRecord {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     if (!row) throw new RuleError("no_project", "project not initialised; run `atelier init`", 404, "run atelier init, or check the project name with atelier status");
     const record = JSON.parse(row.value as string) as ProjectRecord;
     // Only a server-hosted, moved project uses the repository named by its
     // stable Ledger key. Old moves kept the Artifacts name in this row.
-    const name = this.ctx.id.name;
-    if ((this.env as unknown as { GIT?: unknown }).GIT && name?.startsWith("project:") &&
+    const name = (this.env as unknown as { GIT?: unknown }).GIT ? this.ctx.id?.name : undefined;
+    if (name?.startsWith("project:") &&
         record.repo !== repoName(name.slice("project:".length)) &&
         this.sql.exec(`SELECT 1 FROM events WHERE kind = 'project.host_moved' LIMIT 1`).toArray().length) {
-      this.hostedProjectRepo(record);
+      const key = this.hostedProjectRepo(record);
+      if (key && updateIndex) this.updateHostedProjectIndex(key);
     }
     const admissions = effectiveAdmissions(this.reviewerAdmissions(), this.standardReviewers());
     record.policy = { ...record.policy, reviewerAdmissions: admissions.length ? admissions : undefined };
     return record;
   }
 
-  private hostedProjectRepo(record: ProjectRecord, at = new Date().toISOString()): void {
-    const name = this.ctx.id.name;
-    if (!(this.env as unknown as { GIT?: unknown }).GIT || !name?.startsWith("project:")) return;
+  private hostedProjectRepo(record: ProjectRecord, at = new Date().toISOString()): string | undefined {
+    if (!(this.env as unknown as { GIT?: unknown }).GIT) return;
+    const name = this.ctx.id?.name;
+    if (!name?.startsWith("project:")) return;
     const key = name.slice("project:".length);
     const repo = repoName(key);
     if (record.repo === repo) return;
@@ -2630,8 +2638,14 @@ export class Ledger extends DurableObject<Env> {
       this.log(null, "atelier/events", "project.repo_repaired", { key, before, repo }, at);
     });
     record.repo = repo;
-    const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
-    this.ctx.waitUntil(index.setHostedProjectRepo(key));
+    return key;
+  }
+
+  private updateHostedProjectIndex(key: string): void {
+    this.ctx.waitUntil(Promise.resolve().then(() => {
+      const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
+      return index.setHostedProjectRepo(key);
+    }).catch((error) => console.error(`repository index update failed for ${key}:`, error)));
   }
 
   // The version of the standard set last stored here; 0 before any delivery.
@@ -4246,14 +4260,16 @@ export class Ledger extends DurableObject<Env> {
   // project branch's head as main's head when the move set it.
   hostMoved(actor: string, kind: "project.host_moved" | "project.way_back", data: Record<string, unknown>, head: string | null = null): void {
     const at = new Date().toISOString();
+    let repairedKey: string | undefined;
     this.ctx.storage.transactionSync(() => {
       if (kind === "project.host_moved") {
         const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
-        if (row) this.hostedProjectRepo(JSON.parse(row.value as string) as ProjectRecord, at);
+        if (row) repairedKey = this.hostedProjectRepo(JSON.parse(row.value as string) as ProjectRecord, at);
       }
       if (head) this.setMainHead(head, at);
       this.log(null, actor, kind, data, at);
     });
+    if (repairedKey) this.updateHostedProjectIndex(repairedKey);
   }
 
   // Where the project's move stands (task 11, review): whether the bake has

@@ -152,8 +152,6 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
   const git = new GitHost({ dataDir: dir, reposDir: repos, hooksDir, namespace, settings: workerEnv });
   bindings.GIT ??= git.binding();
-  Object.assign(workerEnv, settings({ env, port, secretsDir, vars }), bindings, { LEDGER: namespace });
-  await namespace.get(namespace.idFromName("__index")).repairHostedProjectRepos();
   // Every Ledger change that ends or rotates a task's grant waits for the
   // pushes in flight on the task (src/runtime/ledger-locks.mjs).
   namespace.around = ledgerLocks(git, (name) => namespace.get(namespace.idFromName(name)));
@@ -214,6 +212,8 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const bound = server.address().port;
   Object.assign(workerEnv, settings({ env, port: bound, secretsDir, vars }), bindings, { LEDGER: namespace });
   namespace.start();
+  try { await namespace.get(namespace.idFromName("__index")).repairHostedProjectRepos(); }
+  catch (error) { console.error("startup repository repair failed:", error); }
   // The Worker's crons (wrangler.jsonc gave scheduled() three), at the
   // periods src/limits.ts names, each given the moment it was due, as
   // scheduledTime was.
