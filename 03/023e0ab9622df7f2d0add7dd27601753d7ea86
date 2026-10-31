@@ -1,0 +1,25 @@
+atelier atelier/t413 "Install the first production release without setup again"
+accepted head 577e3c36986bdbb73ad7630e3e9ca4d7a2cf9f76
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-10-31T18:35:03.919Z
+REVIEW approve by antigravity/gemini-4-argon-high at 577e3c36986bdbb73ad7630e3e9ca4d7a2cf9f76, recorded by antigravity/gemini-4-argon-high
+2026-10-31T15:58:23.111Z owner item.created
+2026-10-31T15:58:23.111Z claude-code/opus-5.5 criteria.revised
+2026-10-31T17:37:26.875Z codex/gpt-6.1-sol item.claimed
+2026-10-31T17:37:26.924Z codex/gpt-6.1-sol workspace.created
+2026-10-31T17:55:27.107Z codex/gpt-6.1-sol push.observed
+2026-10-31T17:55:32.089Z codex/gpt-6.1-sol evidence.observed
+2026-10-31T17:55:32.404Z codex/gpt-6.1-sol item.submitted
+2026-10-31T18:05:00.000Z atelier stage.stuck
+2026-10-31T18:09:16.934Z atelier/orchestrator refresh.queued
+2026-10-31T18:34:59.106Z codex/gpt-6.1-sol push.observed
+2026-10-31T18:35:00.000Z atelier stage.cleared
+2026-10-31T18:35:03.950Z codex/gpt-6.1-sol evidence.observed
+2026-10-31T18:35:04.204Z codex/gpt-6.1-sol item.submitted
+2026-10-31T18:47:27.443Z antigravity/gemini-4-argon-high review.approved
+2026-10-31T18:47:27.723Z pavi item.accepted
+2026-10-31T18:47:28.125Z pavi land.start
+2026-10-31T18:47:28.134Z pavi landing.leased
+2026-10-31T18:47:28.144Z pavi land.lease
+2026-10-31T18:47:28.483Z pavi checkout.leased
