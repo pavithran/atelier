@@ -723,3 +723,9 @@ test("models.trend.v1 is a named capability that models show --trend reads witho
   assert.equal(ROUTE_LEVEL, 29);
   assert.deepEqual(requiredForCommand("models", "show", { trend: true }), ["models.note.v1"]);
 });
+
+
+test("way-back renewal requires its capability only when renewal is requested", () => {
+  assert.deepEqual(requiredForCommand("projects", "move-host", {}), ["projects.move-host.v1"]);
+  assert.deepEqual(requiredForCommand("projects", "move-host", { "renew-way-back": true }), ["projects.move-host.v1", "projects.way-back-renew.v1"]);
+});

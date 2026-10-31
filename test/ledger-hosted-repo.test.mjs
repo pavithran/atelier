@@ -1,6 +1,6 @@
 // Exercise imported records and a restart without opening a server socket.
 import { strict as assert } from "node:assert";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -251,4 +251,63 @@ test("a failed index update is logged after the move has committed", async (t) =
   assert.equal((await w.stored()).repo, "relic");
   assert.equal((await w.repairs()).length, 1);
   assert.ok(errors.mock.calls.some((call) => call.arguments[0] === "repository index update failed for relic:"));
+});
+
+
+test("way-back renewal changes only the kept credential and retains a failed push in status until a retry succeeds", async (t) => {
+  const f = await imported(t);
+  const { GitHost } = await import("../src/git/host.mjs");
+  const { formatStatus, formatStatusBrief, statusJson } = await import("../cli/status.mjs");
+  const { formatStanding } = await import("../cli/atelier.mjs");
+  const dir = process.cwd() + "/.way-back-test-" + process.pid;
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const host = new GitHost({ dataDir: dir, reposDir: join(dir, "repos"), namespace: f.env.LEDGER, settings: {} });
+  t.after(() => host.close());
+  f.env.GIT = host.binding();
+  const L = f.ledger();
+  const remote = "/kept/baseline.git";
+  host.keepWayBack({ key: "relic", remote, token: "expired-dummy" });
+  await L.hostMoved("owner", "project.way_back", { state: "failed", remote, head: "a".repeat(40), detail: "remote: Invalid credential" });
+  const command = "atelier projects move-host relic --renew-way-back --token-env VAR";
+  const line = await L.wayBackStatus();
+  assert.match(line, /unable to push.*aaaaaaaa.*Invalid credential/);
+  assert.ok(line.includes(command));
+  const views = [{ name: "relic", items: [], inbox: [], wayBack: line }];
+  assert.ok(formatStatus(views).includes(command));
+  assert.equal(statusJson(views)[0].wayBack, line);
+  const standing = await (await f.request("/api/projects/relic/standing")).json();
+  assert.equal(standing.wayBack, line);
+  assert.ok(formatStanding(standing).includes(command));
+  assert.ok(formatStatusBrief({ standing }).includes(command));
+  for (const body of [{ renewWayBack: true }, { renewWayBack: true, token: "bad token" }, { renewWayBack: true, token: "fresh", endBake: true }]) {
+    assert.equal((await f.request("/api/projects/relic/move-host", "POST", body)).status, 400);
+  }
+  const agent = await (await f.request("/api/tokens", "POST", { actor: "codex/gpt-6-astra", projects: ["relic"] })).json();
+  const denied = await worker.fetch(new Request("http://localhost/api/projects/relic/move-host", {
+    method: "POST", headers: { authorization: `Bearer ${agent.token}`, "content-type": "application/json", "x-atelier-actor": "codex/gpt-6-astra" },
+    body: JSON.stringify({ renewWayBack: true, token: "agent-dummy" }),
+  }), f.env, { waitUntil() {} });
+  assert.equal(denied.status, 403);
+  assert.equal(JSON.parse(readFileSync(join(dir, "way-back", "relic.json"), "utf8")).token, "expired-dummy");
+  const before = await L.hostMoveState();
+  const response = await f.request("/api/projects/relic/move-host", "POST", { renewWayBack: true, token: "fresh-dummy" });
+  assert.equal(response.status, 200);
+  const answer = await response.json();
+  assert.equal(answer.renewed, true);
+  assert.ok(!JSON.stringify(answer).includes("fresh-dummy"));
+  const file = join(dir, "way-back", "relic.json");
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { remote, token: "fresh-dummy" });
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(await L.hostMoveState(), before);
+  assert.equal(await L.wayBackStatus(), line);
+  await f.restart();
+  assert.equal(await f.ledger().wayBackStatus(), line);
+  const { WayBack } = await import("../src/git/move.mjs");
+  assert.deepEqual(new WayBack(dir).get("relic"), { remote, token: "fresh-dummy" });
+  const events = await f.ledger().events(undefined, 100);
+  assert.ok(!JSON.stringify(events).includes("fresh-dummy"));
+  await f.ledger().hostMoved("owner", "project.way_back", { state: "pushed", remote });
+  assert.equal(await f.ledger().wayBackStatus(), null);
+  host.keepWayBack({ key: "relic", remote: null });
+  assert.equal((await f.request("/api/projects/relic/move-host", "POST", { renewWayBack: true, token: "fresh" })).status, 409);
 });

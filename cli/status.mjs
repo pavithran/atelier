@@ -119,6 +119,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
     const a = attentionFor(v.name, v.items, v.inbox, offers, now);
     return {
       name: v.name,
+      ...(v.wayBack ? { wayBack: v.wayBack } : {}),
       ...(v.title ? { title: v.title } : {}),
       ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
       // Fast mode's line while it stands (t629: with the developer's words and the acting model).
@@ -405,6 +406,7 @@ export function formatStatus(views, waiting = {}) {
     const reviews = reviewQueue(waiting, v.name, offers);
     const why = whyIn(waiting, v.name, offers);
     if (!waiting.overdueApart) lines.push(...overdueTick(v.stuck));
+    if (v.wayBack) lines.push(oneLine(v.wayBack));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     lines.push(...tickLines(v.stuck, "  "));
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
@@ -494,6 +496,7 @@ export function formatStatusBrief(b) {
   const s = b.standing;
   const mode = s.familyMode?.single ? ` (single-family: ${s.familyMode.single})` : "";
   const lines = [`${oneLine(s.project.title)} (${oneLine(s.project.name)})${mode} as of ${String(s.generatedAt).slice(0, 16).replace("T", " ")} UTC`];
+  if (s.wayBack) lines.push(oneLine(s.wayBack));
   const partial = s.partial ?? [];
   if (partial.length) lines.push(`Part of this record is not shown; counts cover only what was read: ${partial.map(oneLine).join(" ")}`);
   lines.push("Recent merges:");

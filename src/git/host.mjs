@@ -244,6 +244,7 @@ export class GitHost {
       carry: (args) => this.carry(args),
       dropBranch: (args) => this.dropBranch(args),
       keepWayBack: (args) => this.keepWayBack(args),
+      renewWayBack: (args) => this.renewWayBack(args),
       wayBackOf: (key) => { const w = this.wayBack.get(key); return w ? { remote: w.remote } : null; },
       pushBack: (args) => this.pushBack(args),
       readFile: (args) => this.readFile(args),
@@ -285,6 +286,13 @@ export class GitHost {
   keepWayBack({ key, remote, token }) {
     if (remote === null) this.wayBack.clear(key);
     else this.wayBack.set(key, { remote, token });
+  }
+  // Replaces only the credential of a kept remote; no refs move.
+  renewWayBack({ key, token }) {
+    const kept = this.wayBack.get(key);
+    if (!kept) return null;
+    this.wayBack.set(key, { remote: kept.remote, token });
+    return { remote: kept.remote };
   }
   // The project's branch pushed back to the old baseline, under the
   // project's lock as a reader, so a landing's push is not half seen.
