@@ -86,10 +86,30 @@ inputs remain available for repair.
 
 Agents run as `pavi`, so nothing `pavi` can write is ever run as root or as `atelierd`. The release is built on the Studio, by root, from the Studio's own repository of the project, which only reviewed, landed commits reach.
 
-Since the 2026-10-31 cut-over, `atelier ship`, run by PAVI in the registered checkout on the Mac, deploys main to production at `atelier.zone`. Staging at `next.atelier.zone` ships from the separate `atelier-trial` project. Main's deploy step is `node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio`:
+Since the 2026-10-31 cut-over, production's own `atelier` main is the release source. Staging at `next.atelier.zone` ships from the separate `atelier-trial` project. A commit reviewed in staging or held on another branch must reach production through a production task before it can ship.
+
+When production's main lacks the release commits, use this path. Use the CLI's production connection for all task and ship commands below:
+
+1. Create and claim a task in production's `atelier` project. In that task's workspace, fetch the source commits and carry them on the task's branch: fast-forward when its history permits, otherwise merge or cherry-pick them. The branch must contain every change the release needs; a task that only names a commit elsewhere does not carry it.
+2. Push that production task, run its required checks, submit it, and obtain the review approval production's gate requires at the exact task head. Review the whole diff against production's main, including the carried commits. A staging review does not approve this production task. Have the developer land the task with `atelier land TASK --project atelier`, replacing `TASK` with its production task id. Landing checks the review and acceptance gates before moving production's main; an unapproved head is refused. Do not override the review gate for this path.
+3. In production's registered checkout, on a clean main at the landed revision, have PAVI run:
+
+   ```sh
+   atelier ship --project atelier --dry-run
+   ```
+
+   Record any missing deploy approval at that revision with the command the dry run prints, after PAVI authorizes it, then run:
+
+   ```sh
+   atelier ship --project atelier
+   ```
+
+This is the release path even for the first reviewed release after setup. It needs no hand-built tar and no rerun of `setup-server.sh`; that script is for initial setup and repair only. The releases installed with hand-built tars during the cut-over are historical, not a release procedure. [Setup and repair](#setup-and-repair) also covers replacing the root-owned installer.
+
+Ship does not transfer commits from staging or land a task. Its deploy step is `node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio`:
 
 1. It checks that the checkout is clean and at the commit ship captured.
-2. It checks that the branch head production reports at `/api/version` holds that commit. After a landing it does.
+2. It checks that `main`, the branch head production reports at `/api/version`, holds that commit. A head that exists only on a task or staging branch is refused before SSH or sudo runs. The installer checks ancestry again against the Studio's own production repository.
 3. It runs `/usr/bin/ssh -t -- ai-studio /usr/bin/sudo -- /Library/Atelier/install-server.sh --env production COMMIT`. sudo asks for the administrator password on the terminal. PAVI types it there. Nothing in Atelier reads it. On the Mac, ship uses absolute paths for sudo, ssh and the Command Line Tools Git. The remote command contains only fixed words, a validated environment and a 40-digit lowercase hexadecimal commit.
 
 Server setup, tunnel setup and the installer use privileged Bash (`/bin/bash -p`), which ignores `BASH_ENV`, inherited functions and shell options. As root they discard the inherited environment (setup retains only `SUDO_USER`), set PATH, HOME to `/var/root`, umask 077 and the working directory to `/`. Service-user commands receive an empty environment with explicit HOME, PATH and locale. Health checks in server setup and the installer pass `curl -q` to disable curl's configuration files; tunnel setup's health check does not pass `-q`. Server setup and the installer take the same PID lock at `/Library/Atelier/lock/install.lock`, under a root-owned directory writable only by root, for both environments. A second run refuses; a dead process's lock is reclaimed. The lock is released on exit, after recovery.
@@ -107,7 +127,9 @@ The verify step then reads `https://atelier.zone/api/version` and passes only wh
 
 The deploy runs only when the server's code changed since the commit live: `src/**`, `cli/serve.mjs`, `cli/private-guard.mjs`, `hooks/**`, `package.json` or `package-lock.json`. Otherwise it is skipped, with the verify step.
 
-**Before the first ship** PAVI reviews `setup-server.sh` and `install-server.sh` together in the checkout. On the Studio, PAVI copies that reviewed pair into root's directory:
+### Setup and repair
+
+For initial setup or repair, PAVI reviews `setup-server.sh` and `install-server.sh` together in the checkout. On the Studio, PAVI copies that reviewed pair into root's directory:
 
 ```
 sudo /usr/bin/install -o root -g wheel -m 700 scripts/studio/setup-server.sh scripts/studio/install-server.sh /private/var/root/
