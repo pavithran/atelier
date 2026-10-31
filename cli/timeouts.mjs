@@ -21,9 +21,10 @@ export const talksToRemote = (args) => args.some((arg) => NETWORK.has(arg));
 // The limit a request with `body` runs under. ATELIER_SERVER_TIMEOUT_MS sets
 // it outright (a test's short one, or a slow link's longer one); a value that
 // is not a positive number is ignored.
-export function serverTimeoutMs(body, env = process.env) {
+export function serverTimeoutMs(body, env = process.env, path = "") {
   const set = Number(env.ATELIER_SERVER_TIMEOUT_MS);
   if (Number.isFinite(set) && set > 0) return set;
+  if (/^\/projects\/[^/]+\/move-host$/.test(path)) return 60 * 60_000;
   return body !== undefined && JSON.stringify(body).length >= UPLOAD_BYTES ? UPLOAD_TIMEOUT_MS : SERVER_TIMEOUT_MS;
 }
 

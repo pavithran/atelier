@@ -55,18 +55,18 @@ function baseOf({ old, ref, branch }) {
 
 // { hash, treeHash, parents } of each commit, and the tree of each.
 function commitsOf(sha, base) {
-  const out = git("rev-list", `--max-count=${TASK_COMMITS + 1}`, "--no-commit-header", "--format=%H %T %P", sha, ...(base.length ? ["--not", ...base] : []));
+  const out = git("rev-list", `--max-count=${TASK_COMMITS + 1}`, "--no-commit-header", "--format=%H %T %P", ...(Array.isArray(sha) ? sha : [sha]), ...(base.length ? ["--not", ...base] : []));
   const lines = out.split("\n").filter(Boolean);
   if (lines.length > TASK_COMMITS) throw new Error(`the push adds more than ${TASK_COMMITS} commits, more than the scan reads`);
   const commits = lines.map((line) => {
-    const [hash, treeHash, ...parents] = line.split(" ");
+    const [hash, treeHash, ...parents] = line.trim().split(/\s+/);
     return { hash, treeHash, parents };
   });
   const trees = new Map(commits.map((c) => [c.hash, c.treeHash]));
   const outside = [...new Set(commits.flatMap((c) => c.parents).filter((p) => !trees.has(p)))];
   if (outside.length) {
     for (const line of git("log", "--no-walk=unsorted", "--format=%H %T", ...outside).split("\n").filter(Boolean)) {
-      const [hash, tree] = line.split(" ");
+      const [hash, tree] = line.trim().split(/\s+/);
       trees.set(hash, tree);
     }
   }
@@ -80,12 +80,12 @@ const more = (list) => (list.length > LISTED ? `, and ${list.length - LISTED} mo
 // push may go on. Writes the secret scan's report to `reportPath` whenever
 // the scan completed. Throws nothing: a scan that cannot read the push
 // refuses it.
-export async function checkPush({ old, sha, ref, branch, task, kind, policyPath, reportPath }) {
+export async function checkPush({ old, sha, ref, branch, task, kind, policyPath, reportPath, moveRange }) {
   let policy, base, commits, trees, paths;
   let tipOnly = false;
   try {
     policy = readPolicy(policyPath);
-    base = baseOf({ old, ref, branch });
+    base = moveRange?.base ?? baseOf({ old, ref, branch });
     tipOnly = kind === "owner" && ZERO.test(old) && ref === `refs/heads/${branch}`
       && !git("for-each-ref", "--count=1", "--format=%(refname)");
     if (tipOnly) {
@@ -94,7 +94,7 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
       const treeHash = git("rev-parse", "--verify", `${sha}^{tree}`);
       commits = [{ hash: sha, treeHash, parents: [] }];
       trees = new Map([[sha, treeHash]]);
-    } else ({ commits, trees } = commitsOf(sha, base));
+    } else ({ commits, trees } = commitsOf(moveRange?.tips ?? sha, base));
   } catch (error) {
     return `the push could not be read for the secret scan (${error.message.split("\n")[0]}); nothing was pushed`;
   }
@@ -116,15 +116,15 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
         return blob;
       },
     } : reader);
-    const head = commits.find((c) => c.hash === sha);
-    const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, head.treeHash), tipOnly ? "tree" : "commit");
+    const headTree = git("rev-parse", "--verify", `${sha}^{tree}`);
+    const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, headTree), tipOnly ? "tree" : "commit");
     const cleared = (h) => policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint);
     const standing = scan.hits.filter((h) => !cleared(h));
     // A push to a task's or a plan's branch records an unscanned file on its
     // item. The project's branch and dev/* have no item, so an unscanned
     // file there refuses the push, unless the owner cleared it on the grant's
-    // task (a landing grant carries one).
-    const recorded = /^refs\/heads\/(t|plan)\/\d+$/.test(ref);
+    // task (a landing grant carries one). A move records these on the project.
+    const recorded = !!moveRange || /^refs\/heads\/(t|plan)\/\d+$/.test(ref);
     const unread = recorded ? [] : scan.unscanned.filter((u) => !cleared(u));
     writeReport(reportPath, { ref, head: sha, hits: scan.hits, unscanned: scan.unscanned, refused: standing.length > 0 });
     if (unread.length) {
@@ -143,7 +143,7 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
     try {
       const found = tipOnly
         ? privatePathsAmong(paths, policy.private).map((path) => ({ path, commit: sha }))
-        : privateCommits(process.cwd(), policy.private, sha, base);
+        : privateCommits(process.cwd(), policy.private, moveRange?.tips ?? sha, base);
       if (found.length) refusals.push(`the push would carry private files: ${privateCommitsText(found)}. They never leave the developer's Macs; take them out of those commits and push again`);
     } catch (error) {
       refusals.push(error.message);

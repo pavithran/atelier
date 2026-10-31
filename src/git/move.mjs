@@ -110,8 +110,10 @@ export async function mirrorBranch({ dir, branch: named, remote, token, scan = n
     // What the move adds meets the checks a push would (the hook's rules 5
     // and 6): the secret scan, less the lines the developer cleared, and the
     // private-file guard, before any ref here moves.
+    const unscanned = new Map();
+    const collect = (rows) => { for (const u of rows) unscanned.set(`${u.file}\0${u.fingerprint}`, u); };
     if (scan && fetched !== before && !(before && await holds(dir, fetched, before))) {
-      const refused = await scanMove({ dir, scan, old: before ?? ZERO, sha: fetched, ref: `refs/heads/${branch}`, branch });
+      const refused = await scanMove({ dir, scan, old: before ?? ZERO, sha: fetched, ref: `refs/heads/${branch}`, branch, collect });
       if (refused) return { error: "scan_refused", ...refused, before, remoteHead: fetched };
     }
     const moved = await follow(dir, `refs/heads/${branch}`, before, fetched, `move-host from ${remote.replace(/\?.*$/, "")}`);
@@ -122,10 +124,12 @@ export async function mirrorBranch({ dir, branch: named, remote, token, scan = n
     if (refs[NOTES]) {
       const got = await revParse(dir, `${STAGE}/notes`);
       const had = await revParse(dir, NOTES);
-      const refused = got && scan && got !== had ? await scanMove({ dir, scan, old: had ?? ZERO, sha: got, ref: NOTES, branch }) : null;
+      const notesUnscanned = [];
+      const refused = got && scan && got !== had ? await scanMove({ dir, scan, old: had ?? ZERO, sha: got, ref: NOTES, branch, collect: (rows) => notesUnscanned.push(...rows) }) : null;
       notes = refused ? `not moved: ${refused.detail}` : got ? await follow(dir, NOTES, had, got, "move-host notes") : "none";
+      if (notes === "created" || notes === "forwarded") collect(notesUnscanned);
     }
-    return { branch, before, head, remoteHead: fetched, moved, notes, tags: tags.length };
+    return { branch, before, head, remoteHead: fetched, moved, notes, tags: tags.length, unscanned: [...unscanned.values()] };
   } finally {
     for (const r of ["head", "notes"]) await git(dir, ["update-ref", "-d", `${STAGE}/${r}`]).catch(() => {});
   }
@@ -135,31 +139,31 @@ export async function mirrorBranch({ dir, branch: named, remote, token, scan = n
 // `dir`, in a process whose directory is the repository (src/git/scan-run.mjs).
 // Answers null, or { detail, hits } for a refusal.
 const SCAN_RUN = fileURLToPath(new URL("./scan-run.mjs", import.meta.url));
-// A push adds at most TASK_COMMITS (1,000) commits, as `atelier init` and
-// the old pushHistory send a long history in steps. A move reads a long
-// history the same way: in steps along the first-parent line, each at most
-// STEP commits past the last, so each step stays under the hook's cap.
+// Read every added commit in ancestry order, including side branches. A
+// batch's outside parents exclude precisely the history outside that batch,
+// so even a merge of thousands of commits stays within the scan's cap.
 const STEP = 400;
-async function scanMove({ dir, scan, old, sha, ref, branch }) {
-  const line = (await git(dir, ["rev-list", "--first-parent", "--reverse", sha, ...(/^0+$/.test(old) ? [] : ["--not", old])])).split("\n").filter(Boolean);
-  const stops = line.filter((_, i) => (i + 1) % STEP === 0 && i + 1 < line.length);
-  let from = old;
-  for (const to of [...stops, sha]) {
-    const refused = await scanStep({ dir, scan, old: from, sha: to, ref, branch });
+async function scanMove({ dir, scan, old, sha, ref, branch, collect }) {
+  const rows = (await git(dir, ["rev-list", "--topo-order", "--reverse", "--parents", sha, ...(/^0+$/.test(old) ? [] : ["--not", old])])).split("\n").filter(Boolean).map((l) => l.split(" "));
+  for (let i = 0; i < rows.length; i += STEP) {
+    const batch = rows.slice(i, i + STEP);
+    const tips = batch.map(([hash]) => hash);
+    const inside = new Set(tips);
+    const base = [...new Set(batch.flatMap(([, ...parents]) => parents).filter((p) => !inside.has(p)))];
+    const refused = await scanStep({ dir, scan, old, sha, ref, branch, moveRange: { tips, base }, collect });
     if (refused) return refused;
-    from = to;
   }
   return null;
 }
-async function scanStep({ dir, scan, old, sha, ref, branch }) {
+async function scanStep({ dir, scan, old, sha, ref, branch, moveRange, collect }) {
   const files = openScan(scan.root, scan.policy);
   try {
-    const args = JSON.stringify({ old, sha, ref, branch, policyPath: files.env.ATELIER_POLICY, reportPath: files.env.ATELIER_REPORT });
+    const args = JSON.stringify({ old, sha, ref, branch, moveRange, policyPath: files.env.ATELIER_POLICY, reportPath: files.env.ATELIER_REPORT });
     const out = await new Promise((ok, fail) => execFile(process.execPath, [SCAN_RUN, args], { cwd: dir, encoding: "utf8", maxBuffer: 1 << 24, timeout: 15 * 60_000, env: { ...process.env, GIT_DIR: dir } },
       (err, stdout, stderr) => (err ? fail(new Error(String(stderr || err.message).trim().split("\n").slice(-2).join(" "))) : ok(stdout))));
     const { refusal } = JSON.parse(out.trim().split("\n").at(-1));
-    if (!refusal) return null;
     const report = files.report();
+    if (!refusal) { collect(report?.unscanned ?? []); return null; }
     return { detail: refusal, hits: (report?.hits ?? []).filter((h) => !scan.policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint)) };
   } catch (error) {
     return { detail: `the moved history could not be scanned (${error.message}); nothing was moved`, hits: [] };

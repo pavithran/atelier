@@ -1091,7 +1091,7 @@ export async function request(method, path, body, as, extra = {}, signal) {
     let failure = null;
     try {
       res = await serverFetch(server() + "/api" + path, {
-        method, signal: withTimeout(signal, serverTimeoutMs(body)),
+        method, signal: withTimeout(signal, serverTimeoutMs(body, undefined, method === "POST" ? path : "")),
         // A write is never sent on to another address: an error from a
         // redirect target would look like one from the original URL.
         ...(read ? {} : { redirect: "manual" }),
@@ -1102,7 +1102,7 @@ export async function request(method, path, body, as, extra = {}, signal) {
       // The server's own words, when it gave any, go with the status.
       if (res.status === 408 || res.status === 429 || res.status >= 500) failure = { message: serverWords(res.status, text), sent: true };
     } catch (error) {
-      failure = { message: timedOut(error) ? `${method} ${path} timed out after ${secondsOf(serverTimeoutMs(body))}` : error.message, sent: !NEVER_SENT.has(error?.cause?.code) };
+      failure = { message: timedOut(error) ? `${method} ${path} timed out after ${secondsOf(serverTimeoutMs(body, undefined, method === "POST" ? path : ""))}` : error.message, sent: !NEVER_SENT.has(error?.cause?.code) };
     }
     if (!failure) break;
     if (!read && failure.sent) maybe = true;
