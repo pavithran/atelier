@@ -71,6 +71,9 @@ test("the server limit is 60 s, longer for a large body, and ATELIER_SERVER_TIME
   assert.equal(serverTimeoutMs({ small: true }), 60_000);
   assert.equal(serverTimeoutMs({ big: "x".repeat(UPLOAD_BYTES) }), UPLOAD_TIMEOUT_MS);
   assert.ok(UPLOAD_TIMEOUT_MS > SERVER_TIMEOUT_MS);
+  assert.equal(serverTimeoutMs({}, {}, "/projects/relic/move-host"), 3_600_000);
+  assert.equal(serverTimeoutMs({}, {}, "/projects/relic/items/t1/submit"), 60_000);
+  assert.equal(serverTimeoutMs({}, { ATELIER_SERVER_TIMEOUT_MS: "250" }, "/projects/relic/move-host"), 250);
   process.env.ATELIER_SERVER_TIMEOUT_MS = "250";
   try { assert.equal(serverTimeoutMs(), 250); } finally { delete process.env.ATELIER_SERVER_TIMEOUT_MS; }
   process.env.ATELIER_SERVER_TIMEOUT_MS = "soon";

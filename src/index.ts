@@ -277,7 +277,7 @@ type GitHost = {
   readFile(args: { key: string; branch: string; path: string }): Promise<string | null>;
 };
 // What move-host did (src/git/move.mjs, mirrorBranch), or why it did nothing.
-type HostMove = { error?: undefined; branch: string; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number }
+type HostMove = { error?: undefined; branch: string; before: string | null; head: string; remoteHead: string; moved: "created" | "unchanged" | "forwarded" | "ahead"; notes: string; tags: number; unscanned?: import("./secret-scan.ts").UnscannedFile[] }
   | { error: string; detail: string; before?: string | null; remoteHead?: string; hits?: SecretHit[] };
 
 function gitHost(env: Env): GitHost {
@@ -1224,7 +1224,7 @@ async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): 
   }
   if (body.wayBack === true) git.keepWayBack({ key: ref.key, remote, token });
   const wayBack = git.wayBackOf(ref.key);
-  const record = { remote: shownRemote(remote), branch: moved, before: done.before, head: done.head, remoteHead: done.remoteHead, moved: done.moved, notes: done.notes, tags: done.tags, ...(body.wayBack === true ? { wayBack: true } : {}) };
+  const record = { remote: shownRemote(remote), branch: moved, before: done.before, head: done.head, remoteHead: done.remoteHead, moved: done.moved, notes: done.notes, tags: done.tags, unscanned: done.unscanned ?? [], ...(body.wayBack === true ? { wayBack: true } : {}) };
   await L.hostMoved(actor, "project.host_moved", record, done.moved === "ahead" ? null : done.head);
   return json({ project, ...record, proseStandard: prose, wayBack: wayBack ? { remote: shownRemote(wayBack.remote) } : null, remote: gitRemote(c, project) });
 }

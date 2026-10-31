@@ -119,7 +119,11 @@ A 1.x project comes to the Studio in three steps (design section 5; tasks 10 and
 
 A project kept off Atelier brings its own task and decision files with `atelier import-tasks docs/TASKS.md docs/DECISIONS.md`: `- [ ] TITLE` files an open task (indented lines under it are its brief), `- TEXT` records a standing decision, `- [x]` lines are not filed, and any other line refuses the file, naming it. Importing the same file again changes nothing.
 
-What a move adds meets the checks a push would: the server runs the hook's secret scan and private-file guard over it (`src/git/scan-run.mjs`, in steps along the first-parent line so each stays under the 1,000-commit cap) before any ref moves. A key-shaped line refuses the move, naming file and line; the developer clears it with `--clear-secret REASON --quote WORDS`, and the next move lets that line (same file, same fingerprint) through. `move-host` belongs to the migration alone: after `--end-bake`, or once a landing has moved the branch here with no way back kept, it is refused (`bake_over`) and only a landing moves the branch.
+What a move adds meets the checks a push would: the server runs the hook's secret scan and private-file guard over it (`src/git/scan-run.mjs`, in batches of at most 400 commits across the full graph, including merge parents, so each stays under the 1,000-commit cap) before any ref moves.
+
+Binary and oversized files in the old baseline are carried and recorded as unscanned on the project's `project.host_moved` event, with file, commit and reason named in the answer. Other scan failures and private files still refuse the move.
+
+The CLI waits up to one hour for this route, so a move can finish past the normal 60-second request limit; `ATELIER_SERVER_TIMEOUT_MS` still overrides it. A key-shaped line refuses the move, naming file and line; the developer clears it with `--clear-secret REASON --quote WORDS`, and the next move lets that line (same file, same fingerprint) through. `move-host` belongs to the migration alone: after `--end-bake`, or once a landing has moved the branch here with no way back kept, it is refused (`bake_over`) and only a landing moves the branch.
 
 ## The way back
 

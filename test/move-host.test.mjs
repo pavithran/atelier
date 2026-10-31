@@ -331,3 +331,84 @@ test("moved history meets the push's checks: a key-shaped line refuses the move 
   assert.equal(clear.data.quote, "clear it, it is a dummy");
   assert.equal(clear.data.acting, ACTING);
 });
+
+test("a first move and a later merge scan every commit, even when the merge brings over 1,000 commits", async () => {
+  const { mirrorBranch } = await import("../src/git/move.mjs");
+  const source = join(root, "large-history.git"), into = join(root, "large-move.git");
+  for (const dir of [source, into]) git(root, "init", "-q", "--bare", "-b", "main", dir);
+  let input = "", id = 0;
+  const commit = (branch, extra = "", files = "") => {
+    id++;
+    const bytes = `\0marker-${id}`;
+    input += `commit refs/heads/${branch}\nmark :${id}\ncommitter Test <t@example.test> ${1700000000 + id} +0000\ndata 1\nx\n${extra}M 100644 inline artifact.bin\ndata ${Buffer.byteLength(bytes)}\n${bytes}\n${files}\n`;
+  };
+  for (let i = 0; i < 1005; i++) commit("main");
+  const firstTip = id;
+  const KEY = ["sk", "proj", "TESTONLY", "e".repeat(28)].join("-");
+  const secret = `OPENAI_API_KEY=${KEY}\n`;
+  for (let i = 0; i < 1006; i++) commit("side", i === 0 ? "from :1\n" : "", i === 700 ? `M 100644 inline config.env\ndata ${secret.length}\n${secret}\n` : i === 701 ? "D config.env\n" : "");
+  const sideTip = id;
+  commit("main", `merge :${sideTip}\n`);
+  execFileSync("git", ["fast-import", "--quiet"], { cwd: source, env: gitEnv, input });
+  const merged = tipOf(source, "refs/heads/main");
+  // First carry a long linear baseline. Each commit has a unique unreadable
+  // blob, so the report's commit set proves all commits were visited.
+  const initial = git(source, "rev-list", "--first-parent", merged).split("\n")[1];
+  git(source, "update-ref", "refs/heads/main", initial);
+  const scan = { root: join(root, "scans"), policy: { clearances: [], private: [] } };
+  const first = await mirrorBranch({ dir: into, branch: "main", remote: source, scan });
+  assert.equal(first.moved, "created", JSON.stringify(first));
+  assert.equal(first.unscanned.length, firstTip);
+  assert.deepEqual(new Set(first.unscanned.map((u) => u.commit)), new Set(git(source, "rev-list", initial).split("\n")));
+  git(source, "update-ref", "refs/heads/main", merged);
+  const refused = await mirrorBranch({ dir: into, branch: "main", remote: source, scan });
+  assert.equal(refused.error, "scan_refused");
+  assert.match(refused.detail, /config.env/);
+  assert.equal(tipOf(into, "refs/heads/main"), initial);
+  scan.policy.clearances = refused.hits.map(({ file, fingerprint }) => ({ file, fingerprint }));
+  const later = await mirrorBranch({ dir: into, branch: "main", remote: source, scan });
+  assert.equal(later.moved, "forwarded", JSON.stringify(later));
+  assert.equal(later.unscanned.length, 1007);
+  assert.deepEqual(new Set(later.unscanned.map((u) => u.commit)), new Set(git(source, "rev-list", merged, "--not", initial).split("\n")));
+  // The same graph also works as the project's very first move.
+  git(into, "update-ref", "-d", "refs/heads/main");
+  const all = await mirrorBranch({ dir: into, branch: "main", remote: source, scan });
+  assert.equal(all.moved, "created", JSON.stringify(all));
+  assert.equal(all.unscanned.length, id);
+  assert.deepEqual(new Set(all.unscanned.map((u) => u.commit)), new Set(git(source, "rev-list", merged).split("\n")));
+});
+
+test("a move past 60 seconds reports binary and oversized history as unscanned in the CLI answer and project event", async () => {
+  const dump = JSON.parse(readFileSync(FIXTURE, "utf8"));
+  const file = join(root, "media.json");
+  writeFileSync(file, JSON.stringify({ ...dump, project: "media", key: "media", record: { ...dump.record, name: "media", repo: "media" } }));
+  const imported = await cli(["ledger", "import", "--file", file, "--project", "media"]);
+  assert.equal(imported.code, 0, imported.stderr);
+  const source = join(root, "media-history");
+  makeV1History(source);
+  writeFileSync(join(source, "archive.bin"), Buffer.from([0, 1, 2, 3]));
+  writeFileSync(join(source, "lexicon.json"), '"' + "x".repeat(8388608) + '"');
+  git(source, "add", ".");
+  git(source, "commit", "-q", "-m", "historical media");
+  const added = git(source, "rev-parse", "HEAD");
+  // Removed before the tip: the finding must come from history scanning.
+  git(source, "rm", "-q", "archive.bin", "lexicon.json");
+  git(source, "commit", "-q", "-m", "remove media");
+  const mirror = server.git.mirror;
+  server.git.mirror = async function (args) {
+    await new Promise((resolve) => setTimeout(resolve, 61_000));
+    return mirror.call(this, args);
+  };
+  let result;
+  try { result = await cli(["projects", "move-host", "media", "--from", source, "--project", "media"]); }
+  finally { server.git.mirror = mirror; }
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /Unscanned: archive.bin .*binary content/);
+  assert.match(result.stdout, /Unscanned: lexicon.json .*over the 8388608/);
+  assert.equal(tipOf(join(root, "data", "repos", "media.git"), "refs/heads/main"), git(source, "rev-parse", "HEAD"));
+  const kept = server.namespace.get(server.namespace.idFromName("project:media"));
+  const rows = (await kept.dumpRows("events")).rows;
+  const moved = JSON.parse(rows.find((r) => r[4] === "project.host_moved")[5]);
+  assert.deepEqual(moved.unscanned.map((u) => u.file).sort(), ["archive.bin", "lexicon.json"]);
+  assert.ok(moved.unscanned.every((u) => u.commit === added && u.fingerprint && u.reason));
+});

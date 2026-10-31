@@ -46,6 +46,7 @@ async function moveHostCommand(name) {
   console.log([
     `${name}'s repository on ${at} ${said}.`,
     `Notes: ${r.notes}; tags: ${r.tags}.${r.proseStandard ? ` The prose standard's text was read from ${r.proseStandard}.` : ""}`,
+    ...(r.unscanned ?? []).map((u) => `Unscanned: ${u.file} in ${u.commit?.slice(0, 12) ?? r.head.slice(0, 12)} (${u.reason}); recorded on the project.`),
     r.wayBack ? `During the bake each landing pushes ${r.branch} back to ${r.wayBack.remote}; end it with ${command} --end-bake.` : "No way back is kept: landings push nothing to the old host.",
     `Builders clone ${r.remote}. Tasks still on Artifacts forks move with atelier migrate tN --from REMOTE --project ${name}.`,
   ].join("\n"));
