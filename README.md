@@ -168,7 +168,7 @@ holds the Studio's layout and its backups.
 | Part | What it does in Atelier | State |
 | --- | --- | --- |
 | Node server | `node cli/serve.mjs` runs `src/index.ts` over Node's `http` (`src/runtime/server.mjs`): the API the CLI calls, the signed-in pages and the public pages. One process per environment, on port 4100 for production and 4101 for staging. The stage tick, stuck episodes and model snapshots run on timers inside it. | Live on production, atelier.zone, and on staging, next.atelier.zone |
-| SQLite Ledgers | Each project's tasks, events, evidence and reviews are one SQLite file (`node:sqlite`, mode 600) under `DATA/ledgers`. Calls to one Ledger never interleave, which is what makes one holder per task hold (`claim` in `src/ledger.ts`). The index, `ledgers/__index.sqlite`, keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live on production and staging |
+| SQLite Ledgers | Each project's tasks, events, evidence and reviews are one SQLite file (`node:sqlite`, mode 600) under `DATA/ledgers`. Calls to one Ledger never interleave, which is what makes one holder per task hold (`claim` in `src/ledger.ts`). The index, `ledgers/__index.sqlite`, keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports. | Live on production and staging |
 | Plain Git | One bare repository per project, served at `/git/PROJECT.git/` through `git http-backend`. A task works on the branch `t/N`; the server reads commits, trees and diffs from the repository to measure what a change touches and to preview its merge. Every credential is a grant the server minted, and `hooks/pre-receive` refuses any ref update the grant does not cover. `hooks/post-receive` reports each push to the server. | Live on production and staging |
 | `atelierd` | The macOS service user that runs the server and owns the data, the repositories and the secrets; the server's code and its hooks are root's, read-only to it. Builders run as another user, who cannot read any of these. | Live on production and staging |
 | Tunnel and Cloudflare Access | `cloudflared` carries atelier.zone to production and next.atelier.zone to staging. Access guards the developer's pages; the server verifies its assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). `/api/*` and `/git/*` stay outside Access. | Live on production and staging |
@@ -184,10 +184,11 @@ in package.json; see docs/runners.md for how runners reload) and git. The
 server runs on the machine you choose; no Cloudflare account is needed to
 run it.
 
-**Try it without a server.** Nothing below needs a server until step 2. Atelier 2.0 at
-[atelier.zone](https://atelier.zone) shows the public pages:
-[atelier.zone/how](https://atelier.zone/how)
-states each rule the code enforces and lists every command. On your own
+**Try it without a server.** Nothing below needs a server until step 2. Atelier 2.0's
+single public page, [atelier.zone/how](https://atelier.zone/how),
+states each rule the code enforces and lists every command. The root at
+[atelier.zone](https://atelier.zone) redirects 302 to `/home`, behind
+Cloudflare Access sign-in. On your own
 machine, step 1 installs and tests everything, and
 
 ```sh
@@ -236,7 +237,7 @@ that other users share, keep the secrets directory readable by the server's
 user alone. The server ends cleanly on SIGTERM and SIGINT.
 
 On the Studio the server runs as the service user `atelierd` under a
-LaunchDaemon. `scripts/studio/setup-staging.sh` installs it,
+LaunchDaemon. `scripts/studio/setup-server.sh --env staging|production` installs it,
 `setup-tunnel.sh` adds the tunnel and Access, `setup-backup.sh` the nightly
 backup and `setup-restore.sh` the restore; [docs/studio.md](docs/studio.md)
 holds the layout and the backups.
