@@ -3,7 +3,8 @@
 // to the Studio (Atelier 2.0, task 11, src/git/move.mjs). The scan reads the
 // repository its working directory is, as in the hook, so the server runs
 // this in a process of its own with the bare repository as its directory.
-// Argument: JSON { old, sha, ref, branch, policyPath, reportPath }. Prints
+// Argument: JSON { old, sha, ref, branch, moveRange, policyPath, reportPath }.
+// moveRange names a bounded set of tips and their outside parents. Prints
 // JSON { refusal } (null when the history may go in).
 await import("../runtime/loader.mjs");
 const { checkPush } = await import("./scan.mjs");

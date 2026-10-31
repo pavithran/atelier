@@ -1,3 +1,5 @@
+import { moveDispatcher } from "./move-dispatcher.mjs";
+
 // fetch, after the event loop has caught up (t568). The CLI runs git and
 // checks with spawnSync, which blocks the event loop; a request made in the
 // same turn as the blocking call returns went out on a pooled keep-alive
@@ -21,5 +23,6 @@ export async function settle() {
 // every request.
 export async function serverFetch(input, init) {
   await settle();
-  return globalThis.fetch(input, init);
+  const move = init?.method === "POST" && /^\/api\/projects\/[^/]+\/move-host$/.test(new URL(input).pathname);
+  return globalThis.fetch(input, move ? { ...init, dispatcher: moveDispatcher } : init);
 }
