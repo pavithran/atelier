@@ -408,3 +408,46 @@ test("an alarm deleted inside a transactionSync that throws is restored, and its
     assert.equal(fired, 1);
   } finally { await ns.close(); }
 });
+
+
+test("startup repairs healthy moved projects despite an indexed Ledger with no project row", async (t) => {
+  const { Ledger } = await import("../src/ledger.ts");
+  const dir = join(scratch(), "data");
+  const env = {};
+  const ns = new Namespace({ dir, Class: Ledger, env });
+  env.LEDGER = ns;
+  const index = ns.get(ns.idFromName("__index"));
+  const record = { name: "relic", repo: "relic-2", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  await index.registerProject({ ...record, name: "a-missing", repo: "a-missing-2" });
+  await index.registerProject(record);
+  const ledger = ns.get(ns.idFromName("project:relic"));
+  await ledger.setProject(record, "owner");
+  await ledger.log(null, "owner", "project.host_moved", {}, record.createdAt);
+  await ns.close();
+  const errors = t.mock.method(console, "error", () => {});
+  const server = await startServer({ env: "test", dataDir: dir, host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
+  try {
+    assert.equal((await fetch(`${server.url}/api/version`)).status, 200);
+    const projects = await server.namespace.get(server.namespace.idFromName("__index")).projects();
+    assert.equal(projects.find((p) => p.name === "relic").repo, "relic");
+    assert.ok(errors.mock.calls.some((call) => call.arguments[0] === "repository repair failed for a-missing:"));
+  } finally { await server.close(); }
+});
+
+test("a startup reconciliation failure is logged and the server still answers", async (t) => {
+  const { Ledger } = await import("../src/ledger.ts");
+  let ready;
+  t.mock.method(Ledger.prototype, "repairHostedProjectRepos", function () {
+    ready = { origin: this.env.PUBLIC_ORIGIN, git: this.env.GIT, around: this.env.LEDGER.around };
+    throw new Error("index unavailable");
+  });
+  const errors = t.mock.method(console, "error", () => {});
+  const server = await startServer({ env: "test", dataDir: join(scratch(), "data"), host: "127.0.0.1" });
+  try {
+    assert.equal((await fetch(`${server.url}/api/version`)).status, 200);
+    assert.ok(ready.origin && !ready.origin.endsWith(":0"));
+    assert.ok(ready.git);
+    assert.ok(ready.around);
+    assert.ok(errors.mock.calls.some((call) => call.arguments[0] === "startup repository repair failed:"));
+  } finally { await server.close(); }
+});
