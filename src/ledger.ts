@@ -1428,6 +1428,34 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => listed(JSON.parse(r.json as string)));
   }
 
+  // Repository identity follows the stable key, including after a rename.
+  // Updating just this field preserves index-owned names and revisions.
+  setHostedProjectRepo(key: string): void {
+    if (!(this.env as unknown as { GIT?: unknown }).GIT || this.ctx.id.name !== "__index") return;
+    const record = this.projects().find((p) => (p.key ?? p.name) === key);
+    if (record && record.repo !== repoName(key)) {
+      this.sql.exec(`UPDATE projects SET json = json_set(json, '$.repo', ?) WHERE name = ?`, repoName(key), record.name);
+    }
+  }
+
+  // Before the Node server serves reads, reconcile the index as well as the
+  // project Ledgers. This also catches moves repaired by an older release,
+  // whose Ledger already has the right repo but whose index still does not.
+  // Passing a key does the same reconciliation after move-host succeeds.
+  async repairHostedProjectRepos(onlyKey?: string): Promise<void> {
+    if (!(this.env as unknown as { GIT?: unknown }).GIT || this.ctx.id.name !== "__index") return;
+    for (const record of this.projects()) {
+      const key = record.key ?? record.name;
+      if ((onlyKey !== undefined && key !== onlyKey) || record.repo === repoName(key)) continue;
+      const L = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${key}`));
+      const project = await L.project();
+      if (project.repo !== repoName(key)) continue; // never moved here, or still importing
+      // Keep the index's revision, policy and name metadata. Its projects
+      // table is also the source of assertRepoAvailable's collision checks.
+      this.setHostedProjectRepo(key);
+    }
+  }
+
   // ── names ────────────────────────────────────────────────────────────────
   // A project's ledger is the Durable Object named after it, and its
   // repositories are named after it too; neither can be renamed. So a renamed
@@ -2577,16 +2605,18 @@ export class Ledger extends DurableObject<Env> {
     const record = JSON.parse(row.value as string) as ProjectRecord;
     // Only a server-hosted, moved project uses the repository named by its
     // stable Ledger key. Old moves kept the Artifacts name in this row.
-    if ((this.env as unknown as { GIT?: unknown }).GIT &&
+    const name = this.ctx.id.name;
+    if ((this.env as unknown as { GIT?: unknown }).GIT && name?.startsWith("project:") &&
+        record.repo !== repoName(name.slice("project:".length)) &&
         this.sql.exec(`SELECT 1 FROM events WHERE kind = 'project.host_moved' LIMIT 1`).toArray().length) {
-      this.hostedProjectRepo(record, "system");
+      this.hostedProjectRepo(record);
     }
     const admissions = effectiveAdmissions(this.reviewerAdmissions(), this.standardReviewers());
     record.policy = { ...record.policy, reviewerAdmissions: admissions.length ? admissions : undefined };
     return record;
   }
 
-  private hostedProjectRepo(record: ProjectRecord, actor: string, at = new Date().toISOString()): void {
+  private hostedProjectRepo(record: ProjectRecord, at = new Date().toISOString()): void {
     const name = this.ctx.id.name;
     if (!(this.env as unknown as { GIT?: unknown }).GIT || !name?.startsWith("project:")) return;
     const key = name.slice("project:".length);
@@ -2597,9 +2627,11 @@ export class Ledger extends DurableObject<Env> {
     const before = record.repo;
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(`UPDATE meta SET value = ? WHERE key = 'project'`, JSON.stringify({ ...record, repo }));
-      this.log(null, actor, "project.repo_repaired", { key, before, repo }, at);
+      this.log(null, "atelier/events", "project.repo_repaired", { key, before, repo }, at);
     });
     record.repo = repo;
+    const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
+    this.ctx.waitUntil(index.setHostedProjectRepo(key));
   }
 
   // The version of the standard set last stored here; 0 before any delivery.
@@ -4217,7 +4249,7 @@ export class Ledger extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       if (kind === "project.host_moved") {
         const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
-        if (row) this.hostedProjectRepo(JSON.parse(row.value as string) as ProjectRecord, actor, at);
+        if (row) this.hostedProjectRepo(JSON.parse(row.value as string) as ProjectRecord, at);
       }
       if (head) this.setMainHead(head, at);
       this.log(null, actor, kind, data, at);
@@ -11679,7 +11711,8 @@ export class Ledger extends DurableObject<Env> {
     // gpt-6-astra's ninth review of t622, finding 3).
     // Every event a call made with the developer token on a model's word
     // logs names that model (G18), unless the event names its own already.
-    if (this.#acting && data.acting === undefined) data = { ...data, acting: this.#acting };
+    // Repository repair is platform bookkeeping, even during an acting request.
+    if (this.#acting && data.acting === undefined && kind !== "project.repo_repaired") data = { ...data, acting: this.#acting };
     if (typeof data.acting === "string" && (ACTING_EVENTS as readonly string[]).includes(kind)) data = { ...data, actingExact: true };
     // The stage is read from the item as it stands, so a caller logs after it
     // has changed the item.

@@ -106,6 +106,7 @@ test("move-host mirrors the baseline's branch, notes and tags into the project's
   assert.match(r.stdout, /each landing pushes main back to .*relic\.git/);
   assert.equal(tipOf(bare(), "refs/heads/main"), c.main);
   assert.equal((await L().project()).repo, "relic");
+  assert.equal((await api("GET", "/projects")).body.find((p) => p.name === "relic").repo, "relic");
   const baseline = await api("GET", "/projects/relic/baseline-head");
   assert.equal(baseline.status, 200);
   assert.equal(baseline.body.head, c.main);
@@ -189,8 +190,14 @@ test("an old move's repository name is repaired once after a server restart, wit
     db.prepare("UPDATE meta SET value = ? WHERE key = 'project'").run(JSON.stringify({ ...JSON.parse(row.value), repo: "relic-2" }));
     db.exec("DELETE FROM events WHERE kind = 'project.repo_repaired'");
   } finally { db.close(); }
+  const indexDb = new DatabaseSync(join(root, "data", "ledgers", ledgerFile("__index")));
+  try {
+    indexDb.prepare("UPDATE projects SET json = json_set(json, '$.repo', ?) WHERE name = ?").run("relic-2", "relic");
+  } finally { indexDb.close(); }
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
   base = server.url.replace("localhost", "127.0.0.1");
+  // Read the index before any request to the project Ledger.
+  assert.equal((await api("GET", "/projects")).body.find((p) => p.name === "relic").repo, "relic");
   for (let n = 0; n < 2; n++) {
     const baseline = await api("GET", "/projects/relic/baseline-head");
     assert.equal(baseline.status, 200);

@@ -152,6 +152,8 @@ export async function startServer({ env = "staging", dataDir, reposDir, hooksDir
   const namespace = new Namespace({ dir, Class: Ledger, env: workerEnv });
   const git = new GitHost({ dataDir: dir, reposDir: repos, hooksDir, namespace, settings: workerEnv });
   bindings.GIT ??= git.binding();
+  Object.assign(workerEnv, settings({ env, port, secretsDir, vars }), bindings, { LEDGER: namespace });
+  await namespace.get(namespace.idFromName("__index")).repairHostedProjectRepos();
   // Every Ledger change that ends or rotates a task's grant waits for the
   // pushes in flight on the task (src/runtime/ledger-locks.mjs).
   namespace.around = ledgerLocks(git, (name) => namespace.get(namespace.idFromName(name)));
