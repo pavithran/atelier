@@ -1226,6 +1226,7 @@ async function moveHost(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>): 
   const wayBack = git.wayBackOf(ref.key);
   const record = { remote: shownRemote(remote), branch: moved, before: done.before, head: done.head, remoteHead: done.remoteHead, moved: done.moved, notes: done.notes, tags: done.tags, unscanned: done.unscanned ?? [], ...(body.wayBack === true ? { wayBack: true } : {}) };
   await L.hostMoved(actor, "project.host_moved", record, done.moved === "ahead" ? null : done.head);
+  await index(env).repairHostedProjectRepos(ref.key);
   return json({ project, ...record, proseStandard: prose, wayBack: wayBack ? { remote: shownRemote(wayBack.remote) } : null, remote: gitRemote(c, project) });
 }
 

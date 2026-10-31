@@ -25,11 +25,11 @@ theirs. It runs as one Node server with a SQLite file for each project's
 record and plain Git repositories, and is driven by a dependency-free
 command, `atelier`, that any agent able to run a shell command can use.
 
-Atelier 2.0 runs on staging at next.atelier.zone, on a Mac called the Studio.
-Production, [atelier.zone](https://atelier.zone), is still the 1.x server, a
-Cloudflare Worker, until the cut-over. One page there is
-public: [How it works](https://atelier.zone/how) states the rules the code
-enforces and lists every command. The domain's root leads to the developer's
+Since the 2026-10-31 cut-over, Atelier 2.0 runs on the Mac called the Studio.
+Main ships to production at [atelier.zone](https://atelier.zone); staging at
+next.atelier.zone ships from the separate `atelier-trial` project. One page
+at atelier.zone is public: [How it works](https://atelier.zone/how) states the
+rules the code enforces and lists every command. The domain's root leads to the developer's
 projects list, behind the sign-in, and each project's own page draws its work
 as it was built by agents of several model families: each task, who held it,
 its checks, reviews and decisions.

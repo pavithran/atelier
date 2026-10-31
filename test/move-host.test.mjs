@@ -14,9 +14,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { ledgerFile } from "../src/runtime/ledger-file.mjs";
 import { startServer } from "../src/runtime/server.mjs";
 import { makeV1History } from "./helpers/v1-history.mjs";
 import { criteriaOf } from "../src/criteria.ts";
+import { dumpChecksum } from "../src/rules.ts";
 
 const OWNER = "atl_00112233445566778899aabbccddeeff00112233";
 const ACTING = "claude-code/opus-5.5";
@@ -67,7 +70,17 @@ before(async () => {
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
   base = server.url.replace("localhost", "127.0.0.1");
   assert.equal((await cli(["login", "--server", base])).code, 0);
-  const imported = await cli(["ledger", "import", "--file", FIXTURE, "--project", "relic"]);
+  const dump = JSON.parse(readFileSync(FIXTURE, "utf8"));
+  dump.record.repo = "relic-2";
+  const projectRow = dump.tables.find((t) => t.name === "meta").rows.find((r) => r[0] === "project");
+  projectRow[1] = JSON.stringify({ ...JSON.parse(projectRow[1]), repo: "relic-2" });
+  const meta = dump.tables.find((t) => t.name === "meta");
+  const sum = dumpChecksum();
+  for (const row of meta.rows) sum.add(row);
+  meta.checksum = sum.value();
+  const importedFile = join(root, "relic-2.json");
+  writeFileSync(importedFile, JSON.stringify(dump));
+  const imported = await cli(["ledger", "import", "--file", importedFile, "--project", "relic"]);
   assert.equal(imported.code, 0, `${imported.stdout}\n${imported.stderr}`);
   agentToken = (await api("POST", "/tokens", { actor: HOLDER, projects: ["relic"] })).body.token;
   assert.ok(agentToken);
@@ -92,6 +105,14 @@ test("move-host mirrors the baseline's branch, notes and tags into the project's
   assert.match(r.stdout, /Notes: created; tags: 1\./);
   assert.match(r.stdout, /each landing pushes main back to .*relic\.git/);
   assert.equal(tipOf(bare(), "refs/heads/main"), c.main);
+  assert.equal((await L().project()).repo, "relic");
+  assert.equal((await api("GET", "/projects")).body.find((p) => p.name === "relic").repo, "relic");
+  const baseline = await api("GET", "/projects/relic/baseline-head");
+  assert.equal(baseline.status, 200);
+  assert.equal(baseline.body.head, c.main);
+  assert.equal((await api("GET", "/projects/relic/refreshes")).status, 200);
+  const status = await cli(["status", "--project", "relic"]);
+  assert.equal(status.code, 0, `${status.stdout}\n${status.stderr}`);
   assert.equal(tipOf(bare(), "refs/notes/atelier"), tipOf(artifacts, "refs/notes/atelier"));
   assert.equal(tipOf(bare(), "refs/tags/v0.1"), c.first);
   assert.equal(readFileSync(join(bare(), "HEAD"), "utf8").trim(), "ref: refs/heads/main");
@@ -156,6 +177,35 @@ test("move-host mirrors the baseline's branch, notes and tags into the project's
   assert.equal(creds.body.error, "bad_remote");
   assert.ok(creds.body.next);
   assert.equal((await api("POST", "/projects/relic/move-host", { remote: "ext::sh -c touch% /tmp/x" })).body.error, "bad_remote");
+});
+
+test("an old move's repository name is repaired once after a server restart, without another move", async () => {
+  const head = tipOf(bare(), "refs/heads/main");
+  const moves = (await events("project.host_moved")).length;
+  await server.close();
+  // Reproduce the persisted state written by the server before this fix.
+  const db = new DatabaseSync(join(root, "data", "ledgers", ledgerFile("project:relic")));
+  try {
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'project'").get();
+    db.prepare("UPDATE meta SET value = ? WHERE key = 'project'").run(JSON.stringify({ ...JSON.parse(row.value), repo: "relic-2" }));
+    db.exec("DELETE FROM events WHERE kind = 'project.repo_repaired'");
+  } finally { db.close(); }
+  const indexDb = new DatabaseSync(join(root, "data", "ledgers", ledgerFile("__index")));
+  try {
+    indexDb.prepare("UPDATE projects SET json = json_set(json, '$.repo', ?) WHERE name = ?").run("relic-2", "relic");
+  } finally { indexDb.close(); }
+  server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
+  base = server.url.replace("localhost", "127.0.0.1");
+  // Read the index before any request to the project Ledger.
+  assert.equal((await api("GET", "/projects")).body.find((p) => p.name === "relic").repo, "relic");
+  for (let n = 0; n < 2; n++) {
+    const baseline = await api("GET", "/projects/relic/baseline-head");
+    assert.equal(baseline.status, 200);
+    assert.equal(baseline.body.head, head);
+  }
+  assert.equal((await L().project()).repo, "relic");
+  assert.equal((await events("project.repo_repaired")).length, 1);
+  assert.equal((await events("project.host_moved")).length, moves);
 });
 
 test("migrate carries an open task: its fork's work becomes t/N at the recorded head, its claim stands, and the holder's next claim clones and pushes t/N through the hook", async () => {
@@ -411,4 +461,8 @@ test("a move past 60 seconds reports binary and oversized history as unscanned i
   const moved = JSON.parse(rows.find((r) => r[4] === "project.host_moved")[5]);
   assert.deepEqual(moved.unscanned.map((u) => u.file).sort(), ["archive.bin", "lexicon.json"]);
   assert.ok(moved.unscanned.every((u) => u.commit === added && u.fingerprint && u.reason));
+});
+test("a moved project can queue refreshes from its server baseline", async () => {
+  assert.equal((await api("POST", "/projects/relic/refreshes", {})).status, 200);
+  assert.equal((await api("GET", "/projects/relic/refreshes")).status, 200);
 });
