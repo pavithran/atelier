@@ -1,0 +1,27 @@
+atelier atelier/t416 "Docs after the cut-over: the log, README and studio.md"
+accepted head d4b9ebfad48c8bf2fafbd12b0bc25a68e127584e
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-10-31T17:31:24.249Z
+REVIEW approve by antigravity/gemini-4-argon-high at d4b9ebfad48c8bf2fafbd12b0bc25a68e127584e, recorded by antigravity/gemini-4-argon-high
+CHECKED TREE f55e1c2a4308088109f7a159fee73e637da59f33: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-31T17:19:11.311Z pavi item.created
+2026-10-31T17:19:11.311Z claude-code/opus-5.5 criteria.revised
+2026-10-31T17:19:17.637Z claude-code/opus-5.5 item.claimed
+2026-10-31T17:19:17.682Z claude-code/opus-5.5 workspace.created
+2026-10-31T17:19:53.243Z claude-code/opus-5.5 push.observed
+2026-10-31T17:19:58.305Z claude-code/opus-5.5 evidence.observed
+2026-10-31T17:19:58.653Z claude-code/opus-5.5 item.submitted
+2026-10-31T17:25:00.000Z atelier stage.stuck
+2026-10-31T17:29:43.621Z pavi item.handoff
+2026-10-31T17:30:00.000Z atelier stage.cleared
+2026-10-31T17:31:19.541Z codex/gpt-6.1-sol push.observed
+2026-10-31T17:31:24.278Z codex/gpt-6.1-sol evidence.observed
+2026-10-31T17:31:24.525Z codex/gpt-6.1-sol item.submitted
+2026-10-31T17:35:31.214Z antigravity/gemini-4-argon-high review.approved
+2026-10-31T17:35:31.548Z pavi item.accepted
+2026-10-31T17:35:31.963Z pavi land.start
+2026-10-31T17:35:31.970Z pavi landing.leased
+2026-10-31T17:35:31.978Z pavi land.lease
+2026-10-31T17:35:32.318Z pavi checkout.leased
