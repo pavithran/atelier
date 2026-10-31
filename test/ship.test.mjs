@@ -50,8 +50,8 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(p.source, "docs/atelier/ship.json");
   assert.equal(p.class, "web");
   assert.deepEqual(outline(p), [
-    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-studio.mjs deploy --env staging --version-url https://next.atelier.zone/api/version --host ai-studio [deploy]"],
-    ["verify-delivery", "node scripts/ship-studio.mjs verify --version-url https://next.atelier.zone/api/version"], ["wrap"],
+    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio [deploy]"],
+    ["verify-delivery", "node scripts/ship-studio.mjs verify --version-url https://atelier.zone/api/version"], ["wrap"],
     ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
   ]);
   const by = Object.fromEntries(p.steps.map((s) => [s.step, s]));
@@ -60,7 +60,7 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(by.deploy.runs[0].timeoutMs, 1200_000);
   assert.equal(by.deploy.runs[0].terminal, true, "the deploy hands sudo the terminal");
   assert.equal(by.deploy.runs[0].retries, undefined, "a deploy under sudo is not retried");
-  assert.equal(by.deploy.runs[0].ifChanged.since, "https://next.atelier.zone/api/version");
+  assert.equal(by.deploy.runs[0].ifChanged.since, "https://atelier.zone/api/version");
   assert.ok(by.deploy.runs[0].ifChanged.paths.includes("src/**"));
   assert.deepEqual(neededKinds(p.steps), ["deploy"], "only the deploy needs an approval");
 });
@@ -586,6 +586,7 @@ exit \${FAKE_INSTALL_EXIT:-0}
 `;
 const studioFixture = async (t) => {
   const { typecheck, scan, ...canonical } = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
+  const versionUrls = [canonical.deploy, canonical["verify-deploy"]].map(({ run }) => run[run.indexOf("--version-url") + 1]);
   const plan = { ...canonical, deploy: { ...canonical.deploy, if_changed: undefined } };
   const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: { "scripts/ship-studio.mjs": readFileSync(resolve("scripts/ship-studio.mjs"), "utf8") } });
   const bin = join(f.dir, "tools"); mkdirSync(bin);
@@ -594,7 +595,12 @@ const studioFixture = async (t) => {
   const preload = join(f.dir, "version-response.mjs");
   writeFileSync(preload, `import cp from "node:child_process"; import { syncBuiltinESMExports } from "node:module";
 const originalSpawn = cp.spawnSync; cp.spawnSync = (cmd, args, options) => originalSpawn(cmd === "/usr/bin/ssh" ? ${JSON.stringify(join(bin, "ssh"))} : cmd, args, options); syncBuiltinESMExports();
-const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://next.atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
+const versionUrls = new Set(${JSON.stringify(versionUrls)});
+const original = globalThis.fetch; globalThis.fetch = (url, options) => {
+  if (versionUrls.has(String(url))) return Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN}));
+  if (new URL(String(url)).origin === ${JSON.stringify(f.url)}) return original(url, options);
+  throw new Error("Unexpected test fetch: " + url);
+};`);
   const sshLog = join(f.dir, "ssh.txt");
   const run = (extra) => f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, SSH_LOG: sshLog, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_MAIN: f.head, SHIP_VERIFY_WINDOW_MS: "0", ATELIER_SHIP_HEAD: "spoofed", ...extra });
   const calls = () => (existsSync(sshLog) ? readFileSync(sshLog, "utf8").trim().split("\n") : []);
@@ -604,8 +610,8 @@ const original = globalThis.fetch; globalThis.fetch = (url, options) => String(u
 for (const matches of [true, false]) test(`the Studio deploy ${matches ? "installs the captured commit and passes" : "stops wrap and push when the live commit is another"} (t182)`, async (t) => {
   const { f, run, calls } = await studioFixture(t);
   const r = await run({ SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40) });
-  assert.deepEqual(calls(), [`-t -- ai-studio /usr/bin/sudo -- /Library/Atelier/install-server.sh --env staging ${f.head}`], r.stderr + r.stdout);
-  assert.match(r.stdout, /\d\. deploy +node scripts\/ship-studio\.mjs deploy --env staging --version-url https:\/\/next\.atelier\.zone\/api\/version --host ai-studio .*\[has the terminal: it may ask for a password, such as sudo's\]/);
+  assert.deepEqual(calls(), [`-t -- ai-studio /usr/bin/sudo -- /Library/Atelier/install-server.sh --env production ${f.head}`], r.stderr + r.stdout);
+  assert.match(r.stdout, /\d\. deploy +node scripts\/ship-studio\.mjs deploy --env production --version-url https:\/\/atelier\.zone\/api\/version --host ai-studio .*\[has the terminal: it may ask for a password, such as sudo's\]/);
   const deployRun = f.state.runs.find((run) => run.step === "deploy");
   assert.equal(deployRun.passed, true);
   assert.match(deployRun.outputTail, /the command had the terminal; its output was shown there and not kept/);
@@ -617,7 +623,7 @@ for (const matches of [true, false]) test(`the Studio deploy ${matches ? "instal
     assert.ok(f.state.runs.some(run => run.step === "push"));
   } else {
     assert.notEqual(r.status, 0);
-    assert.match(r.stderr + r.stdout, /live commit [0-9a-f]+ at https:\/\/next\.atelier\.zone\/api\/version does not match/);
+    assert.match(r.stderr + r.stdout, /live commit [0-9a-f]+ at https:\/\/atelier\.zone\/api\/version does not match/);
     assert.ok(!f.state.runs.some(run => ["wrap", "push"].includes(run.step)));
     assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
   }

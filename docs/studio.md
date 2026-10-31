@@ -35,7 +35,7 @@ LaunchDaemons in `/Library/LaunchDaemons`, owned by root, each run as `atelierd`
 | Daemon | Runs | Listens |
 |---|---|---|
 | `zone.atelier.server.staging` | `server/cli/serve.mjs --env staging` | 100.99.0.102:4101 |
-| `zone.atelier.server` | `server-production/cli/serve.mjs --env production` (from the cut-over) | 100.99.0.102:4100 |
+| `zone.atelier.server` | `server-production/cli/serve.mjs --env production` (since 2026-10-31) | 100.99.0.102:4100 |
 | `zone.atelier.tunnel` | `cloudflared tunnel run` | outbound to Cloudflare |
 | `zone.atelier.backup.ENV` | the nightly backup, below | nothing |
 
@@ -45,24 +45,24 @@ Both servers share `bin/node` and the home. Everything else is per environment.
 
 Agents run as `pavi`, so nothing `pavi` can write is ever run as root or as `atelierd`. The release is built on the Studio, by root, from the Studio's own repository of the project, which only reviewed, landed commits reach.
 
-`atelier ship`, run by PAVI in the registered checkout on the Mac, deploys main to staging. Its deploy step is `node scripts/ship-studio.mjs deploy --env staging --version-url https://next.atelier.zone/api/version --host ai-studio`:
+Since the 2026-10-31 cut-over, `atelier ship`, run by PAVI in the registered checkout on the Mac, deploys main to production at `atelier.zone`. Staging at `next.atelier.zone` ships from the separate `atelier-trial` project. Main's deploy step is `node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio`:
 
 1. It checks that the checkout is clean and at the commit ship captured.
-2. It checks that the branch head staging reports at `/api/version` holds that commit. After a landing it does.
-3. It runs `/usr/bin/ssh -t -- ai-studio /usr/bin/sudo -- /Library/Atelier/install-server.sh --env staging COMMIT`. sudo asks for the administrator password on the terminal. PAVI types it there. Nothing in Atelier reads it. On the Mac, ship uses absolute paths for sudo, ssh and the Command Line Tools Git. The remote command contains only fixed words, a validated environment and a 40-digit lowercase hexadecimal commit.
+2. It checks that the branch head production reports at `/api/version` holds that commit. After a landing it does.
+3. It runs `/usr/bin/ssh -t -- ai-studio /usr/bin/sudo -- /Library/Atelier/install-server.sh --env production COMMIT`. sudo asks for the administrator password on the terminal. PAVI types it there. Nothing in Atelier reads it. On the Mac, ship uses absolute paths for sudo, ssh and the Command Line Tools Git. The remote command contains only fixed words, a validated environment and a 40-digit lowercase hexadecimal commit.
 
 Server setup, tunnel setup and the installer use privileged Bash (`/bin/bash -p`), which ignores `BASH_ENV`, inherited functions and shell options. As root they discard the inherited environment (setup retains only `SUDO_USER`), set PATH, HOME to `/var/root`, umask 077 and the working directory to `/`. Service-user commands receive an empty environment with explicit HOME, PATH and locale. Health checks disable curl's configuration files. Server setup and the installer take the same PID lock at `/Library/Atelier/lock/install.lock`, under a root-owned directory writable only by root, for both environments. A second run refuses; a dead process's lock is reclaimed. The lock is released on exit, after recovery.
 
 The installer, as root, then:
 
-1. As `atelierd`, with no configuration but the repository's own and no hooks, checks that the commit is on the project's branch in `/Users/atelierd/repos/staging/atelier.git`, and writes `git archive COMMIT`.
+1. As `atelierd`, with no configuration but the repository's own and no hooks, checks that the commit is on the project's branch in `/Users/atelierd/repos/production/atelier.git`, and writes `git archive COMMIT`.
 2. Checks the archive holds only plain files and directories inside itself, and extracts it into a fresh root-owned directory.
 3. Fetches each runtime package the archived lock file installs, as `atelierd`, from the npm registry, and keeps it only if its SHA-512 is the lock file's `integrity`. No install script runs. This is `npm ci --ignore-scripts` for a lock file whose packages come from the registry; the Studio has no npm of root's own, and Homebrew's belongs to `pavi`.
 4. Writes `COMMIT`.
-5. Stops the daemon, moves `server` to `server.prev` and the new release into place, starts the daemon, and waits up to 60 seconds for `/api/version` to report the commit.
-6. On a failure at any of these points it puts back what ran before: the new release moves to `server.failed`, `server.prev` comes back, and the daemon starts again. Every run first settles what an interrupted run left, including rollback moves through `server.swap`, then proceeds with the requested install or rollback even if the current release cannot answer. At exit it checks that the installed release answers, even if recovery failed. If it cannot start or answer, the installer prints `COULD NOT START` with the environment and log path.
+5. Stops the daemon, moves `server-production` to `server-production.prev` and the new release into place, starts the daemon, and waits up to 60 seconds for `/api/version` to report the commit.
+6. On a failure at any of these points it puts back what ran before: the new release moves to `server-production.failed`, `server-production.prev` comes back, and the daemon starts again. Every run first settles what an interrupted run left, including rollback moves through `server-production.swap`, then proceeds with the requested install or rollback even if the current release cannot answer. At exit it checks that the installed release answers, even if recovery failed. If it cannot start or answer, the installer prints `COULD NOT START` with the environment and log path.
 
-The verify step then reads `https://next.atelier.zone/api/version` and passes only when its commit is the one shipped. With `--push` ship then scans and pushes main to GitHub.
+The verify step then reads `https://atelier.zone/api/version` and passes only when its commit is the one shipped. With `--push` ship then scans and pushes main to GitHub.
 
 The deploy runs only when the server's code changed since the commit live: `src/**`, `cli/serve.mjs`, `cli/private-guard.mjs`, `hooks/**`, `package.json` or `package-lock.json`. Otherwise it is skipped, with the verify step.
 
@@ -89,7 +89,7 @@ Setup refuses a source file or any parent that is a symlink, has an ACL, is writ
 
 Setup refuses unresolved `bin/node.old` or this environment's `server.old` before stopping jobs. It never treats the shared node backup as permission to delete the other environment's server. Recovery records the swap before moving code, stops all service jobs before restoring files, and checks `/api/version` after restarting the restored server. On a first installation failure it unloads the new daemon and removes the new server and plist, and restores the installer or removes it if none existed. Recovery attempts to restart other jobs even when restoring this environment fails; saved inputs remain available for repair. Archive extraction suppresses archived ownership, and setup strips ACLs from the staged server before installing it.
 
-At the cut-over, the ship file names `--env production` and `https://atelier.zone/api/version`. The installer then works on `server-production`, `repos/production` and `zone.atelier.server`.
+Since the 2026-10-31 cut-over, main's ship file names `--env production` and `https://atelier.zone/api/version`. The production installer works on `server-production`, `repos/production` and `zone.atelier.server`.
 
 ## Rolling back
 
@@ -114,15 +114,15 @@ Without sudo, `curl http://100.99.0.102:4101/api/version` shows whether staging 
 
 ## The tunnel and Access
 
-`cloudflared`, run as `atelierd`, holds one tunnel, `atelier-studio`. It carries `next.atelier.zone` to staging at 100.99.0.102:4101. From the cut-over it carries `atelier.zone` to production at port 4100 too. Its credential is only in `secrets/tunnel`.
+`cloudflared`, run as `atelierd`, holds one tunnel, `atelier-studio`. It carries `next.atelier.zone` to staging at 100.99.0.102:4101. Since the 2026-10-31 cut-over it also carries `atelier.zone` to production at port 4100. Its credential is only in `secrets/tunnel`.
 
 Cloudflare Access guards the owner pages. Staging uses the "atelier staging owner" application, production the "atelier owner" application. Each server checks the Access assertion itself, from `CF_ACCESS_ISS`, `CF_ACCESS_AUD` and `CF_ACCESS_OWNER_EMAIL` in its secrets, so a request over the tailnet gets no owner page either. `/api/*`, `/git/*` and `/live.js` stay outside Access; their bearer tokens are checked by the server.
 
 Requests through the tunnel arrive on the tailnet listener. A Git remote is given by the request's Host: a request whose Host is `PUBLIC_ORIGIN`'s host, such as `next.atelier.zone`, is told the public remote, `https://next.atelier.zone/git/KEY.git`. Any other request is told the tailnet remote, `http://100.99.0.102:4101/git/KEY.git`. Both are the server's own, so a made-up Host only picks which one.
 
-## Production at the cut-over
+## Production cut-over procedure
 
-Not run yet. At the cut-over, with PAVI's go, in this order:
+The procedure for the 2026-10-31 cut-over, with PAVI's authorization:
 
 1. `sudo /bin/bash -p /private/var/root/setup-server.sh --env production RELEASE.tar NODE ~/.config/atelier/production-token`, after reviewing and copying the pair as above. It stops every `atelierd` job (staging's server, the tunnel, the backups), checks nothing of `atelierd` runs, makes `server-production`, the production daemon on port 4100 and production's owner token, puts node into `bin/` beside `cloudflared`, and starts again every job that ran. On a failure it puts its code and plist back and starts them all.
 2. `/usr/bin/sudo /bin/bash -p scripts/studio/setup-tunnel.sh --production CLOUDFLARED CREDENTIALS.json ACCESS_AUD`, with the "atelier owner" application's audience tag. It stops every `atelierd` job the same way, adds `atelier.zone` to the tunnel, writes production's Access settings, gives production the origin `https://atelier.zone`, and starts again every job that ran. It does not touch DNS.

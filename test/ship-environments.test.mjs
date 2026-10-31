@@ -1,6 +1,5 @@
-// The staging ship order: docs/atelier/ship-staging.json, read with ship's
-// own loader, and main's docs/atelier/ship.json, which deploys staging too,
-// both through scripts/ship-studio.mjs to the Studio (Atelier 2.0, task 9).
+// The staging and production ship orders, read with ship's own loader,
+// both deploy through scripts/ship-studio.mjs to the Studio.
 // The script itself is tested in test/ship-studio.test.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,8 +10,8 @@ import { composeShip, ship } from "../cli/ship.mjs";
 
 const STAGING_FILE = "docs/atelier/ship-staging.json";
 const STAGING_URL = "https://next.atelier.zone/api/version";
-const DEPLOY = ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--version-url", STAGING_URL, "--host", "ai-studio"];
-const VERIFY = ["node", "scripts/ship-studio.mjs", "verify", "--version-url", STAGING_URL];
+const STAGING_DEPLOY = ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--version-url", STAGING_URL, "--host", "ai-studio"];
+const STAGING_VERIFY = ["node", "scripts/ship-studio.mjs", "verify", "--version-url", STAGING_URL];
 
 test("the staging ship file composes with ship's loader: typecheck, the Studio deploy of staging with the terminal, verify at next.atelier.zone, and no scan or push", () => {
   const p = composeShip(resolve("."), STAGING_FILE);
@@ -23,31 +22,30 @@ test("the staging ship file composes with ship's loader: typecheck, the Studio d
   assert.deepEqual(steps, ["commit", "typecheck", "deploy", "verify-delivery", "wrap"]);
   for (const step of ["scan", "push", "baseline", "studio"]) assert.ok(!steps.includes(step), step);
   const by = Object.fromEntries(p.steps.map((s) => [s.step, s]));
-  assert.deepEqual(by.deploy.runs.map((r) => r.argv), [DEPLOY]);
+  assert.deepEqual(by.deploy.runs.map((r) => r.argv), [STAGING_DEPLOY]);
   assert.equal(by.deploy.runs[0].kind, "deploy");
   assert.equal(by.deploy.runs[0].terminal, true, "sudo asks for the password on the terminal");
   assert.equal(by.deploy.runs[0].retries, undefined, "a deploy under sudo is not retried");
   assert.equal(by.deploy.runs[0].ifChanged.since, STAGING_URL);
-  assert.deepEqual(by["verify-delivery"].runs.map((r) => r.argv), [VERIFY]);
+  assert.deepEqual(by["verify-delivery"].runs.map((r) => r.argv), [STAGING_VERIFY]);
   // No run of the staging order reaches production.
   assert.doesNotMatch(JSON.stringify(p.steps), /https:\/\/atelier\.zone/);
 });
 
-// Main never deploys production: its ship file names staging on the Studio.
-test("ship reads docs/atelier/ship.json unless told otherwise, and main's order deploys and verifies staging, with the push the staging file lacks and no baseline or studio step", () => {
+test("ship reads docs/atelier/ship.json unless told otherwise, and main's order deploys and verifies production, with the push the staging file lacks and no baseline or studio step", () => {
   const main = composeShip(resolve("."));
   assert.equal(main.source, "docs/atelier/ship.json");
   assert.deepEqual(main.problems, []);
   assert.ok(main.steps.some((s) => s.step === "push"));
   for (const step of ["baseline", "studio"]) assert.ok(!main.steps.some((s) => s.step === step), step);
   const deploy = main.steps.find((s) => s.step === "deploy").runs[0];
-  assert.deepEqual(deploy.argv, DEPLOY);
+  assert.deepEqual(deploy.argv, ["node", "scripts/ship-studio.mjs", "deploy", "--env", "production", "--version-url", "https://atelier.zone/api/version", "--host", "ai-studio"]);
   assert.equal(deploy.terminal, true);
-  assert.equal(deploy.ifChanged.since, STAGING_URL);
+  assert.equal(deploy.ifChanged.since, "https://atelier.zone/api/version");
   for (const path of ["src/**", "hooks/**", "cli/serve.mjs", "package-lock.json"]) assert.ok(deploy.ifChanged.paths.includes(path), path);
-  assert.deepEqual(main.steps.find((s) => s.step === "verify-delivery").runs[0].argv, VERIFY);
-  // No run of main's order reaches production.
-  assert.doesNotMatch(JSON.stringify(main.steps), /https:\/\/atelier\.zone/);
+  assert.deepEqual(main.steps.find((s) => s.step === "verify-delivery").runs[0].argv, ["node", "scripts/ship-studio.mjs", "verify", "--version-url", "https://atelier.zone/api/version"]);
+  // Main's order leaves staging to atelier-trial.
+  assert.doesNotMatch(JSON.stringify(main.steps), /https:\/\/next\.atelier\.zone/);
 });
 
 test('"push": false leaves the push step out, and refuses the steps that run with it', (t) => {

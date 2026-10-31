@@ -145,8 +145,9 @@ request to the live site, before `atelier ship` runs for it.
 
 ### From `docs/atelier/ship.json`
 
-Atelier's own, as main holds it. Main deploys and verifies the staging
-server on the Studio (`docs/studio.md`).
+Atelier's own, as main holds it. Since the 2026-10-31 cut-over, main deploys
+and verifies production at `atelier.zone` on the Studio (`docs/studio.md`).
+Staging at `next.atelier.zone` ships from the separate `atelier-trial` project.
 
 ```json
 {
@@ -156,14 +157,14 @@ server on the Studio (`docs/studio.md`).
   "description": "Atelier's own delivery.",
   "typecheck": { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 },
   "deploy": {
-    "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "staging", "--version-url", "https://next.atelier.zone/api/version", "--host", "ai-studio"],
+    "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "production", "--version-url", "https://atelier.zone/api/version", "--host", "ai-studio"],
     "terminal": true, "timeout_seconds": 1200,
     "if_changed": {
       "paths": ["src/**", "cli/serve.mjs", "cli/private-guard.mjs", "hooks/**", "package.json", "package-lock.json"],
-      "since": "https://next.atelier.zone/api/version"
+      "since": "https://atelier.zone/api/version"
     }
   },
-  "verify-deploy": { "run": ["node", "scripts/ship-studio.mjs", "verify", "--version-url", "https://next.atelier.zone/api/version"], "timeout_seconds": 90 },
+  "verify-deploy": { "run": ["node", "scripts/ship-studio.mjs", "verify", "--version-url", "https://atelier.zone/api/version"], "timeout_seconds": 90 },
   "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"], "timeout_seconds": 300 },
   "push": { "remote": "github", "branch": "main" }
 }
@@ -231,20 +232,17 @@ HEAD. `docs/studio.md` says more. Failure stops the ship before wrap or push.
 
 ## Production and staging
 
-Atelier 2.0 runs as two servers on the Studio that share no state: staging at
-`next.atelier.zone` (port 4101) and, from the cut-over, production at
-`atelier.zone` (port 4100). Until then production is the 1.0 Worker, shipped
-from `release/1.0` with that branch's own ship file. `docs/studio.md`
-describes both.
+Since the 2026-10-31 cut-over, Atelier 2.0 runs as two servers on the Studio
+that share no state: production at `atelier.zone` (port 4100) and staging at
+`next.atelier.zone` (port 4101). `docs/studio.md` describes both.
 
-- **Main ships to staging.** Main's `docs/atelier/ship.json` deploys with
-  `node scripts/ship-studio.mjs deploy --env staging --version-url
-  https://next.atelier.zone/api/version --host ai-studio`, checks
-  for server changes against `https://next.atelier.zone/api/version` and
-  verifies there; with `--push` it then scans and pushes main to GitHub. It
-  never deploys production.
-- **At the cut-over** the ship file names `--env production` and
-  `https://atelier.zone/api/version` instead.
+- **Main ships to production.** Main's `docs/atelier/ship.json` deploys with
+  `node scripts/ship-studio.mjs deploy --env production --version-url
+  https://atelier.zone/api/version --host ai-studio`, checks
+  for server changes against `https://atelier.zone/api/version` and
+  verifies there; with `--push` it then scans and pushes main to GitHub.
+- **Staging ships from `atelier-trial`.** The separate project ships to
+  `next.atelier.zone`.
 - **`docs/atelier/ship-staging.json`** is the staging order without the
   push steps (`"push": false`, no scan), for shipping staging from a
   checkout that must not push.
