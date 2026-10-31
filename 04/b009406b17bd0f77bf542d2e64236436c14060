@@ -1,0 +1,26 @@
+atelier atelier/t415 "macOS per-user services must not block installs on the Studio"
+accepted head ee16b68b3b59888a5c4ae1499dec12ab18c8238e
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-10-31T16:52:51.760Z
+REVIEW approve by antigravity/gemini-4-argon-high at ee16b68b3b59888a5c4ae1499dec12ab18c8238e, recorded by antigravity/gemini-4-argon-high
+CHECKED TREE 2937d111bf7ce04e401b7399ef13507776b7c3f8: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-31T16:26:56.241Z pavi item.created
+2026-10-31T16:26:56.241Z claude-code/opus-5.5 criteria.revised
+2026-10-31T16:27:07.382Z codex/gpt-6.1-sol item.claimed
+2026-10-31T16:27:07.431Z codex/gpt-6.1-sol workspace.created
+2026-10-31T16:33:40.722Z codex/gpt-6.1-sol push.observed
+2026-10-31T16:33:45.542Z codex/gpt-6.1-sol evidence.observed
+2026-10-31T16:33:45.787Z codex/gpt-6.1-sol item.submitted
+2026-10-31T16:45:00.000Z atelier stage.stuck
+2026-10-31T16:52:47.119Z codex/gpt-6.1-sol push.observed
+2026-10-31T16:52:51.794Z codex/gpt-6.1-sol evidence.observed
+2026-10-31T16:52:52.044Z codex/gpt-6.1-sol item.submitted
+2026-10-31T16:55:00.000Z atelier stage.cleared
+2026-10-31T17:05:00.000Z atelier stage.stuck
+2026-10-31T17:18:18.966Z antigravity/gemini-4-argon-high review.approved
+2026-10-31T17:18:19.260Z pavi item.accepted
+2026-10-31T17:18:19.701Z pavi land.start
+2026-10-31T17:18:19.709Z pavi landing.leased
+2026-10-31T17:18:19.719Z pavi land.lease
+2026-10-31T17:18:20.065Z pavi checkout.leased
