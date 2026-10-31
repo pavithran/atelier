@@ -11,6 +11,48 @@ const gitEnv = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMI
 const git = (cwd, ...args) => execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd, env: gitEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const tipOf = (dir, ref) => { try { return git(dir, "rev-parse", "--verify", "--quiet", ref); } catch { return null; } };
 
+test("one refusal records every key-shaped line across batches and one clearance lets the move through", async (t) => {
+  const { mirrorBranch } = await import("../src/git/move.mjs");
+  const { Namespace } = await import("../src/runtime/namespace.mjs");
+  const { Ledger } = await import("../src/ledger.ts");
+  const source = join(root, "all-hits.git"), into = join(root, "all-hits-into.git");
+  for (const dir of [source, into]) git(root, "init", "-q", "--bare", "-b", "main", dir);
+  let input = "";
+  const expected = [];
+  for (let i = 1; i <= 805; i++) {
+    let files = "";
+    if ([2, 402, 802].includes(i)) {
+      const file = `keys-${i}.env`;
+      const lines = Array.from({ length: 25 }, (_, n) => `TOKEN_${n}=${["sk", "proj", "TESTONLY", `${i}_${n}_`, "f".repeat(28)].join("-")}`);
+      const content = `${lines.join("\n")}\n`;
+      files = `M 100644 inline ${file}\ndata ${Buffer.byteLength(content)}\n${content}\n`;
+      expected.push(...lines.map((_, n) => [file, n + 1]));
+    } else if ([3, 403, 803].includes(i)) files = `D keys-${i - 1}.env\n`;
+    input += `commit refs/heads/main\ncommitter Test <t@example.test> ${1700000000 + i} +0000\ndata 1\nx\n${files}\n`;
+  }
+  execFileSync("git", ["fast-import", "--quiet"], { cwd: source, env: gitEnv, input });
+  const ns = new Namespace({ dir: join(root, "all-hits-ledger"), Class: Ledger, env: {} });
+  t.after(() => ns.close());
+  const ledger = ns.get(ns.idFromName("project:all-hits"));
+  const scan = { root: join(root, "all-hits-scans"), policy: { clearances: [], private: [] } };
+  const result = await mirrorBranch({ dir: into, branch: "main", remote: source, scan });
+  assert.equal(result.error, "scan_refused", JSON.stringify(result));
+  assert.match(result.detail, /the secret scan found 75 key-shaped lines in total\./);
+  assert.deepEqual(result.hits.map((h) => [h.file, h.line]), expected);
+  assert.equal(tipOf(into, "refs/heads/main"), null);
+  await ledger.hostMoveRefused("owner", source, result.remoteHead, result.hits);
+  const events = (await ledger.dumpRows("events")).rows.map((r) => ({ kind: r[4], data: JSON.parse(r[5]) }));
+  const refusal = events.find((e) => e.kind === "project.host_move_refused");
+  assert.deepEqual(refusal.data.flags.map((h) => [h.file, h.line]), expected);
+  assert.ok(refusal.data.flags.every((h) => /^[0-9a-f]{40}$/.test(h.commit)));
+  assert.doesNotMatch(JSON.stringify(events), /sk-proj-TESTONLY/);
+  assert.deepEqual(await ledger.clearHostMove("owner", "synthetic test keys", { quote: "clear the test keys", acting: "codex/gpt-6-astra" }), { cleared: expected.length });
+  scan.policy.clearances = (await ledger.hostMoveScan()).clearances;
+  const moved = await mirrorBranch({ dir: into, branch: "main", remote: source, scan });
+  assert.equal(moved.moved, "created", JSON.stringify(moved));
+  assert.equal(tipOf(into, "refs/heads/main"), tipOf(source, "refs/heads/main"));
+});
+
 for (const skewed of [false, true]) test(`move scans ${skewed ? "a timestamp-skewed root" : "multiple roots"} without an empty parent`, async () => {
   const { mirrorBranch } = await import("../src/git/move.mjs");
   const source = join(root, `roots-${skewed}.git`), into = join(root, `roots-into-${skewed}.git`);
