@@ -1,0 +1,28 @@
+atelier atelier/t414 "Ship Atelier to production from production's main"
+accepted head 318e77dd62edf8a5e731741b1e3c3d52afa42f1f
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-10-31T16:11:40.383Z
+REVIEW approve by antigravity/gemini-4-argon-high at 318e77dd62edf8a5e731741b1e3c3d52afa42f1f, recorded by antigravity/gemini-4-argon-high
+CHECKED TREE b9b74381ad9357617a58113b795aa3c23e177072: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-31T15:59:00.094Z owner item.created
+2026-10-31T15:59:00.094Z claude-code/opus-5.5 criteria.revised
+2026-10-31T15:59:04.284Z claude-code/opus-5.5 item.claimed
+2026-10-31T15:59:04.355Z claude-code/opus-5.5 workspace.created
+2026-10-31T15:59:46.128Z claude-code/opus-5.5 push.observed
+2026-10-31T16:02:22.783Z claude-code/opus-5.5 evidence.observed
+2026-10-31T16:02:23.035Z claude-code/opus-5.5 item.submitted
+2026-10-31T16:11:27.420Z claude-code/opus-5.5 item.handoff
+2026-10-31T16:11:34.679Z codex/gpt-6.1-sol push.observed
+2026-10-31T16:11:40.408Z codex/gpt-6.1-sol evidence.observed
+2026-10-31T16:11:40.709Z codex/gpt-6.1-sol item.submitted
+2026-10-31T16:24:45.780Z owner land.start
+2026-10-31T16:24:46.740Z owner land.review
+2026-10-31T16:24:53.555Z antigravity/gemini-4-argon-high review.approved
+2026-10-31T16:24:53.555Z atelier/orchestrator goal.notes
+2026-10-31T16:24:53.865Z owner item.accepted
+2026-10-31T16:24:54.277Z owner land.start
+2026-10-31T16:24:54.284Z owner landing.leased
+2026-10-31T16:24:54.292Z owner land.lease
+2026-10-31T16:24:54.635Z owner checkout.leased
