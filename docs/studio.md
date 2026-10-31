@@ -41,6 +41,46 @@ LaunchDaemons in `/Library/LaunchDaemons`, owned by root, each run as `atelierd`
 
 Both servers share `bin/node` and the home. Everything else is per environment.
 
+## macOS per-user services
+
+If ship reports that `/Users/atelierd` is owned by `atelierd`, rerun the
+reviewed server setup. It stops both the Atelier system jobs and the
+`user/UID` launchd domain before requiring that no `atelierd` process
+remains. It checks the home is a plain directory with an accepted owner,
+no group or other writes, and no ACL, then restores `root:atelierd` mode
+750 and installs the trusted node and release again. Ship refuses before
+using node from that home; changing only the home's owner cannot establish
+that its contents were preserved while it was writable by `atelierd`.
+
+After reviewing and copying the setup pair into `/private/var/root` as
+specified under Shipping a release, run this repair for production. Replace
+`RELEASE.tar` and `NODE` with absolute paths to the trusted release archive
+and Node binary; the token argument is the developer's output copy. For
+staging, replace both occurrences of `production` with `staging`.
+
+```sh
+/usr/bin/sudo /bin/bash -p /private/var/root/setup-server.sh --env production RELEASE.tar NODE ~/.config/atelier/production-token
+```
+
+On 2026-10-31 the Studio ran `distnoted`, `lsd`, `cfprefsd`, `trustd`, `secd`
+and `containermanagerd` as `atelierd`, with parent PID 1, after its first
+HTTPS use. The HTTPS request may have triggered macOS's Security framework;
+that trigger has not been established. `containermanagerd` created
+`/Users/atelierd/Library` as `atelierd:atelierd` mode 700 and changed the
+home's owner to `atelierd:atelierd`, leaving mode 750. These services belong
+to the per-user launchd domain, independently of Atelier's system jobs.
+Stopping only the system jobs therefore left processes running and blocked
+setup. Later HTTPS use can start the services again.
+
+If setup cannot stop an unrelated `atelierd` process before replacing code
+or plists, recovery restarts the saved daemons without changing installed
+files. After a replacement, recovery still requires all service-user
+processes to stop before restoring files; a failed shutdown leaves the code
+in place and reports the failure. It attempts to restart every saved
+daemon from the files left in place in either case, skipping jobs already
+loaded. A restart cannot succeed if the failed run left required files
+missing; saved inputs remain available for repair.
+
 ## Shipping a release
 
 Agents run as `pavi`, so nothing `pavi` can write is ever run as root or as `atelierd`. The release is built on the Studio, by root, from the Studio's own repository of the project, which only reviewed, landed commits reach.
@@ -262,8 +302,8 @@ Work recorded after the backup was made (at most a day) is lost from the Ledger;
 
 `setup-backup.sh` and `setup-restore.sh` have been run only with `DRYRUN=1`; neither has run on the Studio.
 
-`test/ship-studio.test.mjs` runs `install-server.sh` for real, not as root, against a scratch home holding a bare repository, with stand-in `launchctl`, `lsof`, `curl`, `sudo` and `mv`. It shows that ship passes the installer the environment and the commit alone; that the installer builds the release from the repository with `COMMIT`, refuses a commit off the project's branch or an archive holding a link, and keeps runtime packages only when their SHA-512 matches the lock file; and that a failure at each point of the swap and of a rollback (each move, the daemon's start, the wait) puts back the release that ran. It also kills the installer after each stop, move and start of an install or rollback, then requests an invalid commit and checks that the installed service answers; overlaps two runs to check the lock; and checks environment clearing and curl configuration suppression. It also replaces a live release that cannot answer, through both rollback and a fresh install. These tests use fakes and run without root. `test/ship.test.mjs` runs `atelier ship` with main's ship file and a stand-in `ssh`. `test/setup-server.test.mjs` shows that staging's setup still makes the user, directories, token and server settings the 2026-10-28 script made (kept in `test/fixtures/studio/`), with absolute Git configuration in the daemon plist, that setup checks both source files and every parent for root ownership, permissions, symlinks and ACLs, installs only the sibling installer at `/Library/Atelier` and adds node to `bin/` without touching the rest, what production gets instead, and, through the scripts' own functions, that production's setup and tunnel step stop every `atelierd` job and start again those that ran, on a failure too. Additional setup tests cover hostile `BASH_ENV`, environment scrubbing, script shims, empty or erroneous library listings, missing tools, unsafe lock parents, lock contention, shared leftover backups, failed backup moves, failed shutdown and failed recovery health checks. `test/version-commit.test.mjs` and `test/claim-branch.test.mjs` cover the commit at `/api/version` and the remote chosen by Host.
+`test/ship-studio.test.mjs` runs `install-server.sh` for real, not as root, against a scratch home holding a bare repository, with stand-in `launchctl`, `lsof`, `curl`, `sudo` and `mv`. It shows that ship passes the installer the environment and the commit alone; that the installer builds the release from the repository with `COMMIT`, refuses a commit off the project's branch or an archive holding a link, and keeps runtime packages only when their SHA-512 matches the lock file; and that a failure at each point of the swap and of a rollback (each move, the daemon's start, the wait) puts back the release that ran. It also kills the installer after each stop, move and start of an install or rollback, then requests an invalid commit and checks that the installed service answers; overlaps two runs to check the lock; and checks environment clearing and curl configuration suppression. It also replaces a live release that cannot answer, through both rollback and a fresh install. These tests use fakes and run without root. `test/ship.test.mjs` runs `atelier ship` with main's ship file and a stand-in `ssh`. `test/setup-server.test.mjs` shows that staging's setup still makes the user, directories, token and server settings the 2026-10-28 script made (kept in `test/fixtures/studio/`), with absolute Git configuration in the daemon plist, that setup checks both source files and every parent for root ownership, permissions, symlinks and ACLs, installs only the sibling installer at `/Library/Atelier` and adds node to `bin/` without touching the rest, what production gets instead, and, through the scripts' own functions, that production's setup and tunnel step stop every `atelierd` job and start again those that ran, on a failure too. Additional setup tests cover macOS per-user domain shutdown, service-owned home repair and its ownership, mode, link and ACL refusals, the installer's documented repair command, recovery with an unrelated process still running before and after code changes, hostile `BASH_ENV`, environment scrubbing, script shims, empty or erroneous library listings, missing tools, unsafe lock parents, lock contention, shared leftover backups, failed backup moves, failed shutdown and failed recovery health checks. `test/version-commit.test.mjs` and `test/claim-branch.test.mjs` cover the commit at `/api/version` and the remote chosen by Host.
 
-`install-server.sh`, `setup-server.sh --env production` and the tunnel script's production step have not run on the Studio.
+The per-user domain shutdown and recovery changes have been tested with stand-ins, not on the Studio.
 
 `test/git-command.test.mjs` checks daemon Git selection and executes hook wrappers with no Node on PATH. The setup tests run the real trust checks against developer-owned temporary parents and script shims, check cleanup installation before lock acquisition, and simulate first production failures. Installer integration tests still substitute service operations as a non-root user; they now run tool validation and Mach-O Node validation. These tests establish local behavior, not a privileged Studio deployment. Socket-dependent HTTP, hook, registry and backup tests require the orchestrator’s unrestricted run.

@@ -210,7 +210,7 @@ STAT="$1/stat" LS="$1/ls"
 trusted_source "$2" || { source_help; exit 1; }
 GIT="$2" OTOOL=/bin/ls check_tools`, SETUP, bin, path], { env: { ...env(), ...extra }, encoding: "utf8" });
   assert.equal(run(join(source, "install-server.sh")).status, 0);
-  for (const path of ["/", "/private", root, source, join(source, "setup-server.sh"), join(source, "install-server.sh")]) {
+  for (const path of ["/", `/${root.split("/")[1]}`, root, source, join(source, "setup-server.sh"), join(source, "install-server.sh")]) {
     for (const kind of ["owner", "mode", "acl"]) {
       const target = path.endsWith("setup-server.sh") ? path : join(source, "install-server.sh");
       const r = run(target, { BAD_PATH: path, BAD_KIND: kind });
@@ -316,14 +316,16 @@ function jobsHarness(loadedJobs) {
   for (const job of loadedJobs) writeFileSync(join(h, "state", job), "");
   writeFileSync(join(bin, "launchctl"), `#!/bin/sh
 s="${h}/state"; echo "$*" >> "${h}/launchctl.log"
+job=\${2#system/}; case "$2" in user/*) job=user-domain ;; esac
 case "$1" in
-  print) [ -e "$s/\${2#system/}" ] ;;
-  bootout) rm -f "$s/\${2#system/}" ;;
+  print) [ -e "$s/$job" ] ;;
+  bootout) rm -f "$s/$job" ;;
   bootstrap) j=$(basename "$3" .plist); : > "$s/$j" ;;
 esac
 `);
   writeFileSync(join(bin, "pgrep"), `#!/bin/sh\n[ -n "$(ls "${h}/state")" ]\n`);
-  for (const f of ["launchctl", "pgrep"]) spawnSync("chmod", ["755", join(bin, f)]);
+  writeFileSync(join(bin, "id"), "#!/bin/sh\necho 450\n");
+  for (const f of ["launchctl", "pgrep", "id"]) spawnSync("chmod", ["755", join(bin, f)]);
   const log = () => readFileSync(join(h, "launchctl.log"), "utf8");
   const state = () => readdirSync(join(h, "state")).sort();
   return { h, bin, log, state };
@@ -332,7 +334,7 @@ esac
 test("production's setup stops every atelierd job, staging's server and the tunnel included, and starts again those that ran", { skip: darwin }, () => {
   const j = jobsHarness(["zone.atelier.server.staging", "zone.atelier.tunnel", "zone.atelier.backup.staging"]);
   const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
-LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep"
+LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep" ID_CMD="${j.bin}/id"
 loaded=" zone.atelier.server.staging zone.atelier.tunnel zone.atelier.backup.staging"
 stop_all || exit 3
 ls "${j.h}/state" | wc -l | tr -d ' '
@@ -356,7 +358,7 @@ test("production's setup, failing midway, puts its code back and starts every jo
   writeFileSync(join(home, "bin", "node"), "new node");
   writeFileSync(join(home, "bin", "cloudflared"), "staging's tunnel");
   const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
-LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep"
+LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep" ID_CMD="${j.bin}/id"
 HOME_DIR="${home}"
 loaded=" zone.atelier.server.staging zone.atelier.tunnel"
 stop_all || exit 3
@@ -377,7 +379,7 @@ test("the tunnel's production step stops every atelierd job, staging's server in
   const r = spawnSync("/bin/bash", ["-p", "-c", `${jobs}\n${fn("stop_all")}\n${fn("start_loaded")}
 SVC=atelierd
 SEQ=/usr/bin/seq SLEEP=/bin/sleep
-LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep"
+LAUNCHCTL="${j.bin}/launchctl" PGREP="${j.bin}/pgrep" ID_CMD="${j.bin}/id"
 loaded=" zone.atelier.server.staging zone.atelier.server zone.atelier.tunnel"
 stop_all || exit 3
 ls "${j.h}/state" | wc -l | tr -d ' '
@@ -520,7 +522,7 @@ test("setup recovery leaves code untouched if bootout fails, and reports a faile
 HOME_DIR="$1"; stopped=1; swapped=1; loaded=" $LABEL"
 LAUNCHCTL=fake_launchctl
 fake_launchctl() { case "$1" in print) return 0 ;; bootout) return ${failStop ? 1 : 0} ;; bootstrap) return 0 ;; esac; }
-${failStop ? "" : "stop_all() { return 0; }; health() { return 1; }"}
+${failStop ? "health() { return 0; }" : "stop_all() { return 0; }; health() { return 1; }"}
 recover`, SETUP, h], { encoding: "utf8" });
     assert.equal(r.status, 1, r.stderr);
     assert.match(r.stderr, failStop ? /bootout failed/ : /did not start or answer \/api\/version/);
@@ -638,4 +640,99 @@ service_command /usr/bin/env`, installer], { env: { ...process.env, NODE_OPTIONS
   assert.match(r.stdout, /^HOME=\/service-home$/m);
   assert.match(r.stdout, /^PATH=\/usr\/bin:\/bin:\/usr\/sbin:\/sbin$/m);
   assert.doesNotMatch(r.stdout, /NODE_OPTIONS|SERVICE_SECRET/);
+});
+
+test("setup stops macOS's user domain before checking processes and restores the home", { skip: darwin }, () => {
+  const j = jobsHarness(["zone.atelier.server", "user-domain"]);
+  const home = join(j.h, "home");
+  mkdirSync(home, { mode: 0o750 });
+  const text = readFileSync(SETUP, "utf8");
+  const directories = text.slice(text.indexOf('# 4. Directories.'), text.indexOf('\nfor d in data data/staging'));
+  const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+HOME_DIR="$1" SVC=atelierd
+LAUNCHCTL="$2/launchctl" PGREP="$2/pgrep" ID_CMD="$2/id"
+SEQ=/usr/bin/seq SLEEP=/usr/bin/true
+STAT=metadata LS=listing
+metadata() { case "$2" in %Su) echo atelierd ;; %Lp) echo 750 ;; esac; }
+listing() { echo directory; }
+trusted_entry() { [ "$1" = / ] || [ "$1" = /Users ]; }
+CHOWN=record_owner
+record_owner() { [ "$1" = root:atelierd ] && [ "$2" = "$HOME_DIR" ] && echo "$*" > "$HOME_DIR/owner"; }
+dry() { return 1; }
+run() { "$@"; }
+stop_all || exit 3
+${directories}
+echo completed`, SETUP, home, j.bin], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /completed/);
+  assert.equal(readFileSync(join(home, "owner"), "utf8"), `root:atelierd ${home}\n`);
+  assert.equal(spawnSync("/usr/bin/stat", ["-f", "%Lp", home], { encoding: "utf8" }).stdout.trim(), "750");
+  assert.ok(j.log().includes("bootout user/450"));
+  assert.deepEqual(j.state(), []);
+});
+
+test("setup recovery restarts all saved daemons while an unrelated process remains", { skip: darwin }, () => {
+  for (const currentLoaded of [false, true, "changed"]) {
+    const jobs = ["zone.atelier.server", "zone.atelier.server.staging", "zone.atelier.tunnel"];
+    const j = jobsHarness(currentLoaded === true ? [jobs[0]] : []);
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+LAUNCHCTL="$1/launchctl"
+loaded="${jobs.join(" ")}" stopped=1 swapped=${currentLoaded === "changed" ? "1" : ""}
+${currentLoaded === true ? "stop_all() { return 1; }" : `PGREP=/usr/bin/true ID_CMD="$1/id" SEQ=once SLEEP=/usr/bin/true
+once() { echo 1; }`}
+RM=refuse_write MV=refuse_write INSTALL=refuse_write
+refuse_write() { echo unexpected-write >&2; return 9; }
+health() { "$LAUNCHCTL" print "system/$LABEL"; }
+recover`, SETUP, j.bin], { encoding: "utf8" });
+    assert.equal(r.status, currentLoaded === "changed" ? 1 : 0, r.stderr);
+    assert.doesNotMatch(r.stderr, /unexpected-write/);
+    if (currentLoaded === "changed") assert.match(r.stderr, /recovery bootout failed; code left in place/);
+    else assert.doesNotMatch(r.stderr, /recovery bootout failed/);
+    assert.deepEqual(j.state(), [...jobs].sort());
+    assert.equal(j.log().split('\n').filter((l) => l.startsWith('bootstrap')).length, currentLoaded === true ? 2 : 3);
+  }
+});
+
+test("installer refuses a macOS service-owned home with the documented setup repair", () => {
+  const installer = resolve("scripts/studio/install-server.sh");
+  const h = mkdtempSync(join(root, "home-repair-"));
+  for (const env of ["production", "staging"]) {
+    const r = spawnSync("/bin/bash", ["-p", "-c", `INSTALL_SERVER_LIB=1 source "$0" --env "$2" ${"a".repeat(40)}
+HOME_DIR="$1" SVC=atelierd STAT=metadata
+metadata() { echo atelierd; }
+check_home_owner`, installer, h, env], { encoding: "utf8" });
+    assert.equal(r.status, 1, r.stderr);
+    assert.ok(r.stderr.includes(`/usr/bin/sudo /bin/bash -p /private/var/root/setup-server.sh --env ${env} RELEASE.tar NODE ~/.config/atelier/${env}-token`));
+    assert.match(r.stderr, /absolute trusted input paths/);
+  }
+  const doc = readFileSync(resolve("docs/studio.md"), "utf8");
+  assert.match(doc, /\/usr\/bin\/sudo \/bin\/bash -p \/private\/var\/root\/setup-server.sh --env production RELEASE.tar NODE ~\/.config\/atelier\/production-token/);
+  const text = readFileSync(installer, "utf8");
+  assert.ok(text.indexOf('\n  check_home_owner\n') < text.indexOf('\n  trusted_source "$NODE"'));
+});
+
+test("setup home repair refuses links, unexpected owners, writable modes and ACLs before chown", () => {
+  const h = mkdtempSync(join(root, "unsafe-home-"));
+  mkdirSync(join(h, "plain"));
+  symlinkSync(join(h, "plain"), join(h, "link"));
+  const text = readFileSync(SETUP, "utf8");
+  const directories = text.slice(text.indexOf('# 4. Directories.'), text.indexOf('\nfor d in data data/staging'));
+  for (const [path, owner, mode, acl, reason] of [
+    ["link", "atelierd", "750", "", /is a link/],
+    ["plain", "pavi", "750", "", /owned by pavi/],
+    ["plain", "atelierd", "770", "", /writable/],
+    ["plain", "atelierd", "750", "acl", /carries an ACL/],
+  ]) {
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+HOME_DIR="$1" SVC=atelierd STAT=metadata LS=listing
+metadata() { case "$2" in %Su) echo "$OWNER_VALUE" ;; %Lp) echo "$MODE_VALUE" ;; esac; }
+listing() { echo directory; [ -z "$ACL_VALUE" ] || echo "$ACL_VALUE"; return 0; }
+trusted_entry() { return 0; }
+dry() { return 1; }
+run() { echo unexpected-write >&2; return 9; }
+${directories}`, SETUP, join(h, path)], { env: { ...process.env, OWNER_VALUE: owner, MODE_VALUE: mode, ACL_VALUE: acl }, encoding: "utf8" });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, reason);
+    assert.doesNotMatch(r.stderr, /unexpected-write/);
+  }
 });
