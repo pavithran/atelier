@@ -521,11 +521,12 @@ test("setup recovery leaves code untouched if bootout fails, and reports a faile
     const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
 HOME_DIR="$1"; stopped=1; swapped=1; loaded=" $LABEL"
 LAUNCHCTL=fake_launchctl
-fake_launchctl() { case "$1" in print) return 0 ;; bootout) return ${failStop ? 1 : 0} ;; bootstrap) return 0 ;; esac; }
-${failStop ? "health() { return 0; }" : "stop_all() { return 0; }; health() { return 1; }"}
+fake_launchctl() { case "$1" in print) return 0 ;; bootout) return ${failStop ? 1 : 0} ;; bootstrap) echo unexpected-bootstrap; return 0 ;; esac; }
+${failStop ? "health() { echo unexpected-health; return 0; }" : "stop_all() { return 0; }; health() { return 1; }"}
 recover`, SETUP, h], { encoding: "utf8" });
     assert.equal(r.status, 1, r.stderr);
     assert.match(r.stderr, failStop ? /bootout failed/ : /did not start or answer \/api\/version/);
+    assert.doesNotMatch(r.stdout, /unexpected-bootstrap|unexpected-health/);
     assert.equal(readFileSync(join(h, "server-production/COMMIT"), "utf8"), failStop ? "new" : "old");
   }
 });
@@ -671,25 +672,26 @@ echo completed`, SETUP, home, j.bin], { encoding: "utf8" });
   assert.deepEqual(j.state(), []);
 });
 
-test("setup recovery restarts all saved daemons while an unrelated process remains", { skip: darwin }, () => {
-  for (const currentLoaded of [false, true, "changed"]) {
+test("setup recovery restarts saved daemons only from untouched files while an unrelated process remains", { skip: darwin }, () => {
+  for (const currentLoaded of [false, true, "changed", "plist"]) {
     const jobs = ["zone.atelier.server", "zone.atelier.server.staging", "zone.atelier.tunnel"];
-    const j = jobsHarness(currentLoaded === true ? [jobs[0]] : []);
+    const j = jobsHarness(currentLoaded === false ? [] : [jobs[0]]);
     const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
 LAUNCHCTL="$1/launchctl"
-loaded="${jobs.join(" ")}" stopped=1 swapped=${currentLoaded === "changed" ? "1" : ""}
+loaded="${jobs.join(" ")}" stopped=1 swapped=${currentLoaded === "changed" ? "1" : ""} plist_written=${currentLoaded === "plist" ? "1" : ""}
 ${currentLoaded === true ? "stop_all() { return 1; }" : `PGREP=/usr/bin/true ID_CMD="$1/id" SEQ=once SLEEP=/usr/bin/true
 once() { echo 1; }`}
 RM=refuse_write MV=refuse_write INSTALL=refuse_write
 refuse_write() { echo unexpected-write >&2; return 9; }
 health() { "$LAUNCHCTL" print "system/$LABEL"; }
 recover`, SETUP, j.bin], { encoding: "utf8" });
-    assert.equal(r.status, currentLoaded === "changed" ? 1 : 0, r.stderr);
+    assert.equal(r.status, typeof currentLoaded === "string" ? 1 : 0, r.stderr);
     assert.doesNotMatch(r.stderr, /unexpected-write/);
-    if (currentLoaded === "changed") assert.match(r.stderr, /recovery bootout failed; code left in place/);
+    if (typeof currentLoaded === "string") assert.match(r.stderr, /recovery bootout failed; code left in place/);
     else assert.doesNotMatch(r.stderr, /recovery bootout failed/);
-    assert.deepEqual(j.state(), [...jobs].sort());
-    assert.equal(j.log().split('\n').filter((l) => l.startsWith('bootstrap')).length, currentLoaded === true ? 2 : 3);
+    assert.deepEqual(j.state(), (typeof currentLoaded === "string" ? jobs.slice(1) : [...jobs]).sort());
+    assert.equal(j.log().split('\n').filter((l) => l.startsWith('bootstrap')).length, currentLoaded === false ? 3 : 2);
+    if (typeof currentLoaded === "string") assert.doesNotMatch(j.log(), /bootstrap system \S*\/zone\.atelier\.server\.plist/);
   }
 });
 
@@ -734,5 +736,71 @@ ${directories}`, SETUP, join(h, path)], { env: { ...process.env, OWNER_VALUE: ow
     assert.equal(r.status, 1, r.stderr);
     assert.match(r.stderr, reason);
     assert.doesNotMatch(r.stderr, /unexpected-write/);
+  }
+});
+
+test("recovery never starts or verifies the server after a failed code or plist restore", () => {
+  for (const failure of ["server", "node", "plist"]) {
+    const h = mkdtempSync(join(root, "restore-failure-"));
+    mkdirSync(join(h, "server-production.old")); mkdirSync(join(h, "bin"));
+    writeFileSync(join(h, "bin/node.old"), "old node");
+    writeFileSync(join(h, "old.plist"), "old plist");
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+HOME_DIR="$1" WORK="$1" PLIST="$1/daemon.plist" INSTALLER_DIR="$1"
+stopped=1 swapped=1 plist_written=1 loaded="$LABEL"
+stop_all() { return 0; }
+MV=move INSTALL=restore_plist LAUNCHCTL=launch
+move() { case "$*" in *${failure === "server" ? "server-production.old" : failure === "node" ? "node.old" : "never-match"}*) return 1 ;; esac; /bin/mv "$@"; }
+restore_plist() { return ${failure === "plist" ? 1 : 0}; }
+launch() { echo "unexpected-launch $*"; return 1; }
+health() { echo unexpected-health; return 0; }
+start_others() { echo restarted-others; }
+recover`, SETUP, h], { encoding: "utf8" });
+    assert.equal(r.status, 1, r.stderr);
+    assert.doesNotMatch(r.stdout, /unexpected-launch|unexpected-health/);
+    assert.match(r.stdout, /restarted-others/);
+    assert.match(r.stderr, /left stopped/);
+    assert.match(r.stderr, /setup-server.sh --env production/);
+  }
+});
+
+test("stop_all refuses user domains outside the dedicated service UID range", () => {
+  const h = mkdtempSync(join(root, "uid-range-"));
+  for (const uid of ["0", "399", "500", "501", "4500", "bad", "400", "499"]) {
+    const r = spawnSync("/bin/bash", ["-p", "-c", `SETUP_SERVER_LIB=1 source "$0" --env production a b c
+JOBS= ID_CMD=service_id LAUNCHCTL=launch PGREP=/usr/bin/false
+service_id() { echo "${uid}"; }
+launch() { echo "$*" >> "$LOG"; return 1; }
+SEQ=once SLEEP=/usr/bin/true
+once() { echo 1; }
+LOG="$1"
+: > "$LOG"
+stop_all`, SETUP, join(h, "launch.log")], { encoding: "utf8" });
+    const valid = ["400", "499"].includes(uid);
+    assert.equal(r.status, valid ? 0 : 1, uid + r.stderr);
+    assert.equal(readFileSync(join(h, "launch.log"), "utf8").trim(), valid ? `print user/${uid}` : "", uid);
+  }
+});
+
+test("installer accepts only a plain root-owned home without write access or ACLs", () => {
+  const installer = resolve("scripts/studio/install-server.sh");
+  const h = mkdtempSync(join(root, "installer-home-"));
+  mkdirSync(join(h, "plain"));
+  symlinkSync(join(h, "plain"), join(h, "link"));
+  for (const [path, owner, mode, acl, reason] of [
+    ["plain", "root", "750", "", null],
+    ["link", "root", "750", "", /not a plain directory/],
+    ["plain", "pavi", "750", "", /not root-owned/],
+    ["plain", "root", "770", "", /group\/world-writable/],
+    ["plain", "root", "752", "", /group\/world-writable/],
+    ["plain", "root", "750", "acl", /carries an ACL/],
+  ]) {
+    const r = spawnSync("/bin/bash", ["-p", "-c", `INSTALL_SERVER_LIB=1 source "$0" --env production ${"a".repeat(40)}
+HOME_DIR="$1" SVC=atelierd STAT=metadata LS=listing
+metadata() { case "$2" in %Su) echo "$OWNER_VALUE" ;; %Lp) echo "$MODE_VALUE" ;; esac; }
+listing() { echo directory; [ -z "$ACL_VALUE" ] || echo "$ACL_VALUE"; return 0; }
+check_home_owner`, installer, join(h, path)], { env: { ...process.env, OWNER_VALUE: owner, MODE_VALUE: mode, ACL_VALUE: acl }, encoding: "utf8" });
+    assert.equal(r.status, reason ? 1 : 0, r.stderr);
+    if (reason) assert.match(r.stderr, reason);
   }
 });

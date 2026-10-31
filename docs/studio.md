@@ -74,12 +74,13 @@ setup. Later HTTPS use can start the services again.
 
 If setup cannot stop an unrelated `atelierd` process before replacing code
 or plists, recovery restarts the saved daemons without changing installed
-files. After a replacement, recovery still requires all service-user
-processes to stop before restoring files; a failed shutdown leaves the code
-in place and reports the failure. It attempts to restart every saved
-daemon from the files left in place in either case, skipping jobs already
-loaded. A restart cannot succeed if the failed run left required files
-missing; saved inputs remain available for repair.
+files. After a replacement, recovery requires all service-user
+processes to stop and the previous code and plist to be restored without
+error before restarting this environment's server or checking its health.
+If shutdown or restoration fails, recovery leaves that server stopped and
+prints the setup command to reinstall trusted inputs. It still attempts
+to restart the other saved daemons, skipping jobs already loaded. Saved
+inputs remain available for repair.
 
 ## Shipping a release
 

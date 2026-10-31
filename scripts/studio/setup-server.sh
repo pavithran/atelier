@@ -204,7 +204,7 @@ stop_all() {
   done
   # macOS starts per-user services independently of the system daemons.
   service_uid=$("$ID_CMD" -u "$SVC") || return 1
-  [[ "$service_uid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$service_uid" =~ ^4[0-9][0-9]$ ]] || return 1
   if "$LAUNCHCTL" print "user/$service_uid" >/dev/null 2>&1; then
     "$LAUNCHCTL" bootout "user/$service_uid" 2>/dev/null || return 1
     for _ in $("$SEQ" 1 20); do "$LAUNCHCTL" print "user/$service_uid" >/dev/null 2>&1 || break; "$SLEEP" 0.5; done
@@ -223,9 +223,9 @@ start_others() {
   done
   return $rc
 }
-# After a failure once the jobs were stopped: the code and plist this run
-# replaced go back, and every job that ran starts again. It decides by its
-# own checks, not by set -e.
+# After a failure once the jobs were stopped, restore the previous code
+# and plist before restarting this server. Other saved jobs restart even
+# when restoration fails. Recovery checks errors itself, not with set -e.
 health() {
   local attempt expected_commit
   for attempt in $("$SEQ" 1 30); do
@@ -249,7 +249,8 @@ health() {
 recover() {
   [ -n "$stopped" ] || return 0
   set +e
-  local rc=0
+  local rc=0 restart_safe=
+  [ -n "$swapped$plist_written" ] || restart_safe=1
   echo "setup: putting back what ran before" >&2
   if stop_all; then
     "$RM" -rf "$HOME_DIR/$SERVER.new" || rc=1
@@ -269,17 +270,22 @@ recover() {
       if [ -f "$WORK/old.installer" ]; then "$INSTALL" -o root -g wheel -m 755 "$WORK/old.installer" "$INSTALLER_DIR/install-server.sh" || rc=1
       else "$RM" -f "$INSTALLER_DIR/install-server.sh" || rc=1; fi
     fi
+    [ "$rc" != 0 ] || restart_safe=1
   elif [ -n "$swapped$plist_written$installer_written" ]; then
     echo "setup: recovery bootout failed; code left in place" >&2
     rc=1
   fi
-  # Restart saved daemons from the files left in place, even if an unrelated
-  # process prevented shutdown. No installed files change on that path.
+  # Only untouched or successfully restored code and plists may restart.
   case " $loaded " in *" $LABEL "*)
-    if ! "$LAUNCHCTL" print "system/$LABEL" >/dev/null 2>&1; then
-      "$LAUNCHCTL" bootstrap system "$PLIST" || rc=1
-    fi
-    health || { echo "setup: recovered $LABEL did not start or answer /api/version" >&2; rc=1; } ;;
+    if [ -n "$restart_safe" ]; then
+      if ! "$LAUNCHCTL" print "system/$LABEL" >/dev/null 2>&1; then
+        "$LAUNCHCTL" bootstrap system "$PLIST" || rc=1
+      fi
+      health || { echo "setup: recovered $LABEL did not start or answer /api/version" >&2; rc=1; }
+    else
+      echo "setup: $LABEL left stopped; restore trusted code and plist with /usr/bin/sudo /bin/bash -p /private/var/root/setup-server.sh --env $ENV RELEASE.tar NODE ~/.config/atelier/$ENV-token (RELEASE.tar and NODE must be absolute trusted input paths)" >&2
+      rc=1
+    fi ;;
   esac
   start_others || rc=1
   return "$rc"
