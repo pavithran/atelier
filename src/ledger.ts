@@ -20,7 +20,7 @@ import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
 import { DUMP_PAGE_BYTES, dumpableTable, dumpChecksum, dumpJson, dumpValue, eventStage, importValue, LEDGER_BOOKMARK, LEDGER_DUMP_FORMAT, LEDGER_IMPORT_MARK, LEDGER_STARTUP_META, ledgerRestart, parseLedgerRestart, type LedgerBookmark, type TaskStage } from "./rules";
 import {
-  preparationPaths,
+  preparationPaths, repoName,
   REVIEW_RENEW_MS, REVIEW_LEASE_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, effectiveAdmissions, familyRefusal, modelKey, sharesName, splitHarness, standardAdmissions, STANDARD_REVIEWER_PROJECT, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
@@ -2575,9 +2575,31 @@ export class Ledger extends DurableObject<Env> {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     if (!row) throw new RuleError("no_project", "project not initialised; run `atelier init`", 404, "run atelier init, or check the project name with atelier status");
     const record = JSON.parse(row.value as string) as ProjectRecord;
+    // Only a server-hosted, moved project uses the repository named by its
+    // stable Ledger key. Old moves kept the Artifacts name in this row.
+    if ((this.env as unknown as { GIT?: unknown }).GIT &&
+        this.sql.exec(`SELECT 1 FROM events WHERE kind = 'project.host_moved' LIMIT 1`).toArray().length) {
+      this.hostedProjectRepo(record, "system");
+    }
     const admissions = effectiveAdmissions(this.reviewerAdmissions(), this.standardReviewers());
     record.policy = { ...record.policy, reviewerAdmissions: admissions.length ? admissions : undefined };
     return record;
+  }
+
+  private hostedProjectRepo(record: ProjectRecord, actor: string, at = new Date().toISOString()): void {
+    const name = this.ctx.id.name;
+    if (!(this.env as unknown as { GIT?: unknown }).GIT || !name?.startsWith("project:")) return;
+    const key = name.slice("project:".length);
+    const repo = repoName(key);
+    if (record.repo === repo) return;
+    // An import must verify the dump's original bytes before any repair.
+    if (this.sql.exec(`SELECT 1 FROM meta WHERE key = ?`, LEDGER_IMPORT_MARK).toArray().length) return;
+    const before = record.repo;
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`UPDATE meta SET value = ? WHERE key = 'project'`, JSON.stringify({ ...record, repo }));
+      this.log(null, actor, "project.repo_repaired", { key, before, repo }, at);
+    });
+    record.repo = repo;
   }
 
   // The version of the standard set last stored here; 0 before any delivery.
@@ -4192,8 +4214,14 @@ export class Ledger extends DurableObject<Env> {
   // project branch's head as main's head when the move set it.
   hostMoved(actor: string, kind: "project.host_moved" | "project.way_back", data: Record<string, unknown>, head: string | null = null): void {
     const at = new Date().toISOString();
-    if (head) this.setMainHead(head, at);
-    this.log(null, actor, kind, data, at);
+    this.ctx.storage.transactionSync(() => {
+      if (kind === "project.host_moved") {
+        const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
+        if (row) this.hostedProjectRepo(JSON.parse(row.value as string) as ProjectRecord, actor, at);
+      }
+      if (head) this.setMainHead(head, at);
+      this.log(null, actor, kind, data, at);
+    });
   }
 
   // Where the project's move stands (task 11, review): whether the bake has
