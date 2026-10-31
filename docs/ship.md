@@ -247,6 +247,30 @@ that share no state: production at `atelier.zone` (port 4100) and staging at
   push steps (`"push": false`, no scan), for shipping staging from a
   checkout that must not push.
 
+When a release exists only in staging's `atelier-trial` or on another branch,
+carry its commits on a task branch in production's `atelier` project. Have
+that production task checked, reviewed at its exact head and landed, then
+run `atelier ship --project atelier` from production's clean registered
+checkout at the landed main revision, with its deploy approval. A review
+recorded only in staging does not satisfy production's review gate. The
+[production release procedure](studio.md#shipping-a-release) gives the steps.
+
+This release path requires production's `atelier` project to protect every
+release path and run in normal mode, without a review override. Production
+protects `**` (every path, as configured by `atelier init --protect "**"`)
+and runs in normal, non-`fast` mode. Under that policy, landing refuses a
+head without the required review approval, including the first reviewed
+release after setup. Default protection after setup and init alone does not
+cover every server release path, and fast mode defers review until after
+merge.
+
+Ship refuses a head that production's main does not hold, before SSH or sudo;
+root's installer checks ancestry again in the Studio's production repository
+and builds the release there. Ship neither carries commits nor lands them.
+`setup-server.sh` is for initial setup and repair only, including replacing
+the root-owned installer; releases use the reviewed task, landing and ship
+path, without hand-built tars.
+
 ## What a ship does, in order
 
 Before anything runs, `atelier ship` refuses, saying what to do next, unless:
