@@ -192,6 +192,16 @@ trusted_entry() {
   [ -z "$(printf '%s\n' "$listing" | "$SED" -n '2,$p')" ] || { echo "install: $path carries an ACL" >&2; return 1; }
 }
 
+# A service-owned home lets the daemon replace its code directories. Setup
+# stops all jobs and installs trusted inputs again before restoring service.
+check_home_owner() {
+  [ -d "$HOME_DIR" ] && [ ! -L "$HOME_DIR" ] || fail "$HOME_DIR is not a plain directory"
+  if [ "$("$STAT" -f %Su "$HOME_DIR")" = "$SVC" ]; then
+    fail "$HOME_DIR is owned by $SVC; repair with the reviewed setup pair (RELEASE.tar and NODE must be absolute trusted input paths): /usr/bin/sudo /bin/bash -p /private/var/root/setup-server.sh --env $ENV RELEASE.tar NODE ~/.config/atelier/$ENV-token; see docs/studio.md, macOS per-user services"
+  fi
+  trusted_entry "$HOME_DIR" || fail "unsafe home at $HOME_DIR"
+}
+
 # Never use Apple's xcode-select dispatch shims as root or atelierd.
 check_tools() {
   local tool
@@ -224,6 +234,7 @@ if [ -n "$TEST" ]; then
   safe_dir "$HOME_DIR"
 else
   check_tools
+  check_home_owner
   trusted_source "$NODE" || fail "unsafe node at $NODE"
 fi
 check_node "$NODE"

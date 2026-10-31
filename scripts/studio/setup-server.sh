@@ -49,7 +49,7 @@ cd /
 # What it makes:
 # - atelierd: a hidden service user with no login, no password and no admin
 #   rights, checked whole on every run.
-# - /Users/atelierd, owned by atelierd, mode 700, with data/, repos/,
+# - /Users/atelierd, owned by root:atelierd, mode 750, with data/, repos/,
 #   secrets/ and log/ (atelierd's), and bin/ and server/ (root's, group
 #   atelierd, read and execute only): the daemon runs code it cannot change,
 #   and the developer's user can neither read nor change any of it. The only
@@ -195,13 +195,21 @@ swapped=
 new_server= new_node= plist_written= installer_written=
 INSTALLER_DIR=/Library/Atelier
 stop_all() {
-  local job
+  local job service_uid
   for job in $JOBS; do
     "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1 || continue
     "$LAUNCHCTL" bootout "system/$job" 2>/dev/null || return 1
     for _ in $("$SEQ" 1 20); do "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1 || break; "$SLEEP" 0.5; done
     if "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1; then echo "setup: $job would not stop" >&2; return 1; fi
   done
+  # macOS starts per-user services independently of the system daemons.
+  service_uid=$("$ID_CMD" -u "$SVC") || return 1
+  [[ "$service_uid" =~ ^4[0-9][0-9]$ ]] || return 1
+  if "$LAUNCHCTL" print "user/$service_uid" >/dev/null 2>&1; then
+    "$LAUNCHCTL" bootout "user/$service_uid" 2>/dev/null || return 1
+    for _ in $("$SEQ" 1 20); do "$LAUNCHCTL" print "user/$service_uid" >/dev/null 2>&1 || break; "$SLEEP" 0.5; done
+    if "$LAUNCHCTL" print "user/$service_uid" >/dev/null 2>&1; then echo "setup: user/$service_uid would not stop" >&2; return 1; fi
+  fi
   for _ in $("$SEQ" 1 60); do "$PGREP" -u "$SVC" >/dev/null 2>&1 || break; "$SLEEP" 0.5; done
   if "$PGREP" -u "$SVC" >/dev/null 2>&1; then echo "setup: a process of $SVC is still running" >&2; return 1; fi
 }
@@ -211,13 +219,13 @@ start_others() {
   local job rc=0
   for job in $JOBS; do
     [ "$job" != "$LABEL" ] || continue
-    case " $loaded " in *" $job "*) "$LAUNCHCTL" bootstrap system "$DAEMONS/$job.plist" || { echo "setup: $job did not start; /usr/bin/sudo launchctl bootstrap system $DAEMONS/$job.plist" >&2; rc=1; } ;; esac
+    case " $loaded " in *" $job "*) "$LAUNCHCTL" print "system/$job" >/dev/null 2>&1 && continue; "$LAUNCHCTL" bootstrap system "$DAEMONS/$job.plist" || { echo "setup: $job did not start; /usr/bin/sudo launchctl bootstrap system $DAEMONS/$job.plist" >&2; rc=1; } ;; esac
   done
   return $rc
 }
-# After a failure once the jobs were stopped: the code and plist this run
-# replaced go back, and every job that ran starts again. It decides by its
-# own checks, not by set -e.
+# After a failure once the jobs were stopped, restore the previous code
+# and plist before restarting this server. Other saved jobs restart even
+# when restoration fails. Recovery checks errors itself, not with set -e.
 health() {
   local attempt expected_commit
   for attempt in $("$SEQ" 1 30); do
@@ -241,7 +249,8 @@ health() {
 recover() {
   [ -n "$stopped" ] || return 0
   set +e
-  local rc=0
+  local rc=0 restart_safe=
+  [ -n "$swapped$plist_written" ] || restart_safe=1
   echo "setup: putting back what ran before" >&2
   if stop_all; then
     "$RM" -rf "$HOME_DIR/$SERVER.new" || rc=1
@@ -261,9 +270,23 @@ recover() {
       if [ -f "$WORK/old.installer" ]; then "$INSTALL" -o root -g wheel -m 755 "$WORK/old.installer" "$INSTALLER_DIR/install-server.sh" || rc=1
       else "$RM" -f "$INSTALLER_DIR/install-server.sh" || rc=1; fi
     fi
-    case " $loaded " in *" $LABEL "*) "$LAUNCHCTL" bootstrap system "$PLIST" && health || { echo "setup: recovered $LABEL did not start or answer /api/version" >&2; rc=1; } ;; esac
-  else echo "setup: recovery bootout failed; code left in place" >&2; rc=1
+    [ "$rc" != 0 ] || restart_safe=1
+  elif [ -n "$swapped$plist_written$installer_written" ]; then
+    echo "setup: recovery bootout failed; code left in place" >&2
+    rc=1
   fi
+  # Only untouched or successfully restored code and plists may restart.
+  case " $loaded " in *" $LABEL "*)
+    if [ -n "$restart_safe" ]; then
+      if ! "$LAUNCHCTL" print "system/$LABEL" >/dev/null 2>&1; then
+        "$LAUNCHCTL" bootstrap system "$PLIST" || rc=1
+      fi
+      health || { echo "setup: recovered $LABEL did not start or answer /api/version" >&2; rc=1; }
+    else
+      echo "setup: $LABEL left stopped; restore trusted code and plist with /usr/bin/sudo /bin/bash -p /private/var/root/setup-server.sh --env $ENV RELEASE.tar NODE ~/.config/atelier/$ENV-token (RELEASE.tar and NODE must be absolute trusted input paths)" >&2
+      rc=1
+    fi ;;
+  esac
   start_others || rc=1
   return "$rc"
 }
@@ -361,6 +384,18 @@ backup_code() {
   [ ! -e "$HOME_DIR/$SERVER" ] || run "$MV" "$HOME_DIR/$SERVER" "$HOME_DIR/$SERVER.old"
 }
 
+# A directory is safe to hold the daemon's files when it is a real
+# directory, owned by root or the service user, writable by no group or
+# other, and carries no ACL.
+safe_dir() {
+  local d=$1 owner
+  [ -d "$d" ] && [ ! -L "$d" ] || fail "$d is not a plain directory"
+  owner=$("$STAT" -f %Su "$d")
+  [ "$owner" = root ] || [ "$owner" = "$SVC" ] || fail "$d is owned by $owner"
+  [ $(( 0$("$STAT" -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
+  ! "$LS" -lde "$d" | "$SED" -n '2,$p' | "$GREP" -q . || fail "$d carries an ACL"
+}
+
 # A test reads these functions alone (SETUP_SERVER_LIB=1), with no other effect.
 if [ "${SETUP_SERVER_LIB:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 run() { if dry; then printf '+ %s\n' "$*"; else "$@"; fi; }
@@ -384,17 +419,6 @@ if ! dry && { [ -z "$DEV" ] || [ "$DEV" = root ]; }; then fail "run through sudo
 [ -f "$RELEASE" ] && [ ! -L "$RELEASE" ] || fail "no release file at $RELEASE"
 [ -e "$NODE_SRC" ] || fail "no node at $NODE_SRC"
 
-# A directory is safe to hold the daemon's files when it is a real
-# directory, owned by root or the service user, writable by no group or
-# other, and carries no ACL.
-safe_dir() {
-  local d=$1 owner
-  [ -d "$d" ] && [ ! -L "$d" ] || fail "$d is not a plain directory"
-  owner=$("$STAT" -f %Su "$d")
-  [ "$owner" = root ] || [ "$owner" = "$SVC" ] || fail "$d is owned by $owner"
-  [ $(( 0$("$STAT" -f %Lp "$d") & 022 )) = 0 ] || fail "$d is writable by a group or others"
-  ! "$LS" -lde "$d" | "$SED" -n '2,$p' | "$GREP" -q . || fail "$d carries an ACL"
-}
 safe_dir /Users
 safe_dir /Library/LaunchDaemons
 
@@ -519,6 +543,10 @@ fi
 # The home is root's, group atelierd, 750: the daemon enters it but cannot
 # rename what is in it, so it cannot swap its own code; the developer's
 # user, not in the group, cannot enter it at all.
+if ! dry; then
+  trusted_entry / && trusted_entry /Users || fail "unsafe home parent"
+  [ ! -e "$HOME_DIR" ] || safe_dir "$HOME_DIR"
+fi
 run "$MKDIR" -p "$HOME_DIR"
 run "$CHOWN" "root:$SVC" "$HOME_DIR"
 run "$CHMOD" 750 "$HOME_DIR"
