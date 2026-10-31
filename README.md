@@ -167,15 +167,15 @@ holds the Studio's layout and its backups.
 
 | Part | What it does in Atelier | State |
 | --- | --- | --- |
-| Node server | `node cli/serve.mjs` runs `src/index.ts` over Node's `http` (`src/runtime/server.mjs`): the API the CLI calls, the signed-in pages and the public pages. One process per environment, on port 4100 for production and 4101 for staging. The stage tick, stuck episodes and model snapshots run on timers inside it. | Live on staging, next.atelier.zone |
-| SQLite Ledgers | Each project's tasks, events, evidence and reviews are one SQLite file (`node:sqlite`, mode 600) under `DATA/ledgers`. Calls to one Ledger never interleave, which is what makes one holder per task hold (`claim` in `src/ledger.ts`). The index, `ledgers/__index.sqlite`, keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live on staging |
-| Plain Git | One bare repository per project, served at `/git/PROJECT.git/` through `git http-backend`. A task works on the branch `t/N`; the server reads commits, trees and diffs from the repository to measure what a change touches and to preview its merge. Every credential is a grant the server minted, and `hooks/pre-receive` refuses any ref update the grant does not cover. `hooks/post-receive` reports each push to the server. | Live on staging |
-| `atelierd` | The macOS service user that runs the server and owns the data, the repositories and the secrets; the server's code and its hooks are root's, read-only to it. Builders run as another user, who cannot read any of these. | Live on staging |
-| Tunnel and Cloudflare Access | `cloudflared` carries next.atelier.zone to the server. Access guards the developer's pages; the server verifies its assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). `/api/*` and `/git/*` stay outside Access. | Live on staging |
-| R2 backups | Nightly, `cli/backup.mjs` copies every Ledger, bundles every repository, packs and encrypts the result with age and uploads it to R2; 30 days are kept. `cli/restore.mjs` decrypts on the developer's Mac. | Written and tested; not yet installed on the Studio (`scripts/studio/setup-backup.sh` installs it) |
+| Node server | `node cli/serve.mjs` runs `src/index.ts` over Node's `http` (`src/runtime/server.mjs`): the API the CLI calls, the signed-in pages and the public pages. One process per environment, on port 4100 for production and 4101 for staging. The stage tick, stuck episodes and model snapshots run on timers inside it. | Live on production, atelier.zone, and on staging, next.atelier.zone |
+| SQLite Ledgers | Each project's tasks, events, evidence and reviews are one SQLite file (`node:sqlite`, mode 600) under `DATA/ledgers`. Calls to one Ledger never interleave, which is what makes one holder per task hold (`claim` in `src/ledger.ts`). The index, `ledgers/__index.sqlite`, keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live on production and staging |
+| Plain Git | One bare repository per project, served at `/git/PROJECT.git/` through `git http-backend`. A task works on the branch `t/N`; the server reads commits, trees and diffs from the repository to measure what a change touches and to preview its merge. Every credential is a grant the server minted, and `hooks/pre-receive` refuses any ref update the grant does not cover. `hooks/post-receive` reports each push to the server. | Live on production and staging |
+| `atelierd` | The macOS service user that runs the server and owns the data, the repositories and the secrets; the server's code and its hooks are root's, read-only to it. Builders run as another user, who cannot read any of these. | Live on production and staging |
+| Tunnel and Cloudflare Access | `cloudflared` carries atelier.zone to production and next.atelier.zone to staging. Access guards the developer's pages; the server verifies its assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). `/api/*` and `/git/*` stay outside Access. | Live on production and staging |
+| R2 backups | Nightly, `cli/backup.mjs` copies every Ledger, bundles every repository, packs and encrypts the result with age and uploads it to R2; 30 days are kept. `cli/restore.mjs` decrypts on the developer's Mac. | Live: installed on the Studio for production and staging by `scripts/studio/setup-backup.sh` |
 | AI Gateway | Runners point opencode's pay-per-use providers at the gateway `atelier` (DeepSeek, OpenRouter and the API-key providers, each base URL `https://gateway.ai.cloudflare.com/v1/{ACCOUNT}/atelier/{provider}`); every call carries a `cf-aig-metadata` header naming the task, role and runner, and subscription harnesses stay direct. | Live: the home runners' DeepSeek and OpenRouter calls go through it ([AI Gateway costs](#ai-gateway-costs)) |
 | GraphQL Analytics API | The Models page and `atelier runner --usage` read the gateway's calls from it (`src/usage/gateway.ts`): each model's calls, failures, tokens, cost, and median and p90 duration over the last 7 days. | Live: the Models page shows each model's calls, failures, cost and durations |
-| Large objects | Large check logs and review diffs (`src/large.ts`) are files under `DATA/large`, named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. | Live on staging |
+| Large objects | Large check logs and review diffs (`src/large.ts`) are files under `DATA/large`, named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. | Live on production and staging |
 
 ## Quickstart
 
@@ -184,8 +184,8 @@ in package.json; see docs/runners.md for how runners reload) and git. The
 server runs on the machine you choose; no Cloudflare account is needed to
 run it.
 
-**Try it without a server.** Nothing below needs a server until step 2. The
-1.x server at [atelier.zone](https://atelier.zone) shows the public pages:
+**Try it without a server.** Nothing below needs a server until step 2. Atelier 2.0 at
+[atelier.zone](https://atelier.zone) shows the public pages:
 [atelier.zone/how](https://atelier.zone/how)
 states each rule the code enforces and lists every command. On your own
 machine, step 1 installs and tests everything, and
