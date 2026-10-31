@@ -124,8 +124,10 @@ export async function mirrorBranch({ dir, branch: named, remote, token, scan = n
     if (refs[NOTES]) {
       const got = await revParse(dir, `${STAGE}/notes`);
       const had = await revParse(dir, NOTES);
-      const refused = got && scan && got !== had ? await scanMove({ dir, scan, old: had ?? ZERO, sha: got, ref: NOTES, branch, collect }) : null;
+      const notesUnscanned = [];
+      const refused = got && scan && got !== had ? await scanMove({ dir, scan, old: had ?? ZERO, sha: got, ref: NOTES, branch, collect: (rows) => notesUnscanned.push(...rows) }) : null;
       notes = refused ? `not moved: ${refused.detail}` : got ? await follow(dir, NOTES, had, got, "move-host notes") : "none";
+      if (notes === "created" || notes === "forwarded") collect(notesUnscanned);
     }
     return { branch, before, head, remoteHead: fetched, moved, notes, tags: tags.length, unscanned: [...unscanned.values()] };
   } finally {
@@ -161,8 +163,7 @@ async function scanStep({ dir, scan, old, sha, ref, branch, moveRange, collect }
       (err, stdout, stderr) => (err ? fail(new Error(String(stderr || err.message).trim().split("\n").slice(-2).join(" "))) : ok(stdout))));
     const { refusal } = JSON.parse(out.trim().split("\n").at(-1));
     const report = files.report();
-    collect(report?.unscanned ?? []);
-    if (!refusal) return null;
+    if (!refusal) { collect(report?.unscanned ?? []); return null; }
     return { detail: refusal, hits: (report?.hits ?? []).filter((h) => !scan.policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint)) };
   } catch (error) {
     return { detail: `the moved history could not be scanned (${error.message}); nothing was moved`, hits: [] };

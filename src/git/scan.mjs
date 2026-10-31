@@ -59,14 +59,14 @@ function commitsOf(sha, base) {
   const lines = out.split("\n").filter(Boolean);
   if (lines.length > TASK_COMMITS) throw new Error(`the push adds more than ${TASK_COMMITS} commits, more than the scan reads`);
   const commits = lines.map((line) => {
-    const [hash, treeHash, ...parents] = line.split(" ");
+    const [hash, treeHash, ...parents] = line.trim().split(/\s+/);
     return { hash, treeHash, parents };
   });
   const trees = new Map(commits.map((c) => [c.hash, c.treeHash]));
   const outside = [...new Set(commits.flatMap((c) => c.parents).filter((p) => !trees.has(p)))];
   if (outside.length) {
     for (const line of git("log", "--no-walk=unsorted", "--format=%H %T", ...outside).split("\n").filter(Boolean)) {
-      const [hash, tree] = line.split(" ");
+      const [hash, tree] = line.trim().split(/\s+/);
       trees.set(hash, tree);
     }
   }
