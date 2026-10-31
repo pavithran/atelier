@@ -16,6 +16,7 @@ export default async function migrateCommand() {
   if (!r.migrated) return console.log(`${id} is already on ${r.branch} @ ${String(r.head).slice(0, 8)} on ${at}; nothing moved.\nnext: ${r.next}`);
   console.log([
     `${id} moved to ${r.branch} @ ${r.head.slice(0, 8)} in ${name}'s repository on ${at} (${r.remote}).`,
+    ...(r.sourceRef ? [`The work was fetched from the fork's ${r.sourceRef} branch.`] : []),
     ...(r.tip && r.tip !== r.head ? [`The fork's branch is at ${r.tip.slice(0, 8)}, past the recorded head; those commits were not carried, and the holder pushes them from its workspace.`] : []),
     `Its holder, claim and head stand. The holder's workspace points at the fork; a new claim clones ${r.branch}.`,
     `next: ${r.next}`,

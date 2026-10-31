@@ -270,7 +270,7 @@ export class GitHost {
     try {
       const dir = this.repo(key, projectBranch);
       if (!await branchTip(dir, projectBranch)) return { error: "not_moved", detail: `${projectBranch} has no commits on this server yet` };
-      return await carryBranch({ dir, branch, remote, ref, token, head });
+      return await carryBranch({ dir, branch, remote, ref, defaultRef: `refs/heads/${projectBranch}`, token, head });
     } finally { release(); }
   }
   // Takes back a branch `carry` made, while it is still at `at`, when the

@@ -53,7 +53,7 @@ const tipOf = (dir, ref) => { try { return git(dir, "rev-parse", "--verify", "--
 const events = async (kind) => (await L().dumpRows("events")).rows.filter((r) => r[4] === kind).map((r) => ({ item: r[1], actor: r[3], data: JSON.parse(r[5]) }));
 
 // The old host: the Artifacts baseline of relic (main, Atelier's notes and a
-// tag) and t2's fork, whose main is one commit past the baseline's.
+// tag) and t2's fork, whose HEAD branch seed is one commit past the baseline's.
 const history = join(root, "history");
 const artifacts = join(root, "artifacts", "relic.git");
 const fork = join(root, "artifacts", "relic-t2.git");
@@ -65,8 +65,8 @@ before(async () => {
   git(history, "tag", "v0.1", c.first);
   git(root, "init", "-q", "--bare", "-b", "main", artifacts);
   git(history, "push", "-q", artifacts, "main:refs/heads/main", "refs/notes/atelier:refs/notes/atelier", "refs/tags/v0.1:refs/tags/v0.1");
-  git(root, "init", "-q", "--bare", "-b", "main", fork);
-  git(history, "push", "-q", fork, "fork:refs/heads/main");
+  git(root, "init", "-q", "--bare", "-b", "seed", fork);
+  git(history, "push", "-q", fork, "fork:refs/heads/seed");
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
   base = server.url.replace("localhost", "127.0.0.1");
   assert.equal((await cli(["login", "--server", base])).code, 0);
@@ -214,11 +214,13 @@ test("migrate carries an open task: its fork's work becomes t/N at the recorded 
   assert.notEqual(missing.code, 0);
   assert.match(missing.stderr, new RegExp(`head_missing: refs/heads/main on the remote is at .*, whose history does not hold the recorded head ${c.fork.slice(0, 8)}`));
   assert.match(missing.stderr, /next: name the fork that holds/);
+  assert.match(missing.stderr, /remote branches: main/);
   assert.equal(tipOf(bare(), "refs/heads/t/3"), null);
 
   const r = await cli(["migrate", "t2", "--from", fork, "--token-env", "RELIC_SOURCE", "--project", "relic"], { env: { RELIC_SOURCE: SOURCE_TOKEN } });
   assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stdout, new RegExp(`t2 moved to t/2 @ ${c.fork.slice(0, 8)} in relic's repository`));
+  assert.match(r.stdout, /fetched from the fork's refs\/heads\/seed branch/);
   assert.match(r.stdout, /next: the holder runs atelier claim t2 --as claude-code\/opus-5\.5/);
   assert.equal(tipOf(bare(), "refs/heads/t/2"), c.fork);
   const item = await L().item("t2");
