@@ -15,8 +15,8 @@ const spec: CommandSpec = {
     },
     {
       group: "Projects", line: 1, slot: 31,
-      form: "projects move-host NAME --push-back | --end-bake",
-      about: "During the bake, `--push-back` pushes the project's branch back to the old baseline now (as each landing does), and `--end-bake` forgets the old baseline and its token once the bake has passed.",
+      form: "projects move-host NAME --push-back | --renew-way-back --token-env VAR | --end-bake",
+      about: "During the bake, `--renew-way-back --token-env VAR` replaces only the stored credential for the kept remote. It requires the developer token, moves no refs and does not fetch. `--push-back` pushes the project's branch back to the old baseline now (as each landing does), and `--end-bake` forgets the old baseline and its token once the bake has passed.",
     },
     {
       group: "Projects", line: 1, slot: 20,
@@ -24,9 +24,9 @@ const spec: CommandSpec = {
       about: "Removes a project from the index and from this machine's config. The project's repository and the ledger are kept. It is refused while work is live unless `--force` is given.",
     },
   ],
-  flags: { force: true, "release-name": true, from: "--from needs the old host's remote: --from https://…/relic.git", "token-env": "--token-env needs a variable name: --token-env ARTIFACTS_TOKEN", "way-back": true, "push-back": true, "end-bake": true, "clear-secret": "--clear-secret needs the reason the line is safe: --clear-secret \"a test fixture's dummy key\"", quote: "--quote needs the developer's words: --quote \"clear it\"" },
+  flags: { force: true, "release-name": true, from: "--from needs the old host's remote: --from https://…/relic.git", "token-env": "--token-env needs a variable name: --token-env ARTIFACTS_TOKEN", "way-back": true, "push-back": true, "renew-way-back": true, "end-bake": true, "clear-secret": "--clear-secret needs the reason the line is safe: --clear-secret \"a test fixture's dummy key\"", quote: "--quote needs the developer's words: --quote \"clear it\"" },
   subcommands: {
-    "move-host": { capabilities: ["projects.move-host.v1"] },
+    "move-host": { capabilities: ["projects.move-host.v1", "projects.way-back-renew.v1"] },
   },
   help: {
     flags: {
@@ -35,6 +35,7 @@ const spec: CommandSpec = {
       "--from REMOTE": "move-host: the old host's repository, an https:// URL or an absolute path",
       "--token-env VAR": "move-host: the environment variable holding a token for the old host",
       "--way-back": "move-host: keep the old host, so each landing pushes the branch back to it during the bake",
+      "--renew-way-back": "move-host: replace the kept remote's credential from --token-env VAR",
       "--push-back": "move-host: push the branch back to the old host now",
       "--end-bake": "move-host: forget the old host once the bake has passed",
       "--clear-secret REASON": "move-host: clear the key-shaped lines the last refused move found, with why they are safe",

@@ -58,6 +58,11 @@ async function remoteRefs(dir, remote, token) {
   return refs;
 }
 
+async function remoteHeadBranch(dir, remote, token) {
+  const out = await git(dir, ["ls-remote", "--symref", remote, "HEAD"], token, 120_000);
+  return /^ref: (refs\/heads\/\S+)\tHEAD$/m.exec(out)?.[1] ?? null;
+}
+
 // Moves `ref` from `from` (null: it must not exist) to `to`.
 const setRef = (dir, ref, to, from, why) => git(dir, ["update-ref", "-m", `atelier: ${why}`, ref, to, from ?? ZERO]);
 
@@ -93,8 +98,7 @@ export async function mirrorBranch({ dir, branch: named, remote, token, scan = n
   const refs = await remoteRefs(dir, remote, token);
   let branch = named;
   if (!branch) {
-    const head = await git(dir, ["ls-remote", "--symref", remote, "HEAD"], token, 120_000).catch(() => "");
-    branch = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(head)?.[1] ?? null;
+    branch = (await remoteHeadBranch(dir, remote, token).catch(() => null))?.slice("refs/heads/".length) ?? null;
     if (!branch) return { error: "no_branch", detail: `${remote.replace(/\?.*$/, "")} names no HEAD branch, and the project's record names none` };
   }
   const want = refs[`refs/heads/${branch}`];
@@ -183,12 +187,23 @@ async function scanStep({ dir, scan, old, sha, ref, branch, moveRange, collect }
 // fetches `ref` of `remote` (its Artifacts fork, or any remote) and makes
 // refs/heads/BRANCH at `head`, the head the Ledger records, which the fetched
 // history must hold. A branch already at `head` is taken as done. Answers
-// { head, tip } (tip: the remote ref's commit), or { error, detail }.
-export async function carryBranch({ dir, branch, remote, ref, token, head }) {
+// { head, tip, sourceRef } (tip: the remote ref's commit), or { error, detail }.
+// Without ref, try defaultRef, then the remote's HEAD branch if absent.
+export async function carryBranch({ dir, branch, remote, ref, defaultRef = `refs/heads/${branch}`, token, head }) {
   if (!SHA.test(head)) return { error: "no_head", detail: "the task records no head to carry" };
   const at = await branchTip(dir, branch);
   if (at === head) return { head, tip: null, carried: false };
   if (at) return { error: "branch_exists", detail: `${branch} already exists here at ${at.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}` };
+  let refs;
+  try {
+    refs = await remoteRefs(dir, remote, token);
+    if (!ref) {
+      ref = refs[defaultRef] ? defaultRef : await remoteHeadBranch(dir, remote, token);
+    }
+  } catch (error) { return { error: "fetch_failed", detail: `the remote could not be read: ${error.message}` }; }
+  const branches = Object.keys(refs).filter((r) => r.startsWith("refs/heads/")).map((r) => r.slice("refs/heads/".length)).sort();
+  const available = `remote branches: ${branches.join(", ") || "(none)"}`;
+  if (!ref || !refs[ref]) return { error: "head_missing", detail: `${ref ?? defaultRef} names no branch on the remote; ${available}` };
   const stage = `${STAGE}/task`;
   try {
     try { await git(dir, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, `+${ref}:${stage}`], token); }
@@ -196,10 +211,10 @@ export async function carryBranch({ dir, branch, remote, ref, token, head }) {
     const tip = await revParse(dir, stage);
     if (!tip) return { error: "fetch_failed", detail: `${ref} was not fetched` };
     if (!await revParse(dir, head) || !await holds(dir, head, tip)) {
-      return { error: "head_missing", detail: `${ref} on the remote is at ${tip.slice(0, 8)}, whose history does not hold the recorded head ${head.slice(0, 8)}` };
+      return { error: "head_missing", detail: `${ref} on the remote is at ${tip.slice(0, 8)}, whose history does not hold the recorded head ${head.slice(0, 8)}; ${available}` };
     }
     await setRef(dir, `refs/heads/${branch}`, head, null, "migrate");
-    return { head, tip, carried: true };
+    return { head, tip, sourceRef: ref, carried: true };
   } finally {
     await git(dir, ["update-ref", "-d", stage]).catch(() => {});
   }

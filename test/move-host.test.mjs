@@ -53,7 +53,7 @@ const tipOf = (dir, ref) => { try { return git(dir, "rev-parse", "--verify", "--
 const events = async (kind) => (await L().dumpRows("events")).rows.filter((r) => r[4] === kind).map((r) => ({ item: r[1], actor: r[3], data: JSON.parse(r[5]) }));
 
 // The old host: the Artifacts baseline of relic (main, Atelier's notes and a
-// tag) and t2's fork, whose main is one commit past the baseline's.
+// tag) and t2's fork, whose HEAD branch seed is one commit past the baseline's.
 const history = join(root, "history");
 const artifacts = join(root, "artifacts", "relic.git");
 const fork = join(root, "artifacts", "relic-t2.git");
@@ -65,8 +65,8 @@ before(async () => {
   git(history, "tag", "v0.1", c.first);
   git(root, "init", "-q", "--bare", "-b", "main", artifacts);
   git(history, "push", "-q", artifacts, "main:refs/heads/main", "refs/notes/atelier:refs/notes/atelier", "refs/tags/v0.1:refs/tags/v0.1");
-  git(root, "init", "-q", "--bare", "-b", "main", fork);
-  git(history, "push", "-q", fork, "fork:refs/heads/main");
+  git(root, "init", "-q", "--bare", "-b", "seed", fork);
+  git(history, "push", "-q", fork, "fork:refs/heads/seed");
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER } });
   base = server.url.replace("localhost", "127.0.0.1");
   assert.equal((await cli(["login", "--server", base])).code, 0);
@@ -214,11 +214,13 @@ test("migrate carries an open task: its fork's work becomes t/N at the recorded 
   assert.notEqual(missing.code, 0);
   assert.match(missing.stderr, new RegExp(`head_missing: refs/heads/main on the remote is at .*, whose history does not hold the recorded head ${c.fork.slice(0, 8)}`));
   assert.match(missing.stderr, /next: name the fork that holds/);
+  assert.match(missing.stderr, /remote branches: main/);
   assert.equal(tipOf(bare(), "refs/heads/t/3"), null);
 
   const r = await cli(["migrate", "t2", "--from", fork, "--token-env", "RELIC_SOURCE", "--project", "relic"], { env: { RELIC_SOURCE: SOURCE_TOKEN } });
   assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stdout, new RegExp(`t2 moved to t/2 @ ${c.fork.slice(0, 8)} in relic's repository`));
+  assert.match(r.stdout, /fetched from the fork's refs\/heads\/seed branch/);
   assert.match(r.stdout, /next: the holder runs atelier claim t2 --as claude-code\/opus-5\.5/);
   assert.equal(tipOf(bare(), "refs/heads/t/2"), c.fork);
   const item = await L().item("t2");
@@ -278,10 +280,22 @@ test("during the bake a landing's recorded merge pushes main back to the old bas
   const merge = git(work, "rev-parse", "HEAD");
   const landed = await netGit(work, ...bearer(grant.body.token), "push", remote, "HEAD:refs/heads/main");
   assert.equal(landed.code, 0, landed.stderr);
+  const pushBack = server.git.pushBack.bind(server.git);
+  server.git.pushBack = async () => ({ remote: artifacts, error: "push_failed", head: merge, detail: "remote: Invalid credential (expired)" });
   const recorded = await api("POST", "/projects/relic/items/t2/merged", { mergeCommit: merge });
+  server.git.pushBack = pushBack;
   assert.equal(recorded.status, 200, JSON.stringify(recorded.body));
   assert.equal(recorded.body.state, "merged");
-  assert.equal(recorded.body.wayBack.state, "pushed");
+  assert.equal(recorded.body.wayBack.state, "failed");
+  assert.equal((await events("project.way_back")).at(-1).data.state, "failed");
+  const failedStatus = await cli(["status", "--project", "relic"]);
+  assert.equal(failedStatus.code, 0, failedStatus.stderr);
+  assert.match(failedStatus.stdout, /Way back unable to push/);
+  assert.match(failedStatus.stdout, /atelier projects move-host relic --renew-way-back --token-env VAR/);
+  const renewed = await cli(["projects", "move-host", "relic", "--renew-way-back", "--token-env", "RELIC_SOURCE"], { env: { RELIC_SOURCE: "fresh-dummy-token" } });
+  assert.equal(renewed.code, 0, renewed.stderr);
+  assert.ok(!renewed.stdout.includes("fresh-dummy-token"));
+  assert.equal((await cli(["projects", "move-host", "relic", "--push-back"])).code, 0);
   assert.equal(tipOf(artifacts, "refs/heads/main"), merge, "the old baseline holds the landing");
   const back = await events("project.way_back");
   assert.equal(back.at(-1).data.state, "pushed");
@@ -298,7 +312,7 @@ test("during the bake a landing's recorded merge pushes main back to the old bas
   const retry = await cli(["projects", "move-host", "relic", "--push-back", "--project", "relic"]);
   assert.notEqual(retry.code, 0);
   assert.match(retry.stderr, /push_back_failed: main was not pushed back to .*relic\.git/);
-  assert.match(retry.stderr, /next: check the old baseline and its token, then run atelier projects move-host relic --push-back/);
+  assert.match(retry.stderr, /next: check the old baseline; renew its credential with atelier projects move-host relic --renew-way-back --token-env VAR/);
   assert.equal((await events("project.way_back")).at(-1).data.state, "failed");
   git(history, "push", "-q", "--force", artifacts, `${merge}:refs/heads/main`);
   const ok = await cli(["projects", "move-host", "relic", "--push-back", "--project", "relic"]);

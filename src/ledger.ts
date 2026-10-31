@@ -4272,6 +4272,18 @@ export class Ledger extends DurableObject<Env> {
     if (repairedKey) this.updateHostedProjectIndex(repairedKey);
   }
 
+  // Renewal leaves a failed push visible until a retry succeeds.
+  wayBackStatus(): string | null {
+    const rows = this.sql.exec(`SELECT data FROM events WHERE kind = 'project.way_back' AND json_extract(data, '$.state') != 'credential_renewed' ORDER BY seq DESC LIMIT 1`).toArray();
+    for (const row of rows) {
+      const data = JSON.parse(row.data as string) as { state?: string; remote?: string; head?: string; detail?: string };
+      if (data.state !== "failed") return null;
+      const command = `atelier projects move-host ${this.project().name}`;
+      return `Way back unable to push: the last push${data.head ? ` at ${data.head.slice(0, 8)}` : ""} to ${data.remote ?? "the old baseline"} failed${data.detail ? `: ${data.detail}` : "."} Renew the credential: ${command} --renew-way-back --token-env VAR; then retry: ${command} --push-back.`;
+    }
+    return null;
+  }
+
   // Where the project's move stands (task 11, review): whether the bake has
   // ended (move-host --end-bake), and whether a merge has been recorded here
   // since the project's repository first moved, which only a landing makes.
