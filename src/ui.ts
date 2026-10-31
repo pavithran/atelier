@@ -1382,6 +1382,7 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
 // said. The project page draws it and the JSON route returns it as it is.
 
 export interface Standing {
+  wayBack?: string | null;
   project: { name: string; title: string; repo: string };
   generatedAt: string;
   session?: SessionNote;

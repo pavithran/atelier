@@ -22,9 +22,15 @@ export function sourceToken(command) {
 // landing so the way back stays open.
 async function moveHostCommand(name) {
   const command = `atelier projects move-host ${name}`;
-  const modes = ["push-back", "end-bake"].filter((f) => args[f] === true);
-  if (modes.length > 1 || (modes.length && (args.from !== undefined || args["way-back"] === true))) die(`move-host does one thing at a time: --from REMOTE [--way-back], --push-back or --end-bake`);
+  const modes = ["push-back", "end-bake", "renew-way-back"].filter((f) => args[f] === true);
+  if (modes.length > 1 || (modes.length && (args.from !== undefined || args["way-back"] === true))) die(`move-host does one thing at a time: --from REMOTE [--way-back], --push-back, --renew-way-back --token-env VAR or --end-bake`);
   const at = new URL(server()).host;
+  if (args["renew-way-back"] === true) {
+    const token = sourceToken(command);
+    if (!token) die(`renewing the way back needs a token: ${command} --renew-way-back --token-env VAR`);
+    const r = await call("POST", `${P(name)}/move-host`, { renewWayBack: true, token }, await actor(OWNER));
+    return console.log(`${name}: the credential for ${r.wayBack.remote} was replaced. Retry the push: ${command} --push-back.`);
+  }
   if (args["end-bake"] === true) {
     const r = await call("POST", `${P(name)}/move-host`, { endBake: true }, await actor(OWNER));
     return console.log(r.ended ? `${name} on ${at}: the way back is forgotten; landings no longer push ${r.branch} to the old baseline.` : `${name} on ${at} kept no way back; nothing changed.`);
@@ -59,7 +65,7 @@ export default async function projectsCommand() {
     if (!name || args._.length !== 3) die(COMMAND_USAGE.projects);
     return await moveHostCommand(name);
   }
-  for (const flag of ["from", "token-env", "way-back", "push-back", "end-bake", "clear-secret", "quote"]) if (args[flag] !== undefined) die(`atelier projects ${sub ?? ""} does not take --${flag}; only move-host does`);
+  for (const flag of ["from", "token-env", "way-back", "push-back", "end-bake", "renew-way-back", "clear-secret", "quote"]) if (args[flag] !== undefined) die(`atelier projects ${sub ?? ""} does not take --${flag}; only move-host does`);
   if (sub === "rename") {
     if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
     // The local move is checked first: a rename the local config would then

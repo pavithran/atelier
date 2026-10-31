@@ -106,7 +106,7 @@ export function requiredForCommand(command: string, word?: string, flags: Readon
   const sub = word !== undefined && Object.hasOwn(d.subcommands, word) ? d.subcommands[word] : [];
   return [...new Set([...d.own, ...sub])].filter((name) =>
     (command !== "models" || word !== "add" || name !== "models.standing.v1" || ["state", "roles", "tier"].some((f) => flags[f] !== undefined)),
-  ).filter((name) => (name !== DIRECTION && name !== ITEM_DIRECTION) || flags.quote !== undefined);
+  ).filter((name) => name !== "projects.way-back-renew.v1" || flags["renew-way-back"] === true).filter((name) => (name !== DIRECTION && name !== ITEM_DIRECTION) || flags.quote !== undefined);
 }
 
 // The developer's direction (t629): a server without it takes no --quote,

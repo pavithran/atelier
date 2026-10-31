@@ -1557,6 +1557,7 @@ export function formatStanding(s, ownerName = "the developer", origin = "", expi
   const mode = s.familyMode?.single ? ` (single-family: ${flat(s.familyMode.single)})` : "";
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
   // Fast mode, with the developer's words and the model that relayed them when it was switched on their direction (t629).
+  if (s.wayBack) lines.push(flat(s.wayBack));
   if (s.mode) lines.push(flat(s.mode));
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.filter((i) => !(i.state === "blocked" && expired.includes(i.id))).map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
