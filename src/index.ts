@@ -269,7 +269,7 @@ type GitHost = {
   revokeAfterPushes(id: string): Promise<boolean>;
   revokeLanding(args: { key: string; task: string }): Promise<number>;
   mirror(args: { key: string; branch: string | null; remote: string; token: string | null; policy: { clearances: { file: string; fingerprint: string }[]; private: string[] } }): Promise<HostMove>;
-  carry(args: { key: string; projectBranch: string; branch: string; task: string; remote: string; ref: string; token: string | null; head: string }): Promise<{ head: string; tip: string | null; carried: boolean; error?: undefined } | { error: string; detail: string }>;
+  carry(args: { key: string; projectBranch: string; branch: string; task: string; remote: string; ref?: string; token: string | null; head: string }): Promise<{ head: string; tip: string | null; sourceRef?: string; carried: boolean; error?: undefined } | { error: string; detail: string }>;
   dropBranch(args: { key: string; projectBranch: string; branch: string; task: string; at: string }): Promise<boolean>;
   keepWayBack(args: { key: string; remote: string | null; token?: string | null }): void;
   renewWayBack(args: { key: string; token: string }): { remote: string } | null;
@@ -1267,9 +1267,9 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
   const head = item.head ?? item.base;
   if (!head) throw new RuleError("no_head", `${id} records no head or base, so there is nothing to carry`, 409, `only the developer can: release ${id} with atelier release ${id}, so its next claim starts it here`);
   const { remote, token } = sourceOf(body, command);
-  const wanted = typeof body.ref === "string" && body.ref ? body.ref : main;
-  const from = wanted.startsWith("refs/") ? wanted : `refs/heads/${wanted}`;
-  if (!/^refs\/[A-Za-z0-9._\/-]{1,200}$/.test(from) || from.includes("..")) throw new RuleError("bad_ref", `${wanted.slice(0, 80)} is not a branch name`, 400, `run ${command} --from REMOTE --ref BRANCH`);
+  const wanted = typeof body.ref === "string" && body.ref ? body.ref : null;
+  const from = wanted ? (wanted.startsWith("refs/") ? wanted : `refs/heads/${wanted}`) : undefined;
+  if (from && (!/^refs\/[A-Za-z0-9._\/-]{1,200}$/.test(from) || from.includes(".."))) throw new RuleError("bad_ref", `${wanted?.slice(0, 80)} is not a branch name`, 400, `run ${command} --from REMOTE --ref BRANCH`);
   const done = await git.carry({ key: ref.key, projectBranch: main, branch, task: id, remote, ref: from, token, head });
   if (done.error !== undefined) {
     const detail = `${done.detail}, so ${id} was not moved`;
@@ -1284,7 +1284,7 @@ async function migrateTask(c: Ctx, ref: ProjectRef, L: ReturnType<typeof ledger>
     if (done.carried) await git.dropBranch({ key: ref.key, projectBranch: main, branch, task: id, at: head });
     throw error;
   }
-  return json({ item: moved, branch, head, tip: done.tip, migrated: true, remote: gitRemote(c, ref.name), next: holder });
+  return json({ item: moved, branch, head, tip: done.tip, sourceRef: done.sourceRef, migrated: true, remote: gitRemote(c, ref.name), next: holder });
 }
 
 // The way back during the bake (design section 5, step 6): after a landing's
