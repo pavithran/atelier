@@ -1,0 +1,27 @@
+atelier atelier/t417 "atelier init registers a large repository"
+accepted head b5ec7e817a1d43b9fd3f6e675ae44ee613c513f1
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-01T16:57:39.162Z
+REVIEW approve by antigravity/gemini-4-argon-high at b5ec7e817a1d43b9fd3f6e675ae44ee613c513f1, recorded by antigravity/gemini-4-argon-high
+CHECKED TREE d58dc87b8494da12ab904afa28f62dfb1a190d42: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-31T21:09:59.864Z pavi item.created
+2026-10-31T21:09:59.864Z claude-code/opus-5.5 criteria.revised
+2026-11-01T15:45:43.266Z codex/gpt-6.1-sol item.claimed
+2026-11-01T15:45:43.315Z codex/gpt-6.1-sol workspace.created
+2026-11-01T16:13:05.175Z codex/gpt-6.1-sol push.observed
+2026-11-01T16:13:37.024Z codex/gpt-6.1-sol evidence.observed
+2026-11-01T16:13:37.412Z codex/gpt-6.1-sol item.submitted
+2026-11-01T16:25:00.000Z atelier stage.stuck
+2026-11-01T16:57:04.427Z codex/gpt-6.1-sol push.observed
+2026-11-01T16:57:39.177Z codex/gpt-6.1-sol evidence.observed
+2026-11-01T16:57:39.538Z codex/gpt-6.1-sol item.submitted
+2026-11-01T17:00:00.000Z atelier stage.cleared
+2026-11-01T17:10:00.000Z atelier stage.stuck
+2026-11-01T17:12:16.162Z antigravity/gemini-4-argon-high review.approved
+2026-11-01T17:12:16.162Z atelier/orchestrator goal.notes
+2026-11-01T17:12:16.787Z pavi item.accepted
+2026-11-01T17:12:18.040Z pavi land.start
+2026-11-01T17:12:18.137Z pavi landing.leased
+2026-11-01T17:12:18.268Z pavi land.lease
+2026-11-01T17:12:19.225Z pavi checkout.leased
