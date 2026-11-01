@@ -394,7 +394,11 @@ export class GitHost {
     const L = this.ledger(grant.key);
     const item = grant.task ? await L.item(grant.task).catch(() => null) : null;
     const clearances = (item?.secretClearances ?? []).map((c) => ({ file: c.file, fingerprint: c.fingerprint }));
-    return { clearances, ...(grant.kind === "owner" ? { initialClearances: (await L.hostMoveScan()).clearances } : {}), private: await L.privatePaths() };
+    // Send only the scan's file/fingerprint bindings, never clearance notes
+    // or developer quotes, and preserve the policy shape when none exist.
+    const initialClearances = grant.kind === "owner"
+      ? (await L.hostMoveScan()).clearances.map((c) => ({ file: c.file, fingerprint: c.fingerprint })) : [];
+    return { clearances, ...(initialClearances.length ? { initialClearances } : {}), private: await L.privatePaths() };
   }
   // The secret scan of a push to a task's or a plan's branch is recorded on
   // its item (hookScanned); a push to the project's branch or dev/* has no

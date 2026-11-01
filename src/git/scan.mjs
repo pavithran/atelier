@@ -131,17 +131,20 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
 }
 
 // Initial registration carries the whole history, as move-host does. Collect
-// every batch, including refused ones, so one owner clearance covers all hits.
+// every batch, including refused ones, so one owner clearance covers all
+// standing hits. Already-cleared hits must not become project flags again.
 async function checkInitialPush(args) {
   const rows = git("rev-list", "--topo-order", "--reverse", "--parents", args.sha).split("\n").filter(Boolean).map((l) => l.split(" "));
+  const policy = readPolicy(args.policyPath);
+  const clearances = [...policy.clearances, ...policy.initialClearances];
   const hits = [], unscanned = new Map(), refusals = [];
   for (const moveRange of historyRanges(rows)) {
     const refusal = await checkPush({ ...args, moveRange, initialScan: true, reportPath: null, onReport: (report) => {
-      hits.push(...report.hits);
+      hits.push(...report.hits.filter((h) => !clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint)));
       for (const u of report.unscanned) unscanned.set(`${u.file}\0${u.fingerprint}`, u);
     } });
     if (refusal) refusals.push(refusal);
   }
   writeReport(args.reportPath, { initial: true, ref: args.ref, head: args.sha, hits, unscanned: [...unscanned.values()], refused: refusals.length > 0 });
-  return refusals.length ? `${refusals.join(" ")}${refusals.some((r) => r.includes("found a key-shaped line")) ? ' Only the developer can clear the key-shaped lines: atelier init --clear-secret "why it is safe" --quote "the developer’s words" --as H/M, then retry atelier init.' : ""}` : null;
+  return refusals.length ? `${refusals.join(" ")}${refusals.some((r) => r.includes("found a key-shaped line")) ? ' Only the developer can clear the key-shaped lines: atelier init --clear-secret "why it is safe" --quote "the developer’s words" --as H/M; this clears the lines, retries the push and completes registration if the push passes.' : ""}` : null;
 }

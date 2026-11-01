@@ -71,5 +71,8 @@ test("initial registration batches history, records a tip over TIP_BYTES, and re
     const privatePush = push(repository("private"), head);
     assert.notEqual(privatePush.status, 0);
     assert.match(privatePush.stderr, /private files:.*key-2.env/);
+    const privateScan = JSON.parse(readFileSync(report));
+    assert.equal(privateScan.refused, true);
+    assert.deepEqual(privateScan.hits, [], "a private-path refusal must not restore cleared secret flags");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
