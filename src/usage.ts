@@ -7,8 +7,7 @@
 // differ. Every form carries a description for that page; the CLI prints only
 // the forms, and test/fixtures/cli pins what it prints byte for byte.
 
-import { BUILD_EVIDENCE } from "./plans/brief.ts";
-import { REVIEW_RULES } from "./review/brief.ts";
+import { BUILD_EVIDENCE, REVIEW_RULES } from "./brief-rules.ts";
 import { FILING_RELAY } from "./sessions.ts";
 import { HELP_GROUP_ORDER, orderedForms, registerCommands, type CommandHelp, type CommandSpec, type Registry } from "./usage/command.ts";
 import { COMMAND_MODULES } from "./usage/commands/index.ts";

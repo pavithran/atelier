@@ -226,7 +226,7 @@ test("review briefs demand independent evidence and scoped re-review (t422)", ()
     /claims.*unverified.*diff.*file and line/, /every caller.*generated page/,
     /routes, endpoints or data with visibility levels/, /who may call.*membership.*edit right.*disclosure level/,
     /table.*visibility level.*output path/, /independently.*output paths/,
-    /UI changes.*screenshots.*console.*network/, /On re-review.*each.*finding.*fix diff/,
+    /UI changes.*screenshots.*console.*network/,
     /completion marker.*after.*crash/, /red and green output/,
   ]) assert.match(REVIEW_RULES, rule);
 });
@@ -238,4 +238,21 @@ test("the guides carry the build and review evidence requirements (t422)", () =>
   const handbook = readFileSync(new URL("../docs/orchestrating.md", import.meta.url), "utf8");
   assert.ok(handbook.includes(BUILD_EVIDENCE));
   assert.match(ROLE_PROMPTS.orchestrate, /Build and review evidence/);
+});
+
+
+test("only incremental re-reviews require the fix diff and handle absent fix reports", () => {
+  const later = need({ kind: "re-review", round: 2 });
+  const incremental = reviewBrief(review({ need: later, since: { from: H2 } }));
+  assert.match(incremental, /On re-review.*each earlier finding.*fix diff/);
+  assert.match(incremental, /If no fix report is supplied, check the earlier findings against the current code and available test evidence; name missing evidence/);
+  for (const over of [
+    {},
+    { need: later, since: null },
+    { need: later, since: { from: H2 }, compare: { from: H2, merge: { main: H0, files: ["x.ts"] } } },
+  ]) {
+    const text = reviewBrief(review(over));
+    assert.ok(!text.includes("inspect only the fix diff"));
+    assert.ok(!text.includes("Require the fix report"));
+  }
 });
