@@ -1,3 +1,4 @@
+import { overlapNext } from "./rules.ts";
 import { stuckBatchRequests } from "./notify.ts";
 import { validateIndex } from "./index-transfer.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
@@ -938,7 +939,7 @@ async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: s
 // task's history holds, so main merged into the task is not counted as its
 // own. Null when the history or the trees cannot be read within one page of
 // each line: the overlap rule then judges the task on its scope.
-async function changedSinceBase(env: Env, workspace: string, head: string, againstRepo: string): Promise<string[] | null> {
+export async function changedSinceBase(env: Env, workspace: string, head: string, againstRepo: string): Promise<string[] | null> {
   try {
     using r = await env.REPOS.get(workspace);
     using against = await env.REPOS.get(againstRepo);
@@ -950,6 +951,35 @@ async function changedSinceBase(env: Env, workspace: string, head: string, again
   } catch (err) {
     console.error(errorLine(`changed files of ${workspace}`, err));
     return null;
+  }
+}
+
+// Enrich only a refused claim, so readable legacy branches offer concrete
+// scopes without recording a footprint or granting permission to edit them.
+export async function claimWithOverlapAdvice<T>(
+  env: Env, L: ReturnType<typeof ledger>, item: Item, actor: string, claim: () => Promise<T>,
+  read = changedSinceBase,
+): Promise<T> {
+  try { return await claim(); }
+  catch (err) {
+    const refusal = parseRuleError(err);
+    if (refusal?.code !== "overlap") throw err;
+    let next: string;
+    try {
+      const [{ item: measured, holders }, project] = await Promise.all([L.claimOverlaps(item.id, actor), L.project()]);
+      if (!holders.length) throw err;
+      const scopes: Record<string, string[]> = {};
+      await Promise.all(holders.filter((holder) => !holder.scope.length && holder.workspace && holder.head).map(async (holder) => {
+        try {
+          const paths = await read(env, holder.workspace!, holder.head!, await baseRepo(env, L, holder, project.repo));
+          if (paths?.length) scopes[holder.id] = paths;
+        } catch { /* Unreadable history leaves the explicit GLOB fallback. */ }
+      }));
+      next = overlapNext(measured, holders, actor, project.policy, { scopes });
+    } catch {
+      throw err;
+    }
+    throw new RuleError(refusal.code, refusal.detail, refusal.status, next);
   }
 }
 
@@ -2576,7 +2606,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409, `wait for the builder to push the fix, then run atelier show ${id}`);
         }
       }
-      const { item, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
+      const { item, generation, replaces } = await claimWithOverlapAdvice(env, L, before, actor, () => L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined));
       try {
         return json(await claimOnGit(c, gitHost(env), L, { key: ref.key, project, id, actor, item, generation, replaces, heldBefore: before.owner === actor }));
       } catch (err) {

@@ -8,6 +8,7 @@ import type { CommitIdentityPolicy } from "./commit-identity.ts";
 import type { CheckSilence, CheckStop, TIMEOUT_FACT } from "./check-limit.ts";
 import { criteriaOf } from "./criteria.ts";
 import { LIMITS } from "./limits.ts";
+import { DEFAULT_LIMITS as STUCK_LIMITS } from "./stuck/rules.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
 
@@ -1720,24 +1721,58 @@ export function assertSingleFamily(actor: string, policy: Pick<ProjectPolicy, "f
   throw new RuleError("single_family", `${what} is not one of ${single}'s models, and this project runs in single-family mode (${single}): use one of ${single}'s models, or return to cross-family review with atelier init --cross-family`, 409, `use one of ${single}'s models, or only the developer can: atelier init --cross-family`);
 }
 
+export interface OverlapAdvice {
+  now?: Date;
+  scopes?: Readonly<Record<string, readonly string[]>>;
+}
+
+function idleMs(item: Item, now: Date): number {
+  const last = Math.max(...[item.updatedAt, item.lastPushAt, item.createdAt]
+    .map((at) => at ? Date.parse(at) : NaN).filter(Number.isFinite));
+  return Number.isFinite(last) ? Math.max(0, now.getTime() - last) : 0;
+}
+
+function idleAge(ms: number): string {
+  const [n, unit] = ms >= 86_400_000 ? [Math.floor(ms / 86_400_000), "day"]
+    : ms >= 3_600_000 ? [Math.floor(ms / 3_600_000), "hour"] : [Math.floor(ms / 60_000), "minute"];
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
+}
+
+// Quote each path for the shell; the developer still chooses whether to
+// adopt the measured scope. Reading it never changes the overlap decision.
+export function overlapNext(item: Item, items: readonly Item[], actor: string, policy: Pick<ProjectPolicy, "silenceLimitMinutes"> = {}, advice: OverlapAdvice = {}): string {
+  const now = advice.now ?? new Date();
+  const limit = policy.silenceLimitMinutes !== undefined ? policy.silenceLimitMinutes * 60_000 : STUCK_LIMITS.noPushHours * 3_600_000;
+  const quote = (path: string) => "'" + path.replaceAll("'", "'\"'\"'") + "'";
+  const commands = overlappingLive(item, items, actor).flatMap((holder) => {
+    const paths = !holder.scope.length ? advice.scopes?.[holder.id] : undefined;
+    const flags = paths?.length ? paths.map((p) => `--scope ${quote(p)}`).join(" ") : "--scope GLOB";
+    return [`atelier edit ${holder.id} ${flags}`, ...(idleMs(holder, now) > limit ? [`atelier release ${holder.id}`] : [])];
+  });
+  return `only the developer can narrow or release the overlapping holders: ${commands.join("; or ")}`;
+}
+
 // The reason a claim whose scope overlaps a live item is refused under a
 // refuseOverlap policy, or null when none overlaps. Shared between the claim
 // and the refusals said ahead of it (a dispatch, t405), so both name the
 // same live items with the same words.
-export function overlappingRefusal(item: Item, items: readonly Item[], actor: string): string | null {
+export function overlappingRefusal(item: Item, items: readonly Item[], actor: string, policy: Pick<ProjectPolicy, "silenceLimitMinutes"> = {}, advice: OverlapAdvice = {}): string | null {
   const clash = overlappingLive(item, items, actor);
   if (!clash.length) return null;
-  const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
+  const now = advice.now ?? new Date();
+  const names = clash.map((o) => `${o.id} (${o.owner}, idle ${idleAge(idleMs(o, now))})`).join(", ");
   const what = item.changedFiles?.length ? "changed files overlap" : "scope overlaps";
-  return `${item.id}'s ${what} live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The developer can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
+  const unscoped = !item.scope.length || clash.some((o) => !o.scope.length);
+  return `${item.id}'s ${what} live ${names}; this project refuses overlapping claims${unscoped ? ", and an unscoped item overlaps everything" : ""}. ${overlapNext(item, items, actor, policy, { ...advice, now })}`;
 }
 
-export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
+export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor", advice: OverlapAdvice = {}): void {
   assertClaimable(item, actor);
   assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
-    const refusal = overlappingRefusal(item, items, actor);
-    if (refusal) throw new RuleError("overlap", refusal, 409, "only the developer can narrow a scope: atelier edit ID --scope GLOB");
+    const context = { ...advice, now: advice.now ?? new Date() };
+    const refusal = overlappingRefusal(item, items, actor, policy, context);
+    if (refusal) throw new RuleError("overlap", refusal, 409, overlapNext(item, items, actor, policy, context));
   }
 }
 
