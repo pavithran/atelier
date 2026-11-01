@@ -9,7 +9,7 @@ import { appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusal
 import { discoverPrivate, guardedPush, moveProjectEntryOnDisk, privateGuardFor, remoteBases } from "../private-guard.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
-import { OWNER, P, agentsMdOffer, apiToken, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, saveConfig, short, wsConfig } from "../atelier.mjs";
+import { OWNER, P, agentsMdOffer, apiToken, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, saveConfig, short, tailnetHost, wsConfig } from "../atelier.mjs";
 
 // The project owner, in the project's checkout.
 export default async function initCommand() {
@@ -147,6 +147,7 @@ export default async function initCommand() {
   const proseText = proseStandardText(top, args["prose-standard"]);
   const r = await call("PUT", P(name), {
     ...policy,
+    ...(args["clear-secret"] !== undefined ? { clearSecret: args["clear-secret"], quote: args.quote } : {}),
     ...(reset ? { reset: true } : {}),
     // The command that regenerates the project's fixtures after a task
     // merges main (atelier land); omitted keeps it, "" clears it.
@@ -209,7 +210,7 @@ export default async function initCommand() {
   // The first push sends the whole history.
   if (!serverHead) {
     guardedPush({ project: name, pending, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s repository`, fail: die },
-      (sha) => git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${sha}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token }));
+      (sha) => git(["push", "--quiet", "--recurse-submodules=no", r.baseline.remote, `${sha}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token, failureHint: (detail) => initialPushHint(detail, name) }));
   }
   cfg.projects ??= {};
   cfg.projects[name] = { ...pending, ...cfg.projects[name], path: top, branch, protect };
@@ -317,4 +318,18 @@ function affectedTestsArg(top, path) {
   if (typeof path !== "string") die('--affected-tests needs the path of a JSON file: atelier init --affected-tests docs/atelier/affected-tests.json, or --affected-tests "" to clear it');
   try { return JSON.parse(readFileSync(resolve(top, path), "utf8")); }
   catch (error) { die(`--affected-tests: ${path} could not be read as JSON: ${error.message}`); }
+}
+
+// A proxy may reject the pack before receive-pack sees it. Retry through the
+// Studio directly; never forward the stored token to a guessed address.
+function initialPushHint(detail, name) {
+  if (!/\bHTTP(?: error:?)?\s+413\b|returned error:\s*413\b/i.test(detail)) return "";
+  let direct = null;
+  try {
+    const url = new URL(cfg.server);
+    if (tailnetHost(url.hostname)) direct = cfg.server;
+  } catch { /* No configured direct address. */ }
+  const login = direct ? `log in to the Studio's tailnet address: atelier login --server ${JSON.stringify(direct)}`
+    : "log in to the Studio's tailnet address with atelier login --server URL";
+  return `The configured server's proxy refused the first push (HTTP 413). ${login}, then retry: atelier init --name ${JSON.stringify(name)}. If ATELIER_SERVER is set, change it to the same tailnet address before retrying.`;
 }

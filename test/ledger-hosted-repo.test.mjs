@@ -311,3 +311,32 @@ test("way-back renewal changes only the kept credential and retains a failed pus
   host.keepWayBack({ key: "relic", remote: null });
   assert.equal((await f.request("/api/projects/relic/move-host", "POST", { renewWayBack: true, token: "fresh" })).status, 409);
 });
+
+test("initial push findings persist on the project and init clears them only with owner direction", async (t) => {
+  const f = await imported(t);
+  const { GitHost } = await import("../src/git/host.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "atelier-init-record-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const host = new GitHost({ dataDir: dir, reposDir: join(dir, "repos"), namespace: f.env.LEDGER, settings: {} });
+  t.after(() => host.close());
+  f.env.GIT = host.binding();
+  const grant = { kind: "owner", key: "relic", branch: "main", actor: "owner" };
+  const hit = { file: "fixture.env", line: 2, commit: "a".repeat(40), fingerprint: "b".repeat(64) };
+  const unread = { file: "corpus.json", commit: "a".repeat(40), fingerprint: "c".repeat(40), reason: "9000000 bytes, over the scan limit" };
+  const report = { initial: true, ref: "refs/heads/main", head: "a".repeat(40), hits: [hit], unscanned: [unread], refused: true };
+  await host.recordScan(grant, report);
+  assert.deepEqual((await f.ledger().hostMoveScan()).hits, [hit]);
+  const rows = (await f.ledger().dumpRows("meta")).rows;
+  assert.deepEqual(JSON.parse(rows.find((row) => row[0] === "init-scan")[1]).unscanned, [unread]);
+  assert.equal((await f.request("/api/projects/relic", "PUT", { clearSecret: "dummy fixture" })).status, 400);
+  assert.deepEqual((await f.ledger().hostMoveScan()).clearances, []);
+  const response = await f.request("/api/projects/relic", "PUT", { clearSecret: "dummy fixture", quote: "clear the fixture" });
+  assert.equal(response.status, 200, await response.text());
+  const policy = await host.scanPolicy(grant);
+  assert.deepEqual(policy.clearances, [], "initial clearances do not apply to ordinary pushes");
+  assert.equal(policy.initialClearances[0].fingerprint, hit.fingerprint);
+  assert.equal(policy.initialClearances[0].file, hit.file);
+  await host.recordScan(grant, { ...report, refused: false });
+  const events = (await f.ledger().dumpRows("events")).rows;
+  assert.ok(events.some((row) => row[4] === "project.init_scanned" && JSON.parse(row[5]).unscanned[0].file === "corpus.json"));
+});

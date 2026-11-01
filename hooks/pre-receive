@@ -20,10 +20,10 @@
 // Then, for a push those four allow, the two rules that read the pushed
 // files (src/git/scan.mjs), with the policy the server wrote for this push
 // (ATELIER_POLICY, src/git/policy.mjs):
-//   5. The secret scan of the commits the push adds (only the tip tree for
+//   5. The secret scan of the commits the push adds (in batches for
 //      owner creation in an empty repository); a key-shaped line the
 //      owner has not cleared refuses the push, naming file and line.
-//   6. The private-file guard over the same commits or tip tree.
+//   6. The private-file guard over the same commits.
 //   7. The grant is still live, asked of the server at hook time.
 import { gitCommand } from "../src/git/command.mjs";
 import { execFileSync } from "node:child_process";

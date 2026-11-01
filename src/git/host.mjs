@@ -389,18 +389,25 @@ export class GitHost {
   }
   ledger(key) { return this.namespace.get(this.namespace.idFromName(`project:${key}`)); }
   // What the hook needs for a push: the secret clearances the owner recorded
-  // on the grant's task (none for the owner's own push) and the project's
-  // private paths.
+  // on the grant's task, or initial history, and the project's private paths.
   async scanPolicy(grant) {
     const L = this.ledger(grant.key);
     const item = grant.task ? await L.item(grant.task).catch(() => null) : null;
     const clearances = (item?.secretClearances ?? []).map((c) => ({ file: c.file, fingerprint: c.fingerprint }));
-    return { clearances, private: await L.privatePaths() };
+    // Send only the scan's file/fingerprint bindings, never clearance notes
+    // or developer quotes, and preserve the policy shape when none exist.
+    const initialClearances = grant.kind === "owner"
+      ? (await L.hostMoveScan()).clearances.map((c) => ({ file: c.file, fingerprint: c.fingerprint })) : [];
+    return { clearances, ...(initialClearances.length ? { initialClearances } : {}), private: await L.privatePaths() };
   }
   // The secret scan of a push to a task's or a plan's branch is recorded on
   // its item (hookScanned); a push to the project's branch or dev/* has no
-  // item to record it on, and the hook's refusal is the whole answer.
+  // item to record it on. Initial history is recorded on the project.
   async recordScan(grant, report) {
+    if (grant.kind === "owner" && report.initial === true && report.ref === `refs/heads/${grant.branch}`) {
+      await this.ledger(grant.key).initScanned(grant.actor, report.head, report.hits, report.unscanned, report.refused === true);
+      return;
+    }
     if (!BRANCH_KINDS.has(grant.kind)) return;
     await this.ledger(grant.key).hookScanned(grant.task, report.head, report.hits, report.unscanned, report.refused === true);
   }

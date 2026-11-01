@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { openScan } from "./policy.mjs";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { historyRanges } from "./scan-batches.mjs";
 import { branchTip, holds } from "./branches.mjs";
 
 const ZERO = "0".repeat(40);
@@ -146,16 +147,11 @@ const SCAN_RUN = fileURLToPath(new URL("./scan-run.mjs", import.meta.url));
 // Read every added commit in ancestry order, including side branches. A
 // batch's outside parents exclude precisely the history outside that batch,
 // so even a merge of thousands of commits stays within the scan's cap.
-const STEP = 400;
 async function scanMove({ dir, scan, old, sha, ref, branch, collect }) {
   const rows = (await git(dir, ["rev-list", "--topo-order", "--reverse", "--parents", sha, ...(/^0+$/.test(old) ? [] : ["--not", old])])).split("\n").filter(Boolean).map((l) => l.split(" "));
   const hits = [], refusals = [];
-  for (let i = 0; i < rows.length; i += STEP) {
-    const batch = rows.slice(i, i + STEP);
-    const tips = batch.map(([hash]) => hash);
-    const inside = new Set(tips);
-    const base = [...new Set(batch.flatMap(([, ...parents]) => parents).filter((p) => !inside.has(p)))];
-    const refused = await scanStep({ dir, scan, old, sha, ref, branch, moveRange: { tips, base }, collect });
+  for (const moveRange of historyRanges(rows)) {
+    const refused = await scanStep({ dir, scan, old, sha, ref, branch, moveRange, collect });
     // A refusal must name findings from every batch so one clearance covers
     // the history. Keep scan failures and private-file refusals as well.
     if (refused) {

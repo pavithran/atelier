@@ -9,7 +9,7 @@ import { test } from "node:test";
 
 const KEY = ["sk", "proj", "TESTONLY", "d".repeat(28)].join("-");
 
-test("owner initialization scans the bounded tip tree and preserves other hook rules", () => {
+test("owner initialization scans history in batches and preserves other hook rules", () => {
   const root = mkdtempSync(join(tmpdir(), "atelier-init-scan-"));
   const work = join(root, "work");
   mkdirSync(work);
@@ -47,14 +47,15 @@ test("owner initialization scans the bounded tip tree and preserves other hook r
   try {
     git("init", "-q", "-b", "main");
     writeFileSync(policy, JSON.stringify({ private: ["notes"], clearances: [] }));
-    const stream = `blob\nmark :1\ndata ${Buffer.byteLength(KEY) + 1}\n${KEY}\n\nblob\nmark :2\ndata 6\nclean\n\n`
+    const stream = `blob\nmark :1\ndata 6\nclean\n\nblob\nmark :2\ndata 6\nclean\n\n`
       + Array.from({ length: 1001 }, (_, i) => `commit refs/heads/imported\ncommitter t <t@example.test> ${1700100000 + i} +0000\ndata 1\nx\n${i === 0 ? "deleteall\nM 100644 :1 config.env\n" : i === 1000 ? "M 100644 :2 config.env\n" : ""}\n`).join("");
     execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env, input: stream });
-    const clean = git("rev-parse", "imported");
-    assert.equal(git("rev-list", "--count", clean), "1001");
+    const history = git("rev-parse", "imported");
+    assert.equal(git("rev-list", "--count", history), "1001");
+    const clean = git("rev-list", "--max-parents=0", history);
     const imported = repository("clean");
     assert.equal(push(imported, clean).status, 0);
-    assert.deepEqual(JSON.parse(readFileSync(report)), { ref: "refs/heads/main", head: clean, hits: [], unscanned: [], refused: false });
+    assert.deepEqual(JSON.parse(readFileSync(report)), { initial: true, ref: "refs/heads/main", head: clean, hits: [], unscanned: [], refused: false });
     refused(push(imported, add(clean, "readme", "hello\n")), /main moves only by a landing/);
     const secret = add(clean, "config.env", `MODE=test\nOPENAI_API_KEY=${KEY}\n`);
     const secretRepo = repository("secret");
@@ -82,42 +83,27 @@ test("owner initialization scans the bounded tip tree and preserves other hook r
     refused(push(repository("task-main-empty"), clean, "main", "task"), /this credential writes t\/1 only/);
     refused(push(repository("two-refs-empty"), clean, "main", "owner", [`${clean}:refs/heads/dev/other`]), /one ref per push/);
     // '+' has no wire representation when creating a ref. It must still scan
-    // the entire tip, so a key at that tip refuses the forced creation too.
+    // the entire history, so a key at that tip refuses the forced creation too.
     refused(push(repository("force-empty"), `+${secret}`), /secret scan found a key-shaped line/);
     refused(push(repository("delete-empty"), ""), /no deletes: main stays/);
     const privateTip = add(clean, "Notes/plan.md", "private\n", "120000");
     refused(push(repository("private"), privateTip), /would carry private files: Notes\/plan\.md in/);
     const removed = git("commit-tree", git("rev-parse", `${clean}^{tree}`), "-p", privateTip, "-m", "removed");
-    assert.equal(push(repository("removed"), removed).status, 0);
-    refused(push(repository("agent"), clean, "t/1", "task"), /adds more than 1000 commits/);
-    refused(push(repository("dev"), clean, "dev/import"), /adds more than 1000 commits/);
+    refused(push(repository("removed"), removed), /would carry private files/);
+    refused(push(repository("agent"), history, "t/1", "task"), /adds more than 1000 commits/);
+    refused(push(repository("dev"), history, "dev/import"), /adds more than 1000 commits/);
     const nonempty = repository("nonempty");
     const empty = git("commit-tree", git("mktree"), "-m", "empty");
     git("-C", nonempty, "fetch", "-q", work, `${empty}:refs/heads/other`);
-    refused(push(nonempty, clean), /adds more than 1000 commits/);
+    refused(push(nonempty, history), /adds more than 1000 commits/);
     for (const [path, text, mode, reason] of [
       ["binary", "\0binary", "100644", "binary content"],
       ["large", "a".repeat(8 * 1024 * 1024 + 1), "100644", "bytes, over"],
       ["sub", "", "160000", "a submodule"],
     ]) {
-      refused(push(repository(path), add(clean, path, text, mode)), /secret scan could not read/);
+      const carried = push(repository(path), add(clean, path, text, mode));
+      assert.equal(carried.status, 0, carried.stderr);
       assert.match(JSON.parse(readFileSync(report)).unscanned[0].reason, new RegExp(reason));
     }
-    const largeTree = `blob\nmark :1\ndata 2\nx\n\ncommit refs/heads/large-tree\ncommitter t <t@example.test> 1700200000 +0000\ndata 1\nx\ndeleteall\n`
-      + Array.from({ length: 20001 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
-    execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env, input: largeTree });
-    refused(push(repository("too-many"), git("rev-parse", "large-tree")), /tip tree has more than 20000 files/);
-    // Long path components need no checkout. Stay below the file-count cap
-    // while exceeding the production inventory buffer with a tiny blob.
-    const inventory = `blob\nmark :1\ndata 2\nx\n\ncommit refs/heads/inventory\ncommitter t <t@example.test> 1700200002 +0000\ndata 1\nx\ndeleteall\n`
-      + Array.from({ length: 2100 }, (_, i) => `M 100644 :1 ${"p".repeat(4000)}-${i}\n`).join("") + "\n";
-    execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env, input: inventory });
-    refused(push(repository("inventory-limit"), git("rev-parse", "inventory")), /tip tree exceeds the 8388608-byte file inventory limit/);
-    // Repeated objects count once per file read, so deduplication cannot bypass the byte cap.
-    const content = "a".repeat(8 * 1024 * 1024);
-    const byteTree = `blob\nmark :1\ndata ${content.length}\n${content}\ncommit refs/heads/byte-tree\ncommitter t <t@example.test> 1700200001 +0000\ndata 1\nx\ndeleteall\n`
-      + Array.from({ length: 33 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
-    execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env, input: byteTree });
-    refused(push(repository("too-large"), git("rev-parse", "byte-tree")), /tip tree exceeds the 268435456-byte scan limit/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
