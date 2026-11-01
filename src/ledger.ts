@@ -4298,11 +4298,15 @@ export class Ledger extends DurableObject<Env> {
     return { moved: true, ended, landedSince };
   }
 
-  // The secret scan of moved history (task 11, review): a move whose
-  // history holds a key-shaped line is refused and its findings kept here;
-  // the developer clears them, with the reason and their words, and the next
-  // move's scan lets those lines (same file, same fingerprint) through, as
-  // a task's clearances let a push through.
+  // Initial history has no task. Keep its scan, including unread files, on
+  // the project and share move-host's owner clearance by file and fingerprint.
+  initScanned(actor: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[], refused: boolean): void {
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('init-scan', ?)`, JSON.stringify({ head, hits, unscanned, refused }));
+    if (refused && hits.length) this.hostMoveRefused(actor, "initial push", head, hits);
+    this.log(null, actor, "project.init_scanned", { head, unscanned, refused, flags: hits.map((h) => ({ file: h.file, line: h.line, commit: h.commit })) }, new Date().toISOString());
+  }
+
+  // Findings and owner clearances shared by move-host and initial registration.
   hostMoveScan(): { hits: SecretHit[]; clearances: { file: string; fingerprint: string }[] } {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'host-move-scan'`).toArray()[0];
     const kept = row ? JSON.parse(row.value as string) as { hits?: SecretHit[]; clearances?: { file: string; fingerprint: string }[] } : {};

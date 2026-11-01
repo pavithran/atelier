@@ -205,6 +205,8 @@ export function gitEnv(base = process.env, extra = {}, args = [], ownerRemote = 
 
 // opts.token is a grant this one command sends as its
 // Authorization header (see auth). It is cut from any error text shown.
+// opts.failureHint(detail) may append recovery instructions to a Git refusal;
+// detail has already had the token removed.
 // opts.hooks === false runs the command with every hook off (hooksOff in
 // cli/landing.mjs), as each Git command of a landing runs (landingGit).
 export function git(args, opts = {}) {
@@ -232,7 +234,10 @@ export function git(args, opts = {}) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
   }
   if (opts.token) detail = detail.split(opts.token).join("[redacted]");
-  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} ${talksToRemote(args) && tooSlow(detail) ? "timed out (the transfer stalled below the low-speed floor)" : "failed"}:\n${detail}`);
+  if (r.status !== 0 && !opts.allowFail) {
+    const hint = opts.failureHint?.(detail);
+    die(`git ${shown.join(" ")} ${talksToRemote(args) && tooSlow(detail) ? "timed out (the transfer stalled below the low-speed floor)" : "failed"}:\n${detail}${hint ? `\n${hint}` : ""}`);
+  }
   return opts.allowFail ? r : opts.raw ? r.stdout : r.stdout.trim();
 }
 
