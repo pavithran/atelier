@@ -2122,6 +2122,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the developer pushes it with the server token.
     const existing = known ? (await L.project().catch(() => null))?.branch ?? null : null;
     if (!existing) init.branch ??= "main";
+    if (has("clearSecret")) await L.clearHostMove(actor, body.clearSecret, ownerDirection(body.quote, c.acting ?? null, "clearing an initial history's secret flag"));
     await gitHost(env).createRepo({ key: ref.key, branch: branch ?? existing ?? "main" });
     const record = await L.initProject(init, actor);
     // The text goes with the path it was read from: a path given without

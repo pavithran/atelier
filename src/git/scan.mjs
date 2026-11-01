@@ -1,7 +1,7 @@
 import { gitCommand } from "./command.mjs";
 // Rules 5 and 6 of the pre-receive hook (Atelier 2.0, design section 4.4):
 // the secret scan and the private-file guard over the commits a push adds,
-// or only the tip tree for owner creation in an empty repository, before
+// in batches for owner creation in an empty repository, before
 // the ref moves. The hook imports this after src/runtime/loader.mjs,
 // so the scans are the ones the rest of Atelier runs, not copies:
 // scanHistory and the allowance list from src/secret-scan.ts, privateCommits
@@ -18,28 +18,11 @@ import { TASK_COMMITS, readAllowanceList, scanHistory, withEmptyTree } from "../
 import { readPolicy, writeReport } from "./policy.mjs";
 import { openReader } from "./reader.mjs";
 import { repoReader } from "../diff.ts";
-import { privatePathsAmong } from "../rules.ts";
+import { historyRanges } from "./scan-batches.mjs";
 
 const ZERO = /^0+$/;
 const LISTED = 20;
-const TIP_FILES = 20_000;
 const TIP_BYTES = 256 * 1024 * 1024;
-
-// Bound the inventory before scanning any file, including symlinks and gitlinks.
-function tipPaths(sha) {
-  let out;
-  try {
-    out = execFileSync(gitCommand(), ["ls-tree", "-r", "-z", "--full-tree", "--name-only", sha], {
-      env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 8 * 1024 * 1024,
-    });
-  } catch (error) {
-    if (error.code === "ENOBUFS") throw new Error("the tip tree exceeds the 8388608-byte file inventory limit");
-    throw error;
-  }
-  const paths = out.split("\0").filter(Boolean);
-  if (paths.length > TIP_FILES) throw new Error(`the tip tree has more than ${TIP_FILES} files, more than the scan reads`);
-  return paths;
-}
 
 // Git as the scans read history: no replacement refs rewrite a commit.
 const env = { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" };
@@ -80,21 +63,16 @@ const more = (list) => (list.length > LISTED ? `, and ${list.length - LISTED} mo
 // push may go on. Writes the secret scan's report to `reportPath` whenever
 // the scan completed. Throws nothing: a scan that cannot read the push
 // refuses it.
-export async function checkPush({ old, sha, ref, branch, task, kind, policyPath, reportPath, moveRange }) {
-  let policy, base, commits, trees, paths;
-  let tipOnly = false;
+export async function checkPush({ old, sha, ref, branch, task, kind, policyPath, reportPath, moveRange, onReport, initialScan = false }) {
+  let policy, base, commits, trees;
   try {
     policy = readPolicy(policyPath);
+    if (initialScan) policy.clearances = [...policy.clearances, ...policy.initialClearances];
     base = moveRange?.base ?? baseOf({ old, ref, branch });
-    tipOnly = kind === "owner" && ZERO.test(old) && ref === `refs/heads/${branch}`
+    const initial = !moveRange && kind === "owner" && ZERO.test(old) && ref === `refs/heads/${branch}`
       && !git("for-each-ref", "--count=1", "--format=%(refname)");
-    if (tipOnly) {
-      paths = tipPaths(sha);
-      // A synthetic root uses the normal scanner over every line of the tip.
-      const treeHash = git("rev-parse", "--verify", `${sha}^{tree}`);
-      commits = [{ hash: sha, treeHash, parents: [] }];
-      trees = new Map([[sha, treeHash]]);
-    } else ({ commits, trees } = commitsOf(moveRange?.tips ?? sha, base));
+    if (initial) return await checkInitialPush({ old, sha, ref, branch, task, kind, policyPath, reportPath });
+    ({ commits, trees } = commitsOf(moveRange?.tips ?? sha, base));
   } catch (error) {
     return `the push could not be read for the secret scan (${error.message.split("\n")[0]}); nothing was pushed`;
   }
@@ -107,7 +85,7 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
   try {
     const reader = repoReader(repo);
     let bytes = 0;
-    const r = withEmptyTree(tipOnly ? {
+    const r = withEmptyTree(!moveRange ? {
       tree: (h) => reader.tree(h),
       blob: async (h) => {
         const blob = await reader.blob(h);
@@ -117,16 +95,18 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
       },
     } : reader);
     const headTree = git("rev-parse", "--verify", `${sha}^{tree}`);
-    const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, headTree), tipOnly ? "tree" : "commit");
+    const scan = await scanHistory(r, commits, trees, () => readAllowanceList(r, headTree), "commit");
     const cleared = (h) => policy.clearances.some((c) => c.file === h.file && c.fingerprint === h.fingerprint);
     const standing = scan.hits.filter((h) => !cleared(h));
     // A push to a task's or a plan's branch records an unscanned file on its
     // item. The project's branch and dev/* have no item, so an unscanned
     // file there refuses the push, unless the owner cleared it on the grant's
-    // task (a landing grant carries one). A move records these on the project.
+    // task (a landing grant carries one). Initial registration and move-host record these on the project.
     const recorded = !!moveRange || /^refs\/heads\/(t|plan)\/\d+$/.test(ref);
     const unread = recorded ? [] : scan.unscanned.filter((u) => !cleared(u));
-    writeReport(reportPath, { ref, head: sha, hits: scan.hits, unscanned: scan.unscanned, refused: standing.length > 0 });
+    const report = { ref, head: sha, hits: scan.hits, unscanned: scan.unscanned, refused: standing.length > 0 };
+    writeReport(reportPath, report);
+    onReport?.(report);
     if (unread.length) {
       refusals.push(`the secret scan could not read ${unread.slice(0, LISTED).map((u) => `${u.file} in ${u.commit.slice(0, 12)} (${u.reason})`).join(", ")}${more(unread)}, and this branch has no task to record that on`);
     }
@@ -138,16 +118,30 @@ export async function checkPush({ old, sha, ref, branch, task, kind, policyPath,
   } finally {
     repo[Symbol.dispose]();
   }
-  // Rule 6: no scanned commit or initialization tip holds a private path.
+  // Rule 6: no added commit holds a private path.
   if (policy.private.length) {
     try {
-      const found = tipOnly
-        ? privatePathsAmong(paths, policy.private).map((path) => ({ path, commit: sha }))
-        : privateCommits(process.cwd(), policy.private, moveRange?.tips ?? sha, base);
+      const found = privateCommits(process.cwd(), policy.private, moveRange?.tips ?? sha, base);
       if (found.length) refusals.push(`the push would carry private files: ${privateCommitsText(found)}. They never leave the developer's Macs; take them out of those commits and push again`);
     } catch (error) {
       refusals.push(error.message);
     }
   }
   return refusals.length ? `${refusals.join("; ")}. Nothing was pushed.` : null;
+}
+
+// Initial registration carries the whole history, as move-host does. Collect
+// every batch, including refused ones, so one owner clearance covers all hits.
+async function checkInitialPush(args) {
+  const rows = git("rev-list", "--topo-order", "--reverse", "--parents", args.sha).split("\n").filter(Boolean).map((l) => l.split(" "));
+  const hits = [], unscanned = new Map(), refusals = [];
+  for (const moveRange of historyRanges(rows)) {
+    const refusal = await checkPush({ ...args, moveRange, initialScan: true, reportPath: null, onReport: (report) => {
+      hits.push(...report.hits);
+      for (const u of report.unscanned) unscanned.set(`${u.file}\0${u.fingerprint}`, u);
+    } });
+    if (refusal) refusals.push(refusal);
+  }
+  writeReport(args.reportPath, { initial: true, ref: args.ref, head: args.sha, hits, unscanned: [...unscanned.values()], refused: refusals.length > 0 });
+  return refusals.length ? `${refusals.join(" ")}${refusals.some((r) => r.includes("found a key-shaped line")) ? ' Only the developer can clear the key-shaped lines: atelier init --clear-secret "why it is safe" --quote "the developer’s words" --as H/M, then retry atelier init.' : ""}` : null;
 }

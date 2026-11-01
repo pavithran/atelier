@@ -26,6 +26,7 @@ elif has --is-shallow-repository "$@"; then echo false
 elif has rev-parse "$@"; then echo ${"a".repeat(40)}
 elif has config "$@"; then exit 1
 elif has ls-remote "$@"; then exit 0
+elif has push "$@" && [ -n "$TEST_PUSH_ERROR" ]; then echo "$TEST_PUSH_ERROR" >&2; exit 1
 elif ! has push "$@"; then exit 2
 fi
 `, { mode: 0o755 });
@@ -57,7 +58,7 @@ globalThis.fetch = async (url, options) => {
     cwd: dir, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_SERVER: initial.server, ATELIER_ACTOR: "owner", TEST_CALLS: log, ...extra },
   });
   try {
-    run({ command, initial, config: () => JSON.parse(readFileSync(config, "utf8")), calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) });
+    run({ command, initial, setConfig: (value) => writeFileSync(config, JSON.stringify(value)), config: () => JSON.parse(readFileSync(config, "utf8")), calls: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -361,4 +362,28 @@ test("projects rename into an existing entry keeps every private setting of both
   assert.deepEqual(config(), clash);
   // Checked before the server was asked (Astra's eighth review of t645).
   assert.equal(calls().length, asked, "nothing was renamed on the server");
+}));
+
+for (const known of [false, true]) test(`init HTTP 413 names ${known ? "the configured" : "the Studio's"} tailnet address and retry`, () => fixture(({ command, initial, setConfig, config }) => {
+  setConfig({ ...initial, projects: {}, ...(known ? { server: "http://100.100.10.20:8787" } : {}) });
+  const result = command(["init", "--name", "large-project"], { TEST_PUSH_ERROR: "error: RPC failed; HTTP 413 curl 22 The requested URL returned error: 413" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, known ? /atelier login --server "http:\/\/100\.100\.10\.20:8787"/ : /log in to the Studio.s tailnet address/);
+  assert.match(result.stderr, /retry: atelier init --name "large-project"/);
+  assert.equal(config().projects["large-project"], undefined);
+}));
+
+test("init preserves other push errors", () => fixture(({ command }) => {
+  const result = command(["init"], { TEST_PUSH_ERROR: "remote: secret scan found a key-shaped line" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /key-shaped line/);
+  assert.doesNotMatch(result.stderr, /tailnet address|HTTP 413/);
+}));
+
+test("init sends an explicit initial-history clearance and its owner quote", () => fixture(({ command, calls }) => {
+  const result = command(["init", "--clear-secret", "dummy fixture", "--quote", "clear the fixture", "--as", "codex/gpt-6-astra"]);
+  assert.equal(result.status, 0, result.stderr);
+  const put = JSON.parse(calls().find((c) => c.method === "PUT").body);
+  assert.equal(put.clearSecret, "dummy fixture");
+  assert.equal(put.quote, "clear the fixture");
 }));

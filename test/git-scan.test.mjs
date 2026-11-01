@@ -247,60 +247,45 @@ test("a push adding more commits than the scan reads is refused, naming the cap"
   refused(await push(t5, `+${c}:refs/heads/t/5`), /adds more than 1000 commits, more than the scan reads/);
 });
 
-test("owner creation scans only the tip of a long history; other pushes keep their restrictions", async () => {
-  // The first commit holds a secret; the final tip holds only clean text.
+test("owner creation batches history, records oversized files and refuses historical keys until cleared", async () => {
   const stream = `blob\nmark :1\ndata ${Buffer.byteLength(KEY) + 1}\n${KEY}\n\n`
     + `blob\nmark :2\ndata 6\nclean\n\n`
     + Array.from({ length: 1001 }, (_, i) => `commit refs/heads/imported\ncommitter t <t@example.test> ${1700100000 + i} +0000\ndata 1\nx\n${i === 0 ? "deleteall\nM 100644 :1 config.env\n" : i === 1000 ? "M 100644 :2 config.env\n" : ""}\n`).join("");
   execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: stream });
-  const clean = git("rev-parse", "imported");
-  assert.equal(git("rev-list", "--count", clean), "1001");
+  const history = git("rev-parse", "imported");
   const initialPush = async (project, head, privates = []) => {
     assert.equal((await api("PUT", `/projects/${project}`, {})).status, 200);
-    if (privates.length) {
-      const ledger = server.namespace.get(server.namespace.idFromName(`project:${project}`));
-      await ledger.setPrivatePaths(privates);
-    }
+    if (privates.length) await server.namespace.get(server.namespace.idFromName(`project:${project}`)).setPrivatePaths(privates);
     return tryGit("push", "--porcelain", remote(OWNER, project), `${head}:refs/heads/main`);
   };
-  const ok = await initialPush("import-clean", clean);
-  assert.equal(ok.status, 0, ok.stderr);
-  refused(await push(t5, `+${clean}:refs/heads/t/5`), /adds more than 1000 commits/);
-  refused(await push(OWNER, `${clean}:refs/heads/dev/imported`), /adds more than 1000 commits/);
-  const next = commit("next", clean, { "a.txt": "hello\n" });
-  refused(await tryGit("push", "--porcelain", remote(OWNER, "import-clean"), `${next}:refs/heads/main`), /main moves only by a landing/);
+  refused(await initialPush("import-history", history), /key-shaped line: config\.env:1/);
+  const ledger = server.namespace.get(server.namespace.idFromName("project:import-history"));
+  assert.equal((await ledger.hostMoveScan()).hits.length, 1);
+  const clear = await api("PUT", "/projects/import-history", { clearSecret: "a dummy fixture", quote: "clear the fixture key" });
+  assert.equal(clear.status, 200, await clear.text());
+  const retry = await tryGit("push", "--porcelain", remote(OWNER, "import-history"), `${history}:refs/heads/main`);
+  assert.equal(retry.status, 0, retry.stderr);
+  refused(await push(t5, `+${history}:refs/heads/t/5`), /adds more than 1000 commits/);
+  refused(await push(OWNER, `${history}:refs/heads/dev/imported`), /adds more than 1000 commits/);
+  const next = commit("next", history, { "a.txt": "hello\n" });
+  refused(await tryGit("push", "--porcelain", remote(OWNER, "import-history"), `${next}:refs/heads/main`), /main moves only by a landing/);
 
-  const secret = commit("secret at tip", clean, { "config.env": `MODE=test\nOPENAI_API_KEY=${KEY}\n` });
-  refused(await initialPush("import-secret", secret), new RegExp(`secret scan found a key-shaped line: config\\.env:2 in ${secret.slice(0, 12)}`));
-  const fixture = git("commit-tree", git("rev-parse", `${secret}^{tree}`), "-m", "fixture root");
-  const line = `OPENAI_API_KEY=${KEY}`;
-  const allowed = commit("allow older fixture", fixture, { "docs/atelier/privacy-allow.json": JSON.stringify({ allowances: [
-    { commit: fixture, file: "config.env", sha256: sha256(line), reason: "a dummy fixture" },
-  ] }) });
-  const initialized = await initialPush("import-allowed", allowed);
-  assert.equal(initialized.status, 0, initialized.stderr);
-  refused(await initialPush("import-unlisted", commit("another key", allowed, { "other.env": `${line}\n` })), /other\.env:1/);
+  const clean = git("commit-tree", git("rev-parse", `${history}^{tree}`), "-m", "clean root");
   const privateTip = commit("private at tip", clean, { "Notes/plan.md": "private\n" });
-  refused(await initialPush("import-private", privateTip, ["notes"]), /would carry private files: Notes\/plan\.md in [0-9a-f]{12}/);
   const privateRemoved = git("commit-tree", git("rev-parse", `${clean}^{tree}`), "-p", privateTip, "-m", "remove private file");
-  assert.equal((await initialPush("import-private-removed", privateRemoved, ["notes"])).status, 0);
+  refused(await initialPush("import-private-removed", privateRemoved, ["notes"]), /would carry private files: Notes\/plan\.md/);
 
-  const unread = commit("unreadable tip", clean, unreadable);
-  refused(await initialPush("import-unreadable", unread), /could not read (?=.*big\.txt)(?=.*blob\.bin)(?=.*sub).*no task to record/s);
-  const tooMany = `blob\nmark :1\ndata 2\nx\n\ncommit refs/heads/large-tree\ncommitter t <t@example.test> 1700200000 +0000\ndata 1\nx\ndeleteall\n`
-    + Array.from({ length: 20001 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
-  execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: tooMany });
-  refused(await initialPush("import-large", git("rev-parse", "large-tree")), /tip tree has more than 20000 files/);
-  // Exercise both production byte caps without thousands of distinct blobs.
-  const inventory = `blob\nmark :1\ndata 2\nx\n\ncommit refs/heads/inventory\ncommitter t <t@example.test> 1700200002 +0000\ndata 1\nx\ndeleteall\n`
-    + Array.from({ length: 2100 }, (_, i) => `M 100644 :1 ${"p".repeat(4000)}-${i}\n`).join("") + "\n";
-  execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: inventory });
-  refused(await initialPush("import-inventory", git("rev-parse", "inventory")), /tip tree exceeds the 8388608-byte file inventory limit/);
-  const content = "a".repeat(8 * 1024 * 1024);
+  const content = "a".repeat(8 * 1024 * 1024 + 1);
   const bytes = `blob\nmark :1\ndata ${content.length}\n${content}\ncommit refs/heads/byte-tree\ncommitter t <t@example.test> 1700200001 +0000\ndata 1\nx\ndeleteall\n`
     + Array.from({ length: 33 }, (_, i) => `M 100644 :1 file-${i}\n`).join("") + "\n";
   execFileSync("git", ["fast-import", "--quiet"], { cwd: work, env: gitEnv, input: bytes });
-  refused(await initialPush("import-bytes", git("rev-parse", "byte-tree")), /tip tree exceeds the 268435456-byte scan limit/);
+  const large = await initialPush("import-bytes", git("rev-parse", "byte-tree"));
+  assert.equal(large.status, 0, large.stderr);
+  const largeLedger = server.namespace.get(server.namespace.idFromName("project:import-bytes"));
+  const rows = (await largeLedger.dumpRows("meta")).rows;
+  const scan = JSON.parse(rows.find((row) => row[0] === "init-scan")[1]);
+  assert.equal(scan.unscanned.length, 33);
+  assert.ok(scan.unscanned.every((u) => /bytes, over/.test(u.reason)));
 });
 
 test("empty-repository initialization keeps credential, ref-count, force and delete guards", async (t) => {
@@ -328,7 +313,7 @@ test("empty-repository initialization keeps credential, ref-count, force and del
   refused(await send(task, `${head}:refs/heads/main`), /this credential writes t\/1 only/);
   refused(await send(OWNER, `${head}:refs/heads/main`, `${head}:refs/heads/dev/other`), /one ref per push/);
   // Force is a client option, absent from the creation sent to receive-pack.
-  // A forced creation must run the same tip scan and refuse a present key.
+  // A forced creation must run the same history scan and refuse a present key.
   const secret = commit("forced secret", head, { "force.env": `${KEY}\n` });
   refused(await send(OWNER, `+${secret}:refs/heads/main`), /secret scan found a key-shaped line: force\.env:1/);
   refused(await send(OWNER, ":refs/heads/main"), /no deletes: main stays/);

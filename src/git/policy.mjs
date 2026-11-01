@@ -7,7 +7,8 @@
 // the two paths.
 //   policy  { clearances: [{ file, fingerprint }], private: [path] }: the
 //           secret clearances the owner recorded on the task and the
-//           project's private paths.
+//           project's private paths. initialClearances are project-history
+//           clearances, used only by the first owner push.
 //   report  { ref, head, hits, unscanned, refused }: the secret scan of the
 //           commits the push adds, as file, line, fingerprint, commit and
 //           reason, never a value.
@@ -35,7 +36,7 @@ export function openScan(root, policy) {
 // it to read, mode 600.
 export function readPolicy(path) {
   const p = JSON.parse(readFileSync(path, "utf8"));
-  return { clearances: Array.isArray(p.clearances) ? p.clearances : [], private: Array.isArray(p.private) ? p.private : [] };
+  return { initialClearances: Array.isArray(p.initialClearances) ? p.initialClearances : [], clearances: Array.isArray(p.clearances) ? p.clearances : [], private: Array.isArray(p.private) ? p.private : [] };
 }
 export function writeReport(path, report) {
   if (path) writeFileSync(path, JSON.stringify(report), { mode: 0o600 });
