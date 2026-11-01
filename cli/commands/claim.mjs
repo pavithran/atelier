@@ -1,5 +1,5 @@
 // atelier claim. Its forms, flags and help are declared in src/usage/commands/claim.ts.
-import { BUILD_RULES } from "../../src/plans/brief.ts";
+import { BUILD_RULES } from "../../src/brief-rules.ts";
 import { actor, args, claimWorkspace, itemArg, project } from "../atelier.mjs";
 
 // Agents: take an item and get a private workspace for it.

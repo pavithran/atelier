@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { briefFor, execute, runReview, runTask, writeBrief } from "../cli/runner.mjs";
 import { BUILD_EVIDENCE, BUILDER_SCREENSHOTS, BUILDER_TESTS, BUILD_RULES, jobBrief } from "../src/plans/brief.ts";
 import { REVIEW_RULES, reviewBrief } from "../src/review/brief.ts";
+import { RE_REVIEW_RULE } from "../src/brief-rules.ts";
 import { guideText, ROLE_PROMPTS } from "../src/usage.ts";
 
 // The rules every build and review brief carries (t376), which lived only in
@@ -187,7 +188,8 @@ const BLOCK_LIMITS = {
   "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "538119f6 + t422", measured: 2098, margin: 150 },
   "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "ece4f377", measured: 634, margin: 100 },
   "builder screenshot instruction (BUILDER_SCREENSHOTS)": { text: BUILDER_SCREENSHOTS, at: "93b3198d", measured: 277, margin: 100 },
-  "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "538119f6 + t422", measured: 2372, margin: 150 },
+  "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "538119f6 + t422", measured: 2155, margin: 150 },
+  "re-review rule (RE_REVIEW_RULE)": { text: RE_REVIEW_RULE, at: "538119f6 + t422", measured: 360, margin: 100 },
 };
 const overLimit = ({ text, measured, margin }) => BYTES(text) > measured + margin;
 
