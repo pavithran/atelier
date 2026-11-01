@@ -3845,6 +3845,10 @@ export class Ledger extends DurableObject<Env> {
   undispatch(id: string, actor: string): Item & { already?: true } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a dispatch", 403, `only the developer can: atelier undispatch ${id}`);
     const item = this.item(id);
+    if (!item.dispatch || item.state !== "open") {
+      const review = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id DESC LIMIT 1`, id).toArray()[0];
+      if (review) throw new RuleError("not_dispatched", `${id} has an open review request ${review.id}; undispatch withdraws build dispatches, not review requests`, 409, `run atelier review-withdraw ${id} --request ${review.id} --reason "Review no longer needed"`);
+    }
     this.assertNotPlanned(item);
     // A rerun: no dispatch stands and the last word on it was this actor's withdrawal.
     const last = this.lastEvent(id, ["item.dispatched", "item.undispatched"]);
@@ -4675,9 +4679,6 @@ export class Ledger extends DurableObject<Env> {
       const { refusal } = postMergeIndependence(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy), item.state === "merged" && this.mergedFast(item.id));
       if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403, `name a reviewer from another family with atelier review-request ${item.id} --reviewer H/M`);
     }
-    if (item.state === "merged" && r.request === undefined) {
-      throw new RuleError("closed", `${item.id} is merged; a review must answer a claimed post-merge review request`, 409, `run atelier show ${item.id}`);
-    }
     assertReviewAllowed(item, proved);
     if (item.state !== "accepted" && item.state !== "merged") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again", 409, `run atelier merge ${item.id} --cancel`);
@@ -4707,14 +4708,14 @@ export class Ledger extends DurableObject<Env> {
       // A verdict that names no request is told so (t575), never "request undefined".
       if (r.request === undefined) {
         const live = claims.map((c) => c.id as number);
-        throw new RuleError("stale_request", `the verdict on ${r.itemId} names no review request, but ${r.by} claimed ${live.length ? `request ${live.join(", ")}` : "one"} at ${r.head.slice(0, 8)}: name it with --request N, as the review claim gave it; if it was withdrawn or replaced, claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409, `run atelier review ${r.itemId} again with --request N from the review claim`);
+        throw new RuleError("stale_request", `the verdict on ${r.itemId} names no review request, but ${r.by} claimed ${live.length ? `request ${live.join(", ")}` : "one"} at ${r.head.slice(0, 8)}: name it with --request N, as the review claim gave it; if it was withdrawn or replaced, claim the review again (${this.reviewRecoveryCommand(r.itemId, r.by)}) and judge the change against the criteria it gives`, 409, live.length ? `run atelier review ${r.itemId} --head ${r.head} --request ${live[0]} --criteria ${r.criteria} --${r.approve ? "approve" : "reject"} --note "…" --as ${r.by}` : `run ${this.reviewRecoveryCommand(r.itemId, r.by)}`);
       }
-      throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409, `run atelier review-claim ${r.itemId} --as ${r.by}, then give the verdict again`);
+      throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (${this.reviewRecoveryCommand(r.itemId, r.by)}) and judge the change against the criteria it gives`, 409, `run ${this.reviewRecoveryCommand(r.itemId, r.by)}, then give the verdict using the command the claim prints`);
     }
     const boundClaims = claims.filter((c) => c.id === r.request);
     const claimed = boundClaims.length > 0;
     if (item.state === "merged" && (!claimed || r.request === undefined)) {
-      throw new RuleError("stale_request", "a post-merge verdict must answer the review request this reviewer claimed", 409, `run atelier review-claim ${r.itemId} --as ${r.by}, then give the verdict again`);
+      throw new RuleError("stale_request", "a post-merge verdict must answer the review request this reviewer claimed", 409, `run ${this.reviewRecoveryCommand(r.itemId, r.by)}, then give the verdict using the command the claim prints`);
     }
     // A review answering a tier request this reviewer claimed is a tier
     // review. One whose tier request was withdrawn, when the change was
@@ -8839,7 +8840,8 @@ export class Ledger extends DurableObject<Env> {
   //
   // `main` is main's head as the Worker read it from the baseline for this
   // claim, which a pre-review claim is bound to (bindPrereview).
-  async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false, main: string | null = null): Promise<ReviewClaim> {
+  async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false, main: string | null = null, offers?: readonly SeenOffer[]): Promise<ReviewClaim> {
+    this.keepOffers(this.ownOffers(offers));
     const item = this.item(itemId);
     if (item.state === "merged") this.expireReviewClaims();
     const postMergeRequest = item.state === "merged" && this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'open' LIMIT 1`, itemId).toArray().length > 0;
@@ -8866,6 +8868,31 @@ export class Ledger extends DurableObject<Env> {
     const item = this.reviewItem(itemId);
     if (head !== item.head) throw new RuleError("stale_head", `the stored diff is for ${head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}`, 409, "run atelier push, then ask for the review again");
     this.log(itemId, actor, "review.diff", { head, ...ref }, new Date().toISOString(), proved);
+  }
+
+  private liveReviewOffers(): SeenOffer[] {
+    return liveOffers(this.heldOffers()).filter((o) => servesProject(o) && (o.jobs ?? []).includes("review"));
+  }
+
+  private reviewClaimCommand(id: string, actor: string, dispatch: Dispatch): string {
+    const live = this.liveReviewOffers();
+    const runner = live.find((o) => assign(dispatch, o))?.runner
+      ?? `${dispatch.to === "any" ? "home" : dispatch.to}:hand`;
+    return `atelier review-claim ${id} --as ${actor}${live.length ? ` --runner ${runner}` : ""}`;
+  }
+
+  private reviewRecoveryCommand(id: string, actor: string): string {
+    const rows = this.sql.exec(`SELECT state, dispatch FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id DESC`, id).toArray();
+    const open = rows.find((r) => {
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      return r.state === "open" && (!d.agent || d.agent === actor.split("/")[0]) && (!d.model || d.model === actor.split("/")[1]);
+    });
+    if (open) return this.reviewClaimCommand(id, actor, JSON.parse(open.dispatch as string) as Dispatch);
+    if (rows.some((r) => r.state === "claimed")) return `atelier show ${id}`;
+    const [agent, model] = actor.split("/");
+    const where = this.poolStanding().find((m) => sameActor(`${m.harness}/${m.id}`, actor))?.where ?? "home";
+    const dispatch: Dispatch = { to: where, agent, model, job: "review", by: this.owner, at: new Date().toISOString(), note: "" };
+    return `atelier review-request ${id} --reviewer ${actor} --hand, then ${this.reviewClaimCommand(id, actor, dispatch)}`;
   }
 
   private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
@@ -8901,14 +8928,14 @@ export class Ledger extends DurableObject<Env> {
     };
     const row = rows.find(askedOf) ?? rows[0];
     if (!row && closed.length) {
-      throw new RuleError("stale_head", `the review request for ${closed.map((h) => h.slice(0, 8)).join(", ")} was closed: ${itemId} is at ${item.head!.slice(0, 8)}, and no review of that head is asked yet`, 409, `run atelier review-request ${itemId} --reviewer H/M for the current head`);
+      throw new RuleError("stale_head", `the review request for ${closed.map((h) => h.slice(0, 8)).join(", ")} was closed: ${itemId} is at ${item.head!.slice(0, 8)}, and no review of that head is asked yet`, 409, `run atelier review-request ${itemId} --reviewer ${actor} --hand for the current head`);
     }
     if (!row) {
       // A request a runner holds is live, as requestReview counts it (t574):
       // the refusal names the claim, so it is not read as no request at all.
       const held = this.sql.exec(`SELECT id, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state = 'claimed' ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
       if (held) throw new RuleError("no_review", `${itemId} has no open review request: request ${held.id} is claimed by ${held.claimedBy} since ${held.claimedAt}`, 404, `wait for ${held.claimedBy}'s verdict, or run atelier show ${itemId}`);
-      throw new RuleError("no_review", `${itemId} has no open review request`, 404, `run atelier review-request ${itemId} --reviewer H/M`);
+      throw new RuleError("no_review", `${itemId} has no open review request`, 404, `run atelier review-request ${itemId} --reviewer ${actor} --hand`);
     }
     const tier = row.tier === 1;
     const head = row.head as string;
@@ -8916,15 +8943,14 @@ export class Ledger extends DurableObject<Env> {
     if (head !== item.head) {
       throw new RuleError("stale_head", `the review request is for ${head.slice(0, 8)} but ${itemId} is at ${item.head?.slice(0, 8) ?? "nothing"}; the builder must push first`, 409, "the builder runs atelier push, then ask for the review again");
     }
-    if (!runner) throw new RuleError("dispatched", `${itemId}'s review waits for a runner to claim it`, 409, `run atelier undispatch ${itemId}, or wait for a runner to claim it`);
     // A request stopped at this head (t238) is claimed by no runner, however
     // it asks; the developer's decision, or a new request, lifts it.
     const stop = tier ? null : parseStop(row.stopped);
     if (reviewStopped(stop)) throw new RuleError("review_stopped", stopText(itemId, stop, item.state === "merged"), 409, `run atelier show ${itemId}`);
-    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s review is for a ${dispatch.to} runner, not ${runner.runner}`, 403, `use a ${dispatch.to} runner, or run atelier dispatch ${itemId} --to any`);
+    if (runner && dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s review is for a ${dispatch.to} runner, not ${runner.runner}`, 403, `run ${this.reviewClaimCommand(itemId, actor, dispatch)}`);
     const [harness, model] = actor.split("/");
-    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403, `claim with ${dispatch.agent}, or run atelier dispatch ${itemId} --agent ${harness}`);
-    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403, `claim with ${dispatch.model}, or run atelier dispatch ${itemId} --model ${model ?? "MODEL"}`);
+    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403, `run ${this.reviewClaimCommand(itemId, `${dispatch.agent}/${dispatch.model ?? model ?? "MODEL"}`, dispatch)}`);
+    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403, `run ${this.reviewClaimCommand(itemId, `${dispatch.agent ?? harness}/${dispatch.model}`, dispatch)}`);
     const at = new Date(Date.now()).toISOString();
     // A request made before the owner paused, reserved or kept this model
     // from reviewing is not claimable: it is withdrawn, so the gate asks
@@ -8934,6 +8960,7 @@ export class Ledger extends DurableObject<Env> {
       this.withdrawHeldRequest(itemId, row.id as number, head, actor, held, tier, at);
       throw new RuleError("model_held", `${held}; its review of ${itemId} is withdrawn`, 409, "name another model, or only the developer can: atelier models set ID --state available");
     }
+    if (!runner && this.liveReviewOffers().length) throw new RuleError("dispatched", `${itemId}'s review waits for a runner to claim it`, 409, this.reviewClaimCommand(itemId, actor, dispatch));
     // A part's claim carries the plan's account of it for the brief; an item
     // outside a plan has none, and its need is read as the gate reads it.
     const record = item.plan ? this.planRecord(item.plan) : null;
@@ -8945,9 +8972,9 @@ export class Ledger extends DurableObject<Env> {
     const criteria = criteriaHash(item.accept, part ? part.acceptance : item.partAccept);
     // No await separates selection from this conditional write. The request
     // id is the fencing generation and may be claimed only once.
-    const bound = this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, criteria = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, criteria, row.id).toArray();
-    if (!bound.length) throw new RuleError("no_review", `${itemId} has no open review request`, 409, `run atelier review-request ${itemId} --reviewer H/M`);
-    this.log(itemId, actor, "review.claimed", { head, runner: runner.runner, criteria, request: row.id as number, ...(tier ? { tier: true } : {}) }, at, proved);
+    const bound = this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, criteria = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner?.runner ?? null, at, criteria, row.id).toArray();
+    if (!bound.length) throw new RuleError("no_review", `${itemId} has no open review request`, 409, `run atelier review-request ${itemId} --reviewer ${actor} --hand`);
+    this.log(itemId, actor, "review.claimed", { head, runner: runner?.runner ?? null, criteria, request: row.id as number, ...(tier ? { tier: true } : {}) }, at, proved);
     // The plan alarm recovers expired reviews without a poll. Renewals can
     // move expiry forward; the alarm reads the latest timestamp and rearms.
     // Standalone reviews recover on queue or Workflow polling.
@@ -9154,7 +9181,7 @@ export class Ledger extends DurableObject<Env> {
         if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403, `name a reviewer from another family with atelier review-request ${id} --reviewer H/M`);
         const dispatch = { ...this.standingDispatch({ to: entry.where, agent: entry.harness, model: entry.id }, "review", ORCHESTRATOR, new Date().toISOString(), pool), job: "review" as const };
         if (!hand && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
-          throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; start a runner with its registered harness and endpoint`, 409, `start a runner that serves ${reviewer}, then run atelier review-request ${id} --reviewer ${reviewer} again`);
+          throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; request it by hand with --hand`, 409, `run atelier review-request ${id} --reviewer ${reviewer} --hand`);
         }
       }
     }
@@ -9275,7 +9302,8 @@ export class Ledger extends DurableObject<Env> {
       // developer's standing, no live offer) with why, and refuses.
       const candidates = this.reviewerCandidates(item, pool, offers, records, "review", hand, destination, need.lapsed, need.counted, at);
       const first = candidates.find((c) => !c.refusal);
-      throw new RuleError("reviewer_needed", candidatesText(`${id}'s review at ${need.head.slice(0, 8)} names no reviewer`, candidates), 409, first ? `name one: atelier review-request ${id} --reviewer ${first.actor}, or another of the eligible` : `add a model with atelier models add, then atelier review-request ${id} --reviewer H/M`);
+      const byHand = first ? undefined : this.reviewerCandidates(item, pool, offers, records, "review", true, destination, need.lapsed, need.counted, at).find((c) => !c.refusal);
+      throw new RuleError("reviewer_needed", candidatesText(`${id}'s review at ${need.head.slice(0, 8)} names no reviewer`, candidates), 409, first ? `name one: atelier review-request ${id} --reviewer ${first.actor}, or another of the eligible` : byHand ? `run atelier review-request ${id} --reviewer ${byHand.actor} --hand` : `add a model with atelier models add, then atelier review-request ${id} --reviewer H/M`);
     }
     const slash = chosen.indexOf("/");
     // The entry chosen, as the one check finds it (reviewTarget), so its
@@ -9289,7 +9317,7 @@ export class Ledger extends DurableObject<Env> {
     const where = records || reviewerAdmission(chosen, policy)?.active ? chosenEntry?.where ?? "home" : "home";
     const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
     if (!hand && reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
-      throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409, `start a runner that serves ${chosen}, then run the same command again`);
+      throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; request it by hand with --hand`, 409, `run atelier review-request ${id} --reviewer ${chosen} --hand`);
     }
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();

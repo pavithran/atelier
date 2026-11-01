@@ -2852,12 +2852,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // having changed nothing, and the claim is made again with the head
       // read here. Any other claim never reads the baseline.
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      const offers = runner ? undefined : await index(env).runnerOffers();
       let claim: ReviewClaim;
       try {
-        claim = await L.claimReview(id, actor, runner, !!c.token) as unknown as ReviewClaim;
+        claim = await L.claimReview(id, actor, runner, !!c.token, null, offers) as unknown as ReviewClaim;
       } catch (err) {
         if (parseRuleError(err)?.code !== "main_unread") throw err;
-        claim = await L.claimReview(id, actor, runner, !!c.token, await mainHeadOf(env, L)) as unknown as ReviewClaim;
+        claim = await L.claimReview(id, actor, runner, !!c.token, await mainHeadOf(env, L), offers) as unknown as ReviewClaim;
       }
       // The review's diff, kept in R2 by reference when the change is too
       // large for a brief (t284): the claim hands the reference to the

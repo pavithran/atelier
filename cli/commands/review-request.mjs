@@ -1,7 +1,7 @@
 // atelier review-request. Its forms, flags and help are declared in src/usage/commands/review-request.ts.
 import { I, OWNER, args, call, die, itemArg, project } from "../atelier.mjs";
 
-// With --reviewer the developer queues that review for a runner, wanted
+// With --reviewer the developer opens that review request, wanted
 // whether or not the gate needs it. Without one the server picks none (G17):
 // it answers why no review is needed when the gate needs none (a rejection
 // stands, the round cap, an approval counted), and otherwise refuses with

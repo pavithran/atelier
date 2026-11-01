@@ -230,7 +230,7 @@ test("review sends the criteria binding and the request only as given, and refus
 test("review-claim prints the verdict command and the lease, --renew renews it, and review remembers the request", (t) => {
   const f = fixture(t);
   const C = "c".repeat(64), as = { ATELIER_ACTOR: "opencode/glm-5.3" };
-  const claim = f.run(f.workspace, ["review-claim", "t2", "--runner", "home:hand"], as);
+  const claim = f.run(f.workspace, ["review-claim", "t2", "--as", "opencode/glm-5.3"], as);
   assert.equal(claim.status, 0, claim.stderr);
   // The JSON stays the one line on stdout, which a runner parses.
   assert.equal(JSON.parse(claim.stdout).request, 7);
