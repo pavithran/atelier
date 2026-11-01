@@ -4,9 +4,9 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { briefFor, execute, runReview, runTask, writeBrief } from "../cli/runner.mjs";
-import { BUILDER_SCREENSHOTS, BUILDER_TESTS, BUILD_RULES, jobBrief } from "../src/plans/brief.ts";
+import { BUILD_EVIDENCE, BUILDER_SCREENSHOTS, BUILDER_TESTS, BUILD_RULES, jobBrief } from "../src/plans/brief.ts";
 import { REVIEW_RULES, reviewBrief } from "../src/review/brief.ts";
-import { ROLE_PROMPTS } from "../src/usage.ts";
+import { guideText, ROLE_PROMPTS } from "../src/usage.ts";
 
 // The rules every build and review brief carries (t376), which lived only in
 // the local wrappers. The fixtures pin the text; a change to it is a change to
@@ -72,13 +72,8 @@ test("every review brief carries the rules, whatever the review", () => {
   }
 });
 
-// t42: a visual change is checked with the project's own screenshot workflow
-// against this workspace's revision, on the server that workflow manages. The
-// build brief says it; the review brief, which reads a diff, does not; a
-// merge's resolution changes no screen of its own, so it does not either. It
-// would have caught the builders of ikon-weblog (2026-10-15) who opened a dev
-// server of their own for every screenshot. The targeted-tests lines stay.
-test("the screenshot lines are in build briefs and not in review or merge briefs", async () => {
+// Builders capture UI evidence; reviewers inspect what the builder supplied.
+test("builders get screenshot workflow instructions; reviewers check supplied evidence", async () => {
   const finding = { file: "a.ts", line: 1, severity: "blocking", text: "Wrong." };
   for (const over of [
     {}, { actor: null, checks: null, attempt: null }, { checks: [] },
@@ -93,7 +88,8 @@ test("the screenshot lines are in build briefs and not in review or merge briefs
   const rejected = { by: "codex/gpt", head: H2, approve: false, note: "", findings: [finding] };
   for (const over of [{}, { plan: null, diff: null }, { need: need({ kind: "re-review", round: 2, previous: [rejected] }) }]) {
     const text = reviewBrief(review(over));
-    assert.ok(!text.includes(BUILDER_SCREENSHOTS) && !/screenshot/i.test(text), JSON.stringify(over));
+    assert.ok(!text.includes(BUILDER_SCREENSHOTS), JSON.stringify(over));
+    assert.match(text, /For UI changes, check before and after screenshots/);
   }
   // The line says what the criteria ask: this workspace's revision, the managed server, never a second, setup as the fallback.
   assert.match(BUILDER_SCREENSHOTS, /documented screenshot workflow, against this workspace's revision/);
@@ -124,7 +120,7 @@ test("the builder's test lines still stand beside the screenshot line in every b
   assert.ok(runner.includes("Run the project's full required test command"));
   assert.ok(!runner.includes("Do not run the full suite"));
   assert.match(ROLE_PROMPTS.build, /Run the project's full required test command\n\(npm test unless it names another\) inside a test slot, and the typecheck; push\nonly when both pass, and name any failing test you could not fix\. Give the suite\na time budget that counts from slot acquisition; on a timeout, commit and report\nvalidation_blocked with the slot wait and run time\. For a visual change, take\nscreenshots with the project's documented screenshot workflow, against this\nworkspace's revision: reuse the server it manages, never start a second one, and\nwith no documented workflow follow the project's setup\./);
-  assert.doesNotMatch(ROLE_PROMPTS.review, /screenshot/i);
+  assert.match(ROLE_PROMPTS.review, /For UI changes, check before and after screenshots/);
 });
 
 // The generic wrapper bin/orchestrate/README.md gives, as written there: it
@@ -188,10 +184,10 @@ test("a runner with the README's generic wrapper hands its agents both rule text
 // measure again and change all three here, as a decision.
 const BYTES = (text) => Buffer.byteLength(text, "utf8");
 const BLOCK_LIMITS = {
-  "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "9c9a3037", measured: 887, margin: 150 },
+  "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "538119f6 + t422", measured: 2098, margin: 150 },
   "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "ece4f377", measured: 634, margin: 100 },
   "builder screenshot instruction (BUILDER_SCREENSHOTS)": { text: BUILDER_SCREENSHOTS, at: "93b3198d", measured: 277, margin: 100 },
-  "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "9c9a3037", measured: 803, margin: 150 },
+  "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "538119f6 + t422", measured: 2372, margin: 150 },
 };
 const overLimit = ({ text, measured, margin }) => BYTES(text) > measured + margin;
 
@@ -209,4 +205,37 @@ test("a block over its limit fails, counting bytes and not characters", () => {
   assert.equal(overLimit({ ...block, text: block.text + "x".repeat(room + 1) }), true, "one byte over fails");
   // A two-byte character counts twice: the same number of characters is over the limit.
   assert.equal(overLimit({ ...block, text: block.text + "é".repeat(Math.ceil(room / 2) + 1) }), true);
+});
+
+test("task and part build briefs carry the evidence checks (t422)", async () => {
+  const task = briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier");
+  assert.ok(task.includes(BUILD_RULES));
+  for (const rule of [
+    /failing test first/, /red and green output/, /who may call.*membership.*edit right.*disclosure level/,
+    /table.*visibility level.*output path/, /responses.*search snippets.*derived fields.*UI copy/,
+    /every caller.*generated page/, /UI changes.*screenshots.*console.*network/,
+    /fix report.*findings.*covering tests.*commands.*output/, /completion marker.*after.*crash/,
+  ]) assert.match(BUILD_RULES, rule);
+  const claim = readFileSync(new URL("../cli/commands/claim.mjs", import.meta.url), "utf8");
+  assert.match(claim, /console.log\(BUILD_RULES\)/);
+  for (const over of [{}, { job: "rework" }]) assert.ok((await jobBrief(job(over))).text.includes(BUILD_RULES));
+});
+
+test("review briefs demand independent evidence and scoped re-review (t422)", () => {
+  for (const rule of [
+    /claims.*unverified.*diff.*file and line/, /every caller.*generated page/,
+    /routes, endpoints or data with visibility levels/, /who may call.*membership.*edit right.*disclosure level/,
+    /table.*visibility level.*output path/, /independently.*output paths/,
+    /UI changes.*screenshots.*console.*network/, /On re-review.*each.*finding.*fix diff/,
+    /completion marker.*after.*crash/, /red and green output/,
+  ]) assert.match(REVIEW_RULES, rule);
+});
+
+test("the guides carry the build and review evidence requirements (t422)", () => {
+  assert.ok(guideText().includes(BUILD_EVIDENCE));
+  assert.ok(ROLE_PROMPTS.build.includes(BUILD_EVIDENCE));
+  assert.ok(ROLE_PROMPTS.review.includes(REVIEW_RULES));
+  const handbook = readFileSync(new URL("../docs/orchestrating.md", import.meta.url), "utf8");
+  assert.ok(handbook.includes(BUILD_EVIDENCE));
+  assert.match(ROLE_PROMPTS.orchestrate, /Build and review evidence/);
 });

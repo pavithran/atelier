@@ -146,6 +146,16 @@ const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner
 // agents none of them. The text names no actor or job, so one fixture,
 // test/fixtures/briefs/build-rules.txt, pins it for every build brief; the
 // commit message each job wants is stated beside it.
+export const BUILD_EVIDENCE = [
+  "- For a behaviour change, write a failing test first; report the commands and red and green output.",
+  "- For changes touching routes, endpoints or data with visibility levels, list each endpoint's trust checks: who may call, membership, edit right and where the disclosure level comes from. Derive that level from trusted caller identity, never from a caller's requested level; test each refusal.",
+  "- For changes touching routes, endpoints or data with visibility levels, test a table of visibility level by output path. List responses, search snippets, derived fields, exports, UI copy and generated pages, and what each level may see.",
+  "- When a contract changes or tightens, list every caller and generated page that uses it; report each one's update or compatibility check.",
+  "- For UI changes, attach before and after screenshots, console output and network failures for every affected page. For pages with visibility levels, include evidence at each level, not only as the owner.",
+  "- In a fix report, name the findings addressed, covering tests, commands and output before re-review.",
+  "- Write each status, version or completion marker only after the work it marks; test that a crash before completion leaves it unset.",
+].join("\n");
+
 export const BUILD_RULES = [
   "- Use no path outside this workspace: read and write files only inside it.",
   "- Put scratch files only under .scratch/ in this workspace.",
@@ -156,6 +166,7 @@ export const BUILD_RULES = [
   "- A run that ends without a commit counts as stalled, whatever it did.",
   "- If a test outside the task's scope fails on main, do not change it; report the failing test and its output in the summary and stop.",
   "- A fix comes with a test that fails without it.",
+  BUILD_EVIDENCE,
   "- A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.",
 ].join("\n");
 
@@ -179,8 +190,8 @@ export const BUILDER_TESTS = [
 // A visual change is checked by looking at it. Builders opened a dev server of
 // their own for each screenshot, which multiplied wall time (seen in
 // ikon-weblog, 2026-10-15); the project's own workflow knows its managed server
-// and how to show this workspace's revision. Build briefs only: a reviewer
-// reads the diff and does not take screenshots. The runner's own brief
+// and how to show this workspace's revision. Builders capture the evidence;
+// reviewers read the diff and check the supplied evidence. The runner's own brief
 // (briefFor in cli/runner.mjs) and the build role prompt (src/usage.ts) say the
 // same.
 export const BUILDER_SCREENSHOTS =
