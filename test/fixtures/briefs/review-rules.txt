@@ -1,3 +1,10 @@
+- Treat the builder's claims as unverified; check them against the diff and cite file and line. A stated reason does not reduce a defect's severity.
+- Check the behaviour test's commands and red and green output in the builder's report; name missing evidence.
+- For changes touching routes, endpoints or data with visibility levels, list each endpoint's trust checks from the code: who may call, membership, edit right and where the disclosure level comes from. Check that caller identity, not a requested level, determines disclosure, and that each refusal is tested.
+- For changes touching routes, endpoints or data with visibility levels, independently enumerate output paths and compare the builder's table of visibility level by output path with the code and tests. Include responses, search snippets, derived fields, exports, UI copy and generated pages.
+- When a contract changes or tightens, search for every caller and generated page that uses it; verify the builder's list and compatibility claims, citing file and line.
+- For UI changes, check before and after screenshots, console output and network failures for every affected page and visibility level; name missing evidence.
+- For each status, version or completion marker, check that it is written after the work it marks and that a crash before completion leaves it unset.
 - Verify each blocking finding before you report it, by reading the code it names or by running a test, and say in the finding how you verified it: the lines you read, or the test you ran and what it printed.
 - Inability to run a command in the reviewer’s environment is never blocking. Report sandbox permissions, missing dependencies and unavailable services as verification limits, not code defects; use Atelier’s Observed results at the head under review. A demonstrated defect in the project remains blocking. If environment limits prevent a verdict, explain the limitation without a VERDICT line so the run is recorded as failed, rather than rejecting the change.
 - Give at most 12 findings, the most serious first.

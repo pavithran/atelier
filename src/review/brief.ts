@@ -30,6 +30,9 @@
 // of its input, so the ledger can hash it and tell whether two requests asked
 // the same question.
 
+import { REVIEW_RULES, RE_REVIEW_RULE } from "../brief-rules.ts";
+export { REVIEW_RULES } from "../brief-rules.ts";
+
 import { submission } from "../brief.ts";
 import type { LedgerEvent } from "../ledger.ts";
 import type { PoolFamily } from "../models/pool.ts";
@@ -183,16 +186,6 @@ export type RecordedEvidence = Evidence & { seq?: number };
 // characters, where a failure says what it is.
 export const EVIDENCE_OUTPUT_MAX = 2000;
 
-// The rules every review brief carries, whatever runs the reviewer (t376).
-// They lived only in the local wrappers (atelier-claude, atelier-codex,
-// atelier-opencode, atelier-agy), so a runner with a generic wrapper gave its
-// reviewers none of them. test/fixtures/briefs/review-rules.txt pins the text.
-export const REVIEW_RULES = [
-  "- Verify each blocking finding before you report it, by reading the code it names or by running a test, and say in the finding how you verified it: the lines you read, or the test you ran and what it printed.",
-  "- Inability to run a command in the reviewer’s environment is never blocking. Report sandbox permissions, missing dependencies and unavailable services as verification limits, not code defects; use Atelier’s Observed results at the head under review. A demonstrated defect in the project remains blocking. If environment limits prevent a verdict, explain the limitation without a VERDICT line so the run is recorded as failed, rather than rejecting the change.",
-  "- Give at most 12 findings, the most serious first.",
-  "- Edit nothing: change, create and delete no file, and do not commit or push.",
-].join("\n");
 
 const WHERE_LABEL ={ sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const CLASS_GLOSS: Record<ChangeClass, string> = {
@@ -308,7 +301,7 @@ export function reviewBrief(input: BriefInput): string {
       : []),
   );
 
-  section("## Rules for reviewing", "", REVIEW_RULES);
+  section("## Rules for reviewing", "", REVIEW_RULES, ...(since ? [RE_REVIEW_RULE] : []));
 
   const basis = need.basis === "part"
     ? `Every part of a plan is reviewed by ${single ? `a different ${single} model from everyone who wrote it (single-family mode)` : "a model of another family"}, whatever its change class.`

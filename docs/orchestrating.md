@@ -30,6 +30,29 @@ model families, and records what went wrong and what prevents it. The rules
 Atelier enforces are in the README and on the `/how` page; this document is
 about working within them well.
 
+## Build and review evidence
+
+The build rules printed by `atelier start` and `atelier claim` also appear in
+runner task briefs and plan-part briefs. Require the following evidence before
+requesting review:
+
+- For a behaviour change, write a failing test first; report the commands and red and green output.
+- For changes touching routes, endpoints or data with visibility levels, list each endpoint's trust checks: who may call, membership, edit right and where the disclosure level comes from. Derive that level from trusted caller identity, never from a caller's requested level; test each refusal.
+- For changes touching routes, endpoints or data with visibility levels, test a table of visibility level by output path. List responses, search snippets, derived fields, exports, UI copy and generated pages, and what each level may see.
+- When a contract changes or tightens, list every caller and generated page that uses it; report each one's update or compatibility check.
+- For UI changes, attach before and after screenshots, console output and network failures for every affected page. For pages with visibility levels, include evidence at each level, not only as the owner.
+- In a fix report, name the findings addressed, covering tests, commands and output before re-review.
+- Write each status, version or completion marker only after the work it marks; test that a crash before completion leaves it unset.
+
+The reviewer treats the report as unverified claims and checks the diff,
+caller list and output paths independently, citing file and line. For UI
+changes, the reviewer checks the supplied evidence for every affected page and
+visibility level. A re-review rules on each earlier finding, checks the fix
+diff for new breakage and the same defect class, and defers unrelated work.
+The orchestrator requires the fix report's covering tests, commands and output
+before requesting that re-review. Existing review and escalation rules still
+apply.
+
 ## The standing rules
 
 `atelier guide --role orchestrate` prints these for any agent that runs a

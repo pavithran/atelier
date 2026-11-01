@@ -32,6 +32,7 @@ import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevant
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
 import { diffPromptMax, largeDiffNote, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/large-diff.ts";
+import { BUILD_RULES } from "../src/brief-rules.ts";
 import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
@@ -284,6 +285,7 @@ export function briefFor(item, project, limits = null) {
     "Rules:",
     "Stay in scope. Work only in this workspace.",
     "Write tests for new behaviour.",
+    BUILD_RULES,
     // t219: the full required test command in a slot, pushed only when it
     // passes (BUILDER_TESTS). The budget is a `timeout` run inside the slot
     // wrapper, so it starts once the slot is held and cannot spend queue time.

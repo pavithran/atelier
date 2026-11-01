@@ -25,6 +25,9 @@
 // brief's, in src/review/brief.ts; it is repeated here so that this file adds
 // nothing to that one.
 
+import { BUILD_RULES } from "../brief-rules.ts";
+export { BUILD_EVIDENCE, BUILD_RULES } from "../brief-rules.ts";
+
 import { TEXT_CONTROLS } from "../text.ts";
 import { VERDICT_LIMITS, type Finding, type Severity } from "../review/verdict.ts";
 import { PLAN_LIMITS, TASK_KINDS, type PlanPart } from "./schema.ts";
@@ -140,25 +143,6 @@ interface Resolved {
 
 const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 
-// The rules every build brief carries, whatever runs the agent (t376). They
-// lived only in the local wrappers (atelier-claude, atelier-codex,
-// atelier-opencode, atelier-agy), so a runner with a generic wrapper gave its
-// agents none of them. The text names no actor or job, so one fixture,
-// test/fixtures/briefs/build-rules.txt, pins it for every build brief; the
-// commit message each job wants is stated beside it.
-export const BUILD_RULES = [
-  "- Use no path outside this workspace: read and write files only inside it.",
-  "- Put scratch files only under .scratch/ in this workspace.",
-  "- Run no rm and no mktemp, and make no temporary folders.",
-  // t302: a local model lost finished work four times to a heredoc and an &&
-  // chain its harness refused.
-  "- Commit first when the work is done, before anything else, with plain single git commands, one per call: git add FILES, then git commit. No heredoc, no -F -, no && chain and no redirection: a harness refuses them, and the run ends without a commit.",
-  "- A run that ends without a commit counts as stalled, whatever it did.",
-  "- If a test outside the task's scope fails on main, do not change it; report the failing test and its output in the summary and stop.",
-  "- A fix comes with a test that fails without it.",
-  "- A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.",
-].join("\n");
-
 // What a builder runs before it pushes, and when it may report
 // validation_blocked (t219, after t552). Builders that ran only the tests of
 // their change pushed work that failed the full suite in the clean-clone
@@ -179,8 +163,8 @@ export const BUILDER_TESTS = [
 // A visual change is checked by looking at it. Builders opened a dev server of
 // their own for each screenshot, which multiplied wall time (seen in
 // ikon-weblog, 2026-10-15); the project's own workflow knows its managed server
-// and how to show this workspace's revision. Build briefs only: a reviewer
-// reads the diff and does not take screenshots. The runner's own brief
+// and how to show this workspace's revision. Builders capture the evidence;
+// reviewers read the diff and check the supplied evidence. The runner's own brief
 // (briefFor in cli/runner.mjs) and the build role prompt (src/usage.ts) say the
 // same.
 export const BUILDER_SCREENSHOTS =
