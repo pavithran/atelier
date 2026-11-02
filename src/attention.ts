@@ -23,7 +23,7 @@ import { directionText, type InboxEntry, type Item } from "./rules.ts";
 // can review (its assess notice names no reviewer from the pool) waits on the
 // owner's override, or on the owner starting a reviewer that qualifies, so it
 // comes after the acceptance it stands in for.
-export const OWNER_CALLS = ["clear-secret", "unblock", "decide-plan", "approve-plan", "accept", "override", "ship", "gave-up", "start-runner"] as const;
+export const OWNER_CALLS = ["clear-secret", "unblock", "decide-plan", "approve-plan", "accept", "land", "override", "ship", "gave-up", "start-runner"] as const;
 export type OwnerCall = typeof OWNER_CALLS[number];
 
 export const OWNER_CALL_LABEL: Record<OwnerCall, string> = {
@@ -32,6 +32,7 @@ export const OWNER_CALL_LABEL: Record<OwnerCall, string> = {
   "decide-plan": "Decide plan",
   "approve-plan": "Approve plan",
   accept: "Accept",
+  land: "Land",
   override: "No reviewer",
   ship: "Ship",
   "gave-up": "Runner gave up",
@@ -61,7 +62,7 @@ export interface OwnerTask {
 // aliases, not as a second rule.
 const LEGACY_KIND: Record<OwnerCall, InboxEntry["kind"]> = {
   "clear-secret": "blocked", unblock: "blocked", "decide-plan": "plan-blocked", "approve-plan": "approve-plan",
-  accept: "accept", override: "assess", ship: "ship", "gave-up": "gave-up", "start-runner": "blocked",
+  accept: "accept", land: "accept", override: "assess", ship: "ship", "gave-up": "gave-up", "start-runner": "blocked",
 };
 export interface LegacyFields { kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string }
 export function legacyFields(t: OwnerTask): LegacyFields {
@@ -142,7 +143,9 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   const ready = has("accept");
   // The owner's path for a submitted task is atelier land, which reviews,
   // accepts and merges it (t495).
-  if (ready) return own("accept", "Accept the revision, whose required checks all passed at its head.", `atelier land ${item.id} --reviewer ${ready.reviewer ?? "H/M"}${flag}`, ready.reason);
+  if (ready) return item.nextGate === "developer" || item.kind === "plan"
+    ? own("accept", "Accept the revision, whose required checks all passed at its head.", `atelier accept ${item.id}${flag}`, ready.reason)
+    : own("land", "Land the revision, whose required checks all passed at its head.", `atelier land ${item.id} --reviewer ${ready.reviewer ?? "H/M"}${flag}`, ready.reason);
   // An assess notice whose reviewer is null: the pool was read and offers no
   // reviewer that qualifies, so only the owner moves it. Undefined: the pool
   // was not read, and the task stays at its stage (attentionFor says so).

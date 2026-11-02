@@ -157,7 +157,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
   // The ledger names a blocking finding on a file the scope lacks (t270).
   const gap = (detail as Detail & { scopeGap?: string }).scopeGap;
   if (gap) lines.push({ rank: 0, text: gap });
-  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Developer acceptance is required.` });
+  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}.` });
   const single = singleFamily(policy);
   if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
   const overridden = overrideOf(detail);
@@ -179,7 +179,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
     : recommendation.verdict === "merge" ? `Merge ${subject}`
     : recommendation.verdict === "send back" ? `Send ${item.id} back ${rev}: ${title}.`
     : recommendation.verdict === "review" ? `Review ${subject}`
-    : recommendation.verdict === "accept" ? `Accept ${subject}`
+    : recommendation.verdict === "accept" ? `${item.nextGate === "developer" || item.kind === "plan" ? "Accept" : "Land"} ${subject}`
     : recommendation.verdict === "wait" ? `Wait on ${subject}`
     : `Decide ${subject}`;
 

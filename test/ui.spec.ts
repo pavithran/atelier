@@ -357,7 +357,7 @@ it('the brief renders above the diff, escapes a hostile summary, and tags the ve
  d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  d.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'<img src=x onerror=alert(1)> done'}}];
  const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
- expect(html).toContain('Accept t1 at aaaaaaaa: &lt;script&gt;unsafe title&lt;/script&gt;.');
+ expect(html).toContain('Land t1 at aaaaaaaa: &lt;script&gt;unsafe title&lt;/script&gt;.');
  expect(html).toContain('&lt;img src=x onerror=alert(1)&gt; done');
  expect(html).not.toContain('<img src=x');
  expect(html).toContain('Summary from codex/gpt-6');
@@ -630,7 +630,7 @@ it('Decisions groups what waits on the owner by project, one row per task with i
  // Unblocking comes before accepting in the rule's precedence.
  expect(html.indexOf('task=t2#review')).toBeLessThan(html.indexOf('task=t1#review'));
  expect(html).toContain('<span class="dec-id">t2</span><span class="dec-title">Second &lt;i&gt;x&lt;/i&gt;</span><span class="dec-state ask">Blocked</span><span class="dec-why">Settle what blocks it, then unblock it so it goes on.</span>');
- expect(html).toContain('<span class="dec-id">t1</span><span class="dec-title">First</span><span class="dec-state go">Ready to accept</span><span class="dec-why">Accept the revision, whose required checks all passed at its head.</span>');
+ expect(html).toContain('<span class="dec-id">t1</span><span class="dec-title">First</span><span class="dec-state go">Ready to land</span><span class="dec-why">Land the revision, whose required checks all passed at its head.</span>');
  expect(html).toContain('href="/decisions?project=other&task=t7#review"');
  expect(html).not.toContain('<i>x</i>');
  // The cards, their mini-threads and the floor strip are gone.
@@ -647,7 +647,7 @@ it('the selected task\'s detail sits beside the list with its state, why, eviden
  expect(html.indexOf('class="queue"')).toBeLessThan(html.indexOf('<section class="review-sheet decision-detail"'));
  expect(sheet).toContain('<p class="context">example · t1 · claude-code/opus-5.5</p>');
  expect(sheet).toContain('<h2 id="sel-h">First</h2>');
- expect(sheet).toContain('<p class="dec-word go">Ready to accept</p>');
+ expect(sheet).toContain('<p class="dec-word go">Ready to land</p>');
  expect(sheet).toContain('<p class="dec-because">Required checks passed for this revision. Accept it to prepare the local merge.</p>');
  // Accept posts the very form the task page posts, to the same route, with the same revision and criteria.
  const page=renderItem(open,d,'PAVI',shown(d));
@@ -848,7 +848,7 @@ it('the Overview tab leads with where the project stands: waiting, running and m
  // The one list of who holds what is the Tasks tab's, not a second one here (finding 8).
  expect(sec).not.toContain('Held now');
  expect(sec).toContain('<h2 id="wait-h">Waiting on you · 1</h2>');
- expect(sec).toContain('<li><a class="row-id" href="/p/example/t2">t2</a><span class="row-title">Ready task</span><span class="state-word go">Ready to accept</span><span class="row-why">Accept the revision, whose required checks all passed at its head.</span></li>');
+ expect(sec).toContain('<li><a class="row-id" href="/p/example/t2">t2</a><span class="row-title">Ready task</span><span class="state-word go">Ready to land</span><span class="row-why">Land the revision, whose required checks all passed at its head.</span></li>');
  expect(sec).not.toContain('bad');
  expect(sec).toContain('<h2 id="run-h">Running · 1</h2>');
  expect(sec).toContain('<span class="row-who">claude-code/opus-5.5 · taken 1 d ago</span>');
@@ -934,7 +934,7 @@ it('the Overview waits only on the owner\'s calls, one per task; the pipeline is
   {project:'example',itemId:'t1',title:'Held',kind:'stale' as const,reason:'claude-code/opus-5.5 has not pushed for 14h; hand it off or release it',weight:50},
  ];
  const s=f.buildStanding(f.p,f.items,f.tasks,300,f.att(inbox),f.details,f.now);
- expect(s.waiting.map((w)=>[w.id,w.call])).toEqual([['t2','accept']]);
+ expect(s.waiting.map((w)=>[w.id,w.call])).toEqual([['t2','land']]);
  expect(s.waiting[0].why).toBe('all checks observed passing');
  expect(s.pipeline).toEqual([{stage:'building',count:1},{stage:'queued',count:1}]);
  expect(s.overlaps).toEqual([['t1','t2']]);

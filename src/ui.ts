@@ -301,7 +301,7 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
 // The owner's calls and the pipeline's stages as the waiting lists tag them
 // (attentionFor in src/attention.ts places each task once).
 const CALL_TONE: Record<OwnerTask["call"], string> = {
-  "clear-secret": "bad", unblock: "ask", "decide-plan": "bad", "approve-plan": "ask", accept: "go", override: "bad", ship: "ask", "gave-up": "bad", "start-runner": "bad",
+  "clear-secret": "bad", unblock: "ask", "decide-plan": "bad", "approve-plan": "ask", accept: "go", land: "go", override: "bad", ship: "ask", "gave-up": "bad", "start-runner": "bad",
 };
 const callTag = (t: OwnerTask) => tag(OWNER_CALL_LABEL[t.call], CALL_TONE[t.call]);
 
@@ -420,6 +420,7 @@ const CALL_STATE: Record<OwnerTask["call"], [string, string]> = {
   "decide-plan": ["Plan blocked", "bad"],
   "approve-plan": ["Plan to approve", "signal"],
   accept: ["Ready to accept", "go"],
+  land: ["Ready to land", "go"],
   override: ["Needs review", "signal"],
   ship: ["To ship", "signal"],
   "gave-up": ["Runner gave up", "bad"],
@@ -1615,7 +1616,7 @@ function overviewSection(p: ProjectRecord, board: Item[] | null, inbox: InboxEnt
     ...merged.length ? [`last merge ${ago(merged[0].at, now)}`] : [],
   ].join(" · ");
   const list = (cls: string, rows: string[]) => `<ul class="overview-list ${cls}">${rows.join("")}</ul>`;
-  const waitRows = waiting.slice(0, 5).map((w) => `<li>${idLink(p, w.id)}<span class="row-title">${e(w.title)}</span>${stateText(words.get(w.id) ?? "in-review")}<span class="row-why">${e(w.sentence)}</span></li>`);
+  const waitRows = waiting.slice(0, 5).map((w) => `<li>${idLink(p, w.id)}<span class="row-title">${e(w.title)}</span>${w.call === "land" ? '<span class="state-word go">Ready to land</span>' : stateText(words.get(w.id) ?? "in-review")}<span class="row-why">${e(w.sentence)}</span></li>`);
   const runRows = working.slice(0, 5).map(({ i, push, since: at }) => `<li>${idLink(p, i.id)}<span class="row-title">${e(i.title)}</span><span class="row-who">${e(i.owner ?? "nobody")}${push ? ` · pushed ${e(ago(push, now))}` : at ? ` · taken ${e(ago(at, now))}` : ""}${stale.has(i.id) ? ' · <span class="state-word caution">stale</span>' : ""}</span></li>`);
   const mergeRows = merged.map((m) => `<li>${idLink(p, m.id)}<span class="row-title">${e(m.title)}</span><time class="row-when" datetime="${e(m.at)}">${e(bare(ago(m.at, now)))}</time></li>`);
   const shipRows = ships.map((w) => `<li>${idLink(p, w.id)}<span class="row-title">${e(w.title)}</span><span class="row-why">${e(w.sentence)} <a href="${e(w.href)}">Open Ship</a></span></li>`);

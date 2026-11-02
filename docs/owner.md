@@ -127,7 +127,8 @@ under the first.
 | 2 | Block (`atelier block`, any holder) | Developer: unblock | Settle what blocks it, then unblock it | Task page, `atelier unblock` |
 | 3 | Plan blocked | Developer: decide plan | Read the blocked plan and decide how it goes on | Task page, `atelier plan show` |
 | 4 | Plan approval (a proposal waits) | Developer: approve plan | Read the split, approve it by its hash or send it back | Task page, `atelier plan show` |
-| 5 | Acceptance (every required check passed at the head) | Developer: accept | Accept the revision | Task page, `atelier accept` |
+| 5 | Acceptance (every required check passed at the head) | Developer: land | Land the revision | `atelier land` |
+| 5a | Task marked `--next-gate developer` | Developer: accept | Accept before landing | Task page, `atelier accept` |
 | 6 | Protected change needing an independent review that no reviewer in the pool qualifies for | Developer: no reviewer | Start a runner offering a reviewer that qualifies, or allow an override and accept with a reason (where overrides are allowed) | Task page, `atelier accept --override-review` |
 | 7 | Merged with declared protected actions not yet run | Developer: ship | Dry run, then approve and ship | Ship tab, `atelier ship --dry-run` |
 | 8 | Unavailable runner: queued, and no live runner can take it | Developer: no runner | Start a runner that offers it, or send the task elsewhere | Task page |

@@ -44,7 +44,7 @@ test("counts are distinct tasks, not notices: a task with three notices is one t
 
 test("each owner item says in one sentence what to do and links where it is done", () => {
   const a = attentionFor("alpha", ALPHA_ITEMS, ALL_ENTRIES, OFFERS, NOW);
-  assert.deepEqual(a.owner.map((t) => t.call).sort(), [...OWNER_CALLS].sort(), "the fixture holds every call");
+  assert.deepEqual(a.owner.map((t) => t.call).sort(), OWNER_CALLS.filter((c) => c !== "accept").sort(), "the fixture holds every call");
   for (const t of a.owner) {
     assert.match(t.sentence, /^[A-Z].*\.$/, `${t.call}: a sentence`);
     assert.doesNotMatch(t.sentence, /[.;:]\s+[A-Z]/, `${t.call}: one sentence`);
@@ -52,7 +52,7 @@ test("each owner item says in one sentence what to do and links where it is done
     assert.ok(t.why.length > 0);
   }
   const by = Object.fromEntries(a.owner.map((t) => [t.call, t]));
-  assert.equal(by.accept.command, "atelier land a1 --reviewer H/M --project alpha");
+  assert.equal(by.land.command, "atelier land a1 --reviewer H/M --project alpha");
   assert.equal(by.unblock.command, "atelier unblock a4 --project alpha");
   assert.equal(by["approve-plan"].command, "atelier plan show a5 --project alpha");
   assert.equal(by.ship.command, "atelier ship --dry-run --project alpha");
@@ -79,7 +79,7 @@ test("transitions: one task moves between the owner and the pipeline as its fact
     [at(item("t1", "submitted", { owner: "codex/gpt-6" }), ["assess"]), "stage:submitted"],
     [at(item("t1", "submitted", { owner: "codex/gpt-6" }), ["failing"]), "stage:submitted"],
     [at(item("t1", "submitted", { owner: "codex/gpt-6", head: "h", secret: [{ file: "k", line: 1, fingerprint: "f", head: "h", by: "s", at: "" }] }), ["failing"]), "owner:clear-secret"],
-    [at(item("t1", "submitted", { owner: "codex/gpt-6", head: "h", secret: [{ file: "k", line: 1, fingerprint: "f", head: "h", by: "s", at: "", cleared: true }] }), ["accept"]), "owner:accept"],
+    [at(item("t1", "submitted", { owner: "codex/gpt-6", head: "h", secret: [{ file: "k", line: 1, fingerprint: "f", head: "h", by: "s", at: "", cleared: true }] }), ["accept"]), "owner:land"],
     [at(item("t1", "accepted", { owner: "codex/gpt-6" }), ["merge"]), "stage:accepted"],
     [at(item("t1", "merged"), ["ship"]), "owner:ship"],
     [at(item("t1", "merged")), "none"],
@@ -91,7 +91,7 @@ test("transitions: one task moves between the owner and the pipeline as its fact
   assert.equal(at(item("t2", "claimed", { kind: "plan", owner: "atelier/orchestrator" })), "stage:building");
   assert.equal(at(item("t2", "claimed", { kind: "plan", owner: "atelier/orchestrator" }), ["plan-blocked"]), "owner:decide-plan");
   // A secret flag at an older head no longer stands.
-  assert.equal(at(item("t3", "submitted", { head: "new", secret: [{ file: "k", line: 1, fingerprint: "f", head: "old", by: "s", at: "" }] }), ["accept"]), "owner:accept");
+  assert.equal(at(item("t3", "submitted", { head: "new", secret: [{ file: "k", line: 1, fingerprint: "f", head: "old", by: "s", at: "" }] }), ["accept"]), "owner:land");
 });
 
 test("a protected change no reviewer in the pool qualifies for waits on the owner; one a reviewer can take stays in review", () => {
@@ -116,7 +116,7 @@ test("a protected change no reviewer in the pool qualifies for waits on the owne
   assert.deepEqual(pipeline(unread), [["t1", "submitted"]]);
   assert.deepEqual(unread.unknown, ["The reviewer pool was not read, so whether t1 needs your override is unknown."]);
   // Transitions: a reviewer starts, the task goes back to review; an acceptance outranks the override.
-  assert.equal(attentionFor("p", [t], [...assess({ reviewer: null }), entry("p", "t1", "accept")], [], NOW).owner[0].call, "accept");
+  assert.equal(attentionFor("p", [t], [...assess({ reviewer: null }), entry("p", "t1", "accept")], [], NOW).owner[0].call, "land");
   const secret = item("t1", "submitted", { head: "h", secret: [{ file: "k", line: 1, fingerprint: "f", head: "h", by: "s", at: "" }] });
   assert.equal(attentionFor("p", [secret], assess({ reviewer: null }), [], NOW).owner[0].call, "clear-secret");
 });
@@ -124,7 +124,7 @@ test("a protected change no reviewer in the pool qualifies for waits on the owne
 test("each owner task keeps the kind, kinds and reason older clients read", () => {
   const a = attentionFor("alpha", ALPHA_ITEMS, ALL_ENTRIES, OFFERS, NOW);
   const by = Object.fromEntries(a.owner.map((t) => [t.call, legacyFields(t)]));
-  assert.deepEqual(by.accept, { kind: "accept", kinds: ["accept"], reason: "all checks observed passing at this head" });
+  assert.deepEqual(by.land, { kind: "accept", kinds: ["accept"], reason: "all checks observed passing at this head" });
   assert.equal(by.override.kind, "assess");
   assert.equal(by["approve-plan"].kind, "approve-plan");
   assert.equal(by["decide-plan"].kind, "plan-blocked");
@@ -156,4 +156,14 @@ test("what was not read is labelled, never counted as nothing", () => {
   // A notice naming a task the list does not hold is said.
   const stray = attentionFor("alpha", ALPHA_ITEMS, [...ALL_ENTRIES, entry("alpha", "a99", "accept")], OFFERS, NOW);
   assert.ok(stray.unknown.some((x) => x.includes("a99")));
+});
+
+test("ready ordinary tasks land and developer gates ask for acceptance", () => {
+  const entries = [entry("alpha", "a1", "accept")];
+  for (const [nextGate, call] of [[null, "land"], ["developer", "accept"]] as const) {
+    const items = ALPHA_ITEMS.filter((i) => i.id === "a1").map((i) => ({ ...i, nextGate }));
+    const result = attentionFor("alpha", items, entries, OFFERS, NOW);
+    assert.equal(result.owner[0].call, call);
+    assert.match(result.owner[0].command!, call === "land" ? /atelier land a1/ : /atelier accept a1/);
+  }
 });

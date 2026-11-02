@@ -386,6 +386,7 @@ export async function runLand(io) {
     // server's record, lifted with atelier unblock.
     if (d.item.state === "blocked" || d.item.blocked) no(`${id} is blocked${d.item.blocked?.reason ? ` (${d.item.blocked.reason})` : ""}, and a blocked task is never landed. Lift the block with atelier unblock ${id}, then run atelier land ${id} again.`);
     if (d.item.state === "accepted") return d;
+    if (d.item.nextGate === "developer") no(`${id} waits for the developer; run atelier accept ${id} before atelier land ${id}.`);
     // A submitted task lands the head it was checked and reviewed at (G2):
     // the merge is made in the registered checkout, so its workspace is not
     // needed and nothing is pushed to its branch.
@@ -848,6 +849,7 @@ export async function runLand(io) {
     // beside the landing that holds it now (t232).
     await renewBeforePublish();
     await recordedHeadStillStands(io, itemPath, head);
+    if (now.item.state !== "accepted" && now.item.nextGate === "developer") throw new StepError(`${id} waits for the developer; run atelier accept ${id} before atelier land ${id}.`);
     if (now.item.state !== "accepted") await step("accept", ["accept", id], p.path);
     await recordedHeadStillStands(io, itemPath, head);
     // The merge itself, as this CLI's own command in the registered

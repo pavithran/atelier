@@ -32,7 +32,7 @@ function detail(over: { item?: Partial<Item>; evidence?: Evidence[]; reviews?: R
 test("accept: the gate is ready, and the decision names the action and revision", () => {
   const b = briefFor(detail(), []);
   assert.equal(b.recommendation.verdict, "accept");
-  assert.equal(b.decided, "Accept t21 at aaaaaaaa: Fix the thing.");
+  assert.equal(b.decided, "Land t21 at aaaaaaaa: Fix the thing.");
   assert.match(b.recommendation.reason, /^1 of 1 required checks passed at this revision/);
   assert.deepEqual(b.evidence, ["Required checks at this revision: 1 passed in a Cloudflare container."]);
 });
