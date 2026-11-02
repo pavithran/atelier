@@ -25,6 +25,8 @@ const item = (over = {}) => ({ id: 't1', title: 'Task', scope: ['src/**'], state
 const snapshot = (over = {}) => ({ items: [item()], events: [], lease: null, reviews: [], coreFiles: ['src/**'], ...over });
 const event = (seq, kind, ms, data = {}, itemId = 't1') => ({ seq, kind, at: at(ms), data, itemId, actor: 'codex/model' });
 const report = (s = snapshot(), offers = [], runs = [], active = [], unavailable = []) => stuckReport('demo', 'https://example.org', now, reportLimits(), s, offers, runs, active, unavailable);
+const idleSnapshot = () => snapshot({ items: [item({ state: 'open', owner: null, dispatch: { to: 'home', agent: 'codex', model: 'gpt-6', by: 'owner', at: at(0), note: '' } })] });
+const idleAgents = [{ agent: 'codex', models: ['gpt-6'] }];
 const kinds = r => r.entries.map(e => e.kind);
 test('limits reject zero, negative, nonfinite; age equals a limit is not stuck', () => {
   for (const n of [0, -1, NaN, Infinity, '', 'oops']) assert.throws(() => reportLimits({ noPushHours: n }));
@@ -43,12 +45,12 @@ test('a live lease held for an open task is no orphan; one whose task is closed 
   assert.deepEqual(kinds(report(snapshot({ items: [], lease: { ...lease, at: at(1) } }))), ['orphan-lease']);
 });
 test('idle runner includes timestamp coarsening and active jobs; unavailable jobs do not prove idle', () => {
-  const offers = [{ runner: 'home:studio', kind: 'home', agents: [], at: at(360000) }];
-  assert.deepEqual(kinds(report(snapshot(), offers)), []);
+  const offers = [{ runner: 'home:studio', kind: 'home', agents: idleAgents, at: at(360000) }];
+  assert.deepEqual(kinds(report(idleSnapshot(), offers)), []);
   offers[0].at = at(360001);
-  assert.deepEqual(kinds(report(snapshot(), offers)), ['idle-runner']);
-  assert.deepEqual(kinds(report(snapshot(), offers, [], ['home:studio'])), []);
-  assert.deepEqual(kinds(report(snapshot(), offers, [], null)), []);
+  assert.deepEqual(kinds(report(idleSnapshot(), offers)), ['idle-runner']);
+  assert.deepEqual(kinds(report(idleSnapshot(), offers, [], ['home:studio'])), []);
+  assert.deepEqual(kinds(report(idleSnapshot(), offers, [], null)), []);
 });
 test('current claimed reviews; old heads, closed and blocked tasks excluded', () => {
   const r = { id: 1, item: 't1', head: item().head, claimedBy: 'reviewer/model', claimedAt: at(7200000), runner: 'home:review' };
@@ -230,7 +232,7 @@ test('core-hold override preserves routing, literal notes and merge-main context
   }
 });
 test('idle runner recovery names the observed runner', () => {
-  const r = report(snapshot(), [{ runner: 'home:studio', kind: 'home', agents: [], at: at(360001) }]);
+  const r = report(idleSnapshot(), [{ runner: 'home:studio', kind: 'home', agents: idleAgents, at: at(360001) }]);
   assert.equal(r.entries[0].recovery, 'atelier runner --name "home:studio" --once');
 });
 test('new limits default to thirty minutes and reject invalid values', () => {
@@ -289,7 +291,20 @@ test('a run report from before the task was created is ignored', () => {
   assert.deepEqual(kinds(report(make(at(5000)), [], [run])), []);
 });
 test('an idle runner last polled over 48 hours ago is dropped; 47 hours still lists', () => {
-  const offer = ms => [{ runner: 'home:studio', kind: 'home', agents: [], at: at(ms) }];
-  assert.deepEqual(kinds(report(snapshot(), offer(47 * 3600000))), ['idle-runner']);
-  assert.deepEqual(kinds(report(snapshot(), offer(48 * 3600000 + 1))), []);
+  const offer = ms => [{ runner: 'home:studio', kind: 'home', agents: idleAgents, at: at(ms) }];
+  assert.deepEqual(kinds(report(idleSnapshot(), offer(47 * 3600000))), ['idle-runner']);
+  assert.deepEqual(kinds(report(idleSnapshot(), offer(48 * 3600000 + 1))), []);
+});
+
+// An expired one-shot offer is not stuck when no queued job needs it.
+test('idle runners need a matching waiting job', () => {
+  const offer = { runner: 'home:one-shot', kind: 'home', agents: [{ agent: 'codex', models: ['gpt-6'] }], at: at(360001) };
+  assert.deepEqual(kinds(report(snapshot(), [offer])), []);
+  const waiting = item({ state: 'open', owner: null, dispatch: { to: 'home', agent: 'codex', model: 'gpt-6', by: 'owner', at: at(0), note: '' } });
+  assert.deepEqual(kinds(report(snapshot({ items: [waiting] }), [offer])), ['idle-runner']);
+  assert.deepEqual(kinds(report(snapshot({ items: [waiting] }), [{ ...offer, kind: 'cloud' }])), []);
+  assert.deepEqual(kinds(report(snapshot({ items: [waiting] }), [{ ...offer, jobs: ['review'] }])), []);
+  assert.deepEqual(kinds(report(snapshot({ items: [waiting] }), [{ ...offer, projects: ['elsewhere'] }])), []);
+  const request = { id: 1, item: 't1', head: item().head, dispatch: { ...waiting.dispatch, job: 'review' } };
+  assert.deepEqual(kinds(report(snapshot({ items: [item({ state: 'submitted' })], openRequests: [request] }), [{ ...offer, jobs: ['review'] }])), ['idle-runner']);
 });
