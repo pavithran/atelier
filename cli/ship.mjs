@@ -422,9 +422,9 @@ export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
 }
 
 // Advisory only: an old or unavailable server never refuses a ship.
-async function warnFastMerges({ name, request, print }) {
+async function warnFastMerges({ name, read, print }) {
   try {
-    const { landed } = await request("GET", `/projects/${encodeURIComponent(name)}/mode`);
+    const { landed } = await read(`/projects/${encodeURIComponent(name)}/mode`);
     const missing = Array.isArray(landed) ? landed.filter((l) => l.owed === true) : [];
     if (missing.length) print(`Warning: fast merges ${missing.map((l) => l.item).join(", ")} have post-merge review owed; continuing ship.`);
   } catch { /* This information is optional, including on older servers. */ }
@@ -437,6 +437,7 @@ async function warnFastMerges({ name, request, print }) {
 //   inProgress()               operations under way in the checkout, in words
 //   git(args, opts)            git in the checkout; opts.allowFail returns the result
 //   request(method, path, body) the server, as the owner; a refusal ends the command
+//   read(path)                 an advisory GET as the owner; a refusal throws
 //   stage(text)                names the step a refusal ends, or clears it with null
 //   fail(message)              ends the command with the message
 //   print(line)                standard output

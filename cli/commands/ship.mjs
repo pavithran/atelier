@@ -60,6 +60,7 @@ export default async function shipCommand() {
       paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
       git: (a, o = {}) => git(a, o),
       request: (method, path, body) => call(method, path, body, OWNER),
+      read: (path) => request("GET", path, undefined, OWNER),
       stage: (text) => { cliState.doneStep = text ?? undefined; },
       fail: (message) => die(message),
       print: (line) => console.log(line),
