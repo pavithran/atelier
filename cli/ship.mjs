@@ -421,6 +421,24 @@ export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
   }
 }
 
+// Advisory only: an old server or unavailable history never refuses a ship.
+export async function warnFastMerges({ name, baselineHead, paired, git, request, print }) {
+  try {
+    const P = `/projects/${encodeURIComponent(name)}`;
+    const { landed } = await request("GET", `${P}/mode`);
+    if (!Array.isArray(landed)) return;
+    const { deploys = [] } = await request("GET", `${P}/deploys`);
+    const head = paired(baselineHead);
+    const contains = (ancestor, tip) => typeof ancestor === "string" && typeof tip === "string"
+      && git(["merge-base", "--is-ancestor", ancestor, tip], { allowFail: true }).status === 0;
+    const previous = deploys.find((d) => d.result === "shipped" && contains(paired(d.head), head));
+    const missing = landed.filter((l) => l.independentApproved === false
+      && contains(paired(l.receipt?.mergeCommit), head)
+      && (!previous || !contains(paired(l.receipt?.mergeCommit), paired(previous.head))));
+    if (missing.length) print(`Warning: fast merges ${missing.map((l) => l.item).join(", ")} have no approving review from another family; continuing ship.`);
+  } catch { /* This information is optional, including on older servers. */ }
+}
+
 // Ship itself. `ctx` holds what cli/atelier.mjs owns:
 //   name, cwd, branch          the project and its registered checkout and branch
 //   baselineHead               the baseline's head, read from the server

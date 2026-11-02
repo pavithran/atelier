@@ -158,6 +158,8 @@ function standIn(state) {
     if (path === "/live") return send(state.live ?? 200, {});
     if (path === "/version") return send(200, { commit: state.liveCommit });
     if (path === "/api/projects/demo/baseline-head") return send(200, { head: git(state.baseline, "rev-parse", "main"), ...(state.repository ? { repository: state.repository } : {}) });
+    if (path === "/api/projects/demo/mode" && state.fastLandings) return send(200, { landed: state.fastLandings });
+    if (path === "/api/projects/demo/deploys" && req.method === "GET") return send(200, { deploys: state.priorDeploys ?? [] });
     if (path === "/api/projects/demo/actions" && req.method === "GET") return send(200, { approvals: [...state.approvals].reverse().map(view), runs: [] });
     if (path === "/api/projects/demo/actions" && req.method === "POST") {
       const a = { id: `a${state.approvals.length + 1}`, kind: body.kind, commit: body.commit, note: body.note, by: "owner", at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString() };
@@ -281,6 +283,34 @@ test("ship --dry-run prints the steps and the approvals missing, and runs nothin
   const quiet = await f.run(["ship", "--dry-run"]);
   assert.match(quiet.stdout, /5\. push             not run without --push \(git push --no-force github refs\/heads\/main:refs\/heads\/main\)/);
   assert.doesNotMatch(quiet.stdout, /approve push/);
+});
+
+test("ship warns once naming unapproved fast merges going out and continues, including with an older server", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"] });
+  const prior = git(f.checkout, "rev-list", "--max-parents=0", "HEAD");
+  f.state.priorDeploys = [{ head: prior, result: "shipped" }];
+  f.state.fastLandings = [
+    { item: "t1", title: "Unreviewed", receipt: { mergeCommit: f.head }, independentApproved: false, owed: true },
+    { item: "t2", title: "Approved", receipt: { mergeCommit: f.head }, independentApproved: true, owed: false },
+    { item: "t3", title: "Review pending", receipt: { mergeCommit: f.head }, independentApproved: false, owed: false },
+    { item: "t4", title: "Already shipped", receipt: { mergeCommit: prior }, independentApproved: false, owed: true },
+    { item: "t5", title: "Outside this ship", receipt: { mergeCommit: "f".repeat(40) }, independentApproved: false, owed: true },
+  ];
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const warnings = r.stdout.split("\n").filter((line) => /Warning:.*fast merge/.test(line));
+  assert.equal(warnings.length, 1, r.stdout);
+  assert.match(warnings[0], /t1.*t3/);
+  assert.doesNotMatch(warnings[0], /t2|t4|t5/);
+  assert.match(r.stdout, /Shipped demo/);
+  assert.equal(readFileSync(f.marker, "utf8"), "deployed\n");
+  // No /mode route: the advisory read must not turn an old server into a refusal.
+  delete f.state.fastLandings;
+  f.state.approvals[0].consumed = null;
+  const old = await f.run(["ship"]);
+  assert.equal(old.status, 0, old.stderr + old.stdout);
+  assert.match(old.stdout, /Shipped demo/);
+  assert.equal(readFileSync(f.marker, "utf8"), "deployed\ndeployed\n");
 });
 
 test("ship with an approval missing refuses before running anything, naming the command", async (t) => {

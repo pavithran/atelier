@@ -124,6 +124,8 @@ export interface FastLanding {
   review: { state: string; request: number | null; by: string | null };
   // Whether the post-merge review is still due (rules.ts postMergeOwed).
   owed: boolean;
+  // Derived from approvals at the merged head or merge commit, for ship.
+  independentApproved: boolean;
   fix: string | null;
 }
 
@@ -7007,12 +7009,24 @@ export class Ledger extends DurableObject<Env> {
       const receipt = r.receipt;
       const id = r.item_id;
       const req = this.sql.exec(`SELECT id, state, stopped FROM review_requests WHERE item = ? AND head IN (?, ?) ORDER BY id DESC LIMIT 1`, id, receipt.commit, receipt.mergeCommit).toArray()[0];
-      const review = this.reviewsFor(id).filter((v) => v.head === receipt.mergeCommit || v.head === receipt.commit).at(-1);
+      const item = this.item(id);
+      const reviews = this.reviewsFor(id);
+      // record-merge keeps the developer's named reviews on its event,
+      // rather than in the reviews table. They settle the same obligation.
+      const recorded = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.merge_recorded' AND json_extract(data, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`, id, receipt.mergeCommit).toArray()[0];
+      const record = recorded ? JSON.parse(recorded.data as string) as RecordedMerge : null;
+      const named = record?.reviews.map((v): Review => ({ itemId: id, by: v.by, head: v.head, approve: v.verdict === "approve", note: "", at: v.at ?? record.at, criteria: criteriaOf(item) })) ?? [];
+      const policy = this.project().policy;
+      const approvals = [receipt.commit, receipt.mergeCommit].flatMap((head) =>
+        countingReviews([...named, ...reviews], { ...bindingOf(item), head }, policy, this.owner));
+      const approval = approvals.find((v) => independentApproval(v, "coordinated", contributorsOf(item), this.owner)
+        && independenceRefusal(v.by, contributorsOf(item)) === null);
+      const review = reviews.filter((v) => v.head === receipt.mergeCommit || v.head === receipt.commit).at(-1) ?? approval;
       const fix = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.fix_of' AND json_extract(data, '$.itemId') = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       // A request that ended without a verdict STOP_LIMIT times stands open,
       // but no runner serves it again, so the review is owed (t331).
       const reviewState = review ? (review.approve ? "approved" : "rejected") : req ? (reviewStopped(parseStop(req.stopped)) ? "stopped without a verdict" : req.state as string) : "not requested";
-      return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, owed: postMergeOwed(reviewState), fix: fix ? fix.item_id as string : null };
+      return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, owed: !approval && postMergeOwed(reviewState), independentApproved: !!approval, fix: fix ? fix.item_id as string : null };
     });
   }
 
