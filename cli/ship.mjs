@@ -421,21 +421,12 @@ export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
   }
 }
 
-// Advisory only: an old server or unavailable history never refuses a ship.
-export async function warnFastMerges({ name, baselineHead, paired, git, request, print }) {
+// Advisory only: an old or unavailable server never refuses a ship.
+async function warnFastMerges({ name, request, print }) {
   try {
-    const P = `/projects/${encodeURIComponent(name)}`;
-    const { landed } = await request("GET", `${P}/mode`);
-    if (!Array.isArray(landed)) return;
-    const { deploys = [] } = await request("GET", `${P}/deploys`);
-    const head = paired(baselineHead);
-    const contains = (ancestor, tip) => typeof ancestor === "string" && typeof tip === "string"
-      && git(["merge-base", "--is-ancestor", ancestor, tip], { allowFail: true }).status === 0;
-    const previous = deploys.find((d) => d.result === "shipped" && contains(paired(d.head), head));
-    const missing = landed.filter((l) => l.independentApproved === false
-      && contains(paired(l.receipt?.mergeCommit), head)
-      && (!previous || !contains(paired(l.receipt?.mergeCommit), paired(previous.head))));
-    if (missing.length) print(`Warning: fast merges ${missing.map((l) => l.item).join(", ")} have no approving review from another family; continuing ship.`);
+    const { landed } = await request("GET", `/projects/${encodeURIComponent(name)}/mode`);
+    const missing = Array.isArray(landed) ? landed.filter((l) => l.owed === true) : [];
+    if (missing.length) print(`Warning: fast merges ${missing.map((l) => l.item).join(", ")} have post-merge review owed; continuing ship.`);
   } catch { /* This information is optional, including on older servers. */ }
 }
 
@@ -499,6 +490,8 @@ export async function ship(ctx) {
   const stops = [...plan.problems, ...refusals];
   if (stops.length) fail(`ship refused before running anything:\n${stops.map((p) => `  ${p}`).join("\n")}`);
   if (missing.length) fail(`ship refused before running anything: ${missing.length === 1 ? "an approval is" : "approvals are"} missing at ${short(commit)}. The developer approves with:\n${missing.map((c) => `  ${c}`).join("\n")}\nthen runs atelier ship again.`);
+
+  await warnFastMerges(ctx);
 
   const id = `s-${Date.now().toString(36)}`;
   const ran = [];

@@ -6,7 +6,7 @@ import { WRAP_MARKERS } from "../../src/sessions.ts";
 import { landingJournalFile, oldLandingJournalFile } from "../landing.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { runCommand, ship as runShip, shipSecrets, warnFastMerges } from "../ship.mjs";
+import { runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
 import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
 import { holdCheckout, postOnExit, stayHeld } from "../checkout-hold.mjs";
 
@@ -55,12 +55,6 @@ export default async function shipCommand() {
   };
   process.on("exit", onExit);
   try {
-    await warnFastMerges({
-      name, baselineHead, paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
-      git: (a, o = {}) => git(a, { cwd, ...o }),
-      request: (method, path) => request(method, path, undefined, OWNER),
-      print: (line) => console.log(line),
-    });
     await runShip({
       name, cwd, branch: p.branch, baselineHead, inProgress, repositoryIsBaseline: repository === "server",
       paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),

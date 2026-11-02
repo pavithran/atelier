@@ -266,6 +266,7 @@ exit \${DEPLOY_EXIT:-0}
 
 test("ship --dry-run prints the steps and the approvals missing, and runs nothing", async (t) => {
   const f = await fixture(t);
+  f.state.fastLandings = [{ item: "t1", owed: true }];
   const r = await f.run(["ship", "--dry-run", "--push"]);
   assert.equal(r.status, 0, r.stderr);
   const out = r.stdout.split("\n");
@@ -283,9 +284,10 @@ test("ship --dry-run prints the steps and the approvals missing, and runs nothin
   const quiet = await f.run(["ship", "--dry-run"]);
   assert.match(quiet.stdout, /5\. push             not run without --push \(git push --no-force github refs\/heads\/main:refs\/heads\/main\)/);
   assert.doesNotMatch(quiet.stdout, /approve push/);
+  assert.ok(!f.state.requests.some((r) => r.path.endsWith("/mode")), "refusals and dry runs do not read advisory reviews");
 });
 
-test("ship warns once naming unapproved fast merges going out and continues, including with an older server", async (t) => {
+test("ship warns once naming every owed fast merge and continues, including with an older server", async (t) => {
   const f = await fixture(t, { approve: ["deploy"] });
   const prior = git(f.checkout, "rev-list", "--max-parents=0", "HEAD");
   f.state.priorDeploys = [{ head: prior, result: "shipped" }];
@@ -300,8 +302,8 @@ test("ship warns once naming unapproved fast merges going out and continues, inc
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const warnings = r.stdout.split("\n").filter((line) => /Warning:.*fast merge/.test(line));
   assert.equal(warnings.length, 1, r.stdout);
-  assert.match(warnings[0], /t1.*t3/);
-  assert.doesNotMatch(warnings[0], /t2|t4|t5/);
+  assert.match(warnings[0], /t1.*t4.*t5/);
+  assert.doesNotMatch(warnings[0], /t2|t3/);
   assert.match(r.stdout, /Shipped demo/);
   assert.equal(readFileSync(f.marker, "utf8"), "deployed\n");
   // No /mode route: the advisory read must not turn an old server into a refusal.
@@ -315,16 +317,19 @@ test("ship warns once naming unapproved fast merges going out and continues, inc
 
 test("ship with an approval missing refuses before running anything, naming the command", async (t) => {
   const f = await fixture(t);
+  f.state.fastLandings = [{ item: "t1", owed: true }];
   const r = await f.run(["ship", "--push"]);
   assert.equal(r.status, 1, r.stdout);
   assert.equal(r.stderr, `atelier: ship refused before running anything: an approval is missing at ${f.head.slice(0, 8)}. The developer approves with:\n  atelier approve deploy --head ${f.head} --project demo\nthen runs atelier ship again.\n`);
   assert.match(r.stdout, /bin\/deploy\.sh  \[deploy: no approval at this revision\]/);
   assert.ok(!existsSync(f.marker));
   assert.deepEqual(f.writes(), [], "nothing used, run or recorded");
+  assert.ok(!f.state.requests.some((r) => r.path.endsWith("/mode")), "refusals and dry runs do not read advisory reviews");
 });
 
 test("a ControlPlane-only checkout refuses before any command, approval or run record, naming the Atelier ship file", async (t) => {
   const f = await fixture(t, { ship: null, approve: ["deploy"], extra: CP_FILES });
+  f.state.fastLandings = [{ item: "t1", owed: true }];
   const cpDeploy = join(f.checkout, "cp-deploy");
   for (const args of [["ship", "--push"], ["ship"]]) {
     const r = await f.run(args);
@@ -339,6 +344,7 @@ test("a ControlPlane-only checkout refuses before any command, approval or run r
   assert.match(dry.stdout, /from no ship file:/);
   assert.match(dry.stdout, /Refused: this project has no ship file: atelier ship reads only docs\/atelier\/ship\.json/);
   assert.deepEqual(f.writes(), []);
+  assert.ok(!f.state.requests.some((r) => r.path.endsWith("/mode")), "refusals and dry runs do not read advisory reviews");
 });
 
 test("ship runs each step in order with its approvals, records each one redacted, and pushes without force or a push approval", async (t) => {
@@ -467,6 +473,7 @@ test("ship never forces a push: a remote that moved on refuses it, and keeps its
 
 test("ship refuses a dirty checkout, a HEAD the baseline does not hold, another actor and another directory", async (t) => {
   const f = await fixture(t, { approve: ["deploy"] });
+  f.state.fastLandings = [{ item: "t1", owed: true }];
   writeFileSync(join(f.checkout, "loose.txt"), "x\n");
   const dirty = await f.run(["ship"]);
   assert.equal(dirty.status, 1);
@@ -487,6 +494,7 @@ test("ship refuses a dirty checkout, a HEAD the baseline does not hold, another 
   assert.match(elsewhere.stderr, /^atelier: run ship in demo's registered checkout: cd /);
   assert.ok(!existsSync(f.marker));
   assert.deepEqual(f.writes(), []);
+  assert.ok(!f.state.requests.some((r) => r.path.endsWith("/mode")), "refusals and dry runs do not read advisory reviews");
 });
 
 test("approve sends the kind, the full revision and the expiry; approvals lists and withdraws", async (t) => {

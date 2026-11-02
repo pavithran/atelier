@@ -124,7 +124,7 @@ export interface FastLanding {
   review: { state: string; request: number | null; by: string | null };
   // Whether the post-merge review is still due (rules.ts postMergeOwed).
   owed: boolean;
-  // Derived from approvals at the merged head or merge commit, for ship.
+  // Whether a standing approval from another family settles this landing.
   independentApproved: boolean;
   fix: string | null;
 }
@@ -6630,11 +6630,9 @@ export class Ledger extends DurableObject<Env> {
     if (!this.mergedFast(id)) return;
     const reviewer = this.standing().get("post-merge-reviewer");
     if (!reviewer || reviewer === "off") return;
+    const merge = this.lastEvent(id, ["item.merged"]);
     const item = this.item(id);
-    const policy = this.project().policy;
-    const counted = countingReviews(this.reviewsFor(id), bindingOf(item), policy, this.owner)
-      .some((r) => independentApproval(r, "coordinated", contributorsOf(item), this.owner, singleFamily(policy)));
-    if (counted) return;
+    if (this.fastReview(id, String(merge?.data.head ?? item.head), String(merge?.data.mergeCommit)).approval) return;
     try {
       this.ctx.storage.transactionSync(() => this.askReview(id, ORCHESTRATOR, reviewer, this.poolStanding(), true, false, undefined, this.heldOffers(), true));
     } catch (err) {
@@ -6999,6 +6997,30 @@ export class Ledger extends DurableObject<Env> {
     return confirmation;
   }
 
+  // Both the automatic ask and status use the gate's standing reviews.
+  // Named approvals cannot replace a verdict the Ledger already holds.
+  private fastReview(id: string, head: string, mergeCommit: string): { approval?: Review; review?: Review } {
+    const item = this.item(id), policy = this.project().policy;
+    const reviews = this.reviewsFor(id);
+    const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.merge_recorded' AND json_extract(data, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`, id, mergeCommit).toArray()[0];
+    const record = row ? JSON.parse(row.data as string) as RecordedMerge : null;
+    const named: Review[] = (record?.reviews ?? [])
+      .filter((r) => r.verdict === "reject" || !reviews.some((v) => v.by === r.by && standingReview(v, { ...bindingOf(item), head: r.head })))
+      .map((r) => ({ itemId: id, by: r.by, head: r.head, approve: r.verdict === "approve", note: "", at: r.at ?? record!.at, criteria: criteriaOf(item) }));
+    const standing = [...new Set([head, mergeCommit])].flatMap((head) =>
+      countingReviews([...named, ...reviews], { ...bindingOf(item), head }, policy, this.owner))
+      .sort((a, b) => a.at.localeCompare(b.at));
+    const rejection = standing.filter((r) => !r.approve).at(-1);
+    const contributors = contributorsOf(item);
+    const approval = standing.filter((r) => {
+      const actor = (a: string) => r.reviewerAdmission ? admissionActor(a, r.reviewerAdmission) : a;
+      return (!rejection || r.at > rejection.at)
+        && independentApproval(r, "coordinated", contributors, this.owner)
+        && independenceRefusal(actor(r.by), contributors.map(actor)) === null;
+    }).at(-1);
+    return { approval, review: approval ?? rejection ?? standing.filter((r) => r.postMerge).at(-1) };
+  }
+
   // Every task landed in fast mode since `since` (all of them when null),
   // with its receipt and the state of its post-merge review.
   fastLandings(since: string | null = null): FastLanding[] {
@@ -7023,19 +7045,7 @@ export class Ledger extends DurableObject<Env> {
       const receipt = r.receipt;
       const id = r.item_id;
       const req = this.sql.exec(`SELECT id, state, stopped FROM review_requests WHERE item = ? AND head IN (?, ?) ORDER BY id DESC LIMIT 1`, id, receipt.commit, receipt.mergeCommit).toArray()[0];
-      const item = this.item(id);
-      const reviews = this.reviewsFor(id);
-      // record-merge keeps the developer's named reviews on its event,
-      // rather than in the reviews table. They settle the same obligation.
-      const recorded = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.merge_recorded' AND json_extract(data, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`, id, receipt.mergeCommit).toArray()[0];
-      const record = recorded ? JSON.parse(recorded.data as string) as RecordedMerge : null;
-      const named = record?.reviews.map((v): Review => ({ itemId: id, by: v.by, head: v.head, approve: v.verdict === "approve", note: "", at: v.at ?? record.at, criteria: criteriaOf(item) })) ?? [];
-      const policy = this.project().policy;
-      const approvals = [receipt.commit, receipt.mergeCommit].flatMap((head) =>
-        countingReviews([...named, ...reviews], { ...bindingOf(item), head }, policy, this.owner));
-      const approval = approvals.find((v) => independentApproval(v, "coordinated", contributorsOf(item), this.owner)
-        && independenceRefusal(v.by, contributorsOf(item)) === null);
-      const review = reviews.filter((v) => v.head === receipt.mergeCommit || v.head === receipt.commit).at(-1) ?? approval;
+      const { approval, review } = this.fastReview(id, receipt.commit, receipt.mergeCommit);
       const fix = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.fix_of' AND json_extract(data, '$.itemId') = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       // A request that ended without a verdict STOP_LIMIT times stands open,
       // but no runner serves it again, so the review is owed (t331).
