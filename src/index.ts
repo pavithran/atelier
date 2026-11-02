@@ -2843,7 +2843,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // A pre-review verdict is judged against main's head as the baseline
         // holds it now, which only the Worker can read (t524).
         ...(isPrereviewRequest(Number(body.request)) ? { mainNow: await mainHeadOf(env, L) } : {}),
-      }, c.url.origin, !!c.token, "api");
+      }, c.url.origin, !!c.token, "api", await index(env).runnerOffers());
       return json(await L.detail(id));
     }
     case "review-claim": {
@@ -2852,7 +2852,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // having changed nothing, and the claim is made again with the head
       // read here. Any other claim never reads the baseline.
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
-      const offers = runner ? undefined : await index(env).runnerOffers();
+      const offers = await index(env).runnerOffers();
       let claim: ReviewClaim;
       try {
         claim = await L.claimReview(id, actor, runner, !!c.token, null, offers) as unknown as ReviewClaim;

@@ -4652,7 +4652,8 @@ export class Ledger extends DurableObject<Env> {
   // form on the task page, which only the signed-in owner reaches; "api" is
   // the owner token, as the orchestrator and the CLI use it. The reliability
   // record (src/models/reliability.ts) counts the two apart.
-  addReview(r: Review & { mainNow?: string | null }, origin?: string, proved = false, via?: "page" | "api"): void {
+  addReview(r: Review & { mainNow?: string | null }, origin?: string, proved = false, via?: "page" | "api", offers?: readonly SeenOffer[]): void {
+    this.keepOffers(this.ownOffers(offers));
     // A verdict under a pre-review's number is pre-review evidence (t524),
     // recorded apart: it never reaches the reviews the gate reads.
     if (isPrereviewRequest(r.request)) return this.prereviewVerdict(r, proved);
@@ -4678,6 +4679,15 @@ export class Ledger extends DurableObject<Env> {
     if (admission?.active) {
       const { refusal } = postMergeIndependence(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy), item.state === "merged" && this.mergedFast(item.id));
       if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403, `name a reviewer from another family with atelier review-request ${item.id} --reviewer H/M`);
+    }
+    // Without a request a CLI verdict still names the submitted head after
+    // landing. Give request recovery before comparing it with the merge head.
+    if (item.state === "merged" && r.request === undefined) {
+      this.expireReviewClaims();
+      const live = this.sql.exec(`SELECT id, criteria, claimedBy FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed' ORDER BY id`, item.id, item.head!).toArray()
+        .find((c) => typeof c.claimedBy === "string" && sameActor(c.claimedBy, r.by));
+      if (live) throw new RuleError("stale_request", "a post-merge verdict must answer the review request this reviewer claimed", 409, `run atelier review ${item.id} --head ${item.head} --request ${live.id} --criteria ${live.criteria} --${r.approve ? "approve" : "reject"} --note "…" --as ${r.by}`);
+      throw new RuleError("closed", `${item.id} is merged; a review must answer a claimed post-merge review request`, 409, `run ${this.reviewRecoveryCommand(item.id, r.by)}, then give the verdict using the command the claim prints`);
     }
     assertReviewAllowed(item, proved);
     if (item.state !== "accepted" && item.state !== "merged") assertLive(item);
@@ -4709,6 +4719,9 @@ export class Ledger extends DurableObject<Env> {
       if (r.request === undefined) {
         const live = claims.map((c) => c.id as number);
         throw new RuleError("stale_request", `the verdict on ${r.itemId} names no review request, but ${r.by} claimed ${live.length ? `request ${live.join(", ")}` : "one"} at ${r.head.slice(0, 8)}: name it with --request N, as the review claim gave it; if it was withdrawn or replaced, claim the review again (${this.reviewRecoveryCommand(r.itemId, r.by)}) and judge the change against the criteria it gives`, 409, live.length ? `run atelier review ${r.itemId} --head ${r.head} --request ${live[0]} --criteria ${r.criteria} --${r.approve ? "approve" : "reject"} --note "…" --as ${r.by}` : `run ${this.reviewRecoveryCommand(r.itemId, r.by)}`);
+      }
+      if (claims.length) {
+        throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} was withdrawn or replaced; ${r.by} already holds replacement request ${claims[0].id}: judge the change against the criteria that claim gave before recording its verdict`, 409, `run atelier review ${r.itemId} --head ${r.head} --request ${claims[0].id} --criteria ${r.criteria} --${r.approve ? "approve" : "reject"} --note "…" --as ${r.by}`);
       }
       throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (${this.reviewRecoveryCommand(r.itemId, r.by)}) and judge the change against the criteria it gives`, 409, `run ${this.reviewRecoveryCommand(r.itemId, r.by)}, then give the verdict using the command the claim prints`);
     }

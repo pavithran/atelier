@@ -165,6 +165,12 @@ test("a by-hand post-merge review claims and judges the recorded landing", async
   const error = await missing.json();
   assert.equal(error.error, "stale_request");
   assert.match(error.next, new RegExp(`atelier review ${id} --head ${merge} --request ${claim.request} --criteria ${claim.criteria}`));
+  const defaultHead = await api("review", REVIEWER, { head: HEAD, criteria: claim.criteria, approve: true, note: "Audited landing" });
+  const defaultError = await defaultHead.json();
+  assert.equal(defaultError.error, "stale_request");
+  assert.match(defaultError.next, new RegExp(`atelier review ${id} --head ${merge} --request ${claim.request} --criteria ${claim.criteria}`));
+  const staleHead = await api("review", REVIEWER, { head: HEAD, criteria: claim.criteria, request: claim.request, approve: true, note: "Audited landing" });
+  assert.equal((await staleHead.json()).error, "stale_head", "naming a request still requires the landing head");
   const res = await api("review", REVIEWER, { head: merge, criteria: claim.criteria, request: claim.request, approve: true, note: "Audited landing" });
   assert.equal(res.status, 200, await res.clone().text());
   assert.equal((await L.item(id)).state, "merged");
@@ -190,4 +196,62 @@ test("a direct claim cannot use a withdrawn reviewer admission", async (t) => {
   assert.equal(res.status, 403);
   assert.equal((await res.json()).error, "reviewer_withdrawn");
   assert.notEqual((await L.reviewRequests(id))[0].state, "claimed");
+});
+
+for (const [code, actor, runner] of [
+  ["wrong_runner", REVIEWER, "cloud:wrong"],
+  ["wrong_agent", "other/gpt-6-astra", "home:studio"],
+  ["wrong_model", "codex/other", "home:studio"],
+]) test(`${code} recovery reads live index offers even with --runner`, async (t) => {
+  const { api, offer, id } = await world(t);
+  await offer();
+  const res = await api("review-claim", actor, {}, runner);
+  const error = await res.json();
+  assert.equal(error.error, code);
+  assert.equal(error.next, `run atelier review-claim ${id} --as ${REVIEWER} --runner home:studio`);
+  assert.equal((await api("review-claim", REVIEWER, {}, "home:studio")).status, 200);
+});
+
+test("stale verdict recovery reads index offers registered after the claim", async (t) => {
+  const { api, L, offer, id, pool } = await world(t);
+  const first = await (await api("review-claim")).json();
+  await L.releaseReview(id, REVIEWER, "Retry", false, first.request);
+  await L.requestReview(id, "owner", REVIEWER, pool, true, false, undefined, [], true);
+  await offer();
+  const res = await api("review", REVIEWER, { head: HEAD, criteria: first.criteria, request: first.request, approve: true });
+  const error = await res.json();
+  assert.equal(error.error, "stale_request");
+  assert.match(error.next, /--runner home:studio/);
+  assert.equal((await api("review-claim", REVIEWER, {}, "home:studio")).status, 200);
+});
+
+test("a stale verdict names the reviewer's already claimed replacement", async (t) => {
+  const { api, L, id, pool } = await world(t);
+  const first = await (await api("review-claim")).json();
+  await L.releaseReview(id, REVIEWER, "Retry", false, first.request);
+  await L.requestReview(id, "owner", REVIEWER, pool, true, false, undefined, [], true);
+  const second = await (await api("review-claim")).json();
+  const verdict = { head: HEAD, criteria: first.criteria, request: first.request, approve: true, note: "Checked" };
+  const res = await api("review", REVIEWER, verdict);
+  const error = await res.json();
+  assert.equal(error.error, "stale_request");
+  assert.match(error.next, new RegExp(`atelier review ${id} --head ${HEAD} --request ${second.request} --criteria ${second.criteria}`));
+  assert.doesNotMatch(error.detail, /claim the review again/);
+  assert.equal((await api("review", REVIEWER, { ...verdict, request: second.request })).status, 200);
+});
+
+test("an unrequested post-merge CLI verdict at the submitted head names recovery before stale_head", async (t) => {
+  const { api, L, id } = await world(t);
+  const project = await L.project();
+  await L.setProject({ ...project, policy: { ...project.policy, protected: ["src/**"] } }, "owner");
+  await L.confirmOverride(id, "owner", HEAD, "access");
+  await L.accept(id, "owner", HEAD, "No independent runner available");
+  await L.merged(id, "owner", "e".repeat(40), true);
+  // review.mjs defaults to detail.item.head when --head is omitted.
+  const res = await api("review", REVIEWER, { head: (await L.item(id)).head, criteria: await L.criteria(id), approve: true });
+  const error = await res.json();
+  assert.equal(error.error, "closed");
+  assert.match(error.next, new RegExp(`atelier review-request ${id} --reviewer ${REVIEWER} --hand, then atelier review-claim ${id}`));
+  assert.equal((await L.item(id)).state, "merged");
+  assert.equal((await L.reviewsFor(id)).length, 0);
 });
