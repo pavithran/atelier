@@ -2,15 +2,24 @@
   "schema_version": 1,
   "kind": "atelier.ship",
   "class": "web",
-  "description": "Atelier's own delivery from main, to production on the Studio (atelier.zone): type-check; when the server's code changed since the commit atelier.zone reports, install the captured commit on the Studio with root's installer under sudo, which builds the release itself from the Studio's repository; the developer types the password at sudo's own prompt; verify the live commit; scan for private data; push main to the github remote.",
-  "typecheck": {
-    "run": [
-      "npm",
-      "run",
-      "typecheck"
-    ],
-    "timeout_seconds": 600
-  },
+  "description": "Atelier delivery: run the full suite from the shipped commit on ai-studio, typecheck, deploy, verify the live commit, scan and push.",
+  "typecheck": [
+    {
+      "run": [
+        "node",
+        "scripts/ship-suite-studio.mjs"
+      ],
+      "timeout_seconds": 3600
+    },
+    {
+      "run": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "timeout_seconds": 600
+    }
+  ],
   "deploy": {
     "run": [
       "node",
