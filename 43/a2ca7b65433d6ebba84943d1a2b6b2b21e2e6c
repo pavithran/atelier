@@ -1,0 +1,66 @@
+atelier atelier/t423 "Role prompts fit the override cap"
+accepted head 2fc77ed337f93dd715d622a9d9c7c132a653f807
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-02T16:48:50.440Z
+REVIEW approve by antigravity/gemini-4-argon-high at 2fc77ed337f93dd715d622a9d9c7c132a653f807, recorded by antigravity/gemini-4-argon-high
+CHECKED TREE 6d1710960d458261a673e961c294e54b8bb63547: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-01T01:48:45.191Z claude-code/opus-5.5 item.created
+2026-11-01T01:48:45.191Z claude-code/opus-5.5 criteria.revised
+2026-11-01T15:45:27.059Z codex/gpt-6.1-sol item.claimed
+2026-11-01T15:45:27.107Z codex/gpt-6.1-sol workspace.created
+2026-11-01T15:56:45.840Z codex/gpt-6.1-sol push.observed
+2026-11-01T15:57:21.860Z codex/gpt-6.1-sol evidence.observed
+2026-11-01T15:57:22.268Z codex/gpt-6.1-sol item.submitted
+2026-11-01T16:10:00.000Z atelier stage.stuck
+2026-11-01T16:42:12.529Z codex/gpt-6.1-sol push.observed
+2026-11-01T16:42:44.430Z codex/gpt-6.1-sol evidence.observed
+2026-11-01T16:42:44.893Z codex/gpt-6.1-sol item.submitted
+2026-11-01T16:45:00.000Z atelier stage.cleared
+2026-11-01T16:55:00.000Z atelier stage.stuck
+2026-11-01T17:12:35.465Z atelier/orchestrator refresh.queued
+2026-11-01T17:34:50.420Z codex/gpt-6.1-sol push.observed
+2026-11-01T17:35:00.000Z atelier stage.cleared
+2026-11-01T17:35:24.158Z codex/gpt-6.1-sol evidence.observed
+2026-11-01T17:35:24.572Z codex/gpt-6.1-sol item.submitted
+2026-11-01T17:49:04.957Z antigravity/gemini-4-argon-high review.approved
+2026-11-01T17:49:04.957Z atelier/orchestrator goal.notes
+2026-11-01T17:49:05.591Z pavi item.accepted
+2026-11-01T17:49:06.721Z pavi land.start
+2026-11-01T17:49:06.826Z pavi landing.leased
+2026-11-01T17:49:06.899Z pavi land.lease
+2026-11-01T17:49:07.849Z pavi checkout.leased
+2026-11-01T17:49:16.475Z pavi land.merge-main
+2026-11-01T17:49:16.753Z pavi checkout.released
+2026-11-01T17:49:16.983Z pavi landing.released
+2026-11-01T17:49:17.053Z pavi land.release
+2026-11-01T17:49:22.056Z pavi land.start
+2026-11-01T17:49:22.164Z pavi landing.leased
+2026-11-01T17:49:22.254Z pavi land.lease
+2026-11-01T17:49:23.163Z pavi checkout.leased
+2026-11-01T17:49:31.383Z pavi land.merge-main
+2026-11-01T17:49:31.660Z pavi checkout.released
+2026-11-01T17:49:31.929Z pavi landing.released
+2026-11-01T17:49:32.025Z pavi land.release
+2026-11-01T17:55:00.000Z atelier stage.stuck
+2026-11-02T16:46:47.005Z pavi land.start
+2026-11-02T16:46:47.128Z pavi landing.leased
+2026-11-02T16:46:47.333Z pavi land.lease
+2026-11-02T16:46:48.721Z pavi checkout.leased
+2026-11-02T16:46:58.690Z pavi land.merge-main
+2026-11-02T16:46:59.020Z pavi checkout.released
+2026-11-02T16:46:59.429Z pavi landing.released
+2026-11-02T16:46:59.556Z pavi land.release
+2026-11-02T16:47:21.452Z atelier/orchestrator refresh.queued
+2026-11-02T16:48:02.599Z codex/gpt-6.1-sol push.observed
+2026-11-02T16:48:50.476Z codex/gpt-6.1-sol evidence.observed
+2026-11-02T16:48:50.936Z codex/gpt-6.1-sol item.submitted
+2026-11-02T16:50:00.000Z atelier stage.cleared
+2026-11-02T17:00:00.000Z atelier stage.stuck
+2026-11-02T17:08:38.200Z antigravity/gemini-4-argon-high review.approved
+2026-11-02T17:08:38.200Z atelier/orchestrator goal.notes
+2026-11-02T17:08:38.885Z pavi item.accepted
+2026-11-02T17:08:40.247Z pavi land.start
+2026-11-02T17:08:40.360Z pavi landing.leased
+2026-11-02T17:08:40.457Z pavi land.lease
+2026-11-02T17:08:41.572Z pavi checkout.leased
