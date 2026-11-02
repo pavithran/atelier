@@ -9,7 +9,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 3, slot: 40,
       form: "unblock [ID] [--quote WORDS]",
-      about: "The holder or the developer lifts the block, and the task returns to the state it was in; it also lifts the fence a blocking pre-review left on the task's landing, so atelier land can queue it again. A model acting with the developer token needs the developer's words: `--quote WORDS` with `--as H/M` (or ATELIER_ACTOR) naming the model, both recorded on the event and shown where the action shows; without them the call stops and names the command to run once the developer has said yes. The task page's forms stay as an alternative.",
+      about: "The holder or the developer lifts the block, and the task returns to the state it was in; it also lifts the fence a blocking pre-review left on the task's landing, so atelier land can queue it again. A model acting with the developer token needs the developer's words: `--quote WORDS` with `--as H/M` (or ATELIER_ACTOR) naming the model, both recorded on the event and shown where the action shows; without them the call stops and names the command to run once the developer has said yes. A review round cap always needs --quote with the developer's words; the holder and the task page cannot clear it without them.",
     },
   ],
   flags: { quote: '--quote needs the developer\'s words: atelier unblock ID --quote "what the developer said" --as H/M' },
