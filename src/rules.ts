@@ -3107,13 +3107,10 @@ export function reviewedSince(previous: readonly Pick<Review, "head" | "by" | "a
   return earlier.at(-1)?.head ?? null;
 }
 
-// The diff a re-review reads: the one since the last reviewed head when it
-// is smaller than the whole change and not empty, else the whole change. A
-// merge of main into the task makes the diff since the last head larger than
-// the change itself, and an empty one (a second opinion on the same tree)
-// leaves nothing to read, so each falls back to the whole change.
+// A re-review reads the diff since the last reviewed head, including an
+// empty diff. Only an unavailable diff falls back to the whole change.
 export function reReviewDiff(whole: string, since: string | null): { diff: string; incremental: boolean } {
-  return since && since.trim() && since.length < whole.length ? { diff: since, incremental: true } : { diff: whole, incremental: false };
+  return since !== null ? { diff: since, incremental: true } : { diff: whole, incremental: false };
 }
 
 // The same finding, however it is spaced or capitalised: the key a settled

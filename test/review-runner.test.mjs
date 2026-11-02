@@ -2152,7 +2152,7 @@ const earlier = { itemId: "t21", by: "codex/gpt-6-astra", head: H_EARLIER, appro
 const reReviewClaim = (verdicts = []) => ({ ...claimed, need: { ...claimed.need, kind: "re-review", round: 2, previous: [earlier], previousReviewer: earlier.by },
   events: verdicts.map((v, i) => ({ seq: 5 + i, itemId: "t21", at: "2026-10-05T11:00:00.000Z", actor: "owner", kind: "review.finding", data: v })) });
 
-test("a re-review reads the diff since the last reviewed head, and the whole change when that is not smaller", async () => {
+test("a re-review reads the diff since the last reviewed head, even when it is larger or empty", async () => {
   const since = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n@@ -1 +1 @@\n+only what changed since\n";
   const whole = `${HUNK}${"+more of the whole change\n".repeat(20)}`;
   const run = async (sinceDiff) => {
@@ -2167,7 +2167,11 @@ test("a re-review reads the diff since the last reviewed head, and the whole cha
   assert.ok(text.includes("only what changed since") && !text.includes("more of the whole change"));
   assert.equal(narrow.calls.find((c) => c.writeDiff).writeDiff, since, "the reviewer's diff file holds the diff since too");
   const wide = await run(`${whole}${whole}`);
-  assert.ok(!wide.calls.find((c) => c.brief).brief.includes("the last head a review judged"));
+  assert.ok(wide.calls.find((c) => c.brief).brief.includes("the last head a review judged"));
+  assert.ok(wide.calls.find((c) => c.brief).brief.includes(earlier.findings[0].text));
+  const empty = await run("");
+  assert.equal(empty.calls.find((c) => c.writeDiff !== undefined).writeDiff, "");
+  assert.ok(empty.calls.find((c) => c.brief).brief.includes("the last head a review judged"));
   // Round one reads the whole change and asks for nothing earlier.
   const first = fixture({ diff: () => whole });
   await runReview(assignment, config, "home:studio", first.io);
