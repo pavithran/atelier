@@ -50,7 +50,7 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(p.source, "docs/atelier/ship.json");
   assert.equal(p.class, "web");
   assert.deepEqual(outline(p), [
-    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio [deploy]"],
+    ["commit"], ["typecheck", "node scripts/ship-suite-studio.mjs", "npm run typecheck"], ["deploy", "node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio [deploy]"],
     ["verify-delivery", "node scripts/ship-studio.mjs verify --version-url https://atelier.zone/api/version"], ["wrap"],
     ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
   ]);
@@ -250,7 +250,7 @@ exit \${DEPLOY_EXIT:-0}
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: { demo: { path: checkout, branch: "main" } } }));
   const marker = join(dir, "deployed.txt");
   const run = (args, env = {}, cwd = checkout) => new Promise((done) => {
-    const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("ATELIER_")));
+    const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => (!k.startsWith("ATELIER_") || k === "ATELIER_TEST_LEASE")));
     const child = spawn(process.execPath, [cli, ...args], {
       cwd, env: { ...clean, ATELIER_PRIVATE_ROOT: join(dir, "no-icloud"), ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_SERVER: url, MY_API_TOKEN: SECRET, SHIP_MARKER: marker, ...env },
     });
@@ -807,3 +807,26 @@ test("the ship file's added steps are read strictly", (t) => {
   assert.match(problems({ scan: { run: ["./s"], bogus: 1 } }), /has a field atelier ship does not read: bogus/);
   assert.equal(problems({ scan: { run: ["./s"] }, baseline: { run: ["./b"] } }), "");
 });
+
+test("production ship declares the Studio suite before deploy with an hour budget", () => {
+ const p = composeShip(resolve("."));
+ const runs = p.steps.find(s => s.step === "typecheck").runs;
+ assert.deepEqual(runs[0].argv, ["node", "scripts/ship-suite-studio.mjs"]);
+ assert.equal(runs[0].timeoutMs, 3600000);
+ });
+
+test("a failing declared Studio suite stops production before deploy or later checks", async (t) => {
+ const own = JSON.parse(readFileSync("docs/atelier/ship.json", "utf8"));
+ const f = await fixture(t, { approve: ["deploy"], extra: SUITE, ship: {
+ schema_version: 1, kind: "atelier.ship", class: "web",
+ typecheck: [{ ...own.typecheck[0], run: ["sh", "suite.sh"] }, { run: ["sh", "-c", "echo should-not-run"] }],
+ deploy: { run: ["bin/deploy.sh"] }, "verify-deploy": { run: ["true"] }
+ } });
+ const r = await f.run(["ship"], { SUITE_EXIT: "1" });
+ assert.equal(r.status, 1, r.stderr);
+ assert.match(r.stderr, /ship stopped at typecheck/);
+ assert.ok(!existsSync(f.marker));
+ assert.deepEqual(f.state.runs.map(x => [x.step, x.passed]), [["commit", true], ["typecheck", false]]);
+ assert.match(f.state.runs[1].outputTail, new RegExp(f.head));
+ assert.doesNotMatch(r.stdout, /^should-not-run$/m);
+ });

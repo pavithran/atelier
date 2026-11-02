@@ -44,10 +44,10 @@ const env = () => {
   return { ...e, DRYRUN: "1" };
 };
 const dry = (script, args) => {
-  // Redirect only the dry-run scratch path, including immutable fixtures,
-  // so the tests work under a workspace sandbox that excludes /var/tmp.
+  // Dry runs use an absent service account, independent of the host.
+  // Redirect scratch paths in both current scripts and immutable fixtures.
   const copy = join(root, script === SETUP ? "setup-server.sh" : script.split("/").at(-1));
-  writeFileSync(copy, readFileSync(script, "utf8").replaceAll("/var/tmp/atelier-", `${root}/atelier-`));
+  writeFileSync(copy, readFileSync(script, "utf8").replaceAll("/usr/bin/dscl", "false").replaceAll("dscl .", "false .").replaceAll("/var/tmp/atelier-", `${root}/atelier-`));
   const r = spawnSync("/bin/bash", ["-p", copy, ...args], { env: env(), encoding: "utf8" });
   // Each run's scratch directory has its own random name.
   const norm = (text) => text.replace(/^(\+ )\/(?:usr\/bin|usr\/sbin|bin)\//gm, "$1").replace(new RegExp(`${root}/atelier-(setup|tunnel)\\.[A-Za-z0-9]+`, "g"), "/var/tmp/atelier-$1.X");
