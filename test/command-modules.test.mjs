@@ -197,19 +197,19 @@ test("regenerate fails on a command error, naming the modules, and leaves the in
   const dir = copy(t);
   const before = snapshot(dir);
   // A second module claims ls as an alias.
-  writeFileSync(join(dir, SPECS, "list.ts"), declaration("list", '\n  aliases: ["ls"],'));
-  writeFileSync(join(dir, HANDLER_DIR, "list.mjs"), handler("list"));
+  writeFileSync(join(dir, SPECS, "frob.ts"), declaration("frob", '\n  aliases: ["ls"],'));
+  writeFileSync(join(dir, HANDLER_DIR, "frob.mjs"), handler("frob"));
   const r = node(dir, ["cli/regenerate.mjs"]);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /atelier ls is declared twice: by src\/usage\/commands\/list\.ts and by src\/usage\/commands\/ls\.ts/);
-  assert.deepEqual(changes(before, snapshot(dir)), ["cli/commands/list.mjs", "src/usage/commands/list.ts"]);
+  assert.match(r.stderr, /atelier ls is declared twice: by src\/usage\/commands\/frob\.ts and by src\/usage\/commands\/ls\.ts/);
+  assert.deepEqual(changes(before, snapshot(dir)), ["cli/commands/frob.mjs", "src/usage/commands/frob.ts"]);
   // A declaration without a handler fails too.
-  rmSync(join(dir, HANDLER_DIR, "list.mjs"));
-  writeFileSync(join(dir, SPECS, "list.ts"), declaration("list"));
+  rmSync(join(dir, HANDLER_DIR, "frob.mjs"));
+  writeFileSync(join(dir, SPECS, "frob.ts"), declaration("frob"));
   const missing = node(dir, ["cli/regenerate.mjs"]);
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /atelier list has no handler: cli\/commands\/list\.mjs/);
-  assert.deepEqual(changes(before, snapshot(dir)), ["src/usage/commands/list.ts"]);
+  assert.match(missing.stderr, /atelier frob has no handler: cli\/commands\/frob\.mjs/);
+  assert.deepEqual(changes(before, snapshot(dir)), ["src/usage/commands/frob.ts"]);
 });
 
 // t765, audit finding 7: regenerate started one CLI process per command (96

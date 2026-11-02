@@ -207,12 +207,13 @@ test("an orphan's recovery names the orphan's own project wherever the hold is p
 // never take this project's work, so it is no idle runner of this one; a
 // runner with no project limit serves every project and stays listed.
 test("atelier stuck lists as idle only the runners whose token serves the project", () => {
+  const agents = [{ agent: "codex", models: ["gpt-6"] }];
   const offers = [
-    { ...offer("home:serves-atelier", CLAIMED), projects: ["atelier", "other"] },
-    { ...offer("home:serves-other", CLAIMED), projects: ["other"] },
-    offer("home:serves-all", CLAIMED),
+    { ...offer("home:serves-atelier", CLAIMED), agents, projects: ["atelier", "other"] },
+    { ...offer("home:serves-other", CLAIMED), agents, projects: ["other"] },
+    { ...offer("home:serves-all", CLAIMED), agents },
   ];
-  const r = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([]), offers, [], []);
+  const r = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([item("t358")]), offers, [], []);
   assert.deepEqual(r.entries.filter((e) => e.kind === "idle-runner").map((e) => e.subject).sort(), ["home:serves-all", "home:serves-atelier"]);
 });
 
@@ -220,7 +221,8 @@ test("atelier stuck lists as idle only the runners whose token serves the projec
 // served by its token (it answers to its former names), though the stored offer
 // lists only the old name; the runner stays on the idle list.
 test("atelier stuck knows a renamed project by its former names when listing idle runners", () => {
-  const offers = [{ ...offer("home:old-scope", CLAIMED), projects: ["old-atelier"] }, { ...offer("home:other", CLAIMED), projects: ["other"] }];
-  const r = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([]), offers, [], [], [], ["atelier", "old-atelier"]);
+  const agents = [{ agent: "codex", models: ["gpt-6"] }];
+  const offers = [{ ...offer("home:old-scope", CLAIMED), agents, projects: ["old-atelier"] }, { ...offer("home:other", CLAIMED), agents, projects: ["other"] }];
+  const r = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([item("t358")]), offers, [], [], [], ["atelier", "old-atelier"]);
   assert.deepEqual(r.entries.filter((e) => e.kind === "idle-runner").map((e) => e.subject), ["home:old-scope"]);
 });
