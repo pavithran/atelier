@@ -757,7 +757,7 @@ export function assertDispatchClaimable(item: Item, items: readonly Item[], poli
     if (refusal) throw new RuleError("ineligible", refusal, 403, "only the developer can: atelier models set ID --state available");
   }
   if (policy.refuseOverlap && overlap) {
-    const refusal = overlappingRefusal(item, items, dispatchClaimant(d));
+    const refusal = overlappingRefusal(item, items, dispatchClaimant(d), policy);
     if (refusal) throw new RuleError("overlap", refusal, 409, `run atelier dispatch ${item.id} --overlap-ok`);
   }
 }

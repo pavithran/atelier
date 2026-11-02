@@ -379,7 +379,7 @@ test("a dispatch refuses a named agent and model the claim would refuse, and an 
   // A scope a refuseOverlap policy refuses is refused, naming the live item,
   // whatever agent is named, and left alone where the policy does not refuse.
   const live = item({ id: "t28", scope: ["relay/test/**"], state: "claimed", owner: "codex/gpt-6" });
-  assert.throws(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d({ agent: "claude-code", model: "opus-5.5" })), /t2's scope overlaps live t28 \(codex\/gpt-6\); this project refuses overlapping claims/);
+  assert.throws(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d({ agent: "claude-code", model: "opus-5.5" })), /t2's scope overlaps live t28 \(codex\/gpt-6, idle [^)]+\); this project refuses overlapping claims/);
   assert.throws(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d()), /overlaps live t28/);
   assert.doesNotThrow(() => assertDispatchClaimable(open, [live], policy(), d()));
   // The holder of the overlapping item is not refused when named.
