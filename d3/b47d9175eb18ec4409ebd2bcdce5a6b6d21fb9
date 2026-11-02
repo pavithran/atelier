@@ -1,0 +1,27 @@
+atelier atelier/t435 "Mechanical failures stop at done, not in review"
+accepted head 75ff053c68216226b6416fa8d74268a4f6aa8f40
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-02T22:08:23.937Z
+REVIEW approve by antigravity/gemini-4-argon at 75ff053c68216226b6416fa8d74268a4f6aa8f40, recorded by antigravity/gemini-4-argon
+2026-11-02T18:13:05.588Z pavi item.created
+2026-11-02T18:13:05.588Z claude-code/opus-5.5 criteria.revised
+2026-11-02T21:47:01.043Z pavi item.dispatched
+2026-11-02T21:58:06.585Z codex/gpt-6.1-sol item.claimed
+2026-11-02T21:58:06.630Z codex/gpt-6.1-sol workspace.created
+2026-11-02T22:08:20.278Z codex/gpt-6.1-sol push.observed
+2026-11-02T22:08:23.960Z codex/gpt-6.1-sol evidence.observed
+2026-11-02T22:08:24.160Z codex/gpt-6.1-sol item.submitted
+2026-11-02T22:14:04.920Z atelier/orchestrator refresh.queued
+2026-11-02T22:14:23.689Z pavi land.start
+2026-11-02T22:14:24.996Z pavi review.requested
+2026-11-02T22:14:24.996Z pavi review.tier_needed
+2026-11-02T22:14:25.261Z pavi land.review
+2026-11-02T22:14:25.360Z pavi land.requested
+2026-11-02T22:14:35.649Z antigravity/gemini-4-argon review.claimed
+2026-11-02T22:16:22.352Z antigravity/gemini-4-argon review.approved
+2026-11-02T22:16:27.641Z pavi item.accepted
+2026-11-02T22:16:28.491Z pavi land.start
+2026-11-02T22:16:28.599Z pavi landing.leased
+2026-11-02T22:16:28.718Z pavi land.lease
+2026-11-02T22:16:29.913Z pavi checkout.leased
