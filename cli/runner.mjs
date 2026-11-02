@@ -1522,7 +1522,7 @@ export function validationBlockedReport(output) {
   };
   const matches = VALIDATION_BLOCKED.flatMap((pattern, i) => [...report.matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))].filter((m) => i === 0
     // Empty reasons and explicit no-block answers are not blockers.
-    ? !/^(?:(?:none|n\/a|nothing)[.!]?)?$/i.test(m[1].replace(/[*_`]/g, "").trim())
+    ? !/^(?:$|(?:none|n\/a|nothing)(?:$|\s*\p{P}))/iu.test(m[1].replace(/[*_`]/g, "").trim())
     : !aboutAnother(m)));
   const match = matches.sort((a, b) => a.index - b.index)[0];
   if (!match) return null;
