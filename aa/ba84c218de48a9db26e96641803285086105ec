@@ -1,0 +1,40 @@
+atelier atelier/t427 "Stuck alerts only for work someone is expected to move"
+accepted head 7c1a5f704c690e018f8efef7a3f74c445200a0d7
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-02T18:24:16.840Z
+REVIEW approve by antigravity/gemini-4-argon at 7c1a5f704c690e018f8efef7a3f74c445200a0d7, recorded by antigravity/gemini-4-argon
+REVIEW approve by antigravity/gemini-4-argon at 7c1a5f704c690e018f8efef7a3f74c445200a0d7, recorded by antigravity/gemini-4-argon
+CHECKED TREE fb11b4454e523cd86269f1717460d2e2216b5f88: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-01T18:54:06.342Z pavi item.created
+2026-11-01T18:54:06.342Z claude-code/opus-5.5 criteria.revised
+2026-11-02T17:59:11.043Z pavi item.edited
+2026-11-02T17:59:11.043Z claude-code/opus-5.5 criteria.revised
+2026-11-02T17:59:11.043Z pavi item.criteria_changed
+2026-11-02T17:59:32.410Z codex/gpt-6.1-sol item.claimed
+2026-11-02T17:59:32.436Z codex/gpt-6.1-sol workspace.created
+2026-11-02T18:19:04.484Z codex/gpt-6.1-sol push.observed
+2026-11-02T18:19:35.618Z codex/gpt-6.1-sol evidence.observed
+2026-11-02T18:19:36.094Z codex/gpt-6.1-sol item.submitted
+2026-11-02T18:20:54.459Z atelier/orchestrator refresh.queued
+2026-11-02T18:21:23.751Z atelier/orchestrator refresh.queued
+2026-11-02T18:21:32.761Z antigravity/gemini-4-argon review.approved
+2026-11-02T18:21:33.530Z pavi item.accepted
+2026-11-02T18:21:35.350Z pavi land.start
+2026-11-02T18:21:35.490Z pavi landing.leased
+2026-11-02T18:21:35.616Z pavi land.lease
+2026-11-02T18:21:37.031Z pavi checkout.leased
+2026-11-02T18:21:46.597Z pavi land.merge-main
+2026-11-02T18:21:46.939Z pavi checkout.released
+2026-11-02T18:21:47.418Z pavi landing.released
+2026-11-02T18:21:47.574Z pavi land.release
+2026-11-02T18:22:05.227Z codex/gpt-6.1-sol push.observed
+2026-11-02T18:22:05.227Z atelier/orchestrator review.retained
+2026-11-02T18:24:16.870Z codex/gpt-6.1-sol evidence.observed
+2026-11-02T18:24:17.459Z codex/gpt-6.1-sol item.submitted
+2026-11-02T18:25:48.790Z antigravity/gemini-4-argon review.approved
+2026-11-02T18:25:49.684Z pavi item.accepted
+2026-11-02T18:25:51.398Z pavi land.start
+2026-11-02T18:25:51.549Z pavi landing.leased
+2026-11-02T18:25:51.664Z pavi land.lease
+2026-11-02T18:25:52.896Z pavi checkout.leased
