@@ -82,12 +82,12 @@ test("a merge whose result is not exactly main's changes beside the task's is no
   assert.match(retentionVerdict(facts(await read(dropped)), who).why, /did not take main's content of src\/b\.ts/);
 });
 
-test("a regenerated declared output is exempt only with the merge's provenance; a fixture path alone earns nothing", async () => {
+test("a regenerated declared output is exempt only after replay; a fixture path alone earns nothing", async () => {
   const both = { main: { "src/b.ts": "b changed\n", ...generated("help v1") }, task: { "src/a.ts": "a changed\n", ...generated("help v2") } };
   const merged = (b: Record<string, string>, o: Record<string, string>, m: Record<string, string>) => ({ ...clean(b, { ...o, ...generated("help v0") }, { ...m, ...generated("help v0") }), ...generated("help v3") });
   const line = "Atelier-Regenerated: command-indexes (node cli/regenerate.mjs): test/fixtures/help.txt matches neither side; test/fixtures/usage.json matches neither side; log sha256 abc";
   const proven = merge({ ...both, merged, message: `Merge main\n\n${line}\nAgent: atelier/integrator` });
-  const r = facts(await read(proven));
+  const r = facts(await readRetention({ ...proven.fork, verifyRegeneration: async () => ["test/fixtures/help.txt", "test/fixtures/usage.json"] }, proven.baseline, proven.o, proven.n));
   assert.deepEqual(r.outputs, ["test/fixtures/help.txt", "test/fixtures/usage.json"]);
   assert.equal(retentionVerdict(r, who).retain, true, retentionVerdict(r, who).why);
   // The same merge with no provenance line, or one for a command the manifest does not declare, is an overlap.
@@ -172,4 +172,23 @@ test("a tree object that reads as missing is unreadable evidence, as a thrown er
   const thrown = { ...s.fork, readTree: async () => { throw new Error("Artifacts is down"); } } as typeof s.fork;
   const t = await readRetention(thrown, s.baseline, s.o, s.n);
   assert.ok("unread" in t && /Artifacts is down/.test(t.unread));
+});
+
+
+test("a provenance claim alone cannot exempt hand-edited generator outputs", async () => {
+  const s = merge({ main: { ...generated("main") }, task: { ...generated("task") },
+    merged: (_b, o) => ({ ...o, ...generated("hand edit") }),
+    message: "Atelier-Regenerated: command-indexes (node cli/regenerate.mjs): test/fixtures/help.txt matches neither side; test/fixtures/usage.json matches neither side; log sha256 abc" });
+  const r = facts(await read(s));
+  assert.deepEqual(r.outputs, []);
+  assert.equal(retentionVerdict(r, who).retain, false);
+});
+
+test("independently reproduced outputs carry approval without a provenance claim", async () => {
+  const s = merge({ main: { ...generated("main") }, task: { ...generated("task") },
+    merged: (_b, o) => ({ ...o, ...generated("combined") }) });
+  const fork = { ...s.fork, verifyRegeneration: async () => ["test/fixtures/help.txt", "test/fixtures/usage.json"] };
+  const r = facts(await readRetention(fork, s.baseline, s.o, s.n));
+  assert.deepEqual(r.outputs, ["test/fixtures/help.txt", "test/fixtures/usage.json"]);
+  assert.equal(retentionVerdict(r, who).retain, true);
 });

@@ -554,7 +554,7 @@ export interface RetentionFacts {
   incoming: string[];    // paths main changed between the base and its commit
   moved: string[];       // paths the merge changed from the approved head
   offMain: string[];     // paths the new head holds differently from main's commit
-  outputs: string[];     // declared outputs the merge's own provenance says it regenerated
+  outputs: string[];     // declared outputs independently reproduced from the merged inputs
 }
 export type RetentionRead = { unread: string } | RetentionFacts;
 
@@ -577,8 +577,8 @@ const listed = (paths: readonly string[], max = 3) => `${paths.slice(0, max).joi
 //     rename or deletion counting at both of its paths;
 //   - the merge changed no path main did not, and took main's content of
 //     every path main changed;
-//   - only a path a declared generator regenerated, as the merge's own
-//     provenance says, is left out of those tests: a path under
+//   - only a path an independent replay of the declared generator reproduced
+//     is left out of those tests: a path under
 //     test/fixtures earns nothing by being there.
 export function retentionVerdict(read: RetentionRead | null, who: { resolver: string | null; outsiders: boolean }): RetentionVerdict {
   const no = (why: string, facts: RetentionFacts | null = null): RetentionVerdict => ({ retain: false, why, facts });
@@ -598,7 +598,7 @@ export function retentionVerdict(read: RetentionRead | null, who: { resolver: st
   if (extra.length) return no(`the merge changed ${listed(extra)}, which main did not, so the new head is reviewed again`, read);
   const dropped = kept(read.offMain).filter((p) => incoming.has(p));
   if (dropped.length) return no(`the merge did not take main's content of ${listed(dropped)}, so the new head is reviewed again`, read);
-  return { retain: true, why: `the merge brought in only main's changes to files the task does not change${exempt.size ? `, and regenerated ${listed([...exempt])}` : ""}`, facts: read };
+  return { retain: true, why: `the merge brought in only main's changes to files the task does not change${exempt.size ? `, and mechanically regenerated ${listed([...exempt])} (independent replay matched the complete tree)` : ""}`, facts: read };
 }
 
 // The approvals standing at a binding that may be carried across a merge:

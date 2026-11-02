@@ -1,7 +1,7 @@
 // What the Worker reads of a merge of main into an approved head, for
 // retentionVerdict in src/rules.ts (t56). It reads and decides nothing: it
 // answers the commit's parents and four path lists, each from two trees, and
-// the declared outputs the merge's own provenance says it regenerated. A
+// the declared outputs an independent replay reproduced. A
 // failure to read any of it answers `unread`, and the head is reviewed again.
 //
 //   task      paths the approved head changed since the base
@@ -17,7 +17,7 @@ import { changedPaths, mergeBase, pairReader, type Reader } from "./diff.ts";
 import { MANIFEST_PATH, parseManifest } from "./merge-declarations.ts";
 import type { RetentionFacts, RetentionRead } from "./rules.ts";
 
-type Repo = Pick<GitRepo, "log" | "readTree" | "readBlob">;
+type Repo = Pick<GitRepo, "log" | "readTree" | "readBlob" | "verifyRegeneration">;
 
 const HISTORY = 1000;
 const PATHS_MAX = 5000;
@@ -97,7 +97,10 @@ export async function readRetention(work: Repo, baseline: Repo, oldHead: string,
       diff(baseCommit.treeHash, approved.treeHash), diff(baseCommit.treeHash, merged.treeHash),
       diff(approved.treeHash, head.treeHash), diff(merged.treeHash, head.treeHash),
     ]);
-    const outputs = await regeneratedOutputs(reader, merged.treeHash, head.message ?? "");
+    const manifest = await fileAt(reader, merged.treeHash, MANIFEST_PATH);
+    const declared = manifest ? parseManifest(new TextDecoder().decode(manifest)).generators.flatMap((g) => g.outputs) : [];
+    const needsReplay = declared.some((path) => moved.includes(path) || (task.includes(path) && incoming.includes(path)));
+    const outputs = needsReplay && work.verifyRegeneration ? await work.verifyRegeneration(oldHead, main, newHead) : [];
     return { ...facts, main, base, task, incoming, moved, offMain, outputs };
   } catch (error) {
     return unread(error instanceof Error ? error.message.slice(0, 200) : "the repositories could not be read");
