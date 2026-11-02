@@ -14,7 +14,7 @@ export const brief = {
 };
 export const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 export const head = "a".repeat(40), passed = [{ claim: "npm test", result: "passed", where: "in a clean clone on this machine" }];
-export async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, policy = {}, kind, evidence = [], logs = {}, prepare = null, env = {} } = {}) {
+export async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, policy = {}, kind, evidence = [], logs = {}, prepare = null, env = {}, files = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "cache", "work", "proj", "t1");
@@ -22,6 +22,8 @@ export async function fixture(t, { failed = false, dirtyWorkspace = false, block
   execFileSync("git", ["init", "-q", "-b", "main", source]);
   git(source, "config", "user.name", "Test Owner");
   git(source, "config", "user.email", "owner@example.test");
+  for (const [path, text] of Object.entries(files)) writeFileSync(join(source, path), text);
+  git(source, "add", ".");
   git(source, "commit", "-q", "--allow-empty", "-m", "Initial");
   execFileSync("git", ["clone", "-q", "--bare", source, remote]);
   // The one repository holds the project's branch and the task's (t/1), as the server's does.

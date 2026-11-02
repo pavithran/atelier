@@ -83,7 +83,26 @@ export default async function checkCommand() {
     if (args.merged) ({ main: mainHead, provenance } = await mergeWithMain(dir, id, name));
     // Preparation is skipped when every command is answered by a reused result.
     const toRun = cmds.filter((cmd) => !reusable(cmd) && !(!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false));
-    if (toRun.length) await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next(), undefined, policy), secrets).catch((error) => die(error.message, 2));
+    const fixtureCommand = cliState.doneStep && policy.regenerate;
+    if (toRun.length || fixtureCommand) await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next(), undefined, policy), secrets).catch((error) => die(error.message, 2));
+    if (fixtureCommand) {
+      const why = refusalOf(fixtureCommand);
+      if (why) die(refusalText(fixtureCommand, why));
+      const before = new Set(git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean));
+      const r = await runCheck(fixtureCommand, dir, secrets, sequence.next(), undefined, policy);
+      const tracked = git(["diff", "HEAD", "--name-only", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+      const added = git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd: dir, raw: true }).split("\0").filter((p) => p && !before.has(p));
+      const stale = [...new Set([...tracked, ...added])];
+      const passed = r.passed && !stale.length;
+      doneChecks.push({ claim: `generated fixtures: ${fixtureCommand}`, result: passed ? "passed" : r.stopped ? "stopped" : "failed", ...(r.stopped ? { stopped: r.stopped } : {}), where: CLEAN_CLONE });
+      if (!passed) {
+        console.log(`${r.stopped ? "STOP" : "FAIL"}  generated fixtures${stale.length ? ` are stale: ${stale.join(", ")}` : `: ${fixtureCommand}`}`);
+        process.stdout.write(r.output.slice(-2000) + "\n");
+        console.log(`In the workspace, run \`${fixtureCommand}\`, inspect and commit the generated fixtures, then run done again.`);
+        return;
+      }
+      console.log(`PASS  generated fixtures: ${fixtureCommand}`);
+    }
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
     // The selection is read from the declaration and the clean clone alone:
     // the changed paths against main and the head's tracked files.
@@ -163,7 +182,11 @@ export default async function checkCommand() {
       // A stopped run is printed as what stopped it, never as FAIL: no test failed.
       const scopeNote = cmd === affected?.check && selection ? (selection.kind === "affected" ? `  (affected tests: ${run})` : "  (full suite)") : "";
       console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${scopeNote}${flake ? `  (${FLAKE_NOTE})` : ""}${r.stopped ? `  (${stopLine(r.stopped)}; not a failed test)` : ""}`);
-      if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
+      if (!r.passed) {
+        failed++;
+        process.stdout.write(r.output.slice(-2000) + "\n");
+        if (!r.stopped) console.log(`In the workspace, fix the failure and run \`${run}\`, commit the correction, then run done again.`);
+      }
     }
   } finally {
     try { await sequence.close(); }
