@@ -154,8 +154,11 @@ Staging at `next.atelier.zone` ships from the separate `atelier-trial` project.
   "schema_version": 1,
   "kind": "atelier.ship",
   "class": "web",
-  "description": "Atelier's own delivery.",
-  "typecheck": { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 },
+  "description": "Atelier delivery: run the full suite from the shipped commit on ai-studio, typecheck, deploy, verify the live commit, scan and push.",
+  "typecheck": [
+    { "run": ["node", "scripts/ship-suite-studio.mjs"], "timeout_seconds": 3600 },
+    { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 }
+  ],
   "deploy": {
     "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "production", "--version-url", "https://atelier.zone/api/version", "--host", "ai-studio"],
     "terminal": true, "timeout_seconds": 1200,
