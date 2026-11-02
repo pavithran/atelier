@@ -421,6 +421,15 @@ export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
   }
 }
 
+// Advisory only: an old or unavailable server never refuses a ship.
+async function warnFastMerges({ name, read, print }) {
+  try {
+    const { landed } = await read(`/projects/${encodeURIComponent(name)}/mode`);
+    const missing = Array.isArray(landed) ? landed.filter((l) => l.owed === true) : [];
+    if (missing.length) print(`Warning: fast merges ${missing.map((l) => l.item).join(", ")} have post-merge review owed; continuing ship.`);
+  } catch { /* This information is optional, including on older servers. */ }
+}
+
 // Ship itself. `ctx` holds what cli/atelier.mjs owns:
 //   name, cwd, branch          the project and its registered checkout and branch
 //   baselineHead               the baseline's head, read from the server
@@ -428,6 +437,7 @@ export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
 //   inProgress()               operations under way in the checkout, in words
 //   git(args, opts)            git in the checkout; opts.allowFail returns the result
 //   request(method, path, body) the server, as the owner; a refusal ends the command
+//   read(path)                 an advisory GET as the owner; a refusal throws
 //   stage(text)                names the step a refusal ends, or clears it with null
 //   fail(message)              ends the command with the message
 //   print(line)                standard output
@@ -481,6 +491,8 @@ export async function ship(ctx) {
   const stops = [...plan.problems, ...refusals];
   if (stops.length) fail(`ship refused before running anything:\n${stops.map((p) => `  ${p}`).join("\n")}`);
   if (missing.length) fail(`ship refused before running anything: ${missing.length === 1 ? "an approval is" : "approvals are"} missing at ${short(commit)}. The developer approves with:\n${missing.map((c) => `  ${c}`).join("\n")}\nthen runs atelier ship again.`);
+
+  await warnFastMerges(ctx);
 
   const id = `s-${Date.now().toString(36)}`;
   const ran = [];
