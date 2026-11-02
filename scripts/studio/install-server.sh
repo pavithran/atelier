@@ -126,7 +126,7 @@ FILE=/usr/bin/file
 if [ -n "$TEST" ]; then
   GIT=$(command -v git)
   LAUNCHCTL=$(command -v launchctl)
-  LSOF=$(command -v lsof)
+  LSOF=$(command -v lsof) || LSOF=/usr/sbin/lsof
   CURL=$(command -v curl)
   MV=$(command -v mv)
 fi
