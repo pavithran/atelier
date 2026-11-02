@@ -2,6 +2,7 @@ import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
+import { criteriaOf } from "../src/criteria.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { postMergeReviewLine, type ProjectPolicy } from "../src/rules.ts";
 
@@ -73,7 +74,7 @@ it("a fast-mode task accepted then merged gets its post-merge review request at 
   expect(((await L.detail(item.id)) as unknown as Live).liveReview).toMatchObject({ reviewer: asks[0].data.reviewer });
 });
 
-it("a fast-mode task recorded with record-merge gets its post-merge review request at the merge", async () => {
+it("a fast-mode recorded merge with a qualifying approval asks no post-merge review", async () => {
   const L = await project("pmr-record-merge", true);
   const item = await L.newItem("Merged outside Atelier", ["src/**"], "owner", { accept: ["Works"] });
   const { generation } = await L.claim(item.id, OPUS);
@@ -84,9 +85,8 @@ it("a fast-mode task recorded with record-merge gets its post-merge review reque
   await L.recordMerge(item.id, "owner", body, { parents: [P1, C1], holds: true, tip: M1 }, await L.workspaceOf(item.id));
   expect(await L.mergedFast(item.id)).toBe(true);
   const asks = await requested(L, item.id);
-  expect(asks).toHaveLength(1);
-  expect(asks[0]).toMatchObject({ data: { head: M1, via: "post-merge" } });
-  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: false, review: { state: "open" } });
+  expect(asks).toHaveLength(0);
+  expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, owed: false, independentApproved: true, review: { state: "approved" } });
 });
 
 it("a fast-mode merge whose head already has a counted approval asks no post-merge review", async () => {
@@ -100,6 +100,16 @@ it("a fast-mode merge whose head already has a counted approval asks no post-mer
   // The one request is the pre-merge one, answered; none is asked at the merge.
   expect((await requested(L, item.id)).map((e) => e.data.via)).toEqual(["land"]);
   expect((await L.reviewRequests(item.id)).some((r) => r.head === M1)).toBe(false);
+});
+
+it("a same-family pre-merge approval leaves the post-merge review requested", async () => {
+  const L = await project("pmr-same-family", true);
+  const item = await accepted(L, "Same-family review before merging");
+  await L.addReview({ itemId: item.id, by: "claude-code/sonnet-5", head: C1, criteria: criteriaOf(item), approve: true, note: "Fine", at: AT }, undefined, true);
+  await L.accept(item.id, "owner", C1);
+  await L.merged(item.id, "owner", M1, true);
+  expect(await requested(L, item.id)).toHaveLength(1);
+  expect((await L.fastLandings())[0]).toMatchObject({ independentApproved: false, review: { state: "open" } });
 });
 
 it("a full-mode merge asks no post-merge review", async () => {

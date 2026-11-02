@@ -1,4 +1,4 @@
-import { env } from "./support/workers.ts";
+import { env } from "./support/ledger.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
@@ -67,6 +67,7 @@ it("a review request unclaimed 10 minutes is recorded stuck once, with its revie
   expect(await kinds(key)).toEqual([["stage.stuck", "checked"]]);
   expect((await stage(key))[0].data).toMatchObject({ head: HEAD });
   expect(String((await stage(key))[0].data.note)).toMatch(new RegExp(`asked of ${OPUS} is unclaimed since`));
+  expect(String((await stage(key))[0].data.note)).toMatch(new RegExp(`${OPUS}.*atelier review-claim ${id}`));
   await offers(key, ["opus-5.5", "sonnet-5.5"], 22 * MIN);
   await tick(22 * MIN);
   await tick(23 * MIN);
@@ -135,6 +136,7 @@ it("an unclaimed tier request is recorded stuck on its own stage after 10 minute
   expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.4"]);
   expect(await kinds(key)).toEqual([["stage.stuck", "checked-tier"]]);
   expect(String((await stage(key))[0].data.note)).toMatch(/asked of claude-code\/sonnet-5\.4 is unclaimed since/);
+  expect(String((await stage(key))[0].data.note)).toMatch(new RegExp(`claude-code/sonnet-5.4.*atelier review-claim ${id}`));
   await offers(key, ALL, 22 * MIN);
   await tick(22 * MIN);
   await tick(23 * MIN);

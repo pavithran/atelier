@@ -50,7 +50,7 @@ import { ago } from "./floor.ts";
 // The note on the release a dispatch makes of a held task; the holder reads it
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, unoffered, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { automaticNote, cleanRunFacts, runFactsText, withoutRunText, type RunFacts } from "./run-facts.ts";
 import { nextProgress, parseProgress, type Blocker, type ProgressRecord, type SituationFacts } from "./situation.ts";
@@ -124,6 +124,8 @@ export interface FastLanding {
   review: { state: string; request: number | null; by: string | null };
   // Whether the post-merge review is still due (rules.ts postMergeOwed).
   owed: boolean;
+  // Whether a standing approval from another family settles this landing.
+  independentApproved: boolean;
   fix: string | null;
 }
 
@@ -2272,22 +2274,16 @@ export class Ledger extends DurableObject<Env> {
   // facts cannot be read makes the read incomplete, and an incomplete read
   // records nothing.
   //
-  // What the tick finds is a fact, never a trigger (G6): a queued dispatch no
-  // live runner offers is recorded stuck at once with "no live runner offers
-  // ..." and keeps its model; a review request left unclaimed past the
-  // checked limit is recorded stuck with its age and keeps its reviewer; a
-  // landable task past its limit is recorded stuck. Nothing is rerouted,
-  // re-pointed, released or replaced. The one action is the developer's
-  // standing queue-landable instruction (src/standing.ts): with it, the land
-  // job of a landable task is queued (decideLandQueue). The runner offers are
-  // read from the index first; when they cannot be read, no dispatch is
-  // judged unoffered and no landing is queued.
+  // Only held tasks can be stuck: released work and queued dispatches wait
+  // without an alert. Each finding names who acts and the next command.
+  // The standing queue-landable instruction may queue a landing; without
+  // readable runner offers it queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     let offers: SeenOffer[] | null = null;
     try {
       offers = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
       this.keepOffers(offers);
-    } catch { /* the index could not be read: no dispatch is judged unoffered this time */ }
+    } catch { /* the index could not be read: no landing is queued this time */ }
     const at = now.toISOString();
     return this.ctx.storage.transactionSync(() => {
       let complete = true;
@@ -2303,6 +2299,7 @@ export class Ledger extends DurableObject<Env> {
         for (const item of items) {
           if (["merged", "abandoned", "integrated", "blocked"].includes(item.state) || item.blocked || item.kind === "plan") continue;
           tasks++;
+          if (!item.owner) continue;
           try {
             const evidence = this.evidenceFor(item.id), reviews = this.reviewsFor(item.id);
             const events = this.events(item.id, Number.MAX_SAFE_INTEGER);
@@ -2315,19 +2312,11 @@ export class Ledger extends DurableObject<Env> {
               reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
             };
             let found = findStageOverrun(item, stage, detail.head, now, clock);
-            // A dispatch waiting for a runner is judged whatever stage the task
-            // is at: rework and merge-main dispatches wait on tasks that keep a
-            // commit, which stageOf reports as built or later. One no live
-            // runner offers is stuck at once, naming what the runners offer.
-            if (item.dispatch && !item.owner && item.state === "open") {
-              const d = item.dispatch, head = item.head ?? "";
-              const dead = offers ? unoffered(d, offersFor(offers, project), now, project) : null;
-              let wait = stage === "queued" ? found : findStageOverrun(item, "queued", head, now, clock);
-              const asked = d.agent || d.model ? `${d.agent ?? "any agent"}/${d.model ?? "any model"}` : "its choice of agent and model";
-              if (dead) wait = { item: item.id, stage: "queued", head, enteredAt: d.at, limitMs: LIMITS.stageMs.queued ?? 0, overMs: Math.max(0, now.getTime() - Date.parse(d.at) - (LIMITS.stageMs.queued ?? 0)), note: `no live runner offers ${asked}${d.job ? ` for the ${d.job} job` : ""}; it stays queued on it: ${dead}` };
-              else if (wait) wait = { ...wait, note: "unclaimed past its limit, though a live runner offers it" };
-              if (stage === "queued") found = wait;
-              else if (wait) findings.push(wait);
+            if (found) {
+              const needsCheck = stage === "built" || (stage === "reviewed" && evidenceAt(policy, evidence, detail.head!).checks.some((c) => c.grade === "pending" || !c.passed));
+              const command = needsCheck ? `check ${item.id}` : stage === "checked" ? `review-request ${item.id} --reviewer H/M` : `submit ${item.id}`;
+              const actor = stage === "checked" ? this.owner : item.owner;
+              found = { ...found, note: `${actor}: run atelier ${command}` };
             }
             // A checked task waits on its review request: once one is open,
             // the stage's clock is the request's, so a request asked a moment
@@ -2337,19 +2326,19 @@ export class Ledger extends DurableObject<Env> {
             if (ask) {
               const limitMs = LIMITS.stageMs.checked ?? 0;
               found = olderThan(ask.openedAt, now, limitMs)
-                ? { item: item.id, stage: "checked", head: detail.head!, enteredAt: ask.openedAt, limitMs, overMs: now.getTime() - Date.parse(ask.openedAt) - limitMs, note: `review request ${ask.id} asked of ${ask.reviewer} is unclaimed since ${ask.openedAt}` }
+                ? { item: item.id, stage: "checked", head: detail.head!, enteredAt: ask.openedAt, limitMs, overMs: now.getTime() - Date.parse(ask.openedAt) - limitMs, note: `review request ${ask.id} asked of ${ask.reviewer} is unclaimed since ${ask.openedAt}; ${ask.reviewer}: run atelier review-claim ${item.id} --as ${ask.reviewer}` }
                 : null;
             }
             // The tier's separate request (askTierReview) waits the same time.
             const tierAsk = stage === "checked" && detail.head ? this.openGateRequest(item.id, detail.head, true) : null;
             if (tierAsk) {
               const limitMs = LIMITS.stageMs.checked ?? 0;
-              if (olderThan(tierAsk.openedAt, now, limitMs)) findings.push({ item: item.id, stage: REVIEW_TIER_STAGE as never as TaskStage, head: detail.head!, enteredAt: tierAsk.openedAt, limitMs, overMs: now.getTime() - Date.parse(tierAsk.openedAt) - limitMs, note: `the tier's review request ${tierAsk.id} asked of ${tierAsk.reviewer} is unclaimed since ${tierAsk.openedAt}` });
+              if (olderThan(tierAsk.openedAt, now, limitMs)) findings.push({ item: item.id, stage: REVIEW_TIER_STAGE as never as TaskStage, head: detail.head!, enteredAt: tierAsk.openedAt, limitMs, overMs: now.getTime() - Date.parse(tierAsk.openedAt) - limitMs, note: `the tier's review request ${tierAsk.id} asked of ${tierAsk.reviewer} is unclaimed since ${tierAsk.openedAt}; ${tierAsk.reviewer}: run atelier review-claim ${item.id} --as ${tierAsk.reviewer}` });
             }
             // A landable task past its limit is a fact; under the standing
             // queue-landable instruction its landing is queued for a lander (t253).
             if (found && stage === "landable" && detail.head) {
-              found = { ...found, note: `landable at ${detail.head.slice(0, 12)}; atelier land ${item.id} lands it` };
+              found = { ...found, note: `${item.owner}: run atelier land ${item.id}; landable at ${detail.head.slice(0, 12)}` };
               if (queueLandable && offers) {
                 const live = liveOffers(offersFor(offers, project), now);
                 const names = [project, ...(this.project().formerly ?? [])];
@@ -2360,7 +2349,7 @@ export class Ledger extends DurableObject<Env> {
                   lander: landerLive(live, names),
                   queued: recorded.filter((e) => e.kind === "stage.land-queued" && e.item === item.id && e.data.head === head).map((e) => ({ at: String(e.data.at), main: (e.data.main as string | null) ?? null, reason: e.data.reason as LandQueued["reason"] })),
                 });
-                found = { ...found, note: verdict.note };
+                found = { ...found, note: `${found.note}; ${verdict.note}` };
                 if (verdict.queue) landings.push({ id: item.id, head, main, verdict });
               }
             }
@@ -6628,11 +6617,9 @@ export class Ledger extends DurableObject<Env> {
     if (!this.mergedFast(id)) return;
     const reviewer = this.standing().get("post-merge-reviewer");
     if (!reviewer || reviewer === "off") return;
+    const merge = this.lastEvent(id, ["item.merged"]);
     const item = this.item(id);
-    const policy = this.project().policy;
-    const counted = countingReviews(this.reviewsFor(id), bindingOf(item), policy, this.owner)
-      .some((r) => independentApproval(r, "coordinated", contributorsOf(item), this.owner, singleFamily(policy)));
-    if (counted) return;
+    if (this.fastReview(id, String(merge?.data.head ?? item.head), String(merge?.data.mergeCommit)).approval) return;
     try {
       this.ctx.storage.transactionSync(() => this.askReview(id, ORCHESTRATOR, reviewer, this.poolStanding(), true, false, undefined, this.heldOffers(), true));
     } catch (err) {
@@ -6997,6 +6984,30 @@ export class Ledger extends DurableObject<Env> {
     return confirmation;
   }
 
+  // Both the automatic ask and status use the gate's standing reviews.
+  // Named approvals cannot replace a verdict the Ledger already holds.
+  private fastReview(id: string, head: string, mergeCommit: string): { approval?: Review; review?: Review } {
+    const item = this.item(id), policy = this.project().policy;
+    const reviews = this.reviewsFor(id);
+    const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.merge_recorded' AND json_extract(data, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`, id, mergeCommit).toArray()[0];
+    const record = row ? JSON.parse(row.data as string) as RecordedMerge : null;
+    const named: Review[] = (record?.reviews ?? [])
+      .filter((r) => r.verdict === "reject" || !reviews.some((v) => v.by === r.by && standingReview(v, { ...bindingOf(item), head: r.head })))
+      .map((r) => ({ itemId: id, by: r.by, head: r.head, approve: r.verdict === "approve", note: "", at: r.at ?? record!.at, criteria: criteriaOf(item) }));
+    const standing = [...new Set([head, mergeCommit])].flatMap((head) =>
+      countingReviews([...named, ...reviews], { ...bindingOf(item), head }, policy, this.owner))
+      .sort((a, b) => a.at.localeCompare(b.at));
+    const rejection = standing.filter((r) => !r.approve).at(-1);
+    const contributors = contributorsOf(item);
+    const approval = standing.filter((r) => {
+      const actor = (a: string) => r.reviewerAdmission ? admissionActor(a, r.reviewerAdmission) : a;
+      return (!rejection || r.at > rejection.at)
+        && independentApproval(r, "coordinated", contributors, this.owner)
+        && independenceRefusal(actor(r.by), contributors.map(actor)) === null;
+    }).at(-1);
+    return { approval, review: approval ?? rejection ?? standing.filter((r) => r.postMerge).at(-1) };
+  }
+
   // Every task landed in fast mode since `since` (all of them when null),
   // with its receipt and the state of its post-merge review.
   fastLandings(since: string | null = null): FastLanding[] {
@@ -7021,12 +7032,12 @@ export class Ledger extends DurableObject<Env> {
       const receipt = r.receipt;
       const id = r.item_id;
       const req = this.sql.exec(`SELECT id, state, stopped FROM review_requests WHERE item = ? AND head IN (?, ?) ORDER BY id DESC LIMIT 1`, id, receipt.commit, receipt.mergeCommit).toArray()[0];
-      const review = this.reviewsFor(id).filter((v) => v.head === receipt.mergeCommit || v.head === receipt.commit).at(-1);
+      const { approval, review } = this.fastReview(id, receipt.commit, receipt.mergeCommit);
       const fix = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.fix_of' AND json_extract(data, '$.itemId') = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       // A request that ended without a verdict STOP_LIMIT times stands open,
       // but no runner serves it again, so the review is owed (t331).
       const reviewState = review ? (review.approve ? "approved" : "rejected") : req ? (reviewStopped(parseStop(req.stopped)) ? "stopped without a verdict" : req.state as string) : "not requested";
-      return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, owed: postMergeOwed(reviewState), fix: fix ? fix.item_id as string : null };
+      return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, owed: !approval && postMergeOwed(reviewState), independentApproved: !!approval, fix: fix ? fix.item_id as string : null };
     });
   }
 

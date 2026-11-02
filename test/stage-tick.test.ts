@@ -13,7 +13,7 @@ const T0 = "2026-10-23T00:00:00.000Z";
 const at = (ms: number) => new Date(Date.parse(T0) + ms);
 const item = (over: Partial<Item> = {}) => ({ id: "t1", createdAt: T0, lastPushAt: null, dispatch: null, ...over }) as Item;
 
-const LIMITS: [TaskStage, number][] = [["filed", 24 * HOUR], ["agreed", 48 * HOUR], ["queued", 10 * MIN], ["built", 20 * MIN], ["checked", 10 * MIN], ["reviewed", 2 * HOUR], ["landable", 5 * MIN]];
+const LIMITS: [TaskStage, number][] = [["filed", 24 * HOUR], ["agreed", 48 * HOUR], ["queued", 10 * MIN], ["built", 20 * MIN], ["checked", 10 * MIN], ["reviewed", 2 * HOUR], ["landable", 60 * MIN]];
 
 test("lists the limit of each stage that has one and none for the others", () => {
   assert.deepEqual(Object.fromEntries(LIMITS), STAGE_LIMITS_MS);

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatRunners, readStuck, readyOf, stageEntries, stageLines, stuckLines } from "../status.mjs";
 import { UNWRAP_RELAY, fileExcerpt, handoffNotes, sessionNoteText } from "../../src/sessions.ts";
-import { OWNER, OWNER_NAME, P, actor, at, call, request, checkoutStatusLine, formatStanding, git, project, remoteStatusLines, server, sessionCheckout, sessionFiles, sessionTree } from "../atelier.mjs";
+import { OWNER, OWNER_NAME, P, actor, args, at, call, request, checkoutStatusLine, formatStanding, git, project, remoteStatusLines, server, sessionCheckout, sessionFiles, sessionTree } from "../atelier.mjs";
 
 // Bounded task reads; requested dispatches are not evidence of models used.
 async function modelLines(name, as, items) {
@@ -43,7 +43,7 @@ export default async function unwrapCommand() {
   if (stages.length) console.log(stages.join("\n"));
   // The runners and what each reported about itself (t234), as status shows them.
   const offers = await request("GET", "/runners", undefined, as).catch(() => null);
-  if (Array.isArray(offers) && offers.length) console.log(formatRunners(offers).join("\n"));
+  if (Array.isArray(offers)) console.log(formatRunners(offers, Date.now(), args["all-runners"]).join("\n"));
   console.log(await checkoutStatusLine(name, as));
   if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
   if (cwd) {

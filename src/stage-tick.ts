@@ -1,12 +1,10 @@
 // The stage tick's records (t223; Atelier 2.0 G6): each live task's stage
 // against its limit (LIMITS.stageMs in src/limits.ts). A task past the limit
 // gets one stage.stuck per stage and head, with its age and a note saying
-// what holds it (no live runner offers the dispatch's model, a review request
-// unclaimed since a time); a task that leaves the stage, or is no longer past
+// who acts and the next command; a task that leaves the stage, or is no longer past
 // the limit, gets stage.cleared, after which the stage can be stuck again.
-// A queued dispatch no live runner offers is stuck at once, since its age
-// does not change that no runner can claim it. Pure functions: the Ledger
-// reads the tasks and writes the events.
+// The Ledger only judges held tasks; unheld tasks wait without alerts.
+// Pure functions: the Ledger reads the tasks and writes the events.
 //
 // The tick acts on no judgment of its own (PAVI, 2026-10-28: Atelier is a
 // tool for an intelligent model orchestrator). It reroutes no dispatch,
