@@ -116,7 +116,7 @@ it("a review request is claimed once, by the routed reviewer, and a stale head i
   await submitPart(L, partId, head);
   // Another runner or actor than the dispatch asks for is refused.
   await refusal(L.claimReview(partId, OPUS, RUNNER), "wrong_agent", /asks for codex/);
-  await refusal(L.claimReview(partId, GPT, null), "dispatched", /waits for a runner/);
+  await refusal(L.claimReview(partId, GPT, null, false, null, [{ ...RUNNER, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["review"], at: new Date().toISOString() }]), "dispatched", /waits for a runner/);
   const claim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
   expect(claim.head).toBe(head);
   expect(claim.need).not.toBeNull();
