@@ -423,7 +423,7 @@ test("a runner's line names the jobs it leaves out, as its own first line does",
   assert.equal(runnerLine(every, NOW), "home:all  live, asked 30s ago  offers opencode/glm-5.3  jobs: build, plan, merge-main, merge-main-task, merge-plan, review");
 });
 
-test("the runners section lists live runners first, and formatStatus appends it once, after the projects", () => {
+test("the runners section collapses inactive runners, and formatStatus appends it once, after the projects", () => {
   const lines = formatRunners([
     ask("cloud:atelier", [{ agent: "codex", models: ["gpt-6-astra"] }], 2 * 60),
     ask("home:studio", [{ agent: "claude-code", models: ["opus-5.5"] }], 30),
@@ -433,7 +433,7 @@ test("the runners section lists live runners first, and formatStatus appends it 
     "  cloud:atelier  live, asked 2m ago  offers codex/gpt-6-astra",
     "  home:studio  live, asked 30s ago  offers claude-code/opus-5.5",
   ]);
-  // Stale runners stand after the live ones, whatever their names.
+  // Inactive runners are counted after the live rows.
   const ordered = formatRunners([
     ask("home:zulu", [{ agent: "zcode", models: ["glm-5.3"] }], OFFER_LIVE_MS / 1000 + 9 * 60),
     ask("home:alpha", [{ agent: "opencode", models: ["qwen3-coder"] }], 60),
@@ -441,7 +441,7 @@ test("the runners section lists live runners first, and formatStatus appends it 
   assert.deepEqual(ordered, [
     "Runners:",
     "  home:alpha  live, asked 1m ago  offers opencode/qwen3-coder",
-    "  home:zulu  not live, last asked 2h ago  offers zcode/glm-5.3",
+    "  1 runner not live; atelier status --all-runners lists every runner with readiness.",
   ]);
   const out = formatStatus(
     [{ name: "demo", items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6" } })], inbox: [] }],
@@ -452,7 +452,7 @@ test("the runners section lists live runners first, and formatStatus appends it 
   assert.match(out.slice(-2)[1], /^  home:studio  live, asked \d+s ago  offers claude-code\/opus-5\.5$/);
   // Without offers there is no section, as a server too old to have them.
   assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }]).includes("Runners:"));
-  assert.ok(!formatStatus([{ name: "demo", items: [], inbox: [] }], { offers: [] }).includes("Runners:"), "no runner recorded yet says nothing");
+  assert.match(formatStatus([{ name: "demo", items: [], inbox: [] }], { offers: [] }), /No live runners\./);
 });
 
 test("a queued task the core files hold says what it waits on and how to let it through; a held part takes no override", () => {
