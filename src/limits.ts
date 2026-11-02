@@ -19,7 +19,7 @@ export const LIMITS = {
   // (t223). Stages not listed (building, landed, shipped) have no limit.
   stageMs: {
     filed: 24 * HOUR, agreed: 48 * HOUR, queued: 10 * MINUTE, built: 20 * MINUTE,
-    checked: 10 * MINUTE, reviewed: 2 * HOUR, landable: 5 * MINUTE,
+    checked: 10 * MINUTE, reviewed: 2 * HOUR, landable: 60 * MINUTE,
   } as Partial<Record<TaskStage, number>>,
   // A tick older than this is the first line of `status`.
   tickStaleMs: 15 * MINUTE,
