@@ -130,28 +130,34 @@ test("the server starts the stage tick, the stuck episodes and the model snapsho
     };
     const made = await api("PUT", "/projects/demo", {});
     assert.equal(made.status, 200, JSON.stringify(made.body));
-    const task = await api("POST", "/projects/demo/items", { title: "Filed and left", scope: ["src/**"] });
+    const task = await api("POST", "/projects/demo/items", { title: "Built and left", scope: ["src/**"] });
     assert.equal(task.status, 201, JSON.stringify(task.body));
     const settle = async () => { while (server.timers.state.some((j) => j.busy)) await new Promise((ok) => setTimeout(ok, 5)); };
     const L = server.namespace.get(server.namespace.idFromName("project:demo"));
+    await L.claim(task.body.id, "claude-code/opus-5.5");
+    await L.setWorkspace(task.body.id, "demo", "0".repeat(40), "claude-code/opus-5.5");
+    await L.recordPush(task.body.id, "claude-code/opus-5.5", "a".repeat(40), "a".repeat(40));
     const stuck = async () => (await L.events(task.body.id, 1000)).filter((e) => e.kind === "stage.stuck");
 
-    // Before its limit (24 hours for a filed task) the tick records nothing.
-    await clock.advance(23 * HOUR, { settle });
-    const ticks = server.timers.state.find((j) => j.name === "stage tick").runs;
-    assert.ok(ticks >= 23 * 12 - 1, `the stage tick ran every five minutes (${ticks} runs)`);
-    assert.ok(server.timers.state.find((j) => j.name === "stuck episodes").runs >= 23 * 6 - 1);
-    assert.ok(server.timers.state.find((j) => j.name === "model snapshots").runs >= 3);
+    // Before its limit (20 minutes for held, built work) the tick records nothing.
+    await clock.advance(19 * MIN, { settle });
     assert.deepEqual(await stuck(), []);
     // Past it, the next tick records the stage as stuck, once, with its age.
-    await clock.advance(2 * HOUR, { settle });
+    await clock.advance(10 * MIN, { settle });
     const found = await stuck();
     assert.equal(found.length, 1);
-    assert.equal(found[0].data.stage, "filed");
+    assert.equal(found[0].data.stage, "built");
     assert.ok(found[0].data.overMs > 0);
+    // Keep ticking through all three schedules and prove the alert is not repeated.
+    await clock.advance(25 * HOUR, { settle });
+    const ticks = server.timers.state.find((j) => j.name === "stage tick").runs;
+    assert.ok(ticks >= 25 * 12 - 1, `the stage tick ran every five minutes (${ticks} runs)`);
+    assert.ok(server.timers.state.find((j) => j.name === "stuck episodes").runs >= 25 * 6 - 1);
+    assert.ok(server.timers.state.find((j) => j.name === "model snapshots").runs >= 4);
+    assert.deepEqual(await stuck(), found);
     // The run is recorded on the index, which status reads.
     const ran = await server.namespace.get(server.namespace.idFromName("__index")).tickRan();
-    assert.ok(ran && Date.parse(ran.at) > start + 24 * HOUR, JSON.stringify(ran));
+    assert.ok(ran && Date.parse(ran.at) > start + 20 * MIN, JSON.stringify(ran));
   } finally {
     await server.close();
   }
@@ -193,7 +199,15 @@ test("a backup taken while the timers tick restores whole: every database passes
   try {
     const api = (method, path, body) => fetch(`${server.url}/api${path}`, { method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" }, body: body === undefined ? undefined : JSON.stringify(body) });
     assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
-    for (let i = 0; i < 5; i++) assert.equal((await api("POST", "/projects/demo/items", { title: `Filed ${i}`, scope: ["src/**"] })).status, 201);
+    const L = server.namespace.get(server.namespace.idFromName("project:demo"));
+    for (let i = 0; i < 5; i++) {
+      const task = await api("POST", "/projects/demo/items", { title: `Built ${i}`, scope: [`src/task${i}.ts`] });
+      assert.equal(task.status, 201);
+      const { id } = await task.json();
+      await L.claim(id, "claude-code/opus-5.5");
+      await L.setWorkspace(id, "demo", "0".repeat(40), "claude-code/opus-5.5");
+      await L.recordPush(id, "claude-code/opus-5.5", "a".repeat(40), "a".repeat(40));
+    }
     const settle = async () => { await new Promise((ok) => setImmediate(ok)); };
     // The clock runs a day of ticks while the snapshot is taken.
     const ticking = clock.advance(25 * HOUR, { settle });
@@ -212,7 +226,7 @@ test("a backup taken while the timers tick restores whole: every database passes
     await clock2.advance(10 * MIN, { settle: settle2 });
     assert.ok(restored.timers.state.find((j) => j.name === "stage tick").runs >= 1, "the restored server ticks");
     const stuck = (await L.events(undefined, 1000)).filter((e) => e.kind === "stage.stuck");
-    assert.equal(stuck.length, 5, "each filed task is recorded stuck once, whether its tick was in the snapshot or ran again");
+    assert.equal(stuck.length, 5, "each held, built task is recorded stuck once, whether its tick was in the snapshot or ran again");
   } finally { await restored.close(); }
 });
 
