@@ -1,0 +1,33 @@
+atelier atelier/t421 "A review by hand is the plain path when no runner serves reviews"
+accepted head 4cb11eeb42e88d065e57c3e7566cb115d2a16f7f
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-02T17:13:56.354Z
+REVIEW approve by antigravity/gemini-4-argon-high at 4cb11eeb42e88d065e57c3e7566cb115d2a16f7f, recorded by antigravity/gemini-4-argon-high
+CHECKED TREE 0be09119471911dc41614e2006d7f7c5844336d6: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-31T21:26:13.664Z pavi item.created
+2026-10-31T21:26:13.664Z claude-code/opus-5.5 criteria.revised
+2026-11-01T17:14:57.672Z codex/gpt-6.1-sol item.claimed
+2026-11-01T17:14:57.710Z codex/gpt-6.1-sol workspace.created
+2026-11-01T17:48:55.740Z codex/gpt-6.1-sol push.observed
+2026-11-01T17:49:29.988Z codex/gpt-6.1-sol evidence.observed
+2026-11-01T17:49:30.421Z codex/gpt-6.1-sol item.submitted
+2026-11-01T18:00:00.000Z atelier stage.stuck
+2026-11-02T15:51:52.856Z codex/gpt-6.1-sol push.observed
+2026-11-02T15:52:26.736Z codex/gpt-6.1-sol evidence.observed
+2026-11-02T15:52:27.119Z codex/gpt-6.1-sol item.submitted
+2026-11-02T15:55:00.000Z atelier stage.cleared
+2026-11-02T16:05:00.000Z atelier stage.stuck
+2026-11-02T16:47:21.452Z atelier/orchestrator refresh.queued
+2026-11-02T17:12:56.544Z atelier/orchestrator refresh.queued
+2026-11-02T17:13:14.536Z codex/gpt-6.1-sol push.observed
+2026-11-02T17:13:56.370Z codex/gpt-6.1-sol evidence.observed
+2026-11-02T17:13:56.741Z codex/gpt-6.1-sol item.submitted
+2026-11-02T17:15:00.000Z atelier stage.cleared
+2026-11-02T17:25:00.000Z atelier stage.stuck
+2026-11-02T17:35:57.836Z antigravity/gemini-4-argon-high review.approved
+2026-11-02T17:35:58.598Z pavi item.accepted
+2026-11-02T17:36:00.002Z pavi land.start
+2026-11-02T17:36:00.102Z pavi landing.leased
+2026-11-02T17:36:00.224Z pavi land.lease
+2026-11-02T17:36:01.401Z pavi checkout.leased
