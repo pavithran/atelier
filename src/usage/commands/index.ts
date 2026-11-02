@@ -9,6 +9,7 @@ import command_baseline_token from "./baseline-token.ts";
 import command_block from "./block.ts";
 import command_board from "./board.ts";
 import command_branch from "./branch.ts";
+import command_catch_up from "./catch-up.ts";
 import command_check from "./check.ts";
 import command_check_log from "./check-log.ts";
 import command_claim from "./claim.ts";
@@ -112,6 +113,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/block.ts", spec: command_block },
   { path: "src/usage/commands/board.ts", spec: command_board },
   { path: "src/usage/commands/branch.ts", spec: command_branch },
+  { path: "src/usage/commands/catch-up.ts", spec: command_catch_up },
   { path: "src/usage/commands/check.ts", spec: command_check },
   { path: "src/usage/commands/check-log.ts", spec: command_check_log },
   { path: "src/usage/commands/claim.ts", spec: command_claim },

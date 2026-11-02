@@ -8,6 +8,7 @@ import command_baseline_token from "./baseline-token.mjs";
 import command_block from "./block.mjs";
 import command_board from "./board.mjs";
 import command_branch from "./branch.mjs";
+import command_catch_up from "./catch-up.mjs";
 import command_check from "./check.mjs";
 import command_check_log from "./check-log.mjs";
 import command_claim from "./claim.mjs";
@@ -111,6 +112,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/block.mjs", run: command_block },
   { path: "cli/commands/board.mjs", run: command_board },
   { path: "cli/commands/branch.mjs", run: command_branch },
+  { path: "cli/commands/catch-up.mjs", run: command_catch_up },
   { path: "cli/commands/check.mjs", run: command_check },
   { path: "cli/commands/check-log.mjs", run: command_check_log },
   { path: "cli/commands/claim.mjs", run: command_claim },
