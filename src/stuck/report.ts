@@ -201,10 +201,17 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   }
   // Active jobs across projects are required before concluding a runner is idle.
   // A runner whose token serves other projects is no idle runner of this one (t669).
+  const waiting = snapshot?.items.filter((i) => i.state === "open" && i.dispatch).map((i) => i.dispatch!) ?? [];
+  const reviews = snapshot?.openRequests?.filter((r) => {
+    const item = snapshot.items.find((i) => i.id === r.item);
+    return item && !["blocked", "merged", "abandoned"].includes(item.state) && item.head === r.head && !r.stopped;
+  }).map((r) => r.dispatch) ?? [];
   if (offers && activeRunners) for (const offer of offers) {
     // An offer lists a project by the name it had when the runner last polled.
     if (!inScope({ projects: offer.projects }, names)) continue;
     if (activeRunners.includes(offer.runner)) continue;
+    // A stopped one-shot runner needs no attention unless work waits for it.
+    if (![...waiting, ...reviews].some((d) => names.some((name) => assign(d, offer, name)))) continue;
     // A runner not polled for IDLE_RUNNER_MAX_MS is gone, not idle: nothing to restart.
     if (age(offer.at) > IDLE_RUNNER_MAX_MS) continue;
     if (age(offer.at) - OFFER_REFRESH_MS > limits.runnerPollMinutes * 60_000)

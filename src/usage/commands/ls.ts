@@ -2,6 +2,7 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "ls",
+  aliases: ["list"],
   forms: [
     {
       group: "Items", line: 2, slot: 10,
