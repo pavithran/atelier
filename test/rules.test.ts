@@ -1534,15 +1534,15 @@ test("round cap: a round is a head, the developer's rejections and approvals are
   assert.deepEqual(rounds.map((r) => [r.head, r.by]), [[sha("1"), "codex/gpt-6-astra"]]);
 });
 
-test("re-review diff: the head the last review judged, and the diff since it only when that is smaller and not empty", () => {
+test("re-review diff: the head the last review judged, and the diff since it even when larger or empty", () => {
   const prior = [rv("codex/gpt-6-astra", false, sha("1"), "2026-10-16T01:00:00.000Z"), rv("gemini/gemini-4-argon", false, sha("2"), "2026-10-16T02:00:00.000Z"), rv("owner", true, sha("3"), "2026-10-16T03:00:00.000Z")];
   assert.equal(reviewedSince(prior, sha("4"), "owner"), sha("2"), "the newest model review of an earlier head");
   assert.equal(reviewedSince(prior, sha("2"), "owner"), sha("1"), "never the head under review");
   assert.equal(reviewedSince([], sha("4"), "owner"), null);
   const whole = "d".repeat(500);
   assert.deepEqual(reReviewDiff(whole, "small change"), { diff: "small change", incremental: true });
-  assert.deepEqual(reReviewDiff(whole, ""), { diff: whole, incremental: false }, "an empty diff leaves nothing to read");
-  assert.deepEqual(reReviewDiff(whole, "e".repeat(900)), { diff: whole, incremental: false }, "a merge of main makes the diff since larger than the change");
+  assert.deepEqual(reReviewDiff(whole, ""), { diff: "", incremental: true }, "an unchanged tree still checks earlier findings");
+  assert.deepEqual(reReviewDiff(whole, "e".repeat(900)), { diff: "e".repeat(900), incremental: true }, "a larger fix diff must not reopen the whole change");
   assert.deepEqual(reReviewDiff(whole, null), { diff: whole, incremental: false });
 });
 

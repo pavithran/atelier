@@ -403,7 +403,9 @@ export function reviewBrief(input: BriefInput): string {
   section(
     "## The diff",
     "",
-    ...(input.diff === "" && merge
+    ...(input.diff === "" && since
+      ? [...kind, "The tree is unchanged since that review. Check the earlier findings against the current code."]
+      : input.diff === "" && merge
       ? [...kind, "The resolution is empty: the builder committed the merge git makes on its own, with no file changed from it."]
       : input.diffRef
         ? [...kind, ...byReference(input.diffRef, compare)]
