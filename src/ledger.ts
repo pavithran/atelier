@@ -4721,7 +4721,7 @@ export class Ledger extends DurableObject<Env> {
         throw new RuleError("stale_request", `the verdict on ${r.itemId} names no review request, but ${r.by} claimed ${live.length ? `request ${live.join(", ")}` : "one"} at ${r.head.slice(0, 8)}: name it with --request N, as the review claim gave it; if it was withdrawn or replaced, claim the review again (${this.reviewRecoveryCommand(r.itemId, r.by)}) and judge the change against the criteria it gives`, 409, live.length ? `run atelier review ${r.itemId} --head ${r.head} --request ${live[0]} --criteria ${r.criteria} --${r.approve ? "approve" : "reject"} --note "…" --as ${r.by}` : `run ${this.reviewRecoveryCommand(r.itemId, r.by)}`);
       }
       if (claims.length) {
-        throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} was withdrawn or replaced; ${r.by} already holds replacement request ${claims[0].id}: judge the change against the criteria that claim gave before recording its verdict`, 409, `run atelier review ${r.itemId} --head ${r.head} --request ${claims[0].id} --criteria ${r.criteria} --${r.approve ? "approve" : "reject"} --note "…" --as ${r.by}`);
+        throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} was withdrawn or replaced; ${r.by} already holds replacement request ${claims[0].id}: refresh the review against the criteria that claim gave before recording its verdict`, 409, `run atelier review ${r.itemId} --head ${r.head} --request ${claims[0].id} --criteria ${r.criteria} --${r.approve ? "approve" : "reject"} --note "…" --as ${r.by}`);
       }
       throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (${this.reviewRecoveryCommand(r.itemId, r.by)}) and judge the change against the criteria it gives`, 409, `run ${this.reviewRecoveryCommand(r.itemId, r.by)}, then give the verdict using the command the claim prints`);
     }
@@ -8903,7 +8903,9 @@ export class Ledger extends DurableObject<Env> {
     if (open) return this.reviewClaimCommand(id, actor, JSON.parse(open.dispatch as string) as Dispatch);
     if (rows.some((r) => r.state === "claimed")) return `atelier show ${id}`;
     const [agent, model] = actor.split("/");
-    const where = this.poolStanding().find((m) => sameActor(`${m.harness}/${m.id}`, actor))?.where ?? "home";
+    const pool = this.poolStanding();
+    const entry = exactEntry(pool, actor) ?? pool.find((m) => sameActor(`${m.harness}/${m.id}`, actor));
+    const where = reviewerAdmission(actor, this.project().policy)?.active ? entry?.where ?? "home" : "home";
     const dispatch: Dispatch = { to: where, agent, model, job: "review", by: this.owner, at: new Date().toISOString(), note: "" };
     return `atelier review-request ${id} --reviewer ${actor} --hand, then ${this.reviewClaimCommand(id, actor, dispatch)}`;
   }

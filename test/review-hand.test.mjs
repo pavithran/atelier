@@ -11,7 +11,7 @@ import { handLines } from "../cli/commands/review-claim.mjs";
 
 const HEAD = "a".repeat(40), BUILDER = "claude-code/opus-5.5", REVIEWER = "codex/gpt-6-astra";
 const RUNNER = { runner: "home:studio", kind: "home" };
-async function world(t) {
+async function world(t, reviewerWhere = "home") {
   const dir = mkdtempSync(join(tmpdir(), "atelier-review-hand-"));
   const env = {
     PUBLIC_ORIGIN: "http://localhost",
@@ -28,7 +28,7 @@ async function world(t) {
   env.LEDGER = ns;
   t.after(async () => { await ns.close(); rmSync(dir, { recursive: true, force: true }); });
   const L = ns.get(ns.idFromName("project:demo")), I = ns.get(ns.idFromName("__index"));
-  const pool = [cleanEntry({ id: "opus-5.5", harness: "claude-code", where: "home" }, "owner", new Date().toISOString()), cleanEntry({ id: "gpt-6-astra", harness: "codex", where: "home" }, "owner", new Date().toISOString())];
+  const pool = [cleanEntry({ id: "opus-5.5", harness: "claude-code", where: "home" }, "owner", new Date().toISOString()), cleanEntry({ id: "gpt-6-astra", harness: "codex", where: reviewerWhere }, "owner", new Date().toISOString())];
   const record = { name: "demo", repo: "demo", branch: "main", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner"); await I.registerProject(record);
   for (const m of pool) await I.putModel(m);
@@ -235,6 +235,7 @@ test("a stale verdict names the reviewer's already claimed replacement", async (
   const res = await api("review", REVIEWER, verdict);
   const error = await res.json();
   assert.equal(error.error, "stale_request");
+  assert.match(error.detail, /withdrawn or replaced.*refresh/);
   assert.match(error.next, new RegExp(`atelier review ${id} --head ${HEAD} --request ${second.request} --criteria ${second.criteria}`));
   assert.doesNotMatch(error.detail, /claim the review again/);
   assert.equal((await api("review", REVIEWER, { ...verdict, request: second.request })).status, 200);
@@ -255,3 +256,33 @@ test("an unrequested post-merge CLI verdict at the submitted head names recovery
   assert.equal((await L.item(id)).state, "merged");
   assert.equal((await L.reviewsFor(id)).length, 0);
 });
+
+for (const admitted of [false, true]) for (const liveKind of ["home", "cloud"]) {
+  test(`cloud pool recovery follows the hand request destination: admitted=${admitted}, live=${liveKind}`, async (t) => {
+    const { api, L, id, pool, offer } = await world(t, "cloud");
+    const first = await (await api("review-claim")).json();
+    await L.releaseReview(id, REVIEWER, "Retry", false, first.request);
+    if (admitted) await L.admitReviewer("gpt-6-astra", true, "Independent reviewer", "owner", pool);
+    await offer({ runner: `${liveKind}:studio`, kind: liveKind });
+
+    const refused = await api("review", REVIEWER, { head: HEAD, criteria: first.criteria, request: first.request, approve: true });
+    assert.equal(refused.status, 409);
+    const error = await refused.json();
+    assert.equal(error.error, "stale_request");
+    const destination = admitted ? "cloud" : "home";
+    const runner = `${destination}:${liveKind === destination ? "studio" : "hand"}`;
+    assert.equal(error.next, `run atelier review-request ${id} --reviewer ${REVIEWER} --hand, then atelier review-claim ${id} --as ${REVIEWER} --runner ${runner}, then give the verdict using the command the claim prints`);
+
+    // Follow both printed commands through the API used by the CLI. No
+    // reliability records are passed by review-request --hand.
+    const requested = await api("review-request", "owner", { reviewer: REVIEWER, wanted: true, hand: true });
+    assert.equal(requested.status, 200, await requested.clone().text());
+    const suggestedRunner = /--runner (\S+)/.exec(error.next)[1].replace(/,$/, "");
+    const claimed = await api("review-claim", REVIEWER, {}, suggestedRunner);
+    assert.equal(claimed.status, 200, await claimed.clone().text());
+    const claim = await claimed.json();
+    assert.notEqual(claim.request, first.request);
+    const verdict = await api("review", REVIEWER, { head: claim.head, criteria: claim.criteria, request: claim.request, approve: true });
+    assert.equal(verdict.status, 200, await verdict.clone().text());
+  });
+}
