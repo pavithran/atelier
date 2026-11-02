@@ -93,6 +93,7 @@ interface GitRepoInfo {
   lastPushAt: string | null; source: string | null; readOnly: boolean; remote: string;
 }
 interface GitRepo extends Disposable {
+  verifyRegeneration?(oldHead: string, main: string, newHead: string): Promise<string[]>;
   info(): Promise<GitRepoInfo>;
   readBlob(hash: string): Promise<Blob | null>;
   readTree(hash: string): Promise<GitTreeEntry[] | null>;
