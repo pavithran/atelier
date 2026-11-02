@@ -24,7 +24,7 @@ import {
   REVIEW_RENEW_MS, REVIEW_LEASE_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, effectiveAdmissions, familyRefusal, modelKey, sharesName, splitHarness, standardAdmissions, STANDARD_REVIEWER_PROJECT, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
+  overlappingLive, overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX, ACCEPT_COUNT, BRIEF_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
@@ -3739,6 +3739,12 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  // Recovery advice reads the same measured footprints as the refused claim.
+  claimOverlaps(id: string, actor: string): { item: Item; holders: Item[] } {
+    const item = this.withChangedFiles([this.item(id)])[0];
+    return { item, holders: overlappingLive(item, this.withChangedFiles(this.items()), actor) };
+  }
+
   // A dispatch never ends a live claim by itself (t391: it did, silently, on
   // t389, and the holder's finished work was refused). A task in the claimed
   // state is refused unless the developer says --release; the refusal names
@@ -3926,7 +3932,7 @@ export class Ledger extends DurableObject<Env> {
       const d = i.dispatch!;
       const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
       // The task as `all` holds it, measured by its changed files (G13).
-      const claimRefusal = policy.refuseOverlap ? overlappingRefusal(all.find((a) => a.id === i.id) ?? i, all, claimant) : null;
+      const claimRefusal = policy.refuseOverlap ? overlappingRefusal(all.find((a) => a.id === i.id) ?? i, all, claimant, policy) : null;
       const blockers = coreBlockers(i, live, policy.coreFiles, lease, now, runners);
       const orphaned = coreOrphans(i, live, policy.coreFiles, lease, now, runners).map((o) => ({ ...o, project: projectName }));
       const gone = orphaned.length ? { orphaned } : {};

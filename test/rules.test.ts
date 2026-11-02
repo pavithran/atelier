@@ -331,7 +331,7 @@ test("overlapping claims are refused when the project says so, and only then", (
   const all = [held, want, apart];
   const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
   assert.deepEqual(overlappingLive(want, all, "claude-code/opus-5.5").map((i) => i.id), ["t1"]);
-  assert.throws(() => assertClaimAllowed(want, all, strict, "claude-code/opus-5.5"), /overlaps live t1 \(codex\/gpt-5.5\)/);
+  assert.throws(() => assertClaimAllowed(want, all, strict, "claude-code/opus-5.5"), /overlaps live t1 \(codex\/gpt-5.5, idle [^)]+\)/);
   assert.doesNotThrow(() => assertClaimAllowed(apart, all, strict, "claude-code/opus-5.5"));
   assert.doesNotThrow(() => assertClaimAllowed(want, all, { checks: [], protected: [] }, "claude-code/opus-5.5"));
   // The holder of the overlapping item may take a second overlapping item.
@@ -358,7 +358,9 @@ test("stored ControlPlane agents restrict no role; the model admission and singl
 test("overlappingRefusal names the same live items with the same words as the claim", () => {
   const held = item({ id: "t1", state: "claimed", owner: "codex/gpt-5.5", scope: ["src/**"] });
   const want = item({ id: "t2", state: "open", owner: null, scope: ["src/ui/**"] });
-  assert.equal(overlappingRefusal(want, [held], "claude-code/opus-5.5"), "t2's scope overlaps live t1 (codex/gpt-5.5); this project refuses overlapping claims. The developer can narrow a scope with atelier edit t1 --scope GLOB (or atelier edit t2 --scope GLOB)");
+  const refusal = overlappingRefusal(want, [held], "claude-code/opus-5.5", {}, { now: new Date(T) });
+  assert.equal(refusal, "t2's scope overlaps live t1 (codex/gpt-5.5, idle 0 minutes); this project refuses overlapping claims. only the developer can narrow or release the overlapping holders: atelier edit t1 --scope GLOB");
+  assert.throws(() => assertClaimAllowed(want, [held], { ...policy, refuseOverlap: true }, "claude-code/opus-5.5", "owner", "executor", { now: new Date(T) }), (err: unknown) => err instanceof RuleError && err.detail === refusal);
   assert.equal(overlappingRefusal(want, [], "claude-code/opus-5.5"), null);
   assert.equal(overlappingRefusal(want, [held], "codex/gpt-5.5"), null, "the holder of the overlapping item may take it");
 });
@@ -372,7 +374,7 @@ test("a live task blocks an overlapping claim by one rule in every state, and th
     assert.deepEqual(overlappingLive(want, [held, want], "claude-code/opus-5.5").map((i) => i.id), ["t14"], state);
     assert.throws(
       () => assertClaimAllowed(want, [held, want], strict, "claude-code/opus-5.5"),
-      /overlaps live t14 \(glm\/glm-4\.6\).*atelier edit t14 --scope GLOB/,
+      /overlaps live t14 \(glm\/glm-4\.6, idle [^)]+\).*atelier edit t14 --scope GLOB/,
       state,
     );
     // Narrowed with atelier edit --scope, the same task no longer blocks.
