@@ -405,8 +405,8 @@ it("exactly one owner: claims are serialised and scoped, and a stored eligible l
   expect(await L.item("t3")).toMatchObject({ owner: winner!.value.item.owner });
 
   // glm is outside the stored eligible list, which no longer refuses it: the claim meets the overlap rule alone.
-  await refusal(L.claim("t2", "glm/glm-4.6"), "overlap", /overlaps live t1 \(claude-code\/opus-5\.5\)/);
-  await refusal(L.claim("t2", B), "overlap", /overlaps live t1 \(claude-code\/opus-5\.5\)/);
+  await refusal(L.claim("t2", "glm/glm-4.6"), "overlap", /overlaps live t1 \(claude-code\/opus-5\.5, idle \d+ minutes?\)/);
+  await refusal(L.claim("t2", B), "overlap", /overlaps live t1 \(claude-code\/opus-5\.5, idle \d+ minutes?\)/);
   // The holder of the overlapping item may take a second overlapping item.
   expect(await L.claim("t2", A)).toMatchObject({ item: { owner: A } });
 });
