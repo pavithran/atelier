@@ -35,6 +35,7 @@ export const BUILD_RULES = [
 // atelier-opencode, atelier-agy), so a runner with a generic wrapper gave its
 // reviewers none of them. test/fixtures/briefs/review-rules.txt pins the text.
 export const REVIEW_RULES = [
+  "- Only correctness, security, data loss and actively misleading docs block. Other findings are follow-ups.",
   "- Treat the builder's claims as unverified; check them against the diff and cite file and line. A stated reason does not reduce a defect's severity.",
   "- Check the behaviour test's commands and red and green output in the builder's report; name missing evidence.",
   "- For changes touching routes, endpoints or data with visibility levels, list each endpoint's trust checks from the code: who may call, membership, edit right and where the disclosure level comes from. Check that caller identity, not a requested level, determines disclosure, and that each refusal is tested.",
