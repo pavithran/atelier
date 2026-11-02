@@ -44,3 +44,14 @@ test('unscoped branch changes become quoted ready-to-run scope flags; unavailabl
   assert.match(err.next, /atelier edit t159 --scope GLOB/);
   assert.match(refusal([item('t157')], {}, { t157: ['docs/a.md'] }).next, /atelier edit t157 --scope GLOB/, 'declared scopes are not replaced by measured files');
 });
+
+
+test('accepted holders still refuse overlap but never offer an unusable release', () => {
+  for (const state of ['claimed', 'submitted', 'accepted']) {
+    const err = refusal([item('t157', { state })]);
+    assert.match(err.detail, /t157 \(codex\/gpt-6, idle 3 days\)/);
+    assert.match(err.next, /atelier edit t157 --scope GLOB/);
+    assert.equal(err.next.includes('atelier release t157'), state !== 'accepted', state);
+    assert.ok(err.detail.endsWith(err.next));
+  }
+});

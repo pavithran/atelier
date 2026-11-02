@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as server from '../src/index.ts';
 import { openReader } from '../src/git/reader.mjs';
-import { RuleError } from '../src/rules.ts';
+import { assertClaimAllowed, parseRuleError, RuleError } from '../src/rules.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'atelier-overlap-advice-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -36,11 +36,17 @@ test('claim refusal reads only unscoped overlapping branches, keeps fallback on 
   const want = { ...holder, id: 't9', scope: ['src/**'], owner: null, state: 'open' };
   const calls = [];
   const L = { claimOverlaps: async () => ({ item: want, holders: [holder, { ...holder, id: 't159', workspace: 'missing' }] }), project: async () => ({ repo: 'main', policy: { refuseOverlap: true } }) };
-  // The real claim's overlap refusal is preserved, with its recovery commands enriched.
-  const claim = async () => { throw new RuleError('overlap', 'original overlap', 409, 'generic'); };
+  // Use the real refusal, whose detail also embeds the recovery commands.
+  const claim = async () => assertClaimAllowed(want, (await L.claimOverlaps()).holders, { checks: [], protected: [], refuseOverlap: true }, 'claude-code/opus-5.5');
   const read = async (_env, workspace) => { calls.push(workspace); if (workspace === 'missing') throw Error('unreadable'); return ['src/a.ts']; };
   await assert.rejects(server.claimWithOverlapAdvice({}, L, want, 'claude-code/opus-5.5', claim, read), (err) => {
-    assert.equal(err.detail, 'original overlap');
+    assert.equal(err.code, 'overlap');
+    assert.equal(err.status, 409);
+    assert.match(err.detail, /t9's scope overlaps live t157/);
+    assert.ok(err.detail.endsWith(err.next), err.detail);
+    assert.match(err.detail, /atelier edit t157 --scope 'src\/a.ts'/);
+    assert.doesNotMatch(err.detail, /atelier edit t157 --scope GLOB/);
+    assert.equal(parseRuleError(new Error(err.message)).detail, err.detail, 'RPC refusal keeps the enriched detail stored by noteClaimRefusal');
     assert.match(err.next, /atelier edit t157 --scope 'src\/a.ts'/);
     assert.match(err.next, /atelier edit t159 --scope GLOB/);
     return true;
@@ -49,4 +55,16 @@ test('claim refusal reads only unscoped overlapping branches, keeps fallback on 
   calls.length = 0;
   await assert.rejects(server.claimWithOverlapAdvice({}, L, want, 'a', async () => { throw new RuleError('not_owner', 'denied', 403); }, read), /denied/);
   assert.deepEqual(calls, []);
+});
+
+
+test('enrichment failure preserves the original refusal', async () => {
+  const original = new RuleError('overlap', 'original overlap', 409, 'generic');
+  const claim = async () => { throw original; };
+  for (const L of [
+    { claimOverlaps: async () => { throw Error('unavailable'); }, project: async () => ({}) },
+    { claimOverlaps: async () => ({ holders: [] }), project: async () => ({}) },
+  ]) {
+    await assert.rejects(server.claimWithOverlapAdvice({}, L, { id: 't9' }, 'a', claim), (err) => err === original);
+  }
 });

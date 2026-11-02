@@ -1,4 +1,4 @@
-import { overlapNext } from "./rules.ts";
+import { overlapNext, overlappingRefusal } from "./rules.ts";
 import { stuckBatchRequests } from "./notify.ts";
 import { validateIndex } from "./index-transfer.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
@@ -964,7 +964,7 @@ export async function claimWithOverlapAdvice<T>(
   catch (err) {
     const refusal = parseRuleError(err);
     if (refusal?.code !== "overlap") throw err;
-    let next: string;
+    let next: string, detail: string;
     try {
       const [{ item: measured, holders }, project] = await Promise.all([L.claimOverlaps(item.id, actor), L.project()]);
       if (!holders.length) throw err;
@@ -975,11 +975,15 @@ export async function claimWithOverlapAdvice<T>(
           if (paths?.length) scopes[holder.id] = paths;
         } catch { /* Unreadable history leaves the explicit GLOB fallback. */ }
       }));
-      next = overlapNext(measured, holders, actor, project.policy, { scopes });
+      const advice = { scopes, now: new Date() };
+      const enriched = overlappingRefusal(measured, holders, actor, project.policy, advice);
+      if (!enriched) throw err;
+      detail = enriched;
+      next = overlapNext(measured, holders, actor, project.policy, advice);
     } catch {
       throw err;
     }
-    throw new RuleError(refusal.code, refusal.detail, refusal.status, next);
+    throw new RuleError("overlap", detail, refusal.status, next);
   }
 }
 

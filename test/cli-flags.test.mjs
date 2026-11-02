@@ -443,3 +443,19 @@ test("a flag the command does not take, or a stray --, is refused before any req
   assert.equal(ok.status, 0, ok.stderr);
   assert.match(ok.stdout, /t1 .*Task t1/);
 });
+
+
+test("release without an agent identity acts as the developer; explicit and workspace actors win", (t) => {
+  const f = fixture(t);
+  for (const [cwd, env, flags, expected] of [
+    [f.checkout, { ATELIER_ACTOR: undefined }, [], "owner"],
+    [f.checkout, { ATELIER_ACTOR: undefined }, ["--as", "claude-code/opus-5.5"], "claude-code/opus-5.5"],
+    [f.checkout, { ATELIER_ACTOR: "codex/test" }, [], "codex/test"],
+    [f.workspace, { ATELIER_ACTOR: undefined }, [], "codex/test"],
+  ]) {
+    f.clear();
+    const r = f.run(cwd, ["release", "t1", "--project", "demo", ...flags], env);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(f.requests().find((q) => q.path.endsWith("/items/t1/release")).actor, expected);
+  }
+});

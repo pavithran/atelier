@@ -1747,7 +1747,7 @@ export function overlapNext(item: Item, items: readonly Item[], actor: string, p
   const commands = overlappingLive(item, items, actor).flatMap((holder) => {
     const paths = !holder.scope.length ? advice.scopes?.[holder.id] : undefined;
     const flags = paths?.length ? paths.map((p) => `--scope ${quote(p)}`).join(" ") : "--scope GLOB";
-    return [`atelier edit ${holder.id} ${flags}`, ...(idleMs(holder, now) > limit ? [`atelier release ${holder.id}`] : [])];
+    return [`atelier edit ${holder.id} ${flags}`, ...(["claimed", "submitted"].includes(holder.state) && idleMs(holder, now) > limit ? [`atelier release ${holder.id}`] : [])];
   });
   return `only the developer can narrow or release the overlapping holders: ${commands.join("; or ")}`;
 }
