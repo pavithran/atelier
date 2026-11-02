@@ -61,3 +61,56 @@ The referenced house-style file was unavailable in this workspace and was
 not read. Prose here uses plain wording. Actual Studio timing and connectivity
 remain to be checked by the declared ship step; no SSH session, deployment,
 push or Atelier command was run for this workspace change.
+
+## Validation for t444
+
+Findings addressed: the ship example still showed one typecheck command;
+`studioSuite()` lacked a stub-runner unit test; library sourcing exited under
+`set -e` when `lsof` was absent from PATH.
+
+The example now matches every field in `docs/atelier/ship.json`. The new
+unit test pins bundle creation, SSH arguments, transferred bytes, environment,
+timeout, and bundle cleanup after success, bundle failure, SSH failure and a
+thrown runner error. The installer keeps its system `lsof` path when lookup
+fails, so library sourcing can finish without that command on PATH. Root's
+tool validation and execution path are unchanged.
+
+All test commands used the host wrapper:
+`node /Users/pavi/ai-projects/atelier-runner/cli/load.mjs --`.
+
+- Red: `node --test test/ship-suite-studio.test.mjs test/install-server-lib.test.mjs`
+  reported `tests 5`, `pass 3`, `fail 2`. Library sourcing returned `1 !== 0`;
+  the docs comparison showed the missing suite command and old description.
+- Green: the same command reported `tests 5`, `pass 5`, `fail 0` in 1.86 seconds.
+- `npm run typecheck` passed with `tsc -p . && tsc -p test` (exit 0).
+- Full suite: `npm test`, launched by a Node timeout harness with a 3600-second
+  timeout and `ATELIER_TEST_TIMEOUT_MS=3540000`, acquired its slot at
+  `2026-11-02T23:01:49.555Z`, with less than one second queued. Its log is
+  `.scratch/t444-full-test.log`. Temporary test files were directed to this
+  workspace's `.scratch`. The run was stopped after 49.34 seconds (exit 143)
+  on unrelated failures, as requested; it did not time out.
+- The full run reported failures in three unchanged review-bake tests:
+  `review-bake.sh gives a Codex reviewer the same blind brief and diff on standard input, read-only, and records the reply`,
+  `review-bake.sh tries a reply with no verdict again and records a second miss as failed; --skip runs nothing`,
+  and `the runner keeps and collects exactly the replies the scorer reads a verdict in`.
+  All three passed in the focused reproduction below.
+- Reproduction: `node --import ./src/runtime/loader.mjs --test test/acting-model.test.mjs bin/orchestrate/review-bake.test.mjs`
+  reported `tests 14`, `pass 12`, `fail 2`. The two unchanged acting-model tests
+  also failed in the full run and were already recorded in t439 above:
+  `a write on the developer token with no acting model is refused, naming --as; reads are free`
+  printed `t1  Nobody named` and `0 !== 1` at line 57;
+  `every write on the developer token records the acting model, the verbs that need words record them, and show lists both`
+  expected `owner` but received `codex/gpt-6.1-sol` at line 107. No unrelated
+  test or implementation was changed.
+
+No callable contract changed. The production ship declaration still calls
+the same suite script; deployment still calls the same installer, installed
+by `setup-server.sh`. Existing library callers in `test/setup-server.test.mjs`
+keep the same arguments and now tolerate absent `lsof`; the new test covers
+that case directly. No route, visibility level, UI, generated page, status,
+version or completion marker changed. Studio SSH, registry access and daemon
+behavior remain subject to the pre-deploy suite and post-deploy live-version
+check described above. No SSH, deployment, push or Atelier command was run.
+
+The referenced house-style file was unavailable in this workspace and was
+not read. Prose uses plain wording.

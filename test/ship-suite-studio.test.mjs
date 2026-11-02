@@ -1,9 +1,58 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { remoteSuite } from "../scripts/ship-suite-studio.mjs";
+import { remoteSuite, studioSuite } from "../scripts/ship-suite-studio.mjs";
+import { SHIP_GIT } from "../scripts/ship-studio.mjs";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
+
+test("the documented ship configuration matches the shipped configuration", () => {
+ const docs = readFileSync("docs/ship.md", "utf8").split("### From `docs/atelier/ship.json`")[1];
+ const example = JSON.parse(docs.match(/```json\n([\s\S]*?)\n```/)[1]);
+ assert.deepEqual(example, JSON.parse(readFileSync("docs/atelier/ship.json", "utf8")));
+});
+
+test("studioSuite transfers the bundle over SSH and cleans up on success and failure", () => {
+ const cwd = resolve(".scratch/studio-suite-unit");
+ mkdirSync(cwd, { recursive: true });
+ const git = (...args) => {
+  const r = spawnSync(SHIP_GIT, args, { cwd, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim();
+ };
+ git("init", "-q");
+ git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-qm", "Fixture");
+ const head = git("rev-parse", "HEAD");
+ const env = { ATELIER_SHIP_HEAD: head, STUB_ENV: "preserved" };
+ // Ignore the bundle while sourceHead checks that the fixture is clean.
+ git("config", "core.excludesFile", "/dev/null");
+ writeFileSync(resolve(cwd, ".git/info/exclude"), ".scratch/\n");
+ for (const failure of ["", "bundle", "ssh-status", "ssh-error", "ssh-throw"]) {
+  let bundle;
+  const calls = [];
+  const run = (command, args, options) => {
+   calls.push(command);
+   if (command === SHIP_GIT) {
+    bundle = args[2];
+    assert.deepEqual(args, ["bundle", "create", resolve(cwd, ".scratch", `ship-${process.pid}.bundle`), "HEAD"]);
+    assert.deepEqual(options, { cwd, stdio: "inherit" });
+    writeFileSync(bundle, "snapshot bytes");
+    return { status: failure === "bundle" ? 7 : 0 };
+   }
+   assert.equal(command, "/usr/bin/ssh");
+   const quoted = "'" + remoteSuite.replaceAll("'", "'\\''") + "'";
+   assert.deepEqual(args, ["-o", "BatchMode=yes", "--", "ai-studio",
+    `PATH=/opt/homebrew/bin:/usr/local/bin:$PATH node -e ${quoted} ${head}`]);
+   assert.deepEqual(options, { input: Buffer.from("snapshot bytes"), stdio: ["pipe", "inherit", "inherit"], env, timeout: 59 * 60_000 });
+   if (failure === "ssh-throw") throw new Error("stub threw");
+   return { status: failure === "ssh-status" ? 7 : 0, error: failure === "ssh-error" ? new Error("offline") : undefined };
+  };
+  if (failure) assert.throws(() => studioSuite({ cwd, env, run }), /Cannot snapshot|Studio full suite failed|stub threw/);
+  else assert.equal(studioSuite({ cwd, env, run }), head);
+  assert.deepEqual(calls, failure === "bundle" ? [SHIP_GIT] : [SHIP_GIT, "/usr/bin/ssh"]);
+  assert.equal(existsSync(bundle), false, `bundle remains after ${failure || "success"}`);
+ }
+});
 
 test("Studio snapshot runs checkout, install and the whole suite in order; failures propagate", () => {
  const root = resolve(".scratch/ship-suite-test");
