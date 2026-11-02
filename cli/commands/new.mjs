@@ -47,5 +47,6 @@ export default async function newCommand() {
     ...formatFields(item),
   ].join("\n"));
   if (!fields.accept?.length) console.error(`Warning: ${item.id} has no acceptance criteria, so a review of it will have none to judge the change against. Give them with atelier edit ${item.id} --accept "TEXT", once per criterion.`);
+  if (fields.accept?.length > 5) console.error(`Warning: ${item.id} has ${fields.accept.length} acceptance criteria, more than five; consider a split into smaller tasks.`);
   pointToGuide([project()]);
 }
