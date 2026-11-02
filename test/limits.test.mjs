@@ -15,7 +15,7 @@ const MIN = 60_000, HOUR = 60 * MIN;
 
 test("the limits module names every remaining limit, and nothing else", () => {
   assert.deepEqual(LIMITS, {
-    stageMs: { filed: 24 * HOUR, agreed: 48 * HOUR, queued: 10 * MIN, built: 20 * MIN, checked: 10 * MIN, reviewed: 2 * HOUR, landable: 5 * MIN },
+    stageMs: { filed: 24 * HOUR, agreed: 48 * HOUR, queued: 10 * MIN, built: 20 * MIN, checked: 10 * MIN, reviewed: 2 * HOUR, landable: 60 * MIN },
     tickStaleMs: 15 * MIN,
     timers: { stageTickMs: 5 * MIN, stuckEpisodesMs: 10 * MIN, modelSnapshotsMs: 6 * HOUR, modelSnapshotsOffsetMs: 7 * MIN },
     noticeAfterMs: 60 * MIN,

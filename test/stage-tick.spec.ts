@@ -1,4 +1,4 @@
-import { env } from "./support/workers.ts";
+import { env } from "./support/ledger.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { scheduled } from "./workers-removed.ts";
@@ -30,7 +30,7 @@ const tick = (hours: number, e: typeof env = testEnv) => scheduled({ scheduledTi
 const stageEvents = async (key: string) => ((await L(key).events(undefined, 1000)) as unknown as { itemId: string; kind: string; data: Record<string, unknown> }[])
   .filter((e) => e.kind.startsWith("stage.")).reverse().map((e) => [e.itemId, e.kind, e.data.stage]);
 
-it("a filed task is stuck after 24 hours: one stuck however many ticks follow", async () => {
+it("an unheld filed task never alerts", async () => {
   await project("st-a");
   const id = await task("st-a", "Waiting");
   await tick(23.9);
@@ -38,20 +38,23 @@ it("a filed task is stuck after 24 hours: one stuck however many ticks follow", 
   await tick(24.1);
   await tick(24.2);
   await tick(30);
-  expect(await stageEvents("st-a")).toEqual([[id, "stage.stuck", "filed"]]);
+  expect(await stageEvents("st-a")).toEqual([]);
 });
 
-it("a task that leaves the stage clears it, and returning past the limit is stuck again", async () => {
+it("release clears a held task's stuck alert, and reclaim can open it again", async () => {
   await project("st-b");
   const id = await task("st-b", "Waiting");
-  await tick(25);
   await L("st-b").claim(id, AGENT);
-  await tick(25.1);
-  await tick(25.2);
+  await L("st-b").setWorkspace(id, "st-b", "0".repeat(40), AGENT);
+  await L("st-b").recordPush(id, AGENT, "a".repeat(40), "a".repeat(40));
+  await tick(1);
   await L("st-b").release(id, AGENT, "stop");
-  await tick(26);
+  await tick(2);
+  await tick(3);
+  await L("st-b").claim(id, AGENT);
+  await tick(4);
   expect(await stageEvents("st-b")).toEqual([
-    [id, "stage.stuck", "filed"], [id, "stage.cleared", "filed"], [id, "stage.stuck", "filed"],
+    [id, "stage.stuck", "built"], [id, "stage.cleared", "built"], [id, "stage.stuck", "built"],
   ]);
 });
 
@@ -63,7 +66,7 @@ it("a task being built has no limit, and tasks of other projects are kept apart"
   const other = await task("st-d", "Waiting");
   await tick(100);
   expect(await stageEvents("st-c")).toEqual([]);
-  expect(await stageEvents("st-d")).toEqual([[other, "stage.stuck", "filed"]]);
+  expect(await stageEvents("st-d")).toEqual([]);
 });
 
 it("each run records tick.ran on the index and the route says when", async () => {
@@ -91,7 +94,10 @@ it("each run records tick.ran on the index and the route says when", async () =>
 
 it("a project that cannot be read records nothing, and the run is still recorded", async () => {
   await project("st-f");
-  await task("st-f", "Waiting");
+  const id = await task("st-f", "Waiting");
+  await L("st-f").claim(id, AGENT);
+  await L("st-f").setWorkspace(id, "st-f", "0".repeat(40), AGENT);
+  await L("st-f").recordPush(id, AGENT, "a".repeat(40), "a".repeat(40));
   const failing = { ...testEnv, LEDGER: { ...env.LEDGER, idFromName: (n: string) => env.LEDGER.idFromName(n), get: (lid: DurableObjectId) => {
     const stub = env.LEDGER.get(lid);
     return new Proxy(stub, { get: (t, p, r) => p === "stageTick" ? () => Promise.reject(new Error("unreadable")) : Reflect.get(t, p, r) });

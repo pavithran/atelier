@@ -63,7 +63,7 @@ after(async () => { await server?.close(); });
 
 let built;   // the task the runner built, for the review test
 
-test("criterion 1: a dispatch no live runner offers stays queued on its model and is recorded as 'no live runner offers' it; a runner that comes up later takes it", async () => {
+test("criterion 1: a dispatch no live runner offers stays queued on its model without an alert; a runner that comes up later takes it", async () => {
   const id = await newTask("Waits for its model");
   assert.equal((await api("POST", `/projects/demo/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3" })).status, 200);
   // A live runner offers another model only.
@@ -75,15 +75,13 @@ test("criterion 1: a dispatch no live runner offers stays queued on its model an
   assert.deepEqual([item.state, item.owner, item.dispatch.agent, item.dispatch.model], ["open", null, "opencode", "glm-5.3"], "no model is substituted");
   assert.deepEqual((await events(id, "item.dispatched")).map((e) => e.actor), ["owner"], "only the developer's dispatch");
   const stuck = await events(id, "stage.stuck");
-  assert.equal(stuck.length, 1);
-  assert.equal(stuck[0].data.stage, "queued");
-  assert.match(stuck[0].data.note, /no live runner offers .*opencode.*glm-5\.3/);
-  // The queue says so too, as show and status read it.
+  assert.deepEqual(stuck, []);
+  // The task remains visible without a stuck alert.
   const shown = await cli(["show", id, "--project", "demo"]);
-  assert.match(shown.stdout, /no live runner/i, said(shown));
-  // A second tick adds nothing: the fact is recorded once.
+  assert.doesNotMatch(shown.stdout, /stage.stuck/, said(shown));
+  // A second tick remains quiet.
   await L().stageTick(new Date(now.getTime() + 5 * MIN));
-  assert.equal((await events(id, "stage.stuck")).length, 1);
+  assert.equal((await events(id, "stage.stuck")).length, 0);
   assert.deepEqual(await events(id, "stage.told"), []);
 
   // Edge: a runner that offers the model comes up later and takes the dispatch.
@@ -106,7 +104,7 @@ execFileSync("git", ["commit", "-q", "-m", "build: the stub's change"], { cwd: w
   assert.equal(taken.state, "submitted", said(ran));
   assert.deepEqual((await events(id, "item.claimed")).map((e) => e.actor), ["opencode/glm-5.3"]);
   await L().stageTick(new Date(Date.now() + MIN));
-  assert.ok((await events(id, "stage.cleared")).some((e) => e.data.stage === "queued"), "the queued record cleared once the runner took it");
+  assert.deepEqual(await events(id, "stage.cleared"), []);
   built = id;
 });
 
