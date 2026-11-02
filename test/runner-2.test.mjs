@@ -865,7 +865,10 @@ test("the build brief asks for a validation_blocked line, and that line is read 
 
 
 test("empty or negative validation_blocked reasons let a finished build submit", async () => {
-  for (const reason of ["", "  ", "none", "NONE.", "n/a", "N/A", "nothing", "Nothing.", "**none**"]) {
+  for (const reason of ["", "  ", "none", "NONE.", "n/a", "N/A", "nothing", "Nothing.", "**none**",
+    "none (the full suite and typecheck passed; only the browser check above is unrun)",
+    "N/A: all required checks passed", "nothing; all required checks passed",
+    "none. All required checks passed", "none — all required checks passed"]) {
     const report = `Done.\nvalidation_blocked: ${reason}\nAll required checks passed.`;
     assert.equal(validationBlockedReport(report), null, report);
     const { io, calls } = fixture();
@@ -875,6 +878,12 @@ test("empty or negative validation_blocked reasons let a finished build submit",
     assert.equal(state.phase, "submitted", report);
     assert.equal(runOutcome(state), null, report);
     assert.ok(!calls.some((c) => c.argv?.includes("--blocked")), report);
+  }
+});
+
+test("negative words that begin a blocking reason still block without punctuation", () => {
+  for (const reason of ["none of the tests could run", "n/a because the suite could not start", "nothing could be tested", "nonetheless blocked"]) {
+    assert.ok(validationBlockedReport(`validation_blocked: ${reason}`), reason);
   }
 });
 

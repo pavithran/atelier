@@ -9,7 +9,7 @@ import { runTask, runOutcome, taskRevisionKey } from "../cli/runner.mjs";
 import { config, assignment, fixture } from "./runner-shared.mjs";
 
 const item = { ...assignment.item, brief: "Make the runner build the task.", accept: ["The runner builds the task; tested."] };
-const BLOCKED = "Committed the change.\nvalidation_blocked: none. The task needs a scope change from the developer";
+const BLOCKED = "Committed the change.\nvalidation_blocked: The task needs a scope change from the developer";
 const RETRY = /retries because the task changed/;
 
 // A workspace whose marker lives in memory, across runs of the runner. The
