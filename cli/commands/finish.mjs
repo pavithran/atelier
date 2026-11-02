@@ -1,6 +1,6 @@
 // atelier finish. Its forms, flags and help are declared in src/usage/commands/finish.ts.
 import { I, actor, isRunnerForbidden, noLongerHolds, takenBackNotice, args, call, cliState, die, doneChecks, git, itemArg, project, request, requireWorkspace, summaryArg } from "../atelier.mjs";
-import { workspaceNotice } from "../review-notice.mjs";
+import { changedFromMain, workspaceNotice } from "../review-notice.mjs";
 import { baseReadGrant } from "../read-grant.mjs";
 import checkCommand from "./check.mjs";
 import pushCommand from "./push.mjs";
@@ -16,6 +16,10 @@ export default async function finishCommand() {
   const head = git(["rev-parse","HEAD"]);
   // Advisory: failure to read the baseline must not prevent push or checks.
   const baseline = await baseReadGrant(request, name, id, as).catch(() => undefined);
+  if (args._?.[0] === "done") {
+    const paths = changedFromMain(git, process.cwd(), baseline);
+    if (paths?.length > 15) console.error(`Warning: ${id} changes ${paths.length} files, more than 15; consider a split into smaller tasks.`);
+  }
   const notice = workspaceNotice(git, process.cwd(), d.policy, { baseline, part: d.item.kind === "part" });
   if (notice) console.log(notice.join("\n"));
   doneChecks.length = 0;
