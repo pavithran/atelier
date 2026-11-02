@@ -43,6 +43,23 @@ test("atelier guide --role ROLE prints the default text, and the plain guide is 
   }
 });
 
+for (const role of ["build", "review"]) {
+  test(`atelier guide --role ${role} fits ROLE_PROMPT_MAX and can seed a runner override`, () => {
+    const r = run(["guide", "--role", role]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.length <= ROLE_PROMPT_MAX,
+      `${role} guide is ${r.stdout.length} characters; ROLE_PROMPT_MAX is ${ROLE_PROMPT_MAX}`);
+    const dir = mkdtempSync(join(tmpdir(), "atelier-role-seed-"));
+    try {
+      mkdirSync(join(dir, ".atelier", "prompts"), { recursive: true });
+      writeFileSync(join(dir, ".atelier", "prompts", `${role}.md`), r.stdout);
+      assert.equal(roleText(role, dir), r.stdout.trimEnd());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 // The orchestrate guide's standing rules, pinned: a change that drops one
 // fails here, and docs/orchestrating.md must state the same ones.
 const ORCHESTRATE_RULES = [

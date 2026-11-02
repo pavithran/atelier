@@ -120,7 +120,15 @@ test("the builder's test lines still stand beside the screenshot line in every b
   assert.ok(runner.includes(BUILDER_SCREENSHOTS));
   assert.ok(runner.includes("Run the project's full required test command"));
   assert.ok(!runner.includes("Do not run the full suite"));
-  assert.match(ROLE_PROMPTS.build, /Run the project's full required test command\n\(npm test unless it names another\) inside a test slot, and the typecheck; push\nonly when both pass, and name any failing test you could not fix\. Give the suite\na time budget that counts from slot acquisition; on a timeout, commit and report\nvalidation_blocked with the slot wait and run time\. For a visual change, take\nscreenshots with the project's documented screenshot workflow, against this\nworkspace's revision: reuse the server it manages, never start a second one, and\nwith no documented workflow follow the project's setup\./);
+  const build = ROLE_PROMPTS.build.replace(/\s+/g, " ");
+  for (const rule of [
+    /Run the project's full required test command \(npm test unless it names another\) inside a test slot, plus the typecheck/,
+    /Push only when both pass; name any unfixed failing test/,
+    /Budget the suite from slot acquisition; report slot wait and run time on timeout/,
+    /take screenshots of this workspace's revision using the documented workflow/,
+    /reuse its server, never start a second one/,
+    /With no workflow, follow the project's setup/,
+  ]) assert.match(build, rule);
   assert.match(ROLE_PROMPTS.review, /For UI changes, check before and after screenshots/);
 });
 
