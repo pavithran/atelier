@@ -261,15 +261,17 @@ export function runnerLine(offer, now = Date.now()) {
   return `${offer.runner}  ${live ? `live, asked ${when}` : `not live, last asked ${when}`}  ${actors.length ? `offers ${actors.join(", ")}` : "offers no model"}${offer.jobs?.length ? `  ${jobsLine(offer.jobs)}` : ""}`;
 }
 
-// The runners section of `atelier status`: one line per recorded offer, live
-// first, so the owner can see why routing passed a model over (no live runner
-// offers it) or what a runner went away from.
-export function formatRunners(offers, now = Date.now()) {
-  const lines = [...offers].sort((a, b) => Number(isLive(b, now)) - Number(isLive(a, now)) || a.runner.localeCompare(b.runner));
-  // Each runner's self-check report follows its line (t234): the machine,
-  // each harness's state and probe time (stale past 25 minutes), and the
-  // credentials with their expiry.
-  return ["Runners:", ...lines.flatMap((o) => [`  ${runnerLine(o, now)}`, ...readinessLines(o.runner, o.readiness, now).map((l) => `    ${l}`)])];
+// Full rows and readiness for live offers; inactive offers are counted unless
+// the caller requests the complete registry.
+export function formatRunners(offers, now = Date.now(), all = false) {
+  const live = offers.filter((o) => isLive(o, now));
+  const hidden = offers.length - live.length;
+  const rows = [...(all ? offers : live)].sort((a, b) => Number(isLive(b, now)) - Number(isLive(a, now)) || a.runner.localeCompare(b.runner));
+  return [
+    ...(live.length ? ["Runners:"] : ["No live runners.", ...(rows.length ? ["Runners:"] : [])]),
+    ...rows.flatMap((o) => [`  ${runnerLine(o, now)}`, ...readinessLines(o.runner, o.readiness, now).map((l) => `    ${l}`)]),
+    ...(!all && hidden ? [`  ${hidden} ${hidden === 1 ? "runner" : "runners"} not live; atelier status --all-runners lists every runner with readiness.`] : []),
+  ];
 }
 
 // The queue's review requests for one project, as lines: each is a submitted
@@ -451,7 +453,7 @@ export function formatStatus(views, waiting = {}) {
       }
     }
   }
-  if (offers?.length) lines.push("", ...formatRunners(offers, waiting.now ? waiting.now.getTime() : Date.now()));
+  if (Array.isArray(offers)) lines.push("", ...formatRunners(offers, waiting.now ? waiting.now.getTime() : Date.now(), waiting.allRunners));
   return lines.join("\n");
 }
 
