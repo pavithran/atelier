@@ -12,7 +12,7 @@ import { parseConfig, DEFAULT_JOBS } from "../cli/runner-config.mjs";
 import { offerFrom, commandFor, nextStep, runTask, runRunner, execute, makeDataHome, removeDataHome, refusedKey, failureCount, infrastructureFailureCount, passedBy, jobOf, runOutcome, harnessEnv, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, taskRevisionKey, _unsavedFailures } from "../cli/runner.mjs";
 import { MAX_HARNESS_RERUNS } from "../cli/runner-failure.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
-import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
+import { helpText, ROLE_PROMPTS, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { RUNNER_COMMANDS, declaredHelperCall, terminalTaskExit } from "../src/tokens.ts";
 import { entry, config, assignment, untilExits, UNTIL_TEST_EXITS, fixture, heldItem, gitWorkspace, KILL_GRACE_MS } from "./runner-shared.mjs";
@@ -853,15 +853,36 @@ test("a blocked marker holds back only its own actor's unverified head", async (
 test("the build brief asks for a validation_blocked line, and that line is read as blocked", () => {
   assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
   // t219: validation_blocked covers the builder's own unfixable failing tests and a suite timeout.
-  assert.match(ROLE_PROMPTS.build, /Only an unfixable failure in your change's tests\nor a suite timeout is `validation_blocked`/);
+  assert.match(ROLE_PROMPTS.build, /Only unfixable failures in your change's tests or suite timeouts block validation/);
   assert.match(ROLE_PROMPTS.build, /report slot wait\s+and run time on timeout/);
-  assert.match(ROLE_PROMPTS.build, /`validation_blocked`: commit without submitting;\s+end your report with `validation_blocked: why`/);
+  assert.match(ROLE_PROMPTS.build, /If blocked, commit unsubmitted; report `validation_blocked: why`\.\s+Else omit the line\./);
+  assert.ok(ROLE_PROMPTS.build.length <= ROLE_PROMPT_MAX);
   assert.match(ROLE_PROMPTS.build, /Run the project's full required test command/);
   assert.match(ROLE_PROMPTS.build, /Never end with finished work uncommitted/);
   assert.match(validationBlockedReport("Implemented the change and committed it.\nvalidation_blocked: vitest could not listen on 127.0.0.1 (EPERM)"), /could not listen/);
   assert.match(validationBlockedReport("Done.\n**validation_blocked:** the sandbox has no network"), /no network/);
 });
 
+
+test("empty or negative validation_blocked reasons let a finished build submit", async () => {
+  for (const reason of ["", "  ", "none", "NONE.", "n/a", "N/A", "nothing", "Nothing.", "**none**"]) {
+    const report = `Done.\nvalidation_blocked: ${reason}\nAll required checks passed.`;
+    assert.equal(validationBlockedReport(report), null, report);
+    const { io, calls } = fixture();
+    const harness = io.harness;
+    io.harness = async (...args) => ({ ...(await harness(...args)), output: report });
+    const state = await runTask(assignment, config, "home:studio", io);
+    assert.equal(state.phase, "submitted", report);
+    assert.equal(runOutcome(state), null, report);
+    assert.ok(!calls.some((c) => c.argv?.includes("--blocked")), report);
+  }
+});
+
+test("a negative validation_blocked line does not hide a real blocker elsewhere", () => {
+  for (const blocker of ["validation_blocked: missing test dependency", "I could not run tests: listen EPERM."]) {
+    assert.match(validationBlockedReport(`validation_blocked: none\n${blocker}`), /missing test dependency|listen EPERM/);
+  }
+});
 
 test("a report that only mentions checks or validation_blocked in passing does not hold a build back", () => {
   for (const report of [

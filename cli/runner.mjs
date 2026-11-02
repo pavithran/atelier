@@ -1481,7 +1481,7 @@ const CHECKS = String.raw`(?:required checks?|checks?|tests?|test suite|suite|ty
 const SANDBOX = String.raw`(?:EPERM|EACCES|permission denied|sandbox|no network|network access|ENOTFOUND|EAI_AGAIN)`;
 const RUN_OBJECT = String.raw`(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`;
 const VALIDATION_BLOCKED = [
-  /^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:/im,
+  /^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:([^\r\n]*)/im,
   new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}`, "i"),
   // "Did not run" is a blocker only beside the environment that stopped it:
   // the build brief tells a builder not to run the full suite (t552), and a
@@ -1520,7 +1520,10 @@ export function validationBlockedReport(output) {
     const end = report.slice(match.index).search(/\.\s|\n/);
     return OTHER_PARTY.test(report.slice(from, end < 0 ? report.length : match.index + end));
   };
-  const matches = VALIDATION_BLOCKED.flatMap((pattern, i) => [...report.matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))].filter((m) => i === 0 || !aboutAnother(m)));
+  const matches = VALIDATION_BLOCKED.flatMap((pattern, i) => [...report.matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))].filter((m) => i === 0
+    // Empty reasons and explicit no-block answers are not blockers.
+    ? !/^(?:(?:none|n\/a|nothing)[.!]?)?$/i.test(m[1].replace(/[*_`]/g, "").trim())
+    : !aboutAnother(m)));
   const match = matches.sort((a, b) => a.index - b.index)[0];
   if (!match) return null;
   // Keep the actual blocker in the server's bounded detail even when the
