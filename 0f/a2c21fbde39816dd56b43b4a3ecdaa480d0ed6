@@ -1,0 +1,26 @@
+atelier atelier/t419 "Overlap refusal names stale unscoped holders"
+accepted head 2d528c5259a8185de8539d5febcb06fb9828128f
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-02T16:11:11.566Z
+REVIEW approve by antigravity/gemini-4-argon-high at 2d528c5259a8185de8539d5febcb06fb9828128f, recorded by antigravity/gemini-4-argon-high
+CHECKED TREE cb094f62d1d426913139e2e28497c9a35245f129: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-31T21:10:20.906Z pavi item.created
+2026-10-31T21:10:20.906Z claude-code/opus-5.5 criteria.revised
+2026-11-01T17:15:17.135Z codex/gpt-6.1-sol item.claimed
+2026-11-01T17:15:17.175Z codex/gpt-6.1-sol workspace.created
+2026-11-01T18:02:47.842Z codex/gpt-6.1-sol push.observed
+2026-11-01T18:03:23.113Z codex/gpt-6.1-sol evidence.observed
+2026-11-01T18:03:23.719Z codex/gpt-6.1-sol item.submitted
+2026-11-01T18:15:00.000Z atelier stage.stuck
+2026-11-02T16:10:38.999Z codex/gpt-6.1-sol push.observed
+2026-11-02T16:11:11.592Z codex/gpt-6.1-sol evidence.observed
+2026-11-02T16:11:11.991Z codex/gpt-6.1-sol item.submitted
+2026-11-02T16:15:00.000Z atelier stage.cleared
+2026-11-02T16:25:00.000Z atelier stage.stuck
+2026-11-02T16:47:01.443Z antigravity/gemini-4-argon-high review.approved
+2026-11-02T16:47:02.190Z pavi item.accepted
+2026-11-02T16:47:04.201Z pavi land.start
+2026-11-02T16:47:04.323Z pavi landing.leased
+2026-11-02T16:47:04.456Z pavi land.lease
+2026-11-02T16:47:05.848Z pavi checkout.leased
