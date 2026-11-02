@@ -6860,10 +6860,10 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A standing instruction (src/standing.ts, G6) is recorded for a project
-  // in fast mode alone.
+  // in fast mode alone, except the models session plan.
   recordDecision(body: Record<string, unknown>, actor: string, acting: string | null = null): DecisionView {
     const p = this.project();
-    if (body.standing !== undefined && actor === this.owner && this.mode().mode !== "fast") {
+    if (body.standing !== undefined && String((body.standing as { key?: unknown } | null)?.key).trim() !== "models" && actor === this.owner && this.mode().mode !== "fast") {
       throw new RuleError("not_fast", `${p.name} is not in fast mode, and a standing instruction is recorded only for a project in fast mode; nothing was recorded`, 409, `only the developer can: atelier mode fast --reason TEXT --project ${p.name}, then run the same command again`);
     }
     return recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);

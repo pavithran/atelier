@@ -1,4 +1,5 @@
-// Standing instructions (Atelier 2.0, G6): the only automatic actions left
+// The models key is a session plan in either mode. The other standing
+// instructions (Atelier 2.0, G6) are the only automatic actions left
 // to the server and the tick. Each is a standing decision the developer
 // records with `atelier decide --standing KEY VALUE --quote "…"`, with their
 // own words, for a project in fast mode; it is withdrawn as any decision is
@@ -13,6 +14,7 @@
 // landing's post-merge review stays owed until it is asked, and a stuck
 // episode is noticed after LIMITS.noticeAfterMs.
 
+import { TEXT_CONTROLS } from "./text.ts";
 import { RuleError, validActor } from "./rules.ts";
 
 export interface StandingKey {
@@ -24,6 +26,11 @@ export interface StandingKey {
 const onOff = (v: string) => (v === "on" || v === "off" ? v : null);
 
 export const STANDING: Record<string, StandingKey> = {
+  models: {
+    value: "non-empty text describing the models, roles and effort levels",
+    says: () => "unwrap prints this model plan at the start of a session",
+    parse: (v) => v.replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim() || null,
+  },
   "queue-landable": {
     value: "on or off",
     says: (v) => v === "on" ? "the stage tick queues the land job of a task found landable past its limit, for a live lander runner" : "the stage tick queues no landing",
