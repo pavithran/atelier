@@ -242,6 +242,12 @@ export function openReader(dir, { name = basename(dir, ".git"), onDispose, env, 
 
     readCommit,
 
+    async verifyRegeneration(oldHead, main, newHead) {
+      for (const hash of [oldHead, main, newHead]) checkHash(hash);
+      const { verifyRegeneration } = await import("./regeneration.mjs");
+      return verifyRegeneration(dir, oldHead, main, newHead);
+    },
+
     async readTree(hash) {
       checkHash(hash);
       const o = await objects().read(hash);
