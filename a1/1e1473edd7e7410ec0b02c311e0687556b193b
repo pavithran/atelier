@@ -1,0 +1,42 @@
+atelier atelier/t336 "The runner runs the full suite once per submission, not the builder"
+accepted head 9fbc9d95faea420604d44dc7a0f181206a231e08
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T17:14:16.205Z
+REVIEW approve by antigravity/gemini-4-argon at 9fbc9d95faea420604d44dc7a0f181206a231e08, recorded by antigravity/gemini-4-argon
+CHECKED TREE 3c8dfb4e262f83536024176547c6a9c80c1dd81c: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-26T17:44:42.326Z claude-code/opus-5.5 item.created
+2026-10-26T17:44:42.326Z claude-code/opus-5.5 criteria.revised
+2026-10-26T19:16:14.235Z pavi item.edited
+2026-10-26T19:16:14.235Z pavi criteria.revised
+2026-10-26T19:16:14.235Z pavi item.criteria_changed
+2026-10-26T19:16:15.154Z pavi criteria_review.requested
+2026-10-26T19:18:41.511Z codex/gpt-6-astra criteria_review.claimed
+2026-10-26T19:18:55.056Z codex/gpt-6-astra criteria_review.approved
+2026-10-28T19:20:36.300Z atelier stage.stuck
+2026-10-28T19:20:36.300Z atelier stage.told
+2026-11-02T21:40:00.000Z atelier stage.cleared
+2026-11-03T15:49:37.566Z pavi item.edited
+2026-11-03T15:49:37.566Z claude-code/opus-5.5 criteria.revised
+2026-11-03T15:49:37.566Z pavi item.criteria_changed
+2026-11-03T15:49:47.377Z pavi item.dispatched
+2026-11-03T16:38:49.745Z pavi item.edited
+2026-11-03T16:38:49.745Z claude-code/opus-5.5 criteria.revised
+2026-11-03T16:38:49.745Z pavi item.criteria_changed
+2026-11-03T16:58:29.235Z codex/gpt-6.1-sol item.claimed
+2026-11-03T16:58:29.269Z codex/gpt-6.1-sol workspace.created
+2026-11-03T17:14:12.573Z codex/gpt-6.1-sol push.observed
+2026-11-03T17:14:16.235Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T17:14:16.448Z codex/gpt-6.1-sol item.submitted
+2026-11-03T17:14:36.501Z pavi land.start
+2026-11-03T17:14:39.273Z pavi review.requested
+2026-11-03T17:14:39.273Z pavi review.tier_needed
+2026-11-03T17:14:40.520Z pavi land.review
+2026-11-03T17:14:40.871Z pavi land.requested
+2026-11-03T17:14:57.179Z antigravity/gemini-4-argon review.claimed
+2026-11-03T17:30:55.478Z antigravity/gemini-4-argon review.approved
+2026-11-03T17:30:59.055Z pavi item.accepted
+2026-11-03T17:30:59.923Z pavi land.start
+2026-11-03T17:30:59.995Z pavi landing.leased
+2026-11-03T17:31:00.113Z pavi land.lease
+2026-11-03T17:31:01.248Z pavi checkout.leased
