@@ -195,6 +195,23 @@ test("push --force leases against the head Atelier recorded, not the ref this wo
   assert.deepEqual(f.pushes(), []);
 });
 
+test("a claim preserves an unrelated workspace and clones the task branch fresh", (t) => {
+  const f = fixture(t);
+  f.git(f.workspace, "checkout", "--orphan", "old-project");
+  f.git(f.workspace, "read-tree", "--empty");
+  const old = f.commit(f.workspace, "old.txt", "Old project");
+  writeFileSync(join(f.workspace, "untracked.txt"), "keep me\n");
+  const r = f.run(["claim", "t3", "--project", "demo"]);
+  assert.equal(r.status, 0, r.stderr);
+  const saved = /Moved unrelated workspace to (.+);/.exec(r.stdout)?.[1];
+  assert.ok(saved, r.stdout);
+  assert.equal(f.git(saved, "rev-parse", "HEAD"), old);
+  assert.equal(readFileSync(join(saved, "untracked.txt"), "utf8"), "keep me\n");
+  assert.equal(f.git(f.workspace, "rev-parse", "HEAD"), f.h2);
+  assert.equal(f.git(f.workspace, "config", "atelier.item"), "t3");
+  assert.equal(existsSync(join(f.workspace, "untracked.txt")), false);
+});
+
 test("a claim that finds the workspace and the branch diverged stops and names the branch's commits", (t) => {
   const f = fixture(t);
   const local = f.commit(f.workspace, "local.txt", "A: local, unpushed");

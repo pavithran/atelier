@@ -1287,6 +1287,22 @@ export async function claimWorkspace(name, id, as, runner) {
     git(["config", "--local", "--replace-all", "remote.origin.fetch", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: dir });
     git(["fetch", "--quiet", "origin"], { cwd: dir });
   }
+  if (!fresh) {
+    const shared = git(["merge-base", "HEAD", `refs/remotes/origin/${branch}`], { cwd: dir, allowFail: true });
+    if (shared.status === 1) {
+      const stem = `${dir}.unrelated-${Date.now()}`;
+      let saved = stem;
+      for (let n = 1; existsSync(saved); n++) saved = `${stem}-${n}`;
+      renameSync(dir, saved);
+      console.log(`Moved unrelated workspace to ${saved}; it shares no history with ${id}’s branch. Cloning fresh.`);
+      git(["clone", "--quiet", "--single-branch", "--branch", branch, remote, dir], { token });
+      storeWorkspaceToken(dir, remote, token);
+      recordTokenExpiry(dir, r.workspace.expiresAt);
+      installMergeConfig(dir, { git });
+    } else if (shared.status !== 0) {
+      die(`Could not compare this workspace with ${id}’s branch: ${(shared.stderr || shared.stdout).trim()}`);
+    }
+  }
   git(["fetch", "--quiet", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd: dir });
   for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, "base-branch": base })) {
     git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
