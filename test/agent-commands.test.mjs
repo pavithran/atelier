@@ -215,7 +215,9 @@ for (const blockers of [[], ["protected paths need an independent approval", "re
   assert.match(r.output, /Head: [0-9a-f]{8}/);
   assert.match(r.output, /Submitted: yes/);
   assert.match(r.output, blockers.length ? /Unresolved gates: 2/ : /Unresolved gates: none/);
-  assert.match(r.output, /Developer action: (accept t1 at [0-9a-f]{8}: atelier accept t1 --head [0-9a-f]{40}|clear the first blocker: protected paths)/);
+  assert.match(r.output, blockers.length
+    ? /Developer action: clear the first blocker: protected paths/
+    : /Developer action: land t1: atelier land t1/);
   assert.match(r.output, /Deploy: not covered by done/);
   // The submit names the head the workspace holds, so a rerun of one that
   // stands answers already (G10).
@@ -294,8 +296,8 @@ test("inbox prints each task waiting on the owner with what to do and its link, 
     // The fixture serves no stuck data, which is said first (t198).
     "    Stuck work: stuck report unknown (not read)",
     "    Stuck work: stuck episodes unknown (not read)",
-    `    t1  Accept  ${brief.title}`,
-    "      Accept the revision, whose required checks all passed at its head.",
+    `    t1  Land  ${brief.title}`,
+    "      Land the revision, whose required checks all passed at its head.",
     "      why: all checks observed passing at this head",
     "      next: atelier land t1 --reviewer H/M --project proj",
     `      ${f.origin}/p/proj/t1`,
@@ -307,7 +309,7 @@ test("inbox prints each task waiting on the owner with what to do and its link, 
   // The entry list older clients read, one entry per task, with the call beside it.
   const entries = JSON.parse(json.stdout);
   assert.deepEqual(entries.map((x) => [x.project, x.itemId, x.kind, x.reason, x.call, x.url]),
-    [["proj", "t1", "accept", "all checks observed passing at this head", "accept", `${f.origin}/p/proj/t1`]]);
+    [["proj", "t1", "accept", "all checks observed passing at this head", "land", `${f.origin}/p/proj/t1`]]);
   assert.deepEqual(entries[0].unknown, []);
   assert.equal(json.output, json.stdout, "nothing goes to standard error when everything was read");
 });
