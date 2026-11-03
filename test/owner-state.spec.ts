@@ -92,8 +92,8 @@ it("criterion 2: the state matrix covers blockers, unavailable diffs and the ter
   type Row = [string, (d: Detail) => void, boolean, Partial<Record<"independent" | "acceptance", string>>, "next" | "waiting" | "complete", RegExp];
   const rows: Row[] = [
     ["waiting for review", () => {}, true, { independent: "Required, not yet given", acceptance: "Not ready: 1 blocker" }, "next", /^Run the landing command below\.$/],
-    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Accept revision, below; the merge command follows\.$/],
-    ["overridden", (d) => { d.item.reviewOverride = { head, by: "pavi", reason: "none qualifies", at: time }; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Overridden by you, 2026-10-10 17:41 UTC: not a review", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Accept revision, below; the merge command follows\.$/],
+    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Run the landing command below\.$/],
+    ["overridden", (d) => { d.item.reviewOverride = { head, by: "pavi", reason: "none qualifies", at: time }; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Overridden by you, 2026-10-10 17:41 UTC: not a review", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Run the landing command below\.$/],
     ["failing check", (d) => { d.evidence[0].passed = false; d.gate = { ready: false, needsAssessor: true, blockers: ["`npm test` failed when observed", "Protected"], outOfScope: [] }; }, true, { acceptance: "Not ready: 2 blockers" }, "waiting", /^For the task holder, codex\/gpt-6\.$/],
     ["diff unavailable", () => {}, false, { acceptance: "Unavailable until the changes shown match the recorded revision" }, "next", /^Reload this task/],
     ["secret pending", (d) => { d.item.secretScan = head; }, true, {}, "waiting", /^For the secret scan/],
@@ -276,8 +276,8 @@ it("the header states each state once and keeps the action it needs", () => {
       expect(h).toContain("fix the copy");
       expect(h).toContain("<summary>Request changes</summary>");
     }],
-    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Ready to accept/, (h) => {
-      expect(h).toContain(">Accept revision</button>");
+    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Ready to land/, (h) => {
+      expect(h).toContain("atelier land t1");
     }],
     ["merged", (d) => { d.item.state = "merged"; d.item.acceptedHead = head; d.gate = { ready: false, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Merged|merged/, (h) => {
       expect(h).toContain("Accepted at aaaaaaaa");

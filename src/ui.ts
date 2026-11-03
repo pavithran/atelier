@@ -491,7 +491,9 @@ function decisionDetail({ project: p, detail: d, diff }: ReviewContext, lead?: O
         : lead?.call === "ship"
           ? `<a class="button primary" href="${e(lead.href)}">Open Ship</a>`
           : "";
-  const merge = decision.action === "merge"
+  const merge = decision.action === "land"
+    ? `<div class="merge-command"><p>In the registered checkout, run:</p><pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre></div>`
+    : decision.action === "merge"
     ? `<div class="merge-command"><p>In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier merge ${item.id} --project ${shell(p.name)} --head ${item.acceptedHead}`)}</pre>
       <p class="meta">This merges the approved revision and records the result. It does not deploy.</p></div>`
@@ -1520,9 +1522,9 @@ export function buildStanding(
 // Ready to accept, assess Needs review, failing Checks failed. One with none
 // of these, or read without the notices, stays In review: Sent back needs
 // the task's reviews, which the Overview does not read.
-export type StateWord = "open" | "working" | "ready-to-accept" | "needs-review" | "checks-failed" | "in-review" | "ready-to-merge" | "blocked" | "integrated" | "merged" | "closed";
+export type StateWord = "ready-to-land" | "open" | "working" | "ready-to-accept" | "needs-review" | "checks-failed" | "in-review" | "ready-to-merge" | "blocked" | "integrated" | "merged" | "closed";
 export const STATE_WORDS: [word: StateWord, label: string, role: string][] = [
-  ["open", "Ready to start", "neutral"], ["working", "Working", "neutral"], ["ready-to-accept", "Ready to accept", "go"],
+  ["open", "Ready to start", "neutral"], ["working", "Working", "neutral"], ["ready-to-land", "Ready to land", "go"], ["ready-to-accept", "Ready to accept", "go"],
   ["needs-review", "Needs review", "ask"], ["checks-failed", "Checks failed", "fault"], ["in-review", stateLabel.submitted, "neutral"],
   ["ready-to-merge", "Ready to merge", "go"], ["blocked", "Blocked", "caution"], ["integrated", stateLabel.integrated, "done"],
   ["merged", "Merged", "done"], ["closed", "Closed", "done"],
@@ -1543,7 +1545,7 @@ export function stateWords(items: Item[], inbox: InboxEntry[] | null): Map<strin
       : i.state === "integrated" ? "integrated"
       : i.state === "merged" ? "merged"
       : i.state === "abandoned" ? "closed"
-      : has("accept") ? "ready-to-accept" : has("assess") ? "needs-review" : has("failing") ? "checks-failed" : "in-review";
+      : has("accept") ? i.nextGate === "developer" || i.kind === "plan" ? "ready-to-accept" : "ready-to-land" : has("assess") ? "needs-review" : has("failing") ? "checks-failed" : "in-review";
     return [i.id, word];
   }));
 }
@@ -2129,7 +2131,7 @@ export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null
 </div>`, "Home", ownerName, 0, true, live);
 }
 
-const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad", none: "" };
+const VERDICT_TONE: Record<Verdict, string> = { land: "go", accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad", none: "" };
 
 // The brief sits above the diff: what is decided, what the agent said, what the
 // record shows, and what it points to.
@@ -2304,6 +2306,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
     : item.state === "integrated" ? { kind: "waiting", text: `For ${item.plan ?? "its plan"} to land: this part is submitted and integrated into the plan's branch, and is accepted and merged with the plan, not on its own.` }
     : live && item.head && !evidenceVisible ? { kind: "next", text: "Reload this task; approval and acceptance wait until the changes shown match the recorded revision." }
     : secretHeld ? { kind: item.secretScan === item.head ? "waiting" : "next", text: item.secretScan === item.head ? "For the secret scan of this revision to complete." : "Check the flagged line and clear the flag if it is not a secret." }
+    : decision.action === "land" ? { kind: "next", text: "Run the landing command below." }
     : decision.action === "accept" ? { kind: "next", text: "Accept revision, below; the merge command follows." }
     : item.state === "submitted" && mine && !mine.approve && !gate.needsAssessor && gate.blockers.length === 1 ? { kind: "next", text: "Approve the revision if your concern is met; otherwise wait for the task holder's next push." }
     // A rejection at this revision blocks whatever review is asked next, so
@@ -2482,7 +2485,9 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
       <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
       <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one ${single ? `that is a different ${single} model from every contributor` : "of another family than every contributor"} — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
     : "";
-  const merge = decision.action === "merge"
+  const merge = decision.action === "land"
+    ? `<div class="merge-command"><p>In the registered checkout, run:</p><pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre></div>`
+    : decision.action === "merge"
     ? `<div class="merge-command"><p>In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier merge ${item.id} --project ${shell(p.name)} --head ${item.acceptedHead}`)}</pre>
       <p class="meta">This merges the approved revision and records the result. It does not deploy.</p></div>`

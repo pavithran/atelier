@@ -360,3 +360,10 @@ test("show displays both ledger revert links without claiming the undo has merge
     }
   }
 });
+
+test("done directs ordinary tasks to land and preserves the developer gate", () => {
+  for (const nextGate of [undefined, "developer"]) {
+    const report = doneReport({ id: "t1", head, checks: passed, item: { ...submitted, nextGate }, gate: { ready: true, blockers: [] } });
+    assert.match(report.summary.join("\n"), nextGate ? /atelier accept t1/ : /atelier land t1/);
+  }
+});

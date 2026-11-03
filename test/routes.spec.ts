@@ -1022,7 +1022,7 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
     expect(s.live.map((x) => x.id)).toEqual(["t1"]);
     // t2 waits on the owner too while no live runner can take it, which
     // depends on the runner offers earlier tests in this file recorded.
-    expect(s.waiting.filter((w) => (w as { call?: string }).call !== "start-runner")).toEqual([expect.objectContaining({ id: "t1", call: "accept", href: `/p/${name}/t1`, brief: expect.objectContaining({ verdict: "accept" }) })]);
+    expect(s.waiting.filter((w) => (w as { call?: string }).call !== "start-runner")).toEqual([expect.objectContaining({ id: "t1", call: "land", href: `/p/${name}/t1`, brief: expect.objectContaining({ verdict: "land" }) })]);
     for (const w of s.waiting.filter((x) => (x as { call?: string }).call === "start-runner")) expect(w.id).toBe("t2");
     expect(s.queued.map((x) => x.id)).toEqual(["t2"])
   }

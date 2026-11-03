@@ -74,7 +74,7 @@ test("the brief counts checks that do not apply, and says so when none applies",
   assert.equal(brief(policy, [observed("npm test")]).evidence[0], "Required checks at this revision: 1 passed in a Cloudflare container, 1 not applicable to this change.");
   const none = brief({ ...policy, checks: ["xcodebuild build"] }, [observed("xcodebuild build", { passed: null, notApplicable: true })]);
   assert.equal(none.evidence[0], "Required checks at this revision: 1 not applicable to this change.");
-  assert.deepEqual(none.recommendation, { verdict: "accept", reason: "No required check applies to this revision's changes, and nothing blocks it." });
+  assert.deepEqual(none.recommendation, { verdict: "land", reason: "No required check applies to this revision's changes, and nothing blocks it." });
 });
 
 test("a not-applicable record is refused unless the measured paths show it", () => {

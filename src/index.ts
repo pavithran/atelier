@@ -2328,7 +2328,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = String(body.item ?? ""), main = String(body.main ?? "");
       const [project, task] = await Promise.all([L.project(), L.item(item)]);
       const top = task.kind === "part" ? null : await headOf(env, project.repo);
-      if (top && top !== main) throw new RuleError("main_moved", `main is at ${top.slice(0, 8)}, not ${main.slice(0, 8)}, the commit ${item}'s head was merged with; release the lease and merge main again`, 409, `run atelier land ${item} --release-lease; merge main into ${item}'s workspace and push (atelier dispatch ${item} --job merge-main); then atelier accept ${item}, then atelier land ${item}`);
+      if (top && top !== main) throw new RuleError("main_moved", `main is at ${top.slice(0, 8)}, not ${main.slice(0, 8)}, the commit ${item}'s head was merged with; release the lease and merge main again`, 409, `run atelier land ${item} --release-lease; merge main into ${item}'s workspace and push (atelier dispatch ${item} --job merge-main); then atelier land ${item}`);
       return json({ confirmed: await L.confirmLeaseMain(item, actor, main, instance) });
     }
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));

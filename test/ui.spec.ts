@@ -98,7 +98,7 @@ it('acceptance renders only after an independent approval and passing evidence; 
  expect(own).toContain('Accept without an independent review');expect(own).toContain('action="/ui/example/t1/override"');expect(own).toContain('<textarea name="note" required rows="3" maxlength="500">');
  d.reviews.push({itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'another family',at:time});d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  const independent=renderItem(project,d,'PAVI',diff);
- expect(independent).toContain('Accept revision');expect(independent).not.toContain('Accept without an independent review');
+ expect(independent).toContain('atelier land t1 --project');expect(independent).not.toContain('Accept without an independent review');
  d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
 });
 it('while the gate waits for the independent review, asking a reviewer is the primary action and the owner\'s Approve is secondary',()=>{
@@ -132,7 +132,7 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   const html=renderItem(project,d,'PAVI',diff);
   expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the developer's override, not a review");
   // The brief says it once; the header's description is not drawn beside that brief (finding 7).
-  expect(html).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('Accept revision');
+  expect(html).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('atelier land t1 --project');
   d.item.state='accepted';d.item.acceptedHead=head;
   expect(renderItem(project,d,'PAVI',diff)).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');
   const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
@@ -372,7 +372,7 @@ it('the brief renders above the diff, escapes a hostile summary, and tags the ve
  const none=briefOf(renderItem(project,d,'PAVI',null));
  expect(none).not.toContain('stale words');expect(none).not.toContain('Summary from');
  expect(html).toContain('1 passed in a Cloudflare container');
- expect(html).toContain('<span class="tag go">accept</span>');
+ expect(html).toContain('<span class="tag go">land</span>');
  expect(html.indexOf('Decision brief')).toBeLessThan(html.indexOf('id="changes"'));
 });
 it('the brief tags a rejected revision as send back and a pending one as wait',()=>{
@@ -648,12 +648,11 @@ it('the selected task\'s detail sits beside the list with its state, why, eviden
  expect(sheet).toContain('<p class="context">example · t1 · claude-code/opus-5.5</p>');
  expect(sheet).toContain('<h2 id="sel-h">First</h2>');
  expect(sheet).toContain('<p class="dec-word go">Ready to land</p>');
- expect(sheet).toContain('<p class="dec-because">Required checks passed for this revision. Accept it to prepare the local merge.</p>');
- // Accept posts the very form the task page posts, to the same route, with the same revision and criteria.
+ expect(sheet).toContain('<p class="dec-because">Required checks passed for this revision. Run atelier land to check, review and merge it.</p>');
  const page=renderItem(open,d,'PAVI',shown(d));
- const form=/<form method="post" action="\/ui\/example\/t1\/accept">.*?<\/form>/s.exec(page)![0];
- expect(sheet).toContain(form);
- expect(form).toContain(`name="head" value="${head}"`);expect(form).toContain('<button class="primary">Accept revision</button>');
+ expect(sheet).toContain('atelier land t1 --project &#39;example&#39;');
+ expect(page).toContain('atelier land t1 --project &#39;example&#39;');
+ expect(sheet).not.toContain('>Accept revision</button>');
  expect(sheet).toContain('<a class="button" href="/p/example/t1#changes">Review the diff</a>');
  expect(page).toContain('id="changes"');
  expect(sheet).toContain('<a class="dec-open" href="/p/example/t1">Open the task</a>');
@@ -968,7 +967,7 @@ it('the Overview counts every task once by its state word and links each count t
   {project:'example',itemId:'t12',title:'x',kind:'failing' as const,reason:'npm test failed',weight:20},
  ];
  const words=stateWords(items,inbox);
- expect(Object.fromEntries(words)).toEqual({t1:'working',t2:'ready-to-accept',t3:'open',t4:'merged',t5:'merged',t6:'merged',t7:'merged',t8:'merged',t9:'merged',t10:'merged',
+ expect(Object.fromEntries(words)).toEqual({t1:'working',t2:'ready-to-land',t3:'open',t4:'merged',t5:'merged',t6:'merged',t7:'merged',t8:'merged',t9:'merged',t10:'merged',
   t11:'needs-review',t12:'checks-failed',t13:'in-review',t14:'ready-to-merge',t15:'blocked',t16:'closed'});
  // Without the notices a submitted task is In review, never a guessed word.
  expect(stateWords(items,null).get('t11')).toBe('in-review');
@@ -977,7 +976,7 @@ it('the Overview counts every task once by its state word and links each count t
  const grid=html.split('<ul class="state-grid" aria-label="Tasks by state">')[1].split('</ul>')[0];
  const cells=[...grid.matchAll(/<a href="\/p\/example\/tasks\?state=([a-z-]+)"><span class="state-n (\w+)">(\d+)<\/span><span class="state-label">([^<]+)<\/span><\/a>/g)].map((m)=>[m[1],m[2],Number(m[3]),m[4]]);
  expect(cells).toEqual([
-  ['open','neutral',1,'Ready to start'],['working','neutral',1,'Working'],['ready-to-accept','go',1,'Ready to accept'],
+  ['open','neutral',1,'Ready to start'],['working','neutral',1,'Working'],['ready-to-land','go',1,'Ready to land'],
   ['needs-review','ask',1,'Needs review'],['checks-failed','fault',1,'Checks failed'],['in-review','neutral',1,'In review'],
   ['ready-to-merge','go',1,'Ready to merge'],['blocked','caution',1,'Blocked'],['merged','done',7,'Merged'],['closed','done',1,'Closed'],
  ]);

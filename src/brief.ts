@@ -10,7 +10,7 @@ import { criteriaOf } from "./criteria.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
-export type Verdict = "accept" | "merge" | "review" | "wait" | "send back" | "decide" | "none";
+export type Verdict = "land" | "accept" | "merge" | "review" | "wait" | "send back" | "decide" | "none";
 
 export interface Brief {
   decided: string;
@@ -179,7 +179,8 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
     : recommendation.verdict === "merge" ? `Merge ${subject}`
     : recommendation.verdict === "send back" ? `Send ${item.id} back ${rev}: ${title}.`
     : recommendation.verdict === "review" ? `Review ${subject}`
-    : recommendation.verdict === "accept" ? `${item.nextGate === "developer" || item.kind === "plan" ? "Accept" : "Land"} ${subject}`
+    : recommendation.verdict === "land" ? `Land ${subject}`
+    : recommendation.verdict === "accept" ? `Accept ${subject}`
     : recommendation.verdict === "wait" ? `Wait on ${subject}`
     : `Decide ${subject}`;
 
@@ -218,7 +219,7 @@ function overrideOf(d: Detail) {
   return d.gate.overridden ?? null;
 }
 
-// accept when the gate is ready; merge when accepted; send back when a review
+// land when the gate is ready, or accept a developer-held task or plan; merge when accepted; send back when a review
 // at this head rejects or a required check failed, at the head or on its
 // merge with main where that blocks; review when only an
 // independent approval of a protected change is missing; wait while checks are
@@ -241,7 +242,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   }
   if (readyToAccept(d)) {
     return {
-      verdict: "accept",
+      verdict: item.nextGate === "developer" || item.kind === "plan" ? "accept" : "land",
       reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.`
         : p.notApplicable ? "No required check applies to this revision's changes, and nothing blocks it." : "The project requires no checks, and nothing blocks it.",
     };
