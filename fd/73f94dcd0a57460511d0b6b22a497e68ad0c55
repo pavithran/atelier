@@ -1,0 +1,29 @@
+atelier atelier/t480 "Test slot pool works across users and survives a reboot"
+accepted head 47054401d6a0a62241021200c932b9926d321756
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T20:38:36.272Z
+REVIEW approve by antigravity/gemini-4-argon at 47054401d6a0a62241021200c932b9926d321756, recorded by antigravity/gemini-4-argon
+2026-11-03T19:50:26.081Z pavi item.created
+2026-11-03T19:50:26.081Z claude-code/opus-5.5 criteria.revised
+2026-11-03T20:08:40.903Z pavi item.dispatched
+2026-11-03T20:32:45.057Z codex/gpt-6.1-sol item.claimed
+2026-11-03T20:32:45.098Z codex/gpt-6.1-sol workspace.created
+2026-11-03T20:38:32.631Z codex/gpt-6.1-sol push.observed
+2026-11-03T20:38:36.301Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T20:38:36.525Z codex/gpt-6.1-sol item.submitted
+2026-11-03T20:39:00.536Z pavi land.start
+2026-11-03T20:39:02.030Z pavi review.requested
+2026-11-03T20:39:02.030Z pavi review.tier_needed
+2026-11-03T20:39:02.433Z pavi land.review
+2026-11-03T20:39:02.565Z pavi land.requested
+2026-11-03T20:41:27.563Z atelier/orchestrator refresh.queued
+2026-11-03T20:41:32.862Z antigravity/gemini-4-argon review.claimed
+2026-11-03T20:41:32.901Z antigravity/gemini-4-argon review.diff
+2026-11-03T20:43:27.342Z antigravity/gemini-4-argon review.approved
+2026-11-03T20:43:27.342Z atelier/orchestrator goal.notes
+2026-11-03T20:43:31.734Z pavi item.accepted
+2026-11-03T20:43:32.867Z pavi land.start
+2026-11-03T20:43:33.025Z pavi landing.leased
+2026-11-03T20:43:33.149Z pavi land.lease
+2026-11-03T20:43:34.434Z pavi checkout.leased
