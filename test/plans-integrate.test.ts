@@ -257,9 +257,11 @@ test("planGate keeps gate()'s blockers for the plan item and refuses a branch th
   assert.deepEqual(planGate(gateInput({ plan: planItem({ state: "claimed" }) })).blockers, ["state is claimed, not submitted"]);
   // A commit pushed after the last integration blocks, even with passing checks.
   assert.deepEqual(planGate(gateInput({ plan: planItem({ head: X }), evidence: [pass(X)] })).blockers, [
+    "touches a protected path; needs approval from a model of another family than every contributor",
     "the plan's head eeeeeeee is not its integration head 22222222; the branch has commits no integration recorded",
   ]);
   assert.deepEqual(planGate(gateInput({ integrationHead: null })).blockers, [
+    "touches a protected path; needs approval from a model of another family than every contributor",
     "the plan's head 22222222 is not its integration head (none recorded); the branch has commits no integration recorded",
   ]);
 });

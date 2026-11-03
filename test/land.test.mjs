@@ -2,7 +2,7 @@
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { git, landFixture, grantedTo, recordedAt } from "./land-fixture.mjs";
 
@@ -48,11 +48,15 @@ import { git, landFixture, grantedTo, recordedAt } from "./land-fixture.mjs";
 test("a clean landing is reviewed without the lease, then takes it to merge the reviewed head, check the merge and push it alone (t550, G2)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  // Local work keeps the finished clone available for the assertions below.
+  const observation = join(f.workspace("t1"), "local-observation.txt");
+  writeFileSync(observation, "Uncommitted local work\n");
   const before = { fork: f.forkHead("t1"), workspace: git(f.workspace("t1"), "rev-parse", "HEAD"), checkout: git(f.checkout, "rev-parse", "HEAD") };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   // Nothing was merged into the workspace or pushed to the task's branch (G2).
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
+  assert.equal(readFileSync(observation, "utf8"), "Uncommitted local work\n");
   assert.equal(f.forkHead("t1"), before.workspace);
   // The registered checkout and the baseline hold the merge commit: main's
   // tip as its first parent, the reviewed head as its second, and the

@@ -47,6 +47,7 @@ it("submission notifies once per revision, with durable deduplication and no pus
       await Promise.all([submit(L, "notify-revisions"), submit(L, "notify-revisions")]);
       expect(send).toHaveBeenCalledTimes(1);
       expect(state.storage.sql.exec("SELECT * FROM notifications").toArray()).toEqual([{ item_id: "t1", head: H1 }]);
+      L.addReview({ itemId: "t1", criteria: L.criteria("t1"), by: "claude-code/opus-5.5", head: H1, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
       L.accept("t1", "owner", H1);
       L.observePush("t1", H2, H1);
       expect(send).toHaveBeenCalledTimes(1);
@@ -109,6 +110,7 @@ it("a review that clears a rejection notifies through the review route", async (
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
       const L = ledger(state); setup(L, "notify-review"); evidence(L);
+      L.addReview({ itemId: "t1", criteria: L.criteria("t1"), by: "claude-code/opus-5.5", head: H1, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
       L.addReview({ itemId: "t1", criteria: await L.criteria("t1"), by: "owner", head: H1, approve: false, note: "Revise", at: new Date().toISOString() });
       await submit(L, "notify-review");
       expect(send).not.toHaveBeenCalled();

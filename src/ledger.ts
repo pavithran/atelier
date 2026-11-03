@@ -8462,6 +8462,13 @@ export class Ledger extends DurableObject<Env> {
     const approval = record.approval;
     if (!approval) return this.plannerTick(id, record, at);
     const parts = this.planParts(id);
+    // A part may land directly while its integration is still queued.
+    const queuedPart = plan.dispatch?.job === "integrate" ? parts.find((p) => p.id === plan.dispatch?.partId) : null;
+    if (!plan.owner && queuedPart && ["merged", "abandoned"].includes(queuedPart.state)) {
+      this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
+      this.log(id, ORCHESTRATOR, "item.undispatched", { reason: `part ${queuedPart.partKey} is ${queuedPart.state}` }, at);
+      plan.dispatch = null;
+    }
     const done = completion(parts.map((p) => p.state));
     if (done === "complete") {
       record.completedAt = at;

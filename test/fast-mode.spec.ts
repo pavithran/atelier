@@ -181,7 +181,8 @@ async function mergedInFastMode(L: Awaited<ReturnType<typeof project>>, title: s
   await L.recordPush(item.id, OPUS, commit, commit);
   await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: commit, passed: true, by: "owner", at: AT, changedPaths: ["src/a/x.ts"] });
   await L.submit(item.id, OPUS);
-  await L.accept(item.id, "owner", commit);
+  await L.confirmOverride(item.id, "owner", commit, "access");
+  await L.accept(item.id, "owner", commit, "Exercise the post-merge audit without a pre-merge approval");
   await L.merged(item.id, "owner", mergeCommit, true);
   return item;
 }

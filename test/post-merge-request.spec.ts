@@ -63,7 +63,8 @@ const requested = async (L: ReturnType<typeof ledger>, id: string) =>
 it("a fast-mode task accepted then merged gets its post-merge review request at the merge", async () => {
   const L = await project("pmr-accept-merge", true);
   const item = await accepted(L, "Merged without land");
-  await L.accept(item.id, "owner", C1);
+  await L.confirmOverride(item.id, "owner", C1, "access");
+  await L.accept(item.id, "owner", C1, "Exercise the post-merge audit without a pre-merge approval");
   await L.merged(item.id, "owner", M1, true);
   const asks = await requested(L, item.id);
   expect(asks).toHaveLength(1);
@@ -106,7 +107,8 @@ it("a same-family pre-merge approval leaves the post-merge review requested", as
   const L = await project("pmr-same-family", true);
   const item = await accepted(L, "Same-family review before merging");
   await L.addReview({ itemId: item.id, by: "claude-code/sonnet-5", head: C1, criteria: criteriaOf(item), approve: true, note: "Fine", at: AT }, undefined, true);
-  await L.accept(item.id, "owner", C1);
+  await L.confirmOverride(item.id, "owner", C1, "access");
+  await L.accept(item.id, "owner", C1, "Exercise the post-merge audit without a pre-merge approval");
   await L.merged(item.id, "owner", M1, true);
   expect(await requested(L, item.id)).toHaveLength(1);
   expect((await L.fastLandings())[0]).toMatchObject({ independentApproved: false, review: { state: "open" } });
@@ -115,7 +117,8 @@ it("a same-family pre-merge approval leaves the post-merge review requested", as
 it("a full-mode merge asks no post-merge review", async () => {
   const L = await project("pmr-full", false);
   const item = await accepted(L, "Merged in full mode");
-  await L.accept(item.id, "owner", C1);
+  await L.confirmOverride(item.id, "owner", C1, "access");
+  await L.accept(item.id, "owner", C1, "Exercise the post-merge audit without a pre-merge approval");
   await L.merged(item.id, "owner", M1, true);
   expect(await L.mergedFast(item.id)).toBe(false);
   expect(await requested(L, item.id)).toEqual([]);
@@ -129,7 +132,8 @@ it("a full-mode merge asks no post-merge review", async () => {
 it("a fast-mode merge with no standing reviewer asks nothing, stays merged and owed, and names the command", async () => {
   const L = await project("pmr-no-standing", true, null);
   const item = await accepted(L, "Nobody to ask");
-  await L.accept(item.id, "owner", C1);
+  await L.confirmOverride(item.id, "owner", C1, "access");
+  await L.accept(item.id, "owner", C1, "Exercise the post-merge audit without a pre-merge approval");
   expect(await L.merged(item.id, "owner", M1, true)).toMatchObject({ state: "merged" });
   expect(await requested(L, item.id)).toEqual([]);
   expect(((await L.events(item.id, 1000)) as unknown as LedgerEvent[]).some((e) => e.kind === "review.unasked")).toBe(false);
@@ -141,7 +145,8 @@ it("a fast-mode merge whose standing reviewer cannot be asked stays merged, owed
   const L = await project("pmr-no-reviewer", true);
   await L.poolChanged([]);
   const item = await accepted(L, "Nobody to ask");
-  await L.accept(item.id, "owner", C1);
+  await L.confirmOverride(item.id, "owner", C1, "access");
+  await L.accept(item.id, "owner", C1, "Exercise the post-merge audit without a pre-merge approval");
   expect(await L.merged(item.id, "owner", M1, true)).toMatchObject({ state: "merged" });
   expect(await requested(L, item.id)).toEqual([]);
   const unasked = ((await L.events(item.id, 1000)) as unknown as LedgerEvent[]).find((e) => e.kind === "review.unasked");
@@ -153,7 +158,8 @@ it("a post-merge review that ends without a verdict is reported as owed in ateli
   const name = "pmr-stopped";
   const L = await project(name, true);
   const item = await accepted(L, "Audited without a verdict");
-  await L.accept(item.id, "owner", C1);
+  await L.confirmOverride(item.id, "owner", C1, "access");
+  await L.accept(item.id, "owner", C1, "Exercise the post-merge audit without a pre-merge approval");
   await L.merged(item.id, "owner", M1, true);
   const reviewer = (await requested(L, item.id))[0].data.reviewer as string;
   const first = await L.claimReview(item.id, reviewer, RUNNER) as unknown as ReviewClaim;

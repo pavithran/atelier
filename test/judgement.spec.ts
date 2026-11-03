@@ -120,12 +120,12 @@ it("a decision and its withdrawal keep the acting model beside the owner and the
 
 it("an override of a missing review keeps the acting model beside the owner", async () => {
   const name = "judge-override";
-  await project(name, ["AGENTS.md"]);
+  await project(name, ["security.ts"]);
   await L(name).newItem("Rewrite the agent instructions", [], "owner");
   await L(name).claim("t1", OPUS);
   await L(name).setWorkspace("t1", `${name}--t1`, H0, OPUS);
   await L(name).recordPush("t1", OPUS, H1, H1);
-  await L(name).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L(name).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L(name).submit("t1", OPUS);
   const refused = await L(name).accept("t1", OPUS, H1, "no reviewer", undefined, undefined, undefined, undefined, GPT).then(() => null, (e: Error) => e.message);
   expect(refused).toMatch(/only the developer accepts/);

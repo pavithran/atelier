@@ -138,7 +138,11 @@ const killLive = () => {
   for (const pgid of live) if (pgid) kill(-Math.abs(pgid));
 };
 process.on("exit", killLive);
-after(() => { killLive(); Atomics.store(ended, 0, Math.ceil(Date.now() / 1000)); });
+// The pool is a coordinator, not a test file. Registering an after hook here
+// starts a second empty harness whose zero-count footer hides the real result.
+if (basename(process.argv[1] ?? "") !== "node-pool.mjs") {
+  after(() => { killLive(); Atomics.store(ended, 0, Math.ceil(Date.now() / 1000)); });
+}
 
 // Node's own execFileSync and execSync call its internal spawnSync, not the
 // exported one, so they are rebuilt on the guarded spawnSync below, failing

@@ -277,6 +277,7 @@ test("a refresh lease's grant pushes t/N while the lease stands, writes nothing 
   // Accepted at its head with main moved on, the task's refresh is queued.
   await L().addEvidence({ itemId: id, claim: "git status", grade: "observed", head, passed: true, by: BUILDER, at: new Date().toISOString(), changedPaths: ["r.txt"] });
   await L().submit(id, BUILDER);
+  await L().addReview({ itemId: id, head: head, criteria: await L().criteria(id), by: "zcode/glm-5.3", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L().accept(id, "owner");
   await L().noteMainHead("a".repeat(40));
   const integrator = (await api("POST", "/tokens", { actor: "atelier/integrator", projects: ["demo"] })).body.token;

@@ -517,6 +517,7 @@ it("removal refuses claimed, submitted and accepted work unless forced", async (
     if (state !== "claimed") await L.submit("t1", actor);
     if (state === "accepted") {
       await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: actor, at: new Date().toISOString(), changedPaths: [] } as never);
+      await L.addReview({ itemId: "t1", head, criteria: await L.criteria("t1"), by: "claude-code/opus-5.5", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
       await L.accept("t1", "owner", head);
     }
     const refused = await call("DELETE", `/projects/${name}`, "owner", { force: "true" });
@@ -637,19 +638,19 @@ function gitStore(logs: Record<string, { hash: string; parents: string[]; treeHa
 it("the item's own agent cannot name the paths its check changed: the Worker measures them, so a protected change needs its independent review", async () => {
   const name = "measured-paths", A = "claude-code/opus-5.5", B = "codex/gpt-6-astra";
   const H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
-  await project(name, ["AGENTS.md"]);
+  await project(name, ["security.ts"]);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
   await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  // The fork's one commit edits AGENTS.md; README.md is untouched.
+  // The fork's one commit edits security.ts; README.md is untouched.
   const REPOS = gitStore({
     [name]: [{ hash: H0, parents: [], treeHash: T0 }],
     [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],
   }, {
-    [T0]: { "AGENTS.md": "b".repeat(40), "README.md": "c".repeat(40) },
-    [T1]: { "AGENTS.md": "d".repeat(40), "README.md": "c".repeat(40) },
+    [T0]: { "security.ts": "b".repeat(40), "README.md": "c".repeat(40) },
+    [T1]: { "security.ts": "d".repeat(40), "README.md": "c".repeat(40) },
   });
   const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
@@ -666,7 +667,7 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
   for (const changedPaths of [["README.md"], [], undefined, "README.md"]) {
     const res = await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H1, changedPaths });
     expect(res.status, await res.clone().text()).toBe(200);
-    expect(await latest()).toMatchObject({ grade: "observed", where: "runner", by: A, passed: true, changedPaths: ["AGENTS.md"] });
+    expect(await latest()).toMatchObject({ grade: "observed", where: "runner", by: A, passed: true, changedPaths: ["security.ts"] });
   }
   // A check for a head the fork is not at is refused, as before.
   const stale = await agent("POST", "/items/t1/evidence", { kind: "check", claim: "npm test", passed: true, head: H0, changedPaths: [] });
@@ -759,13 +760,13 @@ it("the evidence route measures against main's head, so a crafted merge cannot h
 // reason, can override a missing one while accepting.
 it("decision 2026-10-06: the accept route takes an override only from the owner, with a reason", async () => {
   const name = "override-route", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
-  await project(name, ["AGENTS.md"]);
+  await project(name, ["security.ts"]);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
   await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L.submit("t1", A);
   // The baseline's log too, so the task page can draw the change and offer its forms.
   const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
@@ -866,7 +867,7 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
 // is refused; a project that forbids overrides refuses, words or not.
 it("t629: the developer token overrides a missing review on the developer's quoted words and the acting model", async () => {
   const name = "override-direction", A = "claude-code/opus-5.5", G = "codex/gpt-6-astra", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
-  await project(name, ["AGENTS.md"]);
+  await project(name, ["security.ts"]);
   // Since G18 the pool's own writes name an acting model that is in it; gpt-6-astra goes first, into an empty pool.
   for (const [harness, id] of [["codex", "gpt-6-astra"], ["claude-code", "opus-5.5"]]) {
     expect((await call("PUT", `/models/${id}`, "owner", { harness, where: "cloud" })).status).toBe(200);
@@ -877,7 +878,7 @@ it("t629: the developer token overrides a missing review on the developer's quot
     await L.claim(id, A);
     await L.setWorkspace(id, `${name}--${id}`, H0, A);
     await L.recordPush(id, A, H1, H1);
-    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["security.ts"] });
     await L.submit(id, A);
   }
   const log = [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }];
@@ -920,7 +921,7 @@ it("t629: the developer token overrides a missing review on the developer's quot
   expect(page).toContain("every project, fast mode and overrides both");
 
   // A project that forbids overrides refuses, words or not.
-  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["AGENTS.md"], noOverride: true }, createdAt: new Date().toISOString() };
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["security.ts"], noOverride: true }, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner");
   expect(await (await post("/items/t2/accept", { head: H1, overrideReview: reason, quote: QUOTE }, acting)).json()).toMatchObject({ error: "override_forbidden" });
   expect((await L.item("t2")).state).toBe("submitted");
@@ -930,7 +931,7 @@ it("t629: the developer token overrides a missing review on the developer's quot
 // override and every permission for one, through the API and the page alike.
 it("t371: a project that forbids overrides refuses them through the API and the page", async () => {
   const name = "no-override-route", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
-  await project(name, ["AGENTS.md"]);
+  await project(name, ["security.ts"]);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   // As `atelier init --no-override` records it (the init route sends noOverride: true).
   expect((await L.initProject({ name, repo: name, reset: false, noOverride: true }, "owner")).policy.noOverride).toBe(true);
@@ -938,7 +939,7 @@ it("t371: a project that forbids overrides refuses them through the API and the 
   await L.claim("t1", A);
   await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L.submit("t1", A);
   const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
   // A server that takes the confirmation secret, given: the prohibition is told even to a confirmed owner.
@@ -977,14 +978,14 @@ it("t371: a project that forbids overrides refuses them through the API and the 
 // names none.
 it("decision 2026-10-09: the accept route names the reviewer that could replace the override", async () => {
   const name = "override-reviewer", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
-  await project(name, ["AGENTS.md"]);
+  await project(name, ["security.ts"]);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
   await L.newItem("Rewrite the agent instructions", [], "owner");
   await L.claim("t1", A);
   await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L.submit("t1", A);
   const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
   const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
@@ -1011,6 +1012,7 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
   await L.setWorkspace("t1", `${name}--t1`, "0".repeat(40), agent);
   await L.recordPush("t1", agent, head, head);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" } as never);
+  await L.addReview({ itemId: "t1", head, criteria: await L.criteria("t1"), by: "claude-code/opus-5.5", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", agent, "Did the work");
   await L.newItem("Queued", [], "owner");
   await L.dispatch("t2", "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
@@ -1163,6 +1165,7 @@ it("the standing route reads each section from its own source, not a window over
   await L.recordPush("t1", agent, head, head);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["src/a.ts"] } as never);
   await L.submit("t1", agent, "Merged summary");
+  await L.addReview({ itemId: "t1", head, criteria: await L.criteria("t1"), by: "claude-code/opus-5.5", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept("t1", "owner", head);
   await L.beginLanding("t1", "owner", head);
   await L.merged("t1", "owner", "c".repeat(40), true, head);
@@ -1531,13 +1534,13 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   const name = "routes-criteria", A = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra";
   const H0 = "0".repeat(40), H1 = "a".repeat(40);
   const ONE = ["Nested lists parse"], TWO = ["Nested lists parse", "Errors name the line"];
-  await project(name, ["AGENTS.md"]);
+  await project(name, ["security.ts"]);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Parse nested lists", [], "owner", { accept: ONE });
   await L.claim("t1", A);
   await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L.submit("t1", A);
   const REPOS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: "1".repeat(40) }] }, {});
   const api = (actor: string) => (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
@@ -1644,6 +1647,7 @@ it("a project's showcase draws its figures and its eight latest merges from the 
     await L.recordPush(`t${i}`, by, head, head);
     await L.addEvidence({ itemId: `t${i}`, claim: "npm test", grade: "observed", head, passed: true, by, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
     await L.submit(`t${i}`, by);
+    await L.addReview({ itemId: `t${i}`, head, criteria: await L.criteria(`t${i}`), by: by === GPT ? SONNET : GPT, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
     await L.accept(`t${i}`, "owner", head);
     await L.merged(`t${i}`, "owner", "d".repeat(40), true, head);
   }

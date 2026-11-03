@@ -43,7 +43,10 @@ test("status settles another family's approval of the merged head, including rec
     await L.addEvidence({ itemId: item.id, head: C, by: "owner", claim: "paths", grade: "observed", passed: true, changedPaths: ["src/a.ts"], at: new Date().toISOString() });
     await L.submit(item.id, OPUS);
     if (reviewer) await L.addReview({ itemId: item.id, head: C, by: reviewer, approve: true, criteria: criteriaOf(item), note: "Approved", at: new Date().toISOString() }, undefined, true);
-    await L.accept(item.id, "owner", C);
+    if (!approved) {
+      await L.confirmOverride(item.id, "owner", C, "access");
+      await L.accept(item.id, "owner", C, "Exercise the post-merge audit without a pre-merge approval");
+    } else await L.accept(item.id, "owner", C);
     await L.merged(item.id, "owner", M, true);
     const landing = (await L.fastLandings()).find((l) => l.item === item.id);
     assert.equal(landing.owed, !approved);

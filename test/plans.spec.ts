@@ -95,6 +95,7 @@ async function land(L: L, id: string, head: string) {
   await L.recordPush(id, actor, head, head);
   await L.addEvidence(observed(id, head));
   await L.submit(id, actor);
+  await L.addReview({ itemId: id, head, criteria: await L.criteria(id), by: GPT, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept(id, "owner");
   await L.merged(id, "owner", `merge-${id}`, true);
 }
@@ -411,6 +412,7 @@ it("parts never appear as accept, assess, failing, scope or stale entries, and o
   // A protected path: a task would ask for an independent review.
   await L.addEvidence({ ...observed(parts.a, head), changedPaths: ["src/secret/x.ts"] });
   expect(await inbox(L)).toEqual([]);
+  await L.addReview({ itemId: parts.a, head, criteria: await L.criteria(parts.a), by: GPT, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   // A clear gate: a task would be ready to accept; the part is reported by planView.
   await L.addEvidence(observed(parts.a, head));
   expect(await inbox(L)).toEqual([]);

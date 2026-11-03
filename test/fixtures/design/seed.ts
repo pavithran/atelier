@@ -172,6 +172,7 @@ export async function seed(env: Env): Promise<Seeded> {
     advance(5);
     await w.l.submit(w.id, w.holder);
     advance(40);
+    await w.l.addReview({ itemId: w.id, head: w.head, criteria: await w.l.criteria(w.id), by: reviewer(w.holder), approve: true, note: "Reviewed", at: new Date(clock).toISOString() }, undefined, true);
     await w.l.accept(w.id, OWNER, w.head);
     advance(10);
     const main = git.heads.get(plan.name)!;
@@ -229,6 +230,7 @@ export async function seed(env: Env): Promise<Seeded> {
       await check(plan, w, true, i % 2 ? "sandbox" : "runner");
       advance(5);
       await w.l.submit(w.id, w.holder, "Implements the change and its test; nothing else moved.");
+      await w.l.addReview({ itemId: w.id, head: w.head, criteria: await w.l.criteria(w.id), by: reviewer(w.holder), approve: true, note: "Reviewed", at: new Date(clock).toISOString() }, undefined, true);
       record(plan.name, "ready", w.id);
     }
     for (let i = 0; i < (s.protected ?? 0); i++) {
@@ -245,6 +247,7 @@ export async function seed(env: Env): Promise<Seeded> {
       advance(5);
       await w.l.submit(w.id, w.holder);
       advance(30);
+      await w.l.addReview({ itemId: w.id, criteria: await w.l.criteria(w.id), by: AGENTS.find((a) => a !== w.holder && a !== reviewer(w.holder))!, head: w.head, approve: true, note: "Reviewed", at: new Date(clock).toISOString() }, undefined, true);
       await w.l.addReview({ itemId: w.id, criteria: await w.l.criteria(w.id), by: reviewer(w.holder), head: w.head, approve: false, note: "The decision line still says Ready after this rejection; keep the state and the line in step.", at: new Date(clock).toISOString() });
       record(plan.name, "sentBack", w.id);
     }
@@ -254,6 +257,7 @@ export async function seed(env: Env): Promise<Seeded> {
       advance(5);
       await w.l.submit(w.id, w.holder);
       advance(20);
+      await w.l.addReview({ itemId: w.id, head: w.head, criteria: await w.l.criteria(w.id), by: reviewer(w.holder), approve: true, note: "Reviewed", at: new Date(clock).toISOString() }, undefined, true);
       await w.l.accept(w.id, OWNER, w.head);
       record(plan.name, "accepted", w.id);
     }

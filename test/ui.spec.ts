@@ -616,9 +616,9 @@ it('the thread is left off when the record holds no claim, and the note when the
 // ── Decisions as a split view (t545) ──
 const other:ProjectRecord={...project,name:'other',title:'Other <b>Co</b>'};
 const shown=(d:Detail,files:{added:number,removed:number}[]=[{added:3,removed:1}])=>({head:d.item.head!,base:'b'.repeat(40),files:files.map((f,i)=>({path:`src/f${i}.ts`,status:'modified' as const,hunks:[],...f})),truncated:false});
-// A project with no protected path, where a passing check makes a submitted task ready to accept.
+// A submitted task with its required check and independent approval.
 const open:ProjectRecord={...project,policy:{checks:['npm test'],protected:[]}};
-const ready=()=>{const d=threaded('t1','First');d.policy=open.policy;d.events=[];d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};return d;};
+const ready=()=>{const d=threaded('t1','First');d.policy=open.policy;d.events=[];d.reviews=[{itemId:d.item.id,by:"codex/gpt-6-astra",head:d.item.head!,criteria:NO_CRITERIA,approve:true,note:"Reviewed",at:time}];d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};return d;};
 it('Decisions groups what waits on the owner by project, one row per task with its id, title, state word and why',()=>{
  const a=threaded('t1','First'),b=threaded('t2','Second <i>x</i>');
  b.item.state='blocked';b.item.blocked={by:'codex/gpt-6',reason:'keys',at:time,from:'claimed'};

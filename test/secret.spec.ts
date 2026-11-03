@@ -1,3 +1,4 @@
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import { type LedgerEvent } from "../src/ledger.ts";
@@ -96,6 +97,7 @@ it("a later push keeping the secret at the same line re-records the flag for the
   await L.setSecret("t1", "atelier/events", H2, [await hit(3)]);
   expect((await L.item("t1")).secret).toMatchObject([{ file: "src/keys.ts", line: 3, head: H2 }]);
   await L.addEvidence(observed("t1", H2));
+  await L.addReview({ itemId: "t1", head: H2, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner"), "not_ready", /secret flagged in src\/keys.ts:3/);
 });
@@ -106,6 +108,7 @@ it("a file left unscanned is recorded as a blocking flag naming the file", async
   const flagged = await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "b".repeat(40), reason: "binary content" }]);
   expect(flagged.secret).toMatchObject([{ file: "big.ts", line: 0, fingerprint: "b".repeat(40), head: H1, unscanned: true }]);
   await L.addEvidence(observed("t1", H1));
+  await L.addReview({ itemId: "t1", head: H1, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner"), "not_ready", /secret scan could not read big\.ts in full \(binary content\)/);
 });
@@ -115,6 +118,7 @@ it("accept and merge are refused while the flag stands, with a message naming it
   await claimed(L, "secret-gate--t1");
   await L.setSecret("t1", "atelier/events", H1, [await hit(3)]);
   await L.addEvidence(observed("t1", H1));
+  await L.addReview({ itemId: "t1", head: H1, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner"), "not_ready", /secret flagged in src\/keys.ts:3/);
 
@@ -159,6 +163,7 @@ it("a push recorded with its scan pending blocks until that head's own scan comp
   const pushed = await L.recordPush("t1", A, H1, H1, false, undefined, [], true);
   expect(pushed).toMatchObject({ head: H1, secretScan: H1 });
   await L.addEvidence(observed("t1", H1));
+  await L.addReview({ itemId: "t1", head: H1, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner"), "not_ready", /secret scan pending for aaaaaaaa/);
   // Nothing has been judged yet, so there is no flag for the owner to clear.
@@ -171,6 +176,7 @@ it("a push recorded with its scan pending blocks until that head's own scan comp
   expect(stale).toMatchObject({ head: H2, secretScan: H2 });
   expect(stale.secret).toBeUndefined();
   await L.addEvidence(observed("t1", H2));
+  await L.addReview({ itemId: "t1", head: H2, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await refusal(L.accept("t1", "owner"), "not_ready", /secret scan pending for bbbbbbbb/);
   // The scan of the recorded head completes: its findings are recorded and
   // the pending mark is cleared in the same write, so the flag alone blocks.
@@ -206,6 +212,7 @@ it("a cleared line stays cleared through a later push that keeps it, moved or no
   const flagged = ((await L.events("t1")) as unknown as LedgerEvent[]).filter((e) => e.kind === "secret.flagged");
   expect(flagged[0].data).toEqual({ head: H2, hits: [], cleared: [{ file: "src/keys.ts", line: 5 }] });
   await L.addEvidence(observed("t1", H2));
+  await L.addReview({ itemId: "t1", head: H2, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", A);
   await L.accept("t1", "owner");
   // With nothing standing there is nothing further to clear.
@@ -223,6 +230,7 @@ it("a cleared line stays cleared through a later push that keeps it, moved or no
     ["src/keys.ts", 5, true], ["src/keys.ts", 6, false], ["src/other.ts", 1, false], ["src/keys.ts", 9, false],
   ]);
   await L.addEvidence(observed("t1", H1));
+  await L.addReview({ itemId: "t1", head: H1, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", A); // the push reopened the accepted item
   await refusal(L.accept("t1", "owner"), "not_ready", /secret flagged in src\/keys.ts:6.*secret flagged in src\/other.ts:1.*secret flagged in src\/keys.ts:9/s);
   expect((await L.item("t1")).secretClearances).toHaveLength(1);
@@ -240,12 +248,14 @@ it("a cleared unscanned file stays cleared while its content is unchanged", asyn
   await L.recordPush("t1", A, H2, H2);
   expect((await L.setSecret("t1", "atelier/events", H2, [], [{ file: "big.ts", fingerprint: "b".repeat(40), reason: "binary content" }])).secret).toMatchObject([{ file: "big.ts", cleared: true }]);
   await L.addEvidence(observed("t1", H2));
+  await L.addReview({ itemId: "t1", head: H2, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.submit("t1", A);
   await L.accept("t1", "owner");
   // The file changed: its new content was not read, so it blocks again.
   await L.recordPush("t1", A, H1, H1);
   expect((await L.setSecret("t1", "atelier/events", H1, [], [{ file: "big.ts", fingerprint: "c".repeat(40), reason: "binary content" }])).secret).toMatchObject([{ file: "big.ts", unscanned: true }]);
   await L.addEvidence(observed("t1", H1));
+  await L.addReview({ itemId: "t1", head: H1, criteria: NO_CRITERIA, by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await refusal(L.accept("t1", "owner"), "not_ready", /secret scan could not read big\.ts in full \(binary content\)/);
 });
 
