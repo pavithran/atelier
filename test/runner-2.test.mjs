@@ -887,6 +887,32 @@ test("negative words that begin a blocking reason still block without punctuatio
   }
 });
 
+test("unavailable optional checks let a finished build submit", async () => {
+  for (const report of [
+    "npm test and typecheck passed. I could not run optional browser tests because Playwright is not installed.",
+    "Optional browser tests could not run: Playwright is not installed. Required checks passed.",
+    "Optional checks failed: sandbox has no browser. Required checks passed.",
+    "validation_blocked: none (could not run optional browser tests: Playwright missing)\nRequired checks passed.",
+  ]) {
+    assert.equal(validationBlockedReport(report), null, report);
+    const { io, calls } = fixture();
+    const harness = io.harness;
+    io.harness = async (...args) => ({ ...(await harness(...args)), output: report });
+    const state = await runTask(assignment, config, "home:studio", io);
+    assert.equal(state.phase, "submitted", report);
+    assert.equal(runOutcome(state), null, report);
+    assert.ok(!calls.some((c) => c.argv?.includes("--blocked")), report);
+  }
+});
+
+test("an optional check does not hide required checks or an explicit blocker", () => {
+  for (const report of [
+    "Optional browser tests could not run: no browser.\nI could not run required checks: listen EPERM.",
+    "Optional browser tests could not run; required tests could not run: listen EPERM.",
+    "validation_blocked: optional browser tests unavailable",
+  ]) assert.ok(validationBlockedReport(report), report);
+});
+
 test("a negative validation_blocked line does not hide a real blocker elsewhere", () => {
   for (const blocker of ["validation_blocked: missing test dependency", "I could not run tests: listen EPERM."]) {
     assert.match(validationBlockedReport(`validation_blocked: none\n${blocker}`), /missing test dependency|listen EPERM/);

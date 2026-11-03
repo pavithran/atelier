@@ -1566,6 +1566,12 @@ export function validationBlockedReport(output) {
     } catch { /* plain output */ }
   }
   if (structured) report = messages.at(-1) ?? "";
+  // Optional checks are information, not an inferred validation blocker.
+  // Preserve offsets so the returned detail still quotes the original report.
+  const requiredReport = report.replace(
+    new RegExp(String.raw`\boptional\s+(?:(?!required\b)[\w-]+\s+){0,4}${CHECKS}\b`, "gi"),
+    (phrase) => " ".repeat(phrase.length),
+  );
   // A sentence about someone else's checks (a reviewer's sandbox that could
   // not run tests) is not this build's block; only the explicit
   // `validation_blocked:` line is taken whoever it names (G5).
@@ -1574,7 +1580,7 @@ export function validationBlockedReport(output) {
     const end = report.slice(match.index).search(/\.\s|\n/);
     return OTHER_PARTY.test(report.slice(from, end < 0 ? report.length : match.index + end));
   };
-  const matches = VALIDATION_BLOCKED.flatMap((pattern, i) => [...report.matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))].filter((m) => i === 0
+  const matches = VALIDATION_BLOCKED.flatMap((pattern, i) => [...(i === 0 ? report : requiredReport).matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))].filter((m) => i === 0
     // Empty reasons and explicit no-block answers are not blockers.
     ? !/^(?:$|(?:none|n\/a|nothing)(?:$|\s*\p{P}))/iu.test(m[1].replace(/[*_`]/g, "").trim())
     : !aboutAnother(m)));
