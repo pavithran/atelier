@@ -105,7 +105,7 @@ export function startAttempt(run: PostMergeRun, id: string, at: string): Attempt
 // Redact before truncation so a boundary cannot expose part of a credential.
 // The executor also supplies environment values; the server repeats generic
 // redaction rather than trusting executor output to have been sanitized.
-export function redactedOutput(output: unknown, secrets: string[] = []): string {
+export function redactedText(output: unknown, secrets: string[] = []): string {
   if (typeof output !== "string") return "";
   let text = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
   for (const secret of [...new Set(secrets)].filter(Boolean).sort((a, b) => b.length - a.length)) text = text.split(secret).join("[redacted]");
@@ -116,6 +116,10 @@ export function redactedOutput(output: unknown, secrets: string[] = []): string 
     .replace(/(\b["']?[\w.-]{0,128}(?:token|password|passwd|secret|api[_-]?key|authorization|credential)[\w.-]{0,128}["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&]+)/gi, "$1[redacted]")
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[A-Z0-9]{16})\b/g, "[redacted]")
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+  return text;
+}
+export function redactedOutput(output: unknown, secrets: string[] = []): string {
+  const text = redactedText(output, secrets);
   const limit = 8192, marker = "\n[output truncated]";
   return text.length > limit ? text.slice(0, limit - marker.length) + marker : text;
 }

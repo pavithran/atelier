@@ -1,3 +1,4 @@
+import { runnerLogBuffer } from "../src/runner-log.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { generatedPaths, harnessReady, loadClaudeToken } from "./harness/adapter.mjs";
 import { expiryFromToken, tokenExpiry } from "../src/runners/readiness.ts";
@@ -1095,6 +1096,18 @@ export async function readReviewGuide(dir, base, executeChild = execute, signal)
   const result = await executeChild(["git", "show", `${base}:${REVIEW_GUIDE_FILE}`], { cwd: dir, capture: true, captureError: true, signal, step: "review-guide" });
   if (result.timedOut || signal?.aborted || result.code !== 0 || typeof result.output !== "string") return null;
   return result.output.includes("\u0000") ? null : result.output.slice(0, REVIEW_GUIDE_MAX + 1);
+}
+
+// Capture commands the runner owns. Harnesses use the original executor.
+export function runnerDiagnosticChild(run, log) {
+  return async (argv, options) => {
+    const diagnostic = argv[0] === "npm" || argv[0] === "/bin/sh" ||
+      [process.execPath, "node"].includes(argv[0]) && argv.some(arg => ["ci", "test", "typecheck", "finish", "check"].includes(arg));
+    if (diagnostic) log(`running ${argv[0]} ${argv[1] ?? ""}`);
+    const result = await run(argv, options);
+    if (diagnostic && result.code !== 0) log([result.output, result.stderr].filter(Boolean).join("\n"));
+    return result;
+  };
 }
 
 export async function checked(argv, options, executeChild = execute) {
@@ -4463,14 +4476,17 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, pauses: limits.pauses }) });
   // The running build's progress line (G21, cli/progress.mjs) goes with every
   // poll and heartbeat while a build runs, and once more when it has ended.
+  const runnerLogs = runnerLogBuffer([credential].filter(v => typeof v === "string"));
+  const originalExecuteChild = executeChild;
+  executeChild = runnerDiagnosticChild(originalExecuteChild, text => runnerLogs.line(text));
   const progress = progressTracker({ now });
-  // Each run's text goes to a log beside the task workspaces, never to the server.
+  // Run reports keep facts; runner diagnostics travel separately on heartbeats.
   const factsOf = (task, state) => {
     let dir = null;
     try { dir = workspacePath ? join(dirname(workspacePath(task.project, task.item.id)), "run-logs") : null; } catch { dir = null; }
     return runFacts(task, state, { dir, now });
   };
-  const progressReport = () => { const p = progress.report(); return p.length ? { progress: p } : {}; };
+  const progressReport = () => { const p = progress.report(), logs = runnerLogs.report(); return { ...(p.length ? { progress: p } : {}), ...(logs.length ? { runnerLogs: logs } : {}) }; };
   const missing = new Map();
   // Post-merge reviews whose baseline could not be fetched (t591), by
   // missingKey: the commit, the failures so far and the poll the next try
@@ -4642,7 +4658,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     // The empty folder a criteria review job works in (runCriteriaReview).
     makeDir: (dir) => mkdirSync(dir, { recursive: true }),
-    workspacePath, hasPreparation, log: line, stopped: () => controller.signal.aborted,
+    workspacePath, hasPreparation, log: (text) => { line(text); runnerLogs.line(`${new Date(now()).toISOString()} runner: ${text}`); }, stopped: () => controller.signal.aborted,
     // `options.token` (a review job's, t346) is the Atelier token this one
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
     // child's environment, which wins over the owner's stored token; it is
@@ -4697,7 +4713,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
-    harness: (argv, cwd, env, options = {}) => startHarness(argv, cwd, env, { ...options, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, executeChild),
+    harness: (argv, cwd, env, options = {}) => startHarness(argv, cwd, env, { ...options, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, originalExecuteChild),
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
     prepareReview: (cwd, source) => prepareReviewDependencies(cwd, source, { executeChild, signal: controller.signal }),
     // The clean-clone run holds no token (checkEnv), so it runs outside executeChild.
@@ -4709,7 +4725,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         try { policy = await projectPolicy(project, actor); }
         catch (error) { line(`the check limit could not be read (${error.message}); the clean-clone run goes by the defaults`); }
       }
-      return collectRunnerEvidence({ ...args, limits: checkLimits(policy), run: execute, signal: controller.signal });
+      return collectRunnerEvidence({ ...args, limits: checkLimits(policy), run: runnerDiagnosticChild(execute, text => runnerLogs.line(text)), signal: controller.signal });
     },
     prepare: async (cwd) => {
       if (!existsSync(join(cwd, ".git"))) return null;
@@ -5139,6 +5155,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // than RUNNER_GONE_MS would orphan its own claim. The same tick
           // runs the readiness check, which does its probes once per
           // READY_RECHECK_MS, so a long job does not delay it (t195).
+          runnerLogs.begin(task.project, task.item.id);
+          runnerLogs.line(`starting ${task.item.dispatch?.job ?? "build"}`);
           state = await withHeartbeat(() => task.item.dispatch?.job === "land"
             ? runLandTask(task)
             : task.item.dispatch?.job === "plan"
@@ -5155,10 +5173,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { runnerLogs.line(`running ${task.item.dispatch?.job ?? "build"}`); await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           // The ended build's last progress (its cost among it) is sent at once,
           // so the server keeps the run's final line even under --once.
-          if (heartbeat && progress.active()) {
+          runnerLogs.line(`run ended: ${state.phase}${state.reason ? `: ${state.reason}` : ""}`);
+          runnerLogs.end();
+          if (heartbeat) {
             try { await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); progress.sent(); }
             catch (error) { if (!controller.signal.aborted) line(`the build's last progress was not sent: ${error.message}`); }
           }

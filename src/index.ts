@@ -1828,6 +1828,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return mine.length ? ledgerOf(env, p).recordProgress(c.token!.runner!, mine).catch((e: unknown) => console.error("progress not recorded", String(e))) : null;
       }));
     }
+    if (c.token?.runner && offer && Array.isArray(body.runnerLogs)) {
+      const reports = body.runnerLogs.slice(0, 8) as { project?: unknown; task?: unknown; lines?: unknown }[];
+      await Promise.all(projects.map(p => ledgerOf(env, p).recordRunnerLogs(c.token!.runner!, reports.filter(r => typeof r?.project === "string" && namesOf(p).includes(r.project)))));
+    }
     if (offer && body.heartbeat === true) {
       await Promise.all(projects.map((p) => ledgerOf(env, p).recordRunnerPolls(polls).catch(() => {})));
       return json([]);
@@ -2550,6 +2554,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // The task's newest run report rides with it (its facts and the log's host
   // and path on the runner; never its output).
   if (!verb && m === "GET") return json({ ...await L.detail(id), lastRun: lastRunOf((await index(env).runsForItem(project, id).catch(() => []))[0]) });
+  if (verb === "runner-log" && parts.length === 5 && m === "GET") return json(await L.runnerLog(id));
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);

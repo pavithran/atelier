@@ -1,3 +1,4 @@
+import { receiveRunnerLog, type RunnerLog } from "./runner-log.ts";
 import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
 import { decideLandQueue, findStageOverrun, landerLive, olderThan, openStages, reconcileStages, REVIEW_TIER_STAGE, STAGE_EVENT_KINDS, type LandQueued, type LandQueueVerdict, type StageFinding } from "./stage-tick.ts";
@@ -3241,6 +3242,28 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // ── a live progress line per task (G21) ───────────────────────────────────
+
+  recordRunnerLogs(runner: string, reports: { task?: unknown; lines?: unknown; run?: unknown; offset?: unknown }[]): number {
+    let kept = 0;
+    for (const report of reports.slice(0, 8)) {
+      if (typeof report.task !== "string" || !Array.isArray(report.lines)) continue;
+      const item = this.sql.exec("SELECT runner FROM items WHERE id = ?", report.task).toArray()[0];
+      const review = this.sql.exec("SELECT runner FROM review_requests WHERE item = ? ORDER BY id DESC LIMIT 1", report.task).toArray()[0];
+      const claim = this.sql.exec("SELECT data FROM events WHERE item_id = ? AND kind = 'item.claimed' ORDER BY seq DESC LIMIT 1", report.task).toArray()[0];
+      const claimedRunner = claim ? JSON.parse(String(claim.data)).runner : null;
+      if (![item?.runner ?? claimedRunner, review?.runner].some(value => typeof value === "string" && value.toLowerCase() === runner.toLowerCase())) continue;
+      const next = receiveRunnerLog(this.runnerLog(report.task), runner, report);
+      if (!next) continue;
+      this.sql.exec("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", `runner-log:${report.task}`, JSON.stringify(next));
+      kept++;
+    }
+    return kept;
+  }
+
+  runnerLog(id: string): RunnerLog {
+    this.item(id);
+    return this.runnerMeta<RunnerLog>(`runner-log:${id}`) ?? { next: 1, lines: [] };
+  }
 
   // The runner's reports of the builds it runs, sent with its poll and
   // heartbeat (cli/progress.mjs). Each is kept for its task while the task
