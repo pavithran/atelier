@@ -23,11 +23,11 @@ test("real slots CLI changes an isolated occupied pool and reports draining with
       const loaded = next(url, context);
       if (url === ${JSON.stringify(new URL("../cli/load.mjs", import.meta.url).href)}) {
         const source = readFileSync(new URL(url), "utf8");
-        if (!source.includes(JSON.stringify('/tmp/atelier-test-slots-v1.sqlite'))) {
+        if (!source.includes(JSON.stringify('/tmp/atelier-test-slots-v2/pool.sqlite'))) {
           throw new Error('cannot isolate the test pool; refusing to run the CLI');
         }
         loaded.source = source
-          .replace(JSON.stringify('/tmp/atelier-test-slots-v1.sqlite'), ${JSON.stringify(JSON.stringify(path))})
+          .replace(JSON.stringify('/tmp/atelier-test-slots-v2/pool.sqlite'), ${JSON.stringify(JSON.stringify(path))})
           .replace('(options.processes ?? slotProcesses)()', ${JSON.stringify(JSON.stringify(processes))});
       }
       return loaded;

@@ -368,6 +368,7 @@ test("idle reservations expire, close only idle entries, and respect capacity re
 
 test("sequence cleanup warns when the pool is inaccessible; invalid priority stays a command error", async (t) => {
   const f = fixture(t), warnings = [], previous = console.warn;
+  await slotStatus(f.options);
   console.warn = (text) => warnings.push(text);
   try {
     const seq = releaseSequence({ class: "release" }, { ...f.options, path: join(f.options.path, "missing", "pool.sqlite") });

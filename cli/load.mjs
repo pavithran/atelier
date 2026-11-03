@@ -2,8 +2,8 @@ import { cpus, hostname } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
-import { closeSync, writeSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { closeSync, writeSync, mkdirSync, chmodSync, statSync, openSync, fstatSync, fchmodSync } from "node:fs";
 
 // The variable naming the descriptor the held slot is reported on (G7); the
 // same name as SLOT_HELD_FD in cli/check-clock.mjs, written out here so this
@@ -12,7 +12,7 @@ const SLOT_HELD_FD = "ATELIER_SLOT_HELD_FD";
 
 // Host-wide, deliberately independent of HOME, ATELIER_CACHE, project and
 // runner configuration. Containers have their own /tmp and process namespace.
-export const HOST_POOL = "/tmp/atelier-test-slots-v1.sqlite";
+export const HOST_POOL = "/tmp/atelier-test-slots-v2/pool.sqlite";
 export const SLOT_WRAPPER = fileURLToPath(import.meta.url);
 export const SEQUENCE_GRACE_MS = 5000;
 export const SEQUENCE_CONTINUATIONS = 3;
@@ -98,33 +98,45 @@ export function parseSlotProcesses(output) {
 // Tests inject a database and process snapshot; production has no path override.
 export async function poolTransaction(options = {}, update = () => {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const db = new DatabaseSync(options.path ?? HOST_POOL);
+  // No await while the umask is changed: SQLite creates journals during writes.
+  // The non-sticky directory lets another user remove a crashed writer's journal.
+  const mask = process.umask(0);
   try {
-    db.exec("PRAGMA busy_timeout=30000; CREATE TABLE IF NOT EXISTS pool (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)");
-    db.exec("BEGIN IMMEDIATE");
+    const path = options.path ?? HOST_POOL;
+    const directory = dirname(path);
+    const created = mkdirSync(directory, { recursive: true, mode: 0o777 });
+    if ((created || path === HOST_POOL) && statSync(directory).uid === process.getuid?.()) chmodSync(directory, 0o777);
+    const fd = openSync(path, "a", 0o666);
+    try { if (fstatSync(fd).uid === process.getuid?.()) fchmodSync(fd, 0o666); }
+    finally { closeSync(fd); }
+    const db = new DatabaseSync(options.path ?? HOST_POOL);
     try {
-      const stored = db.prepare("SELECT data FROM pool WHERE id=1").get();
-      const env = options.env ?? process.env;
-      let requested;
-      try { requested = slotCapacity(env); }
-      catch { /* Invalid environment is advisory, including first creation. */ }
-      const state = stored ? JSON.parse(stored.data) : { capacity: requested ?? slotCapacity({}), host: hostname(), sequence: 0, entries: [] };
-      const poolPath = resolve(options.path ?? HOST_POOL);
-      if (env.ATELIER_TEST_SLOTS !== undefined && requested !== state.capacity && !warnedPools.has(poolPath)) {
-        warnedPools.add(poolPath);
-        (options.warn ?? console.warn)(`test slots: warning: ATELIER_TEST_SLOTS ${requested === undefined ? "is invalid" : `requests ${requested}`}; using stored capacity ${state.capacity}`);
+      db.exec("PRAGMA busy_timeout=30000; CREATE TABLE IF NOT EXISTS pool (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const stored = db.prepare("SELECT data FROM pool WHERE id=1").get();
+        const env = options.env ?? process.env;
+        let requested;
+        try { requested = slotCapacity(env); }
+        catch { /* Invalid environment is advisory, including first creation. */ }
+        const state = stored ? JSON.parse(stored.data) : { capacity: requested ?? slotCapacity({}), host: hostname(), sequence: 0, entries: [] };
+        const poolPath = resolve(options.path ?? HOST_POOL);
+        if (env.ATELIER_TEST_SLOTS !== undefined && requested !== state.capacity && !warnedPools.has(poolPath)) {
+          warnedPools.add(poolPath);
+          (options.warn ?? console.warn)(`test slots: warning: ATELIER_TEST_SLOTS ${requested === undefined ? "is invalid" : `requests ${requested}`}; using stored capacity ${state.capacity}`);
+        }
+        const processes = options.skipEmpty && !state.entries.length ? [] : (options.processes ?? slotProcesses)();
+        state.entries = state.entries.filter((entry) => entry.reservedUntil ? entry.reservedAt <= now(options) && entry.reservedUntil > now(options) : processes.some((p) => p.lease === entry.lease));
+        const result = update(state, processes);
+        db.prepare("INSERT INTO pool(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(JSON.stringify(state));
+        db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
       }
-      const processes = options.skipEmpty && !state.entries.length ? [] : (options.processes ?? slotProcesses)();
-      state.entries = state.entries.filter((entry) => entry.reservedUntil ? entry.reservedAt <= now(options) && entry.reservedUntil > now(options) : processes.some((p) => p.lease === entry.lease));
-      const result = update(state, processes);
-      db.prepare("INSERT INTO pool(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(JSON.stringify(state));
-      db.exec("COMMIT");
-      return result;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally { db.close(); }
+    } finally { db.close(); }
+  } finally { process.umask(mask); }
 }
 
 // Use the admission lock; never rebuild the pool or renumber its queue.
@@ -281,7 +293,7 @@ to one, so a wave's checks run one at a time. Stored capacity then wins (a pool
 made under an older default keeps it: run --set 1); invalid or differing
 environment values warn. --set N atomically changes capacity (positive safe
 integer). Lowering drains running work without preemption or a restart.
-The database is /tmp/atelier-test-slots-v1.sqlite.
+The database is /tmp/atelier-test-slots-v2/pool.sqlite.
 Release/landing precedes review, then ordinary, FIFO within each class by an
 atomic enqueue sequence. Admission never preempts active commands. Lower
 classes may starve across separate releases. Release check/wrap sequences retain

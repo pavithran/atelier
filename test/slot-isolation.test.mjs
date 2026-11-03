@@ -5,7 +5,7 @@ import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { HOST_POOL, SLOT_WRAPPER } from "../cli/load.mjs";
 
 test("test checks use an isolated scheduler even with a scrubbed environment", (t) => {
-  assert.notEqual(HOST_POOL, "/tmp/atelier-test-slots-v1.sqlite");
+  assert.notEqual(HOST_POOL, "/tmp/atelier-test-slots-v2/pool.sqlite");
   if (!canInspectSlots(t)) return;
   const r = spawnSync(process.execPath, [SLOT_WRAPPER, "--status", "--json"], {
     env: { PATH: process.env.PATH, HOME: process.env.HOME }, encoding: "utf8", timeout: 5000,

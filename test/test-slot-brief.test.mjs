@@ -122,7 +122,7 @@ test("the generated command runs from another workspace: slot held, nested reuse
   // its own pool because its fresh environment intentionally drops that lease.
   const wrapper = join(work, "load.mjs");
   const source = readFileSync(new URL("../cli/load.mjs", import.meta.url), "utf8");
-  const isolated = source.replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(join(work, "pool.sqlite")));
+  const isolated = source.replace('"/tmp/atelier-test-slots-v2/pool.sqlite"', JSON.stringify(join(work, "pool.sqlite")));
   assert.notEqual(isolated, source, "the fixture must replace the host pool path");
   writeFileSync(wrapper, isolated);
   const task = `t479-${randomUUID()}`;
