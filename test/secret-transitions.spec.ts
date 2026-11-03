@@ -1,6 +1,7 @@
 import { env } from "./support/workers.ts";
 import { expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import type { Evidence, Item } from "../src/rules.ts";
 
 // The push scan over every kind of change a tree can make to a path (t332):
@@ -161,6 +162,7 @@ async function pushed(row: Row, i: number, missing?: Set<string>) {
   // findings stand between the item and the gate.
   const evidence: Evidence = { itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: Object.keys({ ...row.base, ...row.head }) };
   await L.addEvidence(evidence);
+  await L.addReview({ itemId: "t1", head: H1, by: "codex/gpt-6-astra", criteria: NO_CRITERIA, approve: true, note: "Reviewed", at: new Date().toISOString() }, undefined, true);
   if (!missing) await L.submit("t1", A);
   const d = (await (await call("GET", `/projects/${name}/items/t1`, "owner")).json()) as Detail;
   const events = await L.events("t1");

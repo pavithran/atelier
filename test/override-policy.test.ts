@@ -17,7 +17,7 @@ const H1 = "a".repeat(40);
 const H2 = "b".repeat(40);
 const T = "2026-10-06T12:00:00.000Z";
 const NOW = Date.parse(T);
-const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"] };
+const policy: ProjectPolicy = { checks: ["npm test"], protected: ["security.ts"] };
 const forbidding: ProjectPolicy = { ...policy, noOverride: true };
 
 function item(over: Partial<Item> = {}): Item {
@@ -26,7 +26,7 @@ function item(over: Partial<Item> = {}): Item {
     createdAt: T, updatedAt: T, lastPushAt: T, ...over,
   };
 }
-const pass = (over: Partial<Evidence> = {}): Evidence => ({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: T, changedPaths: ["AGENTS.md"], ...over });
+const pass = (over: Partial<Evidence> = {}): Evidence => ({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: T, changedPaths: ["security.ts"], ...over });
 const review = (by: string, approve = true): Review => ({ itemId: "t1", by, head: H1, criteria: "", approve, note: "", at: T });
 const touching = [pass()];
 

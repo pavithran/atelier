@@ -36,9 +36,9 @@ const OPUS = "claude-code/opus-5.5";
 const SONNET = "claude-code/sonnet-5.5";
 const GPT = "codex/gpt-6-astra";
 
-const anthropic: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"], familyMode: { single: "anthropic", by: OWNER, at: T } };
-const crossFamily: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"] };
-const returned: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"], familyMode: { single: null, by: OWNER, at: T } };
+const anthropic: ProjectPolicy = { checks: ["npm test"], protected: ["security.ts"], familyMode: { single: "anthropic", by: OWNER, at: T } };
+const crossFamily: ProjectPolicy = { checks: ["npm test"], protected: ["security.ts"] };
+const returned: ProjectPolicy = { checks: ["npm test"], protected: ["security.ts"], familyMode: { single: null, by: OWNER, at: T } };
 
 const item = (over: Partial<Item> = {}): Item => ({
   id: "t21", title: "Review rules", scope: ["src/review/**"], state: "submitted", owner: OPUS,
@@ -47,7 +47,7 @@ const item = (over: Partial<Item> = {}): Item => ({
 });
 const pass = (over: Partial<Evidence> = {}): Evidence => ({
   itemId: "t21", claim: "npm test", grade: "observed", head: H2, passed: true,
-  by: "atelier/sandbox", at: T, changedPaths: ["AGENTS.md"], where: "sandbox", ...over,
+  by: "atelier/sandbox", at: T, changedPaths: ["security.ts"], where: "sandbox", ...over,
 });
 const review = (by: string, approve = true, over: Partial<Review> = {}): Review =>
   ({ itemId: "t21", by, head: H2, criteria: NO_CRITERIA, approve, note: "", at: T, ...over });

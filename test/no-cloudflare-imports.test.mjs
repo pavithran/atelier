@@ -36,7 +36,7 @@ export const EXCEPTIONS = {
   "test/ledger.spec.ts": { why: DATA, literals: [`${W}.*`] },
   "test/review-notice.test.ts": { why: DATA, literals: [`${W}.*`] },
   "test/routes.spec.ts": { why: DATA, literals: [`${W}.*`] },
-  "test/rules.test.ts": { why: DATA, literals: [`${W}.*`, `${W}.jsonc`, `${W}.j\\u017fonc`] },
+  "test/rules.test.ts": { why: DATA, literals: [`${W}.*`, `${W}.toml`, `${W}.jsonc`, `${W}.j\\u017fonc`] },
   "test/runner-evidence.test.mjs": { why: DATA, literals: [`${W} types`] },
   "test/runner-prepare-policy.spec.ts": { why: DATA, literals: [`${W}.jsonc`] },
 };
