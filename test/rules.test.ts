@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { reviewNeeded } from "../src/review/needed.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,10 +33,10 @@ function item(over: Partial<Item> = {}): Item {
     createdAt: T, updatedAt: T, lastPushAt: T, ...over,
   };
 }
-const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md", "wrangler.*"] };
+const policy: ProjectPolicy = { checks: ["npm test"], protected: ["wrangler.toml", "wrangler.*"] };
 const pass = (over: Partial<Evidence> = {}): Evidence => ({
   itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true,
-  by: "claude-code/opus-5.5", at: T, changedPaths: ["src/a.ts"], ...over,
+  by: "claude-code/opus-5.5", at: T, changedPaths: ["src/a.md"], ...over,
 });
 
 test("a project that requires criteria refuses a task filed or cleared without them", () => {
@@ -151,7 +152,7 @@ test("the latest observation at a head wins", () => {
 });
 
 test("protected paths need a model of another family; the project owner's approval is not that review", () => {
-  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const touching = pass({ changedPaths: ["wrangler.toml"] });
   const sameModel: Review = { itemId: "t1", by: "other-harness/opus-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T };
   const sameFamily: Review = { ...sameModel, by: "claude-code/sonnet-5.5" };
   const otherModel: Review = { ...sameModel, by: "codex/gpt-5.5" };
@@ -175,7 +176,7 @@ test("a rejection at the head blocks", () => {
 });
 
 test("changes outside scope are surfaced, not blocked", () => {
-  const g = gate(item(), policy, [pass({ changedPaths: ["src/a.ts", "docs/b.md"] })], []);
+  const g = gate(item(), policy, [pass({ changedPaths: ["src/a.ts", "docs/b.md"] })], [review("codex/gpt-6")]);
   assert.equal(g.ready, true);
   assert.deepEqual(g.outOfScope, ["docs/b.md"]);
 });
@@ -196,7 +197,7 @@ test("inbox: decisions outrank the owner's problems", () => {
   ];
   const ev = [pass({ itemId: "t1" }), pass({ itemId: "t2", passed: false, changedPaths: ["lib/a.ts"] })];
   const kinds = inboxFor("proj", items, policy, ev, [], now).map((x) => `${x.itemId}:${x.kind}`);
-  assert.deepEqual(kinds, ["t1:accept", "t4:merge", "t3:stale", "t2:failing"]);
+  assert.deepEqual(kinds, ["t1:accept", "t4:merge", "t2:assess", "t3:stale"]);
 });
 
 test("inbox flags live items whose scopes overlap", () => {
@@ -282,9 +283,9 @@ test("a check line holding a word that names an Object.prototype member finds no
     assert.deepEqual(checkFiles([`${word} test`]), [], word);
     assert.ok(checkFiles([`npm ${word} check`]).includes("package.json"), word);
     // The gate reads the same tables through changeClass.
-    const p: ProjectPolicy = { checks: [`grep -q ${word} src/a.ts`], protected: ["AGENTS.md"] };
+    const p: ProjectPolicy = { checks: [`grep -q ${word} src/a.ts`], protected: ["wrangler.toml"] };
     assert.equal(changeClass(["src/a.ts"], p), "coordinated", word);
-    assert.equal(gate(item({ scope: [] }), p, [pass({ claim: p.checks[0], changedPaths: ["src/a.ts"] })], []).ready, true, word);
+    assert.equal(gate(item({ scope: [] }), p, [pass({ claim: p.checks[0], changedPaths: ["src/a.ts"] })], [review("codex/gpt-6")]).ready, true, word);
   }
 });
 
@@ -472,7 +473,7 @@ test("an actor name is at most 200 characters, whatever its shape", () => {
 // way a coordinated change was reviewed under the retired execution policy.
 const governed: ProjectPolicy = {
   ...policy,
-  riskReviews: { core: ["AGENTS.md", "wrangler.*"], reviews: { "docs-or-tests": 0, other: 1, core: 1 } },
+  riskReviews: { core: ["wrangler.toml", "wrangler.*"], reviews: { "docs-or-tests": 0, other: 1, core: 1 } },
   agents: {
     claude: { available: true, eligible_roles: ["executor", "assessor"] },
     codex: { available: true, eligible_roles: ["executor", "assessor"] },
@@ -503,7 +504,7 @@ test("changed paths take the strictest class and retain implicit check protectio
     [["docs/a.md"], "coordinated"], [["src/a.ts"], "coordinated"],
     [["docs/a.md", "src/a.ts"], "coordinated"],
     [["docs/a.md", "docs/secret/key"], "coordinated"],
-    [["src/a.ts", "AGENTS.md"], "protected"], [["package.json"], "protected"],
+    [["src/a.ts", "wrangler.toml"], "protected"], [["package.json"], "protected"],
   ] as [string[], string][]) assert.equal(changeClass(paths, governed), kind);
   assert.equal(changeClass(["docs/a.md", "docs/secret/key"], { ...governed, execution: undefined }), "coordinated");
   assert.equal(protectedRuleGroups(governed).some(([origin]) => /execution/.test(origin)), false);
@@ -511,12 +512,12 @@ test("changed paths take the strictest class and retain implicit check protectio
 
 test("a change needs no review beside the project's riskReviews, whatever a stored execution policy allowed (t152)", () => {
   const docs = [pass({ changedPaths: ["docs/a.md"] })];
-  const other = [pass()];
-  const protectedChange = [pass({ changedPaths: ["AGENTS.md"] })];
+  const other = [pass({ changedPaths: ["src/a.ts"] })];
+  const protectedChange = [pass({ changedPaths: ["wrangler.toml"] })];
   assert.equal(gate(item(), governed, docs, []).ready, true);
   assert.equal(gate(item(), governed, other, []).needsAssessor, true);
   assert.equal(gate(item(), governed, other, [review(item().owner!)]).ready, false);
-  assert.equal(gate(item(), governed, other, [review("claude-code/sonnet-5.5")]).ready, true);
+  assert.equal(gate(item(), governed, other, [review("claude-code/sonnet-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("claude-code/sonnet-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("opencode/opus-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6")]).ready, true);
@@ -525,8 +526,8 @@ test("a change needs no review beside the project's riskReviews, whatever a stor
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6", { head: H2 })]).ready, false);
   // Without riskReviews a change outside the guarded paths needs no review, as in a project ControlPlane never governed.
   const legacyOnly: ProjectPolicy = { ...governed, riskReviews: undefined };
-  assert.equal(gate(item(), legacyOnly, other, []).ready, true);
-  assert.equal(approvalsNeeded(legacyOnly, "coordinated", ["src/a.ts"]).count, 0);
+  assert.equal(gate(item(), legacyOnly, other, []).ready, false);
+  assert.equal(approvalsNeeded(legacyOnly, "coordinated", ["src/a.ts"]).count, 1);
 });
 
 test("a review counts by the same rules whatever agent a stored policy marked available (t152)", () => {
@@ -541,7 +542,7 @@ test("a review counts by the same rules whatever agent a stored policy marked av
 test("a stored execution policy blocks no class and implies no nothing-to-merge or class fields (t152)", () => {
   // Would have caught: allowed_classes [] blocking every change with "not allowed by this project's execution policy".
   const p = { ...governed, execution: { ...governed.execution!, allowed_classes: [] } };
-  for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
+  for (const path of ["docs/a.md", "src/a.ts", "wrangler.toml"]) {
     const g = gate(item(), p, [pass({ changedPaths: [path] })], [review("codex/gpt-6")]);
     assert.doesNotMatch(g.blockers.join(), /not allowed|execution policy/);
     assert.equal(g.ready, true, path);
@@ -555,15 +556,15 @@ test("a stored execution policy blocks no class and implies no nothing-to-merge 
 
 test("ungoverned gates need another family for a protected change, and count neither the same family nor the owner", () => {
   assert.equal(gate(item(), policy, [pass()], []).ready, true);
-  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("claude-code/sonnet-5.5")]).ready, false);
-  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("owner")]).ready, false);
-  assert.equal(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"] })], [review("codex/gpt-6")]).ready, true);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["wrangler.toml"] })], [review("claude-code/sonnet-5.5")]).ready, false);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["wrangler.toml"] })], [review("owner")]).ready, false);
+  assert.equal(gate(item(), policy, [pass({ changedPaths: ["wrangler.toml"] })], [review("codex/gpt-6")]).ready, true);
   assert.equal(gate(item(), policy, [pass()], []).changeClass, undefined);
 });
 
 
 test("the project owner's rejection blocks every class, and the owner's approval is no class's independent review", () => {
-  for (const owner of ["owner", "pavi"]) for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
+  for (const owner of ["owner", "pavi"]) for (const path of ["docs/a.md", "src/a.ts", "wrangler.toml"]) {
     const evidence = [pass({ changedPaths: [path] })];
     // A direct change needs no review, so it is ready whoever approved it.
     const alone = gate(item(), governed, evidence, [review(owner)], owner);
@@ -586,7 +587,7 @@ test("non-array path measurements remain unmeasured", () => {
 test("path input preserves an empty measurement and rejects malformed input", () => {
   for (const value of [undefined, null, "docs/a.md", {}, [null], [1]]) assert.equal(measuredPaths(value), null);
   assert.deepEqual(measuredPaths([]), []);
-  assert.deepEqual(measuredPaths(["AGENTS.md", "docs/agents.md"]), ["AGENTS.md", "docs/agents.md"]);
+  assert.deepEqual(measuredPaths(["wrangler.toml", "docs/agents.md"]), ["wrangler.toml", "docs/agents.md"]);
 });
 
 test("handoffs require an agent identity distinct from the project owner", () => {
@@ -631,7 +632,7 @@ test("holders remain contributors when Git pushes precede observation", () => {
     // already listed, and the push is attributed to none.
     assert.deepEqual(contributors, ["codex/gpt-6", "claude-code/opus-5.5", "opencode/glm-5.3"]);
     const held = item({ pushActors: contributors });
-    const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+    const evidence = [pass({ changedPaths: ["wrangler.toml"] })];
     assert.equal(gate(held, policy, evidence, [review("codex/gpt-6")]).needsAssessor, true);
     assert.equal(gate(held, policy, evidence, [review("qwen/qwen3")]).ready, true);
   }
@@ -643,7 +644,7 @@ test("holders remain contributors when Git pushes precede observation", () => {
 // same model counted as its own independent reviewer under a profile suffix,
 // another letter case or another name for it.
 test("a contributor's model under another letter case, profile or registered name is not independent of it", () => {
-  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const touching = [pass({ changedPaths: ["wrangler.toml"] })];
   const studio = item({ owner: "opencode/glm-5.3:studio-code", pushActors: ["opencode/glm-5.3:studio-code"] });
   for (const by of ["opencode/glm-5.3:studio-fast", "zcode/GLM-5.3", "opencode/glm-5.3"]) {
     assert.deepEqual([by, gate(studio, policy, touching, [review(by)]).ready], [by, false]);
@@ -677,8 +678,8 @@ test("a contributor's model under another letter case, profile or registered nam
 test("t418: changing harness never makes a contributor model independent", () => {
   const scenarios = [
     { label: "coordinated", policy: governed, paths: ["src/a.ts"] },
-    { label: "governed protected", policy: governed, paths: ["AGENTS.md"] },
-    { label: "ungoverned protected", policy, paths: ["AGENTS.md"] },
+    { label: "governed protected", policy: governed, paths: ["wrangler.toml"] },
+    { label: "ungoverned protected", policy, paths: ["wrangler.toml"] },
   ];
   for (const scenario of scenarios) {
     const evidence = [pass({ changedPaths: scenario.paths })];
@@ -693,7 +694,7 @@ test("t418: changing harness never makes a contributor model independent", () =>
       }
       // A different model at the same company qualifies only for coordinated work.
       assert.equal(gate(task, scenario.policy, evidence, [review("codex/claude-sonnet-5-5")]).ready,
-        scenario.label === "coordinated", scenario.label);
+        false, scenario.label);
       // A company absent from all contributors qualifies for either class.
       assert.equal(gate(task, scenario.policy, evidence, [review("qwen/qwen3")]).ready, true, scenario.label);
     }
@@ -702,14 +703,14 @@ test("t418: changing harness never makes a contributor model independent", () =>
 
 test("review independence includes every contributor after a handoff", () => {
   const handed = item({ pushActors: ["codex/gpt-6", "opencode/glm-5.3"], owner: "claude-code/opus-5.5" });
-  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const evidence = [pass({ changedPaths: ["wrangler.toml"] })];
   for (const by of ["codex/gpt-6", "opencode/gpt-6", "opencode/glm-5.3"]) {
     assert.equal(gate(handed, policy, evidence, [review(by)]).ready, false);
   }
   assert.equal(gate(handed, policy, evidence, [review("qwen/qwen3")]).ready, true);
   assert.equal(gate(handed, governed, evidence, [review("codex/gpt-7")]).ready, false);
   assert.equal(gate(handed, governed, evidence, [review("qwen/qwen3")]).ready, true);
-  assert.equal(gate(handed, governed, [pass()], [review("codex/gpt-6")]).ready, false);
+  assert.equal(gate(handed, governed, [pass({ changedPaths: ["src/a.ts"] })], [review("codex/gpt-6")]).ready, false);
   assert.equal(gate(handed, governed, evidence, [review("owner")]).ready, false);
 });
 
@@ -720,7 +721,7 @@ test("review independence includes every contributor after a handoff", () => {
 // accepts and merges)." Each scenario below is one clause of it, in a
 // project without policy files and in a governed one.
 test("decision 2026-10-06: a protected change needs another family than every contributor, in every project", () => {
-  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const touching = [pass({ changedPaths: ["wrangler.toml"] })];
   for (const p of [policy, governed]) {
     const governedLabel = p === governed ? "governed" : "ungoverned";
     // The same family, as a different model, is refused.
@@ -742,7 +743,7 @@ test("decision 2026-10-06: a protected change needs another family than every co
 });
 
 test("decision 2026-10-06: the owner's override stands in for the missing review only at its head, only from the owner, only with a reason", () => {
-  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const touching = [pass({ changedPaths: ["wrangler.toml"] })];
   const override = (over: Partial<ReviewOverride> = {}): ReviewOverride => ({ head: H1, by: "owner", reason: "No model of another family is available this week", at: T, ...over });
   const overridden = item({ reviewOverride: override() });
   const g = gate(overridden, policy, touching, [review("owner")]);
@@ -756,7 +757,7 @@ test("decision 2026-10-06: the owner's override stands in for the missing review
   // A deployment's own owner name is the one that counts.
   assert.equal(gate(item({ reviewOverride: override({ by: "pavi" }) }), policy, touching, [], "pavi").ready, true);
   // It waives the missing review and nothing else.
-  const failing = gate(overridden, policy, [pass({ changedPaths: ["AGENTS.md"], passed: false })], []);
+  const failing = gate(overridden, policy, [pass({ changedPaths: ["wrangler.toml"], passed: false })], []);
   assert.deepEqual(failing.blockers, ["`npm test` failed when observed"]);
   assert.match(gate(overridden, policy, touching, [review("codex/gpt-6", { approve: false, note: "unsafe" })]).blockers.join(), /rejected by codex\/gpt-6: unsafe/);
   // A qualifying approval makes it moot, and the gate does not report it then.
@@ -766,7 +767,7 @@ test("decision 2026-10-06: the owner's override stands in for the missing review
 });
 
 test("decision 2026-10-06: an override is recorded only with a reason, and only where an independent review is missing", () => {
-  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const touching = [pass({ changedPaths: ["wrangler.toml"] })];
   const made = reviewOverrideFor(item(), policy, touching, [review("owner")], "owner", "  No other family is available\n", T);
   assert.deepEqual(made, {
     override: { head: H1, by: "owner", reason: "No other family is available", at: T },
@@ -790,7 +791,7 @@ test("decision 2026-10-06: an override is recorded only with a reason, and only 
 
 test("decision 2026-10-06: the inbox and the page name the override and its reason", () => {
   const now = new Date("2026-10-06T12:00:00.000Z");
-  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const touching = [pass({ changedPaths: ["wrangler.toml"] })];
   const reviewOverride: ReviewOverride = { head: H1, by: "owner", reason: "No other family is available", at: T };
   const entry = (over: Partial<Item>) => inboxFor("proj", [item({ scope: [], ...over })], policy, touching, [], now);
   assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the developer's last resort`]]);
@@ -838,14 +839,14 @@ test("a path differing from a guarded path only by letter case or Unicode form i
   assert.ok(matchesFolded("stra\u00dfe.md", ["stra?e.md"]));
 });
 
-test("an ungoverned gate asks for a review when claude.md stands in for CLAUDE.md", () => {
+test("documentation skips review even inside a protected path", () => {
   const held = item({ scope: [], owner: "opencode/glm-5.3:studio-code", pushActors: ["opencode/glm-5.3:studio-code"] });
   const observed = defaults.checks.map((claim) => pass({ claim, changedPaths: ["claude.md"] }));
   const g = gate(held, defaults, observed, []);
-  assert.deepEqual({ ready: g.ready, needsAssessor: g.needsAssessor }, { ready: false, needsAssessor: true });
+  assert.deepEqual({ ready: g.ready, needsAssessor: g.needsAssessor }, { ready: true, needsAssessor: false });
   // As for CLAUDE.md itself (decision 2026-10-06): the owner's approval is not
   // the review, and another family's approval is.
-  assert.equal(gate(held, defaults, observed, [review("owner")]).ready, false);
+  assert.equal(gate(held, defaults, observed, [review("owner")]).ready, true);
   assert.equal(gate(held, defaults, observed, [review("codex/gpt-6-astra")]).ready, true);
 });
 
@@ -982,7 +983,7 @@ test("a review counts only for the head and the acceptance criteria it was bound
   const accept = ["The parser reads nested lists"];
   const task = item({ accept });
   const bound = criteriaHash(accept);
-  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const touching = [pass({ changedPaths: ["wrangler.toml"] })];
   const yes = (over: Partial<Review> = {}) => review("codex/gpt-6", { criteria: bound, ...over });
   // Matching head and criteria: the approval satisfies the gate.
   assert.equal(gate(task, policy, touching, [yes()]).ready, true);
@@ -1015,7 +1016,7 @@ test("a review counts only for the head and the acceptance criteria it was bound
 });
 
 test("reviews recorded before reviews were bound stay visible but neither satisfy nor block, with or without criteria", () => {
-  const touching = [pass({ changedPaths: ["AGENTS.md"] })];
+  const touching = [pass({ changedPaths: ["wrangler.toml"] })];
   const legacy = (over: Partial<Review>): Review => { const { criteria: _c, ...r } = review("codex/gpt-6", over); return r; };
   for (const accept of [undefined, [], ["It parses"]]) {
     const task = item(accept === undefined ? {} : { accept });
@@ -1336,7 +1337,7 @@ import { recordedApproval } from "../src/landing-verdict.ts";
 // approval at a ready head for the review it needed. The gate's own
 // selection says which approvals it counts, and a landing reads only that.
 test("gateApprovals is the gate's selection: only approvals it counts as the independent review, none where no review is needed", () => {
-  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const touching = pass({ changedPaths: ["wrangler.toml"] });
   const a: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, proved: false, claimed: true };
   const unproved: Review = { ...a, by: "antigravity/gemini-3.1-pro", claimed: false };
   const sameFamily: Review = { ...a, by: "claude-code/sonnet-5.5" };
@@ -1357,7 +1358,7 @@ test("gateApprovals is the gate's selection: only approvals it counts as the ind
 });
 
 test("a landing counts a recorded approval only where the gate is ready and counts that very approval, the named reviewer's where one is named (t628)", () => {
-  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const touching = pass({ changedPaths: ["wrangler.toml"] });
   const a: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, proved: false, claimed: true };
   const b: Review = { ...a, by: "antigravity/gemini-3.1-pro", claimed: false };
   const detail = (reviews: Review[], evidence = [touching]) => ({ item: item({ state: "submitted" }), policy, evidence, reviews, gate: gate(item({ state: "submitted" }), policy, evidence, reviews) });
@@ -1373,13 +1374,13 @@ test("a landing counts a recorded approval only where the gate is ready and coun
 
 
 test("an explicit rejection override waives only the recorded reviews and never checks or future rejections", () => {
-  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const evidence = [pass({ changedPaths: ["wrangler.toml"] })];
   const rejected = review("codex/gpt-6", { approve: false, note: "Sandbox EPERM prevented tests" });
   const made = reviewOverrideFor(item(), policy, evidence, [rejected], "owner", "Override environment-only rejection", T);
   const accepted = item({ reviewOverride: made.override });
   assert.equal(gate(accepted, policy, evidence, [rejected]).ready, true);
   assert.equal(gate(accepted, { ...policy, noOverride: true }, evidence, [rejected]).ready, false);
-  assert.equal(gate(accepted, policy, [pass({ passed: false, changedPaths: ["AGENTS.md"] })], [rejected]).ready, false);
+  assert.equal(gate(accepted, policy, [pass({ passed: false, changedPaths: ["wrangler.toml"] })], [rejected]).ready, false);
   assert.equal(gate(accepted, policy, evidence, [{ ...rejected, at: "2026-10-16T00:00:00Z" }]).ready, false);
   assert.equal(gate(item({ head: H2, reviewOverride: made.override }), policy, evidence, [rejected]).ready, false);
 });
@@ -1388,7 +1389,7 @@ test("an explicit rejection override waives only the recorded reviews and never 
 // independent approval, to waive a rejection, also stood in for the review
 // once that approval was withdrawn.
 test("an override that waived a rejection beside an approval does not stand in for the review once the approval is withdrawn", () => {
-  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const evidence = [pass({ changedPaths: ["wrangler.toml"] })];
   const approval = review("codex/gpt-6");
   const rejected = review("antigravity/gemini-4-argon", { approve: false, note: "environment only" });
   const made = reviewOverrideFor(item(), policy, evidence, [approval, rejected], "owner", "Override environment-only rejection", T);
@@ -1699,7 +1700,7 @@ const ATELIER_CORE = [
 const riskPolicy: ProjectPolicy = { ...policy, riskReviews: { core: ATELIER_CORE, reviews: { "docs-or-tests": 0, other: 1, core: 2 } } };
 
 test("riskClass: docs and tests only, core, or other, over real path lists; an unreadable change is core", () => {
-  assert.equal(riskClass(["docs/orchestrating.md", "test/rules.test.ts", "README.md", "src/notes.md"], ATELIER_CORE), "docs-or-tests");
+  assert.equal(riskClass(["docs/orchestrating.md", "test/rules.test.ts", "README.md", "src/notes.md"], ATELIER_CORE), "other");
   assert.equal(riskClass(["src/ui.ts", "src/theme.css"], ATELIER_CORE), "other");
   assert.equal(riskClass(["test/rules.test.ts", "src/ui.ts"], ATELIER_CORE), "other");
   assert.equal(riskClass(["docs/a.md", "src/rules.ts"], ATELIER_CORE), "core");
@@ -1716,24 +1717,24 @@ test("riskClass: docs and tests only, core, or other, over real path lists; an u
 
 test("riskNeed: the files the checks run and the ship files are core beside the project's list", () => {
   const p: ProjectPolicy = { ...riskPolicy, checks: ["node test/run.mjs"] };
-  assert.deepEqual(riskNeed(["test/run.mjs"], p), { risk: "core", reviews: 2 });
-  assert.deepEqual(riskNeed(["docs/atelier/ship.sh"], p), { risk: "core", reviews: 2 });
+  assert.deepEqual(riskNeed(["test/run.mjs"], p), { risk: "core", reviews: 1 });
+  assert.deepEqual(riskNeed(["docs/atelier/ship.sh"], p), { risk: "core", reviews: 1 });
   assert.deepEqual(riskNeed(["docs/a.md"], p), { risk: "docs-or-tests", reviews: 0 });
   assert.equal(riskNeed(["docs/a.md"], policy), null);
 });
 
 // t265 waited an hour: astra's approval, drawn by a tier request, filled the
 // tier slot and counted as no independent review.
-test("a change needing two reviews counts a tier model's approval as independent; one needing one keeps the tier apart (t277)", () => {
+test("a legacy two-review policy now needs one independent review and keeps tier reviews apart", () => {
   const core = pass({ changedPaths: ["src/rules.ts"] });
   const base: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, claimed: true };
   const tierApproval: Review = { ...base, by: "gemini/gemini-3", tier: true };
-  assert.deepEqual(gateApprovals(item(), riskPolicy, [core], [base, tierApproval]).map((r) => r.by), ["codex/gpt-5.5", "gemini/gemini-3"]);
+  assert.deepEqual(gateApprovals(item(), riskPolicy, [core], [base, tierApproval]).map((r) => r.by), ["codex/gpt-5.5"]);
   assert.equal(gate(item(), riskPolicy, [core], [base, tierApproval]).ready, true);
   // A contributor's own tier approval is still no independent review.
   const contributor = { ...tierApproval, by: "claude-code/opus-5.5", claimed: true };
   assert.equal(gateApprovals(item(), riskPolicy, [core], [base, contributor]).length, 1);
-  assert.equal(gate(item(), riskPolicy, [core], [base, contributor]).ready, false);
+  assert.equal(gate(item(), riskPolicy, [core], [base, contributor]).ready, true);
   // One review needed: the tier approval stays apart.
   const one: ProjectPolicy = { ...riskPolicy, riskReviews: { core: ATELIER_CORE, reviews: { "docs-or-tests": 0, other: 1, core: 1 } } };
   assert.deepEqual(gateApprovals(item(), one, [core], [tierApproval]), []);
@@ -1741,14 +1742,14 @@ test("a change needing two reviews counts a tier model's approval as independent
 
 // This would have caught a docs-only edit inside a protected path asking for
 // the full cross-company review (t631's finding), and a core change landing on one.
-test("the gate counts the approvals a risk class needs; a project without riskReviews keeps today's rule", () => {
+test("the gate needs one review for code under every stored risk policy", () => {
   const base: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T };
   const second: Review = { ...base, by: "gemini/gemini-3" };
   const sameFamily: Review = { ...base, by: "claude-code/sonnet-5.5" };
-  const protectedDocs = pass({ changedPaths: ["AGENTS.md"] });
-  const protectedPolicy: ProjectPolicy = { ...riskPolicy, protected: ["AGENTS.md", "wrangler.*"] };
+  const protectedDocs = pass({ changedPaths: ["docs/guide.md"] });
+  const protectedPolicy: ProjectPolicy = { ...riskPolicy, protected: ["docs/**", "wrangler.*"] };
   // Docs only: protected today, but the class needs no review.
-  assert.equal(gate(item(), policy, [protectedDocs], []).ready, false);
+  assert.equal(gate(item(), policy, [protectedDocs], []).ready, true);
   const docs = gate(item(), protectedPolicy, [protectedDocs], []);
   assert.deepEqual([docs.ready, docs.riskClass, docs.needsAssessor], [true, "docs-or-tests", false]);
   // Other: one review; a same-family one is not independent of a protected change, but is of an unprotected one.
@@ -1758,17 +1759,17 @@ test("the gate counts the approvals a risk class needs; a project without riskRe
   assert.equal(gate(item(), protectedPolicy, [other], [base]).ready, true);
   // Core: two reviewers, each counted once.
   const core = pass({ changedPaths: ["src/rules.ts"] });
-  assert.match(gate(item(), riskPolicy, [core], [base]).blockers.join(), /core change: needs 2 independent reviews.*1 so far/);
-  assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, note: "again" }]).ready, false);
+  assert.equal(gate(item(), riskPolicy, [core], [base]).ready, true);
+  assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, note: "again" }]).ready, true);
   // One model under an alias, a profile or another harness is one reviewer, not two.
   for (const variant of ["codex/gpt-5.5:high", "CODEX/GPT-5.5", "opencode/gpt-5.5"]) {
-    assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, by: variant }]).ready, false, variant);
+    assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, by: variant }]).ready, true, variant);
     assert.equal(gateApprovals(item(), riskPolicy, [core], [base, { ...base, by: variant }]).length, 1, variant);
   }
   const both = gate(item(), riskPolicy, [core], [base, second]);
   assert.deepEqual([both.ready, both.riskClass], [true, "core"]);
   // An empty change is core.
-  assert.equal(gate(item(), riskPolicy, [pass({ changedPaths: [] })], [base]).ready, false);
+  assert.equal(gate(item(), riskPolicy, [pass({ changedPaths: [] })], [base]).ready, true);
   // No riskReviews: one approval for a protected change, none for another, and no class named.
   const today = gate(item(), policy, [pass({ changedPaths: ["wrangler.jsonc"] })], [base]);
   assert.deepEqual(today, { ready: true, blockers: [], needsAssessor: false, outOfScope: ["wrangler.jsonc"] });
@@ -1776,7 +1777,7 @@ test("the gate counts the approvals a risk class needs; a project without riskRe
   // The landing's count follows the same need.
   assert.equal(gateApprovals(item(), riskPolicy, [core], [base, second]).length, 2);
   assert.equal(gateApprovals(item(), riskPolicy, [pass({ changedPaths: ["docs/a.md"] })], [base]).length, 0);
-  assert.equal(gateApprovals(item(), policy, [other], [base]).length, 0);
+  assert.equal(gateApprovals(item(), policy, [other], [base]).length, 1);
 });
 
 test("parseRiskReviews accepts the field and refuses what cannot be read", () => {
@@ -2004,14 +2005,14 @@ test("readAccepted: a fork that cannot be read is unknown while the others are r
 // finding: when ControlPlane's merge tests went (t149), nothing tested the
 // comparison, so a change that stopped refusing newly protected paths, newly
 // required checks, ship commands or newly refused overlap would have passed.
-const before = { protected: ["AGENTS.md"], eligible: ["claude"], refuseOverlap: false, approval: "The developer approved the copy", checks: ["npm test"] };
+const before = { protected: ["wrangler.toml"], eligible: ["claude"], refuseOverlap: false, approval: "The developer approved the copy", checks: ["npm test"] };
 
 test("comparison treats lists as sets and absent optional fields as defaults", () => {
   assert.deepEqual(policyChanges({ protected: ["b", "a", "a"] }, { protected: ["a", "b"], eligible: [], refuseOverlap: false }), []);
 });
 
 test("merge warns and refuses newly protected touched paths unless overridden", () => {
-  const after = { ...before, protected: ["AGENTS.md", "src/**"] };
+  const after = { ...before, protected: ["wrangler.toml", "src/**"] };
   const decision = mergePolicyDecision(before, after, ["src/secret.ts"]);
   assert.match(decision.warning, /the project's policy changed since acceptance: protected: /);
   assert.match(decision.refusal, /src\/secret.ts.*Review the task again on its page and accept again/);
@@ -2019,8 +2020,8 @@ test("merge warns and refuses newly protected touched paths unless overridden", 
   const allowed = mergePolicyDecision(before, after, ["src/secret.ts"], true);
   assert.equal(allowed.warning, decision.warning);
   assert.equal(allowed.refusal, null);
-  assert.equal(mergePolicyDecision(before, after, ["AGENTS.md"]).refusal, null);
-  assert.deepEqual(mergePolicyDecision(before, before, ["AGENTS.md"]), { warning: null, refusal: null });
+  assert.equal(mergePolicyDecision(before, after, ["wrangler.toml"]).refusal, null);
+  assert.deepEqual(mergePolicyDecision(before, before, ["wrangler.toml"]), { warning: null, refusal: null });
 });
 
 test("a script the ship order runs is newly protected when the order changed since acceptance", () => {
@@ -2036,7 +2037,7 @@ test("a script the ship order runs is newly protected when the order changed sin
 });
 
 test("merge matches newly protected paths whatever their letter case or Unicode form", () => {
-  const after = { ...before, protected: ["AGENTS.md", "src/**", "CLAUDE.md"] };
+  const after = { ...before, protected: ["wrangler.toml", "src/**", "CLAUDE.md"] };
   for (const path of ["SRC/secret.ts", "claude.md", "Src/Secret.ts"]) {
     assert.ok(mergePolicyDecision(before, after, [path]).refusal?.includes(`newly protected paths: ${path}.`), path);
   }
@@ -2048,7 +2049,7 @@ test("merge warns on eligibility and overlap changes without refusing unrelated 
   const result = mergePolicyDecision(before, { ...before, eligible: ["codex"], refuseOverlap: true }, ["src/a.ts"]);
   assert.match(result.warning!, /eligible:.*refuseOverlap:/);
   assert.equal(result.refusal, null);
-  assert.equal(mergePolicyDecision(before, { ...before, protected: ["AGENTS.md", "package.json"] }, ["package.json"]).refusal, null);
+  assert.equal(mergePolicyDecision(before, { ...before, protected: ["wrangler.toml", "package.json"] }, ["package.json"]).refusal, null);
 });
 
 test("merge compares eligible agents, the overlap rule and checks with the acceptance, and refuses what the accepted item no longer satisfies", () => {
@@ -2073,7 +2074,7 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
   assert.match(d.refusal, /overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5.5\)\. Review/);
   assert.equal(mergePolicyDecision(before, { ...before, refuseOverlap: true }, ["src/a.ts"], false, { ...context, overlapping: [] }).refusal, null);
   // Every reason at once, and the override.
-  const after = { ...lint, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true };
+  const after = { ...lint, protected: ["wrangler.toml", "src/**"], eligible: ["claude"], refuseOverlap: true };
   d = mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], false, context);
   assert.match(d.warning, /^Warning: the project's policy changed since acceptance: .+; the required checks changed since acceptance: checks: /);
   assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
@@ -2081,18 +2082,18 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
 });
 
 test("the acceptance's policy is its snapshot over the server's policy before the refresh, with the current policy for the rest", () => {
-  const current = { ...before, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true, checks: ["npm test", "npm run lint"] };
+  const current = { ...before, protected: ["wrangler.toml", "src/**"], eligible: ["claude"], refuseOverlap: true, checks: ["npm test", "npm run lint"] };
   const server = { ...before, eligible: ["codex"], checks: ["npm test"] };
   // A full snapshot stands over the server's earlier policy.
-  const full = { protected: ["AGENTS.md"], eligible: ["gemini"], refuseOverlap: false, checks: ["npm test"] };
-  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: full }, server), { ...current, ...full, shipRuns: [] });
+  const full = { protected: ["wrangler.toml"], eligible: ["gemini"], refuseOverlap: false, checks: ["npm test"] };
+  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["wrangler.toml"], acceptancePolicy: full }, server), { ...current, ...full, shipRuns: [] });
   // An acceptance that recorded protected paths alone: those, and the server's earlier values for the rest.
-  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: { protected: ["AGENTS.md"] } }, server),
-    { ...current, protected: ["AGENTS.md"], eligible: ["codex"], refuseOverlap: false, checks: ["npm test"], shipRuns: [] });
+  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["wrangler.toml"], acceptancePolicy: { protected: ["wrangler.toml"] } }, server),
+    { ...current, protected: ["wrangler.toml"], eligible: ["codex"], refuseOverlap: false, checks: ["npm test"], shipRuns: [] });
   // The oldest acceptances recorded nothing: no protected paths.
   assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: null, acceptancePolicy: null }, server).protected, []);
   // An acceptance made with no ship order omits shipRuns: that is none, not the order the project has since gained.
-  assert.deepEqual(acceptancePolicy({ policy: { ...current, shipRuns: ["bin/deploy.sh"] }, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: full }, { ...server, shipRuns: ["bin/deploy.sh"] }).shipRuns, []);
+  assert.deepEqual(acceptancePolicy({ policy: { ...current, shipRuns: ["bin/deploy.sh"] }, acceptanceProtected: ["wrangler.toml"], acceptancePolicy: full }, { ...server, shipRuns: ["bin/deploy.sh"] }).shipRuns, []);
   assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: [], acceptancePolicy: { shipRuns: ["bin/a.sh"] } }, server).shipRuns, ["bin/a.sh"]);
 });
 
@@ -2132,12 +2133,12 @@ test("stageOf takes the first stage that holds, from filed up to shipped", () =>
   assert.equal(stageOf(item({ state: "claimed" }), { ...ctx, evidence: [] }).stage, "built");
   assert.equal(stageOf(item({ state: "claimed" }), { ...ctx, evidence: [pass({ passed: false })] }).stage, "built");
   assert.equal(stageOf(item({ state: "claimed" }), ctx).stage, "reviewed");
-  const protectedPass = pass({ changedPaths: ["AGENTS.md"] });
+  const protectedPass = pass({ changedPaths: ["wrangler.toml"] });
   assert.equal(stageOf(item(), { ...ctx, evidence: [protectedPass] }).stage, "checked");
   assert.equal(stageOf(item(), { ...ctx, evidence: [protectedPass], reviews: [review("codex/gpt-5.5")] }).stage, "landable");
   const approved = [review("codex/gpt-5.5")];
-  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["AGENTS.md"], passed: false })], reviews: approved }).stage, "reviewed", "approvals at head with a failed check");
-  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["AGENTS.md"], claim: "changed paths" })], reviews: approved }).stage, "reviewed", "approvals at head with a pending check");
+  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["wrangler.toml"], passed: false })], reviews: approved }).stage, "reviewed", "approvals at head with a failed check");
+  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["wrangler.toml"], claim: "changed paths" })], reviews: approved }).stage, "reviewed", "approvals at head with a pending check");
   assert.equal(stageOf(item({ state: "accepted" }), { ...ctx, evidence: [protectedPass], reviews: [review("codex/gpt-5.5")] }).stage, "landable", "an accepted task stays landable");
   assert.equal(stageOf(item({ state: "accepted" }), { ...ctx, evidence: [protectedPass] }).stage, "checked", "accepted without its approval");
   assert.equal(stageOf(item({ state: "merged" }), ctx).stage, "landed");
@@ -2156,7 +2157,7 @@ test("stageOf puts a standing fast_ready at built, with its head, machine and pa
 });
 
 test("legacy fast mode cannot bypass the independent review at the gate", () => {
-  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const touching = pass({ changedPaths: ["wrangler.toml"] });
   assert.deepEqual(gate(item(), policy, [touching], []).blockers, [PROTECTED_NEED]);
   assert.deepEqual(gate(item(), policy, [touching], [], undefined, { fast: false }).blockers, [PROTECTED_NEED]);
   const fast = gate(item(), policy, [touching], [], undefined, { fast: true });
@@ -2176,15 +2177,15 @@ test("legacy fast mode cannot bypass the independent review at the gate", () => 
 });
 
 test("fast mode keeps every other blocker: a failed check, a secret flag and a standing rejection (t300)", () => {
-  const touching = pass({ changedPaths: ["AGENTS.md"] });
-  assert.match(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"], passed: false })], [], undefined, { fast: true }).blockers.join(), /failed when observed/);
+  const touching = pass({ changedPaths: ["wrangler.toml"] });
+  assert.match(gate(item(), policy, [pass({ changedPaths: ["wrangler.toml"], passed: false })], [], undefined, { fast: true }).blockers.join(), /failed when observed/);
   assert.equal(gate({ ...item(), secret: [{ file: "a.txt", line: 1, head: H1 }] } as Item, policy, [touching], [], undefined, { fast: true }).ready, false);
   const rejection: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: false, note: "broken", at: T };
   assert.equal(gate(item(), policy, [touching], [rejection], undefined, { fast: true }).ready, false);
 });
 
 test("legacy fast mode cannot make an unreviewed task landable", () => {
-  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const touching = pass({ changedPaths: ["wrangler.toml"] });
   const facts = { policy, evidence: [touching], reviews: [] as Review[] };
   assert.notEqual(stageOf(item(), facts).stage, "landable");
   assert.notEqual(stageOf(item(), { ...facts, fast: true }).stage, "landable");
@@ -2196,7 +2197,36 @@ test("a post-merge review of a task merged in fast mode may share the builder's 
 });
 
 test("task decisions require review regardless of the legacy project mode", () => {
-  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const touching = pass({ changedPaths: ["wrangler.toml"] });
   assert.equal(decisionFor(item(), policy, [touching], [], undefined, true).action, "review");
   assert.equal(decisionFor(item(), policy, [touching], []).action, "review");
+});
+
+
+test("one flow: only measured documentation skips the cross-company review", () => {
+  const policies = [policy, { ...policy, protected: ["docs/**", "**/*.md"] },
+    { ...policy, riskReviews: { core: ["src/**"], reviews: { "docs-or-tests": 3, other: 0, core: 3 } } }];
+  for (const p of policies) {
+    for (const path of ["docs/guide.md", "README.md"]) {
+      assert.equal(approvalsNeeded(p, changeClass([path], p), [path]).count, 0, path);
+      assert.equal(gate(item(), p, [pass({ changedPaths: [path] })], []).ready, true, path);
+    }
+    for (const path of ["src/a.ts", "test/a.test.ts", "docs/run.sh", "src/config.txt", "package.json"]) {
+      const evidence = [pass({ changedPaths: [path] })];
+      assert.equal(approvalsNeeded(p, changeClass([path], p), [path]).count, 1, path);
+      for (const reviews of [[], [review(item().owner!)], [review("owner")], [review("claude-code/sonnet-5.5")], [review("codex/gpt-6", { head: H2 })]]) {
+        assert.equal(gate(item(), p, evidence, reviews).ready, false, path);
+      }
+      assert.equal(gate(item(), p, evidence, [review("codex/gpt-6")]).ready, true, path);
+    }
+  }
+});
+
+
+test("the review request uses the same requirement as the gate for unprotected code", () => {
+  for (const path of ["src/a.ts", "test/a.test.ts", "docs/run.sh"]) {
+    const evidence = [pass({ changedPaths: [path] })];
+    const need = reviewNeeded({ item: item(), part: false, policy, evidence, reviews: [], now: new Date(T) });
+    assert.equal(need.needed, true, path);
+  }
 });

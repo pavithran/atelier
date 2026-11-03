@@ -16,7 +16,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, gateApprovals, modelKey, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, riskNeed, roundCapHold, sameActor, singleFamily,
+  approvalsNeeded, bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, gateApprovals, modelKey, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, riskNeed, roundCapHold, sameActor, singleFamily,
   type ChangeClass, type RiskClass, type Evidence, type EvidenceView, type Finding, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
@@ -230,14 +230,16 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   if (view.changedPaths === null) return no(`changed paths not yet observed at ${short(head)}`);
   if (!input.postMerge && !view.changedPaths.length) return no(`${short(head)} changes no paths, so there is nothing to review`);
 
-  const kind = changeClass(view.changedPaths, policy) ?? "coordinated";   // null only for no paths, refused above
+  const measuredKind = changeClass(view.changedPaths, policy);
+  const need = approvalsNeeded(policy, measuredKind, view.changedPaths);
+  const kind = measuredKind ?? "coordinated";
   // A project that states riskReviews (t143) asks what the change's risk
   // class needs, for a direct change as for a protected one: before this a
   // direct change was never reviewed here, though the gate waited for the
   // reviews its class needs. A plan's part keeps its basis and is reviewed at
   // least once, since its integration needs one approval whatever its class.
   const risk = input.postMerge ? null : riskNeed(view.changedPaths, policy);
-  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : risk ? (risk.reviews > 0 ? "risk" : null) : kind === "protected" ? "protected" : null;
+  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : risk ? (risk.reviews > 0 ? "risk" : null) : need.count ? "protected" : null;
   if (!basis && !input.wanted) {
     return no("a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed");
   }
@@ -287,7 +289,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     const g = gate(item, policy, [...input.evidence], reviews, owner);
     if (g.overridden) return no(`the developer overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
     if (!g.needsAssessor) {
-      const approvers = atHead.filter((r) => independentApproval(r, kind === "protected" ? "protected" : "coordinated", contributors, owner, single)).map((r) => r.by);
+      const approvers = atHead.filter((r) => independentApproval(r, "protected", contributors, owner, single)).map((r) => r.by);
       return no(`the gate already counts an independent approval of ${short(head)} (${approvers.join(", ")})`);
     }
   }
