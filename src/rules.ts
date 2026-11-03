@@ -2145,10 +2145,8 @@ export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan"
 // independent review, assessor or override is asked of it. Every other
 // blocker stands, a rejection at the head among them.
 //
-// `fast` is the project in fast mode (t300): the gate counts the change ready
-// on its required checks at the head with no secret flag, and asks no
-// independent review before the merge; the review is owed after it
-// (postMergeOwed). A rejection standing at the head still blocks.
+// `fast` remains accepted for callers reading old project records. It no longer
+// waives the independent review before landing.
 export interface GateOptions { reviewHeld?: boolean; fast?: boolean }
 
 // The approvals the gate counts as a change's independent review: of the
@@ -2218,7 +2216,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
   const need = approvalsNeeded(policy, kind, view.changedPaths);
-  if (!options.reviewHeld && !options.fast && need.as && need.count > 0) {
+  if (!options.reviewHeld && need.as && need.count > 0) {
     const kindNeeded = need.as;
     const contributors = contributorsOf(item);
     const single = singleFamily(policy);

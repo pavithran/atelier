@@ -283,12 +283,12 @@ test("one model under two names counts once when the change's class needs severa
   assert.equal(ok.status, 200, (await ok.clone().json()).detail);
 });
 
-test("in fast mode record-merge asks no review before the merge, as the gate does", async () => {
+test("legacy record-merge keeps its exemption while the gate requires review in fast mode", async () => {
   const { id, head, L } = await builtTask("fastp");
   const blockers = async () => (await (await api("GET", `/projects/fastp/items/${id}`)).json()).gate.blockers;
   assert.ok((await blockers()).includes(PROTECTED_NEED));
   await L.setMode("owner", "fast", "reviewers are down", OTHER, "PAVI: go fast today");
-  assert.ok(!(await blockers()).includes(PROTECTED_NEED));
+  assert.ok((await blockers()).includes(PROTECTED_NEED));
   const r = await recordMerge("fastp", id, { mergeCommit: mergeOutside(head), head, reviews: [approvalBy(SAME, head)] });
   const body = await r.json();
   assert.equal(r.status, 200, body.detail);

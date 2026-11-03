@@ -135,15 +135,17 @@ test("a landing cancelled while it waits stops before its merge, merging nothing
   assert.equal((await w.detail(id)).item.state, "submitted");
 });
 
-test("in fast mode the landing's review step records without a warning", async (t) => {
+test("legacy fast mode cannot land a protected task without review", async (t) => {
   const w = await landingWorld(t);
   await w.L().setMode("owner", "fast", "the test lands on its checks", "claude-code/opus-5.5", "land on the checks");
   const { id } = await w.task({ files: { "task.txt": "task\n" }, approve: false });
   const r = await w.cli(["land", id]);
-  assert.equal(r.status, 0, r.output);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /not ready to accept/);
   assert.doesNotMatch(r.output, /could not be recorded/);
   const d = await w.detail(id);
-  assert.equal(d.item.state, "merged");
+  assert.equal(d.item.state, "submitted");
+  assert.equal(eventsOf(d, "item.merged").length, 0);
   assert.deepEqual(eventsOf(d, "land.review").map((e) => [e.data.skipped, e.data.fast]), [[true, true]]);
 });
 

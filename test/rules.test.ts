@@ -2155,13 +2155,24 @@ test("stageOf puts a standing fast_ready at built, with its head, machine and pa
   assert.equal(stageOf({ ...claimed, state: "merged" }, { events: [...events, stageEv(3, "item.merged")] }).stage, "landed");
 });
 
-test("fast mode: the gate is ready on passing checks without the independent review, and full mode still asks it (t300)", () => {
+test("legacy fast mode cannot bypass the independent review at the gate", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
   assert.deepEqual(gate(item(), policy, [touching], []).blockers, [PROTECTED_NEED]);
   assert.deepEqual(gate(item(), policy, [touching], [], undefined, { fast: false }).blockers, [PROTECTED_NEED]);
   const fast = gate(item(), policy, [touching], [], undefined, { fast: true });
-  assert.equal(fast.ready, true);
-  assert.equal(fast.needsAssessor, false);
+  assert.equal(fast.ready, false);
+  assert.equal(fast.needsAssessor, true);
+  assert.deepEqual(fast.blockers, [PROTECTED_NEED]);
+  const approval: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T };
+  for (const legacyFast of [false, true]) {
+    const options = { fast: legacyFast };
+    assert.equal(gate(item(), policy, [touching], [approval], undefined, options).ready, true);
+    for (const by of ["owner", "claude-code/opus-5.5", "claude-code/sonnet-5.5"]) {
+      assert.equal(gate(item(), policy, [touching], [{ ...approval, by }], undefined, options).ready, false, by);
+    }
+    assert.equal(gate(item(), policy, [touching], [{ ...approval, head: H2 }], undefined, options).ready, false);
+    assert.equal(gate(item(), policy, [pass({ changedPaths: ["docs/guide.md"] })], [], undefined, options).ready, true);
+  }
 });
 
 test("fast mode keeps every other blocker: a failed check, a secret flag and a standing rejection (t300)", () => {
@@ -2172,11 +2183,11 @@ test("fast mode keeps every other blocker: a failed check, a secret flag and a s
   assert.equal(gate(item(), policy, [touching], [rejection], undefined, { fast: true }).ready, false);
 });
 
-test("fast mode: a task is landable on its checks alone, and full mode keeps it reviewed-less (t300)", () => {
+test("legacy fast mode cannot make an unreviewed task landable", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
   const facts = { policy, evidence: [touching], reviews: [] as Review[] };
   assert.notEqual(stageOf(item(), facts).stage, "landable");
-  assert.equal(stageOf(item(), { ...facts, fast: true }).stage, "landable");
+  assert.notEqual(stageOf(item(), { ...facts, fast: true }).stage, "landable");
 });
 
 test("a post-merge review of a task merged in fast mode may share the builder's family (t300)", () => {
@@ -2184,8 +2195,8 @@ test("a post-merge review of a task merged in fast mode may share the builder's 
   assert.ok(postMergeIndependence("claude-code/opus-5.5", ["claude-code/sonnet-5.5"], null, false).refusal);
 });
 
-test("the decision on a task page reads the project's mode: fast mode is ready on the checks, full mode waits for the review (t300)", () => {
+test("task decisions require review regardless of the legacy project mode", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
-  assert.equal(decisionFor(item(), policy, [touching], [], undefined, true).action, "land");
+  assert.equal(decisionFor(item(), policy, [touching], [], undefined, true).action, "review");
   assert.equal(decisionFor(item(), policy, [touching], []).action, "review");
 });
