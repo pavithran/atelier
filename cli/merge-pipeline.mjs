@@ -380,10 +380,9 @@ export function indexBeyond(dir, tree, { git = localGit } = {}) {
 //   config    [key, value] settings for the merge and the commit (identity)
 //   verify    false commits with --no-verify, as a throwaway merge does
 //   generate  false stops a merge that would need a generator to run, as
-//             the owner's merge onto the baseline does: outputs written
-//             there would never have been checked or reviewed
+//             the owner's merge onto the baseline does without adoption
 //   adopt     { tree, regenerated } for a merge verifyAccepted passed: a
-//             generator that would run takes its outputs from `target`
+//             generator that would run takes its outputs from `tree`
 //             instead, and the merge stops unless the tree it leaves is
 //             `tree`, the one verifyAccepted compared
 //   run       how a generator runs (argv, { cwd, env }), as runGroup answers
@@ -437,8 +436,8 @@ export async function mergeThrough(dir, target, { git = localGit, message, commi
   const changed = manifest?.generators.length || manifest?.records.length ? await sidesChanged(dir, git, ours, theirs) : { mb: null, a: [], b: [] };
   const generators = pickGenerators(manifest, { ...changed, conflicted });
   if (generators.length && adopt) {
-    const taken = await git(["checkout", theirs, "--", ...generators.flatMap((g) => g.outputs)], { cwd: dir, allowFail: true });
-    if (taken.status !== 0) { await abort(); return { state: "stopped", reason: `the accepted revision does not hold every output of ${generators.map((g) => g.name).join(", ")}`, ...sorted, regenerated }; }
+    const taken = await git(["checkout", adopt.tree, "--", ...generators.flatMap((g) => g.outputs)], { cwd: dir, allowFail: true });
+    if (taken.status !== 0) { await abort(); return { state: "stopped", reason: `the verified tree does not hold every output of ${generators.map((g) => g.name).join(", ")}`, ...sorted, regenerated }; }
     regenerated.push(...adopt.regenerated);
   } else if (generators.length && !generate) {
     await abort();
@@ -472,16 +471,9 @@ export async function mergeThrough(dir, target, { git = localGit, message, commi
   return { ...result, head: await git(["rev-parse", "HEAD"], { cwd: dir }) };
 }
 
-// What a merge of `target` (the accepted revision) onto `local` needs
-// regenerated, checked without touching the checkout at `dir`: the merge
-// runs through the pipeline, generators included, in a throwaway clone
-// pinned to those two commits, and every declared output of the tree it
-// leaves must be the accepted revision's own entry, mode and bytes. Anything
-// else is a refusal, since an output the accepted revision does not hold was
-// never checked or reviewed. Compared directly against `target`, never
-// against which side an output "matches", which depends on which way round
-// the merge runs. The generators' logs and the comparison are kept under the
-// checkout's Git directory (merge-logs) whatever the verdict.
+// Verify the merged tree and declared generators in an isolated clone. Generator
+// writes must stay within their outputs and be deterministic. Keep the verified
+// tree's objects for adoption without running a generator in the checkout.
 // Answers { ok, tree, regenerated, reason, kept }.
 export async function verifyAccepted(dir, local, target, { git: callerGit = localGit, run = defaultRun, identity = null } = {}) {
   // Every Git command of the check, the clone's creation and checkout
@@ -520,8 +512,8 @@ export async function verifyAccepted(dir, local, target, { git: callerGit = loca
         lines.push(`${path}: regenerated ${got || "missing"}, accepted ${want || "missing"}`);
         if (!got || got !== want) differing.push(`${path} (${got ? want ? "regenerated differently from the accepted revision" : "the accepted revision holds none" : "missing after regeneration"})`);
       }
-      verdict = differing.length ? { ok: false, reason: `regenerated outputs differ from the accepted revision's: ${differing.join(", ")}`, regenerated: r.regenerated }
-        : { ok: true, tree, regenerated: r.regenerated.map((g) => ({ ...g, outputs: g.outputs.map((o) => ({ path: o.path, matches: "the accepted revision" })) })) };
+      git(["fetch", "--quiet", "--no-tags", clone, tree], { cwd: dir });
+      verdict = { ok: true, tree, changed: differing.length > 0, regenerated: r.regenerated.map((g) => ({ ...g, outputs: g.outputs.map((o) => ({ ...o, matches: entry(tree, o.path) === entry(target, o.path) ? "the accepted revision" : o.matches })) })) };
     }
     lines.push(`tree: ${verdict.tree ?? "none"}`);
   } catch (error) {
@@ -539,7 +531,7 @@ export async function verifyAccepted(dir, local, target, { git: callerGit = loca
     }
     rmSync(scratch, { recursive: true, force: true });
   }
-  lines.push(`verdict: ${verdict.ok ? "identical" : `refused, ${verdict.reason}`}`);
+  lines.push(`verdict: ${verdict.ok ? verdict.changed ? "regenerated" : "identical" : `refused, ${verdict.reason}`}`);
   const comparison = join(kept, `${stamp}-verify-accepted.txt`);
   try { writeFileSync(comparison, `${lines.join("\n")}\n`); }
   catch (error) { verdict = { ok: false, reason: `the comparison could not be kept in ${kept}: ${error.message}`, regenerated: verdict.regenerated }; }
