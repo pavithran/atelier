@@ -1,3 +1,4 @@
+// atelier catch-up. Its forms, flags and help are declared in src/usage/commands/catch-up.ts.
 import { fileURLToPath } from 'node:url';
 import { catchUp } from '../catch-up.mjs';
 import { runCommand } from '../ship.mjs';
@@ -7,11 +8,15 @@ export default async function catchUpCommand() {
   const name = project(), p = cfg.projects?.[name];
   const fields = fieldsArg('catch-up');
   const builder = args.builder, reviewer = args.reviewer;
-  const child = async (argv, cwd, pending = false) => {
+  const child = async (argv, cwd, pending = false, submittedId = null) => {
     const r = await runCommand([process.execPath, fileURLToPath(new URL('../atelier.mjs', import.meta.url)), ...argv, '--project', name], {
       cwd, env: { ...process.env, ATELIER_LAND_POOL: '1' }, timeoutMs: 60 * 60_000,
     });
     if (pending && r.status === 75) return false;
+    if (submittedId && r.status === 3) {
+      const d = await call('GET', I(name, submittedId), undefined, OWNER);
+      if (d.item.state === 'submitted' && d.item.head === git(['rev-parse', 'HEAD'], { cwd })) return true;
+    }
     if (!r.passed) throw new Error(`catch-up stopped; the task and checkout are preserved:\n${r.output}`);
     return true;
   };
@@ -40,7 +45,7 @@ export default async function catchUpCommand() {
         git(['fetch', '--quiet', '--', p.path, head], { cwd: dir });
         git(['merge', '--ff-only', head], { cwd: dir });
       },
-      finish: (dir) => child(['done', 'Carry the checkout’s direct commits', '--as', builder], dir),
+      finish: (dir, id) => child(['done', 'Carry the checkout’s direct commits', '--as', builder], dir, false, id),
       land: async id => {
         const d = await call('GET', I(name, id), undefined, OWNER);
         if (d.item.state === 'merged') return true;

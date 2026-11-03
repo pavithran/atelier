@@ -480,7 +480,10 @@ export default async function mergeCommand() {
     // part of the history, its twin: the same tree, authors, dates and
     // message on the baseline's head and the accepted head. The same inputs
     // give the same twin, so a retry publishes the same commit.
-    const published=fresh?rebuild(git,cwd,mergeCommit,[journal.state.baselineStart??baselineHead,item.acceptedHead]):mergeCommit;
+    // A checkout already at the accepted head stays there. Publish its
+    // checked tree with the parents required by the landing grant instead.
+    const carriedHead=lander && landingStartsAtAcceptedHead(journal.state.start,item.acceptedHead);
+    const published=fresh||carriedHead?rebuild(git,cwd,mergeCommit,[journal.state.baselineStart??baselineHead,item.acceptedHead]):mergeCommit;
     if(fresh)savePairs(gitDir,name,{...loadPairs(gitDir,name),[published]:mergeCommit});
     // Every commit the push adds to the baseline, the landing's generated
     // merge commit and its twin included, is checked again before it goes.
