@@ -303,8 +303,8 @@ test("a merge-main task whose workspace already holds main runs the harness on w
   assert.ok(brief.endsWith("The workspace already holds main at " + r.main.slice(0, 8) + "; no merge was left in progress.\n"));
   assert.ok(brief.includes("## Resolve the merge of main"), brief);
   assert.ok(calls.some((c) => c.jobBrief), "the merge job fetched its context");
-  assert.ok(brief.includes("npm test") && brief.includes(context), brief);
-  assert.ok(brief.indexOf("npm test") < brief.indexOf(context) && brief.indexOf(context) < brief.indexOf("## Resolve the merge of main"));
+  assert.ok(brief.includes("tests your change touches") && brief.includes(context), brief);
+  assert.ok(brief.indexOf("tests your change touches") < brief.indexOf(context) && brief.indexOf(context) < brief.indexOf("## Resolve the merge of main"));
 });
 
 test("a merge-main task dispatch with a malformed head is skipped before any claim, and a part still needs its plan", async (t) => {
