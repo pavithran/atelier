@@ -15,10 +15,10 @@ const item = (over: Partial<Item> = {}): Item => ({
   workspace: "p--t21", base: "0".repeat(40), head: H1, acceptedHead: null,
   createdAt: T, updatedAt: T, lastPushAt: T, ...over,
 });
-const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"] };
+const policy: ProjectPolicy = { checks: ["npm test"], protected: ["security.ts"] };
 const pass = (over: Partial<Evidence> = {}): Evidence => ({
   itemId: "t21", claim: "npm test", grade: "observed", head: H1, passed: true,
-  by: "owner", at: T, changedPaths: ["src/a.ts"], where: "sandbox", ...over,
+  by: "owner", at: T, changedPaths: ["src/a.md"], where: "sandbox", ...over,
 });
 const rev = (over: Partial<Review> = {}): Review => ({ itemId: "t21", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, ...over });
 const submitted = (seq: number, head: string, summary?: string, actor = "claude-code/opus-5.5"): LedgerEvent =>
@@ -59,7 +59,7 @@ test("send back: a required check failed at this head, and where it ran is named
 });
 
 test("the decided sentence follows the recommendation", () => {
-  assert.equal(briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), []).decided, "Review t21 at aaaaaaaa: Fix the thing.");
+  assert.equal(briefFor(detail({ evidence: [pass({ changedPaths: ["security.ts"] })] }), []).decided, "Review t21 at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ reviews: [rev({ approve: false })] }), []).decided, "Send t21 back at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ evidence: [pass({ passed: false })] }), []).decided, "Send t21 back at aaaaaaaa: Fix the thing.");
   assert.equal(briefFor(detail({ evidence: [] }), []).decided, "Wait on t21 at aaaaaaaa: Fix the thing.");
@@ -70,9 +70,9 @@ test("the decided sentence follows the recommendation", () => {
 
 test("with two rejections and scope flags, the flags and one rejection line stay and reports go", () => {
   const d = detail({
-    policy: { checks: ["npm test"], protected: ["AGENTS.md"] },
+    policy: { checks: ["npm test"], protected: ["security.ts"] },
     evidence: [
-      pass({ changedPaths: ["AGENTS.md", "x/1"] }),
+      pass({ changedPaths: ["security.ts", "x/1"] }),
       { itemId: "t21", claim: "fine", grade: "reported", head: H1, passed: null, by: "claude-code/opus-5.5", at: T },
     ],
     reviews: [
@@ -105,18 +105,18 @@ test("wait: a required check is pending, and it is named", () => {
 });
 
 test("review: a protected path needs an assessor and none has approved this revision", () => {
-  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), []);
+  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["security.ts"] })] }), []);
   assert.equal(b.recommendation.verdict, "review");
   assert.equal(b.recommendation.reason, "This revision touches a protected path and needs an approval from a model of another family than every contributor. Your own approval is not that review; if no reviewer qualifies, accept with an override and its reason.");
   assert.match(b.decided, /^Review t21 at aaaaaaaa/);
   assert.ok(b.evidence.includes("It touches a protected path and no model of another family than every contributor has approved this revision."));
   // The owner's approval leaves it a review: it is not the independent one.
-  assert.equal(briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })], reviews: [rev({ by: OWNER })] }), []).recommendation.verdict, "review");
+  assert.equal(briefFor(detail({ evidence: [pass({ changedPaths: ["security.ts"] })], reviews: [rev({ by: OWNER })] }), []).recommendation.verdict, "review");
 });
 
 test("the owner's override is named with its reason, while the item waits for acceptance and once it is accepted", () => {
   const reviewOverride = { head: H1, by: OWNER, reason: "No model of another family is available", at: T };
-  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const evidence = [pass({ changedPaths: ["security.ts"] })];
   const ready = briefFor(detail({ item: { reviewOverride }, evidence }), []);
   assert.equal(ready.recommendation.verdict, "land");
   assert.ok(ready.evidence.includes("The developer overrode the independent review at this revision: No model of another family is available."));
@@ -131,8 +131,8 @@ test("the owner's override is named with its reason, while the item waits for ac
 
 test("a protected path with a check still pending is a review, naming the pending check", () => {
   const d = detail({
-    policy: { checks: ["npm test", "npm run lint"], protected: ["AGENTS.md"] },
-    evidence: [pass({ changedPaths: ["AGENTS.md"] })],
+    policy: { checks: ["npm test", "npm run lint"], protected: ["security.ts"] },
+    evidence: [pass({ changedPaths: ["security.ts"] })],
   });
   const b = briefFor(d, []);
   assert.equal(b.recommendation.verdict, "review");
@@ -141,14 +141,14 @@ test("a protected path with a check still pending is a review, naming the pendin
 });
 
 test("a protected path with a rejection is still a review, as the page's banner says", () => {
-  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })], reviews: [rev({ approve: false })] }), []);
+  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["security.ts"] })], reviews: [rev({ approve: false })] }), []);
   assert.equal(b.recommendation.verdict, "review");
   assert.match(b.decided, /^Review t21/);
   assert.match(b.recommendation.reason, /; gpt-5\.5 asked for changes at this revision\.$/);
 });
 
 test("a failed check comes before a missing approval, as the page's banner says", () => {
-  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] }), pass({ passed: false, at: "2026-10-03T12:01:00.000Z" })] }), []);
+  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["security.ts"] }), pass({ passed: false, at: "2026-10-03T12:01:00.000Z" })] }), []);
   assert.equal(b.recommendation.verdict, "send back");
   assert.match(b.decided, /^Send t21 back/);
 });
@@ -160,7 +160,7 @@ test("a task still in progress follows the page: a failed check or a rejection s
   const rejected = briefFor(detail({ item: { state: "claimed" }, reviews: [rev({ approve: false })] }), []);
   assert.equal(rejected.recommendation.verdict, "send back");
   assert.match(rejected.recommendation.reason, /^gpt-5\.5 asked for changes at this revision/);
-  const quiet = briefFor(detail({ item: { state: "claimed" }, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), []);
+  const quiet = briefFor(detail({ item: { state: "claimed" }, evidence: [pass({ changedPaths: ["security.ts"] })] }), []);
   assert.equal(quiet.recommendation.verdict, "wait");
   assert.match(quiet.recommendation.reason, /^The task is in progress/);
 });
@@ -201,7 +201,7 @@ test("a closed task never appears in the inbox as waiting on the owner", () => {
 });
 
 test("an approval at an older head does not count for this revision", () => {
-  const d = detail({ item: { head: H2 }, evidence: [pass({ head: H2, changedPaths: ["AGENTS.md"] })], reviews: [rev({ head: H1 })] });
+  const d = detail({ item: { head: H2 }, evidence: [pass({ head: H2, changedPaths: ["security.ts"] })], reviews: [rev({ head: H1 })] });
   const b = briefFor(d, []);
   assert.equal(b.recommendation.verdict, "review");
   assert.ok(!b.evidence.some((l) => l.startsWith("Reviews at this revision")));
@@ -227,7 +227,7 @@ test("another item's submission is never attributed to this one", () => {
 });
 
 test("a protected path with an independent approval is ready to land", () => {
-  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })], reviews: [rev()] }), []);
+  const b = briefFor(detail({ evidence: [pass({ changedPaths: ["security.ts"] })], reviews: [rev()] }), []);
   assert.equal(b.recommendation.verdict, "land");
   assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved."));
 });
@@ -270,9 +270,9 @@ test("several rejections say how many models and quote the newest non-empty note
 
 test("scope flags, reports and where checks ran appear, capped at five lines", () => {
   const d = detail({
-    policy: { checks: ["npm test", "npm run lint"], protected: ["AGENTS.md"] },
+    policy: { checks: ["npm test", "npm run lint"], protected: ["security.ts"] },
     evidence: [
-      pass({ changedPaths: ["AGENTS.md", "x/1", "x/2", "x/3", "x/4"] }),
+      pass({ changedPaths: ["security.ts", "x/1", "x/2", "x/3", "x/4"] }),
       pass({ claim: "npm run lint", where: "runner", changedPaths: undefined }),
       { itemId: "t21", claim: "looked fine", grade: "reported", head: H1, passed: null, by: "a", at: T },
     ],
@@ -281,7 +281,7 @@ test("scope flags, reports and where checks ran appear, capped at five lines", (
   const b = briefFor(d, []);
   assert.equal(b.evidence.length, 5);
   assert.equal(b.evidence[0], "Required checks at this revision: 1 passed in a Cloudflare container, 1 passed on a runner, in a clean clone.");
-  assert.ok(b.evidence.some((l) => l.startsWith("Changes outside the task's scope: AGENTS.md, x/1, x/2")));
+  assert.ok(b.evidence.some((l) => l.startsWith("Changes outside the task's scope: security.ts, x/1, x/2")));
   const calm = briefFor(detail({ evidence: [pass(), { itemId: "t21", claim: "ok", grade: "reported", head: H1, passed: null, by: "a", at: T }] }), []);
   assert.equal(calm.evidence.at(-1), "1 report recorded, not verified.");
 });
@@ -318,7 +318,7 @@ test("a stored execution policy puts no class requirement in a brief (t152)", ()
     allowed_classes: ["direct", "coordinated", "protected"],
     direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: [],
   } };
-  for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
+  for (const path of ["docs/a.md", "src/a.ts", "security.ts"]) {
     for (const reviews of [[], [rev()]]) {
       const b = briefFor(detail({ policy: p, evidence: [pass({ changedPaths: [path] })], reviews }));
       assert.ok(!b.evidence.some((line) => /^(Direct|Coordinated|Protected) change:/.test(line)), `${path}: ${b.evidence.join(" | ")}`);

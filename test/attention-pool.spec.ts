@@ -26,14 +26,14 @@ const page = async (path: string, cookie: string) => (await worker.fetch(new Req
 type Waiting = { id: string; call: string; kind: string; kinds: string[]; reason: string; why: string };
 
 it("a protected change with no qualifying reviewer waits on the owner in every view, and goes back to review once one qualifies", async () => {
-  const record = { name: NAME, repo: NAME, policy: { checks: ["npm test"], protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() };
+  const record = { name: NAME, repo: NAME, policy: { checks: ["npm test"], protected: ["security.ts"] }, createdAt: new Date().toISOString() };
   await L(NAME).setProject(record, "owner");
   await I().registerProject(record);
-  await L(NAME).newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L(NAME).newItem("Touch a protected path", ["security.ts"], "owner");
   await L(NAME).claim("t1", A);
   await L(NAME).setWorkspace("t1", `${NAME}--t1`, H0, A);
   await L(NAME).recordPush("t1", A, H1, H1);
-  await L(NAME).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L(NAME).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L(NAME).submit("t1", A);
   const cookie = await signIn(TOKEN, testEnv);
 
