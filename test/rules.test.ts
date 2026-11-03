@@ -1717,24 +1717,27 @@ test("riskClass: docs and tests only, core, or other, over real path lists; an u
 
 test("riskNeed: the files the checks run and the ship files are core beside the project's list", () => {
   const p: ProjectPolicy = { ...riskPolicy, checks: ["node test/run.mjs"] };
-  assert.deepEqual(riskNeed(["test/run.mjs"], p), { risk: "core", reviews: 1 });
-  assert.deepEqual(riskNeed(["docs/atelier/ship.sh"], p), { risk: "core", reviews: 1 });
+  assert.deepEqual(riskNeed(["test/run.mjs"], p), { risk: "core", reviews: 2 });
+  assert.deepEqual(riskNeed(["docs/atelier/ship.sh"], p), { risk: "core", reviews: 2 });
   assert.deepEqual(riskNeed(["docs/a.md"], p), { risk: "docs-or-tests", reviews: 0 });
+  for (const path of ["test/run.mjs", "docs/atelier/ship.sh"]) {
+    assert.deepEqual(approvalsNeeded(p, changeClass([path], p), [path]), { count: 2, as: "protected", risk: "core" });
+  }
   assert.equal(riskNeed(["docs/a.md"], policy), null);
 });
 
 // t265 waited an hour: astra's approval, drawn by a tier request, filled the
 // tier slot and counted as no independent review.
-test("a legacy two-review policy now needs one independent review and keeps tier reviews apart", () => {
+test("a two-review policy counts independent tier reviews toward its requirement", () => {
   const core = pass({ changedPaths: ["src/rules.ts"] });
   const base: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, claimed: true };
   const tierApproval: Review = { ...base, by: "gemini/gemini-3", tier: true };
-  assert.deepEqual(gateApprovals(item(), riskPolicy, [core], [base, tierApproval]).map((r) => r.by), ["codex/gpt-5.5"]);
+  assert.deepEqual(gateApprovals(item(), riskPolicy, [core], [base, tierApproval]).map((r) => r.by), ["codex/gpt-5.5", "gemini/gemini-3"]);
   assert.equal(gate(item(), riskPolicy, [core], [base, tierApproval]).ready, true);
   // A contributor's own tier approval is still no independent review.
   const contributor = { ...tierApproval, by: "claude-code/opus-5.5", claimed: true };
   assert.equal(gateApprovals(item(), riskPolicy, [core], [base, contributor]).length, 1);
-  assert.equal(gate(item(), riskPolicy, [core], [base, contributor]).ready, true);
+  assert.equal(gate(item(), riskPolicy, [core], [base, contributor]).ready, false);
   // One review needed: the tier approval stays apart.
   const one: ProjectPolicy = { ...riskPolicy, riskReviews: { core: ATELIER_CORE, reviews: { "docs-or-tests": 0, other: 1, core: 1 } } };
   assert.deepEqual(gateApprovals(item(), one, [core], [tierApproval]), []);
@@ -1742,7 +1745,7 @@ test("a legacy two-review policy now needs one independent review and keeps tier
 
 // This would have caught a docs-only edit inside a protected path asking for
 // the full cross-company review (t631's finding), and a core change landing on one.
-test("the gate needs one review for code under every stored risk policy", () => {
+test("the gate preserves higher review counts and exempts documentation", () => {
   const base: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T };
   const second: Review = { ...base, by: "gemini/gemini-3" };
   const sameFamily: Review = { ...base, by: "claude-code/sonnet-5.5" };
@@ -1752,25 +1755,25 @@ test("the gate needs one review for code under every stored risk policy", () => 
   assert.equal(gate(item(), policy, [protectedDocs], []).ready, true);
   const docs = gate(item(), protectedPolicy, [protectedDocs], []);
   assert.deepEqual([docs.ready, docs.riskClass, docs.needsAssessor], [true, "docs-or-tests", false]);
-  // Other: one review; a same-family one is not independent of a protected change, but is of an unprotected one.
+  // Other: one independent review.
   const other = pass({ changedPaths: ["src/ui.ts"] });
   assert.equal(gate(item(), protectedPolicy, [other], []).ready, false);
   assert.match(gate(item(), protectedPolicy, [other], []).blockers.join(), /other change: needs 1 independent review/);
   assert.equal(gate(item(), protectedPolicy, [other], [base]).ready, true);
   // Core: two reviewers, each counted once.
   const core = pass({ changedPaths: ["src/rules.ts"] });
-  assert.equal(gate(item(), riskPolicy, [core], [base]).ready, true);
-  assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, note: "again" }]).ready, true);
+  assert.equal(gate(item(), riskPolicy, [core], [base]).ready, false);
+  assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, note: "again" }]).ready, false);
   // One model under an alias, a profile or another harness is one reviewer, not two.
   for (const variant of ["codex/gpt-5.5:high", "CODEX/GPT-5.5", "opencode/gpt-5.5"]) {
-    assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, by: variant }]).ready, true, variant);
+    assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, by: variant }]).ready, false, variant);
     assert.equal(gateApprovals(item(), riskPolicy, [core], [base, { ...base, by: variant }]).length, 1, variant);
   }
   const both = gate(item(), riskPolicy, [core], [base, second]);
   assert.deepEqual([both.ready, both.riskClass], [true, "core"]);
   // An empty change is core.
-  assert.equal(gate(item(), riskPolicy, [pass({ changedPaths: [] })], [base]).ready, true);
-  // No riskReviews: one approval for a protected change, none for another, and no class named.
+  assert.equal(gate(item(), riskPolicy, [pass({ changedPaths: [] })], [base]).ready, false);
+  // Without riskReviews, code needs one approval and no risk class is named.
   const today = gate(item(), policy, [pass({ changedPaths: ["wrangler.jsonc"] })], [base]);
   assert.deepEqual(today, { ready: true, blockers: [], needsAssessor: false, outOfScope: ["wrangler.jsonc"] });
   assert.equal(gate(item(), policy, [other], []).riskClass, undefined);
@@ -2213,11 +2216,12 @@ test("one flow: only measured documentation skips the cross-company review", () 
     }
     for (const path of ["src/a.ts", "test/a.test.ts", "docs/run.sh", "src/config.txt", "package.json"]) {
       const evidence = [pass({ changedPaths: [path] })];
-      assert.equal(approvalsNeeded(p, changeClass([path], p), [path]).count, 1, path);
+      const count = (path.startsWith("src/") || path === "package.json") && p.riskReviews ? 3 : 1;
+      assert.equal(approvalsNeeded(p, changeClass([path], p), [path]).count, count, path);
       for (const reviews of [[], [review(item().owner!)], [review("owner")], [review("claude-code/sonnet-5.5")], [review("codex/gpt-6", { head: H2 })]]) {
         assert.equal(gate(item(), p, evidence, reviews).ready, false, path);
       }
-      assert.equal(gate(item(), p, evidence, [review("codex/gpt-6")]).ready, true, path);
+      assert.equal(gate(item(), p, evidence, [review("codex/gpt-6")]).ready, count === 1, path);
     }
   }
 });

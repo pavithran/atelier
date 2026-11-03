@@ -1305,7 +1305,7 @@ export function riskNeed(paths: readonly string[] | null | undefined, policy: Pr
   const r = policy.riskReviews;
   if (!r) return null;
   const risk = riskClass(paths, [...r.core, ...checkFiles(policy.checks), ...checkFiles(policy.shipRuns ?? []), ...SHIP_FILES]);
-  return { risk, reviews: risk === "docs-or-tests" ? 0 : 1 };
+  return { risk, reviews: risk === "docs-or-tests" ? 0 : Math.max(1, r.reviews[risk]) };
 }
 
 // riskReviews as a request states it, or a refusal that names what is wrong.
@@ -2154,11 +2154,11 @@ export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evide
   return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, view.changedPaths, owner, options);
 }
 
-// Every measured non-documentation change needs one cross-company approval.
-// Stored risk policies remain readable but no longer change the review count.
+// Code needs at least one cross-company approval; a project may require more.
 export function approvalsNeeded(policy: ProjectPolicy, kind: ChangeClass | null, paths: readonly string[] | null | undefined): { count: number; as: "protected" | "coordinated" | null; risk: RiskClass | null } {
-  const risk = riskClass(paths, policy.riskReviews?.core ?? []);
-  return { count: risk === "docs-or-tests" ? 0 : 1, as: "protected", risk: policy.riskReviews ? risk : null };
+  const need = riskNeed(paths, policy);
+  const count = need?.reviews ?? (riskClass(paths, []) === "docs-or-tests" ? 0 : 1);
+  return { count, as: "protected", risk: need?.risk ?? null };
 }
 
 // gateApprovals over reviews already counted, for the gate that has them.
@@ -2945,7 +2945,10 @@ export function recordedMergeIndependence(
     const reason = `the developer's record of ${unproved.map((r) => r.by).join(", ")}'s approval, which no review the Ledger holds proves`;
     return { refusal: null, override: { head: record.commit, by: owner, reason, at: record.at } };
   }
-  return { refusal: new RuleError("not_independent", detail, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
+  const overrideCount = unproved.length && need.risk
+    ? `; for a developer-recorded override, ${riskBlocker(need.risk, need.count, withProof.length, single)}`
+    : "";
+  return { refusal: new RuleError("not_independent", detail + overrideCount, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
 }
 
 // The builder a commit's message names: its last Agent: line, as harness/model.
