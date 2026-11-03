@@ -1,0 +1,31 @@
+atelier atelier/t447 "A failed delivery check after a deploy still wraps and says what to do"
+accepted head 67102c781f925b49f9416e09df18f7098fc44b74
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T00:54:03.031Z
+REVIEW approve by antigravity/gemini-4-argon at 67102c781f925b49f9416e09df18f7098fc44b74, recorded by antigravity/gemini-4-argon
+2026-11-02T22:33:29.952Z pavi item.created
+2026-11-02T22:33:29.952Z claude-code/opus-5.5 criteria.revised
+2026-11-02T22:39:54.393Z pavi item.dispatched
+2026-11-02T23:58:37.915Z pavi item.undispatched
+2026-11-02T23:58:42.226Z pavi item.dispatched
+2026-11-03T00:42:16.690Z codex/gpt-6.1-sol item.claimed
+2026-11-03T00:42:16.734Z codex/gpt-6.1-sol workspace.created
+2026-11-03T00:53:59.566Z codex/gpt-6.1-sol push.observed
+2026-11-03T00:54:03.062Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T00:54:03.238Z codex/gpt-6.1-sol item.submitted
+2026-11-03T00:59:50.549Z pavi land.start
+2026-11-03T00:59:51.768Z pavi review.requested
+2026-11-03T00:59:51.768Z pavi review.tier_needed
+2026-11-03T00:59:52.053Z pavi land.review
+2026-11-03T00:59:52.152Z pavi land.requested
+2026-11-03T01:00:25.758Z antigravity/gemini-4-argon review.claimed
+2026-11-03T01:18:41.741Z antigravity/gemini-4-argon review.approved
+2026-11-03T01:25:47.101Z atelier/orchestrator refresh.queued
+2026-11-03T01:27:32.370Z atelier/orchestrator refresh.queued
+2026-11-03T01:27:53.087Z atelier/orchestrator refresh.queued
+2026-11-03T01:28:10.211Z pavi item.accepted
+2026-11-03T01:28:10.984Z pavi land.start
+2026-11-03T01:28:11.076Z pavi landing.leased
+2026-11-03T01:28:11.162Z pavi land.lease
+2026-11-03T01:28:12.154Z pavi checkout.leased
