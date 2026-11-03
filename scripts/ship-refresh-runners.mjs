@@ -10,18 +10,22 @@ export function refreshRunners({ cwd = process.cwd(), env = process.env,
     const head = getHead({ cwd, env });
     if (!/^[a-f0-9]{40}$/.test(head)) throw new Error('Invalid shipped commit.');
     const commands = [
-      [SHIP_GIT, ['push', 'ai-studio:ai-projects/atelier-runner', `${head}:refs/atelier/ship`]],
+      ['ai-projects/atelier-runner', '$HOME/ai-projects/atelier-runner'],
+      ['/Users/atelier-build/ai-projects/atelier-runner', '/Users/atelier-build/ai-projects/atelier-runner'],
+    ].flatMap(([remote, directory]) => [
+      [SHIP_GIT, ['push', `ai-studio:${remote}`, `${head}:refs/atelier/ship`]],
       ['/usr/bin/ssh', ['-o', 'BatchMode=yes', '--', 'ai-studio',
-        `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; export PATH; cd "$HOME/ai-projects/atelier-runner" && git reset --hard ${head} && npm ci`]],
-    ];
+        `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; export PATH; cd "${directory}" && git reset --hard ${head} && npm ci`]],
+    ]);
+    // Four operations must leave time to warn within the nine-minute ship step.
     for (const [command, args] of commands) {
-      const result = run(command, args, { cwd, env: { ...env, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }, stdio: 'inherit', timeout: 240_000 });
+      const result = run(command, args, { cwd, env: { ...env, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }, stdio: 'inherit', timeout: 120_000 });
       if (result.error || result.status !== 0) throw new Error(`${command}: ${result.error?.message ?? result.signal ?? `exit ${result.status}`}`);
     }
     log(`Refreshed Studio runners to ${head}.`);
     return true;
   } catch (error) {
-    warn(`Warning: Studio runner refresh failed: ${error.message}; delivery remains successful. Refresh ~/ai-projects/atelier-runner on ai-studio manually.`);
+    warn(`Warning: Studio runner refresh failed: ${error.message}; delivery remains successful. Refresh ~/ai-projects/atelier-runner and /Users/atelier-build/ai-projects/atelier-runner on ai-studio manually.`);
     return false;
   }
 }

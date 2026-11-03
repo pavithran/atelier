@@ -23,25 +23,28 @@ test('refresh pins the push, reset and dependency install to the shipped commit'
   assert.deepEqual(calls.map(c => c.slice(0, 2)), [
     [SHIP_GIT, ['push', 'ai-studio:ai-projects/atelier-runner', `${head}:refs/atelier/ship`]],
     ['/usr/bin/ssh', ['-o', 'BatchMode=yes', '--', 'ai-studio', `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; export PATH; cd "$HOME/ai-projects/atelier-runner" && git reset --hard ${head} && npm ci`]],
+    [SHIP_GIT, ['push', "ai-studio:/Users/atelier-build/ai-projects/atelier-runner", `${head}:refs/atelier/ship`]],
+    ['/usr/bin/ssh', ['-o', 'BatchMode=yes', '--', 'ai-studio', `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; export PATH; cd "/Users/atelier-build/ai-projects/atelier-runner" && git reset --hard ${head} && npm ci`]],
   ]);
-  assert.ok(calls.every(c => c[2].timeout === 240_000));
+  assert.ok(calls.every(c => c[2].timeout === 120_000));
   assert.deepEqual(messages, [`Refreshed Studio runners to ${head}.`]);
 });
 
-for (const failure of ['source', 'push', 'ssh', 'spawn']) {
+for (const failure of ['source', 'push', 'ssh', 'builder-push', 'builder-ssh', 'spawn']) {
   test(`a ${failure} failure warns, returns normally and never reports completion`, () => {
     const warnings = [], messages = [];
     let calls = 0;
     const result = refreshRunners({
       getHead: () => { if (failure === 'source') throw Error('source moved'); return head; },
-      run: () => { calls++; if (failure === 'spawn') throw Error('spawn failed'); return { status: calls === (failure === 'push' ? 1 : 2) ? 1 : 0 }; },
+      run: () => { calls++; if (failure === 'spawn') throw Error('spawn failed'); return { status: calls === ({ push: 1, ssh: 2, 'builder-push': 3, 'builder-ssh': 4 }[failure]) ? 1 : 0 }; },
       warn: s => warnings.push(s), log: s => messages.push(s),
     });
     assert.equal(result, false);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /Warning: Studio runner refresh failed.*delivery remains successful/);
+    assert.match(warnings[0], /Refresh.*~\/ai-projects\/atelier-runner.*\/Users\/atelier-build\/ai-projects\/atelier-runner/);
     assert.deepEqual(messages, []);
-    assert.equal(calls, failure === 'source' ? 0 : failure === 'ssh' ? 2 : 1);
+    assert.equal(calls, ({ source: 0, push: 1, ssh: 2, 'builder-push': 3, 'builder-ssh': 4, spawn: 1 }[failure]));
   });
 }
 
