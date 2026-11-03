@@ -2,7 +2,7 @@
 // runs the review once on this Mac, under the reviewer's own token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reviewerHere, reviewerOffered, runOneShotReview } from "../cli/review-oneshot.mjs";
@@ -138,9 +138,8 @@ test("the owner's token is not the reviewer's: a model with no token of its own 
   assert.equal(calls.length, 0, "nothing was claimed");
 });
 
-test("atelier guide --role orchestrate states the one-shot review", async () => {
-  const { rolePrompt } = await import("../cli/help.mjs");
-  const text = rolePrompt("orchestrate").replace(/\s+/g, " ");
+test("the orchestrating reference states the one-shot review details", () => {
+  const text = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
   assert.match(text, /no live runner offers that reviewer, the landing runs a one-shot review on this Mac/);
   assert.match(text, /its own verdict under its own token/);
   assert.match(text, /missing from the config is named and the landing stops/);

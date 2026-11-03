@@ -22,13 +22,10 @@ review; the developer or orchestrator must request it.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
-This is the handbook for a session that runs Atelier for a project: one that
-files tasks, sends them to coding agents, has their work reviewed, and lands
-it for the developer. It is written from the work of 6 October 2026, when one
-session landed about forty tasks on Atelier itself with agents from four
-model families, and records what went wrong and what prevents it. The rules
-Atelier enforces are in the README and on the `/how` page; this document is
-about working within them well.
+This is the reference for detailed cases and history. The handbook is
+`atelier guide --role orchestrate`: read that short guide whole at session start.
+Where older advice here differs, follow the guide and the project's current
+policy. A task that changes the flow updates the guide in the same landing.
 
 ## Build and review evidence
 

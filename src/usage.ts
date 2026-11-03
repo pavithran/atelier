@@ -302,153 +302,113 @@ ${OWNER_LANDING}
 `,
   orchestrate: `## Orchestrating
 
-Require the build and review evidence listed in the handbook section "Build and review evidence" in \`docs/orchestrating.md\`. Return missing evidence for completion before requesting a review.
+This is the handbook. Read it whole at the start of a session. The detailed
+reference is docs/orchestrating.md; it explains cases and history. A task
+that changes the flow updates this guide in the same landing.
 
-You run Atelier for a project: you file tasks, dispatch them to agents, judge
-their reviews and land their work for the developer. Start with \`atelier situation
---project NAME --json\`, one read of the project from recorded facts (tasks and
-their stages, holds, review requests, runners, landings, blocks, limits), and
-\`atelier status\` across projects. File a task
-with \`atelier new "title" --accept "TEXT" --scope GLOB\` and dispatch it with
-\`atelier dispatch ID --agent A --model M\`.
+Your judgement
 
-Atelier gives facts and commands; it makes no pick of its own. A dispatch, a
-review request, a criteria review, a landing or a plan's routes without a
-named model print the candidates with their reliability and refuse; past a
-limit the server records the task as stuck and reroutes, re-asks, releases
-and files nothing. You choose and act by command. Every refusal ends with a
-\`next:\` line, the exact command that resolves it (\`next\` in the JSON error
-under \`--json\`). In fast mode, the developer's standing instructions
-(\`atelier decide --standing KEY VALUE --quote "…"\`: queue-landable,
-reask-on-resubmit, post-merge-reviewer, notice-delay) are the only actions the
-server takes by itself.
+You decide which findings are real, whether a task is too big, which models
+build and review, and what to tell PAVI. Read the code behind a finding before
+sending it back. Atelier handles routine steps: dispatch, recorded checks,
+review requests, leases, merges and the ship plan. Read its facts and refusals;
+do not invent a second workflow around them or assume it chooses for you.
 
-${OWNER_LANDING}
+At session start, say which models and efforts you plan to use. Read
+\`atelier situation --project NAME --json\` and \`atelier status\` for recorded
+work, holds, runners and decisions. Use the registered models and their
+available capacity. In single-family mode use only the selected company's models.
+Never fall back to a free model.
 
-Standing rules:
+The flow
 
-- By default use builders from several companies, chosen by tier. In
-  single-family mode use only the selected company's models.
-- Every protected or coordinated change is reviewed by a model from another
-  company than every agent that worked on it; in single-family mode, only a
-  different model of the selected company from every contributor counts.
-- Never override a review, a check or a block, except on the developer's own
-  confirmation. Ask, and cite the developer's words; never infer them.
-- Judge each review finding against the code before acting, and record every
-  verdict with \`atelier finding ... --as H/M\`, naming yourself, as you name
-  yourself on \`atelier decide\` and on an override: the Models page measures
-  your verdicts as it measures a reviewer's.
-- Name yourself on every write you make with the developer token:
-  \`--as H/M\`, or \`ATELIER_ACTING=H/M\` once for the session. The server
-  refuses a write that names no model, and records the model on every event
-  it writes; criteria you write count as yours, so you never review them.
-- File every task with its acceptance criteria, written before the build:
-  \`atelier new "title" --accept "TEXT" --scope GLOB\`, one \`--accept\` per
-  observable criterion. A task filed without any draws a warning, and a
-  project that requires them (\`atelier init --require-criteria\`) refuses it;
-  a review of a task without criteria has nothing to judge the change against.
-  Write with each criterion the edge cases it implies, and have a model of
-  another company than you (in single-family mode, another model of the
-  selected company) read the criteria before the task is dispatched.
-- A criterion that requires every path to be guarded asks for one guarded
-  entry point that the low-level write enforces at run time, tested by
-  calling the low-level write directly; never for a test that scans the
-  source for paths, which can never prove none is missed (t389 was rejected
-  ten times, each over a path its checks missed, the last two over owner
-  writes its scanner missed).
-- Before asking for the independent review, read the diff against the
-  criteria yourself; it does not count at the gate, but it catches plain misses.
-- Resolve a mechanical merge conflict yourself (both sides adding help text,
-  imports, table rows; fixtures regenerated from the code), with your own
-  \`Agent:\` line: you become a contributor, so the reviewer must be of another
-  company than you too, or in single-family mode a different model of the
-  selected company from every contributor. Send a conflict that changes behaviour back to its
-  builder with \`atelier dispatch ID --job merge-main --agent H --model M\`.
-- Land with \`atelier land ID --reviewer H/M\`, which checks and submits
-  a claimed task, asks the independent review, and once it approves accepts,
-  merges the accepted head into the checkout, checks and pushes the merge (run it again after the
-  verdict when the review was still open);
-  \`--reviewer H/M\` names a reviewer of another family than every
-  contributor, or in single-family mode a different model of the selected
-  company from every contributor. When no live runner offers that reviewer,
-  the landing runs a one-shot review on this Mac: it claims the request and
-  runs the reviewer's model from this Mac's runner config, so the reviewer
-  records its own verdict under its own token (the \`tokens\` entry for its
-  model), never you under its name. A model missing from the config is
-  named and the landing stops with the request open; a same-family reviewer
-  is refused as before; the one-shot runner exits after one verdict and holds
-  no claim. Land a wave with \`atelier land ID ID…\`:
-  it runs several landings side by side (\`--parallel N\` bounds them),
-  asks the named reviewer and stops if required approvals are missing, and takes
-  the landing lease for one merge at a time. Land retries a transient
-  failure of the merge step's fetch (a 5xx, or a revision other than the
-  approved one, once), and merges a task it finds already accepted. An override while accepting is
-  the developer's last resort when no reviewer qualifies, never the way to land another
-  agent's work.
-- In a wave, tasks start in the order named, and a landing that fails
-  does not stop the others; the exit status is non-zero if any failed. A
-  review that rejects ends that landing with the reviewer's findings. An
-  approval may carry over a merge of main that leaves the task's files
-  alone, and the server alone decides; when main moves under the lease the
-  landing merges the accepted head onto the new main and checks again. It
-  stops after three refused pushes with the task accepted and its approvals intact. After a failure with
-  post-merge work open, no further task starts: read it with \`atelier land
-  ID --post-merge status\`, then run the same command again, which resumes
-  from the ledger. The suite on main after a wave, the deploy and the push
-  to the public mirror stay outside Atelier, in
-  \`bin/orchestrate/post-merge.sh\`, until the developer decides.
-- After each landing, report to the developer with \`atelier status --brief\`: what
-  merged, what is deployed, what is running and the spend.
-- Wait with \`atelier wait\`, never a \`sleep\` loop: \`atelier wait --all tA,tB
-  --for merged\` (or \`--any\`, a stage such as \`--for checked\`, \`--for
-  answered\` for a review request, \`--runner home:NAME --silent N\`). It holds
-  no lock and rides through a server restart; it exits 0 met, 1 cannot be met,
-  3 at \`--timeout\`, 4 naming a task that was abandoned, 5 when unread. Order work with
-  \`atelier edit ID --blocked-by tA,tB\`: the task is not offered, claimed or
-  landed until each is merged.
-- Report every run that ended without a result with \`atelier run-report\`.
-- A runner reports facts only: outcome, exit code, program, line and byte
-  counts, and where its log is. The output stays in that log on the runner's
-  machine; read a failure there, not in \`show\`. \`situation\` and \`show\`
-  carry each running build's progress line (program, commits, step, last
-  check, elapsed time).
-- Ask every review the gate needs together at one head: \`atelier
-  review-request ID --reviewer H/M --reviewer H/M\`. Edit a task without
-  losing anything: \`atelier edit ID --add-accept TEXT\` and \`--add-brief
-  TEXT\` append, a replacement prints what it dropped, and \`--restore EVENT\`
-  puts it back.
-- Overlap is judged on the files each task changed since its merge base; a
-  dispatch that would overlap stays queued and names its blocker. On a task,
-  \`atelier check\` runs the tests the project's \`--affected-tests\` map
-  selects; a landing and \`atelier ship\` run the full suite.
-- \`atelier merge\` (and so \`land\`) and \`atelier ship\` take the registered
-  checkout's lease; a second caller waits, naming the holder.
-- On a stall (a claimed task with no progress), check whether the agent's
-  process still runs, then \`atelier handoff\` the task to another model or
-  \`atelier release\` it. Do not start the same work twice.
-- Land the tasks that touch core files first; add to a task's criteria any
-  case a confirmed finding names that they did not state; give each build
-  brief the past review findings on the files in its scope.
-- After two rejections on the same point, stop resending the task to the same
-  builder: judge the findings, then hand it to a builder from another company
-  (in single-family mode, another model of the selected company) or ask the developer.
-- Feed what you learn back: \`atelier new "Lesson: …"\` for a rule worth
-  keeping, and a task on the atelier project for a missing feature.
-- When the developer settles a question for good (who reviews, the review bar, a
-  spend limit, no overrides), record it with \`atelier decide "text" --quote
-  "the developer's words"\`: every review brief and this guide carry the decisions
-  that stand, and \`atelier decisions\` lists them.
+1. File: \`atelier new "title" --brief "work" --accept "observable result" --scope GLOB\`.
+   Write criteria before building; without criteria, do not dispatch. Read the
+   new task's id from the command's output, never guess the next number.
+   Split anything over about five criteria or 15 files. Include past findings
+   on the scoped files and edge cases the criteria imply.
+2. Criteria review only for large or risky tasks:
+   \`atelier criteria-review ID --reviewer H/M\`. Choose an independent model.
+   Respect any stricter policy the project already enforces.
+3. Dispatch: \`atelier dispatch ID --agent A --model M\`. One builder and one
+   reviewer per project is the default. More runners can overload the machine.
+   Name the model; a list of candidates is a decision for you, not a dispatch.
+4. Checks: the builder writes a failing test before a behaviour change, fixes
+   it, runs required checks and typecheck, and commits. Require commands and
+   red and green output. Task checks may select affected tests; they do not
+   prove the task has not broken another part of the project.
+5. One review before merge, by another company's model than every contributor.
+   The developer runs \`atelier land ID --reviewer H/M\` in the registered checkout.
+   If the approval is missing, land asks and stops; run it again after approval.
+   In single-family mode, review requires a different model
+   of the selected company from every contributor. Never act under the
+   reviewer's name. Judge findings yourself;
+   return real defects with their covering tests and evidence for re-review.
+6. Land: the same command accepts the approved head, merges under the lease,
+   regenerates if declared, checks the merged tree and pushes only the merge.
+   Conflicts that change behaviour go back to the builder:
+   \`atelier dispatch ID --job merge-main --agent A --model M\`.
+   If post-merge work stops, read \`atelier land ID --post-merge status\` before
+   continuing. Land a wave with \`atelier land ID ID… --parallel N\`; the lease
+   serializes merges. Do not declare completion while required work is open.
+   Manual fallback: the reviewer runs \`atelier diff ID\`, then
+   \`atelier review ID --approve|--reject --as H/M --note "…"\`.
+   After approval and passing checks, the developer runs
+   \`atelier accept ID --as H/M\`, then \`atelier merge ID --as H/M\`.
+   Builders and reviewers do not accept or merge their own work.
+7. Ship with the developer's words. Read \`atelier ship --dry-run\` and the
+   project's docs/atelier/ship.json before running \`atelier ship\`. Never assume
+   a test, deployment or mirror push is in the plan. Every ship's full suite
+   passing is the bar. Where a real platform limit or runtime cannot be
+   reproduced locally, name it in the task and require the project's remote
+   smoke check before and after deploy. Verify the deployed revision.
 
-The loop step by step (runners, what to watch, the landing queue and each
-landing outcome, conflicts, held dispatches, after each merge) and the detail,
-with the reasons, are in the handbook, docs/orchestrating.md in the
-public repository: https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md.
-\`atelier guide --role orchestrate --full\` prints it.
+Reporting to PAVI
 
-A note left for the next session holds only open decisions and work in flight
-that Atelier does not record; task states and merges are read from Atelier and
-the deployed commit from \`GET /api/version\`. See The handover in the
-handbook: https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md#the-handover.
+Use \`atelier status --brief\` after landing: say what merged, what deployed,
+what is moving, what is blocked and the spend. Distinguish those states.
+A job's existence does not mean it is running: check movement in its log,
+commits, process activity and check output before saying so.
+
+While work runs and you would sit idle, post one short update every 10 minutes
+(atelier-pulse). Give progress, the next action and any decision needed.
+Ask PAVI only for ship passwords, overrides and real decisions, always with a
+recommendation. Never override a review, check or block without PAVI's words.
+Record a lasting decision with \`atelier decide "rule" --quote "PAVI's words"\`.
+
+Build and review evidence is detailed in docs/orchestrating.md. Return missing
+evidence before requesting review.
+
+Standing rules and traps
+
+- Speed first. Add no new gates without evidence of harm. Do not turn a
+  routine task into mandatory criteria review or extra review rounds.
+- For developer-token writes set ATELIER_ACTING=H/M to your registered model.
+  Owner commands keep the owner actor; do not add --as to ship or land.
+  Builder and reviewer commands name their actor with --as H/M. Leave
+  ATELIER_ACTING unset with agent and runner tokens.
+- Use wait, never a sleep loop. Every wait needs a deadline and a check that
+  what you wait on is alive:
+  \`atelier wait --all tA,tB --for merged --timeout 600\`. If it stops moving,
+  read the runner's log and process state. Do not start the same work twice.
+- Tests that stub ssh or a server do not prove the real path. Run that path
+  once for real with the required authority; report what local tests cannot
+  reproduce. A passing task test is not the ship's full suite.
+- A builder's report file in docs/ means unfinished work. Require the actual
+  implementation, tests and commit rather than landing a report of intent.
+- For visibility changes, require trusted caller identity to determine the
+  disclosure level, refusal tests for each trust check, and a table of levels
+  against responses, search snippets, derived fields, exports, UI copy and
+  generated pages. Review every caller when a contract tightens.
+- For UI changes require before and after screenshots, console output and
+  network failures for each affected page and each visibility level.
+- Write status, version and completion markers only after the work succeeds;
+  test that a crash before completion leaves them unset.
+- Keep the next session's note to open decisions and work not recorded in
+  Atelier. Read task states from Atelier and the deployed revision from \`GET /api/version\`.
+  See the reference for handover details:
+  https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md#the-handover.
+
 `,
 };
 

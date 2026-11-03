@@ -60,8 +60,8 @@ for (const role of ["build", "review"]) {
   });
 }
 
-// The orchestrate guide's standing rules, pinned: a change that drops one
-// fails here, and docs/orchestrating.md must state the same ones.
+// Historical detail stays in the reference; the short handbook carries the
+// current operating rules tested separately below.
 const ORCHESTRATE_RULES = [
   /builders from several companies, chosen by tier/,
   /reviewed by a model from another\s+company/,
@@ -80,7 +80,15 @@ const ORCHESTRATE_RULES = [
 
 test("the orchestrate guide states each standing rule and names docs/orchestrating.md", () => {
   const text = ROLE_PROMPTS.orchestrate;
-  for (const rule of ORCHESTRATE_RULES) assert.match(text, rule);
+  for (const rule of [
+    /One review before merge, by another company's model than every contributor/,
+    /Never override a review, check or block without PAVI's words/,
+    /Read the code behind a finding/,
+    /criteria review only for large or risky tasks/i,
+    /Split anything over about five criteria or 15 files/,
+    /ATELIER_ACTING=H\/M/,
+    /Every ship's full suite\s+passing is the bar/,
+  ]) assert.match(text, rule);
   assert.match(text, /docs\/orchestrating\.md/);
   assert.equal(run(["guide", "--role", "orchestrate"]).stdout, text);
 });
@@ -101,7 +109,7 @@ test("the briefing section tells the orchestrator to run 'existing tests pass' c
   assert.match(briefing, /t52's tests pass unchanged/);
 });
 
-test("the orchestrate guide names the handbook's public URL, and --full prints the handbook from outside the checkout", () => {
+test("the orchestrate handbook links the reference, and --full prints the reference outside the checkout", () => {
   assert.ok(ROLE_PROMPTS.orchestrate.includes("https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md"));
   const full = run(["guide", "--role", "orchestrate", "--full"]);
   assert.equal(full.status, 0, full.stderr);
@@ -213,14 +221,15 @@ test("docs/orchestrating.md says a push comes before landing a workspace with un
   assert.match(doc, /Run\s+`atelier push`\s+in\s+the\s+workspace\s+first,\s+then\s+land/);
 });
 
-// Finding t144: after `atelier land ID ID…` (t54), approval counts (t143) and
-// retained approvals (t56) shipped, the guide and the handbook still told the
-// orchestrator "Never land two together" and taught the local scratch queue
-// (LANDQ lines). Both now teach the wave, name what stays outside Atelier,
-// and every flag and command the wave text names exists in the land help.
-test("the guide and the handbook teach landing a wave, not 'Never land two together' or the scratch queue", () => {
+// The reference keeps wave recovery details; the handbook teaches the
+// command and points shipping at the declared plan.
+test("the handbook teaches waves and the ship plan; the reference keeps wave details", () => {
   const doc = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
-  for (const text of [doc, ROLE_PROMPTS.orchestrate.replace(/\s+/g, " ")]) {
+  const guide = ROLE_PROMPTS.orchestrate.replace(/\s+/g, " ");
+  assert.match(guide, /atelier land ID ID… --parallel N/);
+  assert.match(guide, /docs\/atelier\/ship.json/);
+  assert.doesNotMatch(guide, /Never land two together|LANDQ|post-merge\.sh/);
+  for (const text of [doc]) {
     assert.doesNotMatch(text, /Never land two together/);
     assert.doesNotMatch(text, /LANDQ/);
     assert.match(text, /atelier land ID ID…/);
@@ -242,12 +251,12 @@ test("the guide and the handbook teach landing a wave, not 'Never land two toget
   assert.ok(wave.includes("MAIN_MOVED_REDOS"));
 });
 
-// t49: the handover is described once, in the handbook, and the guide links it.
-test("the orchestrate guide links the handbook's handover section, which states what the handover holds", () => {
+// The handbook gives a short handover rule and links the detailed reference.
+test("the orchestrate handbook links the reference handover section", () => {
   const text = ROLE_PROMPTS.orchestrate;
   assert.ok(text.includes("https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md#the-handover"));
-  assert.match(text, /holds only open decisions and work in flight\s+that Atelier does not record/);
-  assert.match(text, /deployed commit from `GET \/api\/version`/);
+  assert.match(text, /open decisions and work not recorded in\s+Atelier/);
+  assert.match(text, /deployed revision from `GET \/api\/version`/);
   const doc = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
   assert.ok(doc.includes("## The handover "), "the anchor the guide links exists");
   const section = doc.slice(doc.indexOf("## The handover"), doc.indexOf("## Registering workspace preparation"));
