@@ -102,7 +102,7 @@ function buildSteps(order, runsFor, hint, push, problems) {
 
 // Atelier's own ship file. Its schema is in docs/ship.md.
 const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "install", "verify-install", "deploy", "verify-deploy", "push", ...ADDED]);
-const RUN_KEYS = new Set(["run", "request", "status", "timeout_seconds", "approval", "description", "if_changed", "retries", "terminal"]);
+const RUN_KEYS = new Set(["run", "request", "status", "redirect", "timeout_seconds", "approval", "description", "if_changed", "retries", "terminal"]);
 const DELIVERY_FIELDS = { install: ["installable", "hybrid"], "verify-install": ["installable", "hybrid"], deploy: ["web", "hybrid"], "verify-deploy": ["web", "hybrid"] };
 
 function atelierShip(doc, problems, notes, file) {
@@ -182,6 +182,7 @@ function parseRuns(value, field, problems, file) {
       if (r.terminal !== true || r.run === undefined) { problems.push(`${where} "terminal" must be true, on a "run"`); return null; }
       extra.terminal = true;
     }
+    if (r.redirect !== undefined && (r.request === undefined || !["follow", "manual"].includes(r.redirect))) { problems.push(`${where} "redirect" must be follow or manual, on a "request"`); return null; }
     if (r.run !== undefined && r.request === undefined) {
       if (!Array.isArray(r.run) || !r.run.length || r.run.some((w) => typeof w !== "string" || !w)) { problems.push(`${where} "run" must be the command and its arguments, as a list of strings`); return null; }
       return { label: r.run.map(quote).join(" "), argv: [...r.run], timeoutMs: seconds(r.timeout_seconds, RUN_SECONDS) * 1000, kind, ...extra };
@@ -192,7 +193,7 @@ function parseRuns(value, field, problems, file) {
       if (!url || !["https:", "http:"].includes(url.protocol)) { problems.push(`${where} "request" must be an http or https URL`); return null; }
       const status = r.status ?? 200;
       if (!Number.isInteger(status) || status < 100 || status > 599) { problems.push(`${where} "status" must be an HTTP status, such as 200`); return null; }
-      return { label: `GET ${r.request}, expecting ${status}`, request: r.request, status, timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind, ...extra };
+      return { label: `GET ${r.request}, expecting ${status}${r.redirect === "manual" ? ", without following redirects" : ""}`, request: r.request, status, redirect: r.redirect ?? "follow", timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind, ...extra };
     }
     problems.push(`${where} needs "run" or "request", not both`);
     return null;
@@ -378,11 +379,11 @@ export async function runTerminal(argv, { cwd, env, timeoutMs }) {
 // The one GET this module makes, for runRequest and the if_changed read.
 const get = (url, options) => fetch(url, options);
 
-// A GET of the URL, following redirects, that must end with the status.
+// A GET of the URL that must answer with the expected status.
 export async function runRequest(run) {
   const started = Date.now();
   try {
-    const res = await get(run.request, { redirect: "follow", signal: AbortSignal.timeout(run.timeoutMs) });
+    const res = await get(run.request, { redirect: run.redirect ?? "follow", signal: AbortSignal.timeout(run.timeoutMs) });
     await res.body?.cancel();
     const moved = res.url && res.url !== run.request ? ` at ${res.url}` : "";
     return { status: null, signal: null, durationMs: Date.now() - started, passed: res.status === run.status, output: `${run.request} answered ${res.status}${moved}; expected ${run.status}` };
@@ -496,6 +497,7 @@ export async function ship(ctx) {
 
   const id = `s-${Date.now().toString(36)}`;
   const ran = [];
+  let unconfirmed = null;
   const record = (step, r, extra) => request("POST", `${P}/actions/runs`, {
     step, kind: r.kind ?? null, approval: r.approval ?? null, command: r.command ?? null, commit,
     exitStatus: r.status ?? null, signal: r.signal ?? null, durationMs: r.durationMs ?? 0, passed: r.passed,
@@ -567,13 +569,28 @@ export async function ship(ctx) {
     const failed = results.at(-1)?.passed === false ? results.at(-1) : null;
     if (failed) {
       const how = `${failed.command ?? s.step} ${failed.signal ? `ended by ${failed.signal}` : failed.status !== null && failed.status !== undefined ? `exited ${failed.status}` : "failed"}`;
-      await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: s.step, ran, note: how.slice(0, 1000) });
+      if (s.step === "verify-delivery" && s.verifies === "deploy") {
+        const rechecks = s.runs.filter(r => !r.skip).map(r => r.argv
+          ? `ATELIER_SHIP_HEAD=${quote(head)} ${r.argv.map(quote).join(" ")}`
+          : `curl --silent --show-error --max-time ${r.timeoutMs / 1000} --output /dev/null --write-out '%{http_code}\\n'${r.redirect === "manual" ? "" : " --location"} ${quote(r.request)} # expected ${r.status}`);
+        unconfirmed = `Delivery is unconfirmed at ${short(commit)}: ${how}. Deploy passed. Recheck from ${quote(cwd)}:\n${rechecks.map(c => `  ${c}`).join("\n")}`;
+        print(unconfirmed);
+        ran.push("verify-delivery (unconfirmed)");
+        continue;
+      }
+      await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: s.step, ran, note: [unconfirmed, how].filter(Boolean).join("\n").slice(0, 1000) });
       const usedText = Object.entries(used).map(([k, a]) => `${a} for ${k}`).join(", ");
       fail([
         `ship stopped at ${s.step}: ${how}.`,
+        unconfirmed,
         `Ran before it: ${ran.join(", ") || "nothing"}. Not run: ${rest(i + 1).join(", ") || "nothing"}. Each step that ran is recorded on the ledger.`,
         usedText ? `The approval used here (${usedText}) is spent; after fixing the cause, the developer approves again: ${Object.keys(used).map((k) => `atelier approve ${k} --head ${commit} --project ${quote(name)}`).join(" and ")}` : "",
       ].filter(Boolean).join("\n"));
+    }
+    if (unconfirmed && s.step === "wrap") {
+      ran.push("wrap");
+      await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: "verify-delivery", ran, note: unconfirmed.slice(0, 1000) });
+      fail(`${unconfirmed}\nWrap passed. Not run: ${rest(i + 1).join(", ") || "nothing"}. Each step that ran is recorded on the ledger.`);
     }
     ran.push(s.runs.length && s.runs.every((r) => r.skip) ? `${s.step} (skipped)` : s.step);
   }
