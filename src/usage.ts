@@ -248,20 +248,21 @@ export const ROLE_PROMPTS: Record<Role, string> = {
 
 ${BUILD_EVIDENCE}
 
-Claim one task: \`atelier start ID --project NAME --as HARNESS/MODEL\` prints its
-workspace, title, brief, criteria, scope and note. Use only that workspace,
-never the project checkout. The developer alone writes criteria before building;
-review judges against them. Without criteria, do not build:
+Claim one task: \`atelier start ID --project NAME --as HARNESS/MODEL\` prints the brief.
+Work only in its workspace. The developer writes criteria; review judges them.
+Without criteria, do not build:
 \`atelier block ID "no acceptance criteria"\`.
 Write tests for new behaviour.
-Run the project's full required test command (npm test unless it names another)
-inside a test slot, plus the typecheck. Push only when both pass; name any
-unfixed failing test. Budget the suite from slot acquisition; report slot wait
-and run time on timeout. For visual changes, take screenshots of this workspace's
+Run the tests your change touches inside a test slot and the typecheck.
+The runner runs the full required checks once after your commit, before review;
+a failure returns the failing check's name and output for one repair turn.
+Before finishing, go through the acceptance criteria one by one and name the
+evidence for each in your final reply. Leave no report file in the repository.
+For visual changes, take screenshots of this workspace's
 revision using the documented workflow;
 reuse its server, never start a second one. With no workflow, follow the project's
-setup. After passing, commit here; \`atelier done "summary"\` pushes, checks
-(full suite included) in a clean clone, and submits. Relay its final line to the developer.
+setup. After passing, commit here. The runner pushes, checks in a clean clone
+and submits. Relay its final line to the developer.
 Never end with finished work uncommitted. If unfinished:
 \`atelier handoff ID --to H/M --note "…"\` or \`atelier release ID\`;
 if only the developer can decide: \`atelier block ID "what"\`.

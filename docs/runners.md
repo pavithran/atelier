@@ -472,7 +472,17 @@ check gets (the toolchain's variables, such as `PATH`, `HOME`, `LANG` and
 token, key or secret) and the variables its config entry names in `env`. A
 named variable that holds the developer's Atelier token is withheld, and the
 runner says so. After a successful harness exit with a new commit,
-the runner calls `finish` to push, run required checks, and submit. Failure
+the runner calls `finish` to push, run required checks once in a clean clone at
+the pushed head, and submit before review. Builders run targeted tests and the
+typecheck. If a required check fails, the runner gives the builder one repair
+turn with the check name and output tail, under the task harness timeout. It
+calls `finish` once more after that turn passes. A second check failure blocks
+the task for the developer, naming the check and keeping its claim; there is
+no third turn. A failed or timed out repair keeps the claim and runs no checks.
+Parts, merge-main jobs and plan merges keep their existing finish or release
+path, without this repair turn. Builders that run the full suite anyway are
+not refused or counted at fault. Projects without checks incur no check run.
+Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
 in place for inspection. A `validation_blocked` run's uncommitted work is
 committed, pushed unsubmitted and released for the next run to continue (see

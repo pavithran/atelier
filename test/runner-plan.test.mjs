@@ -192,7 +192,7 @@ test("a part's build brief comes from the server, and any other task keeps brief
   // alone holds for it comes after the local brief, which stays.
   assert.deepEqual(ordinary.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t6", "opencode/glm-5.3"]);
   const ordinaryBrief = ordinary.calls.find((c) => c.brief).brief;
-  assert.ok(ordinaryBrief.includes("npm test"));
+  assert.ok(ordinaryBrief.includes("tests your change touches"));
   assert.ok(ordinaryBrief.endsWith("\nSERVER BRIEF\n"), ordinaryBrief.slice(-80));
 });
 
@@ -361,7 +361,7 @@ test("a task sent back with an earlier attempt gets the server's review findings
   assert.equal((await runTask(job, buildConfig, "home:studio", back.io)).phase, "submitted");
   assert.deepEqual(back.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t6", "opencode/glm-5.3"]);
   const text = back.calls.find((c) => c.brief).brief;
-  assert.ok(text.includes("npm test") && text.includes("An earlier attempt is committed") && text.includes("FINDING-1"));
+  assert.ok(text.includes("tests your change touches") && text.includes("An earlier attempt is committed") && text.includes("FINDING-1"));
 });
 
 test("plans prepare after reset and before the planner starts", async (t) => {

@@ -276,11 +276,10 @@ test("the landing's regenerate command goes by the project's limit", async () =>
   assert.equal((await runRegenerateIn(dir, "true", io, null)).ok, true);
 });
 
-test("a builder's brief gives the project's limit as its suite budget and the words a timeout is reported in", () => {
+test("a builder's brief leaves the full check budget to the runner", () => {
   const brief = briefFor({ id: "t9", title: "x", scope: [], owner: "a/b" }, "demo", { limitMinutes: 25, silenceMinutes: 5 });
-  assert.match(brief, /exec timeout 1500 npm test/);
-  assert.match(brief, /The project's check limit is 25 minutes from the held slot, and a run silent for 5 minutes/);
-  assert.match(brief, /validation_blocked: timed out after 25 minutes \(or silent for 5 minutes\)/);
+  assert.doesNotMatch(brief, /exec timeout .*npm test|The project's check limit/);
+  assert.match(brief, /runner runs the full required checks once/);
   assert.ok(STOP_WORDS.test("timed out after 25 minutes (slot wait 31 minutes, run 25)"));
   assert.ok(STOP_WORDS.test("silent for 5 minutes"));
   assert.ok(STOP_WORDS.test("showed no work in 3 minutes"));

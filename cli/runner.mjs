@@ -45,7 +45,7 @@ import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
 import { progressTracker } from "./progress.mjs";
 import { automaticNote } from "../src/run-facts.ts";
-import { checkLimits, limitMs, minutesText, stopLine, stopOf } from "../src/check-limit.ts";
+import { checkLimits, limitMs, stopLine, stopOf } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 import { redactKeys } from "../src/models/pool.ts";
@@ -276,27 +276,13 @@ export function versionRefusal(version, jobs = [...DEFAULT_JOBS, "review"]) {
   return check.ok ? null : `${check.message}, then start the runner again`;
 }
 
-// The suite's time budget in seconds, counted from slot acquisition (t219).
-export const SUITE_BUDGET_SECONDS = 2400;
-
-// `limits` is the project's check limit as the server's job brief gives it
-// (G7, checkLimits in src/check-limit.ts): the suite's budget is its hard
-// ceiling, and a timeout is reported in Atelier's words for a stop, which
-// the server records as a fact the model lifts. Without it (an older
-// server) the budget is SUITE_BUDGET_SECONDS.
 export function briefFor(item, project, limits = null) {
-  const budget = limits?.limitMinutes ? Math.round(limits.limitMinutes * 60) : SUITE_BUDGET_SECONDS;
   return [
     "Rules:",
     "Stay in scope. Work only in this workspace.",
     "Write tests for new behaviour.",
     BUILD_RULES,
-    // t219: the full required test command in a slot, pushed only when it
-    // passes (BUILDER_TESTS). The budget is a `timeout` run inside the slot
-    // wrapper, so it starts once the slot is held and cannot spend queue time.
     ...BUILDER_TESTS,
-    `For example: node ${quoteShell(SLOT_WRAPPER)} -- sh -c 'date +%s; exec timeout ${budget} npm test' (gtimeout where timeout is missing). The date line is printed inside the slot, before the suite starts, so it marks slot acquisition even if the suite is silent: note the time before you run it; that time to the printed one is the slot wait, and the printed one to the end is the run time.`,
-    ...(limits?.limitMinutes ? [`The project's check limit is ${minutesText(limits.limitMinutes)} from the held slot, and a run silent for ${minutesText(limits.silenceMinutes)} (no output, no process activity) is stopped too. If the suite is stopped at either, end your report with the line validation_blocked: timed out after ${minutesText(limits.limitMinutes)} (or silent for ${minutesText(limits.silenceMinutes)}${limits.startupMinutes ? `, or showed no work in ${minutesText(limits.startupMinutes)}` : ""}), then the slot wait and the run time.`] : []),
     BUILDER_SCREENSHOTS,
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
@@ -1083,7 +1069,7 @@ export function removeDataHome({ dir, onExit }) {
 // to say what failed, and log it either way.
 // The task refresh (cli/task-refresh.mjs) reads its lease and the answers
 // to its reports.
-const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "base-token", "baseline-token", "check"]);
+const READS_OUTPUT = new Set(["finish", "review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "base-token", "baseline-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 // The project's REVIEW.md at `base` in the clone `dir` (t718), or null. A
@@ -1914,8 +1900,48 @@ export async function runTask(assignment, config, name, io) {
     const summary = item.dispatch?.job === "merge-main"
       ? (merged?.mainHead ?? mergedMain) && `Merged main at ${merged?.mainHead ?? mergedMain}`
       : merged && `Built ${item.id} with main at ${merged.mainHead} merged`;
-    await io.cli(["finish", item.id, "--project", project, "--as", actor,
+    const submit = () => io.cli(["finish", item.id, "--project", project, "--as", actor,
       ...(summary ? ["--summary", summary] : [])], workspace);
+    try { await submit(); }
+    catch (error) {
+      // Finish owns the clean-clone checks. Only a failed check (exit 2)
+      // earns one repair turn; parts and merge jobs keep their own retry path.
+      if (error.code !== 2 || item.kind === "part" || item.dispatch?.job === "merge-main" || item.dispatch?.planHead != null || io.stopped()) throw error;
+      const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+      const context = await briefContext();
+      const checkedHead = await io.head(workspace);
+      const repair = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project, context?.checkLimits ?? null)}\n${context?.text ?? ""}\n\nRequired checks failed in the clean clone. Fix the failing check below, run targeted tests and the typecheck, and commit. This is the only repair turn before the task is blocked for the developer.\n\n${String(error.output || error.message).slice(-12000)}\n`, context?.proseStandard ?? null);
+      let dataHome;
+      try {
+        const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+        dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+        const result = await io.harness(commandFor(entry, { model, briefFile: repair.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        if (result.timedOut || result.code !== 0) {
+          harnessExit = failedExitOf(result);
+          await markFailure();
+          throw new Error(result.timedOut ? "check repair harness timed out; claim preserved" : `check repair harness exited ${result.code}; claim preserved`);
+        }
+        if (io.stopped()) throw new Error("interrupted");
+        state = { ...state, head: await io.head(workspace) };
+      } finally {
+        if (dataHome) await io.removeDataHome(dataHome);
+        await io.removeBrief(repair);
+      }
+      const block = async (failure) => {
+        const reason = `Required checks failed after one repair turn: ${String(failure.output || failure.message).slice(-1500)}`;
+        await io.cli(["release", item.id, "--project", project, "--as", actor, ...blockArgs(reason)], workspace);
+        released = true;
+        state = { ...state, blocked: true };
+        throw Object.assign(new Error(reason), { needsDeveloper: true });
+      };
+      // An unchanged head already has its check result; do not run it twice.
+      if (state.head === checkedHead) await block(error);
+      try { await submit(); }
+      catch (second) {
+        if (second.code !== 2) throw second;
+        await block(second);
+      }
+    }
   };
   try {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
