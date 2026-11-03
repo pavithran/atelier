@@ -1281,29 +1281,19 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
   if (!paths.length) return null;
   const guarded = protectedRuleGroups(policy).flatMap(([, globs]) => globs);
   if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
-  // The stored execution policy's direct paths are retired (t152): a change
-  // that touches no guarded path is coordinated, which needs no review unless
-  // the project's riskReviews ask for one.
+  // Classification still identifies guarded paths; every code change is reviewed.
   return "coordinated";
 }
 
-// The files that are docs or tests: a change made only of them is the lowest
-// risk class. Matched as written, so a variant spelling falls outside them and
-// is "other", the safe side.
-export const DOCS_OR_TESTS = ["docs/**", "test/**", "**/*.md"];
+// Only documentation formats qualify; scripts under docs/ still run code.
+export const DOCS_OR_TESTS = ["**/*.md", "**/*.rst", "docs/**/*.txt", "**/*.adoc"];
 
-// The risk class of a change, from the paths Atelier measured itself (t631).
-// Core when any path matches a core glob (matched whatever the letter case or
-// Unicode form, as the guarded set is), and also for an empty or unreadable
-// list: a change that cannot be read is never taken for a small one. Docs or
-// tests when every path is one of DOCS_OR_TESTS. Otherwise other. This is the
-// rule of tier.sh, the orchestrator's review-by-risk script (PAVI,
-// 2026-10-17). A docs-only change under a protected glob would have been
-// reviewed in full before; the class lets the project say it needs less.
+// Documentation is exempt even under a guarded path. Empty or unreadable
+// measurements remain core. The legacy class name stays readable in records.
 export function riskClass(paths: readonly string[] | null | undefined, coreGlobs: readonly string[]): RiskClass {
   if (!paths || !paths.length) return "core";
-  if (paths.some((p) => matchesFolded(p, [...coreGlobs]))) return "core";
-  return paths.every((p) => matchesAny(p, DOCS_OR_TESTS)) ? "docs-or-tests" : "other";
+  if (paths.every((p) => matchesAny(p, DOCS_OR_TESTS))) return "docs-or-tests";
+  return paths.some((p) => matchesFolded(p, [...coreGlobs])) ? "core" : "other";
 }
 
 // The risk class and the approvals it needs under a project's riskReviews, or
@@ -1315,7 +1305,7 @@ export function riskNeed(paths: readonly string[] | null | undefined, policy: Pr
   const r = policy.riskReviews;
   if (!r) return null;
   const risk = riskClass(paths, [...r.core, ...checkFiles(policy.checks), ...checkFiles(policy.shipRuns ?? []), ...SHIP_FILES]);
-  return { risk, reviews: r.reviews[risk] };
+  return { risk, reviews: risk === "docs-or-tests" ? 0 : Math.max(1, r.reviews[risk]) };
 }
 
 // riskReviews as a request states it, or a refusal that names what is wrong.
@@ -2145,10 +2135,8 @@ export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan"
 // independent review, assessor or override is asked of it. Every other
 // blocker stands, a rejection at the head among them.
 //
-// `fast` is the project in fast mode (t300): the gate counts the change ready
-// on its required checks at the head with no secret flag, and asks no
-// independent review before the merge; the review is owed after it
-// (postMergeOwed). A rejection standing at the head still blocks.
+// `fast` remains accepted for callers reading old project records. It no longer
+// waives the independent review before landing.
 export interface GateOptions { reviewHeld?: boolean; fast?: boolean }
 
 // The approvals the gate counts as a change's independent review: of the
@@ -2166,16 +2154,11 @@ export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evide
   return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, view.changedPaths, owner, options);
 }
 
-// How many independent approvals a change needs, and by which test each one
-// counts. Without the project's riskReviews: one for a protected change,
-// none for any other, tested as a protected change's. With them (t631): what the change's risk class
-// needs, each approval tested as a protected change's if the change is
-// protected and as a coordinated change's otherwise.
+// Code needs at least one cross-company approval; a project may require more.
 export function approvalsNeeded(policy: ProjectPolicy, kind: ChangeClass | null, paths: readonly string[] | null | undefined): { count: number; as: "protected" | "coordinated" | null; risk: RiskClass | null } {
-  const risk = riskNeed(paths, policy);
-  if (risk) return { count: risk.reviews, as: kind === "protected" ? "protected" : "coordinated", risk: risk.risk };
-  const as = kind === "protected" ? kind : null;
-  return { count: as ? 1 : 0, as, risk: null };
+  const need = riskNeed(paths, policy);
+  const count = need?.reviews ?? (riskClass(paths, []) === "docs-or-tests" ? 0 : 1);
+  return { count, as: "protected", risk: need?.risk ?? null };
 }
 
 // gateApprovals over reviews already counted, for the gate that has them.
@@ -2218,7 +2201,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
   const need = approvalsNeeded(policy, kind, view.changedPaths);
-  if (!options.reviewHeld && !options.fast && need.as && need.count > 0) {
+  if (!options.reviewHeld && need.as && need.count > 0) {
     const kindNeeded = need.as;
     const contributors = contributorsOf(item);
     const single = singleFamily(policy);
@@ -2962,7 +2945,10 @@ export function recordedMergeIndependence(
     const reason = `the developer's record of ${unproved.map((r) => r.by).join(", ")}'s approval, which no review the Ledger holds proves`;
     return { refusal: null, override: { head: record.commit, by: owner, reason, at: record.at } };
   }
-  return { refusal: new RuleError("not_independent", detail, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
+  const overrideCount = unproved.length && need.risk
+    ? `; for a developer-recorded override, ${riskBlocker(need.risk, need.count, withProof.length, single)}`
+    : "";
+  return { refusal: new RuleError("not_independent", detail + overrideCount, 403, `name an approval from ${independentReviewerText(single)} that the Ledger holds: ${review}`), override: null };
 }
 
 // The builder a commit's message names: its last Agent: line, as harness/model.

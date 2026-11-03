@@ -27,7 +27,7 @@ const event = (seq, kind, ms, data = {}, itemId = 't1') => ({ seq, kind, at: at(
 const report = (s = snapshot(), offers = [], runs = [], active = [], unavailable = []) => stuckReport('demo', 'https://example.org', now, reportLimits(), s, offers, runs, active, unavailable);
 const idleSnapshot = () => snapshot({ items: [item({ state: 'open', owner: null, dispatch: { to: 'home', agent: 'codex', model: 'gpt-6', by: 'owner', at: at(0), note: '' } })] });
 const idleAgents = [{ agent: 'codex', models: ['gpt-6'] }];
-const kinds = r => r.entries.map(e => e.kind);
+const kinds = r => r.entries.filter(e => e.kind !== 'task-idle').map(e => e.kind);
 test('limits reject zero, negative, nonfinite; age equals a limit is not stuck', () => {
   for (const n of [0, -1, NaN, Infinity, '', 'oops']) assert.throws(() => reportLimits({ noPushHours: n }));
   assert.equal(reportLimits({ noPushHours: '3' }).noPushHours, 3);
@@ -53,17 +53,17 @@ test('idle runner includes timestamp coarsening and active jobs; unavailable job
   assert.deepEqual(kinds(report(idleSnapshot(), offers, [], null)), []);
 });
 test('current claimed reviews; old heads, closed and blocked tasks excluded', () => {
-  const r = { id: 1, item: 't1', head: item().head, claimedBy: 'reviewer/model', claimedAt: at(7200000), runner: 'home:review' };
+  const r = { id: 1, item: 't1', head: item().head, claimedBy: 'reviewer/model', claimedAt: at(3600000), runner: 'home:review' };
   const s = snapshot({ reviews: [r] });
   assert.deepEqual(kinds(report(s)), []);
-  r.claimedAt = at(7200001);
+  r.claimedAt = at(3600001);
   assert.deepEqual(kinds(report(s)), ['review']);
   r.head = 'b'.repeat(40);
   assert.deepEqual(kinds(report(s)), []);
   r.head = item().head;
   for (const state of ['blocked','merged','abandoned']) assert.deepEqual(kinds(report({ ...s, items: [item({ state })] })), []);
 });
-const LIMIT = 7200000;
+const LIMIT = 3600000;
 // A claimed review as the ledger keeps it: claimedAt is rewritten on each
 // renewal, and the review.claimed event naming request id marks its start.
 const claimedReview = (id, startMs, renewedMs) => ({
@@ -307,4 +307,31 @@ test('idle runners need a matching waiting job', () => {
   assert.deepEqual(kinds(report(snapshot({ items: [waiting] }), [{ ...offer, projects: ['elsewhere'] }])), []);
   const request = { id: 1, item: 't1', head: item().head, dispatch: { ...waiting.dispatch, job: 'review' } };
   assert.deepEqual(kinds(report(snapshot({ items: [item({ state: 'submitted' })], openRequests: [request] }), [{ ...offer, jobs: ['review'] }])), ['idle-runner']);
+});
+
+test('held work without movement is reported only past an hour, with holder and last event', () => {
+  for (const state of ['claimed', 'submitted']) {
+    for (const ms of [30*60000+1, 3600000, 3600001]) {
+      const s = snapshot({ items: [item({ state })], events: [event(1, 'item.claimed', 7200000), event(2, 'item.noted', ms)] });
+      const r = report(s);
+      const entries = r.entries.filter(e => e.kind === 'task-idle');
+      assert.equal(entries.length, ms > 3600000 ? 1 : 0);
+      if (entries.length) {
+        assert.equal(r.project, 'demo');
+        assert.equal(entries[0].subject, 't1');
+        assert.match(entries[0].reason, /codex\/model.*60 minutes.*item.noted/);
+        assert.equal(entries[0].since, at(ms));
+        assert.deepEqual(report({ ...s, events: [...s.events].reverse() }), r);
+      }
+    }
+  }
+  assert.deepEqual(report(snapshot({ items: [item({ state: 'blocked' })], events: [event(1, 'item.claimed', 7200000)] })).entries, []);
+});
+test('review without a verdict is reported only past an hour despite renewals', () => {
+  for (const ms of [3600000, 3600001]) {
+    const c = claimedReview(1, ms, 0);
+    const entries = report(snapshot({ reviews: [c.review], events: [c.event] })).entries.filter(e => e.kind === 'review');
+    assert.equal(entries.length, ms > 3600000 ? 1 : 0);
+    if (entries.length) assert.match(entries[0].reason, /reviewer\/model.*60 minutes.*review.claimed/);
+  }
 });
