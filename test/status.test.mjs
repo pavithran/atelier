@@ -578,9 +578,9 @@ for (const project of [false, true]) for (const json of [false, true]) test(`sta
   assert.match(r.output, /item.unblocked by pavi, acting codex\/gpt-6\.1-sol/);
 });
 
-for (const mode of [null, "Mode: fast since yesterday (test)"]) for (const json of [false, true]) test(`project status omits the mode line (mode=${mode}, json=${json})`, async (t) => {
+for (const mode of [null, "Mode: full", "Mode: fast since yesterday (test)"]) for (const json of [false, true]) test(`project status omits the mode line (mode=${mode}, json=${json})`, async (t) => {
   const r = await runLocal(t, () => ({ standing: { ...STANDING, mode } }), ["status", "--project", "demo", ...(json ? ["--json"] : [])]);
   assert.equal(r.code, 0, r.output);
-  assert.doesNotMatch(r.output, /Mode: fast/);
+  assert.doesNotMatch(r.output, /Mode:/);
   if (json) assert.equal(Object.hasOwn(JSON.parse(r.output).project, "mode"), false);
 });
