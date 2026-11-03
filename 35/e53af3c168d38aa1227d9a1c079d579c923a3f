@@ -1,0 +1,33 @@
+atelier atelier/t456 "Do not block a task on validation_blocked with reason none or a missing browser"
+accepted head ab2fc08aa65a21e5905e4b122fbe4aa48004b040
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T18:10:42.066Z
+REVIEW approve by antigravity/gemini-4-argon at ab2fc08aa65a21e5905e4b122fbe4aa48004b040, recorded by antigravity/gemini-4-argon
+CHECKED TREE 9a6f0406e7af7513ad62240e9905bdb18029abf6: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-03T13:05:46.233Z pavi item.created
+2026-11-03T13:05:46.233Z claude-code/opus-5.5 criteria.revised
+2026-11-03T15:37:50.941Z pavi item.dispatched
+2026-11-03T15:49:45.375Z pavi item.undispatched
+2026-11-03T15:49:52.387Z pavi item.dispatched
+2026-11-03T17:45:54.746Z codex/gpt-6.1-sol item.claimed
+2026-11-03T17:45:54.777Z codex/gpt-6.1-sol workspace.created
+2026-11-03T17:46:01.953Z codex/gpt-6.1-sol item.released
+2026-11-03T17:54:56.027Z codex/gpt-6.1-sol item.claimed
+2026-11-03T17:54:56.080Z codex/gpt-6.1-sol workspace.moved
+2026-11-03T18:07:10.370Z codex/gpt-6.1-sol push.observed
+2026-11-03T18:10:42.080Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T18:10:42.265Z codex/gpt-6.1-sol item.submitted
+2026-11-03T18:11:37.667Z pavi land.start
+2026-11-03T18:11:39.093Z pavi review.requested
+2026-11-03T18:11:39.093Z pavi review.tier_needed
+2026-11-03T18:11:39.443Z pavi land.review
+2026-11-03T18:11:39.516Z pavi land.requested
+2026-11-03T18:11:54.500Z antigravity/gemini-4-argon review.claimed
+2026-11-03T18:23:27.681Z antigravity/gemini-4-argon review.approved
+2026-11-03T18:23:27.681Z atelier/orchestrator goal.notes
+2026-11-03T18:23:30.677Z pavi item.accepted
+2026-11-03T18:23:31.690Z pavi land.start
+2026-11-03T18:23:31.826Z pavi landing.leased
+2026-11-03T18:23:31.960Z pavi land.lease
+2026-11-03T18:23:33.209Z pavi checkout.leased
