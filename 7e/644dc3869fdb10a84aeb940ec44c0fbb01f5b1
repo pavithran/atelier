@@ -1,0 +1,42 @@
+atelier atelier/t446 "A brief server blip does not lose a claimed review or fail a command"
+accepted head 6d26a4d3f60cbda7c6960e620c814c3c71742e62
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T00:04:57.061Z
+REVIEW approve by antigravity/gemini-4-argon at 6d26a4d3f60cbda7c6960e620c814c3c71742e62, recorded by antigravity/gemini-4-argon
+2026-11-02T22:33:29.241Z pavi item.created
+2026-11-02T22:33:29.241Z claude-code/opus-5.5 criteria.revised
+2026-11-02T22:39:53.814Z pavi item.dispatched
+2026-11-02T23:53:14.902Z codex/gpt-6.1-sol item.claimed
+2026-11-02T23:53:14.924Z codex/gpt-6.1-sol workspace.created
+2026-11-03T00:04:53.460Z codex/gpt-6.1-sol push.observed
+2026-11-03T00:04:57.071Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T00:04:57.249Z codex/gpt-6.1-sol item.submitted
+2026-11-03T00:09:56.433Z atelier/orchestrator refresh.queued
+2026-11-03T00:15:00.000Z atelier stage.stuck
+2026-11-03T00:31:10.983Z pavi land.start
+2026-11-03T00:31:12.557Z pavi review.requested
+2026-11-03T00:31:12.557Z pavi review.tier_needed
+2026-11-03T00:31:12.876Z pavi land.review
+2026-11-03T00:31:12.965Z pavi land.requested
+2026-11-03T00:35:00.000Z atelier stage.cleared
+2026-11-03T00:36:44.890Z antigravity/gemini-4-argon review.claimed
+2026-11-03T00:37:25.107Z atelier/orchestrator refresh.queued
+2026-11-03T00:38:03.267Z pavi land.start
+2026-11-03T00:38:04.499Z pavi land.review
+2026-11-03T00:41:04.713Z antigravity/gemini-4-argon review.approved
+2026-11-03T00:41:10.571Z pavi item.accepted
+2026-11-03T00:41:11.417Z pavi land.start
+2026-11-03T00:41:11.495Z pavi landing.leased
+2026-11-03T00:41:11.566Z pavi land.lease
+2026-11-03T00:41:12.545Z pavi checkout.leased
+2026-11-03T00:41:22.469Z pavi land.merge-main
+2026-11-03T00:41:22.770Z pavi checkout.released
+2026-11-03T00:41:23.141Z pavi landing.released
+2026-11-03T00:41:23.269Z pavi land.release
+2026-11-03T01:25:47.101Z atelier/orchestrator refresh.queued
+2026-11-03T01:27:32.370Z atelier/orchestrator refresh.queued
+2026-11-03T01:27:35.525Z pavi land.start
+2026-11-03T01:27:35.595Z pavi landing.leased
+2026-11-03T01:27:35.681Z pavi land.lease
+2026-11-03T01:27:36.566Z pavi checkout.leased
