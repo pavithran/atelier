@@ -7,10 +7,12 @@ import { existsSync, writeFileSync, readFileSync, rmSync, mkdtempSync } from "no
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 
-test("the documented ship configuration matches the shipped configuration", () => {
+test("the documented ship configuration matches production", () => {
  const docs = readFileSync("docs/ship.md", "utf8").split("### From `docs/atelier/ship.json`")[1];
  const example = JSON.parse(docs.match(/```json\n([\s\S]*?)\n```/)[1]);
- assert.deepEqual(example, JSON.parse(readFileSync("docs/atelier/ship.json", "utf8")));
+ const production = JSON.parse(readFileSync("docs/atelier/ship.json", "utf8"));
+ assert.deepEqual(production["verify-deploy"][1], { run: ["node", "scripts/ship-refresh-runners.mjs"], timeout_seconds: 540 });
+ assert.deepEqual(example, production);
 });
 
 test("studioSuite transfers the bundle over SSH and cleans up on success and failure", () => {

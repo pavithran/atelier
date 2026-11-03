@@ -51,7 +51,7 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(p.class, "web");
   assert.deepEqual(outline(p), [
     ["commit"], ["typecheck", "node scripts/ship-suite-studio.mjs", "npm run typecheck"], ["deploy", "node scripts/ship-studio.mjs deploy --env production --version-url https://atelier.zone/api/version --host ai-studio [deploy]"],
-    ["verify-delivery", "node scripts/ship-studio.mjs verify --version-url https://atelier.zone/api/version"], ["wrap"],
+    ["verify-delivery", "node scripts/ship-studio.mjs verify --version-url https://atelier.zone/api/version", "node scripts/ship-refresh-runners.mjs"], ["wrap"],
     ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
   ]);
   const by = Object.fromEntries(p.steps.map((s) => [s.step, s]));
@@ -60,8 +60,7 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(by.deploy.runs[0].timeoutMs, 1200_000);
   assert.equal(by.deploy.runs[0].terminal, true, "the deploy hands sudo the terminal");
   assert.equal(by.deploy.runs[0].retries, undefined, "a deploy under sudo is not retried");
-  assert.equal(by.deploy.runs[0].ifChanged.since, "https://atelier.zone/api/version");
-  assert.ok(by.deploy.runs[0].ifChanged.paths.includes("src/**"));
+  assert.equal(by.deploy.runs[0].ifChanged, undefined);
   assert.deepEqual(neededKinds(p.steps), ["deploy"], "only the deploy needs an approval");
 });
 
@@ -700,15 +699,15 @@ exit \${FAKE_INSTALL_EXIT:-0}
 `;
 const studioFixture = async (t) => {
   const { typecheck, scan, ...canonical } = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
-  const versionUrls = [canonical.deploy, canonical["verify-deploy"]].map(({ run }) => run[run.indexOf("--version-url") + 1]);
+  const versionUrls = [canonical.deploy, ...canonical["verify-deploy"]].filter(r => r.run.includes("--version-url")).map(({ run }) => run[run.indexOf("--version-url") + 1]);
   const plan = { ...canonical, deploy: { ...canonical.deploy, if_changed: undefined } };
-  const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: { "scripts/ship-studio.mjs": readFileSync(resolve("scripts/ship-studio.mjs"), "utf8") } });
+  const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: { "scripts/ship-studio.mjs": readFileSync(resolve("scripts/ship-studio.mjs"), "utf8"), "scripts/ship-refresh-runners.mjs": readFileSync(resolve("scripts/ship-refresh-runners.mjs"), "utf8") } });
   const bin = join(f.dir, "tools"); mkdirSync(bin);
   writeFileSync(join(bin, "ssh"), STUDIO_SSH);
   chmodSync(join(bin, "ssh"), 0o755);
   const preload = join(f.dir, "version-response.mjs");
   writeFileSync(preload, `import cp from "node:child_process"; import { syncBuiltinESMExports } from "node:module";
-const originalSpawn = cp.spawnSync; cp.spawnSync = (cmd, args, options) => originalSpawn(cmd === "/usr/bin/ssh" ? ${JSON.stringify(join(bin, "ssh"))} : cmd, args, options); syncBuiltinESMExports();
+const originalSpawn = cp.spawnSync; cp.spawnSync = (cmd, args, options) => args[0] === "push" && args[1] === "ai-studio:ai-projects/atelier-runner" ? { status: 1 } : originalSpawn(cmd === "/usr/bin/ssh" ? ${JSON.stringify(join(bin, "ssh"))} : cmd, args, options); syncBuiltinESMExports();
 const versionUrls = new Set(${JSON.stringify(versionUrls)});
 const original = globalThis.fetch; globalThis.fetch = (url, options) => {
   if (versionUrls.has(String(url))) return Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN}));
@@ -733,6 +732,7 @@ for (const matches of [true, false]) test(`the Studio deploy ${matches ? "instal
   assert.equal(verified.passed, matches);
   if (matches) {
     assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.match(r.stdout + r.stderr, /Warning: Studio runner refresh failed/);
     assert.ok(f.state.runs.some(run => run.step === "wrap"));
     assert.ok(f.state.runs.some(run => run.step === "push"));
   } else {
