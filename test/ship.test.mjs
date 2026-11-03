@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { composeShip, knownKinds, neededKinds, ORDERS, stepEnv } from "../cli/ship.mjs";
+import { composeShip, knownKinds, neededKinds, ORDERS, runRequest, ship as runShip, stepEnv } from "../cli/ship.mjs";
 
 // atelier ship and its approvals. The composition is read from files in
 // temporary folders. ControlPlane's ship files are retired and never read.
@@ -410,14 +410,85 @@ test("ship stops at the first step that fails, says what ran and what did not, a
   assert.notEqual(git(f.github, "rev-parse", "main"), f.head, "nothing was pushed");
 });
 
-test("a live site that does not answer as expected stops the ship after the deploy", async (t) => {
+test("a failed delivery check records the deploy and wraps before reporting delivery unconfirmed", async (t) => {
   const f = await fixture(t, { approve: ["deploy"] });
   f.state.live = 503;
-  const r = await f.run(["ship"]);
+  const r = await f.run(["ship", "--push"]);
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /^atelier: ship stopped at verify-delivery: GET .*\/live, expecting 200 failed\.\nRan before it: commit, deploy\. Not run: wrap\./);
-  assert.deepEqual(f.state.runs.map((x) => [x.step, x.passed]), [["commit", true], ["deploy", true], ["verify-delivery", false]]);
+  assert.deepEqual(f.state.runs.map((x) => [x.step, x.passed]), [["commit", true], ["deploy", true], ["verify-delivery", false], ["wrap", true]]);
+  assert.match(r.stderr, /Delivery is unconfirmed/);
+  assert.match(r.stderr, /Recheck[\s\S]*curl.*--location.*\/live.*expected 200/);
+  assert.doesNotMatch(r.stdout, /Shipped demo/);
   assert.match(f.state.runs[2].outputTail, /answered 503; expected 200/);
+  assert.ok(f.state.requests.some(q => q.path.endsWith("/sessions")), "wrap recorded the session");
+  assert.equal(f.state.deploys.at(-1).result, "failed");
+  assert.equal(f.state.deploys.at(-1).step, "verify-delivery");
+  assert.ok(f.state.deploys.at(-1).ran.includes("wrap"));
+  assert.notEqual(git(f.github, "rev-parse", "main"), f.head, "push remains blocked");
+});
+
+test("request verification can check an Access redirect without following it", async (t) => {
+  let signins = 0;
+  const server = createServer((req, res) => {
+    if (req.url === "/private") { res.writeHead(302, { location: "/signin" }); res.end(); }
+    else { signins++; res.writeHead(200); res.end("sign in"); }
+  });
+  await new Promise(done => server.listen(0, "127.0.0.1", done));
+  t.after(() => server.close());
+  const request = `http://127.0.0.1:${server.address().port}/private`;
+  const p = plan(t, { "docs/atelier/ship.json": { ...WEB_SHIP, "verify-deploy": { request, status: 302, redirect: "manual" } } });
+  assert.deepEqual(p.problems, []);
+  const run = p.steps.find(s => s.step === "verify-delivery").runs[0];
+  assert.equal((await runRequest(run)).passed, true);
+  assert.equal((await runRequest({ ...run, status: 200 })).passed, false);
+  assert.equal(signins, 0, "manual checks never request the sign-in page");
+  assert.equal((await runRequest({ ...run, redirect: undefined, status: 200 })).passed, true, "existing requests still follow redirects");
+  assert.equal(signins, 1);
+  assert.equal((await runRequest({ ...run, request: request.replace("/private", "/public") })).passed, false, "a public 200 does not satisfy the Access 302 check");
+  for (const redirect of [false, "error", "bogus"]) {
+    const bad = plan(t, { "docs/atelier/ship.json": { ...WEB_SHIP, "verify-deploy": { request, redirect } } });
+    assert.match(bad.problems.join("\n"), /"redirect" must be follow or manual/);
+  }
+  const command = plan(t, { "docs/atelier/ship.json": { ...WEB_SHIP, "verify-deploy": { run: ["true"], redirect: "manual" } } });
+  assert.match(command.problems.join("\n"), /"redirect" must be follow or manual, on a "request"/);
+});
+
+for (const wrapOutcome of ["crash", "failed", "passed"]) test(`an unreachable delivery check with wrap ${wrapOutcome} never records ship success`, async (t) => {
+  const cwd = files({ "docs/atelier/ship.json": { ...WEB_SHIP, deploy: { run: [process.execPath, "-e", "void 0"] }, "verify-deploy": { request: "http://127.0.0.1:0", redirect: "manual", status: 302 }, push: false } });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const head = "a".repeat(40), runs = [], deploys = [], lines = [];
+  const approval = { id: "a1", kind: "deploy", commit: head, at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString() };
+  let wrapped = false;
+  await assert.rejects(runShip({
+    name: "demo", cwd, branch: "main", baselineHead: head, paired: () => head,
+    git: args => args[0] === "branch" ? "main" : args[0] === "rev-parse" ? head : "",
+    inProgress: () => [], env: {}, secrets: [], redact: text => text,
+    stage: () => {}, print: line => lines.push(line), fail: message => { throw new Error(message); },
+    request: async (method, path, body) => {
+      if (path.endsWith("/actions")) return { approvals: [approval] };
+      if (path.endsWith("/consume")) return { id: "a1" };
+      if (path.endsWith("/runs")) runs.push(body);
+      return {};
+    },
+    deployed: async record => deploys.push(record),
+    wrap: async () => {
+      wrapped = true;
+      assert.equal(deploys.length, 0, "no completion record before wrap");
+      if (wrapOutcome === "crash") throw new Error("simulated crash during wrap");
+      return { status: wrapOutcome === "failed" ? 1 : 0 };
+    },
+  }), wrapOutcome === "crash" ? /simulated crash/ : wrapOutcome === "failed" ? /ship stopped at wrap/ : /Delivery is unconfirmed/);
+  assert.ok(wrapped);
+  assert.equal(runs.find(r => r.step === "deploy").passed, true);
+  assert.equal(runs.find(r => r.step === "verify-delivery").passed, false);
+  assert.ok(deploys.every(d => d.result === "failed"));
+  assert.ok(!runs.some(r => r.step === "wrap" && r.passed) || wrapOutcome === "passed");
+  assert.ok(!lines.some(line => line.startsWith("Shipped ")));
+  if (wrapOutcome === "crash") assert.deepEqual(deploys, []);
+  if (wrapOutcome === "passed") {
+    assert.match(lines.join("\n"), /curl.*# expected 302/);
+    assert.doesNotMatch(lines.join("\n"), /curl.*--location/);
+  }
 });
 
 // G20: a project whose task checks run only the affected tests ships with
@@ -645,7 +716,7 @@ const original = globalThis.fetch; globalThis.fetch = (url, options) => {
   return { f, run, calls };
 };
 
-for (const matches of [true, false]) test(`the Studio deploy ${matches ? "installs the captured commit and passes" : "stops wrap and push when the live commit is another"} (t182)`, async (t) => {
+for (const matches of [true, false]) test(`the Studio deploy ${matches ? "installs the captured commit and passes" : "wraps but stops push when the live commit is another"} (t182)`, async (t) => {
   const { f, run, calls } = await studioFixture(t);
   const r = await run({ SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40) });
   assert.deepEqual(calls(), [`-t -- ai-studio /usr/bin/sudo -- /Library/Atelier/install-server.sh --env production ${f.head}`], r.stderr + r.stdout);
@@ -662,7 +733,9 @@ for (const matches of [true, false]) test(`the Studio deploy ${matches ? "instal
   } else {
     assert.notEqual(r.status, 0);
     assert.match(r.stderr + r.stdout, /live commit [0-9a-f]+ at https:\/\/atelier\.zone\/api\/version does not match/);
-    assert.ok(!f.state.runs.some(run => ["wrap", "push"].includes(run.step)));
+    assert.ok(f.state.runs.some(run => run.step === "wrap"));
+    assert.match(r.stderr, new RegExp(`ATELIER_SHIP_HEAD=${f.head} node scripts/ship-studio\\.mjs verify`));
+    assert.ok(!f.state.runs.some(run => run.step === "push"));
     assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
   }
 });
