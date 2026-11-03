@@ -1,4 +1,5 @@
 import { executePostMerge } from "../post-merge.mjs";
+import { landingStartsAtAcceptedHead } from "../catch-up.mjs";
 // atelier merge. Its forms, flags and help are declared in src/usage/commands/merge.ts.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -301,7 +302,7 @@ export default async function mergeCommand() {
     // is adopted by the lander only when its merge began at the project's
     // tip as the journal recorded it: one begun on a checkout ahead of it
     // would publish commits no landing reviewed.
-    if (lander && !fresh && journal.state && journal.state.phase!=='published' && (!journal.state.baselineStart || journal.state.start!==journal.state.baselineStart)) {
+    if (lander && !fresh && journal.state && journal.state.phase!=='published' && (!journal.state.baselineStart || (journal.state.start!==journal.state.baselineStart && !landingStartsAtAcceptedHead(journal.state.start,item.acceptedHead)))) {
       await fail(`the unfinished merge of ${id} in ${cwd} began at ${short(journal.state.start)}, not at the project's ${p.branch} (${journal.state.baselineStart?short(journal.state.baselineStart):'not recorded'}) as it stood then, so it may carry commits no landing reviewed; nothing was merged or pushed.\nnext: only the developer can: atelier merge ${id} --cancel --discard-local, then atelier land ${id} again`);
     }
     if (lander && !fresh && !journal.state && git(['rev-parse','HEAD'],{cwd})!==baselineHead
@@ -328,11 +329,14 @@ export default async function mergeCommand() {
       // The lander's merge starts from the project's tip itself (G2): a
       // checkout ahead of it holds commits no landing reviewed, which the
       // push would publish with the merge.
-      else if (lander && local!==baselineHead) {
+      else if (lander && local!==baselineHead && !landingStartsAtAcceptedHead(local,item.acceptedHead)) {
         const ahead=git(['log','--format=%h %s',`${baselineHead}..${local}`],{cwd,allowFail:true}).stdout.trim().split('\n').filter(Boolean);
         await fail(`${p.branch} in ${cwd} is at ${short(local)}, ${ahead.length} commit${ahead.length===1?'':'s'} ahead of the project's ${p.branch} (${short(baselineHead)}), which no landing reviewed:\n  ${ahead.slice(0,10).join('\n  ')}\nThe landing merges onto the project's tip alone, so nothing was merged or pushed.\nnext: only the developer can: move those commits off ${p.branch} in ${cwd} (or land them as a task), then run atelier land ${id} again`);
       }
       journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
+      // The accepted task already occupies the checkout. Check and publish
+      // that revision through the ordinary landing steps, without a reset.
+      if (lander && landingStartsAtAcceptedHead(local,item.acceptedHead)) journal.save({mergeCommit:local,phase:'committed'});
     }
     if (!journal.state.mergeCommit) {
       // What is merged: the accepted head, or its rebuilt twin on the project's commits.
@@ -471,7 +475,10 @@ export default async function mergeCommand() {
     // part of the history, its twin: the same tree, authors, dates and
     // message on the baseline's head and the accepted head. The same inputs
     // give the same twin, so a retry publishes the same commit.
-    const published=fresh?rebuild(git,cwd,mergeCommit,[journal.state.baselineStart??baselineHead,item.acceptedHead]):mergeCommit;
+    // A checkout already at the accepted head stays there. Publish its
+    // checked tree with the parents required by the landing grant instead.
+    const carriedHead=lander && landingStartsAtAcceptedHead(journal.state.start,item.acceptedHead);
+    const published=fresh||carriedHead?rebuild(git,cwd,mergeCommit,[journal.state.baselineStart??baselineHead,item.acceptedHead]):mergeCommit;
     if(fresh)savePairs(gitDir,name,{...loadPairs(gitDir,name),[published]:mergeCommit});
     // Every commit the push adds to the baseline, the landing's generated
     // merge commit and its twin included, is checked again before it goes.
