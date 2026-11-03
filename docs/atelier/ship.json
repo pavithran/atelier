@@ -33,18 +33,7 @@
       "ai-studio"
     ],
     "terminal": true,
-    "timeout_seconds": 1200,
-    "if_changed": {
-      "paths": [
-        "src/**",
-        "cli/serve.mjs",
-        "cli/private-guard.mjs",
-        "hooks/**",
-        "package.json",
-        "package-lock.json"
-      ],
-      "since": "https://atelier.zone/api/version"
-    }
+    "timeout_seconds": 1200
   },
   "verify-deploy": [
     {

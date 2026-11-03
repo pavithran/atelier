@@ -13,6 +13,7 @@ test('production verifies delivery before refreshing runners with the captured c
     ['node', 'scripts/ship-studio.mjs', 'verify', '--version-url', 'https://atelier.zone/api/version'],
     ['node', 'scripts/ship-refresh-runners.mjs'],
   ]);
+  assert.equal(ship.deploy.if_changed, undefined, "every production ship must reach runner refresh, including runner-only changes");
   assert.deepEqual(composeShip(process.cwd()).problems, []);
 });
 

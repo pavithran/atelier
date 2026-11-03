@@ -41,8 +41,7 @@ test("ship reads docs/atelier/ship.json unless told otherwise, and main's order 
   const deploy = main.steps.find((s) => s.step === "deploy").runs[0];
   assert.deepEqual(deploy.argv, ["node", "scripts/ship-studio.mjs", "deploy", "--env", "production", "--version-url", "https://atelier.zone/api/version", "--host", "ai-studio"]);
   assert.equal(deploy.terminal, true);
-  assert.equal(deploy.ifChanged.since, "https://atelier.zone/api/version");
-  for (const path of ["src/**", "hooks/**", "cli/serve.mjs", "package-lock.json"]) assert.ok(deploy.ifChanged.paths.includes(path), path);
+  assert.equal(deploy.ifChanged, undefined);
   assert.deepEqual(main.steps.find((s) => s.step === "verify-delivery").runs[0].argv, ["node", "scripts/ship-studio.mjs", "verify", "--version-url", "https://atelier.zone/api/version"]);
   // Main's order leaves staging to atelier-trial.
   assert.doesNotMatch(JSON.stringify(main.steps), /https:\/\/next\.atelier\.zone/);

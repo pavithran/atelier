@@ -163,20 +163,73 @@ Staging at `next.atelier.zone` ships from the separate `atelier-trial` project.
   "class": "web",
   "description": "Atelier delivery: run the full suite from the shipped commit on ai-studio, typecheck, deploy, verify the live commit, scan and push.",
   "typecheck": [
-    { "run": ["node", "scripts/ship-suite-studio.mjs"], "timeout_seconds": 3600 },
-    { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 }
+    {
+      "run": [
+        "node",
+        "scripts/ship-suite-studio.mjs"
+      ],
+      "timeout_seconds": 3600
+    },
+    {
+      "run": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "timeout_seconds": 600
+    }
   ],
   "deploy": {
-    "run": ["node", "scripts/ship-studio.mjs", "deploy", "--env", "production", "--version-url", "https://atelier.zone/api/version", "--host", "ai-studio"],
-    "terminal": true, "timeout_seconds": 1200,
-    "if_changed": {
-      "paths": ["src/**", "cli/serve.mjs", "cli/private-guard.mjs", "hooks/**", "package.json", "package-lock.json"],
-      "since": "https://atelier.zone/api/version"
-    }
+    "run": [
+      "node",
+      "scripts/ship-studio.mjs",
+      "deploy",
+      "--env",
+      "production",
+      "--version-url",
+      "https://atelier.zone/api/version",
+      "--host",
+      "ai-studio"
+    ],
+    "terminal": true,
+    "timeout_seconds": 1200
   },
-  "verify-deploy": { "run": ["node", "scripts/ship-studio.mjs", "verify", "--version-url", "https://atelier.zone/api/version"], "timeout_seconds": 90 },
-  "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"], "timeout_seconds": 300 },
-  "push": { "remote": "github", "branch": "main" }
+  "verify-deploy": [
+    {
+      "run": [
+        "node",
+        "scripts/ship-studio.mjs",
+        "verify",
+        "--version-url",
+        "https://atelier.zone/api/version"
+      ],
+      "timeout_seconds": 90
+    },
+    {
+      "run": [
+        "node",
+        "scripts/ship-refresh-runners.mjs"
+      ],
+      "timeout_seconds": 540
+    }
+  ],
+  "scan": {
+    "run": [
+      "node",
+      "scripts/privacy-scan.mjs",
+      "--remote",
+      "github",
+      "--branch",
+      "main",
+      "--project",
+      "atelier"
+    ],
+    "timeout_seconds": 300
+  },
+  "push": {
+    "remote": "github",
+    "branch": "main"
+  }
 }
 ```
 

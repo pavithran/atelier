@@ -7,12 +7,11 @@ import { existsSync, writeFileSync, readFileSync, rmSync, mkdtempSync } from "no
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 
-test("the documented ship configuration matches production before its runner refresh", () => {
+test("the documented ship configuration matches production", () => {
  const docs = readFileSync("docs/ship.md", "utf8").split("### From `docs/atelier/ship.json`")[1];
  const example = JSON.parse(docs.match(/```json\n([\s\S]*?)\n```/)[1]);
  const production = JSON.parse(readFileSync("docs/atelier/ship.json", "utf8"));
  assert.deepEqual(production["verify-deploy"][1], { run: ["node", "scripts/ship-refresh-runners.mjs"], timeout_seconds: 540 });
- production["verify-deploy"] = production["verify-deploy"][0];
  assert.deepEqual(example, production);
 });
 
