@@ -2451,3 +2451,54 @@ test("a review harness refusing its input over a 1,048,576-character limit is re
   assert.deepEqual(runs, [], "a size refusal is the harness's limit, not a run the model left without a result");
   assert.ok(!logs.some((l) => / refused: harness /.test(l)), "no bare refusal is logged");
 });
+
+for (const [name, reply, verdict] of [
+  ["malformed criterion approval", "VERDICT: APPROVE\nBLOCKING: 0\nCRITERION 1: tested it", "approve"],
+  ["malformed finding approval", "VERDICT: APPROVE\nBLOCKING: 0\nCRITERION 1: met tests pass\nFINDING: strange note", "approve"],
+  ["malformed finding rejection", "VERDICT: REJECT\nBLOCKING: 1\nFINDING: strange note", "reject"],
+  ["malformed criterion rejection", "VERDICT: REJECT\nBLOCKING: 0\nCRITERION 1: tested it", "reject"],
+]) test(name + " keeps its verdict and note", async () => {
+  const { io, calls } = fixture({ verdict: reply });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "reviewed", JSON.stringify(state));
+  assert.equal(state.verdict, verdict);
+  assert.equal(calls.filter(c => c.harness).length, 1, "a clear verdict needs no retry");
+  const posted = calls.find(c => c.argv?.[0] === "review").argv;
+  assert.match(posted[posted.indexOf("--note") + 1], /(?:CRITERION 1: tested it|FINDING: strange note)/);
+});
+
+test("an invalid review is retried once before release", async () => {
+  const { io, calls } = fixture();
+  let runs = 0;
+  io.harness = async () => { runs++; return { code: 0 }; };
+  io.readVerdict = () => runs === 1 ? "No verdict yet" : "VERDICT: APPROVE\nBLOCKING: 0\nCRITERION 1: met tests pass";
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "reviewed");
+  assert.equal(runs, 2);
+  assert.ok(!calls.some(c => c.argv?.[0] === "review-unparsable"));
+});
+
+test("two invalid reviews release without posting a verdict", async () => {
+  const { io, calls } = fixture({ verdict: "No verdict" });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(calls.filter(c => c.harness).length, 2);
+  assert.ok(calls.some(c => c.argv?.[0] === "review-unparsable"));
+  assert.ok(!calls.some(c => c.argv?.[0] === "review"));
+});
+
+test("raw subprocess output preserves a single tracked fixture status for staging", async () => {
+  const { dirtyPaths } = await import("../cli/land.mjs");
+  const r = await execute([process.execPath, "-e", 'process.stdout.write(" M test/fixtures/cli/usage.json\\0")'], { capture: true, raw: true });
+  assert.deepEqual(dirtyPaths(r.output, { unstaged: true }), ["test/fixtures/cli/usage.json"]);
+});
+
+test("format notes do not hide contradictory verdicts or valid blocking findings", async () => {
+  const { parseRunnerVerdict } = await import("../cli/runner.mjs");
+  for (const reply of [
+    "VERDICT: APPROVE\nVERDICT: REJECT\nFINDING: malformed",
+    "VERDICT: APPROVE\nBLOCKING: 1\nFINDING: blocking cli/a.mjs:1 breaks\nFINDING: malformed",
+    "VERDICT: APPROVE\nBLOCKING: 0\nFINDING: malformed",
+    "VERDICT: APPROVE\nBLOCKING: 0\nCRITERION 1: unmet tests fail\nFINDING: malformed",
+    "VERDICT: APPROVE\nBLOCKING: 0\nCRITERION 0: malformed",
+  ]) assert.equal(parseRunnerVerdict(reply, 1, { counted: true }).ok, false, reply);
+});

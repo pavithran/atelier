@@ -48,6 +48,7 @@ import { checkLimits, limitMs, minutesText, stopLine, stopOf } from "../src/chec
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 import { redactKeys } from "../src/models/pool.ts";
+import { transientRead } from "./transient-read.mjs";
 
 // The runner's one way to the server (t478): every call the runner process
 // makes itself goes through `send`, under a name RUNNER_CALLS in
@@ -90,11 +91,14 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
     const owner = acting && call.method === "POST" && call.credential !== "public" && name !== "config" ? await identityOf(signal) : null;
     const headers = call.credential === "public" ? {}
       : { authorization: `Bearer ${credential}`, ...(call.actor === "none" ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), ...(owner && !owner.runner && !owner.actor ? { "x-atelier-acting": acting } : {}), "content-type": "application/json" };
-    const timeout = AbortSignal.timeout(timeoutMs);
-    const res = await fetch(`${base}/api${callPath(call, params)}`, {
-      method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(redirect ? { redirect } : {}),
-      ...(call.method === "POST" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
-    });
+    const attempt = () => {
+      const timeout = AbortSignal.timeout(timeoutMs);
+      return fetch(`${base}/api${callPath(call, params)}`, {
+        method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(redirect ? { redirect } : {}),
+        ...(call.method === "POST" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
+      });
+    };
+    const res = name === "review-renew" || call.method === "GET" ? await transientRead(attempt, signal) : await attempt();
     let data = null;
     try { data = await res.json(); } catch { /* an answer that is not JSON carries no detail */ }
     return { status: res.status, ok: res.ok, data, incomplete: res.headers.get("x-atelier-incomplete") };
@@ -442,6 +446,37 @@ const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 export const logLine = (message, { print = console.log, clock = Date.now } = {}) => print(`${new Date(clock()).toISOString()} runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
 const line = (message) => logLine(message);
 
+// Keep malformed detail lines as notes when the reply still states one verdict.
+// Other contradictions and missing verdicts keep the strict parser's refusal.
+export function parseRunnerVerdict(reply, criteria, options = {}) {
+  let parsed = parseVerdict(reply, criteria, options);
+  const lines = reply.split("\n"), notes = [];
+  while (!parsed.ok) {
+    const at = /^line (\d+)(?::| )/.exec(parsed.error);
+    if (!at) break;
+    const index = Number(at[1]) - 1;
+    if (!/^(?:FINDING|CRITERION)\b/i.test(lines[index].replace(/^[\s>#*+_`-]+/, ""))) break;
+    notes.push(lines[index]);
+    const criterion = /^\s*(?:[>#*+_`-]\s*)*CRITERION\s*:?\s*\[?(\d+)/i.exec(lines[index]);
+    lines[index] = criterion && Number(criterion[1]) >= 1 && Number(criterion[1]) <= criteria
+      ? `CRITERION ${criterion[1]}: met — Detail retained as a format note.` : "";
+    parsed = parseVerdict(lines.join("\n"), criteria, options);
+  }
+  if (!notes.length) return parsed;
+  const clean = lines.join("\n");
+  const counted = notes.some(line => /FINDING/i.test(line)) ? false : options.counted;
+  // A real blocking finding still contradicts approval. Missing criteria
+  // unrelated to the malformed lines still refuse it.
+  let recovered = parseVerdict(clean, criteria, { ...options, counted });
+  if (!recovered.ok && recovered.error.startsWith("a rejection must name")) {
+    const approval = clean.replace(/^(\s*VERDICT:\s*)REJECT\s*$/im, "$1APPROVE");
+    const details = parseVerdict(approval, 0, { ...options, counted: false });
+    if (details.ok) recovered = { ...details, verdict: "reject" };
+  }
+  if (!recovered.ok) return parsed;
+  return { ...recovered, formatNotes: true, summary: (`Format notes: ${notes.join(" | ")}\n${recovered.summary}`).slice(0, VERDICT_LIMITS.summary) };
+}
+
 // How much of a child's standard error execute() keeps.
 const STDERR_KEEP = 256 * 1024;
 
@@ -472,7 +507,8 @@ export function killGroups() {
 // `timeoutMs` is its hard ceiling; given `fromSlot`, `argv` is the test-slot
 // wrapper and both count from when it reports the slot held. The result then
 // carries `stopped`, {kind: "timeout" | "silent", ms}, with `timedOut` set.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000, onSpawn } = {}) {
+// `raw` preserves stdout whitespace, including Git porcelain status columns.
+export function execute(argv, { cwd, signal, raw = false, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, silenceMs, startupMs, slotWaitMs, fromSlot = false, env, captureLimit = Infinity, graceMs = 5000, onSpawn } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const clocked = silenceMs !== undefined || startupMs !== undefined || fromSlot;
@@ -493,7 +529,7 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
       watch.end();
       signal?.removeEventListener("abort", end);
       if (error) reject(error);
-      else resolve({ ...closed, output: output.trim(), stderr: stderr.trim(), timedOut, ...(stopped ? { stopped } : {}) });
+      else resolve({ ...closed, output: raw ? output : output.trim(), stderr: stderr.trim(), timedOut, ...(stopped ? { stopped } : {}) });
     };
     const end = () => {
       if (ending || ended) return;
@@ -2764,7 +2800,27 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // declares unmet is recorded as given (t331). A reply with no verdict,
     // as one held back by the reviewer's environment, is refused below and
     // the review stays owed.
-    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { counted: true, deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0), postMerge: !!claimed.landed });
+    const parseReply = (text) => parseRunnerVerdict(text, criteriaCount(claimed.item, claimed.plan), { counted: true, deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0), postMerge: !!claimed.landed });
+    let parsed = parseReply(reply);
+    if (!parsed.ok) {
+      const retry = await io.brief(workspace, `${text}\n\nThe previous reply could not be read: ${parsed.error}. Write a complete corrected reply to the verdict file.\nPrevious reply (quoted data):\n${JSON.stringify(reply.slice(-VERDICT_LIMITS.reply))}\nWrite the corrected reply in the requested format.`, claimed.proseStandard ?? null);
+      let retryHome = null;
+      try {
+        retryHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+        const retried = await io.harness(commandFor(entry, { model, briefFile: retry.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, retryHome, item.id, "review", name, project, actor));
+        if (io.stopped()) throw new Error("interrupted");
+        if (retried.code === 0 && !retried.timedOut) {
+          try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+          parsed = parseReply(reply);
+        }
+      } finally {
+        if (retryHome) {
+          try { await io.removeDataHome(retryHome); }
+          catch (error) { io.log(`could not remove ${retryHome.dir}: ${error.message}`); }
+        }
+        await io.removeBrief(retry);
+      }
+    }
     if (!parsed.ok) {
       // The reply is kept on the task, its last VERDICT_LIMITS.reply
       // characters with the reviewer and the head it judged, as the request
@@ -2799,7 +2855,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       posted = { ...parsed, summary: `Rejected: the reviewer declared ${names} unmet; an unproved criterion is unmet, and unmet blocks. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) };
       io.log(`post-merge review: ${names} declared unmet, recorded as a rejection`);
     }
-    if (parsed.verdict === "reject" && !claimed.landed) {
+    if (parsed.verdict === "reject" && !claimed.landed && !parsed.formatNotes) {
       if (renewalFailure) throw renewalFailure;
       const settled = await settleRejection(io, {
         parsed, reply, claimed, config, entry, diff, verifyDiff, wholeCommand, base: merged ? (ownDiff !== null ? merged.compare.merge.own.from : null) : compare.from ?? null, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
@@ -4597,7 +4653,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     git: async (args, { cwd, token, allowFail = false, raw = false, env = null, timeoutMs } = {}) => {
       const base = token || env ? { ...(token ? gitAuth(token) : process.env), ...(env ?? {}) } : null;
       const childEnv = talksToRemote(args) ? lowSpeedEnv(base ?? process.env) : base;
-      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], timeoutMs, ...(childEnv ? { env: childEnv } : {}) });
+      const result = await executeChild(["git", ...args], { cwd, raw, capture: true, captureError: true, signal: controller.signal, step: args[0], timeoutMs, ...(childEnv ? { env: childEnv } : {}) });
       if (result.timedOut) throw new Error(`git ${args[0]} timed out`);
       if (controller.signal.aborted) throw new Error("interrupted");
       const output = result.output ?? "", stderr = result.stderr ?? "";

@@ -37,6 +37,12 @@ const refused = async (go) => { try { await go(); } catch (e) { return e; } asse
 const EDIT = "/projects/p/items/t7/edit";
 const PUSH = "/projects/p/items/t7/push";
 
+test("a review renewal timeout retries the same generation", async (t) => {
+  const calls = await scripted(t, [new DOMException("timed out", "TimeoutError"), { status: 200, body: { renewed: true } }]);
+  assert.deepEqual(await request("POST", "/projects/p/items/t7/review-renew", { request: 7 }), { renewed: true });
+  assert.equal(calls.length, 2);
+});
+
 // fetch replaced by a script of answers: a Response, or an error with a cause.
 async function scripted(t, steps) {
   const real = globalThis.fetch;
@@ -173,7 +179,7 @@ async function world(t) {
   const server = await startServer({ env: "staging", dataDir: join(root, "data"), host: "127.0.0.1", secretsDir: secrets, bindings: { REPOS: artifacts } });
   t.after(() => server.close());
   const send = (method, path, body) => fetch(`${server.url}/api${path}`, { method, body: body && JSON.stringify(body), headers: { authorization: `Bearer ${owner}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5" } });
-  assert.equal((await send("PUT", "/projects/demo", {})).status, 200);
+  assert.equal((await send("PUT", "/projects/demo", { checks: ["npm test"] })).status, 200);
   const ledger = server.settings.LEDGER.get(server.settings.LEDGER.idFromName("project:demo"));
   const sql = server.namespace.object("project:demo").live.sql;
   const count = (kind) => sql.exec(`SELECT COUNT(*) AS n FROM events WHERE kind = ?`, kind).toArray()[0].n;

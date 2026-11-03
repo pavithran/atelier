@@ -73,7 +73,7 @@ async function lastOf(id, kind) {
 
 before(async () => {
   server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, bindings: { REPOS: artifacts } });
-  assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
+  assert.equal((await api("PUT", "/projects/demo", { checks: ["npm test"] })).status, 200);
   assert.equal((await api("PUT", "/projects/gated", { checks: ["npm test"], protected: ["src/**"] })).status, 200);
 });
 after(async () => { await server?.close(); });

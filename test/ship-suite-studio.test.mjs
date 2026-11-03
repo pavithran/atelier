@@ -42,7 +42,7 @@ test("studioSuite transfers the bundle over SSH and cleans up on success and fai
    assert.equal(command, "/usr/bin/ssh");
    const quoted = "'" + remoteSuite.replaceAll("'", "'\\''") + "'";
    assert.deepEqual(args, ["-o", "BatchMode=yes", "--", "ai-studio",
-    `PATH=/opt/homebrew/bin:/usr/local/bin:$PATH node -e ${quoted} ${head}`]);
+    `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" node -e ${quoted} ${head}`]);
    assert.deepEqual(options, { input: Buffer.from("snapshot bytes"), stdio: ["pipe", "inherit", "inherit"], env, timeout: 59 * 60_000 });
    if (failure === "ssh-throw") throw new Error("stub threw");
    return { status: failure === "ssh-status" ? 7 : 0, error: failure === "ssh-error" ? new Error("offline") : undefined };

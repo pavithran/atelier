@@ -145,7 +145,7 @@ async function setup(name: string, coreFiles = ["src/**"]) {
   acting = "codex/shared";
   for (const m of POOL) await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel(m);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const record = { name, repo: name, policy: { checks: [], protected: [], coreFiles }, createdAt: new Date().toISOString() };
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], coreFiles }, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const live = await L.newItem("Blocking work", ["src/a.ts"], "owner");

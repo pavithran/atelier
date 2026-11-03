@@ -239,7 +239,7 @@ async function runLocal(t, setup, argv) {
     else if (req.url === "/api/inbox") body = [];
     else if (req.url === "/api/projects/demo/baseline-head") body = { head: git(state.checkout, "rev-parse", "HEAD") };
     else if (req.url === "/api/projects/demo/standing") body = state.standing ?? STANDING;
-    else if (req.url === "/api/projects/demo") body = { project: { ...STANDING.project, policy: state.policy }, items: state.items ?? [], events: [] };
+    else if (req.url === "/api/projects/demo") body = { project: { ...STANDING.project, policy: state.policy }, items: state.items ?? [], events: state.events ?? [] };
     else if (req.url === "/api/projects/demo/landing-lease") {
       if (state.noLeaseRoute) { status = 404; body = { error: "not_found", detail: "no such route" }; }
       else body = { lease: state.lease ?? null };
@@ -559,3 +559,21 @@ test("a held task names every blocker and when each stops holding, claimed or la
   assert.equal(line([claimed("t1"), claimed("t3"), landing("t5")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; t5 (accepted by claude-code/opus-5.5): ${reach}; offered once t1 submits or is released, t3 submits or is released and the landing of t5 ends${override}`);
 });
 
+
+test("status names the model beside each developer decision, including an unquoted unblock", async () => {
+  const { developerDecisionLines } = await import("../cli/status.mjs");
+  const lines = developerDecisionLines([{ itemId: "t4", seq: 1, actor: "pavi", kind: "item.unblocked", at: "2026-11-02T12:00:00Z", data: { acting: "codex/gpt-6.1-sol" } }]);
+  const { actedThroughOwner, actedLine } = await import("../cli/commands/show.mjs");
+  const event = { itemId: "t4", seq: 1, actor: "pavi", kind: "item.unblocked", at: "2026-11-02T12:00:00Z", data: { acting: "codex/gpt-6.1-sol" } };
+  assert.match(actedLine(actedThroughOwner([event], "t4")[0]), /item.unblocked by pavi, acting codex\/gpt-6\.1-sol/);
+  assert.match(lines.join("\n"), /t4.*item.unblocked by pavi, acting codex\/gpt-6\.1-sol/);
+});
+
+for (const project of [false, true]) for (const json of [false, true]) test(`status displays the acting model (project=${project}, json=${json})`, async (t) => {
+  const r = await runLocal(t, ({ dir }) => ({
+    checkout: workspace(join(dir, "checkout"), [["README.md", "hello"]]),
+    events: [{ itemId: "t4", seq: 1, actor: "pavi", kind: "item.unblocked", at: "2026-11-02T12:00:00Z", data: { acting: "codex/gpt-6.1-sol" } }],
+  }), ["status", ...(project ? ["--project", "demo"] : []), ...(json ? ["--json"] : [])]);
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /item.unblocked by pavi, acting codex\/gpt-6\.1-sol/);
+});

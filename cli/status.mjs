@@ -1,3 +1,4 @@
+import { actedLine } from "./commands/show.mjs";
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
 // and inbox holds the notices the server's inbox holds for it. What waits on
@@ -119,6 +120,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
     const a = attentionFor(v.name, v.items, v.inbox, offers, now);
     return {
       name: v.name,
+      ...(v.developerDecisions?.length ? { developerDecisions: v.developerDecisions } : {}),
       ...(v.wayBack ? { wayBack: v.wayBack } : {}),
       ...(v.title ? { title: v.title } : {}),
       ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
@@ -631,4 +633,11 @@ export function formatUsageWarnings(usage, now = Date.now()) {
     for (const b of lowBalances(r, floor)) lines.push(`${r.tool} on ${r.runner}: balance ${b.amount} ${b.currency}, below ${floor}`);
   }
   return lines.length ? ["Usage warnings:", ...lines.map((l) => `  ${l}`)] : [];
+}
+
+// Events already carry the model recorded by the server.
+export function developerDecisionLines(events = []) {
+  const acts = events.filter((e) => typeof e.data?.acting === "string" && e.data.acting);
+  if (!acts.length) return [];
+  return ["Recent developer decisions (from the returned events)", ...acts.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)).map((e) => `${e.itemId ?? "project"} ${actedLine({ ...e, acting: e.data.acting, quote: e.data.quote }).trim()}`)];
 }

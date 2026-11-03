@@ -14,7 +14,7 @@ afterEach(() => vi.restoreAllMocks());
 async function setup(policy = {}) {
   const name = `runner-test-${++serial}`;
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [], ...policy }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: ["npm test"], protected: [], ...policy }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await I().registerProject(p);
   await L.newItem("Build", [], "owner");

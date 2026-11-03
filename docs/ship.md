@@ -143,6 +143,13 @@ A verify step with nothing to run refuses the ship before anything runs,
 naming what to declare: a web project needs a `verify-deploy` run, such as a
 request to the live site, before `atelier ship` runs for it.
 
+Local request tests cannot establish DNS propagation or the live Access policy.
+Before and after deployment, run the declared delivery check from the deployment
+host: check the current live revision before deploying and the captured revision
+afterwards. For an Access-protected site, check the expected redirect status
+without following redirects. Repeat an unconfirmed check from the calling Mac
+once its DNS has caught up. These checks do not require deploying again.
+
 ### From `docs/atelier/ship.json`
 
 Atelier's own, as main holds it. Since the 2026-10-31 cut-over, main deploys
@@ -198,7 +205,11 @@ last four adds its step to the class's order; leaving it out leaves the step out
 - `{"request": URL, "status": 200}`: a GET of an http or https URL that must
   end with that status. Redirects are followed, so `https://atelier.zone`,
   which sends a visitor who is not signed in on to `/home` and its sign-in,
-  answers 200 there.
+  answers 200 there. Add `"redirect": "manual"` to check the first response
+  without following redirects. For example, `{"request": "https://private.example",
+  "status": 302, "redirect": "manual"}` expects an Access sign-in redirect;
+  a public HTTP 200 fails that check. The default is `"redirect": "follow"`.
+  A status check confirms the response code, not which service issued it.
 
 and may add `"retries"` (0 to 3: the run is tried again that many times if it
 fails, under the approval already taken, and every try is recorded),
@@ -302,6 +313,12 @@ It then prints the steps and runs them:
   `ATELIER_SHIP_HEAD` to the local source HEAD it validated, replacing any
   caller-supplied value. It is the source commit, not a rebuilt baseline
   commit. Its output is shown as it comes.
+  After a successful deploy, a failed verify-delivery is recorded as failed,
+  but wrap still runs. Ship then exits unsuccessfully with delivery unconfirmed,
+  the commands to recheck from the checkout, and push still blocked. A request
+  recheck prints its HTTP status and the expected status; command checks reuse
+  their declared command with `ATELIER_SHIP_HEAD` set to the captured source
+  commit. Install verification and a failed deploy still stop immediately. No successful ship record is written before wrap completes.
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
   and reports how the checkout stands against the server's branch; a failing

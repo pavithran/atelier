@@ -3793,6 +3793,7 @@ export class Ledger extends DurableObject<Env> {
   // only for a dispatch that will be made.
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403, `only the developer can: atelier dispatch ${id}`);
+    if (!this.project().policy.checks.length) throw new RuleError("checks_required", "this project has no required checks; register one with atelier init --check CMD before dispatching a build", 409, "atelier init --check CMD");
     if (input) this.refuseLiveHolder(id, input);
     const item = this.item(id);
     assertNotTerminal(item);
@@ -4912,6 +4913,10 @@ export class Ledger extends DurableObject<Env> {
   unblock(id: string, actor: string, proved = false, direction: OwnerDirection | null = null): Item {
     const item = this.item(id);
     const fence = this.prereviewFence(id);
+    const roundCap = item.blocked?.by === ORCHESTRATOR && /^\d+ review rounds were rejected and no further round starts on its own/.test(item.blocked.reason);
+    if (roundCap && (actor !== this.owner || !direction?.quote.trim() || !direction.acting)) {
+      throw new RuleError("direction_needed", "A review round cap needs the developer's words: unblock with --quote \"what the developer said\" --as H/M", 403, `atelier unblock ${id} --quote \"what the developer said\" --as H/M`);
+    }
     if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`, 409, "run atelier show ID");
     // A block that is a fact (G7: a run stopped at its limit) waits on no
     // one's decision, so any model with standing in the project lifts it.

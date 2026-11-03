@@ -802,7 +802,7 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
 
 it("a dispatch refuses the claim rules ahead of the claim: refused overlap, and no stored agents role (t152)", async () => {
   const governed: ProjectPolicy = {
-    checks: [], protected: [],
+    checks: ["npm test"], protected: [],
     agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } },
   };
   const L = await setup("dispatch-claim-rules", governed);
@@ -814,7 +814,7 @@ it("a dispatch refuses the claim rules ahead of the claim: refused overlap, and 
   const t1b = (await L.newItem("Build it too", ["docs/**"], "owner")).id;
   expect((await L.dispatch(t1b, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" })).dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
 
-  const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
+  const strict: ProjectPolicy = { checks: ["npm test"], protected: [], refuseOverlap: true };
   const S = await setup("dispatch-claim-overlap", strict);
   await S.newItem("Live", ["relay/test/**"], "owner");
   await S.claim("t1", A);

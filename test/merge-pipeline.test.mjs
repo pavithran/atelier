@@ -442,16 +442,19 @@ test("verifyAccepted passes outputs equal to the accepted revision's and an adop
   assert.match(git(f.dir, "log", "-1", "--format=%B"), /Atelier-Regenerated: index .*: out\/index\.txt matches the accepted revision; log sha256 [0-9a-f]{64}/);
 });
 
-test("verifyAccepted refuses outputs that are not the accepted revision's, keeps the comparison and log, and leaves the checkout alone", async (t) => {
+test("verifyAccepted keeps regenerated outputs and an adopting merge commits the verified tree", async (t) => {
   const f = fixture(t);
   // The accepted revision left its index stale; regeneration would write another.
   const s = sides(f, { "cmds/push.txt": "name: push\n" }, { "cmds/land.txt": "name: land\n" }, { theirs: { regenerate: false } });
   const v = await verifyAccepted(f.dir, s.ours, s.theirs);
-  assert.equal(v.ok, false);
-  assert.match(v.reason, /regenerated outputs differ from the accepted revision's: out\/index\.txt/);
+  assert.equal(v.ok, true, JSON.stringify(v));
   assert.equal(merging(f.dir), false);
   assert.equal(git(f.dir, "status", "--porcelain"), "");
-  assert.match(readFileSync(v.comparison, "utf8"), /verdict: refused, regenerated outputs differ/);
+  assert.match(readFileSync(v.comparison, "utf8"), /verdict: regenerated/);
+  const r = await mergeThrough(f.dir, "theirs", { message: "m", generate: false, adopt: v });
+  assert.equal(r.state, "merged", JSON.stringify(r));
+  assert.equal(git(f.dir, "rev-parse", "HEAD^{tree}"), v.tree);
+  assert.equal(readFileSync(join(f.dir, "out/index.txt"), "utf8"), "help\nland\npush\n");
   assert.ok(existsSync(v.kept));
 });
 
@@ -467,12 +470,12 @@ test("a merge that adopts a compared tree stops, aborted, when the tree it leave
   assert.equal(git(f.dir, "rev-parse", "HEAD"), other);
 });
 
-test("a merge that adopts takes outputs from the accepted revision, and stops when it holds none", async (t) => {
+test("a merge that adopts refuses a tree without its outputs", async (t) => {
   const f = fixture(t, { extra: { "cmds/a.txt": "name: a\ndescription: one\n" } });
   const s = sides(f, { "cmds/a.txt": "name: a\ndescription: two\n", "out/index.txt": null }, { "cmds/help.txt": "name: help\ndescription: three\n" }, { theirs: { regenerate: false } });
   const r = await mergeThrough(f.dir, "theirs", { message: "m", generate: false, adopt: { tree: "0".repeat(40), regenerated: [] } });
   assert.equal(r.state, "stopped");
-  assert.match(r.reason, /the accepted revision does not hold every output of index/);
+  assert.match(r.reason, /the verified tree does not hold every output of index/);
   assert.equal(merging(f.dir), false);
   assert.equal(git(f.dir, "rev-parse", "HEAD"), s.ours);
 });

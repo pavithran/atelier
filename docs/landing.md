@@ -385,9 +385,13 @@ Details of the steps:
    differently, an edit against a deletion or a duplicate registry key stays
    a conflict. In the landing's merge onto the project's branch no generator
    runs in the checkout: where one would, `verifyAccepted` merges first in a
-   throwaway clone, and only outputs equal to the accepted head's, which
-   were checked and reviewed with it, are merged; anything else stops the
-   landing with nothing merged. On conflicts the landing stops, naming the
+   throwaway clone and runs each declared generator twice. A successful,
+   deterministic generator may change its declared outputs; the landing
+   commits those outputs with the merge and says so without another review.
+   Generator failures, writes outside declared outputs, missing outputs and
+   changes between runs stop the landing. The checkout adopts the verified
+   outputs without running the generator again; any other difference from
+   the verified merge tree also stops the landing. On conflicts the landing stops, naming the
    files (`failedStep: merge-main`), and leaves nothing in the checkout. The
    conflicts go back to the task's builder: `atelier dispatch t9 --job
    merge-main` (naming the holder with `--agent` and `--model`) sends the

@@ -20,7 +20,7 @@ async function setup() {
   const name = `baseline-token-${++serial}`;
   const index: any = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   const L: any = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const project = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const project = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(project, "owner");
   await index.registerProject(project);
   await L.newItem("Build", [], "owner");
