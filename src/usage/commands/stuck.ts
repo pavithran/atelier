@@ -5,7 +5,7 @@ const spec: CommandSpec = {
   // The stuck report route (t441), which an older server answers 404.
   capabilities: ["projects.stuck.v1"],
   forms: [
-    { group: "Developer", line: 2, slot: 5, form: "stuck [--project P] [--json] [--no-push-hours N] [--unanswered-hours N] [--core-hold-minutes N] [--runner-poll-minutes N] [--review-answer-hours N]", about: "One read-only developer report of stuck tasks, confirmed orphan leases, runner give-ups, idle polls, claims orphaned by a runner that stopped polling, claimed reviews and stale core holds; prints evidence and recovery commands without running them, and separately lists failed observed check commands in the preceding rolling day." },
+    { group: "Developer", line: 2, slot: 5, form: "stuck [--project P] [--json] [--no-push-hours N] [--unanswered-hours N] [--core-hold-minutes N] [--runner-poll-minutes N] [--review-answer-hours N]", about: "One read-only developer report of stuck tasks, claimed or submitted tasks with no event for over 60 minutes, confirmed orphan leases, runner give-ups, idle polls, claims orphaned by a runner that stopped polling, claimed reviews and stale core holds; prints evidence and recovery commands without running them, and separately lists failed observed check commands in the preceding rolling day." },
   ],
   flags: { json: true, "no-push-hours": false, "unanswered-hours": false, "core-hold-minutes": false, "runner-poll-minutes": false, "review-answer-hours": false },
   help: {
@@ -16,7 +16,7 @@ const spec: CommandSpec = {
       "--unanswered-hours N": "positive limit for unanswered changes requests; default 24 hours",
       "--core-hold-minutes N": "positive limit for core blockers since their current claim/handoff or later push; default 30 minutes; land the blocker (merge if already accepted) or dispatch the held task with --overlap-ok if harmless",
       "--runner-poll-minutes N": "positive idle-poll limit; default 5 minutes, plus one minute of offer timestamp coarsening; a runner with an active job is not idle. A claim is orphaned by its runner past the fixed 5 minutes (plus the minute), whatever this says, since that is when it stops holding the core files; a runner mid-job renews its poll with a heartbeat",
-      "--review-answer-hours N": "positive limit for current claimed reviews; default 2 hours; a claim ages from when it began, not its last renewal; a re-claim after expiry starts a new claim",
+      "--review-answer-hours N": "positive limit for current claimed reviews; default 1 hour; a claim ages from when it began, not its last renewal; a re-claim after expiry starts a new claim",
     },
     example: "atelier stuck --project demo",
   },

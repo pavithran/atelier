@@ -13,6 +13,7 @@ export interface Transition extends EpisodeKey { kind: "opened" | "cleared"; epi
 // case (a task's rule, a review request) the reason with elapsed hours
 // removed, so a finding that ages stays one episode.
 export function causeOf(entry: Pick<Entry, "kind" | "reason">): string {
+  if (entry.kind === "review") return `review:${entry.reason.split("; no verdict for ")[0]}`;
   return ["task", "review", "review-unoffered", "review-skipped"].includes(entry.kind) ? `${entry.kind}:${entry.reason.replace(/\b\d+h\b/g, "Nh")}` : entry.kind;
 }
 

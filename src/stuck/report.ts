@@ -9,7 +9,7 @@ import { SIZE_FIX, SIZE_REFUSED } from "../large-diff.ts";
 import { inScope } from "../tokens.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
-export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
+export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 1 };
 const IDLE_RUNNER_MAX_MS = 48 * 3_600_000;
 export type ReportLimits = typeof REPORT_DEFAULTS;
 export function reportLimits(values: Record<string, unknown> = {}): ReportLimits {
@@ -68,6 +68,19 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   if (snapshot) {
     const { items, events, lease, reviews } = snapshot;
     const live = items.filter((i) => i.state !== "blocked");
+    const lastEvent = (id: string) => events.filter((e) => e.itemId === id)
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.seq - a.seq)[0];
+    const movement = (id: string) => {
+      const last = lastEvent(id);
+      return last ? `last event ${last.kind} at ${last.at}` : "no recorded event";
+    };
+    for (const item of live) {
+      if (item.state !== "claimed" && item.state !== "submitted") continue;
+      const since = lastEvent(item.id)?.at ?? item.updatedAt;
+      if (age(since) > 60 * 60_000)
+        add("task-idle", item.id, `${item.state} by ${item.owner ?? "unknown holder"}; no movement for ${Math.floor(age(since) / 60_000)} minutes; ${movement(item.id)}`,
+          since, `check in with the holder: ${command(`show ${item.id} --reviews`)}`);
+    }
     const requeue = (id: string) => {
       const item = live.find((i) => i.id === id);
       if (!item?.kind) return command(`dispatch ${id}`);
@@ -98,7 +111,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       const item = live.find((i) => i.id === r.item && i.head === r.head && !["merged", "abandoned"].includes(i.state));
       const since = claimStart(r);
       if (item && age(since) > limits.reviewAnswerHours * 3_600_000)
-        add("review", r.item, `review request ${r.id} claimed by ${r.claimedBy}`, since, `${command(`review-release ${r.item} --note "Release stalled review claim"`)} --as ${r.claimedBy}`);
+        add("review", r.item, `review request ${r.id} claimed by ${r.claimedBy}; no verdict for ${Math.floor(age(since) / 60_000)} minutes; ${movement(r.item)}`, since, `${command(`review-release ${r.item} --note "Release stalled review claim"`)} --as ${r.claimedBy}`);
     }
     // An open request whose reviewer no live runner offers for the review job
     // is claimed by no one, however long it waits, and holds the landing.
