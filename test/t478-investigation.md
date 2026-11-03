@@ -1,5 +1,35 @@
 # t478 investigation, incomplete
 
+## Continuation on 2026-11-03
+
+Retried validation from the workspace at `3cd311b5`, preserving the earlier
+attempt. The host wrapper again refused both commands before starting a child:
+
+```text
+node '/Users/atelier-build/ai-projects/atelier-runner/cli/load.mjs' -- node -e '<suite launcher>'
+test slots: unable to open database file
+exit 1
+
+node '/Users/atelier-build/ai-projects/atelier-runner/cli/load.mjs' -- npm run typecheck
+test slots: unable to open database file
+exit 1
+```
+
+The suite launcher prints an acquisition timestamp, then starts `npm test`
+with `ATELIER_TEST_TIMEOUT_MS=3600000` and a 60-minute termination timer.
+Neither the timestamp nor test output appeared. Slot wait and suite run time
+cannot be measured because admission failed; pass/fail counts are unavailable.
+This is neither a suite timeout nor an observed test failure.
+
+No behavior was changed: the required failing-test-first step cannot run.
+No tests were deleted, skipped, or weakened. The findings below remain
+preliminary and unresolved; the acceptance criteria are not met. No routes,
+contracts, visibility rules, UI, generated pages, or completion markers changed.
+No new platform dependency was introduced. Nothing was pushed and no atelier
+command was run. Continuing requires working host slot admission; this attempt
+did not access or repair files outside the workspace. The referenced house-style
+file remains unavailable and was not read.
+
 No implementation or test behavior changed. No test was deleted or skipped.
 The acceptance criteria remain unmet: the suite has not run and there are no
 pass/fail counts for this workspace. Nothing was pushed.
