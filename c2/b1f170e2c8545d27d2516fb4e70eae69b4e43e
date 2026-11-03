@@ -1,0 +1,35 @@
+atelier atelier/t450 "A runner's regeneration commit succeeds when only a fixture changed"
+accepted head f8256021dc149375725df61bc5cb1a9038d5f6ce
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T00:28:28.342Z
+REVIEW approve by antigravity/gemini-4-argon at f8256021dc149375725df61bc5cb1a9038d5f6ce, recorded by antigravity/gemini-4-argon
+CHECKED TREE 3a6073a7c4a4e582a7359a4a0310f168733a72b2: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-02T23:29:29.242Z pavi item.created
+2026-11-02T23:29:29.242Z claude-code/opus-5.5 criteria.revised
+2026-11-02T23:29:30.487Z pavi item.dispatched
+2026-11-02T23:58:35.092Z pavi item.edited
+2026-11-02T23:58:35.092Z claude-code/opus-5.5 criteria.revised
+2026-11-02T23:58:35.092Z pavi item.criteria_changed
+2026-11-03T00:05:27.563Z codex/gpt-6.1-sol item.claimed
+2026-11-03T00:05:27.607Z codex/gpt-6.1-sol workspace.created
+2026-11-03T00:28:24.758Z codex/gpt-6.1-sol push.observed
+2026-11-03T00:28:28.375Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T00:28:28.552Z codex/gpt-6.1-sol item.submitted
+2026-11-03T00:29:07.351Z pavi land.start
+2026-11-03T00:29:08.807Z pavi review.requested
+2026-11-03T00:29:08.807Z pavi review.tier_needed
+2026-11-03T00:29:09.149Z pavi land.review
+2026-11-03T00:29:09.234Z pavi land.requested
+2026-11-03T00:30:23.329Z antigravity/gemini-4-argon review.claimed
+2026-11-03T00:31:40.525Z pavi land.start
+2026-11-03T00:31:41.680Z pavi land.review
+2026-11-03T00:31:48.590Z pavi land.start
+2026-11-03T00:31:49.637Z pavi land.review
+2026-11-03T00:36:38.125Z antigravity/gemini-4-argon review.approved
+2026-11-03T00:36:38.125Z atelier/orchestrator goal.notes
+2026-11-03T00:36:40.062Z pavi item.accepted
+2026-11-03T00:36:40.998Z pavi land.start
+2026-11-03T00:36:41.094Z pavi landing.leased
+2026-11-03T00:36:41.202Z pavi land.lease
+2026-11-03T00:36:42.298Z pavi checkout.leased
