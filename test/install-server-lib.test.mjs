@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 
-test("installer library sources with no lsof on PATH under errexit", { skip: process.getuid?.() === 0 ? "library mode requires a non-root caller" : false }, () => {
- const bin = resolve(".scratch/install-server-lib-bin");
- mkdirSync(bin, { recursive: true });
+test("installer library sources with no lsof on PATH under errexit", { skip: process.getuid?.() === 0 ? "library mode requires a non-root caller" : false }, (t) => {
+ const bin = mkdtempSync(join(tmpdir(), "atelier-install-server-lib-"));
+ t.after(() => rmSync(bin, { recursive: true, force: true }));
  for (const tool of ["node", "git", "launchctl", "curl", "mv"]) {
   writeFileSync(resolve(bin, tool), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
  }

@@ -36,7 +36,10 @@
 //   waits on among them), then this process. (SIGSTOP first would stop the
 //   watchdog's thread with the rest.)
 import childProcess from "node:child_process";
-import { rmSync } from "node:fs";
+import { rmSync, mkdirSync, realpathSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { after } from "node:test";
@@ -55,6 +58,33 @@ process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-te
 {
   const dir = `${process.env.TMPDIR || "/tmp"}/atelier-tests-config-${process.pid}`;
   process.env.ATELIER_CONFIG_DIR = dir;
+  process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
+}
+
+// Checks must not queue behind the host slot running this suite. Copy the
+// scheduler with a fixed private pool; its own wrapper path keeps scrubbed
+// check children isolated too, without changing the production environment.
+{
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "atelier-test-pool-")));
+  const source = new URL("../cli/load.mjs", import.meta.url);
+  const declaration = 'export const HOST_POOL = "/tmp/atelier-test-slots-v1.sqlite";';
+  const text = readFileSync(source, "utf8");
+  if (text.split(declaration).length !== 2) throw Error("cannot isolate the test scheduler");
+  mkdirSync(join(dir, "cli"));
+  const wrapper = join(dir, "cli", "load.mjs"), hook = join(dir, "isolate.mjs");
+  writeFileSync(wrapper, text.replace(declaration, `export const HOST_POOL = ${JSON.stringify(join(dir, "slots.sqlite"))};`));
+  const loaded = readFileSync(wrapper, "utf8").replace(
+    "export const SLOT_WRAPPER = fileURLToPath(import.meta.url);",
+    `export const SLOT_WRAPPER = process.argv[1] && resolve(process.argv[1]) === ${JSON.stringify(fileURLToPath(source))} ? fileURLToPath(import.meta.url) : ${JSON.stringify(wrapper)};`);
+  writeFileSync(hook, `import { registerHooks } from "node:module";
+registerHooks({ load(url, context, next) {
+  return url === ${JSON.stringify(source.href)}
+    ? { format: "module", source: ${JSON.stringify(loaded)}, shortCircuit: true }
+    : next(url, context);
+} });`);
+  await import(pathToFileURL(hook).href);
+  process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ""} --import=${pathToFileURL(hook).href}`.trim();
+  delete process.env.ATELIER_TEST_LEASE;
   process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
 }
 

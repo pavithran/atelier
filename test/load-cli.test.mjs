@@ -18,10 +18,11 @@ test("real slots CLI changes an isolated occupied pool and reports draining with
   // Test-only module loading redirects the fixed production pool and supplies
   // its process snapshot. CLI parsing, dispatch, handlers and SQLite are real.
   writeFileSync(preload, `import { registerHooks } from 'node:module';
+    import { readFileSync } from 'node:fs';
     registerHooks({ load(url, context, next) {
       const loaded = next(url, context);
       if (url === ${JSON.stringify(new URL("../cli/load.mjs", import.meta.url).href)}) {
-        const source = String(loaded.source);
+        const source = readFileSync(new URL(url), "utf8");
         if (!source.includes(JSON.stringify('/tmp/atelier-test-slots-v1.sqlite'))) {
           throw new Error('cannot isolate the test pool; refusing to run the CLI');
         }

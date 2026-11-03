@@ -633,7 +633,7 @@ test("an unavailable or malformed version answer refuses with its own message an
   const r = await down.run(["new", "A short title", "--project", "proj"]);
   assert.equal(r.status, 4, r.output);
   assert.match(r.output, /^atelier: the server did not answer GET \/api\/version with a version, so its capabilities \(items\.brief-criteria\.v1\) cannot be checked\. Check that the server is reachable and deployed\./);
-  assert.deepEqual(down.requests.map((x) => x.path), ["/api/version"]);
+  assert.deepEqual(down.requests.map((x) => x.path), Array(3).fill("/api/version"));
   const text = await stub(t, "<html>not json</html>");
   const n = await text.run(["new", "A short title", "--project", "proj"]);
   assert.equal(n.status, 4, n.output);
