@@ -1,0 +1,33 @@
+atelier atelier/t461 "A deploy or ship running far too long shows in stuck"
+accepted head ba80084bf59067b58b69124c3d4d712c491f581e
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T16:26:24.744Z
+REVIEW approve by antigravity/gemini-4-argon at ba80084bf59067b58b69124c3d4d712c491f581e, recorded by antigravity/gemini-4-argon
+2026-11-03T14:50:24.373Z pavi item.created
+2026-11-03T14:50:24.373Z claude-code/opus-5.5 criteria.revised
+2026-11-03T14:50:25.662Z pavi item.dispatched
+2026-11-03T15:51:18.730Z pavi land.start
+2026-11-03T15:51:18.848Z pavi land.start
+2026-11-03T15:58:03.059Z codex/gpt-6.1-sol item.claimed
+2026-11-03T15:58:03.080Z codex/gpt-6.1-sol workspace.created
+2026-11-03T16:26:14.672Z codex/gpt-6.1-sol push.observed
+2026-11-03T16:26:24.772Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T16:26:24.956Z codex/gpt-6.1-sol item.submitted
+2026-11-03T16:26:52.944Z pavi land.start
+2026-11-03T16:26:55.280Z pavi review.requested
+2026-11-03T16:26:55.280Z pavi review.tier_needed
+2026-11-03T16:26:55.614Z pavi land.review
+2026-11-03T16:26:55.718Z pavi land.requested
+2026-11-03T16:30:54.570Z atelier/orchestrator refresh.queued
+2026-11-03T16:30:56.066Z antigravity/gemini-4-argon review.claimed
+2026-11-03T16:30:56.112Z antigravity/gemini-4-argon review.diff
+2026-11-03T16:31:01.868Z pavi land.start
+2026-11-03T16:31:03.468Z pavi land.review
+2026-11-03T16:47:20.427Z antigravity/gemini-4-argon review.approved
+2026-11-03T16:47:20.427Z atelier/orchestrator goal.notes
+2026-11-03T16:47:28.511Z pavi item.accepted
+2026-11-03T16:47:29.511Z pavi land.start
+2026-11-03T16:47:29.651Z pavi landing.leased
+2026-11-03T16:47:29.783Z pavi land.lease
+2026-11-03T16:47:31.135Z pavi checkout.leased
