@@ -29,10 +29,10 @@ function detail(over: { item?: Partial<Item>; evidence?: Evidence[]; reviews?: R
   return { item: i, policy: p, evidence, reviews, gate: gate(i, p, evidence, reviews, OWNER), events: over.events ?? [], ownerActor: OWNER };
 }
 
-test("accept: the gate is ready, and the decision names the action and revision", () => {
+test("land: the gate is ready, and the decision names the action and revision", () => {
   const b = briefFor(detail(), []);
-  assert.equal(b.recommendation.verdict, "accept");
-  assert.equal(b.decided, "Accept t21 at aaaaaaaa: Fix the thing.");
+  assert.equal(b.recommendation.verdict, "land");
+  assert.equal(b.decided, "Land t21 at aaaaaaaa: Fix the thing.");
   assert.match(b.recommendation.reason, /^1 of 1 required checks passed at this revision/);
   assert.deepEqual(b.evidence, ["Required checks at this revision: 1 passed in a Cloudflare container."]);
 });
@@ -93,7 +93,7 @@ test("with two rejections and scope flags, the flags and one rejection line stay
 
 test("a rejection at an older head is answered by the push and does not count", () => {
   const b = briefFor(detail({ reviews: [rev({ approve: false, head: H2 })] }), []);
-  assert.equal(b.recommendation.verdict, "accept");
+  assert.equal(b.recommendation.verdict, "land");
   assert.ok(!b.evidence.some((l) => l.includes("asked for changes")));
 });
 
@@ -118,7 +118,7 @@ test("the owner's override is named with its reason, while the item waits for ac
   const reviewOverride = { head: H1, by: OWNER, reason: "No model of another family is available", at: T };
   const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
   const ready = briefFor(detail({ item: { reviewOverride }, evidence }), []);
-  assert.equal(ready.recommendation.verdict, "accept");
+  assert.equal(ready.recommendation.verdict, "land");
   assert.ok(ready.evidence.includes("The developer overrode the independent review at this revision: No model of another family is available."));
   const accepted = briefFor(detail({ item: { reviewOverride, state: "accepted", acceptedHead: H1 }, evidence }), []);
   assert.equal(accepted.recommendation.reason, "You accepted this revision with the independent review overridden, and the merge runs in your local checkout.");
@@ -226,9 +226,9 @@ test("another item's submission is never attributed to this one", () => {
   assert.equal(briefFor(detail(), [other, submitted(1, H1, "mine")]).summary, "mine");
 });
 
-test("a protected path with an independent approval is ready to accept", () => {
+test("a protected path with an independent approval is ready to land", () => {
   const b = briefFor(detail({ evidence: [pass({ changedPaths: ["AGENTS.md"] })], reviews: [rev()] }), []);
-  assert.equal(b.recommendation.verdict, "accept");
+  assert.equal(b.recommendation.verdict, "land");
   assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved."));
 });
 
@@ -241,9 +241,9 @@ test("decide: only a blocker that is not a check, a review or a measurement rema
   assert.match(open.recommendation.reason, /no verified push/);
 });
 
-test("accept with no required checks says the project requires none", () => {
+test("land with no required checks says the project requires none", () => {
   const b = briefFor(detail({ policy: { checks: [], protected: [] }, evidence: [pass()] }), []);
-  assert.equal(b.recommendation.verdict, "accept");
+  assert.equal(b.recommendation.verdict, "land");
   assert.equal(b.recommendation.reason, "The project requires no checks, and nothing blocks it.");
 });
 
@@ -348,7 +348,7 @@ test("send back: the required checks fail on the merge with main, which moved af
   ]);
   // Against the main the revision's own check saw, the merged failure is shown by the page and does not change the brief.
   const same = briefFor(detail({ evidence: [own, { ...onMerge, mainHead: M0 }] }), []);
-  assert.equal(same.recommendation.verdict, "accept");
+  assert.equal(same.recommendation.verdict, "land");
   assert.deepEqual(same.evidence, ["Required checks at this revision: 1 passed in a Cloudflare container."]);
 });
 
@@ -359,4 +359,10 @@ test("the reviews line says who recorded each review, as atelier show prints it 
   ];
   const b = briefFor(detail({ reviews }), []);
   assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved (recorded by codex/gpt-5.5 with its own token), gemini-3.1-pro approved (recorded by the developer with the developer token)."), b.evidence.join("\n"));
+});
+
+test("developer gates and plans still recommend accept", () => {
+  for (const item of [{ nextGate: "developer" }, { kind: "plan" as const }]) {
+    assert.equal(briefFor(detail({ item }), []).recommendation.verdict, "accept");
+  }
 });

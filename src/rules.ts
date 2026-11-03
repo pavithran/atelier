@@ -2627,10 +2627,12 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
     return { title: "Waiting for an independent review", detail: `${need} Your own approval does not count as that review.${override}`, action: "review", tone: "ask", passed };
   }
   if (item.state === "submitted" && g.ready) {
+    const held = item.nextGate === "developer" || item.kind === "plan";
+    const next = held ? "Accept it to prepare the local merge." : "Run atelier land to check, review and merge it.";
     const detail = g.overridden
-      ? `Required checks passed for this revision, and you overrode the independent review: ${sentence(g.overridden.reason)} Accept it to prepare the local merge.`
-      : "Required checks passed for this revision. Accept it to prepare the local merge.";
-    return { title: "Ready to accept", detail, action: "accept", tone: "go", passed };
+      ? `Required checks passed for this revision, and you overrode the independent review: ${sentence(g.overridden.reason)} ${next}`
+      : `Required checks passed for this revision. ${next}`;
+    return { title: held ? "Ready to accept" : "Ready to land", detail, action: held ? "accept" : "land", tone: "go", passed };
   }
   if (countingReviews(reviews, bindingOf(item), policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The holder must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
   return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The holder is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };

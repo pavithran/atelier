@@ -41,9 +41,9 @@ test("atelier status lists exactly the rule's owner tasks per project, each once
   assert.equal(lines[beta + 1], "  Nothing waiting on you.");
   assert.deepEqual(listedUnder(lines.slice(beta), 0, "  Waiting for you"), []);
   // Each owner task names its call, says what to do, and links the action.
-  const at = lines.indexOf("    a1  Accept  Task a1");
+  const at = lines.indexOf("    a1  Land  Task a1");
   assert.ok(at > 0);
-  assert.equal(lines[at + 1], "      Accept the revision, whose required checks all passed at its head.");
+  assert.equal(lines[at + 1], "      Land the revision, whose required checks all passed at its head.");
   assert.ok(lines.slice(at, at + 6).includes("      https://atelier.test/p/alpha/a1"));
   assert.ok(lines.includes("      https://atelier.test/p/alpha/ship"));
   // The pipeline is counted, overlapping scopes are counted, neither listed inline.
@@ -76,7 +76,7 @@ test("atelier inbox --json keeps the entry fields older clients read, one entry 
     assert.equal(x.reason, x.why);
   }
   const by = Object.fromEntries(inbox.map((x) => [x.itemId, x]));
-  assert.deepEqual([by.a1.kind, by.a1.reason, by.a1.call], ["accept", "all checks observed passing at this head", "accept"]);
+  assert.deepEqual([by.a1.kind, by.a1.reason, by.a1.call], ["accept", "all checks observed passing at this head", "land"]);
   assert.deepEqual([by.a14.kind, by.a14.reviewer, by.a14.weight, by.a14.call], ["assess", null, 80, "override"]);
   assert.deepEqual(by.a14.unknown, []);
   // What was not read is said per project, for standard error.

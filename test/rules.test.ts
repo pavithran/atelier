@@ -801,7 +801,7 @@ test("decision 2026-10-06: the inbox and the page name the override and its reas
   const waiting = decisionFor(item(), policy, touching, [review("owner")]);
   assert.deepEqual([waiting.title, waiting.action], ["Waiting for an independent review", "review"]);
   assert.match(waiting.detail, /Your own approval does not count as that review\. If no reviewer qualifies, you can accept with an override and say why\.$/);
-  assert.equal(decisionFor(item({ reviewOverride }), policy, touching, []).detail, "Required checks passed for this revision, and you overrode the independent review: No other family is available. Accept it to prepare the local merge.");
+  assert.equal(decisionFor(item({ reviewOverride }), policy, touching, []).detail, "Required checks passed for this revision, and you overrode the independent review: No other family is available. Run atelier land to check, review and merge it.");
   assert.equal(decisionFor(item({ reviewOverride, state: "accepted", acceptedHead: H1 }), policy, touching, []).detail, "You accepted it with the independent review overridden: No other family is available. Run the revision-bound command below in your local checkout.");
 });
 
@@ -997,7 +997,7 @@ test("a review counts only for the head and the acceptance criteria it was bound
   const no = (over: Partial<Review> = {}) => review("zcode/glm-5.3", { criteria: bound, approve: false, note: "unsafe", ...over });
   assert.match(gate(task, policy, touching, [yes(), no()]).blockers.join(), /rejected by zcode\/glm-5.3: unsafe/);
   for (const r of [no({ head: H2 }), no({ criteria: NO_CRITERIA }), no({ withdrawn: { at: T, reason: "x" } })]) assert.equal(gate(task, policy, touching, [yes(), r]).ready, true);
-  assert.equal(decisionFor(task, policy, touching, [yes(), no({ criteria: NO_CRITERIA })]).action, "accept");
+  assert.equal(decisionFor(task, policy, touching, [yes(), no({ criteria: NO_CRITERIA })]).action, "land");
   // The latest standing review per reviewer decides: an approval bound to old
   // criteria after a bound rejection does not lift it.
   assert.equal(gate(task, policy, touching, [no({ by: "codex/gpt-6" }), yes({ criteria: NO_CRITERIA, at: "2026-10-04" })]).ready, false);
@@ -2186,6 +2186,6 @@ test("a post-merge review of a task merged in fast mode may share the builder's 
 
 test("the decision on a task page reads the project's mode: fast mode is ready on the checks, full mode waits for the review (t300)", () => {
   const touching = pass({ changedPaths: ["AGENTS.md"] });
-  assert.equal(decisionFor(item(), policy, [touching], [], undefined, true).action, "accept");
+  assert.equal(decisionFor(item(), policy, [touching], [], undefined, true).action, "land");
   assert.equal(decisionFor(item(), policy, [touching], []).action, "review");
 });

@@ -134,3 +134,20 @@ test("a rejection before the lease ends the landing with the lease never asked f
   assert.equal(f.posts("/land").at(-1).body.failed, true, "the rejection is the review step failing");
   assert.equal(f.posts("/accept").length, 0);
 });
+
+test("developer gate refuses landing before acceptance and permits it afterwards", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.nextGate = "developer";
+  const refused = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(refused.status, 0, refused.output);
+  assert.match(refused.output, /atelier accept t1/);
+  assert.equal(f.box.states.t1, "submitted");
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(grantedTo(f).length, 0);
+  f.box.states.t1 = "accepted";
+  const landed = await f.run(f.checkout, "land", "t1");
+  assert.equal(landed.status, 0, landed.output);
+  assert.equal(f.box.states.t1, "merged");
+});

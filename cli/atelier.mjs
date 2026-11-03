@@ -1661,8 +1661,9 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   } else if (submitted && gate.ready) {
     outcome = "submitted"; exitCode = 0;
     unresolved = "none";
-    accept = "waiting for the developer"; merge = "not yet; it follows acceptance";
-    ownerAction = `accept ${id} at ${short(head)}: atelier accept ${id} --head ${head}`;
+    const held = item.nextGate === "developer" || item.kind === "plan";
+    accept = held ? "waiting for the developer" : "recorded during landing"; merge = held ? "not yet; it follows acceptance" : "run atelier land";
+    ownerAction = held ? `accept ${id} at ${short(head)}: atelier accept ${id} --head ${head}` : `land ${id}: atelier land ${id}`;
     line = "Outcome: submitted, ready for the developer";
   } else {
     outcome = "checked_but_blocked"; exitCode = 3;

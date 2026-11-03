@@ -175,8 +175,8 @@ field-notes 70, open-tool 40), plus `blank-slate` (no tasks) and
 | `task-stale` | `/p/ledger-core/t163` | owner | Claimed, nothing pushed for two days |
 | `task-blocked` | `/p/ledger-core/t166` | owner | Blocked by its holder |
 | `task-failed` | `/p/ledger-core/t188` | owner | Submitted with a failing check |
-| `task-unreadable` | `/p/ledger-core/t191` | owner | Ready to accept; the diff cannot be read from Artifacts |
-| `task-ready` | `/p/ledger-core/t192` | owner | Ready to accept, diff shown |
+| `task-unreadable` | `/p/ledger-core/t191` | owner | Ready to land; the diff cannot be read from Artifacts |
+| `task-ready` | `/p/ledger-core/t192` | owner | Ready to land, diff shown |
 | `task-protected` | `/p/ledger-core/t195` | owner | Protected path: independent review required |
 | `task-sent-back` | `/p/ledger-core/t197` | owner | Checks passed, then sent back (the t435 shape) |
 | `task-accepted` | `/p/ledger-core/t198` | owner | Accepted, waiting for the merge |
@@ -201,7 +201,7 @@ draws each state with one word, its colour role and a shape:
 |---|---|---|---|
 | open | **Ready to start** | neutral | open, ready to start |
 | claimed | **Working** (+ "Stale" qualifier after 12 h with no push) | neutral / caution | in progress, running, Claimed, Needs a handoff |
-| submitted, gate ready | **Ready to accept** | go | In review, accept |
+| submitted, gate ready | **Ready to land** | go | In review, land |
 | submitted, review needed | **Needs review** | ask | Review required, Waiting for an independent review |
 | submitted, rejected at head | **Sent back** | fault | Changes requested, send back, In review |
 | submitted, check failed | **Checks failed** | fault | Checks need attention, In review |

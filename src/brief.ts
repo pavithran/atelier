@@ -10,7 +10,7 @@ import { criteriaOf } from "./criteria.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
 
-export type Verdict = "accept" | "merge" | "review" | "wait" | "send back" | "decide" | "none";
+export type Verdict = "land" | "accept" | "merge" | "review" | "wait" | "send back" | "decide" | "none";
 
 export interface Brief {
   decided: string;
@@ -157,7 +157,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
   // The ledger names a blocking finding on a file the scope lacks (t270).
   const gap = (detail as Detail & { scopeGap?: string }).scopeGap;
   if (gap) lines.push({ rank: 0, text: gap });
-  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Developer acceptance is required.` });
+  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}.` });
   const single = singleFamily(policy);
   if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
   const overridden = overrideOf(detail);
@@ -179,6 +179,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
     : recommendation.verdict === "merge" ? `Merge ${subject}`
     : recommendation.verdict === "send back" ? `Send ${item.id} back ${rev}: ${title}.`
     : recommendation.verdict === "review" ? `Review ${subject}`
+    : recommendation.verdict === "land" ? `Land ${subject}`
     : recommendation.verdict === "accept" ? `Accept ${subject}`
     : recommendation.verdict === "wait" ? `Wait on ${subject}`
     : `Decide ${subject}`;
@@ -218,7 +219,7 @@ function overrideOf(d: Detail) {
   return d.gate.overridden ?? null;
 }
 
-// accept when the gate is ready; merge when accepted; send back when a review
+// land when the gate is ready, or accept a developer-held task or plan; merge when accepted; send back when a review
 // at this head rejects or a required check failed, at the head or on its
 // merge with main where that blocks; review when only an
 // independent approval of a protected change is missing; wait while checks are
@@ -241,7 +242,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   }
   if (readyToAccept(d)) {
     return {
-      verdict: "accept",
+      verdict: item.nextGate === "developer" || item.kind === "plan" ? "accept" : "land",
       reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.`
         : p.notApplicable ? "No required check applies to this revision's changes, and nothing blocks it." : "The project requires no checks, and nothing blocks it.",
     };

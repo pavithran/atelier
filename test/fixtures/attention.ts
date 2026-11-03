@@ -74,7 +74,7 @@ export const ALL_ENTRIES = [...ALPHA_ENTRIES, ...BETA_ENTRIES];
 // owner, in the rule's order, and the pipeline's tasks.
 export const EXPECTED = {
   alpha: {
-    owner: [["a10", "clear-secret"], ["a4", "unblock"], ["a6", "decide-plan"], ["a5", "approve-plan"], ["a1", "accept"], ["a14", "override"], ["a11", "ship"], ["a15", "gave-up"], ["a8", "start-runner"]],
+    owner: [["a10", "clear-secret"], ["a4", "unblock"], ["a6", "decide-plan"], ["a5", "approve-plan"], ["a1", "land"], ["a14", "override"], ["a11", "ship"], ["a15", "gave-up"], ["a8", "start-runner"]],
     pipeline: [["a2", "submitted"], ["a3", "building"], ["a7", "open"], ["a9", "queued"], ["a12", "accepted"]],
     overlaps: [["a2", "a3"]],
   },

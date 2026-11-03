@@ -22,7 +22,7 @@ models qualify; if none qualifies, no separate tier review is requested.
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
 This is the full reference for how a task moves from creation to merge, what
-the gate requires before the developer may accept it, which checks are
+the gate requires before a task may land, which checks are
 allowed, and which checks apply to a change. The README's "Concepts" section
 gives the outline.
 

@@ -479,3 +479,15 @@ needed, an approval already covers the change, or `--no-review` was given.
 ## Integration basis
 
 The integrator runner merges each part onto its plan's branch as `atelier/integrator`. Their commits remain in the integration history. The tick queues a `refresh` job to merge main into the plan's branch when it moves, so later parts branch from an updated basis. For a single task, `atelier land` merges the accepted head into the project's branch in the registered checkout and runs the checks on that merged tree before it pushes. Local verification does not establish a successful production container run.
+
+## Landing without a separate acceptance
+
+For an ordinary task, run `atelier land ID` once the required checks pass
+and a qualifying independent reviewer approves its recorded head. The landing
+checks the gate and accepts that head internally before merging it. No separate
+`atelier accept` command is needed. Ship remains the developer’s control.
+
+To require a developer decision for a task, set
+`atelier edit ID --next-gate developer`. A landing refuses that task until the
+developer runs `atelier accept ID`. Other next-gate text remains descriptive.
+Plans still use their integration and acceptance workflow.

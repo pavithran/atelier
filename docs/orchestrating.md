@@ -225,8 +225,9 @@ A task moves through five hands:
    Ask it explicitly with `atelier review-request tN --reviewer H/M
    --tier-review`. It is never requested automatically. Its approval does
    not replace an independent gate approval.
-5. **The developer** accepts that exact revision and merges it into the
-   registered checkout with `atelier merge`.
+5. **The developer** runs `atelier land` to land the checked and approved
+   revision in the registered checkout. A task marked `--next-gate developer`
+   waits for `atelier accept` first. Ship remains the developer’s control.
 
 Several builders can work at once, each on its own task and branch, `t/N`,
 except on the project's core files: the queue does not start two pieces of
