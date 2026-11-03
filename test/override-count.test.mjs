@@ -58,7 +58,7 @@ test("atelier status keeps override directions but omits the fast-mode line", ()
   // JSON omits the mode line too.
   assert.equal(Object.hasOwn(statusJson(views, "https://atelier.zone")[0], "mode"), false);
   // Neither a missing mode nor a legacy full-mode line is shown.
-  for (const mode of [null, "Mode: full"]) {
+  for (const mode of [undefined, null, "Mode: full"]) {
     const full = [{ ...views[0], mode }];
     assert.doesNotMatch(formatStatus(full), /Mode:/);
     assert.equal(Object.hasOwn(statusJson(full)[0], "mode"), false);
