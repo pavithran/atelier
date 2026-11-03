@@ -26,7 +26,7 @@ export async function landingWorld(t) {
   const root = mkdtempSync(join(tmpdir(), "atelier-land-node-"));
   const gitEnv = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Demo", GIT_AUTHOR_EMAIL: EMAIL, GIT_COMMITTER_NAME: "Demo", GIT_COMMITTER_EMAIL: EMAIL };
   delete gitEnv.GIT_DIR;
-  for (const k of Object.keys(gitEnv)) if (k.startsWith("ATELIER_")) delete gitEnv[k];
+  for (const k of Object.keys(gitEnv)) if (k.startsWith("ATELIER_") && k !== "ATELIER_TEST_LEASE") delete gitEnv[k];
   const git = (cwd, ...args) => execFileSync("git", ["-c", "credential.helper=", ...args], { cwd, env: gitEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   // Git that talks to the server runs asynchronously: the server answers
   // from this same process.
