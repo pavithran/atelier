@@ -100,7 +100,7 @@ test("real wrapper CLI sets capacity, preserves launch tokens, drains and report
   // nonce-launch route, with no replacement of admission or process inspection.
   const wrapper = join(realpathSync(f.root), "load.mjs");
   writeFileSync(wrapper, readFileSync(new URL("../cli/load.mjs", import.meta.url), "utf8")
-    .replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(f.path)));
+    .replace('"/tmp/atelier-test-slots-v2/pool.sqlite"', JSON.stringify(f.path)));
   const cli = (args, slots = "invalid") => {
     const env = { ...process.env, ATELIER_TEST_SLOTS: slots };
     delete env.ATELIER_TEST_LEASE;

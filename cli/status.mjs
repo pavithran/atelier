@@ -124,8 +124,6 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       ...(v.wayBack ? { wayBack: v.wayBack } : {}),
       ...(v.title ? { title: v.title } : {}),
       ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
-      // Fast mode's line while it stands (t629: with the developer's words and the acting model).
-      ...(v.mode ? { mode: v.mode } : {}),
       ...(criteriaJson(v) ? { criteriaReview: criteriaJson(v) } : {}),
       // Each null when not read, which attention.unknown words; never an
       // empty list standing for nothing.
@@ -414,8 +412,6 @@ export function formatStatus(views, waiting = {}) {
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     lines.push(...tickLines(v.stuck, "  "));
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
-    // Fast mode, as status --project prints it (t629).
-    if (v.mode) lines.push(`  ${flatText(v.mode)}`);
     lines.push(...criteriaLines(v));
     lines.push(...stuckLines(v.stuck, "  ", false));
     if (!owner.length) {

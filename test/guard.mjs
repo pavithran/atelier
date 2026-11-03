@@ -67,7 +67,7 @@ process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-te
 {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "atelier-test-pool-")));
   const source = new URL("../cli/load.mjs", import.meta.url);
-  const declaration = 'export const HOST_POOL = "/tmp/atelier-test-slots-v1.sqlite";';
+  const declaration = 'export const HOST_POOL = "/tmp/atelier-test-slots-v2/pool.sqlite";';
   const text = readFileSync(source, "utf8");
   if (text.split(declaration).length !== 2) throw Error("cannot isolate the test scheduler");
   mkdirSync(join(dir, "cli"));

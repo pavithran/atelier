@@ -23,7 +23,7 @@ async function fixture(t, checks = ["exit 0"], isolated = false) {
     symlinkSync(resolve("node_modules"), join(root, "node_modules"));
     const load = join(root, "cli/load.mjs");
     const source = readFileSync(load, "utf8");
-    const isolatedSource = source.replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(join(root, "pool.sqlite")));
+    const isolatedSource = source.replace('"/tmp/atelier-test-slots-v2/pool.sqlite"', JSON.stringify(join(root, "pool.sqlite")));
     assert.notEqual(isolatedSource, source, "the fixture must replace the host pool path");
     writeFileSync(load, isolatedSource);
     executable = join(root, "cli/atelier.mjs");

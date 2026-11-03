@@ -126,9 +126,7 @@ points at it and states the review path (it does not edit the file).
   routes without a named model print the candidates with their reliability
   and refuse. Past a limit the server records the task as stuck and
   reroutes, re-asks, releases and files nothing. You choose, and act by
-  command. The only actions the server takes by itself are the developer's
-  standing instructions in fast mode ("Standing instructions" under "Fast
-  mode").
+  command.
 - Every refusal names its next step (G8): the CLI prints `next:` on a line of
   its own with the exact command that resolves it, or "only the developer
   can: ..." when the step is theirs. Under `--json` or `ATELIER_JSON=1` the
@@ -188,8 +186,8 @@ model registration also accepts the acting name when it resolves to the
 entry being added.
 Every event the write records carries `acting`; the event's
 actor stays the developer's, the model beside it. The verbs that need the
-developer's words (block, unblock, abandon, clear-secret, an override, fast
-mode, an approval on their words) also carry `quote`, and without the words
+developer's words (block, unblock, abandon, clear-secret, an override,
+an approval on their words) also carry `quote`, and without the words
 they are refused (`direction_needed`), since a model is always acting.
 `atelier show ID` lists the task's acts on the developer token, each with
 its model and, where given, the words; `show --json` carries them as
@@ -594,9 +592,7 @@ A runner is offered the oldest review request it can serve, whatever older ones 
 
 The stage tick records facts and acts on no judgment of its own (Atelier 2.0, G6). A queued dispatch no live runner offers is `stage.stuck` at once with the note "no live runner offers H/M", and keeps its model; one left unclaimed past 10 minutes is `stage.stuck` too. Nothing reroutes it: dispatch it again with the model you choose. The limits are named in `src/limits.ts`.
 
-A review claim unanswered for 2 hours (`reviewAnswerHours`) shows in `atelier stuck`; the tick releases nothing. A checked task whose review request stays unclaimed 10 minutes is `stage.stuck` with the request, its reviewer and the time it was asked, and `atelier show ID` prints its age; withdraw it with `atelier review-withdraw` and ask another reviewer with `atelier review-request ID --reviewer H/M`. The only automatic actions are the standing instructions the developer records for a project in fast mode, `atelier decide --standing KEY VALUE` (queue-landable, reask-on-resubmit, post-merge-reviewer, notice-delay). A blocking post-merge finding is a note on the goal, which `atelier file-fix ID --from-note N` files as a task; the server files none.
-
-Only under the developer's standing `queue-landable on` does the stage tick queue a land job (`stage.land-queued`, keyed by task and head) for a task left landable over 5 minutes that is accepted or in a project in fast mode, with no landing lease held. A lease lapsed for 15 minutes queues it again; main moving queues it again at most twice. Without the instruction, or with no live runner that lists `land` and holds the checkout, the task is `stage.stuck` with a note saying why, and `atelier land ID` (or `--queue`) lands it (t253).
+A review claim unanswered for 2 hours (`reviewAnswerHours`) shows in `atelier stuck`; the tick releases nothing. A checked task whose review request stays unclaimed 10 minutes is `stage.stuck` with the request, its reviewer and the time it was asked, and `atelier show ID` prints its age; withdraw it with `atelier review-withdraw` and ask another reviewer with `atelier review-request ID --reviewer H/M`.
 
 To serve a review by hand, claim it as the reviewer with `atelier
 review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
@@ -1325,126 +1321,6 @@ paging remain importable. Older five-table files add no snapshots.
 Moving a project's repository and its open tasks from 1.x (`atelier projects
 move-host`, `atelier migrate tN`), and keeping the old baselines current
 during the bake, are in [Branches](branches.md#moving-a-project-here).
-
-## Fast mode
-
-Atelier has two modes. Full mode is the default: every task is claimed,
-built on its branch, checked, reviewed and landed one at a time, as above.
-Fast mode is the developer's, for when that path cannot run. On 2026-10-13,
-under 1.x, Artifacts failed every new fork, so no task could be claimed, and
-four finished tasks (t575 to t578) were merged by hand, outside the record.
-Fast mode makes that path a recorded one.
-
-Only the developer switches. `atelier mode fast --reason TEXT` puts the project
-in fast mode; the switch is recorded as a standing decision with the
-reason, so every review brief carries it. Fast mode has no end time.
-
-Fast mode lands tasks without the gate, so it is held to what an override
-of the independent review is (Astra's audit of 2026-10-13, finding 3). The
-developer's direction switches to it: the developer's own words in
-`--quote` and the model acting on them in `--as H/M`, with the developer
-token, on any project (t629, the developer's decision of 2026-10-13: their
-recorded direction suffices):
-
-```text
-atelier mode fast --reason "no reviewer can run today" --quote "go to fast mode" --as claude-code/opus-5.5 --project demo
-```
-
-Both are required and both are recorded: on the mode, its standing
-decision and its `mode.fast` event, and in each fast landing's receipt.
-Without them the developer token alone does not switch: the developer
-first presses "Allow fast mode from the command line" on the project's
-Settings page, under their Cloudflare Access sign-in or giving the
-server's confirmation secret (OVERRIDE_SECRET), and then runs `atelier mode
-fast` within 15 minutes; one permission allows one switch. Without either
-the command is refused and says so. A project set up with `atelier init
---no-override` refuses the switch to fast mode and every fast landing.
-Switching back with `atelier mode full` needs no confirmation. A server
-without `projects.developer-direction.v1` takes no `--quote`; the command
-says so, and the Settings page is the way until it is deployed.
-`atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`,
-followed for a switch on the developer's direction by their words and the
-model that relayed them, and the project's Overview says so while fast
-mode stands.
-
-### Runner builds in fast mode
-
-A runner's build in fast mode claims its task and branch, as every build
-does. The fork-less build of 1.x (t589), which took a dispatched build with
-`atelier fast take` and reported its commit with `atelier fast ready`, was
-removed in t228. Fast mode is a flag on the one path, and on that path fast mode lands now and reviews
-after (t300). The gate counts a task ready when its required checks pass at
-its head and no secret flag stands; the independent review is not required
-before the merge, so `atelier land` (and the lander that runs it for a
-queued task) asks none, and merges. A rejection already standing at the head
-still blocks, as does a failed check. The criteria review is skipped.
-
-Once the merge is recorded, the post-merge review is owed until a verdict
-stands. The server asks it as it records the merge only under the
-developer's standing `post-merge-reviewer` instruction, of the reviewer it
-names; otherwise `atelier land --reviewer H/M` asks it of that reviewer, and
-without one the landing says the review is owed and how to ask it. The task
-stays merged either way; ask it with `atelier review-request tN --reviewer
-H/M`. That reviewer may share the builder's family; the review records
-`same-family (fast mode)`. A blocking finding is a note on the task, and
-`atelier file-fix tN --from-note N` files it as a task; the server files
-none. A merge made in fast mode by
-`land`, the lander or `atelier merge` is listed by `atelier fast status` and
-by the switch back to full mode, as a landing with a receipt is, and the
-review it is owed may come from the builder's family. Full mode is unchanged:
-the review comes before the merge.
-
-- The queue marks no build fast. The routes `POST items/tN/fast-take` and
-  `fast-ready` remain only for a runner older than t228: each answers 409
-  `not_fast_build` and records nothing, and that runner falls back to the
-  claim.
-- The server writes no `item.fast_taken` or `item.fast_ready`. Events
-  already recorded still replay: a standing `item.fast_ready` shows its task
-  as built, in `atelier fast status` as a `tN=SHA` line and on the task
-  page, until the task lands. Record its merge as before.
-- The route group is the named capability `runners.fast-build.v1`, kept so
-  `atelier fast status` can name what it reads.
-
-### Standing instructions
-
-In fast mode, and only there, the developer may let the server act by itself
-in four named ways (G6, `src/standing.ts`). Each is a standing decision
-recorded with the developer's words, `atelier decide --standing KEY VALUE
---quote "…" --as H/M`, listed by `atelier decisions` and withdrawn as any
-decision is (`atelier decisions withdraw dN --note "…"`):
-
-- `queue-landable on`: the stage tick queues the land job of a task found
-  landable past its limit, for a live lander runner.
-- `reask-on-resubmit on`: a review request withdrawn because the task's head
-  moved is asked again of the same reviewer at the new head, once the gate
-  needs it.
-- `post-merge-reviewer H/M`: the post-merge review of a fast landing is asked
-  of that reviewer as its merge is recorded.
-- `notice-delay MINUTES`: a stuck episode is sent to the developer's channel
-  once it has been open that long (60 minutes without it).
-
-A project that leaves fast mode keeps the records, and none of them acts
-until it is in fast mode again. Without them nothing happens by itself: a
-landable task is a fact that `atelier land` acts on, a withdrawn review is
-asked again by `atelier review-request`, and a post-merge review stays owed
-until it is asked.
-
-There is no command that lands a batch. The developer merges a reported
-build in their own checkout of main, runs the checks they trust, publishes
-main, and then records the merge with `atelier record-merge` (see its help
-for the review it needs). A task recorded that way is shown as merged
-outside Atelier, recorded afterwards, with the reviews as the developer
-gave them. `atelier fast land` and `atelier fast record` were removed in
-t767; the landings they made stay in the ledger and in `atelier fast
-status`, with the review state of each.
-
-`atelier fast status` lists every fast landing with its review's state,
-then every build reported ready as a `tN=SHA` line and the command that
-records a merge. `atelier mode full` (or `atelier fast close`) returns the
-project to full mode, withdraws the decision and prints the same list. The
-task page names a fast landing as "Landed in fast mode" with its receipt,
-and a ready build as "Ready to merge at SHA"; the showcase counts fast
-landings apart from gated merges.
 
 ## Judging a review
 
