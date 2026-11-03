@@ -806,15 +806,7 @@ export async function runLand(io) {
         return NOT_LANDED;
       }
       await triageStillStands(io, { triaged, id, itemPath, head, retry: triageRetry(io, triage, id) });
-      // In fast mode (t300) the gate asks no review before the merge: the
-      // review is asked after it (askPostMergeReview), and owed until a
-      // verdict stands. The step says so, as a fact the record keeps (G1).
-      const fast = d0.mode?.mode === "fast";
-      const reviewed = fast ? undefined : await reviewStep(io, { id, name, itemPath, reviewer, head, record, oneShot: !noWait });
-      if (fast) {
-        print(`${name} is in fast mode: ${id} lands on its passing checks, and its independent review is asked after the merge.`);
-        await record("review", 0, { skipped: true, fast: true });
-      }
+      const reviewed = await reviewStep(io, { id, name, itemPath, reviewer, head, record, oneShot: !noWait });
       await recordLandRequest(io, itemPath, id);
       if (reviewed === "asked") {
         print(`${id} is submitted at ${short(head)} with its review asked and its land request recorded. The landing lease was never taken: the stage tick queues the land job once the gate counts an approval, and a runner that holds ${name}'s registered checkout runs it; or run atelier land ${id} again then.`);
@@ -891,28 +883,6 @@ export async function runLand(io) {
   // When another landing took the lease over, release() has said where it
   // stands; claiming a release here would say what did not happen.
   if (takenOverBy === null) print(`The landing lease for ${name} is released; another task may merge.`);
-  await askPostMergeReview(io, { itemPath, id, reviewer });
-}
-
-// A task merged in fast mode owes its independent review (t300): asked once
-// the merge is recorded, of the reviewer named or the one the server picks,
-// who may be of the builder's family. A failed ask does not undo the merge;
-// it says the review is owed and how to ask it. The server asks it itself as
-// it records the merge (t331); when that request stands, this asks nothing,
-// so a named reviewer does not replace it.
-async function askPostMergeReview(io, { itemPath, id, reviewer }) {
-  const d = await io.request("GET", itemPath);
-  if (d.mode?.mode !== "fast" || d.item?.state !== "merged") return;
-  if (d.liveReview) {
-    io.print(`Post-merge review of ${id} was requested by the server of ${d.liveReview.reviewer} (request ${d.liveReview.request}); it is owed until a verdict stands.${reviewer && reviewer !== d.liveReview.reviewer ? ` To ask ${reviewer} instead, run atelier review-request ${id} --reviewer ${reviewer}.` : ""}`);
-    return;
-  }
-  try {
-    const ask = await io.request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
-    io.print(`Post-merge review of ${id} requested${ask.reviewer ? ` of ${ask.reviewer}` : ""}${ask.requested === false ? " (a request was already open)" : ""}; it is owed until a verdict stands.`);
-  } catch (error) {
-    io.print(`Post-merge review of ${id} is owed and could not be requested: ${error.message}. Ask it with atelier review-request ${id} --reviewer H/M.`);
-  }
 }
 
 // What a duration reads as in a message.
@@ -972,8 +942,7 @@ async function followLand(io, { detail, itemPath, noWait }) {
   const { args, id, request, print } = io;
   const reviewer = args.reviewer;
   let ask = null;
-  if (detail.item.state === "submitted" && detail.mode?.mode === "fast") print(`${io.name} is in fast mode: no review is asked before the merge of ${id}; it is asked after it.`);
-  else if (detail.item.state === "submitted") {
+  if (detail.item.state === "submitted") {
     // An approval by the named reviewer already recorded at the head settles
     // the review, as the landing's own review step does: no request is posted.
     const held = await settledByRecorded(io, { detail, itemPath, head: detail.item.head, reviewer });
