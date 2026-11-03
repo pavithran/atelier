@@ -3711,6 +3711,7 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
     // polls the queue and the claim check read at that moment (t540).
     const [offers, runs, projects] = await Promise.all([
       read("runner offers", () => index(env).runnerOffers()),
+      // Give-up findings have no age cutoff; old unresolved runs still count.
       read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
       read("project index", () => index(env).projects()),
     ]);
@@ -3718,10 +3719,15 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
     const active: string[] = [];
     let jobsAvailable = projects !== null;
     if (projects) await Promise.all(projects.map(async (p) => {
-      const other = p.key === ref.key ? snapshot : await read<Snapshot>(`active jobs ${p.name}`, () => ledgerOf(env, p).stuckSnapshot());
-      if (!other) { jobsAvailable = false; return; }
-      for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
-      for (const r of other.reviews) if (r.runner) active.push(r.runner);
+      if (p.key !== ref.key) {
+        const runners = await read(`active jobs ${p.name}`, () => ledgerOf(env, p).stuckActiveRunners());
+        if (runners === null) jobsAvailable = false;
+        else active.push(...runners);
+        return;
+      }
+      if (!snapshot) { jobsAvailable = false; return; }
+      for (const i of snapshot.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
+      for (const r of snapshot.reviews) if (r.runner) active.push(r.runner);
     }));
   return stuckReport(project, origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names);
 }

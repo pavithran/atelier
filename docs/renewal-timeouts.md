@@ -1,10 +1,37 @@
 # Renewal and checkout lease timeouts (t466)
 
-The cause of the November 2–3, 2026 production timeouts is still unknown.
-This investigation uses revision `1901706a`. It does not read the Studio's
-production database or atelierd logs: this task permits access only inside
-its workspace. It cannot reproduce PGGB or compare the Studio with PGGB
-running and paused. No server fix is justified by this evidence yet.
+## November 3: the ten-minute stalls (t474)
+
+The ten-minute `recordStuckEpisodes` job caused recurring server stalls by
+reading every project’s entire event history once for each project. The
+other-project reads were used only to identify runners holding active jobs.
+SQLite executes synchronously on the server thread; these repeated reads
+blocked unrelated requests and allocated large event arrays.
+
+Production measurements on November 3 recorded `/api/version` taking 15.8,
+10.0, 19.2, 21.8 and 21.7 seconds at 12:50, 13:00, 13:10, 13:20 and 13:30,
+respectively, versus about 0.1 seconds otherwise. Memory rose from about
+930 MB to about 1.9 GB during the stalls. There was no corresponding stall
+at the intervening five-minute marks, which rules out the stage tick as the
+cause of this recurring pattern. This does not explain every timeout on
+November 2–3.
+
+The fix reads only claimed task runners with owners and claimed review
+runners from other projects, without reading their events. The selected
+project retains complete histories for live, unblocked tasks. It also keeps
+ship start/completion events because an unresolved ship step can be old,
+and failed check events because the last-day list includes terminal tasks.
+Run reports remain unbounded: unresolved runner give-ups have no age cutoff,
+so limiting them to recent reports would change the report’s findings.
+
+The effect on production latency and memory can only be confirmed after
+this fix ships. The local equivalence tests cannot reproduce the production
+database size, traffic, namespace queue or event-loop and garbage-collection
+behavior. Run the before/after production smoke check described below.
+
+The earlier investigation below used revision `1901706a` and synthetic data;
+it did not read the Studio’s production database or atelierd logs and did
+not establish the cause of every reported timeout.
 
 ## Method
 
@@ -62,13 +89,12 @@ delay every request; a long asynchronous call can delay other calls to the
 same ledger without blocking the whole thread. Neither observation proves
 what delayed production's `/api/version` request.
 
-`stuckSnapshot` reads the entire project event history and its callers in
-`src/index.ts` may read other active projects too. `events` converts every
-returned row and reads the text cutover metadata for each row. These are
-candidates for profiling on a production copy, not established causes of
-the 60-second timeout. `stageTick` reads stage events and each live owned
-task's history; `situationFacts` reads active task facts. The probe measures
-these paths separately from review and checkout renewal.
+Before t474, `stuckSnapshot` read the entire project event history and
+`readStuckReport` repeated that read for every other project. The local
+probe below predates the fix and measures that full-history path. `stageTick`
+reads stage events and each live owned task’s history; `situationFacts`
+reads active task facts. The probe measures these separately from review
+and checkout renewal.
 
 ## Studio evidence still needed
 
@@ -89,7 +115,7 @@ test as the before/after Studio smoke check.
 
 The referenced house style was unavailable in this workspace and was not read.
 
-## Validation
+## Earlier investigation validation (t466)
 
 No server behavior, contract, route or UI changed; there is no fix with a
 red/green test pair. All commands used the supplied host slot wrapper:
