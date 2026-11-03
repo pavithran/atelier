@@ -19,7 +19,7 @@ async function refused(p: Promise<unknown>) {
 }
 async function setup(name: string) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:boundary-${name}`));
-  await L.setProject({ name, repo: name, policy: { checks: [], protected: [] }, createdAt: AT }, "owner");
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
   await L.poolChanged([model]);
   const { id } = await L.newItem("Build it", ["src/**"], "owner");
   return { L, id };

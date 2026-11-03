@@ -37,7 +37,7 @@ export function studioSuite({ cwd = process.cwd(), env = process.env, run = spaw
     const made = run(SHIP_GIT, ["bundle", "create", bundle, "HEAD"], { cwd, stdio: "inherit" });
     if (made.error || made.status !== 0) throw new Error("Cannot snapshot the shipped head.");
     const r = run("/usr/bin/ssh", ["-o", "BatchMode=yes", "--", "ai-studio",
-      `PATH=/opt/homebrew/bin:/usr/local/bin:$PATH node -e ${quote(remoteSuite)} ${head}`],
+      `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" node -e ${quote(remoteSuite)} ${head}`],
       { input: readFileSync(bundle), stdio: ["pipe", "inherit", "inherit"], env, timeout: 59 * 60_000 });
     if (r.error || r.status !== 0) throw new Error(`Studio full suite failed: ${r.error?.message ?? r.status}`);
   } finally { try { unlinkSync(bundle); } catch (e) { if (e.code !== "ENOENT") throw e; } }

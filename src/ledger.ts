@@ -3793,6 +3793,7 @@ export class Ledger extends DurableObject<Env> {
   // only for a dispatch that will be made.
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403, `only the developer can: atelier dispatch ${id}`);
+    if (!this.project().policy.checks.length) throw new RuleError("checks_required", "this project has no required checks; register one with atelier init --check CMD before dispatching a build", 409, "atelier init --check CMD");
     if (input) this.refuseLiveHolder(id, input);
     const item = this.item(id);
     assertNotTerminal(item);

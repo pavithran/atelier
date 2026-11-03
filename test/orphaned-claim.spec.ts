@@ -15,7 +15,7 @@ const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => wor
 
 async function setup(name: string, runner: string | null) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const record = { name, repo: name, createdAt: new Date().toISOString(), policy: { checks: [], protected: [], coreFiles: ["src/**"] } };
+  const record = { name, repo: name, createdAt: new Date().toISOString(), policy: { checks: ["npm test"], protected: [], coreFiles: ["src/**"] } };
   await L.setProject(record, "owner");
   await index().registerProject(record);
   await L.newItem("Claimed", ["src/**"], "owner");

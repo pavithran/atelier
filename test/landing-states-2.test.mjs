@@ -325,21 +325,19 @@ function side(f, dir, files, message) {
 }
 
 
-test('a merge onto the baseline that would regenerate outputs nobody checked or reviewed is refused, and nothing is merged', async (t) => {
+test('a merge onto the baseline commits declared regenerated outputs and keeps acceptance', async (t) => {
   const f = await landing(t);
   declareMerges(f);
   side(f, f.workspace, { 'in/task.txt': 'task\n', 'gen.txt': 'base\ntask\n' }, 'Task adds an input');
   side(f, f.checkout, { 'in/main.txt': 'main\n', 'gen.txt': 'base\nmain\n' }, 'Main adds an input');
-  const before = { at: f.at(), tip: f.tip() };
+  const accepted = f.box.acceptedHead;
   const r = await f.run('merge', 't1');
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /merging t1 would regenerate gen\.txt, since the baseline and the accepted revision both changed what its generator reads \(gen\), and regenerated outputs differ from the accepted revision's: gen\.txt \(regenerated differently from the accepted revision\)\. Outputs that are not the accepted revision's were never checked or reviewed, so nothing was merged and t1 stays accepted\. The generators' logs and the comparison are in \S+merge-logs\. The developer can send it back to a runner with atelier dispatch t1 --job merge-main, or hand it to a builder with atelier handoff t1 --to H\/M: main is merged into its workspace there/);
-  // Not atelier land, which refuses an accepted task (cli/land.mjs).
-  assert.doesNotMatch(r.output, /atelier land t1/);
-  assert.deepEqual({ at: f.at(), tip: f.tip() }, before);
-  assert.equal(existsSync(join(f.checkout, '.git', 'MERGE_HEAD')), false);
-  assert.equal(f.journal(), null);
-  assert.equal(f.box.state, 'accepted');
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Regenerated declared outputs.*without another review/);
+  assert.equal(readFileSync(join(f.checkout, 'gen.txt'), 'utf8'), 'base\nmain\ntask\n');
+  assert.equal(f.box.acceptedHead, accepted);
+  assert.equal(f.tip(), f.at());
+  assert.equal(f.box.state, 'merged');
 });
 
 

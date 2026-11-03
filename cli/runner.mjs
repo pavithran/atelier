@@ -48,6 +48,7 @@ import { checkLimits, limitMs, minutesText, stopLine, stopOf } from "../src/chec
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 import { redactKeys } from "../src/models/pool.ts";
+import { transientRead } from "./transient-read.mjs";
 
 // The runner's one way to the server (t478): every call the runner process
 // makes itself goes through `send`, under a name RUNNER_CALLS in
@@ -90,11 +91,14 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
     const owner = acting && call.method === "POST" && call.credential !== "public" && name !== "config" ? await identityOf(signal) : null;
     const headers = call.credential === "public" ? {}
       : { authorization: `Bearer ${credential}`, ...(call.actor === "none" ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), ...(owner && !owner.runner && !owner.actor ? { "x-atelier-acting": acting } : {}), "content-type": "application/json" };
-    const timeout = AbortSignal.timeout(timeoutMs);
-    const res = await fetch(`${base}/api${callPath(call, params)}`, {
-      method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(redirect ? { redirect } : {}),
-      ...(call.method === "POST" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
-    });
+    const attempt = () => {
+      const timeout = AbortSignal.timeout(timeoutMs);
+      return fetch(`${base}/api${callPath(call, params)}`, {
+        method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(redirect ? { redirect } : {}),
+        ...(call.method === "POST" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
+      });
+    };
+    const res = name === "review-renew" || call.method === "GET" ? await transientRead(attempt, signal) : await attempt();
     let data = null;
     try { data = await res.json(); } catch { /* an answer that is not JSON carries no detail */ }
     return { status: res.status, ok: res.ok, data, incomplete: res.headers.get("x-atelier-incomplete") };

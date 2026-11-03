@@ -44,7 +44,7 @@ async function serve() {
       return { code: 0, stdout, stderr };
     } catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
   };
-  assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
+  assert.equal((await api("PUT", "/projects/demo", { checks: ["npm test"] })).status, 200);
   // A claim on the Node server makes the task's branch from the project's
   // (task 5), so the project's branch holds a commit first, pushed by the
   // owner, as atelier init pushes it.

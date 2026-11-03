@@ -387,3 +387,14 @@ test("init sends an explicit initial-history clearance and its owner quote", () 
   assert.equal(put.clearSecret, "dummy fixture");
   assert.equal(put.quote, "clear the fixture");
 }));
+
+test("init warns when the returned policy has no checks and names --check", () => fixture(({ command }) => {
+  const empty = command(["init"]);
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.match(empty.stdout, /Warning:.*no required checks.*--check/);
+  const checked = command(["init", "--check", "npm test"]);
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.doesNotMatch(checked.stdout, /Warning:.*no required checks/);
+  const reset = command(["init", "--reset"]);
+  assert.match(reset.stdout, /Warning:.*no required checks.*--check/);
+}));

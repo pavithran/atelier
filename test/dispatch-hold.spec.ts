@@ -38,7 +38,7 @@ it("traverses every blocker, distinguishing convergent blocked chains from cycle
 
 async function setup(name: string, refuseOverlap = false) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const record = { name, repo: name, createdAt: at, policy: { checks: [], protected: [], coreFiles: ["src/**"], refuseOverlap } };
+  const record = { name, repo: name, createdAt: at, policy: { checks: ["git status"], protected: [], coreFiles: ["src/**"], refuseOverlap } };
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("First", ["src/**"], "owner");
@@ -92,7 +92,7 @@ it("real authenticated queue routes offer submitted/accepted work unless landing
   };
   expect(await offered()).not.toContain("t2");
   await L.recordPush("t1", A, "a".repeat(40), "a".repeat(40));
-  await L.addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head: "a".repeat(40), passed: true, by: "owner", at, changedPaths: ["src/a.ts"] });
+  await L.addEvidence({ itemId: "t1", claim: "git status", grade: "observed", head: "a".repeat(40), passed: true, by: "owner", at, changedPaths: ["src/a.ts"] });
   await L.submit("t1", A);
   expect(await offered()).toContain("t2");
   await L.accept("t1", "owner");
