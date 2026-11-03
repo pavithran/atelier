@@ -101,9 +101,10 @@ test("a cancel while the landing merges is refused, naming the step, and the lan
   const { id } = await w.task({ files: { "task.txt": "task\n" } });
   assert.equal((await w.cli(["land", id, "--queue"])).status, 0);
   const main = await w.tip();
-  const landing = w.cli(["land", id]);
-  for (let i = 0; i < 600 && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
-  assert.ok(existsSync(entered), "the check on the merged tree started");
+  let finished;
+  const landing = w.cli(["land", id]).then((r) => (finished = r));
+  for (let i = 0; i < 600 && !finished && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
+  assert.ok(existsSync(entered), `the check on the merged tree started: ${finished?.output ?? "still running"}`);
   const refused = await w.cli(["land", id, "--queue", "--cancel"]);
   assert.notEqual(refused.status, 0, refused.output);
   assert.match(refused.output, /landing_past_merge: t\d+'s landing \(attempt 1\) is at its merge-main step, past the merge, so it is not cancelled or interrupted/);

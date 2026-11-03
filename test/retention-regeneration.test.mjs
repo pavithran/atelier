@@ -1,15 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { localGit, mergeThrough } from "../cli/merge-pipeline.mjs";
 import { openReader } from "../src/git/reader.mjs";
 import { readRetention } from "../src/retention.ts";
 import { retentionVerdict } from "../src/rules.ts";
 
-test("replay carries clean generation and refuses hand edits, conflicts, failures and drift", async () => {
-  const dir = resolve(".scratch", `retention-${process.pid}`);
-  mkdirSync(dir, { recursive: true });
+test("replay carries clean generation and refuses hand edits, conflicts, failures and drift", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-retention-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (args, opts = {}) => localGit(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { cwd: dir, ...opts });
   git(["init", "-q", "-b", "main"]);
   mkdirSync(`${dir}/bin`); mkdirSync(`${dir}/in`);

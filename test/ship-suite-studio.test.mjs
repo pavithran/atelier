@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { remoteSuite, studioSuite } from "../scripts/ship-suite-studio.mjs";
 import { SHIP_GIT } from "../scripts/ship-studio.mjs";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, writeFileSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 
 test("the documented ship configuration matches the shipped configuration", () => {
  const docs = readFileSync("docs/ship.md", "utf8").split("### From `docs/atelier/ship.json`")[1];
@@ -13,8 +14,8 @@ test("the documented ship configuration matches the shipped configuration", () =
 });
 
 test("studioSuite transfers the bundle over SSH and cleans up on success and failure", () => {
- const cwd = resolve(".scratch/studio-suite-unit");
- mkdirSync(cwd, { recursive: true });
+ const cwd = mkdtempSync(join(tmpdir(), "atelier-studio-suite-unit-"));
+ after(() => rmSync(cwd, { recursive: true, force: true }));
  const git = (...args) => {
   const r = spawnSync(SHIP_GIT, args, { cwd, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
@@ -55,8 +56,7 @@ test("studioSuite transfers the bundle over SSH and cleans up on success and fai
 });
 
 test("Studio snapshot runs checkout, install and the whole suite in order; failures propagate", () => {
- const root = resolve(".scratch/ship-suite-test");
- mkdirSync(root, { recursive: true });
+ const root = mkdtempSync(join(tmpdir(), "atelier-ship-suite-test-"));
  after(() => rmSync(root, { recursive: true, force: true }));
  const log = resolve(root, "calls");
  for (const command of ["git", "npm"]) {
@@ -80,8 +80,7 @@ if [ "$1" = "$FAIL_AT" ]; then exit 7; fi
 });
 
 test("the transferred bundle checks out the exact source commit", () => {
- const root = resolve(".scratch/ship-bundle-test");
- mkdirSync(root, { recursive: true });
+ const root = mkdtempSync(join(tmpdir(), "atelier-ship-bundle-test-"));
  after(() => rmSync(root, { recursive: true, force: true }));
  const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
  const bundle = resolve(root, "source.bundle");
