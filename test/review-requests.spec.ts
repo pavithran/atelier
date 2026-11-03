@@ -1655,14 +1655,14 @@ it("the stuck report ages a renewed review from its claim, and a re-claim after 
       expect(waiting.request).not.toBe(claim.request);
       const again = await instance.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
       const restart = now;
-      for (let elapsed = 30_000; elapsed <= 2 * 3_600_000; elapsed += 30_000) {
+      for (let elapsed = 30_000; elapsed <= 3_600_000; elapsed += 30_000) {
         now = restart + elapsed;
         instance.renewReview(partId, GPT, again.request);
       }
       expect(reviews()).toEqual([]);
       now += 1;
       instance.renewReview(partId, GPT, again.request);
-      expect(reviews()).toMatchObject([{ subject: partId, reason: `review request ${again.request} claimed by ${GPT}`, since: new Date(restart).toISOString() }]);
+      expect(reviews()).toMatchObject([{ subject: partId, reason: expect.stringContaining(`review request ${again.request} claimed by ${GPT}; no verdict for 60 minutes; last event`), since: new Date(restart).toISOString() }]);
     } finally { Date.now = realNow; }
   });
 });

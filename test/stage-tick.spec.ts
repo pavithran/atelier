@@ -114,5 +114,5 @@ it("the stuck episodes of t196 keep working beside the stage tick", async () => 
   const id = await task("st-g", "Silent");
   await L("st-g").claim(id, AGENT);
   await scheduled({ scheduledTime: Date.now() + 7 * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, testEnv);
-  expect((await I().stuckEpisodes("st-g")).map((t) => [t.item, t.kind])).toEqual([[id, "opened"]]);
+  expect((await I().stuckEpisodes("st-g")).map((t) => [t.item, t.cause.split(":")[0], t.kind])).toEqual([[id, "task", "opened"], [id, "task-idle", "opened"]]);
 });

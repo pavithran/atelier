@@ -52,3 +52,8 @@ test("episodes are kept apart by item and cause, and a finding that ages stays o
   assert.deepEqual(s.tick([task(8), { ...orphan, subject: "t2" }], true, "t2").map((t) => [t.kind, t.item, t.cause]), [["cleared", "t1", "orphaned-claim"]]);
   assert.equal(causeOf(task(7)), causeOf(task(30)));
 });
+
+test("review detail preserves its episode as elapsed minutes and task events change", () => {
+  const original = { kind: "review", reason: "review request 1 claimed by reviewer/model" };
+  for (const minutes of [60, 61]) assert.equal(causeOf({ ...original, reason: `${original.reason}; no verdict for ${minutes} minutes; last event item.noted at now` }), causeOf(original));
+});

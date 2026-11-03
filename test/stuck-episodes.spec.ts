@@ -44,16 +44,16 @@ it("repeated ticks open one episode, resolution clears it, and a recurrence open
   await tick(7);
   await tick(7.2);
   await tick(8);
-  expect(await episodes("ep-a")).toEqual([[id, "task", 1, "opened"]]);
+  expect(await episodes("ep-a")).toEqual([[id, "task", 1, "opened"], [id, "task-idle", 1, "opened"]]);
   // The holder gives it up: the finding no longer shows, so the episode clears, once.
   await L("ep-a").release(id, AGENT, "stop");
   await tick(9);
   await tick(9.2);
-  expect(await episodes("ep-a")).toEqual([[id, "task", 1, "opened"], [id, "task", 1, "cleared"]]);
+  expect(await episodes("ep-a")).toEqual([[id, "task", 1, "opened"], [id, "task-idle", 1, "opened"], [id, "task", 1, "cleared"], [id, "task-idle", 1, "cleared"]]);
   // Claimed again and silent again: a new episode, not the first reopened.
   await L("ep-a").claim(id, AGENT);
   await tick(16);
-  expect(await episodes("ep-a")).toEqual([[id, "task", 1, "opened"], [id, "task", 1, "cleared"], [id, "task", 2, "opened"]]);
+  expect(await episodes("ep-a")).toEqual([[id, "task", 1, "opened"], [id, "task-idle", 1, "opened"], [id, "task", 1, "cleared"], [id, "task-idle", 1, "cleared"], [id, "task", 2, "opened"], [id, "task-idle", 2, "opened"]]);
 });
 
 it("a read that fails part way keeps the episode open; the next complete read clears it", async () => {
@@ -68,9 +68,9 @@ it("a read that fails part way keeps the episode open; the next complete read cl
   } } } as unknown as typeof env;
   await tick(8, failing);
   await tick(8.2, failing);
-  expect(await episodes("ep-b")).toEqual([[id, "task", 1, "opened"]]);
+  expect(await episodes("ep-b")).toEqual([[id, "task", 1, "opened"], [id, "task-idle", 1, "opened"]]);
   await tick(9);
-  expect(await episodes("ep-b")).toEqual([[id, "task", 1, "opened"], [id, "task", 1, "cleared"]]);
+  expect(await episodes("ep-b")).toEqual([[id, "task", 1, "opened"], [id, "task-idle", 1, "opened"], [id, "task", 1, "cleared"], [id, "task-idle", 1, "cleared"]]);
 });
 
 it("renaming a project with an open finding keeps its episode: no second one opens and it still clears", async () => {
@@ -79,10 +79,10 @@ it("renaming a project with an open finding keeps its episode: no second one ope
   await tick(7);
   expect((await call("POST", "/projects/ep-c/rename", { to: "ep-c-new" })).status).toBe(200);
   await tick(7.5);
-  expect(await episodes("ep-c")).toEqual([[id, "task", 1, "opened"]]);
+  expect(await episodes("ep-c")).toEqual([[id, "task", 1, "opened"], [id, "task-idle", 1, "opened"]]);
   await L("ep-c").release(id, AGENT, "stop");
   await tick(9);
-  expect(await episodes("ep-c")).toEqual([[id, "task", 1, "opened"], [id, "task", 1, "cleared"]]);
+  expect(await episodes("ep-c")).toEqual([[id, "task", 1, "opened"], [id, "task-idle", 1, "opened"], [id, "task", 1, "cleared"], [id, "task-idle", 1, "cleared"]]);
   // Nothing was recorded under either name.
   expect(await episodes("ep-c-new")).toEqual([]);
 });
@@ -99,8 +99,8 @@ it("a released name taken by a new project shares no history with the project th
   const fresh = await claimed(key, "New stuck work");
   await tick(7.5);
   // Each project has its own episode 1; the new project's was not counted after the old one's.
-  expect(await episodes("ep-d")).toEqual([[old, "task", 1, "opened"]]);
-  expect(await episodes(key)).toEqual([[fresh, "task", 1, "opened"]]);
+  expect(await episodes("ep-d")).toEqual([[old, "task", 1, "opened"], [old, "task-idle", 1, "opened"]]);
+  expect(await episodes(key)).toEqual([[fresh, "task", 1, "opened"], [fresh, "task-idle", 1, "opened"]]);
 });
 
 // Scheduled runs can overlap (a run may last 15 minutes, the interval is 10), so an
