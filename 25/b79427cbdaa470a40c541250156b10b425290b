@@ -1,0 +1,29 @@
+atelier atelier/t465 "A runner replaces a workspace with no history in common with its branch"
+accepted head ce8d2fd04d4bceb75491effd6432ecc7aed56771
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T17:26:25.018Z
+REVIEW approve by antigravity/gemini-4-argon at ce8d2fd04d4bceb75491effd6432ecc7aed56771, recorded by antigravity/gemini-4-argon
+2026-11-03T15:37:47.940Z pavi item.created
+2026-11-03T15:37:47.940Z claude-code/opus-5.5 criteria.revised
+2026-11-03T15:38:01.375Z pavi item.dispatched
+2026-11-03T15:49:42.301Z pavi item.undispatched
+2026-11-03T15:49:48.977Z pavi item.dispatched
+2026-11-03T17:14:28.806Z codex/gpt-6.1-sol item.claimed
+2026-11-03T17:14:28.848Z codex/gpt-6.1-sol workspace.created
+2026-11-03T17:26:21.258Z codex/gpt-6.1-sol push.observed
+2026-11-03T17:26:25.046Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T17:26:25.250Z codex/gpt-6.1-sol item.submitted
+2026-11-03T17:31:18.654Z atelier/orchestrator refresh.queued
+2026-11-03T17:31:29.271Z pavi land.start
+2026-11-03T17:31:31.331Z pavi review.requested
+2026-11-03T17:31:31.331Z pavi review.tier_needed
+2026-11-03T17:31:31.756Z pavi land.review
+2026-11-03T17:31:31.918Z pavi land.requested
+2026-11-03T17:31:56.069Z antigravity/gemini-4-argon review.claimed
+2026-11-03T17:44:18.755Z antigravity/gemini-4-argon review.approved
+2026-11-03T17:44:23.802Z pavi item.accepted
+2026-11-03T17:44:24.827Z pavi land.start
+2026-11-03T17:44:24.967Z pavi landing.leased
+2026-11-03T17:44:25.069Z pavi land.lease
+2026-11-03T17:44:26.322Z pavi checkout.leased
