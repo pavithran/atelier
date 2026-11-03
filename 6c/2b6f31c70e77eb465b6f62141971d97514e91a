@@ -1,0 +1,41 @@
+atelier atelier/t476 "Remove the fast-mode docs and status mode lines"
+accepted head e54335c03133e6c55d9ca3cd8094ff4fe534ef83
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T20:33:04.921Z
+REVIEW approve by antigravity/gemini-4-argon at e54335c03133e6c55d9ca3cd8094ff4fe534ef83, recorded by antigravity/gemini-4-argon
+CHECKED TREE a61ffcf5e46eb5df23efbfdcc45ce29c41e3d668: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-03T19:41:14.908Z pavi item.created
+2026-11-03T19:41:14.908Z claude-code/opus-5.5 criteria.revised
+2026-11-03T19:42:30.290Z pavi item.dispatched
+2026-11-03T19:43:00.151Z codex/gpt-6.1-sol item.claimed
+2026-11-03T19:43:00.191Z codex/gpt-6.1-sol workspace.created
+2026-11-03T19:44:46.090Z codex/gpt-6.1-sol push.observed
+2026-11-03T19:46:12.960Z codex/gpt-6.1-sol push.observed
+2026-11-03T19:46:15.517Z codex/gpt-6.1-sol item.released
+2026-11-03T19:46:36.924Z codex/gpt-6.1-sol item.claimed
+2026-11-03T19:47:36.707Z codex/gpt-6.1-sol push.observed
+2026-11-03T19:49:04.480Z codex/gpt-6.1-sol push.observed
+2026-11-03T19:49:06.943Z codex/gpt-6.1-sol item.released
+2026-11-03T19:49:23.933Z codex/gpt-6.1-sol item.claimed
+2026-11-03T19:50:33.605Z pavi item.released
+2026-11-03T19:50:33.605Z pavi item.dispatched
+2026-11-03T20:15:23.025Z codex/gpt-6.1-sol item.claimed
+2026-11-03T20:20:00.000Z atelier stage.stuck
+2026-11-03T20:33:00.756Z codex/gpt-6.1-sol push.observed
+2026-11-03T20:33:04.951Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T20:33:05.157Z codex/gpt-6.1-sol item.submitted
+2026-11-03T20:33:42.736Z pavi land.start
+2026-11-03T20:33:44.292Z pavi review.requested
+2026-11-03T20:33:44.292Z pavi review.tier_needed
+2026-11-03T20:33:44.643Z pavi land.review
+2026-11-03T20:33:44.791Z pavi land.requested
+2026-11-03T20:35:00.000Z atelier stage.cleared
+2026-11-03T20:39:11.668Z antigravity/gemini-4-argon review.claimed
+2026-11-03T20:41:02.425Z antigravity/gemini-4-argon review.approved
+2026-11-03T20:41:02.425Z atelier/orchestrator goal.notes
+2026-11-03T20:41:09.494Z pavi item.accepted
+2026-11-03T20:41:10.545Z pavi land.start
+2026-11-03T20:41:10.667Z pavi landing.leased
+2026-11-03T20:41:10.776Z pavi land.lease
+2026-11-03T20:41:12.024Z pavi checkout.leased
