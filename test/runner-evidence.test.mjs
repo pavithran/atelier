@@ -247,7 +247,7 @@ test("a failed or timed-out install makes the evidence not-run and runs no test"
     const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.test.mjs"], run: spy, id: `n${i + 2}` });
     assert.equal(evidence.tests.status, "not-run");
     assert.equal(evidence.typecheck.status, "not-run");
-    assert.match(evidence.tests.reason, /dependencies could not be prepared: npm ci (failed|timed out)/);
+    assert.match(evidence.tests.reason, /dependencies could not be prepared: the runner.s evidence dependency setup: npm ci .* (failed|timed out)/);
     assert.deepEqual(npm, [], "nothing is run on an unprepared clone");
   }
 });
