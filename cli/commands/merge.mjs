@@ -13,7 +13,7 @@ import { stopLine } from "../../src/check-limit.ts";
 import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { guardedPush, privateGuardFor, privateRefusal } from "../private-guard.mjs";
-import { describeConflicts, indexBeyond, mergeThrough, previewMerge, readManifest, verifyAccepted } from "../merge-pipeline.mjs";
+import { describeConflicts, indexBeyond, mergeThrough, previewMerge, verifyAccepted } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
@@ -371,21 +371,16 @@ export default async function mergeCommand() {
         if(runs.length){journal.clear();await fail(`the accepted change touches files that this checkout's Git configuration runs: ${describeTouched(runs)}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's holder submit a revision that leaves them alone`);}
         // The merge onto the baseline goes through the merge pipeline
         // (cli/merge-pipeline.mjs) and runs no generator in this checkout.
-        // Where it needs one, verifyAccepted runs the merge first in a
-        // throwaway clone pinned to this checkout's head and the accepted
-        // head: outputs equal to the accepted revision's, mode and bytes,
-        // were checked and reviewed with it, so the merge goes on and takes
-        // them from it; anything else was never checked or reviewed, so
-        // nothing is merged and the task goes back to its builder (atelier
-        // land refuses an accepted task). The approval stays bound to the
-        // accepted head and never carries over to outputs generated after it.
+        // Verify generators in an isolated clone, then adopt only their outputs.
+        // The rest of the merged tree must match that verified tree exactly.
         const preview=previewMerge(cwd,local,target,{git});
         let adopt=null;
         if(!preview.error&&(preview.regenerate.length||preview.generated.length)){
           const verified=await verifyAccepted(cwd,local,target,{git,identity});
           const moved=git(['rev-parse','HEAD'],{cwd});
           if(verified.ok&&moved!==local)Object.assign(verified,{ok:false,reason:`${p.branch} moved from ${short(local)} to ${short(moved)} while the outputs were compared`});
-          if(!verified.ok){journal.clear();await fail(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}), and ${verified.reason}. Outputs that are not the accepted revision's were never checked or reviewed, so nothing was merged and ${id} stays accepted. The generators' logs and the comparison are in ${verified.kept}. The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}
+          if(!verified.ok){journal.clear();await fail(`merging ${id} could not regenerate declared outputs: ${verified.reason}; nothing was merged and ${id} stays accepted. The generators' logs and the comparison are in ${verified.kept}.`);}
+          if(verified.changed)console.log(`Regenerated declared outputs for ${id}; they will be committed with the merge without another review.`);
           adopt={tree:verified.tree,regenerated:verified.regenerated};
         }
         const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false,adopt});
