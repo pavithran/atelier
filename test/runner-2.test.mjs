@@ -854,10 +854,10 @@ test("the build brief asks for a validation_blocked line, and that line is read 
   assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
   // t219: validation_blocked covers the builder's own unfixable failing tests and a suite timeout.
   assert.match(ROLE_PROMPTS.build, /Only unfixable failures in your change's tests or suite timeouts block validation/);
-  assert.match(ROLE_PROMPTS.build, /report slot wait\s+and run time on timeout/);
+  assert.match(ROLE_PROMPTS.build, /one repair turn/);
   assert.match(ROLE_PROMPTS.build, /If blocked, commit unsubmitted; report `validation_blocked: why`\.\s+Else omit the line\./);
   assert.ok(ROLE_PROMPTS.build.length <= ROLE_PROMPT_MAX);
-  assert.match(ROLE_PROMPTS.build, /Run the project's full required test command/);
+  assert.match(ROLE_PROMPTS.build, /Run the tests your change touches/);
   assert.match(ROLE_PROMPTS.build, /Never end with finished work uncommitted/);
   assert.match(validationBlockedReport("Implemented the change and committed it.\nvalidation_blocked: vitest could not listen on 127.0.0.1 (EPERM)"), /could not listen/);
   assert.match(validationBlockedReport("Done.\n**validation_blocked:** the sandbox has no network"), /no network/);

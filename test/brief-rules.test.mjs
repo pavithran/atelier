@@ -98,17 +98,19 @@ test("builders get screenshot workflow instructions; reviewers check supplied ev
   assert.match(BUILDER_SCREENSHOTS, /documents no such workflow, follow its setup instructions/);
 });
 
-test("builders run the full suite green before pushing, in a slot, on a budget that starts at acquisition (t219)", () => {
-  const [full, budget] = BUILDER_TESTS;
-  assert.match(full, /full required test command \(npm test.*inside a test slot/);
-  assert.match(full, /Push only when both pass; name any failing test you could not fix/);
-  assert.match(budget, /counts from the moment the slot is held, so it cannot time out while queued/);
-  assert.match(budget, /commit your work and report validation_blocked with the slot wait and the run time/);
+test("builders run targeted tests and check every criterion before the runner checks", () => {
   const runner = briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier");
+  for (const text of [BUILDER_TESTS.join("\n"), runner, ROLE_PROMPTS.build]) {
+    assert.match(text, /tests your change touches/);
+    assert.match(text, /typecheck/);
+    assert.match(text, /runner runs the full required checks once/);
+    assert.match(text, /one repair turn/);
+    assert.match(text, /acceptance criteria one by one/);
+    assert.match(text, /evidence for each/);
+    assert.match(text, /Leave no report file in the repository/);
+    assert.doesNotMatch(text, /Run the project's full required test command|exec timeout .*npm test/);
+  }
   for (const line of BUILDER_TESTS) assert.ok(runner.includes(line));
-  assert.match(runner, /load\.mjs'? -- sh -c 'date \+%s; exec timeout 2400 npm test'/);
-  assert.match(runner, /printed inside the slot, before the suite starts/);
-  assert.match(runner, /slot wait, and the printed one to the end is the run time/);
 });
 
 test("the builder's test lines still stand beside the screenshot line in every build brief that ran them", async () => {
@@ -118,13 +120,12 @@ test("the builder's test lines still stand beside the screenshot line in every b
   // The runner's own brief and the guide carry the same two statements.
   const runner = briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier");
   assert.ok(runner.includes(BUILDER_SCREENSHOTS));
-  assert.ok(runner.includes("Run the project's full required test command"));
-  assert.ok(!runner.includes("Do not run the full suite"));
+  assert.ok(!runner.includes("Run the project's full required test command"));
+  assert.ok(!runner.includes("exec timeout 2400 npm test"));
   const build = ROLE_PROMPTS.build.replace(/\s+/g, " ");
   for (const rule of [
-    /Run the project's full required test command \(npm test unless it names another\) inside a test slot, plus the typecheck/,
-    /Push only when both pass; name any unfixed failing test/,
-    /Budget the suite from slot acquisition; report slot wait and run time on timeout/,
+    /Run the tests your change touches inside a test slot and the typecheck/,
+    /runner runs the full required checks once/,
     /take screenshots of this workspace's revision using the documented workflow/,
     /reuse its server, never start a second one/,
     /With no workflow, follow the project's setup/,
@@ -194,7 +195,7 @@ test("a runner with the README's generic wrapper hands its agents both rule text
 const BYTES = (text) => Buffer.byteLength(text, "utf8");
 const BLOCK_LIMITS = {
   "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "538119f6 + t422", measured: 2098, margin: 150 },
-  "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "ece4f377", measured: 634, margin: 100 },
+  "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "t336", measured: 580, margin: 100 },
   "builder screenshot instruction (BUILDER_SCREENSHOTS)": { text: BUILDER_SCREENSHOTS, at: "93b3198d", measured: 277, margin: 100 },
   "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "538119f6 + t422", measured: 2155, margin: 150 },
   "re-review rule (RE_REVIEW_RULE)": { text: RE_REVIEW_RULE, at: "538119f6 + t422", measured: 360, margin: 100 },

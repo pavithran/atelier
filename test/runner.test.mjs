@@ -72,7 +72,7 @@ test("offerFrom includes only the server capability shape", () => {
 test("briefFor includes task identity, scope, rules, and commit attribution", () => {
   const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
   for (const text of ["atelier", "t13", "Home runner", ...assignment.item.scope,
-    "Stay in scope", "Write tests", "Run the project's full required test command", "Push only when both pass",
+    "Stay in scope", "Write tests", "Run the tests your change touches", "runner runs the full required checks once",
     `git commit -m "subject" -m "Agent: ${assignment.actor}"`, "Do not push", "Run no atelier command"]) assert.ok(brief.includes(text), text);
   assert.ok(briefFor(assignment.item, "atelier").includes("Agent: <harness>/<model>"));
 });
@@ -84,10 +84,10 @@ test("briefFor includes task identity, scope, rules, and commit attribution", ()
 // (t541, t546, t532, t463). The brief now asks for the changed files' tests and
 // the typecheck, leaves the full suite to the clean-clone checks, and keeps
 // validation_blocked for the builder's own failing tests.
-test("briefFor asks for the full suite green in a slot before pushing, and a commit when it passes", () => {
+test("briefFor asks for targeted tests and a commit before runner checks", () => {
   const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
-  assert.match(brief, /full required test command .*inside a test slot/);
-  assert.match(brief, /counts from the moment the slot is held/);
+  assert.match(brief, /tests your change touches inside a test slot/);
+  assert.match(brief, /runner runs the full required checks once/);
   assert.doesNotMatch(brief, /Do not run the full/);
   assert.match(brief, /Never end with finished work uncommitted/);
   assert.match(brief, /validation_blocked only for a failure in the tests of your own change that you cannot fix/);
@@ -300,9 +300,9 @@ test("every build the queue can offer fetches the server's brief context before 
     const fetched = calls.findIndex((c) => c.jobBrief), written = calls.findIndex((c) => c.brief), ran = calls.findIndex((c) => c.harness);
     assert.ok(fetched < written && written < ran, `${name}: the context is fetched before the brief is written and the harness starts`);
     const brief = calls[written].brief;
-    assert.ok(brief.includes("npm test"), `${name}: the local brief stays`);
+    assert.ok(brief.includes("tests your change touches"), `${name}: the local brief stays`);
     assert.ok(brief.includes(context), `${name}: the brief carries the server's context`);
-    assert.ok(brief.indexOf("npm test") < brief.indexOf(context), `${name}: the context follows the local brief`);
+    assert.ok(brief.indexOf("tests your change touches") < brief.indexOf(context), `${name}: the context follows the local brief`);
   }
   // A server that holds nothing for the task leaves the local brief as it is.
   const bare = withContext({}, "");
@@ -1695,4 +1695,72 @@ test("finish deadline stops a real child and preserves committed work", async (t
   });
   assert.deepEqual(commands, ["claim", "baseline-token", "finish"], "committed work refreshes main before the finish deadline starts");
   assert.ok(logs.some((s) => s.includes("finish timed out; claim preserved")));
+});
+
+
+test("required checks get one repair turn, then submit or block with the claim kept", async () => {
+  for (const outcome of ["pass", "fail", "exit", "timeout", "unchanged"]) {
+    const f = fixture({ marker: null });
+    const originalCli = f.io.cli;
+    let finishes = 0, turns = 0;
+    const readHead = f.io.head;
+    f.io.head = async () => turns === 2 && outcome !== "unchanged" ? "repaired" : readHead();
+    f.io.cli = async (argv, cwd) => {
+      await originalCli(argv, cwd);
+      if (argv[0] === "finish" && (++finishes === 1 || outcome === "fail"))
+        throw Object.assign(new Error("check failed"), { code: 2, output: "FAIL npm test @ abc: regression.test failed" });
+    };
+    const harness = f.io.harness;
+    f.io.harness = async (...args) => {
+      const result = await harness(...args);
+      turns++;
+      return turns === 2 && ["exit", "timeout"].includes(outcome)
+        ? { code: 1, timedOut: outcome === "timeout" } : result;
+    };
+    const state = await runTask(assignment, config, "home", f.io);
+    assert.equal(turns, 2, outcome);
+    assert.equal(finishes, ["exit", "timeout", "unchanged"].includes(outcome) ? 1 : 2, outcome);
+    assert.ok(f.calls.some(c => c.brief?.includes("regression.test failed")), "repair brief carries stdout and check name");
+    assert.equal(state.phase, outcome === "pass" ? "submitted" : "failed");
+    assert.equal(f.calls.filter(c => c.argv?.[0] === "check").length, 0, "finish owns the only check pass");
+    assert.equal(f.calls.some(c => c.argv?.[0] === "release" && !c.argv.includes("--blocked")), false);
+    assert.equal(f.calls.some(c => c.argv?.includes("--blocked")), ["fail", "unchanged"].includes(outcome));
+    if (outcome !== "pass") assert.notEqual(state.phase, "submitted", "a failed or crashed repair never records completion");
+  }
+});
+
+
+test("a builder running the suite anyway is accepted without a fault", async () => {
+  const f = fixture();
+  const harness = f.io.harness;
+  f.io.harness = async (...args) => ({ ...await harness(...args), output: "npm test: all tests passed" });
+  const state = await runTask(assignment, config, "home", f.io);
+  assert.equal(state.phase, "submitted");
+  assert.equal(state.taskFailure, undefined);
+  assert.equal(f.calls.filter(c => c.argv?.[0] === "finish").length, 1);
+  assert.equal(f.calls.filter(c => c.harness).length, 1);
+  assert.ok(!f.logs.some(line => /fault|refused/.test(line)));
+});
+
+test("parts and merge jobs keep the existing finish failure path without a check repair turn", async () => {
+  for (const kind of ["part", "merge-main", "plan-merge"]) {
+    const f = fixture({ marker: null });
+    f.io.jobBrief = async () => ({ text: "part brief" });
+    const cli = f.io.cli;
+    f.io.cli = async (...args) => {
+      await cli(...args);
+      if (args[0][0] === "finish") throw Object.assign(new Error("failed npm test"), { code: 2, output: "FAIL npm test" });
+    };
+    const item = heldItem({ head: "recorded", ...(kind === "part" ? { kind: "part" } : {}),
+      ...(kind === "merge-main" ? { dispatch: { job: "merge-main", head: "a".repeat(40) } } : {}),
+      ...(kind === "plan-merge" ? { kind: "part", plan: "t12", dispatch: { planHead: "a".repeat(40) } } : {}) });
+    // Resumed merges still prepare their branch before finishing.
+    f.io.mergeMain = async () => ({ state: "already", head: "after", mainHead: "a".repeat(40) });
+    f.io.mergePlan = async () => ({ state: "already", head: "after", planHead: "a".repeat(40) });
+    const state = await runTask({ ...assignment, item }, config, "home", f.io);
+    assert.equal(state.phase, "failed", kind);
+    assert.ok(!f.calls.some(c => c.brief?.includes("Required checks failed in the clean clone")), kind);
+    assert.ok(!f.calls.some(c => c.argv?.includes("--blocked")), kind);
+    assert.equal(f.calls.filter(c => c.argv?.[0] === "finish").length, 1, kind);
+  }
 });

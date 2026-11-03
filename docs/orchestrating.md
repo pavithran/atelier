@@ -399,15 +399,18 @@ misread:
   (the 3x ratio, with only the Nx filter) wrong by design; reading the test
   before dispatch caught it, and nothing else would have. Write "t52's tests
   pass except the 3x ratio test, which the task rewrites" instead.
-- A builder runs the project's full required test command (`npm test`)
-  inside a test slot and pushes only when it passes (t219). Failures found
-  only in the clean clone cost a rebuilt run each, about an hour; goal 1's six
-  tasks took about 300 builder runs. The suite's time budget counts from slot
-  acquisition, so queueing cannot time it out; on a timeout the builder commits
-  and reports `validation_blocked` with the slot wait and run time. A merge's
-  resolution and a wave's checks run whole as before. A project that names
-  another test command in its own instructions (`AGENTS.md`) has the builder
-  run that one. For a visual
+- A builder runs the tests its change touches and the typecheck, then checks
+  each acceptance criterion and names its evidence in the final reply, leaving
+  no report file. Full-suite runs consumed 44% of Studio builder time in the
+  2026-10-26 study. The runner calls `finish` after the commit to push and run
+  the required checks once in a clean clone on that head, before review. A
+  failed check returns its name and output tail for one repair turn under the
+  task harness timeout. After a successful turn, `finish` checks once more;
+  a second failure blocks the task for the developer naming the check and
+  keeping the claim. A failed or timed out repair keeps the claim without a
+  second check. Parts and merge jobs keep their existing paths without this
+  turn. No check command means no added check run. Running the suite anyway
+  is not a builder fault. For a visual
   change the build brief says to use the project's documented screenshot
   workflow against the workspace's own revision, reusing the server that
   workflow manages and never starting a second, or to follow the project's
