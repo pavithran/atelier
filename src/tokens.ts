@@ -95,7 +95,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   // criteria-review-claim, criteria-review and criteria-review-failed are the
   // criteria reviewer's claim, verdict and failure (t438); asking for one
   // and resolving its findings stay the owner's.
-  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews"].includes(verb) || parts.length === 6 && ["logs", "diffs"].includes(verb);
+  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews", "runner-log"].includes(verb) || parts.length === 6 && ["logs", "diffs"].includes(verb);
   return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
 }
 
@@ -243,16 +243,16 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The poll: what the runner can run and when it started (t420), answered
   // with the tasks it may claim. GET /queue is the owner's listing, which
   // runnerRoute refuses a runner token (test/runner-routes.test.mjs).
-  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "projects", "readiness", "checkouts", "memory", "commit", "progress"], via: "runner", jobs: [] },
+  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "projects", "readiness", "checkouts", "memory", "commit", "progress", "runnerLogs"], via: "runner", jobs: [] },
   // The same poll asked with `why` (t420), when a poll offered nothing: the
   // server answers the listing GET gives, cut to the token's projects, each
   // waiting dispatch with why it is not being taken. The same route, the
   // same credential, a body field more: declared apart so the idle path is
   // its own authorization case.
-  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why", "projects", "readiness", "checkouts", "memory", "commit", "progress"], via: "runner", jobs: [] },
+  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why", "projects", "readiness", "checkouts", "memory", "commit", "progress", "runnerLogs"], via: "runner", jobs: [] },
   // A busy runner's heartbeat (t537): its offer marked as one, which renews
   // its last poll while a job runs and is offered nothing back.
-  { name: "queue-heartbeat", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "heartbeat", "projects", "readiness", "checkouts", "memory", "commit", "progress"], via: "runner", jobs: [] },
+  { name: "queue-heartbeat", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "heartbeat", "projects", "readiness", "checkouts", "memory", "commit", "progress", "runnerLogs"], via: "runner", jobs: [] },
   // The baseline's head, for a post-merge review the runner keeps waiting on
   // a merge commit no source held (t591).
   { name: "baseline-head", method: "GET", path: "/projects/{project}/baseline-head", credential: "runner", body: [], via: "runner", jobs: REVIEW },

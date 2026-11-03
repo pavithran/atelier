@@ -587,3 +587,70 @@ test("rounds 13 and 14: the server refuses raw text in every field a runner fill
   assert.match(reason, /work in progress abcdef12 pushed/);
   assert.ok(!reason.includes("abc123"), reason);
 });
+
+
+test("task runner logs cross sessions, refuse unrelated writers and readers, and exclude transcripts", async () => {
+  const id = builtId;
+  assert.ok(id);
+  const path = `/projects/demo/items/${id}/runner-log`;
+  const agent = (await api("POST", "/tokens", { actor: "codex/gpt-6", projects: ["demo"] })).body.token;
+  const other = (await api("POST", "/tokens", { actor: "codex/gpt-6", projects: ["elsewhere"] })).body.token;
+  const read = token => fetch(`${base}/api${path}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await read(agent)).status, 200);
+  assert.equal((await read(other)).status, 403);
+  assert.equal((await read(runnerToken)).status, 403);
+  assert.equal((await read("bad")).status, 401);
+  assert.equal((await fetch(`${base}/api${path}?level=owner`, { headers: { authorization: `Bearer ${other}` } })).status, 403);
+  const before = await (await read(agent)).json();
+  assert.ok(before.lines.length);
+  assert.match(JSON.stringify(before), /starting build/);
+  assert.doesNotMatch(JSON.stringify(before), /Done: the change is committed|tool_use|tool_result|stream-json/);
+  assert.equal(await L().recordRunnerLogs("home:other", [{ task: id, run: "22222222-2222-2222-2222-222222222222", offset: 0, lines: ["forged"] }]), 0);
+  assert.equal(await L().recordRunnerLogs("home:studio", [{ task: "t999999", run: "22222222-2222-2222-2222-222222222222", offset: 0, lines: ["forged"] }]), 0);
+  const offer = { runner: "home:studio", kind: "home", jobs: ["build"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }], heartbeat: true,
+    runnerLogs: [{ project: "demo", task: id, run: "11111111-1111-1111-1111-111111111111", offset: 0, lines: ["install failed: missing module password=hidden", "check failed: assertion parser", "running review"] }] };
+  const sent = await fetch(`${base}/api/queue`, { method: "POST", headers: { authorization: `Bearer ${runnerToken}`, "content-type": "application/json", "x-atelier-runner": "home:studio" }, body: JSON.stringify(offer) });
+  assert.equal(sent.status, 200, await sent.text());
+  const log = await (await read(agent)).json();
+  assert.match(JSON.stringify(log), /missing module[\s\S]*assertion parser[\s\S]*running review/);
+  assert.doesNotMatch(JSON.stringify(log), /hidden/);
+  const printed = await cli(["log", id, "--project", "demo"], { token: agent });
+  assert.equal(printed.code, 0, printed.stderr);
+  assert.match(printed.stdout, /missing module/);
+  let followed = "";
+  const follower = execFile(process.execPath, [join(process.cwd(), "cli/atelier.mjs"), "log", id, "--project", "demo", "--follow"], {
+    env: { ...baseEnv, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: agent, ATELIER_SERVER: base, NO_COLOR: "1" },
+  });
+  follower.on("error", () => {});
+  follower.stdout.on("data", chunk => { followed += chunk; });
+  const untilText = async text => {
+    const end = Date.now() + 10000;
+    while (!followed.includes(text) && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(followed.includes(text), followed);
+  };
+  try {
+    await untilText("missing module");
+    await L().recordRunnerLogs("home:studio", [{ task: id, run: "11111111-1111-1111-1111-111111111111", offset: 3, lines: ["follow update: check tail"] }]);
+    await untilText("follow update: check tail");
+    assert.equal(followed.match(/missing module/g).length, 1);
+  } finally { follower.kill("SIGTERM"); }
+
+  const matrix = [
+    { path, owner: 200, agent: 200, other: 403, runner: 403, contains: true },
+    { path: `/projects/demo/items/${id}`, owner: 200, agent: 200, other: 403, runner: 403, contains: false },
+    { path: `/projects/demo/items/${id}/brief`, owner: 200, agent: 200, other: 403, runner: 403, contains: false },
+    { path: "/projects/demo/situation", owner: 200, agent: 403, other: 403, runner: 403, contains: false },
+    { path: "/projects/demo/ledger/dump?table=meta", owner: 200, agent: 403, other: 403, runner: 403, contains: true },
+  ];
+  for (const row of matrix) for (const [level, token] of [["owner", OWNER], ["agent", agent], ["other", other], ["runner", runnerToken]]) {
+    const response = await fetch(`${base}/api${row.path}`, { headers: { authorization: `Bearer ${token}`, ...(token === OWNER ? { "x-atelier-actor": "owner" } : {}) } });
+    const text = await response.text();
+    assert.equal(response.status, row[level], `${level} ${row.path}: ${text}`);
+    assert.equal(text.includes("missing module"), row[level] === 200 && row.contains, `${level} ${row.path}`);
+  }
+  for (const [token, status] of [[OWNER, 200], [agent, 403], [other, 403], [runnerToken, 403]]) {
+    const response = await fetch(`${base}/p/demo/${id}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.status, status);
+    assert.doesNotMatch(await response.text(), /missing module/);
+  }
+});
