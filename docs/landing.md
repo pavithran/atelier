@@ -154,9 +154,7 @@ so the task's branch and its approvals stay as they were reviewed.
      clean clone (`atelier check`), and is submitted. A submitted task's
      checks are the ones its holder ran at that head.
    - The review the gate needs, asked and not waited for (t264), or settled
-     by an approval already recorded at the head. In fast mode the review
-     step is recorded as skipped, `{ skipped: true, fast: true }`, and the
-     review is asked after the merge.
+     by an approval already recorded at the head.
    - The gate, as `accept` reads it: the head with its checks passing and an
      approval it counts (or none needed).
 2. **The lease**, queued for in the order the landings asked (below).

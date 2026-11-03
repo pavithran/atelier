@@ -43,7 +43,7 @@ export default async function statusCommand() {
   if (args.project !== undefined) {
     const name = args.project;
     const as = await actor(OWNER);
-    const standing = await call("GET", `${P(name)}/standing`, undefined, as);
+    const { mode: _mode, ...standing } = await call("GET", `${P(name)}/standing`, undefined, as);
     const checkout = await checkoutStatus(name, as);
     const local = await localStanding(name, as);
     const live = liveHere(name);
