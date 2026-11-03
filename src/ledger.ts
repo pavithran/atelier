@@ -7316,7 +7316,12 @@ export class Ledger extends DurableObject<Env> {
     return actionRuns(this.sql, limit);
   }
 
-  // Newest first. `before` pages back: only events with a lower seq than it.
+  // Other projects contribute only the runners holding active jobs.
+  stuckActiveRunners(): string[] {
+    return this.sql.exec(`SELECT runner FROM items WHERE state = 'claimed' AND runner IS NOT NULL AND runner != '' AND owner IS NOT NULL AND owner != ''
+      UNION ALL SELECT runner FROM review_requests WHERE state = 'claimed' AND superseded IS NULL AND runner IS NOT NULL AND runner != ''`).toArray().map((r) => String(r.runner));
+  }
+
   // Diagnostic snapshot: no tick, lease renewal or status observation. It
   // writes only the runners' last polls it is given, to the project's one
   // record of them, before it reads (t540): the stuck report, the queue and
@@ -7324,8 +7329,16 @@ export class Ledger extends DurableObject<Env> {
   stuckSnapshot(polls?: readonly { runner: string; at: string }[]) {
     if (polls) this.recordRunnerPolls(polls);
     const items = this.items();
+    // Live tasks need their complete history: holds, unanswered reviews and
+    // give-ups have no age cutoff. Ship starts need their old completions too.
+    // Failed checks from terminal tasks still appear in failedChecksLastDay.
+    const cutover = this.cutover().seq;
+    const events = this.sql.exec(`SELECT * FROM events WHERE item_id IN (SELECT id FROM items WHERE state NOT IN ('merged', 'abandoned', 'blocked'))
+      UNION SELECT * FROM events WHERE kind IN ('action.started', 'action.ran', 'ship.recorded')
+      UNION SELECT * FROM events WHERE kind = 'evidence.observed' AND json_extract(data, '$.passed') = 0
+      ORDER BY seq DESC`).toArray().map((r) => eventOf(r, this.owner, cutover));
     return {
-      items, events: this.events(undefined, Number.MAX_SAFE_INTEGER),
+      items, events,
       coreFiles: this.project().policy.coreFiles,
       lease: this.readProjectLanding(),
       openReviewItems: this.sql.exec(`SELECT DISTINCT r.item FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND r.head = i.head`).toArray().map((r) => String(r.item)),
