@@ -38,7 +38,7 @@ for (const [label, overrides] of [
   await assert.rejects(catchUp(io));
   assert.deepEqual(calls, []);
 });
-for (const step of ['carry', 'finish', 'land']) test(`a crash at ${step} leaves completion unset`, async () => {
+for (const step of ['create', 'claim', 'carry', 'finish', 'land']) test(`a crash at ${step} leaves completion unset`, async () => {
   const lines = [];
   const { io } = fixture({ [step]: async () => { throw Error('crash'); }, print: line => lines.push(line) });
   await assert.rejects(catchUp(io), /crash/);
@@ -48,4 +48,16 @@ test('only the exact accepted head may start ahead of the baseline', () => {
   assert.equal(landingStartsAtAcceptedHead('head', 'head'), true);
   assert.equal(landingStartsAtAcceptedHead('extra', 'head'), false);
   assert.equal(landingStartsAtAcceptedHead('unrelated', 'head'), false);
+});
+
+test('a crash while waiting for review leaves completion unset', async () => {
+  const lines = [];
+  const { io, calls } = fixture({
+    land: async () => { calls.push('land'); return false; },
+    pause: async () => { throw Error('crash while waiting'); },
+    print: line => lines.push(line),
+  });
+  await assert.rejects(catchUp(io), /crash while waiting/);
+  assert.deepEqual(calls, ['create', 'claim', 'carry', 'checks', 'land']);
+  assert.deepEqual(lines, []);
 });
