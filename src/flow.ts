@@ -11,7 +11,7 @@
 // start or end the record does not show is unknown for that task, never zero
 // and never an estimate.
 
-export const PHASES = ["runnerWait", "build", "checks", "reviewWait", "accept", "waitToLand", "merge"] as const;
+export const PHASES = ["criteriaReview", "runnerWait", "build", "checks", "reviewWait", "accept", "waitToLand", "merge"] as const;
 export type Phase = (typeof PHASES)[number];
 
 export interface FlowEvent { seq: number; at: string; kind: string; data?: Record<string, unknown> | null }
@@ -31,6 +31,7 @@ export interface TaskFlow {
   complete: boolean;
   merged: boolean;
   phases: Record<Phase, PhaseTime>;
+  minutesToMerge: number | null;
   submissions: number;
   rejections: number;
   conflicts: number;
@@ -40,6 +41,9 @@ export interface TaskFlow {
 export interface PhaseTotal { ms: number; unknownTasks: number; openTasks: number }
 
 export interface FlowReport {
+  medianMinutesToMerge: number | null;
+  medianReviewRounds: number | null;
+  phaseShares: Record<Phase, number | null>;
   tasks: TaskFlow[];
   totals: Record<Phase, PhaseTotal>;
   // Tasks counted in the rates: those whose record is complete.
@@ -61,7 +65,7 @@ const blank = (): Record<Phase, PhaseTime> =>
 export function taskFlow(id: string, events: readonly FlowEvent[], now: number): TaskFlow {
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
   const phases = blank();
-  const flow: TaskFlow = { id, complete: sorted[0]?.kind === "item.created", merged: false, phases, submissions: 0, rejections: 0, conflicts: 0, checkFailures: 0 };
+  const flow: TaskFlow = { id, complete: sorted[0]?.kind === "item.created", merged: false, phases, minutesToMerge: null, submissions: 0, rejections: 0, conflicts: 0, checkFailures: 0 };
   let state: { phase: Phase; at: number } | null = null;
   let accepted = false, lastLandingCheck = 0, landingChecks = false;
 
@@ -79,7 +83,11 @@ export function taskFlow(id: string, events: readonly FlowEvent[], now: number):
     if (kind === "refresh.returned" || kind === "integration.failed") flow.conflicts++;
     if (kind === "refresh.checks_failed" || (kind.startsWith("evidence.") && e.data?.passed === false)) flow.checkFailures++;
 
-    if (kind === "item.dispatched") { if (phase !== "runnerWait") enter("runnerWait", at); }
+    if (kind === "criteria_review.requested") { if (phase !== "criteriaReview") enter("criteriaReview", at); }
+    else if (["criteria_review.approved", "criteria_review.rejected", "criteria_review.withdrawn", "criteria_review.failed"].includes(kind)) { if (phase === "criteriaReview") close(at); }
+    else if (kind === "landing.begun") enter("merge", at);
+    else if (kind === "landing.cancelled") { if (phase === "merge") enter("waitToLand", at); }
+    else if (kind === "item.dispatched") { if (phase !== "runnerWait") enter("runnerWait", at); }
     else if (kind === "item.claimed") { if (phase !== "build") enter("build", at); }
     else if (kind === "item.handoff") {
       // Accepted work handed back while it waited to land or was checking
@@ -119,6 +127,9 @@ export function taskFlow(id: string, events: readonly FlowEvent[], now: number):
     else if (kind === "item.released" || kind === "item.undispatched" || kind === "item.abandoned") { landingChecks = false; close(at); }
     else if (kind === "item.merged") {
       flow.merged = true;
+      if (flow.complete) flow.minutesToMerge = Math.max(0, at - Date.parse(sorted[0].at)) / 60_000;
+      if (phase === "merge") close(at);
+      else
       if (phase === "waitToLand") { close(at); unknown("merge"); }
       else if (phase === "checks" && landingChecks) { close(lastLandingCheck); phases.merge.ms += Math.max(0, at - lastLandingCheck); }
       else if (phase !== null) { unknown(phase); state = null; }
@@ -149,7 +160,16 @@ export function computeFlow(tasks: readonly { id: string; events: readonly FlowE
   const counted = flows.filter((f) => f.complete);
   const merged = counted.filter((f) => f.merged);
   const share = (has: (f: TaskFlow) => boolean) => (counted.length ? counted.filter(has).length / counted.length : null);
+  const median = (values: number[]) => {
+    values.sort((a, b) => a - b);
+    const middle = Math.floor(values.length / 2);
+    return values.length ? (values[middle] + values[Math.floor((values.length - 1) / 2)]) / 2 : null;
+  };
+  const measuredMs = PHASES.reduce((sum, p) => sum + totals[p].ms, 0);
   return {
+    medianMinutesToMerge: median(merged.flatMap((f) => f.minutesToMerge === null ? [] : [f.minutesToMerge])),
+    medianReviewRounds: median(counted.map((f) => f.submissions)),
+    phaseShares: Object.fromEntries(PHASES.map((p) => [p, measuredMs ? totals[p].ms / measuredMs : null])) as Record<Phase, number | null>,
     tasks: flows, totals, counted: counted.length,
     measured: flows.filter((f) => PHASES.some((p) => !f.phases[p].unknown && (f.phases[p].ms > 0 || f.phases[p].open))).length, merged: merged.length,
     attemptsPerMerge: merged.length ? merged.reduce((n, f) => n + f.submissions, 0) / merged.length : null,
@@ -157,4 +177,18 @@ export function computeFlow(tasks: readonly { id: string; events: readonly FlowE
     rejectionRate: share((f) => f.rejections > 0),
     checkFailureRate: share((f) => f.checkFailures > 0),
   };
+}
+
+export function formatScorecard(report: FlowReport): string[] {
+  const number = (n: number | null) => n === null ? "n/a" : n.toFixed(1);
+  const percent = (n: number | null) => n === null ? "n/a" : `${(n * 100).toFixed(1)}%`;
+  const labels: Record<Phase, string> = { criteriaReview: "criteria review", runnerWait: "runner wait", build: "build", checks: "checks", reviewWait: "review wait", accept: "accept", waitToLand: "wait to land", merge: "merge" };
+  return [
+    `Merged: ${report.merged} (${report.counted} complete records, ${report.tasks.length} tasks)`,
+    `Median filing to merge: ${number(report.medianMinutesToMerge)} min`,
+    `Median review rounds per task: ${number(report.medianReviewRounds)} (submissions, complete records)`,
+    `Rejection rate: ${percent(report.rejectionRate)} (tasks with a rejection, complete records)`,
+    "Phase share of known measured time (includes open phases):",
+    ...PHASES.map((p) => `  ${labels[p]}: ${percent(report.phaseShares[p])} (${report.totals[p].unknownTasks} unknown, ${report.totals[p].openTasks} open)`),
+  ];
 }

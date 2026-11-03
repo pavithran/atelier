@@ -1,8 +1,9 @@
 # Where the time goes
 
 `atelier flow [--project P] [--since T] [--json]` reports how long tasks spend
-in each phase of their flow, summed and per task, and how often a task needs
-more than one attempt. It reads the events the ledger already records and
+in each phase of their flow in a 13-line scorecard: merged tasks, median
+minutes from filing to merge, median review rounds per task, rejection rate
+and phase shares. It reads the events the ledger already records and
 records nothing of its own (`src/flow.ts` computes it; `cli/commands/flow.mjs`
 fetches each task's events from the item route and prints it).
 
@@ -19,13 +20,14 @@ minutes of every stretch are added.
 
 | Phase | Begins at | Ends at |
 | --- | --- | --- |
+| criteria review | `criteria_review.requested` | `criteria_review.approved`, `criteria_review.rejected`, `criteria_review.withdrawn` or `criteria_review.failed` |
 | runner wait | `item.dispatched` | `item.claimed`, `item.handoff`, `item.released`, `item.undispatched` or `item.abandoned` |
 | build | `item.claimed` or `item.handoff` | the first `push.observed`; or `item.submitted`, `item.released`, `item.abandoned` or a new `item.dispatched` |
 | checks | `push.observed` while building; or the first check on the merge (`evidence.*` with `merged`) while waiting to land | `item.submitted`; or, for the landing's checks, the last check on the merge |
 | review wait | `item.submitted` | the first `review.approved` or `review.rejected` |
 | accept | `review.approved` | `item.accepted` (a `review.rejected` sends the task back to build) |
 | wait to land | `item.accepted` | the first check on the merge, or `item.merged` when none was recorded |
-| merge | the last check on the merge | `item.merged` |
+| merge | `landing.begun`, or the last check on the merge in older histories | `item.merged` |
 
 Build time before the first push and the time from a push to the next submit
 are split by the push: the checks an agent runs between its push and its submit
@@ -52,6 +54,28 @@ Nothing is guessed. For one task and one phase:
 - A phase a task never entered adds nothing. A task landed outside the flow
   (`atelier record-merge`, or a fast landing) has no phase events, so its row
   is empty rather than unknown.
+
+## Scorecard and JSON
+
+Filing-to-merge minutes use creation and merge timestamps for merged tasks
+with complete records. Review rounds count submissions for every task with a
+complete record, including zero for tasks not yet submitted. Both medians use
+the mean of the two middle values for an even count. Empty populations show
+`n/a` (JSON `null`). Rejection rate counts tasks with any rejection, rather
+than rejected verdicts divided by all verdicts.
+
+Phase shares divide each known phase total by the sum of known phase totals,
+including open time up to observation. Unassigned gaps and unknown stretches
+are excluded; these shares do not partition all elapsed filing-to-merge time.
+Each phase shows its unknown and open task counts. A cancelled landing returns
+to waiting to land. A landing that has only begun remains open and does not
+count as merged.
+
+JSON retains the existing task phases, totals and rates, adding
+`medianMinutesToMerge`, `medianReviewRounds`, and `phaseShares` (fractions from
+zero to one). Each task also has `minutesToMerge`, null until a merge is recorded.
+The only production caller is `cli/commands/flow.mjs`; it uses the same report
+for text and JSON. No generated page consumes this report.
 
 ## Attempts and rates
 
