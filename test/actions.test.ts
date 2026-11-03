@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   approvalDirection, approvalStatus, approveAction, cleanApprovalInput, cleanRun, consumeAction, expirySeconds, listApprovals,
-  recordActionRun, unrunKinds, withdrawAction, type ActionStore,
+  startActionRun, recordActionRun, unrunKinds, withdrawAction, type ActionStore,
 } from "../src/actions.ts";
 import { parseRuleError } from "../src/rules.ts";
 
@@ -181,4 +181,15 @@ test("a quote without the acting model, or a blank one, is refused", () => {
 test("approvalDirection words the developer's direction as every surface does, and says nothing without it", () => {
   assert.equal(approvalDirection({}), "");
   assert.equal(approvalDirection({ quote: "go", acting: "claude-code/opus-5.5" }), "the developer's words: \u201cgo\u201d, relayed by claude-code/opus-5.5");
+});
+
+test("only the owner records a ship start, with no completion claim", () => {
+  const m = memory();
+  const body = { step: "deploy", command: "npm run release", commit: H1, ship: "s-1" };
+  refused(() => startActionRun(m.store, "agent/model", body), "not_project_owner");
+  assert.deepEqual(m.events, []);
+  refused(() => startActionRun(m.store, "owner", { ...body, commit: "bad" }), "bad_run");
+  assert.deepEqual(m.events, []);
+  startActionRun(m.store, "owner", body);
+  assert.deepEqual(m.events, [{ kind: "action.started", data: body }]);
 });

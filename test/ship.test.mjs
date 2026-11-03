@@ -172,6 +172,7 @@ function standIn(state) {
       a.consumed = { by: "owner", at: new Date().toISOString() };
       return send(200, view(a));
     }
+    if (path === "/api/projects/demo/actions/starts") return send(201, { recorded: true });
     if (path === "/api/projects/demo/actions/runs") { state.runs.push(body); return send(201, body); }
     // The checkout lease (G9) as the server keeps it, for one holder at a
     // time, and the deploys ship records.
@@ -456,7 +457,7 @@ test("request verification can check an Access redirect without following it", a
 for (const wrapOutcome of ["crash", "failed", "passed"]) test(`an unreachable delivery check with wrap ${wrapOutcome} never records ship success`, async (t) => {
   const cwd = files({ "docs/atelier/ship.json": { ...WEB_SHIP, deploy: { run: [process.execPath, "-e", "void 0"] }, "verify-deploy": { request: "http://127.0.0.1:0", redirect: "manual", status: 302 }, push: false } });
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  const head = "a".repeat(40), runs = [], deploys = [], lines = [];
+  const head = "a".repeat(40), runs = [], starts = [], deploys = [], lines = [];
   const approval = { id: "a1", kind: "deploy", commit: head, at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString() };
   let wrapped = false;
   await assert.rejects(runShip({
@@ -467,6 +468,7 @@ for (const wrapOutcome of ["crash", "failed", "passed"]) test(`an unreachable de
     request: async (method, path, body) => {
       if (path.endsWith("/actions")) return { approvals: [approval] };
       if (path.endsWith("/consume")) return { id: "a1" };
+      if (path.endsWith("/starts")) starts.push(body);
       if (path.endsWith("/runs")) runs.push(body);
       return {};
     },
@@ -474,6 +476,9 @@ for (const wrapOutcome of ["crash", "failed", "passed"]) test(`an unreachable de
     wrap: async () => {
       wrapped = true;
       assert.equal(deploys.length, 0, "no completion record before wrap");
+      assert.equal(starts.at(-1).step, "wrap");
+      assert.match(starts.at(-1).command, /atelier wrap/);
+      assert.ok(!runs.some(r => r.step === "wrap"), "start is not a completion marker");
       if (wrapOutcome === "crash") throw new Error("simulated crash during wrap");
       return { status: wrapOutcome === "failed" ? 1 : 0 };
     },

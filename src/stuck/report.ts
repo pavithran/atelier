@@ -67,6 +67,23 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   const runners: RunnerPolls | null = offers ? { polls: offers } : null;
   if (snapshot) {
     const { items, events, lease, reviews } = snapshot;
+    const started = new Map<string, LedgerEvent>();
+    const runKey = (e: LedgerEvent) => JSON.stringify([e.data.ship, e.data.step, e.data.command]);
+    for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+      if (e.kind === "action.started") {
+        // Ship commands run in sequence; the next start replaces the previous one.
+        for (const [key, previous] of started) if (previous.data.ship === e.data.ship) started.delete(key);
+        started.set(runKey(e), e);
+      }
+      if (e.kind === "action.ran") started.delete(runKey(e));
+      if (e.kind === "ship.recorded") for (const [key, start] of started) {
+        if (start.data.ship === e.data.ship) started.delete(key);
+      }
+    }
+    for (const e of started.values()) if (age(e.at) > 60 * 60_000) {
+      add("ship", `${String(e.data.ship)}:${String(e.data.step)}`, `ship step ${String(e.data.step)} running over 60 minutes: ${String(e.data.command ?? "no command")}; started ${e.at}`, e.at,
+        "Inspect the ship process and stop or recover the command; give long commands a deadline.", `${base}/ship`);
+    }
     const live = items.filter((i) => i.state !== "blocked");
     const requeue = (id: string) => {
       const item = live.find((i) => i.id === id);
