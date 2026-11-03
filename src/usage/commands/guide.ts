@@ -17,7 +17,7 @@ const spec: CommandSpec = {
   help: {
     flags: {
       "--role build|review|plan|orchestrate": "prints the instructions for one role alone; a project's `.atelier/prompts/ROLE.md` overrides that role's text",
-      "--full": "with --role orchestrate, prints the handbook itself, docs/orchestrating.md, instead of the role's instructions",
+      "--full": "with --role orchestrate, prints the detailed reference, docs/orchestrating.md, instead of the short handbook",
     },
     example: "atelier guide --role build",
   },
