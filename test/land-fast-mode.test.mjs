@@ -16,6 +16,12 @@ for (const mode of ["full", "fast"]) {
       assert.doesNotMatch(r.output, /Post-merge review|lands on its passing checks/);
       assert.equal(f.box.states.t1, "merged");
       assert.equal(f.box.reviewAsks.length, 1);
+      assert.equal(f.box.reviews.t1.at(-1).head, f.forkHead("t1"));
+      assert.equal(f.box.reviews.t1.at(-1).approve, true);
+      if (named) {
+        assert.equal(f.posts("/review-request")[0].body.reviewer, "codex/gpt-6-astra");
+        assert.equal(f.posts("/review-request")[0].body.wanted, true);
+      }
       const step = f.box.requests.find((x) => x.method === "POST" && x.path === "/api/projects/proj/items/t1/land" && x.body.step === "review");
       assert.ok(step, "the landing recorded its review");
       assert.notEqual(step.body.skipped, true);
@@ -39,3 +45,23 @@ test("a pending review in a legacy fast record leaves the task unmerged and the 
   assert.equal(f.posts("/merged").length, 0);
   assert.match(r.output, /lease was never taken/);
 });
+
+for (const verdict of ["pending", "reject"]) {
+  test(`a named ${verdict} review blocks a legacy fast landing even when the gate needs no review (t455)`, async (t) => {
+    if (!canInspectSlots(t)) return;
+    const f = await landFixture(t);
+    f.box.mode = { mode: "fast" };
+    f.box.review.needed = false;
+    f.box.review.approve = false;
+    if (verdict === "pending") f.box.review.approveAfter = null;
+    const r = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-astra");
+    assert.equal(r.status, verdict === "pending" ? 0 : 1, r.output);
+    assert.equal(f.posts("/review-request").length, 1);
+    assert.deepEqual(f.posts("/review-request")[0].body, { reviewer: "codex/gpt-6-astra", wanted: true });
+    assert.equal(f.box.states.t1, "submitted");
+    assert.equal(f.posts("/accept").length, 0);
+    assert.equal(f.posts("/merged").length, 0);
+    assert.equal(f.posts("/landing-lease").filter(x => !x.body.cancel).length, 0);
+    assert.doesNotMatch(r.output, /Post-merge review|lands on its passing checks/);
+  });
+}
