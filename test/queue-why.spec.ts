@@ -30,7 +30,7 @@ function request(method: string, path: string, token: string, actor: string, bod
 it("a runner token's poll with why names each waiting dispatch's reason, a refused claim among them", async () => {
   const name = "queue-why-runner";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await index().registerProject(p);
   const mine = await L.newItem("Mine", [], "owner");
@@ -91,7 +91,7 @@ it("a runner token's poll with why names each waiting dispatch's reason, a refus
 it("asked by one runner, a dispatch another live runner offers is said to be for that one", async () => {
   const name = "queue-why-elsewhere";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await index().registerProject(p);
   const task = await L.newItem("For the desk", [], "owner");
@@ -108,7 +108,7 @@ it("asked by one runner, a dispatch another live runner offers is said to be for
 it("a runner's reported infrastructure skip reaches the owner's listing, for a job its poll was offered only", async () => {
   const name = "queue-why-infra";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await index().registerProject(p);
   const task = await L.newItem("Broken workspace", [], "owner");
@@ -148,7 +148,7 @@ it("a runner's reported infrastructure skip reaches the owner's listing, for a j
 it("a skip is said however many other run reports follow its failures", async () => {
   const name = "queue-why-window";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await index().registerProject(p);
   const task = await L.newItem("Failed twice", [], "owner");
@@ -178,7 +178,7 @@ it("a skip is said however many other run reports follow its failures", async ()
 it("a runner token's why poll carries no brief, note or other runner's refusal of a task it may not read", async () => {
   const name = "queue-why-private";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await index().registerProject(p);
   const task = await L.newItem("Someone else's", [], "owner", { brief: "SECRET-BRIEF the owner wrote" });
@@ -213,7 +213,7 @@ it("explains when an offering runner's token is scoped to another project, when 
   const micah = "micahapp-why";
   for (const name of [other, micah]) {
     const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-    const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+    const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
     await L.setProject(p, "owner");
     await index().registerProject(p);
   }
@@ -304,7 +304,7 @@ it("explains when an offering runner's token is scoped to another project, when 
 it("a runner's skip of a task it holds is kept for a kind it reports and refused for any other", async () => {
   const name = "queue-why-held-skip";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await index().registerProject(p);
   const task = await L.newItem("Held and blocked", [], "owner");
@@ -334,7 +334,7 @@ it("a runner's idle mark lapses after RUNNER_IDLE_MS, and the job it holds makes
   const held = "idle-mark-held", waiting = "idle-mark-waiting";
   for (const name of [held, waiting]) {
     const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-    const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+    const p = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
     await L.setProject(p, "owner");
     await index().registerProject(p);
   }

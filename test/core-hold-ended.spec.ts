@@ -10,7 +10,7 @@ const A = "claude-code/opus-5.5", RUNNER = { runner: "home:studio", kind: "home"
 async function setup(name: string) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const at = new Date().toISOString();
-  const record = { name, repo: name, createdAt: at, policy: { checks: [], protected: [], coreFiles: ["cli/runner.mjs"] } };
+  const record = { name, repo: name, createdAt: at, policy: { checks: ["npm test"], protected: [], coreFiles: ["cli/runner.mjs"] } };
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Holder", ["cli/**"], "owner");
@@ -52,7 +52,7 @@ it("an ended run on one claim lifts no other claim of the same runner and actor 
   const name = "core-hold-ended-shared";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const at = new Date().toISOString();
-  const record = { name, repo: name, createdAt: at, policy: { checks: [], protected: [], coreFiles: ["cli/runner.mjs"] } };
+  const record = { name, repo: name, createdAt: at, policy: { checks: ["npm test"], protected: [], coreFiles: ["cli/runner.mjs"] } };
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Ended", ["src/**"], "owner");

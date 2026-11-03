@@ -27,8 +27,8 @@ async function issue(projects?: string[]) {
   return await response.json() as { id: string; token: string; expiresAt: string };
 }
 
-async function project(name: string) {
-  const record = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+async function project(name: string, checks: string[] = []) {
+  const record = { name, repo: name, policy: { checks, protected: [] }, createdAt: new Date().toISOString() };
   await L(name).setProject(record, "owner");
   await I().registerProject(record);
   await L(name).newItem("Assigned task", [], "owner");
@@ -158,8 +158,8 @@ it("refuses every owner route before any project or Artifacts operation", async 
 });
 
 it("applies project scope to direct reads, writes and aggregate lists", async () => {
-  await project("token-inside");
-  await project("token-outside");
+  await project("token-inside", ["git status"]);
+  await project("token-outside", ["git status"]);
   await L("token-inside").dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
   await L("token-outside").dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
   const { token } = await issue(["token-inside"]);
@@ -173,7 +173,7 @@ it("applies project scope to direct reads, writes and aggregate lists", async ()
     await L(name).newItem("Ready task", [], "owner");
     await L(name).claim("t2", ACTOR);
     await L(name).recordPush("t2", ACTOR, "a".repeat(40), null);
-    await L(name).addEvidence({ itemId: "t2", claim: "paths", grade: "observed", head: "a".repeat(40), passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+    await L(name).addEvidence({ itemId: "t2", claim: "git status", grade: "observed", head: "a".repeat(40), passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
     await L(name).submit("t2", ACTOR);
   }
   const ownerInbox = await (await call("GET", "/inbox", OWNER_TOKEN, "owner")).json() as { project: string }[];

@@ -160,9 +160,9 @@ test("the counts: strict codes, codes with a next, exempt codes", () => {
   console.log(`# strict ${STRICT.length}, with next ${withNext}, exempt ${exempt.size}, codes ${sites.size}`);
   // Server-index validation and conflicts add two guided refusals (t7).
   assert.equal(STRICT.length, 78);
-  assert.equal(withNext, 227);
+  assert.equal(withNext, 228);
   assert.equal(exempt.size, 125);
-  assert.equal(sites.size, 352);
+  assert.equal(sites.size, 353);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });

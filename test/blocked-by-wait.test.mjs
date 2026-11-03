@@ -83,7 +83,7 @@ async function start() {
 before(async () => {
   mkdirSync(config);
   await start();
-  assert.equal((await api("PUT", "/projects/demo", {})).status, 200);
+  assert.equal((await api("PUT", "/projects/demo", { checks: ["git status"] })).status, 200);
 });
 after(async () => { await server?.close(); });
 
