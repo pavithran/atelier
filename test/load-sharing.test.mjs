@@ -12,7 +12,7 @@ const pause = () => new Promise((done) => setTimeout(done, 20));
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-sharing-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return join(dir, "pool.sqlite");
+  return join(dir, "pool", "pool.sqlite");
 }
 
 test("host pool uses a shared non-sticky directory", () => {
