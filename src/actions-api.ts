@@ -5,6 +5,7 @@
 //   POST actions               approve {kind, commit, note?, expires?, quote?}, with the acting model in the request's x-atelier-acting
 //   POST actions/ID/withdraw   withdraw an active approval {note?}
 //   POST actions/consume       use the approval for {kind, commit}: one approval, one run
+//   POST actions/starts        record a ship command starting (server timestamp)
 //   POST actions/runs          record a step a ship ran
 //
 // Every route is the project owner's. An agent token reaches none of them,
@@ -44,6 +45,10 @@ export async function actionsApi(L: LedgerStub, method: string, rest: string[], 
   }
   if (method === "POST" && rest.length === 0) return { status: 201, data: await approve(L, body, actor, ownerActor, onMainLine, acting) };
   if (method === "POST" && rest.length === 1 && rest[0] === "consume") return { status: 200, data: await L.consumeAction(body, actor) };
+  if (method === "POST" && rest.length === 1 && rest[0] === "starts") {
+    await L.startActionRun(body, actor);
+    return { status: 201, data: { recorded: true } };
+  }
   if (method === "POST" && rest.length === 1 && rest[0] === "runs") return { status: 201, data: await L.recordActionRun(body, actor) };
   if (method === "POST" && rest.length === 2 && rest[1] === "withdraw") return { status: 200, data: await L.withdrawAction(rest[0], actor, body.note) };
   throw new RuleError("not_found", "no such route", 404);

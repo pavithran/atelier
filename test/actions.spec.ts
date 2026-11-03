@@ -82,6 +82,7 @@ it("the routes are the owner's: an agent token and any other actor are refused",
     ["POST", "/projects/actions-owner/actions", { kind: "deploy", commit: H2 }],
     ["POST", "/projects/actions-owner/actions/consume", { kind: "deploy", commit: H2 }],
     ["POST", "/projects/actions-owner/actions/runs", {}],
+    ["POST", "/projects/actions-owner/actions/starts", {}],
     ["POST", "/projects/actions-owner/actions/a1/withdraw", {}],
   ] as const) {
     const byAgent = await api(method, path, "codex/gpt-6-astra", body, issued.token);
