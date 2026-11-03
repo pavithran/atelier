@@ -1,0 +1,57 @@
+# t478 investigation, incomplete
+
+No implementation or test behavior changed. No test was deleted or skipped.
+The acceptance criteria remain unmet: the suite has not run and there are no
+pass/fail counts for this workspace. Nothing was pushed.
+
+## Validation obstacle
+
+The required host slot wrapper refused both commands before launching their
+children:
+
+```text
+node '/Users/atelier-build/ai-projects/atelier-runner/cli/load.mjs' -- node -e '<suite launcher>'
+test slots: unable to open database file
+exit 1
+
+node '/Users/atelier-build/ai-projects/atelier-runner/cli/load.mjs' -- npm run typecheck
+test slots: unable to open database file
+exit 1
+```
+
+The suite launcher would print the slot acquisition time, spawn `npm test`
+with output in `.scratch/baseline.log`, and terminate it after 60 minutes.
+It never started. Neither command acquired a slot; suite run time and test
+counts are unavailable. This was not a suite timeout or a failing test.
+There is no red or green test output. Tests were not run outside the wrapper.
+
+Local `cli/load.mjs` documents the host database as
+`/tmp/atelier-test-slots-v1.sqlite` and explicitly provides no production path
+override. Repairing that host resource would require access outside the
+workspace, which this task forbids. Restore host slot admission before
+continuing; do not replace it with a private pool or pretend to hold a slot.
+
+## History and preliminary findings
+
+Inspected `git log --oneline 6fec9b6a..HEAD` at `0da075b4`, including the
+rules changes in `9a987830` and `aa123570`. These are source-inspection findings,
+not a reproduced inventory of all suite failures.
+
+| Reported group | Evidence and cause | Decision and remaining work |
+| --- | --- | --- |
+| Accept/merge fixture refusals | t437's `9a987830` makes measured code require an independent review even with no protected paths. `src/refresh/lifecycle.cases.mjs` setup submits `src/a.ts` and immediately accepts without a review. | That fixture needs a valid independent approval, retaining all lifecycle assertions. No edit made without a red run. Other fixtures still need individual inspection. |
+| Coordinated changes needing no review | The same commit removes the no-review exemption for coordinated code changes. | Tests of that removed exemption should assert the new review requirement. The exact failing cases still need reproduction. |
+| riskReviews | `9a987830` initially forced one review; `aa123570` restored project counts with `Math.max(1, r.reviews[risk])`. Documentation remains exempt; executable tests no longer qualify as documentation. | Preserve multi-review gates. Classify each failing assertion against the final policy, rather than reducing all expectations to one. No test or code changed. |
+| Secret flags | `test/secret-flag.test.ts` has stale-head and cleared-flag cases expecting `gate(..., passing, []).ready === true` for `src/keys.ts`. The independent review is missing, although the secret blocker is correctly absent. | Supply the review prerequisite while retaining standing-secret and pending-scan refusals. Text-to-text scan cases still need inspection; no conclusion about their implementation yet. |
+| reviewNeeded and independentApproval | `approvalsNeeded` now counts code approvals as protected, including coordinated paths; existing single-family rules still apply. | Reproduce each failure and check contributor, model alias, family and policy refusals. No blanket expectation change is justified. |
+| Accept override tests | New review prerequisites may affect setups, but no failing run was obtained. | Cause and test-versus-code decision unresolved. Preserve override refusals. |
+| reviewBrief tests | No failing run was obtained. | Cause and test-versus-code decision unresolved. |
+| atelier-review-sh ENOENT | No failing run was obtained. A prior report in `test/t451-validation.md` records extensionless CommonJS fixtures being treated as ES modules when scratch lives inside this ESM package. This is a lead, not proof of this failure's cause. | Reproduce and inspect fixture stderr before deciding. |
+
+No contracts, routes, disclosure levels, UI, generated pages, or completion
+markers were changed. There is no new platform dependency or deployment.
+The existing host process-inspection smoke workflow is documented in
+`docs/test-slots.md`; it does not establish that this host's database is usable.
+
+The referenced house-style file is unavailable inside this workspace and
+was not read. This report and the commit message use plain prose.
