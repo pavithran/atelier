@@ -4912,6 +4912,10 @@ export class Ledger extends DurableObject<Env> {
   unblock(id: string, actor: string, proved = false, direction: OwnerDirection | null = null): Item {
     const item = this.item(id);
     const fence = this.prereviewFence(id);
+    const roundCap = item.blocked?.by === ORCHESTRATOR && /^\d+ review rounds were rejected and no further round starts on its own/.test(item.blocked.reason);
+    if (roundCap && (actor !== this.owner || !direction?.quote.trim() || !direction.acting)) {
+      throw new RuleError("direction_needed", "A review round cap needs the developer's words: unblock with --quote \"what the developer said\" --as H/M", 403, `atelier unblock ${id} --quote \"what the developer said\" --as H/M`);
+    }
     if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`, 409, "run atelier show ID");
     // A block that is a fact (G7: a run stopped at its limit) waits on no
     // one's decision, so any model with standing in the project lifts it.

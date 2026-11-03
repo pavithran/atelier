@@ -78,7 +78,14 @@ it("the round after the cap is not started: the task is held for the developer w
   expect((await L.inbox(new Date().toISOString())).some((e: { itemId: string; kind: string }) => e.itemId === id && e.kind === "blocked")).toBe(true);
 
   // The developer unblocks it and the builder pushes again; no round starts by itself.
-  await L.unblock(id, "owner");
+  for (const actor of ["owner", OPUS]) {
+    await expect(L.unblock(id, actor)).rejects.toThrow(/--quote/);
+    expect((await L.item(id)).state).toBe("blocked");
+    expect((await events(L, id)).some((e) => e.kind === "item.unblocked")).toBe(false);
+  }
+  await expect(L.unblock(id, OPUS, false, { quote: "my own words", acting: OPUS })).rejects.toThrow(/--quote/);
+  await expect(L.unblock(id, "owner", false, { quote: "  ", acting: OPUS })).rejects.toThrow(/--quote/);
+  await L.unblock(id, "owner", false, { quote: "Try another round", acting: OPUS });
   await pushed(L, id, head(REVIEW_ROUND_CAP + 1));
   const next = await L.requestReview(id, "owner", null, POOL);
   expect(next.needed).toBe(false);
