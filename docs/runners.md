@@ -630,7 +630,9 @@ Runner admission no longer uses load average. Individual test commands share
 through the documented wrapper. Review harnesses inherit review priority;
 build and plan harnesses inherit ordinary priority. The runner includes the
 wrapper's absolute path in build, plan and review briefs. The old `loadLimit`
-setting is ignored.
+setting is ignored. The pool at `/tmp/atelier-test-slots-v2/pool.sqlite` and its
+journals are world writable in a non-sticky shared directory, including after
+reboot; cleanup checks the caller’s launch nonce in live processes before signalling, never trusting stored PIDs.
 
 ```sh
 atelier runner --name home:studio

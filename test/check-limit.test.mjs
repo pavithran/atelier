@@ -124,7 +124,7 @@ function isolatedWrapper() {
   const root = temp("slots");
   mkdirSync(join(root, "cli"));
   const source = readFileSync(resolve("cli/load.mjs"), "utf8");
-  const isolated = source.replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(join(root, "pool.sqlite")));
+  const isolated = source.replace('"/tmp/atelier-test-slots-v2/pool.sqlite"', JSON.stringify(join(root, "pool.sqlite")));
   assert.notEqual(isolated, source);
   writeFileSync(join(root, "cli/load.mjs"), isolated);
   return { root, wrapper: join(root, "cli/load.mjs") };
@@ -178,7 +178,7 @@ async function checkFixture(t, policy) {
   cpSync(resolve("src"), join(root, "src"), { recursive: true });
   symlinkSync(resolve("node_modules"), join(root, "node_modules"));
   const load = join(root, "cli/load.mjs");
-  writeFileSync(load, readFileSync(load, "utf8").replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(join(root, "pool.sqlite"))));
+  writeFileSync(load, readFileSync(load, "utf8").replace('"/tmp/atelier-test-slots-v2/pool.sqlite"', JSON.stringify(join(root, "pool.sqlite"))));
   const source = join(root, "source"), remote = join(root, "remote.git");
   execFileSync("git", ["init", "-q", "-b", "main", source]);
   execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "--allow-empty", "-m", "Initial"], { cwd: source });

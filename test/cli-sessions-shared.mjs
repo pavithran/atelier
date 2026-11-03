@@ -14,10 +14,10 @@ export function fixture(t) {
   const slotPool = join(dir, "slots.sqlite"), slotWrapper = join(dir, "load.mjs");
   const slotModule = new URL("../cli/load.mjs", import.meta.url);
   const slotSource = readFileSync(slotModule, "utf8");
-  const declaration = 'export const HOST_POOL = "/tmp/atelier-test-slots-v1.sqlite";';
+  const declaration = 'export const HOST_POOL = "/tmp/atelier-test-slots-v2/pool.sqlite";';
   if (slotSource.split(declaration).length !== 2) throw Error("cannot isolate the session test pool");
   const isolation = join(dir, "isolate.mjs"), slotLog = join(dir, "slot-opens.jsonl");
-  const opening = "  const db = new DatabaseSync(options.path ?? HOST_POOL);";
+  const opening = "    const path = options.path ?? HOST_POOL;";
   if (slotSource.split(opening).length !== 2) throw Error("cannot guard the session test pool");
   // Guard the scheduler's database opening in this test copy, including in
   // descendants whose environment drops the module hook. SQLite stays real.
