@@ -51,6 +51,7 @@ import { commandModuleName } from "../src/usage/command.ts";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { serverFetch } from "./server-fetch.mjs";
+import { transientRead } from "./transient-read.mjs";
 import { joinMainMerges } from "./workspace-branch.mjs";
 import * as grants from "./read-grant.mjs";
 import { lowSpeedEnv, secondsOf, serverTimeoutMs, talksToRemote, timedOut, tooSlow, withTimeout } from "./timeouts.mjs";
@@ -474,7 +475,7 @@ function checkFlags(cmd) {
 // declared preflight call (RUNNER_CALLS in src/tokens.ts, t478).
 export async function serverVersion() {
   try {
-    const res = await serverFetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal: AbortSignal.timeout(30_000) });
+    const res = await transientRead(() => serverFetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal: AbortSignal.timeout(30_000) }));
     return res.ok ? await res.json() : null;
   } catch { return null; }
 }
@@ -1049,10 +1050,12 @@ const checkFor = (path) => {
 // after it, so a reset is not here.
 const NEVER_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"]);
 
-// The only write asked again by itself: a push is idempotent by head, so the
-// same head again changes nothing. Every other write that failed uncertainly
-// stops, and the command's own "already" answer serves a rerun by hand.
+// Writes repeated automatically must be idempotent: the same head, claim
+// generation or result changes nothing when sent again. Other writes that
+// failed uncertainly stop for the caller to inspect before rerunning.
 export const REPEATABLE_WRITES = [
+  // Renewing the same review generation extends only its existing claim.
+  /^POST \/projects\/[^/]+\/items\/[^/]+\/review-renew$/,
   /^POST \/projects\/[^/]+\/items\/[^/]+\/push$/,
   // A check result: the same result posted again is recorded once
   // (addEvidence in src/ledger.ts), and one for an older head is refused.
