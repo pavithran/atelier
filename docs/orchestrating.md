@@ -1632,3 +1632,10 @@ run reports. Work done outside it is invisible. When you judge a finding,
 resolve a conflict, or watch a run fail, record it, so the comparison
 between models grows from every project and not only from the sessions that
 remember to write it down.
+
+Projects deploy through `atelier ship` so a hung deploy can be seen. Ship records
+when each command starts. `atelier stuck` and `atelier status` name a ship step
+running for more than 60 minutes, with its command and start time. Deploys run
+outside `atelier ship` are not tracked. Give a long command a deadline in the
+ship order (`timeout_seconds`); the stuck report observes a hang, but does not
+stop the command.

@@ -503,6 +503,9 @@ export async function ship(ctx) {
     exitStatus: r.status ?? null, signal: r.signal ?? null, durationMs: r.durationMs ?? 0, passed: r.passed,
     outputTail: ctx.redact(r.output ?? "", ctx.secrets).slice(-TAIL), ship: id, note: extra ?? "",
   });
+  const starting = (step, command) => request("POST", `${P}/actions/starts`, {
+    ship: id, step, command: ctx.redact(command, ctx.secrets), commit,
+  });
   const rest = (from) => plan.steps.slice(from).map((s) => s.step).filter((s) => !WITH_PUSH.has(s) || ctx.push);
   // The deploy record (G9): once the ship has begun it records itself, the
   // head, who and the result, whether it ships or fails.
@@ -529,11 +532,13 @@ export async function ship(ctx) {
       // What wrap prints next speaks for the wrap alone: its "not pushed" and
       // "nothing deployed" lines are about what wrap itself did.
       print(`wrap: running atelier wrap ${quote(summary)}; its own output follows`);
+      await starting(s.step, `atelier wrap ${quote(summary)}`);
       const r = await ctx.wrap(summary, stepEnv(ctx.env, null, true));
       results.push({ ...r, command: `atelier wrap ${quote(summary)}`, passed: r.status === 0 });
     } else if (s.step === "push") {
       const started = Date.now();
       const label = pushLabel(target, branch);
+      await starting(s.step, label);
       const r = pushCheckoutRemote({ git, dir: cwd, branch, targetBranch: target.branch, remote: target.remote, identity: ctx.identity, project: name });
       const now = git(["rev-parse", "HEAD"], { cwd });
       const listed = r.status === 0 ? git(["ls-remote", target.remote, `refs/heads/${target.branch}`], { cwd, allowFail: true, ownerRemote: true }) : null;
@@ -551,6 +556,7 @@ export async function ship(ctx) {
         // A retry is the same run: it uses the approval already taken.
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
+          await starting(s.step, command);
           const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });

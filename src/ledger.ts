@@ -80,7 +80,7 @@ import {
 } from "./plans/state.ts";
 import { integrationBlockers, nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
-import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
+import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
@@ -7302,6 +7302,10 @@ export class Ledger extends DurableObject<Env> {
 
   consumeAction(body: Record<string, unknown>, actor: string): ApprovalView {
     return consumeAction(this.actionStore, actor, body, new Date().toISOString());
+  }
+
+  startActionRun(body: Record<string, unknown>, actor: string): void {
+    startActionRun(this.actionStore, actor, body);
   }
 
   recordActionRun(body: Record<string, unknown>, actor: string): ActionRun {

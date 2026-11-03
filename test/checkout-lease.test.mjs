@@ -147,6 +147,7 @@ async function shipper(t, real, { failDeploys = 0 } = {}) {
       a.consumed = true;
       return send(200, a);
     }
+    if (path === "/api/projects/demo/actions/starts") return send(201, { recorded: true });
     if (path === "/api/projects/demo/actions/runs") { state.runs.push(body); return send(201, body); }
     if (path === "/api/projects/demo" && req.method === "GET") return send(200, { project: { policy: { checks: [] } }, items: [] });
     if (path === "/api/projects/demo/git-token") return send(200, { kind: "read", remote: join(dir, "baseline.git"), token: "t", expiresAt: "2999-01-01T00:00:00.000Z", defaultBranch: "main", repository: "server" });

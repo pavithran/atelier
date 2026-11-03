@@ -217,8 +217,14 @@ export function consumeAction(store: ActionStore, actor: string, body: Record<st
   return view(match, now);
 }
 
-// A step a ship ran. A run that names an approval must name one this
-// revision and kind used, so the record cannot claim an approval it did not have.
+// A start is an observation, with no completion or approval claim.
+export function startActionRun(store: ActionStore, actor: string, body: Record<string, unknown>): void {
+  ownerOnly(store, actor, "records a ship step start");
+  const run = cleanRun({ ...body, durationMs: 0, passed: false });
+  store.log("action.started", { ship: run.ship, step: run.step, command: run.command, commit: run.commit });
+}
+
+// A completed run must name an approval used for this revision and kind.
 export function recordActionRun(store: ActionStore, actor: string, body: Record<string, unknown>): ActionRun {
   ownerOnly(store, actor, "records a protected action");
   const run = cleanRun(body);
