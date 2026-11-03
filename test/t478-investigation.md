@@ -1,5 +1,32 @@
 # t478 investigation, incomplete
 
+## Further continuation on 2026-11-03
+
+Preserved both earlier commits and retried admission at `4ec3f507`:
+
+```text
+node '/Users/atelier-build/ai-projects/atelier-runner/cli/load.mjs' -- sh -c 'date +%s; exec npm test'
+test slots: unable to open database file
+exit 1
+
+node '/Users/atelier-build/ai-projects/atelier-runner/cli/load.mjs' -- npm run typecheck
+test slots: unable to open database file
+exit 1
+```
+
+Neither child started. The suite's acquisition timestamp was never printed;
+there is no acquired-slot wait measurement, suite run time, or pass/fail count.
+This is an admission failure, not a suite timeout or a failing test. The
+workspace-only restriction prevents repairing the host database. No bypass
+was attempted.
+
+No behavior changed, so there is no red or green test result. No tests were
+deleted, skipped, or weakened. The group findings and unresolved decisions
+below remain preliminary; the acceptance criteria are unmet. No routes,
+contracts, visibility rules, UI, generated pages, or completion markers changed.
+No atelier command was run and nothing was pushed. The referenced house-style
+file is unavailable within this workspace and was not read.
+
 ## Continuation on 2026-11-03
 
 Retried validation from the workspace at `3cd311b5`, preserving the earlier
