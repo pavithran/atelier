@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeFlow, taskFlow, type FlowEvent } from "../src/flow.ts";
+import { computeFlow, taskFlow, formatScorecard, type FlowEvent } from "../src/flow.ts";
 
 // Where a task's time goes (t467, src/flow.ts, docs/flow.md): the minutes in
 // each phase, from the events the ledger records and from nothing else.
@@ -21,7 +21,7 @@ test("a clean task: every phase is the minutes between its bounding events", () 
   ], T0 + 999 * MIN);
   assert.equal(f.complete, true);
   assert.deepEqual(Object.fromEntries(Object.entries(f.phases).map(([p, t]) => [p, min(t.ms)])), {
-    runnerWait: 3, build: 20, checks: 6 + 5, reviewWait: 20, accept: 9, waitToLand: 10, merge: 1,
+    criteriaReview: 0, runnerWait: 3, build: 20, checks: 6 + 5, reviewWait: 20, accept: 9, waitToLand: 10, merge: 1,
   });
   assert.ok(Object.values(f.phases).every((t) => !t.unknown && !t.open));
   assert.equal(f.merged, true);
@@ -142,3 +142,33 @@ test("the report counts the tasks with a measured phase apart from those with a 
   assert.equal(r.counted, 2);
   assert.equal(r.measured, 1);
 });
+
+ test("scorecard pins criteria, landing, medians and JSON on recorded history", () => {
+  const history = (id: string, end: number, rejected = false) => ({ id, events: [
+    made(), ev(1, "criteria_review.requested"), ev(4, "criteria_review.approved"),
+    ev(5, "item.claimed"), ev(10, "item.submitted"),
+    ...(rejected ? [ev(11, "review.rejected"), ev(12, "item.submitted")] : []),
+    ev(15, "review.approved"), ev(16, "item.accepted"), ev(18, "landing.begun"), ev(end, "item.merged"),
+  ] });
+  const r = computeFlow([history("a", 20), history("b", 30, true), history("c", 100)], T0 + 110 * MIN);
+  assert.equal(r.medianMinutesToMerge, 30);
+  assert.equal(r.medianReviewRounds, 1);
+  assert.equal(r.rejectionRate, 1 / 3);
+  assert.equal(r.totals.criteriaReview.ms, 9 * MIN);
+  assert.equal(r.totals.merge.ms, 96 * MIN);
+  assert.equal(r.phaseShares.criteriaReview, 9 / 144);
+  assert.equal(JSON.parse(JSON.stringify(r)).medianMinutesToMerge, 30);
+  const lines = formatScorecard(r);
+  assert.ok(lines.length < 15);
+  assert.match(lines.join("\n"), /Merged: 3/);
+  assert.match(lines.join("\n"), /Median filing to merge: 30.0 min/);
+  assert.match(lines.join("\n"), /criteria review/);
+  assert.equal(computeFlow([], T0).medianMinutesToMerge, null);
+  assert.equal(computeFlow([], T0).phaseShares.merge, null);
+ });
+ test("unfinished landing stays open and has no completed duration", () => {
+  const r = computeFlow([{ id: "a", events: [made(), ev(2, "landing.begun")] }], T0 + 5 * MIN);
+  assert.equal(r.tasks[0].phases.merge.open, true);
+  assert.equal(r.merged, 0);
+  assert.equal(r.medianMinutesToMerge, null);
+ });
