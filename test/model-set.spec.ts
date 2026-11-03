@@ -122,12 +122,12 @@ type Event = { kind: string; data: Record<string, unknown> };
 async function submitted(name: string) {
   const L = ledger(name);
   // A change to a protected path, which the gate needs reviewed.
-  await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() }, "owner");
+  await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, protected: ["security.ts"] }, createdAt: new Date().toISOString() }, "owner");
   const { id } = await L.newItem("Small task", [], "owner");
   await L.claim(id, BUILDER);
   await L.setWorkspace(id, `fork-${id}`, H0, BUILDER);
   await L.recordPush(id, BUILDER, H1, H1);
-  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L.submit(id, BUILDER);
   return { L, id };
 }

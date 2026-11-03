@@ -35,9 +35,9 @@ async function world(t) {
   const config = join(root, "config");
   mkdirSync(config);
   const cli = async (argv, extra = {}) => {
-    const env = { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ...extra };
+    const env = { ...process.env, GIT_CEILING_DIRECTORIES: process.cwd(), ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: server.url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ...extra };
     for (const k of ["ATELIER_PROJECT", "ATELIER_ACTOR", "ATELIER_ACTING", "ATELIER_JSON"]) if (!(k in extra)) delete env[k];
-    try { const { stdout, stderr } = await run(process.execPath, ["cli/atelier.mjs", ...argv], { env, timeout: 60_000 }); return { code: 0, stdout, stderr }; }
+    try { const { stdout, stderr } = await run(process.execPath, [new URL("../cli/atelier.mjs", import.meta.url).pathname, ...argv], { env, cwd: root, timeout: 60_000 }); return { code: 0, stdout, stderr }; }
     catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
   };
   assert.equal((await api("PUT", "/projects/demo", {}, { "x-atelier-acting": OPUS })).status, 200);

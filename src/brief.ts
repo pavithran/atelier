@@ -157,9 +157,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
   // The ledger names a blocking finding on a file the scope lacks (t270).
   const gap = (detail as Detail & { scopeGap?: string }).scopeGap;
   if (gap) lines.push({ rank: 0, text: gap });
-  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}.` });
+  if (item.head && view.changedPaths !== null && gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}.` });
   const single = singleFamily(policy);
-  if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
+  if (item.head && view.changedPaths !== null && gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
   const overridden = overrideOf(detail);
   if (overridden) lines.push({ rank: -1, text: `The developer overrode the independent review at this revision: ${clip(overridden.reason, 200).replace(/[.\s]*$/, "")}.` });
   if (view.reports.length) lines.push({ rank: 3, text: `${plural(view.reports.length, "report")} recorded, not verified.` });
@@ -253,7 +253,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   const asked = p.rejections.map((r) => `${reviewer(d, r.by)} asked for changes at this revision`);
   const failedChecks = [...p.failed.map((c) => `\`${c.claim}\` failed at this revision`), ...p.onMerge];
   if (failedChecks.length) return { verdict: "send back", reason: `${upper([...asked, ...failedChecks].join(" and "))}.` };
-  if (item.state === "submitted" && gate.needsAssessor) {
+  if (item.state === "submitted" && item.head && !p.unmeasured && gate.needsAssessor) {
     const also = [
       ...asked,
       ...p.pending.map((c) => `\`${c.claim}\` is also not yet observed at this revision`),

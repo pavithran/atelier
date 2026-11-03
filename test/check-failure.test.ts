@@ -1,3 +1,4 @@
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -7,7 +8,7 @@ import {
   headsWithChecks, LOCAL_OUTPUT_TAIL, readCheckLog, resolveFailures, SANDBOX_OUTPUT_TAIL, SUMMARY_TAIL_CHARS, SUMMARY_TAIL_LINES, SUMMARY_TEST_NAMES,
 } from "../src/check-failure.ts";
 import { LARGE_MAX, type LargeRef } from "../src/large.ts";
-import { gate, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
+import { gate, type Review, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
 
 // The failure summary (t436, src/check-failure.ts): the failed checks as the
 // gate reads them at a head, each log read by reference or inline and
@@ -16,6 +17,7 @@ import { gate, type Evidence, type Item, type ProjectPolicy } from "../src/rules
 
 const fixture = (name: string) => readFileSync(resolve("test/fixtures/check-logs", name), "utf8");
 const H1 = "a".repeat(40), H2 = "b".repeat(40), M1 = "1".repeat(40), M2 = "2".repeat(40);
+const approvals: Review[] = [{ itemId: "t1", by: "zcode/glm-5.3", head: H1, criteria: NO_CRITERIA, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }];
 const policy: ProjectPolicy = { checks: ["npm test", "npm run typecheck"], protected: [] };
 let n = 0;
 const at = (i: number) => new Date(Date.UTC(2026, 9, 10, 12, 0, i)).toISOString();
@@ -24,7 +26,7 @@ const ev = (over: Partial<Evidence> = {}): Evidence => {
   return { itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: false, by: "codex/test", at: at(n), changedPaths: ["src/a.ts"], where: "runner", outputTail: "", id: n, ...over };
 };
 const item = (over: Partial<Item> = {}): Item => ({
-  id: "t1", title: "Fix the thing", scope: ["src/**"], state: "submitted", owner: "codex/test", workspace: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
+  id: "t1", title: "Fix the thing", scope: ["src/**"], state: "submitted", owner: "codex/gpt-6-astra", workspace: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null,
   createdAt: at(0), updatedAt: at(0), lastPushAt: at(0), ...over,
 });
 const ref = (over: Partial<LargeRef> = {}): LargeRef => ({ key: "logs/p/t1/" + "c".repeat(64), bytes: 12_000, sha256: "c".repeat(64), ...over });
@@ -135,7 +137,7 @@ test("a log kept as a tail says the names may have been cut with the rest, inste
 test("a check whose latest run at the head passes is no failure, however many earlier runs failed (retries)", () => {
   const evidence = [ev({ passed: false }), ev({ passed: false }), ev({ passed: true }), ev({ claim: "npm run typecheck", passed: true })];
   assert.deepEqual(effectiveFailures(policy, evidence, H1), []);
-  assert.deepEqual(gate(item(), policy, evidence, []).blockers, []);
+  assert.deepEqual(gate(item(), policy, evidence, approvals).blockers, []);
 });
 
 test("the latest run decides: a failure after a pass is the failure, named by its evidence id and its place among the attempts", () => {
@@ -152,7 +154,7 @@ test("the latest run decides: a failure after a pass is the failure, named by it
   assert.equal(f.merged, false);
   assert.equal(f.outputTail, "not ok 1 - the cap");
   // The same run the gate names.
-  assert.deepEqual(gate(item(), policy, evidence, []).blockers, ["`npm test` failed when observed"]);
+  assert.deepEqual(gate(item(), policy, evidence, approvals).blockers, ["`npm test` failed when observed"]);
 });
 
 test("the failures follow the policy's order and keep the container run id, where it ran and its load", () => {
@@ -186,7 +188,7 @@ test("a failing run on the merge with main is a failure exactly when the gate co
   const failures = effectiveFailures(policy, [own, ownType, blocking], H1);
   assert.equal(failures.length, 1);
   assert.deepEqual([failures[0].merged, failures[0].mainHead, failures[0].id], [true, M2, blocking.id]);
-  assert.match(gate(item(), policy, [own, ownType, blocking], []).blockers.join("\n"), /failed on the merge with main at 22222222/);
+  assert.match(gate(item(), policy, [own, ownType, blocking], approvals).blockers.join("\n"), /failed on the merge with main at 22222222/);
   // The same main as the head's own check saw: shown, not counted, so not a failure.
   const same = ev({ passed: false, merged: true, mainHead: M1, changedPaths: null });
   assert.deepEqual(effectiveFailures(policy, [own, ownType, same], H1), []);

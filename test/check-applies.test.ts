@@ -1,6 +1,7 @@
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkApplies, evidenceAt, gate, parseRuleError, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
+import { checkApplies, evidenceAt, gate, parseRuleError, type Review, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
 import { appliesReason, appliesText, parseCheckPaths, settleCheckPaths } from "../src/checks.ts";
 import { briefFor } from "../src/brief.ts";
 
@@ -14,6 +15,7 @@ const item = (over: Partial<Item> = {}): Item => ({
   id: "t1", title: "Edit", scope: [], state: "submitted", owner: "claude-code/opus-5.5",
   workspace: "p--t1", base: "0".repeat(40), head: H1, acceptedHead: null, createdAt: T, updatedAt: T, lastPushAt: T, ...over,
 });
+const approvals: Review[] = [{ itemId: "t1", by: "zcode/glm-5.3", head: H1, criteria: NO_CRITERIA, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }];
 const policy: ProjectPolicy = {
   checks: ["npm test", "xcodebuild build"],
   checkPaths: [{ command: "xcodebuild build", paths: ["App/**", "project.yml"] }],
@@ -48,10 +50,10 @@ test("the gate requires a check exactly when it applies, and shows it as not app
   // A change to the app: the build applies, and the gate waits for it.
   const app = [observed("npm test", { changedPaths: ["App/View.swift"] })];
   assert.deepEqual(evidenceAt(policy, app, H1).notApplicable, []);
-  assert.deepEqual(gate(item(), policy, app, []).blockers, ["`xcodebuild build` not yet observed at this head"]);
+  assert.deepEqual(gate(item(), policy, app, approvals).blockers, ["`xcodebuild build` not yet observed at this head"]);
   // A failure of a check that does not apply does not block, and a pass of one that does still counts.
   assert.equal(gate(item(), policy, [...docs, observed("xcodebuild build", { passed: false })], []).ready, true);
-  assert.equal(gate(item(), policy, [...app, observed("xcodebuild build", { changedPaths: ["App/View.swift"] })], []).ready, true);
+  assert.equal(gate(item(), policy, [...app, observed("xcodebuild build", { changedPaths: ["App/View.swift"] })], approvals).ready, true);
   // Before the paths are measured, a check with paths may apply, so it waits.
   const unmeasured = evidenceAt(policy, [], H1);
   assert.deepEqual(unmeasured.checks.map((c) => c.claim), ["npm test", "xcodebuild build"]);
@@ -66,7 +68,7 @@ test("a record that a check does not apply measures the paths and is never its r
   assert.equal(gate(item(), only, [na], []).ready, true);
   // If the check applies after all, such a record is not a result: the check waits.
   const app = observed("xcodebuild build", { passed: null, notApplicable: true, changedPaths: ["App/View.swift"] });
-  assert.deepEqual(gate(item(), only, [app], []).blockers, ["`xcodebuild build` not yet observed at this head"]);
+  assert.deepEqual(gate(item(), only, [app], approvals).blockers, ["`xcodebuild build` not yet observed at this head"]);
 });
 
 test("the brief counts checks that do not apply, and says so when none applies", () => {

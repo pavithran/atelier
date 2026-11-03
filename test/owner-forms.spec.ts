@@ -22,7 +22,7 @@ const A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 =
 // change the owner's page never showed, made between the route's reads.
 async function setup(name: string) {
   const race: { during?: () => Promise<unknown> } = {};
-  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() };
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["security.ts"] }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
@@ -30,7 +30,7 @@ async function setup(name: string) {
   await L.claim("t1", A);
   await L.setWorkspace("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L.submit("t1", A);
   const logs: Record<string, { hash: string; parents: string[]; treeHash: string }[]> = {
     [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }],

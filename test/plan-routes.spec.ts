@@ -315,6 +315,7 @@ it("a part's builder reads its brief: the spec and checks, dependencies with lan
   await L.recordPush(a.id, actor, H1, H1);
   await L.addEvidence({ itemId: a.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: actor, at: new Date().toISOString(), changedPaths: ["src/a/one.ts"] });
   await L.submit(a.id, actor);
+  await L.addReview({ itemId: a.id, head: H1, criteria: await L.criteria(a.id), by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept(a.id, "owner");
   await L.merged(a.id, "owner", `merge-${a.id}`, true);
   const bDispatch = (await L.item(b.id)).dispatch!;

@@ -56,7 +56,8 @@ test("a real rejected post-merge review of a fast landing leaves blocking goal n
   try {
     await L.setMode("owner", "fast", "product work", OPUS, "go fast");
     const id = await submitted(head(1));
-    await L.accept(id, "owner", head(1));
+    await L.confirmOverride(id, "owner", head(1), "access");
+    await L.accept(id, "owner", head(1), "Exercise the post-merge audit without a pre-merge approval");
     const merge = "d".repeat(40);
     await L.merged(id, "owner", merge, true);
     assert.equal((await L.item(id)).state, "merged");

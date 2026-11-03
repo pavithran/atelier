@@ -95,6 +95,7 @@ it("real authenticated queue routes offer submitted/accepted work unless landing
   await L.addEvidence({ itemId: "t1", claim: "git status", grade: "observed", head: "a".repeat(40), passed: true, by: "owner", at, changedPaths: ["src/a.ts"] });
   await L.submit("t1", A);
   expect(await offered()).toContain("t2");
+  await L.addReview({ itemId: "t1", head: "a".repeat(40), criteria: await L.criteria("t1"), by: "zcode/glm-5.3", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept("t1", "owner");
   expect(await offered()).toContain("t2");
   await L.beginProjectLanding("t1", "owner");

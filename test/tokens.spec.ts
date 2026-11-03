@@ -82,7 +82,7 @@ for (const transfer of ["handoff", "release"]) {
   it(`plain Git pushes before ${transfer} cannot make a holder independent`, async () => {
     const name = `token-delayed-${transfer}`;
     await project(name);
-    await L(name).setProject({ name, repo: name, policy: { checks: [], protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() }, "owner");
+    await L(name).setProject({ name, repo: name, policy: { checks: [], protected: ["security.ts"] }, createdAt: new Date().toISOString() }, "owner");
     const next = "claude-code/opus-5.5", head = "c".repeat(40);
     await L(name).claim("t1", ACTOR);
     // The Git push has reached Artifacts but has no ledger event yet.
@@ -91,7 +91,7 @@ for (const transfer of ["handoff", "release"]) {
     await L(name).observePush("t1", "b".repeat(40), null);
     if (transfer === "release") await L(name).claim("t1", next);
     await L(name).recordPush("t1", next, head, null);
-    await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: next, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+    await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: next, at: new Date().toISOString(), changedPaths: ["security.ts"] });
     await L(name).submit("t1", next);
     const review = { itemId: "t1", by: ACTOR, head, criteria: NO_CRITERIA, approve: true, note: "", at: new Date().toISOString() };
     await L(name).addReview(review);
@@ -175,6 +175,7 @@ it("applies project scope to direct reads, writes and aggregate lists", async ()
     await L(name).recordPush("t2", ACTOR, "a".repeat(40), null);
     await L(name).addEvidence({ itemId: "t2", claim: "git status", grade: "observed", head: "a".repeat(40), passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
     await L(name).submit("t2", ACTOR);
+    await L(name).addReview({ itemId: "t2", head: "a".repeat(40), criteria: NO_CRITERIA, by: "claude-code/opus-5.5", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   }
   const ownerInbox = await (await call("GET", "/inbox", OWNER_TOKEN, "owner")).json() as { project: string }[];
   expect(ownerInbox.some((entry) => entry.project === "token-outside")).toBe(true);
@@ -257,12 +258,14 @@ it("agent reviews cannot reopen accepted work but the owner can", async () => {
   await L(name).recordPush("t1", "claude-code/opus-5.5", head, null);
   await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
   await L(name).submit("t1", "claude-code/opus-5.5");
+  await L(name).addReview({ itemId: "t1", head, criteria: NO_CRITERIA, by: "zcode/glm-5.3", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
+  const standing = await L(name).reviewsFor("t1");
   await L(name).accept("t1", "owner", head);
   for (const approve of [true, false]) {
     expect((await call("POST", `/projects/${name}/items/t1/review`, token, undefined, { head, criteria: NO_CRITERIA, approve })).status).toBe(403);
     await refusal(L(name).addReview({ itemId: "t1", criteria: await L(name).criteria("t1"), by: ACTOR, head, approve, note: "", at: new Date().toISOString() }, undefined, true), "accepted", /only the developer token may reopen/);
     expect((await L(name).item("t1")).state).toBe("accepted");
-    expect(await L(name).reviewsFor("t1")).toEqual([]);
+    expect(await L(name).reviewsFor("t1")).toEqual(standing);
   }
   expect((await call("POST", `/projects/${name}/items/t1/review`, OWNER_TOKEN, "owner", { head, criteria: NO_CRITERIA, approve: false })).status).toBe(200);
   expect((await L(name).item("t1")).state).toBe("submitted");
@@ -271,13 +274,13 @@ it("agent reviews cannot reopen accepted work but the owner can", async () => {
 it("handoffs cannot erase push contributors from the acceptance gate", async () => {
   const name = "token-contributors";
   await project(name);
-  await L(name).setProject({ name, repo: name, policy: { checks: [], protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() }, "owner");
+  await L(name).setProject({ name, repo: name, policy: { checks: [], protected: ["security.ts"] }, createdAt: new Date().toISOString() }, "owner");
   const head = "b".repeat(40);
   await L(name).claim("t1", ACTOR);
   await L(name).recordPush("t1", ACTOR, "a".repeat(40), null);
   await L(name).handoff("t1", ACTOR, "claude-code/opus-5.5", "");
   await L(name).observePush("t1", head, "a".repeat(40));
-  await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L(name).addEvidence({ itemId: "t1", claim: "paths", grade: "observed", head, passed: true, by: ACTOR, at: new Date().toISOString(), changedPaths: ["security.ts"] });
   await L(name).submit("t1", "claude-code/opus-5.5");
   await L(name).addReview({ itemId: "t1", criteria: await L(name).criteria("t1"), by: ACTOR, head, approve: true, note: "", at: new Date().toISOString() });
   const detail = await L(name).detail("t1") as unknown as { item: { pushActors: string[] }; gate: { needsAssessor: boolean } };

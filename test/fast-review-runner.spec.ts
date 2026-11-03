@@ -149,7 +149,8 @@ async function fastMerged(name: string) {
   await L.recordPush(item.id, OPUS, C1, C1);
   await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: C1, passed: true, by: "owner", at: AT, changedPaths: ["src/a.ts"] });
   await L.submit(item.id, OPUS);
-  await L.accept(item.id, "owner", C1);
+  await L.confirmOverride(item.id, "owner", C1, "access");
+  await L.accept(item.id, "owner", C1, "Exercise the post-merge audit without a pre-merge approval");
   await L.merged(item.id, "owner", M1, true);
   // G17/G6: the server asks no review of its own; the developer asks Astra's, by command, at the merge commit.
   expect(await L.liveReviewRequest(item.id, M1)).toBeNull();

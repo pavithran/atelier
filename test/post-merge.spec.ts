@@ -14,8 +14,7 @@ const policy = parsePostMerge({ version: 1, approval: { reason: "owner approval"
 
 async function setup(name: string, configured = true, accepted = true) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  // Accept before enabling protected executable policy, to keep the fixture
-  // concerned with the merge reservation rather than review setup.
+  // Each landing has its independent review before the merge reservation.
   const record = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
@@ -23,7 +22,9 @@ async function setup(name: string, configured = true, accepted = true) {
     const id = (await L.newItem("Landing", [], "owner")).id;
     await L.claim(id, builder); await L.setWorkspace(id, `${name}--${id}`, A, builder); await L.recordPush(id, builder, head, head);
     await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: builder, at: new Date().toISOString(), changedPaths: ["old.txt"] });
-    await L.submit(id, builder); if (accepted) await L.accept(id, "owner", head);
+    await L.submit(id, builder);
+    await L.addReview({ itemId: id, head, criteria: await L.criteria(id), by: "claude-code/opus-5.5", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
+    if (accepted) await L.accept(id, "owner", head);
   }
   if (configured) await L.initProject({ name, repo: name, reset: false, postMerge: policy }, "owner");
   let merged = false, missing = false;

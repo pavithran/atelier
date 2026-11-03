@@ -99,6 +99,7 @@ it("the queue holds core overlaps during building and landing, but offers them w
   await L.addEvidence(evidence);
   await L.submit(live.id, A);
   expect(await offered()).toContain(core);
+  await L.addReview({ itemId: live.id, head: H1, criteria: await L.criteria(live.id), by: "zcode/glm-5.3", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept(live.id, "owner");
   expect(await offered()).toContain(core);
   expect((await listed()).some((q) => q.item.held)).toBe(false);

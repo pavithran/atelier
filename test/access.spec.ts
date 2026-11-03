@@ -311,7 +311,7 @@ it("behind Access, the owner's Access sign-in confirms an override, and the reco
   const send = serveKeys();
   try {
     const name = "access-override", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
-    const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["AGENTS.md"] }, createdAt: "2026-10-08T00:00:00.000Z" };
+    const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["security.ts"] }, createdAt: "2026-10-08T00:00:00.000Z" };
     const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
     await L.setProject(record, "owner");
     await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
@@ -319,7 +319,7 @@ it("behind Access, the owner's Access sign-in confirms an override, and the reco
     await L.claim("t1", A);
     await L.setWorkspace("t1", `${name}--t1`, H0, A);
     await L.recordPush("t1", A, H1, H1);
-    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["security.ts"] });
     await L.submit("t1", A);
     // The fork's log, enough for the forms' check that the revision shown is the one pushed.
     const log = [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }];

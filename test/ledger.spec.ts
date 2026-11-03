@@ -24,7 +24,7 @@ const H2 = "b".repeat(40);
 const A = "claude-code/opus-5.5";
 const B = "codex/gpt-5.5";
 
-const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md", "wrangler.*"] };
+const policy: ProjectPolicy = { checks: ["npm test"], protected: ["security.ts", "wrangler.*"] };
 
 // One Durable Object instance per project name, so every test starts from an
 // empty ledger regardless of how the pool isolates storage.
@@ -146,7 +146,7 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   await L.recordPush("t1", A, H1, H1);
   await refusal(L.accept("t1", "owner"), "not_ready", /state is claimed, not submitted/);
   await L.addEvidence(observed("t1", H1, ["src/ledger.ts"]));
-  await L.submit("t1", A);
+  await L.submit("t1", A); await L.addReview(review("t1", B, H1, true), undefined, true);
 
   expect(await L.detail("t1")).toMatchObject({ gate: { ready: true, blockers: [], needsAssessor: false, outOfScope: [] } });
   expect((await L.inbox(new Date().toISOString())).map((e) => `${e.itemId}:${e.kind}`)).toEqual(["t1:accept"]);
@@ -157,7 +157,7 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   expect(merged).toMatchObject({ state: "merged", owner: null });
   expect(await L.owners()).toEqual([]);
   expect(kinds(await L.events("t1"))).toEqual([
-    "item.merged", "item.accepted", "item.submitted", "evidence.observed", "push.observed",
+    "item.merged", "item.accepted", "review.approved", "item.submitted", "evidence.observed", "push.observed",
     "workspace.created", "item.claimed", "item.created",
   ]);
 });
@@ -186,7 +186,7 @@ it("the inbox reminds the owner of a merged revision whose declared protected ac
   await L.setWorkspace("t1", "ship-inbox--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["src/a.ts"]));
-  await L.submit("t1", A);
+  await L.submit("t1", A); await L.addReview(review("t1", B, H1, true), undefined, true);
   await L.accept("t1", "owner");
   await L.merged("t1", "owner", M, true);
   const before = await L.inbox(new Date().toISOString());
@@ -204,7 +204,7 @@ it("the inbox reminds the owner of a merged revision whose declared protected ac
   await quiet.setWorkspace("t1", "ship-quiet--t1", H0, A);
   await quiet.recordPush("t1", A, H1, H1);
   await quiet.addEvidence(observed("t1", H1, ["src/a.ts"]));
-  await quiet.submit("t1", A);
+  await quiet.submit("t1", A); await quiet.addReview(review("t1", B, H1, true), undefined, true);
   await quiet.accept("t1", "owner");
   await quiet.merged("t1", "owner", M, true);
   expect(await quiet.inbox(new Date().toISOString())).toEqual([]);
@@ -216,7 +216,7 @@ it("a protected path is accepted only after an independent approval", async () =
   await L.claim("t1", A);
   await L.setWorkspace("t1", "protected--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["src/ledger.ts", "AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["src/ledger.ts", "security.ts"]));
   await L.submit("t1", A);
 
   await refusal(L.accept("t1", B), "not_project_owner", /only the developer accepts/);
@@ -240,11 +240,11 @@ it("a protected path is accepted only after an independent approval", async () =
 it("decision 2026-10-06: only the owner overrides a missing review, with a reason, and it is recorded as an override", async () => {
   const H3 = "c".repeat(40);
   const L = await setup("override");
-  await L.newItem("Touch a protected path", ["src/**", "AGENTS.md"], "owner");
+  await L.newItem("Touch a protected path", ["src/**", "security.ts"], "owner");
   await L.claim("t1", A);
   await L.setWorkspace("t1", "override--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   await L.submit("t1", A);
   const reason = "No model of another family is available this week";
 
@@ -268,7 +268,7 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
 
   // At a new head the approval no longer counts, and the owner overrides.
   await L.recordPush("t1", A, H2, H2);
-  await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H2, ["security.ts"]));
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner", H2), "not_ready", /protected path/);
   // t371: the developer token alone does not override. Without the owner's
@@ -302,14 +302,14 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
 
   // A later push needs a review or another override.
   await L.recordPush("t1", A, H3, H3);
-  await L.addEvidence(observed("t1", H3, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H3, ["security.ts"]));
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner", H3), "not_ready", /protected path/);
 });
 
 it("decision 2026-10-09: availableReviewer names the reviewer the pool offers, and null when none of another family qualifies", async () => {
   const L = await setup("available-reviewer");
-  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L.newItem("Touch a protected path", ["security.ts"], "owner");
   await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
   const T = "2026-10-09T00:00:00.000Z";
   const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
@@ -324,12 +324,12 @@ it("decision 2026-10-09: availableReviewer names the reviewer the pool offers, a
 });
 
 it("decision 2026-10-09: availableReviewer asks the review tier first for a protected change", async () => {
-  const L = await setup("available-reviewer-tier", { ...policy, protected: ["AGENTS.md"], reviewTier: ["codex/gpt-6-astra"] });
-  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  const L = await setup("available-reviewer-tier", { ...policy, protected: ["security.ts"], reviewTier: ["codex/gpt-6-astra"] });
+  await L.newItem("Touch a protected path", ["security.ts"], "owner");
   await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
   await L.setWorkspace("t1", "available-reviewer-tier--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   await L.submit("t1", A);
   const T = "2026-10-09T00:00:00.000Z";
   const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
@@ -346,11 +346,11 @@ it("decision 2026-10-09: availableReviewer asks the review tier first for a prot
 // replaces an override; without a qualifying reviewer it names none.
 it("decision 2026-10-09: the inbox names the reviewer a land would use for an assess entry, and null without one", async () => {
   const L = await setup("inbox-reviewer");
-  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L.newItem("Touch a protected path", ["security.ts"], "owner");
   await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
   await L.setWorkspace("t1", "inbox-reviewer--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   await L.submit("t1", A);
   const T = "2026-10-09T00:00:00.000Z";
   const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
@@ -375,7 +375,7 @@ it("the holder under another letter case, profile or registered name cannot revi
   await L.claim("t1", A);
   await L.setWorkspace("t1", "same-model-names--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   await L.submit("t1", A);
   for (const by of ["Claude-Code/Opus-5.5", "claude-code/opus-5.5:fast", "claude-code/claude-opus-5-5"]) {
     await refusal(L.addReview(review("t1", by, H1, true)), "self_review", /cannot review their own/);
@@ -473,7 +473,7 @@ it("the owner returns accepted work to a builder without losing reviews or accep
     await L.setWorkspace("t1", `accepted-rework-${action}--t1`, H0, A);
     await L.recordPush("t1", A, H1, H1);
     await L.addEvidence(observed("t1", H1));
-    await L.addReview(review("t1", B, H1, true, "Reviewed before conflict"));
+    await L.addReview(review("t1", B, H1, true, "Reviewed before conflict"), undefined, true);
     await L.submit("t1", A);
     await L.accept("t1", "owner", H1);
     const reviews = await L.reviewsFor("t1");
@@ -502,6 +502,7 @@ it("the owner returns accepted work to a builder without losing reviews or accep
     await L.recordPush("t1", B, H2, H2);
     await L.addEvidence(observed("t1", H2));
     await L.submit("t1", B);
+    await L.addReview(review("t1", "zcode/glm-5.3", H2, true), undefined, true);
     expect(await L.accept("t1", "owner", H2)).toMatchObject({ state: "accepted", acceptedHead: H2 });
     expect((await L.events("t1") as unknown as LedgerEvent[]).filter((e) => e.kind === "item.accepted").sort((a, b) => a.seq - b.seq).map((e) => e.data.head)).toEqual([H1, H2]);
   }
@@ -520,7 +521,7 @@ it("a task is closed as delivered by a merged task, which the event records", as
   await L.setWorkspace("t1", "delivered-by--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["src/ledger.ts"]));
-  await L.submit("t1", A);
+  await L.submit("t1", A); await L.addReview(review("t1", B, H1, true), undefined, true);
   await L.accept("t1", "owner");
   await L.merged("t1", "owner", "m1", true);
 
@@ -557,7 +558,7 @@ it("the owners view reports live items without titles, scopes or paths", async (
 it("acceptance is bound to the expected revision and a push event invalidates approval", async () => {
   const L=await setup('revision-bound');
   await L.newItem('Review this revision',['src/**'],'owner'); await L.claim('t1',A); await L.setWorkspace('t1','revision--t1',H0,A);
-  await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A);
+  await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A); await L.addReview(review('t1', B, H1, true), undefined, true);
   await refusal(L.accept('t1','owner',H2),'stale_head',/changed since/);
   await L.accept('t1','owner',H1);
   await L.observePush('t1',H2,H1);
@@ -569,7 +570,7 @@ it("acceptance is bound to the expected revision and a push event invalidates ap
 it("completed tasks cannot be reopened by push, submit, release, or review", async () => {
   const L=await setup('closed-state');
   await L.newItem('Close safely',[],'owner'); await L.claim('t1',A); await L.setWorkspace('t1','closed--t1',H0,A);
-  await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A); await L.accept('t1','owner',H1);
+  await L.recordPush('t1',A,H1,H1); await L.addEvidence(observed('t1',H1)); await L.submit('t1',A); await L.addReview(review('t1', B, H1, true), undefined, true); await L.accept('t1','owner',H1);
   await refusal(L.merged('t1','owner','merge',false),'unverified_merge',/not on the baseline/);
   await L.merged('t1','owner','merge',true); await L.merged('t1','owner','merge',true);
   await refusal(L.recordPush('t1',A,H2,H2),'closed',/merged/);
@@ -626,11 +627,11 @@ it("push notices read the authoritative branch head and ignore duplicate or unre
 // override alike, with the reason unread.
 it("t371: a permission for an override is spent by one override, lapses with the head or the criteria, and is refused where overrides are forbidden", async () => {
   const L = await setup("override-permission");
-  await L.newItem("Touch a protected path", ["src/**", "AGENTS.md"], "owner", { accept: ["Keeps the prompts"] });
+  await L.newItem("Touch a protected path", ["src/**", "security.ts"], "owner", { accept: ["Keeps the prompts"] });
   await L.claim("t1", A);
   await L.setWorkspace("t1", "override-permission--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   // Not submitted yet: nothing to allow.
   await refusal(L.confirmOverride("t1", "owner", undefined, "access"), "not_submitted", /t1 is claimed; an override is allowed only on a submitted revision/);
   await L.submit("t1", A);
@@ -644,27 +645,27 @@ it("t371: a permission for an override is spent by one override, lapses with the
   // Given again, then the head moves: the permission names the old head.
   await L.confirmOverride("t1", "owner", H1, "access");
   await L.recordPush("t1", A, H2, H2);
-  await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H2, ["security.ts"]));
   await L.submit("t1", A);
   expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1 });
   await refusal(L.accept("t1", "owner", H2, "No other family"), "override_unconfirmed", /needs the developer's confirmation/);
   // Where another family has approved there is nothing to allow an override of.
-  await L.newItem("Touch another protected path", ["AGENTS.md"], "owner");
+  await L.newItem("Touch another protected path", ["security.ts"], "owner");
   await L.claim("t2", A);
   await L.setWorkspace("t2", "override-permission--t2", H0, A);
   await L.recordPush("t2", A, H1, H1);
-  await L.addEvidence(observed("t2", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t2", H1, ["security.ts"]));
   await L.submit("t2", A);
   await L.addReview(review("t2", B, H1, true), undefined, true);
   await refusal(L.confirmOverride("t2", "owner", H1, "access"), "override_unneeded", /nothing to allow an override of/);
 
   // A project that forbids overrides.
   const F = await setup("override-forbidden", { ...policy, noOverride: true });
-  await F.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await F.newItem("Touch a protected path", ["security.ts"], "owner");
   await F.claim("t1", A);
   await F.setWorkspace("t1", "override-forbidden--t1", H0, A);
   await F.recordPush("t1", A, H1, H1);
-  await F.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await F.addEvidence(observed("t1", H1, ["security.ts"]));
   await F.submit("t1", A);
   expect((await F.project()).policy.noOverride).toBe(true);
   await refusal(F.confirmOverride("t1", "owner", H1, "access"), "override_forbidden", /this project forbids overrides of the independent review \(atelier init --no-override\)/);
@@ -684,11 +685,11 @@ it("t371: a permission for an override is spent by one override, lapses with the
 // overrides again restores it.
 it("t371: an override recorded earlier is ignored once the project forbids overrides", async () => {
   const L = await setup("override-then-forbidden");
-  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L.newItem("Touch a protected path", ["security.ts"], "owner");
   await L.claim("t1", A);
   await L.setWorkspace("t1", "override-then-forbidden--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   await L.submit("t1", A);
   await L.confirmOverride("t1", "owner", H1, "secret");
   await L.accept("t1", "owner", H1, "No other family");
@@ -716,13 +717,13 @@ it("t371: an override recorded earlier is ignored once the project forbids overr
 
 it("HTTP review and acceptance preserve the displayed revision through successful form posts",async()=>{
  const {default:worker}=await import('../src/index');
- const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setWorkspace('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
+ const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setWorkspace('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['security.ts']));await L.submit('t1',A);
  const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Repos;
  // A server whose owner factor is the confirmation secret (t371); every form here carries it.
  const bindings={...env,REPOS:artifacts,ATELIER_TOKEN:'fixture-token',OVERRIDE_SECRET:'fixture-word'};
  const post=(action:string,note:string,headers:Record<string,string>={authorization:'Bearer fixture-token'})=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{...headers,origin:'https://atelier.test'},body:new URLSearchParams({head:H1,criteria:NO_CRITERIA,note,confirmation:'fixture-word'})}),bindings);
  // The owner's approval is recorded at the displayed revision, but it is not
- // the independent review AGENTS.md needs, so Accept is refused; the
+ // the independent review security.ts needs, so Accept is refused; the
  // override form, with its reason, accepts at the same revision — under the
  // owner's own sign-in and with the confirmation secret (t371): posted with
  // the owner token as a bearer, as an agent session could, the override
@@ -1189,7 +1190,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
         expect(recent.map((e) => [e.kind, e.at])).toEqual(recent.map((e) => [e.kind, item.updatedAt]));
         return item;
       };
-      const record = L.initProject({ name: "one-clock", repo: "one-clock", reset: false, checks: ["npm test"], protected: ["AGENTS.md"] }, "owner");
+      const record = L.initProject({ name: "one-clock", repo: "one-clock", reset: false, checks: ["npm test"], protected: ["security.ts"] }, "owner");
       expect(L.events(undefined, 1)[0]).toMatchObject({ kind: "project.set", at: record.createdAt });
 
       expect(L.newItem("One clock", [], "owner")).toMatchObject({ createdAt: stamped("t1").updatedAt });
@@ -1231,7 +1232,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
       L.claim("t4", A);
       L.setWorkspace("t4", "one-clock--t4", H0, A);
       L.recordPush("t4", A, H1, H1);
-      L.addEvidence(observed("t4", H1, ["AGENTS.md"]));
+      L.addEvidence(observed("t4", H1, ["security.ts"]));
       L.submit("t4", A);
       L.confirmOverride("t4", "owner", H1, "access");
       L.accept("t4", "owner", H1, "No reviewer of another family is available");
@@ -1302,7 +1303,7 @@ it("stored agents and execution persist across init and gate no claim, handoff, 
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
-  await L.addReview(review("t1", "opencode/glm-5.3", H1, true));
+  await L.addReview(review("t1", "opencode/glm-5.3", H1, true), undefined, true);
   await refusal(L.accept("t1", B), "not_project_owner", /only the developer/);
   expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
   await L.initProject({ name: "governed", repo: "governed", reset: false, agents: {} }, "owner");
@@ -1320,6 +1321,7 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
+  await L.addReview(review("t1", B, H1, true), undefined, true);
   await L.accept("t1", "owner", H1);
   expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
   // The acceptance records the whole policy it was made under, for the merge guard.
@@ -1327,18 +1329,17 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   expect((await L.detail("t1") as unknown as { acceptancePolicy: unknown }).acceptancePolicy).toEqual({ protected: policy.protected, refuseOverlap: false, checks: policy.checks });
   const firstAcceptance = (await L.events("t1") as unknown as LedgerEvent[]).find((e) => e.kind === "item.accepted")!;
   expect(Object.keys(firstAcceptance.data)).not.toContain("eligible");
-  const changed = { ...policy, protected: [...policy.protected, "src/**"] };
+  const changed: ProjectPolicy = { ...policy, protected: [...policy.protected, "src/**"], riskReviews: { core: ["src/**"], reviews: { core: 2, other: 1, "docs-or-tests": 0 } } };
   await L.setProject({ ...(await L.project()), policy: changed }, "owner");
   for (let i = 0; i < 2; i++) {
-    await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
+    await refusal(L.accept("t1", "owner", H1), "not_ready", /needs 2 independent reviews/);
     expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
   }
-  // The owner's approval reopens the accepted item, but it is not the
-  // independent review the newly protected path needs; another family's is.
+  // The owner's approval reopens the item but does not supply the second independent review.
   await L.addReview(review("t1", "owner", H1, true));
   expect(await L.item("t1")).toMatchObject({ state: "submitted", acceptedHead: null });
-  await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
-  await L.addReview(review("t1", B, H1, true), undefined, true);
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /needs 2 independent reviews/);
+  await L.addReview(review("t1", "zcode/glm-5.3", H1, true), undefined, true);
   for (let i = 0; i < 2; i++) {
     await L.accept("t1", "owner", H1);
     expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(changed.protected);
@@ -1558,7 +1559,7 @@ async function submittedWith(L: Awaited<ReturnType<typeof setup>>, accept: strin
   await L.claim(id, A);
   await L.setWorkspace(id, `fork-${id}`, H0, A);
   await L.recordPush(id, A, H1, H1);
-  await L.addEvidence(observed(id, H1, ["AGENTS.md"]));
+  await L.addEvidence(observed(id, H1, ["security.ts"]));
   await L.submit(id, A);
 }
 // A review as recorded before reviews were bound, or as sent without a binding.
@@ -1701,13 +1702,13 @@ it("reviews recorded before reviews were bound stay as history, unstamped, and n
   const stub = env.LEDGER.get(env.LEDGER.idFromName("project:criteria-legacy"));
   await runInDurableObject(stub, async (_instance, state) => {
     const L = new Ledger(state, env);
-    L.initProject({ name: "criteria-legacy", repo: "criteria-legacy", reset: false, checks: ["npm test"], protected: ["AGENTS.md"] }, "owner");
+    L.initProject({ name: "criteria-legacy", repo: "criteria-legacy", reset: false, checks: ["npm test"], protected: ["security.ts"] }, "owner");
     for (const [id, accept] of [["t1", undefined], ["t2", ONE]] as const) {
       L.newItem("Legacy", [], "owner", accept ? { accept: [...accept] } : {});
       L.claim(id, A);
       L.setWorkspace(id, `fork-${id}`, H0, A);
       L.recordPush(id, A, H1, H1);
-      L.addEvidence(observed(id, H1, ["AGENTS.md"]));
+      L.addEvidence(observed(id, H1, ["security.ts"]));
       L.submit(id, A);
       // The rows as a ledger before t326 left them: no binding.
       for (const r of [unbound(review(id, B, H1, true)), unbound(review(id, GLM, H1, false, "old"))]) {
@@ -1810,12 +1811,12 @@ it("requests and reviews made before reviews were bound stop counting as already
   const stub = env.LEDGER.get(env.LEDGER.idFromName("project:criteria-tier-legacy"));
   await runInDurableObject(stub, async (_instance, state) => {
     const L = new Ledger(state, env);
-    L.initProject({ name: "criteria-tier-legacy", repo: "criteria-tier-legacy", reset: false, checks: ["npm test"], protected: ["AGENTS.md"], reviewTier: [GLM] }, "owner");
+    L.initProject({ name: "criteria-tier-legacy", repo: "criteria-tier-legacy", reset: false, checks: ["npm test"], protected: ["security.ts"], reviewTier: [GLM] }, "owner");
     L.newItem("Legacy", [], "owner", { accept: [...ONE] });
     L.claim("t1", A);
     L.setWorkspace("t1", "fork-t1", H0, A);
     L.recordPush("t1", A, H1, H1);
-    L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+    L.addEvidence(observed("t1", H1, ["security.ts"]));
     L.submit("t1", A);
     L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
     L.requestTierReview("t1", "owner", GLM, TIER_POOL, undefined, true);
@@ -1849,12 +1850,12 @@ it("under the standing reask-on-resubmit, a gate request the criteria change wit
   await submittedWith(L, ONE);
   await L.requestReview("t1", "owner", GPT, REVIEW_POOL);
   // The check fails at the head while the criteria change, so no review is needed and none is asked yet.
-  await L.addEvidence({ ...observed("t1", H1, ["AGENTS.md"]), passed: false });
+  await L.addEvidence({ ...observed("t1", H1, ["security.ts"]), passed: false });
   const change = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
   expect(change.criteriaChange).toMatchObject({ requests: 1, asked: [] });
   expect(await live(L)).toEqual([]);
   // The check passes again at the same head: the withdrawn request is carried to the same reviewer.
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   expect(await live(L)).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
   expect(((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "review.requested")!.data).toMatchObject({ reviewer: GPT, via: "head-moved" });
 });
@@ -1920,11 +1921,11 @@ it("failed claim restores its prior state instead of assuming it was open", asyn
 
 it("accept with a developer quote overrules an environment-only rejection and records it", async () => {
   const L = await setup("environment-rejection-override");
-  await L.newItem("Review environment", ["AGENTS.md"], "owner");
+  await L.newItem("Review environment", ["security.ts"], "owner");
   await L.claim("t1", A);
   await L.setWorkspace("t1", "env--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
-  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.addEvidence(observed("t1", H1, ["security.ts"]));
   await L.submit("t1", A);
   await L.addReview({ ...review("t1", B, H1, false, "Environment limitation, not a demonstrated code defect"),
     findings: [{ file: "cli/load.mjs", line: 41, severity: "blocking", text: "Sandbox EPERM prevented the test command" }] });

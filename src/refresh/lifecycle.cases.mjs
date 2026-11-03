@@ -22,6 +22,7 @@ async function setup() {
   await L.recordPush(id, builder, H, H);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H, passed: true, by: builder, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
   await L.submit(id, builder);
+  await L.addReview({ itemId: id, by: "claude-code/opus-5.5", head: H, criteria: await L.criteria(id), approve: true, note: "Reviewed", at: new Date().toISOString() }, undefined, true);
   await L.accept(id, "owner");
   await L.noteMainHead(M);
   const { lease } = await L.leaseRefresh(id, actor, null, "refresh");

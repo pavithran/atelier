@@ -2419,7 +2419,7 @@ export function inboxFor(
       const g = gate(item, policy, ev, rv, owner, { fast });
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
-      } else if (g.needsAssessor) {
+      } else if (g.needsAssessor && item.head && evidenceAt(policy, ev, item.head).changedPaths !== null) {
         out.push({ ...base, kind: "assess", reason: `${g.requirement ?? protectedNeed(singleFamily(policy))}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the developer's last resort"}`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
@@ -2604,7 +2604,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   // The owner's approval is recorded but is not the independent review, so
   // the page asks for a qualifying reviewer, and offers the override only
   // when the missing review is all that blocks, since it waives nothing else.
-  if (item.state === "submitted" && g.needsAssessor) {
+  if (item.state === "submitted" && item.head && view.changedPaths !== null && g.needsAssessor) {
     const need = g.requirement ? `${g.requirement}.` : `This task changes protected files and needs an approval from ${independentReviewerText(singleFamily(policy))}.`;
     const override = overrideOffer(policy, g.blockers.length === 1);
     return { title: "Waiting for an independent review", detail: `${need} Your own approval does not count as that review.${override}`, action: "review", tone: "ask", passed };

@@ -131,6 +131,7 @@ test("the ordinary merge clears the task's grant with the merge: the old grant i
   assert.equal(checked.status, 200, JSON.stringify(checked.body));
   const submitted = await api("POST", `/projects/demo/items/${id}/submit`, { summary: "done", head }, agentToken, BUILDER);
   assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
+  await L().addReview({ itemId: id, head: head, criteria: await L().criteria(id), by: "claude-code/opus-5.5", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   const accepted = await api("POST", `/projects/demo/items/${id}/accept`, { head });
   assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
   assert.equal(await infoRefs(grant), 200, "accepted, the holder still holds it");

@@ -198,6 +198,8 @@ it("a part landed on main by itself does not move the record, so the plan is not
   await L.recordPush(a, builder, PART_A, PART_A);
   await L.addEvidence(observed(a, PART_A, "a"));
   await L.submit(a, builder);
+  await L.addReview({ itemId: a, head: PART_A, criteria: await L.criteria(a), by: "codex/gpt-6-astra", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
+  expect((await L.item(item.id)).dispatch).toMatchObject({ job: "integrate", partId: a });
   await L.accept(a, "owner");
   const LAND = "6".repeat(40);
   await L.merged(a, "owner", LAND, true);

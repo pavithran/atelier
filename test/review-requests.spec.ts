@@ -1479,6 +1479,7 @@ it("a merged task with no historical path measurements or scope still gets its a
   await L.recordPush(item.id, OPUS, head, head);
   await L.addEvidence(observed(item.id, head));
   await L.submit(item.id, OPUS);
+  await L.addReview({ itemId: item.id, head, criteria: await L.criteria(item.id), by: GPT, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept(item.id, "owner", head);
   await L.merged(item.id, "owner", merge, true);
   // Simulate an older ledger that kept checks without measured paths.

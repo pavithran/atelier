@@ -19,7 +19,7 @@ const H2 = "b".repeat(40);
 const T = "2026-10-03T12:00:00.000Z";
 const NOW = new Date("2026-10-05T12:00:00.000Z");
 const A = "claude-code/opus-5.5";
-const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md"] };
+const policy: ProjectPolicy = { checks: ["npm test"], protected: ["security.ts"] };
 const block = { reason: "waiting on the API key", by: A, at: T, from: "claimed" as const };
 
 function item(over: Partial<Item> = {}): Item {
@@ -62,9 +62,9 @@ test("a block's reason is one line of text: required, trimmed, control character
 });
 
 test("the inbox lists a blocked task with its reason, below a missing review and above a stale claim, and never as stale or overlapping", () => {
-  const touching: Evidence[] = [{ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: T, changedPaths: ["AGENTS.md"] }];
+  const touching: Evidence[] = [{ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: T, changedPaths: ["security.ts"] }];
   const items = [
-    item({ id: "t1", state: "submitted", blocked: undefined, scope: ["AGENTS.md"] }),
+    item({ id: "t1", state: "submitted", blocked: undefined, scope: ["security.ts"] }),
     item({ id: "t5" }),
     item({ id: "t3", state: "claimed", blocked: undefined, scope: ["docs/**"], lastPushAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z" }),
   ];

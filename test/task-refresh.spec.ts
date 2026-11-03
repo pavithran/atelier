@@ -59,7 +59,10 @@ async function task(L: L, title: string, to: "claimed" | "submitted" | "accepted
   await L.addEvidence(passed(id, head));
   await L.submit(id, OPUS);
   if (to === "blocked") { await L.block(id, OPUS, "waiting on the owner"); return id; }
-  if (to === "accepted") await L.accept(id, "owner");
+  if (to === "accepted") {
+    await L.addReview({ itemId: id, by: GPT, head, criteria: await L.criteria(id), approve: true, note: "Reviewed", at: new Date().toISOString() }, undefined, true);
+    await L.accept(id, "owner");
+  }
   return id;
 }
 
@@ -138,6 +141,8 @@ it("a clean refresh moves the head under the integrator's lease, drops the accep
   expect((await L.refreshChecked(id, INTEGRATOR, { ...report(l), passed: true, reason: "" })).result.outcome).toBe("refreshed");
   expect(await queue(L)).toEqual([]);
   expect(await L.refreshChecker(id, INTEGRATOR, R1)).toBe(false);
+  await refusal(L.accept(id, "owner"), "not_ready", /needs approval/);
+  await L.addReview({ itemId: id, by: GPT, head: R1, criteria: await L.criteria(id), approve: true, note: "Reviewed refreshed head", at: new Date().toISOString() }, undefined, true);
   await L.accept(id, "owner");
   expect((await L.item(id)).acceptedHead).toBe(R1);
 });

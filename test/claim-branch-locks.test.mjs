@@ -131,6 +131,7 @@ test("a refresh lease released while a refresh push that passed its hook is paus
   const L = server.namespace.get(server.namespace.idFromName("project:demo"));
   await L.addEvidence({ itemId: id, claim: "git status", grade: "observed", head: await git(work, "rev-parse", "HEAD"), passed: true, by: BUILDER, at: new Date().toISOString(), changedPaths: ["refresh.txt"] });
   await L.submit(id, BUILDER);
+  await L.addReview({ itemId: id, head: await git(work, "rev-parse", "HEAD"), criteria: await L.criteria(id), by: OTHER, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept(id, "owner");
   await L.noteMainHead("a".repeat(40));
   const integrator = (await api("POST", "/tokens", { actor: "atelier/integrator", projects: ["demo"] })).body.token;

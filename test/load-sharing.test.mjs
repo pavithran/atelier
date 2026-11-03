@@ -1,21 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, statSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { resolve, dirname } from "node:path";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { HOST_POOL, poolTransaction, slotStatus } from "../cli/load.mjs";
 
 const moduleURL = new URL("../cli/load.mjs", import.meta.url).href;
 const pause = () => new Promise((done) => setTimeout(done, 20));
-const fixture = () => resolve(".scratch", `sharing-${randomUUID()}`, "pool.sqlite");
+function fixture(t) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-sharing-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return join(dir, "pool", "pool.sqlite");
+}
 
 test("host pool uses a shared non-sticky directory", () => {
   assert.notEqual(dirname(HOST_POOL), "/tmp");
 });
 
-for (const mask of [0o077, 0o027]) test(`creator umask ${mask.toString(8)} permits shared access and hot-journal recovery`, async () => {
-  const path = fixture();
+for (const mask of [0o077, 0o027]) test(`creator umask ${mask.toString(8)} permits shared access and hot-journal recovery`, async (t) => {
+  const path = fixture(t);
   const script = `import { poolTransaction } from ${JSON.stringify(moduleURL)};
     process.umask(${mask});
     await poolTransaction({path:${JSON.stringify(path)}, processes:()=>[]});
@@ -47,9 +52,8 @@ for (const mask of [0o077, 0o027]) test(`creator umask ${mask.toString(8)} permi
   } finally { process.umask(previous); }
 });
 
-test("a forged pool PID cannot redirect wrapper cleanup", { timeout: 15000 }, async () => {
-  const path = fixture();
-  mkdirSync(dirname(path), {recursive:true});
+test("a forged pool PID cannot redirect wrapper cleanup", { timeout: 15000 }, async (t) => {
+  const path = fixture(t);
   const victim = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"]);
   let victimExit = false;
   victim.once("exit", () => victimExit = true);
