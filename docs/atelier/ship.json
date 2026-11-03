@@ -46,16 +46,25 @@
       "since": "https://atelier.zone/api/version"
     }
   },
-  "verify-deploy": {
-    "run": [
-      "node",
-      "scripts/ship-studio.mjs",
-      "verify",
-      "--version-url",
-      "https://atelier.zone/api/version"
-    ],
-    "timeout_seconds": 90
-  },
+  "verify-deploy": [
+    {
+      "run": [
+        "node",
+        "scripts/ship-studio.mjs",
+        "verify",
+        "--version-url",
+        "https://atelier.zone/api/version"
+      ],
+      "timeout_seconds": 90
+    },
+    {
+      "run": [
+        "node",
+        "scripts/ship-refresh-runners.mjs"
+      ],
+      "timeout_seconds": 540
+    }
+  ],
   "scan": {
     "run": [
       "node",
