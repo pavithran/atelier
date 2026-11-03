@@ -855,6 +855,25 @@ export function credentialReadiness(config, deps = {}) {
   return out;
 }
 
+function dependencyInstallCommand(dir, evidence = false) {
+  if (existsSync(join(dir, "pnpm-lock.yaml"))) return ["pnpm", "install", "--frozen-lockfile"];
+  const locked = existsSync(join(dir, "package-lock.json")) || existsSync(join(dir, "npm-shrinkwrap.json"));
+  return ["npm", evidence || locked ? "ci" : "install", ...(evidence ? ["--prefer-offline"] : []), "--no-audit", "--no-fund"];
+}
+
+async function installRunnerDependencies(argv, options, run, kind) {
+  const setup = `the runner's ${kind} dependency setup: ${argv.join(" ")}`;
+  let result;
+  try { result = await run(argv, options); }
+  catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw new Error(`${setup} could not start: ${error.message}`, { cause: error });
+  }
+  if (options.signal?.aborted) throw new Error("interrupted");
+  if (result.timedOut) throw new Error(`${setup} timed out`);
+  if (result.code !== 0) throw new Error(`${setup} failed (exit ${result.signal ?? result.code})${result.stderr ? `: ${String(result.stderr).slice(-300)}` : ""}`);
+}
+
 // Prepare Node dependencies on the host before entering the review sandbox.
 // Nested projects (for example relay/) need their own dependency directory.
 export async function prepareReviewDependencies(workspace, source, { executeChild = execute, signal } = {}) {
@@ -866,9 +885,8 @@ export async function prepareReviewDependencies(workspace, source, { executeChil
       } else {
         const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
         if (manifest.dependencies || manifest.devDependencies || manifest.optionalDependencies) {
-          const locked = existsSync(join(dir, "package-lock.json")) || existsSync(join(dir, "npm-shrinkwrap.json"));
-          await checked(["npm", locked ? "ci" : "install", "--no-audit", "--no-fund"],
-            { cwd: dir, env: checkEnv(process.env), signal, timeoutMs: prepareTimeout(), step: "review dependencies" }, executeChild);
+          await installRunnerDependencies(dependencyInstallCommand(dir),
+            { cwd: dir, env: checkEnv(process.env), signal, timeoutMs: prepareTimeout(), step: "review dependencies" }, executeChild, "review");
         }
       }
     }
@@ -881,8 +899,8 @@ export async function prepareReviewDependencies(workspace, source, { executeChil
   await visit(workspace, source);
 }
 
-// The evidence clone installs its own dependencies from the head (npm ci, then the
-// project's `types` script), never the review clone's node_modules, which can
+// The evidence clone installs its own dependencies from the head, then runs the
+// project's `types` script, never using the review clone's node_modules, which can
 // itself point into the builder's workspace: an undeclared dependency
 // installed only there would pass the tests that a fresh install fails. An
 // install that fails or times out is 'not-run' (the caller catches the throw).
@@ -895,7 +913,8 @@ export async function installEvidenceDependencies(dir, source, { run = execute, 
   async function visit(folder) {
     const manifestPath = join(folder, "package.json");
     if (existsSync(manifestPath)) {
-      await step(folder, ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"]);
+      await installRunnerDependencies(dependencyInstallCommand(folder, true),
+        { cwd: folder, capture: true, captureError: true, signal, timeoutMs, env: checkEnv(process.env) }, run, "evidence");
       if (folder === dir && JSON.parse(readFileSync(manifestPath, "utf8")).scripts?.types) await step(folder, ["npm", "run", "types"]);
     }
     for (const entry of readdirSync(folder, { withFileTypes: true })) {
