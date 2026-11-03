@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { execute } from "../cli/runner.mjs";
 import { mergeMainAndRegenerate, StepError } from "../cli/land.mjs";
 
 // t730: files the project declares generated (here out/index.txt, as
@@ -54,8 +55,8 @@ function setup(t, { main = {}, task = {}, layout = {} } = {}) {
     git: (args, opts = {}) => { const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env }); if (opts.allowFail) return r; if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`); return r.stdout.trim(); },
     print: (m) => lines.push(m), redact: (s) => s, secrets: () => [],
   };
-  const merge = () => mergeMainAndRegenerate(io, { dir, id: "t1", name: "proj", regenerate: "node gen.mjs", record: async () => {}, guard: () => {}, d0: {}, base: { remote, defaultBranch: "main", token: "x" } });
-  return { dir, remote, merge, lines };
+  const merge = (overrides = {}) => mergeMainAndRegenerate(io, { dir, id: "t1", name: "proj", regenerate: "node gen.mjs", record: async () => {}, guard: () => {}, d0: {}, base: { remote, defaultBranch: "main", token: "x" }, ...overrides });
+  return { dir, remote, merge, lines, io };
 }
 
 test("a conflict confined to a declared generated file is regenerated and committed with no manual step", async (t) => {
@@ -110,4 +111,36 @@ test("two tasks that each add a command settle the CLI fixtures by regenerating 
 test("a conflict in a CLI fixture and another file stops the landing and names the other file", async (t) => {
   const f = setup(t, { layout: FIXTURE_LAYOUT, main: { "notes.txt": "main\n" }, task: { "notes.txt": "task\n" } });
   await assert.rejects(f.merge(), (e) => e instanceof StepError && /notes\.txt/.test(e.message) && /stops on conflicts/.test(e.message));
+});
+
+test("runner regeneration stages and commits a single tracked fixture before recording completion", async (t) => {
+  const f = setup(t, { layout: FIXTURE_LAYOUT });
+  f.io.git = async (args, opts = {}) => {
+    const r = await execute(["git", ...args], { cwd: opts.cwd, env, capture: true, captureError: true, raw: opts.raw });
+    if (opts.allowFail) return { status: r.code, stdout: r.output, stderr: r.stderr };
+    if (r.code !== 0) throw new Error(r.stderr);
+    return r.output;
+  };
+  const records = [];
+  await f.merge({ regenerate: `node -e 'require("fs").writeFileSync("${FIXTURES[1]}", "rewritten\\n")'`, record: async (step, ms, detail) => {
+    if (step === "regenerate") {
+      assert.equal(git(f.dir, "status", "--porcelain"), "");
+      assert.equal(git(f.dir, "show", `HEAD:${FIXTURES[1]}`), "rewritten");
+    }
+    records.push([step, detail]);
+  } });
+  assert.ok(records.some(([step, detail]) => step === "regenerate" && detail.changed));
+});
+
+test("a crash at the regeneration commit leaves completion unset", async (t) => {
+  const f = setup(t, { layout: FIXTURE_LAYOUT });
+  const runGit = f.io.git;
+  f.io.git = (args, opts) => {
+    if (args[0] === "commit" && args.includes("Regenerate after merging main into t1")) throw new Error("simulated crash before commit");
+    return runGit(args, opts);
+  };
+  const records = [];
+  await assert.rejects(f.merge({ regenerate: `node -e 'require("fs").writeFileSync("${FIXTURES[1]}", "rewritten\\n")'`, record: async (step, ms, detail) => records.push([step, detail]) }), /simulated crash/);
+  assert.ok(!records.some(([step]) => step === "regenerate"));
+  assert.notEqual(git(f.dir, "show", `HEAD:${FIXTURES[1]}`), "rewritten");
 });
