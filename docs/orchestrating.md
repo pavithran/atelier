@@ -186,8 +186,8 @@ model registration also accepts the acting name when it resolves to the
 entry being added.
 Every event the write records carries `acting`; the event's
 actor stays the developer's, the model beside it. The verbs that need the
-developer's words (block, unblock, abandon, clear-secret, an override, fast
-mode, an approval on their words) also carry `quote`, and without the words
+developer's words (block, unblock, abandon, clear-secret, an override,
+an approval on their words) also carry `quote`, and without the words
 they are refused (`direction_needed`), since a model is always acting.
 `atelier show ID` lists the task's acts on the developer token, each with
 its model and, where given, the words; `show --json` carries them as
