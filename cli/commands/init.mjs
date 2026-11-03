@@ -225,6 +225,7 @@ export default async function initCommand() {
   console.log(serverHead ? serverInitText(titled, name, branch, serverHead, top, r.baseline)
     : `${titled}: ${name}'s repository on this server now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
   console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
+  if (!pol.checks.length) console.log("Warning: this project has no required checks; runner dispatches are refused until you register one with atelier init --check CMD.");
   for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
   if (pol.prepare) console.log(`Prepare:    ${pol.prepare.command} (inputs: ${pol.prepare.inputs.join(", ")}; outputs: ${pol.prepare.outputs.join(", ")})`);

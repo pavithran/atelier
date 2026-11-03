@@ -10,7 +10,7 @@ it("a run skip's note loses the values of API_TOKEN=... and PASSWORD=...", async
   const name = "run-skip-redact";
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const at = new Date().toISOString();
-  const record = { name, repo: name, createdAt: at, policy: { checks: [], protected: [], coreFiles: [] } };
+  const record = { name, repo: name, createdAt: at, policy: { checks: ["npm test"], protected: [], coreFiles: [] } };
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   await L.newItem("Holder", ["cli/**"], "owner");

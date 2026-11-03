@@ -4,7 +4,7 @@ import worker from '../src/index.ts';
 const TOKEN = 'stuck-test-token';
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN };
 async function project(name) {
-  const record = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record, 'owner');
   await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);

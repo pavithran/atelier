@@ -588,7 +588,7 @@ it("after a release and reuse, an old page link and an owner-token runner config
   await project("reuse-a");
   await L("reuse-a").newItem("Old task", [], "owner");
   expect((await release("reuse-a", "reuse-a-old")).status).toBe(200);
-  expect((await call("PUT", "/projects/reuse-a", "owner", {})).status).toBe(200);
+  expect((await call("PUT", "/projects/reuse-a", "owner", { checks: ["npm test"] })).status).toBe(200);
   await L("reuse-a-2").newItem("Replacement task", [], "owner");
   const signedIn = await cookie();
   const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), testEnv);

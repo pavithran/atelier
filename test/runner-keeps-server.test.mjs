@@ -126,7 +126,7 @@ test("a runner's memory is parsed within bounds, kept with its offer, survives a
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   try {
-    assert.equal((await call("PUT", "/projects/demo", {})).status, 200);
+    assert.equal((await call("PUT", "/projects/demo", { checks: ["npm test"] })).status, 200);
     const made = await call("POST", "/tokens", { runner: "home:studio", projects: ["demo"] });
     assert.equal(made.status, 201);
     const { token: runnerToken } = await made.json();
@@ -211,7 +211,7 @@ test("two runners claiming one dispatch at once through the real server: exactly
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   try {
-    assert.equal((await call("PUT", "/projects/demo", {})).status, 200);
+    assert.equal((await call("PUT", "/projects/demo", { checks: ["npm test"] })).status, 200);
     // A claim on the Node server makes the task's branch from the project's
     // (task 5), so the owner pushes the project's branch first.
     await seedMain(root, `${server.url}/git/demo.git`, OWNER);

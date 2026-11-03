@@ -32,7 +32,7 @@ const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
 
 async function setup(name: string) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const record = { name, repo: name, branch: "main", createdAt: new Date().toISOString(), policy: { checks: [], protected: [], coreFiles: ["src/**"] } };
+  const record = { name, repo: name, branch: "main", createdAt: new Date().toISOString(), policy: { checks: ["npm test"], protected: [], coreFiles: ["src/**"] } };
   await L.setProject(record, "owner");
   await index().registerProject(record);
   await L.newItem("Claimed", ["src/**"], "owner");

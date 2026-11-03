@@ -30,7 +30,7 @@ afterEach(() => { Object.defineProperty(proto, "claim", saved); });
 // dispatched; `scope` is t1's. Core file src/ledger.ts.
 async function setup(name: string, scope: string[]) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const record = { name, repo: name, createdAt: new Date().toISOString(), policy: { checks: [], protected: [], coreFiles: ["src/ledger.ts"] } };
+  const record = { name, repo: name, createdAt: new Date().toISOString(), policy: { checks: ["npm test"], protected: [], coreFiles: ["src/ledger.ts"] } };
   await L.setProject(record, "owner");
   await index().registerProject(record);
   await L.newItem("Winner", scope, "owner");
