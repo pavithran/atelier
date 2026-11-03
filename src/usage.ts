@@ -338,7 +338,7 @@ The flow
    red and green output. Task checks may select affected tests; they do not
    prove the task has not broken another part of the project.
 5. One review before merge, by another company's model than every contributor.
-   Request it with \`atelier land ID --reviewer H/M\` in the registered checkout.
+   The developer runs \`atelier land ID --reviewer H/M\` in the registered checkout.
    If the approval is missing, land asks and stops; run it again after approval.
    In single-family mode, review requires a different model
    of the selected company from every contributor. Never act under the
@@ -351,6 +351,11 @@ The flow
    If post-merge work stops, read \`atelier land ID --post-merge status\` before
    continuing. Land a wave with \`atelier land ID ID… --parallel N\`; the lease
    serializes merges. Do not declare completion while required work is open.
+   Manual fallback: the reviewer runs \`atelier diff ID\`, then
+   \`atelier review ID --approve|--reject --as H/M --note "…"\`.
+   After approval and passing checks, the developer runs
+   \`atelier accept ID --as H/M\`, then \`atelier merge ID --as H/M\`.
+   Builders and reviewers do not accept or merge their own work.
 7. Ship with the developer's words. Read \`atelier ship --dry-run\` and the
    project's docs/atelier/ship.json before running \`atelier ship\`. Never assume
    a test, deployment or mirror push is in the plan. Every ship's full suite
