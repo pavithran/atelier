@@ -94,6 +94,9 @@ test("review.sh passes its prompt to agy on standard input, not as an argument",
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const tools = join(dir, "tools"), record = join(dir, "record.json"), main = join(dir, "main"), ws = join(dir, "ws");
   mkdirSync(tools);
+  // A user startup file must not replace the fixture executables.
+  writeFileSync(join(tools, ".zshenv"), "PATH=/usr/bin:/bin\n");
+  standIn(join(tools, "atelier"), join(dir, "policy-record.json"), "{}");
   standIn(join(tools, "agy"), record, JSON.stringify({ response: "VERDICT: APPROVE\nSUMMARY: Read it.\n" }));
   const gitMain = gitRepo(main);
   writeFileSync(join(main, "a.txt"), "a\n");
@@ -106,8 +109,8 @@ test("review.sh passes its prompt to agy on standard input, not as an argument",
   git("add", "."); git("commit", "--quiet", "-m", "the change");
   writeFileSync(join(dir, "context.txt"), "The task: add b.txt.\n");
   const out = join(ws, ".scratch", "review");
-  const result = spawnSync(zsh, [join(repo, "bin", "orchestrate", "review.sh"), ws, out, join(dir, "context.txt")], {
-    encoding: "utf8", env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, MAIN_REPO: main, TMPDIR: dir },
+  const result = spawnSync(zsh, ["-f", join(repo, "bin", "orchestrate", "review.sh"), ws, out, join(dir, "context.txt")], {
+    encoding: "utf8", env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, ZDOTDIR: tools, MAIN_REPO: main, TMPDIR: dir },
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const seen = JSON.parse(readFileSync(record, "utf8"));
@@ -127,6 +130,9 @@ test("review.sh names the prose standard the policy records, says when the looku
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const tools = join(dir, "tools"), record = join(dir, "record.json"), main = join(dir, "main"), ws = join(dir, "ws");
   mkdirSync(tools);
+  // A user startup file must not replace the fixture executables.
+  writeFileSync(join(tools, ".zshenv"), "PATH=/usr/bin:/bin\n");
+  standIn(join(tools, "atelier"), join(dir, "policy-record.json"), "{}");
   standIn(join(tools, "agy"), record, JSON.stringify({ response: "VERDICT: APPROVE\nSUMMARY: Read it.\n" }));
   const gitMain = gitRepo(main);
   writeFileSync(join(main, "a.txt"), "a\n");
@@ -146,8 +152,8 @@ test("review.sh names the prose standard the policy records, says when the looku
   };
   const review = (env = {}) => {
     const out = join(ws, ".scratch", "review");
-    const result = spawnSync(zsh, [join(repo, "bin", "orchestrate", "review.sh"), ws, out, join(dir, "context.txt")], {
-      encoding: "utf8", env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, MAIN_REPO: main, TMPDIR: dir, ...env },
+    const result = spawnSync(zsh, ["-f", join(repo, "bin", "orchestrate", "review.sh"), ws, out, join(dir, "context.txt")], {
+      encoding: "utf8", env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, ZDOTDIR: tools, MAIN_REPO: main, TMPDIR: dir, ...env },
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return { prompt: readFileSync(`${out}.prompt.md`, "utf8"), stderr: result.stderr };
