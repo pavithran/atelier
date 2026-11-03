@@ -1,0 +1,27 @@
+atelier atelier/t452 "The ship's Studio suite finds node on the Studio"
+accepted head 30fa3e720d86929e5dbce51f961213c6d4b526bc
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-03T01:48:00.203Z
+REVIEW approve by antigravity/gemini-4-argon at 30fa3e720d86929e5dbce51f961213c6d4b526bc, recorded by antigravity/gemini-4-argon
+CHECKED TREE 8e7e1614bb00b26bffbd03d4914c2991ca3c40df: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-03T01:30:32.160Z pavi item.created
+2026-11-03T01:30:32.160Z claude-code/opus-5.5 criteria.revised
+2026-11-03T01:30:34.505Z pavi item.dispatched
+2026-11-03T01:41:16.490Z codex/gpt-6.1-sol item.claimed
+2026-11-03T01:41:16.523Z codex/gpt-6.1-sol workspace.created
+2026-11-03T01:47:56.700Z codex/gpt-6.1-sol push.observed
+2026-11-03T01:48:00.225Z codex/gpt-6.1-sol evidence.observed
+2026-11-03T01:48:00.412Z codex/gpt-6.1-sol item.submitted
+2026-11-03T01:48:04.113Z pavi land.start
+2026-11-03T01:48:05.476Z pavi review.requested
+2026-11-03T01:48:05.476Z pavi review.tier_needed
+2026-11-03T01:48:05.847Z pavi land.review
+2026-11-03T01:48:05.946Z pavi land.requested
+2026-11-03T01:48:33.097Z antigravity/gemini-4-argon review.claimed
+2026-11-03T01:49:37.627Z antigravity/gemini-4-argon review.approved
+2026-11-03T01:49:41.921Z pavi item.accepted
+2026-11-03T01:49:42.813Z pavi land.start
+2026-11-03T01:49:42.901Z pavi landing.leased
+2026-11-03T01:49:42.987Z pavi land.lease
+2026-11-03T01:49:44.041Z pavi checkout.leased
