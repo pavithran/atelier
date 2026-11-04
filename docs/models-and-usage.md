@@ -516,14 +516,57 @@ not imply zero usage. Missing windows are explicit, not estimated from
 counts, costs or balances. Shared Codex account windows are not added across
 machines. Claude session counts remain separate per runner.
 
-Claude Code's supported reader takes model, timestamp and token counts from
-`~/.claude/projects/**/*.jsonl`. These records do not establish the plan's
-percent or reset. No verified Antigravity quota reader exists here. Neither
-figure can be supplied from the records this project currently reads.
-The t469 workspace restriction prevented inspecting the host's private tool
-directories or installed apps, so this is not evidence that no other source
-exists on the host. No credentials were inspected and no new reader was added.
-Check the tools' own usage displays until a readable source is verified.
+`atelier unwrap --project NAME` prints percent left alongside percent used
+and the next reset for every reported window. It names every supported harness
+and DeepSeek even when no figure exists. Counts, costs and balances never
+stand in for a plan percentage. The tool names follow the sender and harness
+registry, including `gemini-cli` (not `gemini`).
+
+Unwrap uses the server's thresholds, including its existing pace warnings,
+to warn before an allowance runs out. Each warning names a suggested next
+builder and independent reviewer. It also names a reviewer for each live task,
+checked against **every** recorded contributor, including earlier builders.
+It reads the registered pool and live runner offers, respects held models,
+roles and runner project restrictions, and excludes tools with a current
+warning. Fresh known allowances rank by the least percent left across their
+windows and machines; unknown quotas follow with “quota unknown; check vendor”.
+Shared accounts are never added together. With no eligible alternative it says
+none; unreadable inputs say unknown. Stale reports, old source readings and
+expired windows cannot establish available quota. No routing or settings change.
+In a single-family project this advice refuses to name a reviewer: that policy
+cannot meet the requested cross-company rule.
+
+### Sources checked
+
+| Source | Result |
+| --- | --- |
+| Codex session `rate_limits` | Existing reader supplies percent used and reset. |
+| Claude project JSONL | Model and token counts only; these cannot establish allowance percent or reset. |
+| Claude status-line stdin | [Anthropic documents](https://code.claude.com/docs/en/statusline#rate-limit-usage) `rate_limits.five_hour` and `seven_day`, each with `used_percentage` and Unix-seconds `resets_at`. Supported through an explicit capture, below. Context-window percentage is a different measure and is ignored. |
+| Claude authenticated usage APIs | Not added: the documented status-line input avoids reading credentials or making another authenticated provider call. |
+| Antigravity `~/.gemini/antigravity` | Existing sender detects the directory but has no verified quota reader. No percent is inferred from its presence. |
+| Antigravity `~/.gemini/antigravity-cli` | Lead remains unverified: this task permits file access only inside its workspace, so host state and installed app fields could not be inspected. No schema or quota reader is claimed. |
+| zcode and opencode databases | Request/token counts and opencode costs, not plan percent or reset. |
+| DeepSeek balance endpoint | Currency balance, not allowance percent or reset. |
+| Gemini CLI | No verified allowance reader; no percent or reset. |
+
+To supply Claude's figures, have a local status-line command project only
+`.rate_limits` from its stdin into a JSON capture, then run:
+
+```text
+atelier runner --usage --name home:studio --claude-status-file PATH
+```
+
+For example, the status-line script can pass its stdin through
+`jq '{rate_limits: .rate_limits}' > PATH`. Keep the capture private and replace
+it on each update. A partial write cannot yield valid windows. The sender
+accepts captures no older than three hours and at most 1 MiB, validates only
+the two documented windows and copies only their numeric allowance fields.
+It sends them through the existing `POST /api/usage/claude-code` route, together
+with session counts if available. Missing, malformed or stale captures say why
+no figure exists; they do not become zero usage. No credential, path, session
+content or context-window field is reported. Capturing and scheduling are
+explicit local setup, not automatic changes made by unwrap.
 
 Usage authorization remains independent of project membership and edit
 rights: an active runner token may write only its own tool reports, without
@@ -535,7 +578,7 @@ levels grant no access.
 | --- | --- | --- | --- | --- |
 | Developer | Own submitted report | All reports | No new path | Existing full view |
 | Active runner | Its submitted report | Refused | No new path | No read access |
-| Agent or anonymous API caller | Refused | Refused | No new path | No new access |
+| Agent token or anonymous API caller | Refused | Refused | No new path | No new access |
 
 The existing runner usage sender and developer sender keep the same body
 contract. Usage and Models pages, gateway readers and alert calculations
@@ -545,3 +588,30 @@ configuration or real provider files. Before and after deployment, run the
 hourly usage check on the Studio with its runner token and verify the server
 shows its Claude counts under that runner. Also check the Mac's report and
 confirm shared Codex percentages are displayed separately. Never print tokens.
+
+The additions keep the report and endpoint contracts unchanged. Callers checked:
+runner and developer usage senders, unwrap, Usage and Models renderers, gateway
+readers, threshold/notification calculations, and the generated command reference
+(`/how`) and CLI help. The senders and renderers accept Claude windows in the
+same shape as Codex windows. CLI help and its pinned fixtures include the new
+optional flag; the command reference reads the same declarations. No search
+snippet, export or additional generated usage page is introduced.
+
+Unwrap's added reads use existing trust checks: `GET /api/models` needs the
+developer token; `GET /api/runners` additionally requires the developer actor.
+Neither needs project membership or an edit right. `GET /api/usage` needs the
+developer token, with no membership/edit check; `POST /api/usage/TOOL` accepts
+an active runner for its own identity, or a developer with a valid runner
+header. Agent-token/anonymous callers, conflicting runner headers and revoked runner
+tokens are refused. Disclosure comes from authenticated identity, with no
+caller-requested level. Project reads retain their token project scope.
+
+Local fixtures cannot establish which Claude version and subscription the
+Studio uses, whether it supplies status-line windows, or what quota fields an
+Antigravity installation holds. Before and after deployment, the remote smoke
+check must capture actual Claude status-line allowance fields, send them with
+the Studio runner token, and confirm unwrap shows matching percentages/reset
+and a cross-company alternative when a threshold is crossed. Verify the sender names a missing capture, Antigravity remains an explicit
+unknown, previous reports retain their receipt time and become stale, and a runner cannot read
+the global report. Do not print credentials or conversation contents. These
+host checks remain required; local fixture tests do not replace them.

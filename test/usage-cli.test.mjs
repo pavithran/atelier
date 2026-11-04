@@ -535,3 +535,23 @@ test("t727: a session folder that cannot be read is an error, so nothing is repo
     assert.equal(calls.report.length, 0);
   } finally { chmodSync(locked, 0o755); }
 });
+
+test("Claude status capture reaches the existing usage sender with numbers only, including without session logs", async (t) => {
+  const { io, calls, dir } = fakeIo(t);
+  const file = join(dir, "claude-status.json");
+  writeFileSync(file, JSON.stringify({ rate_limits: { five_hour: { used_percentage: 12, resets_at: NOW / 1000 + 3600 }, seven_day: { used_percentage: 85, resets_at: RESET } }, cwd: PROMPT, token: KEY, transcript_path: SESSION }));
+  utimesSync(file, NOW / 1000, NOW / 1000);
+  await runUsage(args("name=home:test", `claude-status-file=${file}`), io);
+  const body = calls.report.find((r) => r.tool === "claude-code").body;
+  assert.deepEqual(body.windows.map((w) => [w.name, w.usedPercent]), [["5-hour", 12], ["weekly", 85]]);
+  assert.doesNotThrow(() => cleanReport("claude-code", body, new Date(NOW).toISOString(), "home:test"));
+  for (const secret of [PROMPT, KEY, SESSION]) assert.equal((JSON.stringify(calls.report) + calls.printed.join("\n")).includes(secret), false);
+  for (const kind of ["stale", "malformed", "absent"]) {
+    calls.report.length = 0;
+    if (kind === "stale") utimesSync(file, hoursAgo(4) / 1000, hoursAgo(4) / 1000);
+    if (kind === "malformed") { writeFileSync(file, "private invalid JSON"); utimesSync(file, NOW / 1000, NOW / 1000); }
+    await runUsage(args("name=home:test", `claude-status-file=${kind === "absent" ? file + ".missing" : file}`), io);
+    assert.equal(calls.report.some((r) => r.tool === "claude-code" && r.body.windows.length), false);
+    assert.match(calls.printed.at(-1), /status-line capture.*(stale|could not be read)/);
+  }
+});

@@ -1,5 +1,5 @@
 // atelier unwrap. Its forms, flags and help are declared in src/usage/commands/unwrap.ts.
-import { usageLines } from "../../src/usage/summary.ts";
+import { usageAdvice, usageLines } from "../../src/usage/summary.ts";
 import { line } from "../../src/decisions.ts";
 import { contributorsOf, validActor } from "../../src/rules.ts";
 import { readFileSync } from "node:fs";
@@ -39,12 +39,19 @@ export default async function unwrapCommand() {
   const standing = await call("GET", `${P(name)}/standing`, undefined, as);
   console.log(formatStanding(standing, OWNER_NAME, server()));
   console.log((await modelLines(name, as, read?.items)).join("\n"));
-  console.log(usageLines(await request("GET", "/usage", undefined, as).catch(() => null)).join("\n"));
+  const usage = await request("GET", "/usage", undefined, as).catch(() => null);
+  console.log(usageLines(usage).join("\n"));
   const mode = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
   const stages = stageLines(stageEntries(read?.items, readyOf(mode)), "");
   if (stages.length) console.log(stages.join("\n"));
   // The runners and what each reported about itself (t234), as status shows them.
-  const offers = await request("GET", "/runners", undefined, as).catch(() => null);
+  const offers = await request("GET", "/runners", undefined, OWNER).catch(() => null);
+  const pool = await request("GET", "/models", undefined, OWNER).catch(() => null);
+  console.log(usageAdvice(usage, {
+    pool: Array.isArray(pool) ? pool : null, offers: Array.isArray(offers) ? offers : null,
+    project: name, single: read?.project?.policy?.familyMode?.single,
+    tasks: Array.isArray(read?.items) ? read.items.filter((i) => !["merged", "abandoned"].includes(i.state)).map((i) => ({ id: i.id, contributors: contributorsOf(i) })) : null,
+  }).join("\n"));
   if (Array.isArray(offers)) console.log(formatRunners(offers, Date.now(), args["all-runners"]).join("\n"));
   console.log(await checkoutStatusLine(name, as));
   if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
