@@ -1,0 +1,29 @@
+atelier atelier/t486 "Runners can't rule out a second copy of themselves when /usr/sbin isn't on PATH"
+accepted head f50a6fa9a458feb192f20fa5ba1f93a8dbeab0fa
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-04T16:24:07.897Z
+REVIEW approve by claude-code/sonnet-5.5 at f50a6fa9a458feb192f20fa5ba1f93a8dbeab0fa, recorded by claude-code/sonnet-5.5
+CHECKED TREE c4c1bf00c6751973befff2e7051b96b991e7ebb3: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-04T07:18:32.813Z pavi item.created
+2026-11-04T07:18:32.813Z claude-code/opus-5.5 criteria.revised
+2026-11-04T16:11:18.550Z pavi item.dispatched
+2026-11-04T16:11:26.450Z codex/gpt-6.1-sol item.claimed
+2026-11-04T16:11:26.488Z codex/gpt-6.1-sol workspace.created
+2026-11-04T16:23:31.891Z codex/gpt-6.1-sol push.observed
+2026-11-04T16:24:07.917Z codex/gpt-6.1-sol evidence.observed
+2026-11-04T16:24:08.133Z codex/gpt-6.1-sol item.submitted
+2026-11-04T16:40:00.000Z atelier stage.stuck
+2026-11-04T16:52:25.443Z pavi land.start
+2026-11-04T16:52:29.984Z pavi review.requested
+2026-11-04T16:52:29.984Z pavi review.tier_needed
+2026-11-04T16:52:30.339Z pavi land.review
+2026-11-04T16:52:30.452Z pavi land.requested
+2026-11-04T16:52:34.412Z claude-code/sonnet-5.5 review.claimed
+2026-11-04T16:52:52.590Z claude-code/sonnet-5.5 review.approved
+2026-11-04T16:52:52.590Z atelier/orchestrator goal.notes
+2026-11-04T16:52:59.818Z pavi item.accepted
+2026-11-04T16:53:00.793Z pavi land.start
+2026-11-04T16:53:00.938Z pavi landing.leased
+2026-11-04T16:53:01.055Z pavi land.lease
+2026-11-04T16:53:02.455Z pavi checkout.leased
