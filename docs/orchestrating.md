@@ -562,9 +562,12 @@ A build's progress line (G21) comes from its runner with each poll and
 heartbeat: commands run so far and the one running now (from the builder's
 stream-json log, which the Claude Code adapter writes beside the workspace),
 whether a process the model started is alive, commits on `t/N`, elapsed
-time, tokens and cost. `situation` flags a stall: no change for 30 minutes
-with no child process alive, or no command completed five minutes after the
-build started (the `claude -p` that hangs on a privacy prompt under launchd).
+time, tokens and cost. The line names that log only while the file is there
+to read: another harness (codex, opencode) writes no such log, so its line
+says it has none rather than naming a file that does not exist.
+`situation` flags a stall: no change for 30 minutes with no child process
+alive, or no command completed five minutes after the build started (the
+`claude -p` that hangs on a privacy prompt under launchd).
 
 A task can wait on others: `atelier edit ID --blocked-by tA,tB` (`""`
 clears the list). The queue offers it to no runner, a claim is refused

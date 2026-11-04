@@ -129,15 +129,20 @@ test("a progress record dates what changed, keeps each run's spend, and flags a 
 
 test("progress names the reported runner log and numbers a new attempt after an ended run", () => {
   const at = (m) => new Date(Date.parse("2026-11-03T12:00:00Z") + m * 60000).toISOString();
+  const logFile = join(root, "current.log");
   const tracker = progressTracker({ now: () => Date.parse(at(0)), git: () => ({ status: 1 }) });
-  tracker.begin({ project: "demo", task: "t3", actor: BUILDER, workspace: root, log: "/runs/current.log" });
+  tracker.begin({ project: "demo", task: "t3", actor: BUILDER, workspace: root, log: logFile });
+  // A log is named only once the file exists (t489): the adapter opens it after
+  // the harness has begun, so the first reports of a run name none.
+  assert.equal(tracker.report()[0].log, null, "no log is named before the file exists");
+  writeFileSync(logFile, "");
   const raw = tracker.report()[0];
-  assert.equal(raw.log, "/runs/current.log");
+  assert.equal(raw.log, logFile);
   for (const log of ["relative.log", "/runs/../secret", "/runs/log\nforged"]) assert.equal(parseProgress({ ...raw, log }).log, null);
   const first = nextProgress(null, parseProgress({ ...raw, endedAt: at(5) }), "build:studio", at(5));
   const current = nextProgress(first, parseProgress({ ...raw, startedAt: at(60) }), "build:studio", at(61));
   const line = progressText(progressView(current, new Date(at(72))));
-  assert.match(line, /runner build:studio; log at \/runs\/current.log/);
+  assert.ok(line.includes(`runner build:studio; log at ${logFile};`), line);
   assert.match(line, /attempt 2; elapsed 12m/);
   assert.equal(nextProgress(current, parseProgress({ ...raw, startedAt: at(60), attempt: 99 }), "build:studio", at(73)).attempt, 2, "a heartbeat neither starts an attempt nor accepts a caller-supplied number");
   let many = current;
@@ -146,7 +151,9 @@ test("progress names the reported runner log and numbers a new attempt after an 
   assert.equal(progressView(many, new Date(at(22 * 60))).attempt, 22);
   assert.match(progressText(progressView(first, new Date(at(72)))), /attempt 1; elapsed 5m/);
   const old = nextProgress(null, parseProgress({ ...raw, log: undefined }), "build:studio", at(1));
-  assert.doesNotMatch(progressText(progressView(old, new Date(at(2)))), /log at/);
+  const oldLine = progressText(progressView(old, new Date(at(2))));
+  assert.doesNotMatch(oldLine, /log at/);
+  assert.match(oldLine, /no log named/);
 });
 
 // ── end to end ────────────────────────────────────────────────────────────
@@ -347,11 +354,17 @@ test("a codex build reports no command telemetry: said so, never flagged for no 
   t += 10 * 60_000;
   const [r] = tracker.report();
   assert.deepEqual([r.harness, r.telemetry, r.childAlive], ["codex", false, false]);
+  // No adapter writes the codex run's output to the progress log, so the file
+  // never exists (t489): the report names no log, and the line says it has
+  // none, never a path that is not there to read.
+  assert.equal(r.log, null);
   const rec = nextProgress(null, parseProgress(r), "home:studio", new Date(t).toISOString());
   const startView = progressView(rec, new Date(t));
   assert.equal(startView.stall, null, "no command telemetry is no startup stall");
   assert.equal(startView.commands, null);
   assert.match(progressText(startView), /^no command telemetry for codex; 1 commit on t\/9; no child process/);
+  assert.match(progressText(startView), /no log named/);
+  assert.doesNotMatch(progressText(startView), /log at/);
   assert.equal(progressView(rec, new Date(t + STALL_MS)).stall, "no change in 30 minutes and no child process alive");
   assert.equal(progressView({ ...rec, childAlive: true }, new Date(t + STALL_MS)).stall, null);
 });
