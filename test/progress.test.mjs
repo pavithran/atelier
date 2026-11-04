@@ -127,6 +127,28 @@ test("a progress record dates what changed, keeps each run's spend, and flags a 
   assert.match(situationText(s), /STALL: no change in 31 minutes/);
 });
 
+test("progress names the reported runner log and numbers a new attempt after an ended run", () => {
+  const at = (m) => new Date(Date.parse("2026-11-03T12:00:00Z") + m * 60000).toISOString();
+  const tracker = progressTracker({ now: () => Date.parse(at(0)), git: () => ({ status: 1 }) });
+  tracker.begin({ project: "demo", task: "t3", actor: BUILDER, workspace: root, log: "/runs/current.log" });
+  const raw = tracker.report()[0];
+  assert.equal(raw.log, "/runs/current.log");
+  for (const log of ["relative.log", "/runs/../secret", "/runs/log\nforged"]) assert.equal(parseProgress({ ...raw, log }).log, null);
+  const first = nextProgress(null, parseProgress({ ...raw, endedAt: at(5) }), "build:studio", at(5));
+  const current = nextProgress(first, parseProgress({ ...raw, startedAt: at(60) }), "build:studio", at(61));
+  const line = progressText(progressView(current, new Date(at(72))));
+  assert.match(line, /runner build:studio; log at \/runs\/current.log/);
+  assert.match(line, /attempt 2; elapsed 12m/);
+  assert.equal(nextProgress(current, parseProgress({ ...raw, startedAt: at(60), attempt: 99 }), "build:studio", at(73)).attempt, 2, "a heartbeat neither starts an attempt nor accepts a caller-supplied number");
+  let many = current;
+  for (let n = 3; n <= 22; n++) many = nextProgress(many, parseProgress({ ...raw, startedAt: at(n * 60) }), "build:studio", at(n * 60));
+  assert.equal(many.runs.length, 20);
+  assert.equal(progressView(many, new Date(at(22 * 60))).attempt, 22);
+  assert.match(progressText(progressView(first, new Date(at(72)))), /attempt 1; elapsed 5m/);
+  const old = nextProgress(null, parseProgress({ ...raw, log: undefined }), "build:studio", at(1));
+  assert.doesNotMatch(progressText(progressView(old, new Date(at(2)))), /log at/);
+});
+
 // ── end to end ────────────────────────────────────────────────────────────
 
 const baseEnv = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
@@ -237,13 +259,14 @@ process.stdin.resume(); process.stdin.on("data", () => {});
   assert.equal(mid.runner, "home:studio");
   assert.equal(mid.ended, false);
   const text = await cli(["situation", "--project", "demo"]);
-  assert.match(text.stdout, /progress: 0 commands run; 0 commits on t\/1; running Bash \(npm\) for \d+s; a child process is alive; no check yet; elapsed \d+s/);
+  assert.match(text.stdout, /progress: 0 commands run; 0 commits on t\/1; running Bash \(npm\) for \d+s; a child process is alive; no check yet; runner home:studio; log at [^;]+; attempt 1; elapsed \d+s/);
   writeFileSync(`${go}.1`, "");
   // Between commands: two completed, one commit on t/N, no child.
   const between = await until((p) => p.commands.completed === 2 && p.commits === 1 && p.childAlive === false && !p.current, "two commands and a commit");
   assert.equal(between.ended, false);
   const shown = await cli(["show", id, "--project", "demo"]);
-  assert.match(shown.stdout, /Progress: 2 commands run; 1 commit on t\/1; between commands; no child process; no check yet; elapsed \d+s/);
+  assert.match(shown.stdout, /Progress: 2 commands run; 1 commit on t\/1; between commands; no child process; no check yet; runner home:studio; log at [^;]+; attempt 1; elapsed \d+s/);
+  assert.ok(between.log && shown.stdout.includes(`runner home:studio; log at ${between.log}; attempt 1`));
   writeFileSync(`${go}.2`, "");
   const r = await runner;
   assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);

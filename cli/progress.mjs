@@ -152,7 +152,7 @@ export function progressTracker({ now = Date.now, ps, git } = {}) {
       const current = !run.endedAt && s.pending.size ? [...s.pending.values()].at(-1) : null;
       return [{
         project: run.project, task: run.task, actor: run.actor, harness: run.harness, telemetry: run.telemetry,
-        startedAt: run.startedAt, endedAt: run.endedAt, at,
+        startedAt: run.startedAt, endedAt: run.endedAt, at, log: run.log ?? null,
         commands: { started: s.started, completed: s.completed },
         current, last: s.last,
         childAlive: below === null ? null : below.some((p) => p.depth >= 2),

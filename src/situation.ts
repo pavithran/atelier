@@ -61,6 +61,8 @@ export interface SituationFacts {
 // spend of each run of the task.
 export interface ProgressRecord {
   task: string; actor: string; runner: string;
+  log?: string | null;
+  attempt?: number; // Optional for records written before attempt numbering.
   // The harness, and whether it reports commands (only Claude Code's
   // stream-json log does); without telemetry the command counts are unknown.
   harness: string | null; telemetry: boolean;
@@ -76,7 +78,7 @@ export interface ProgressRecord {
 }
 
 const RUNS_KEPT = 20;
-// No free text a runner reports is kept: the actor must be a harness/model
+// Apart from the bounded log path, no free text a runner reports is kept: the actor must be a harness/model
 // name, a tool a bare tool name, a command its program's name; anything
 // else in their place is dropped, never stored or shown.
 const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
@@ -99,7 +101,7 @@ export function parseProgress(raw: unknown): Omit<ProgressRecord, "runner" | "re
   if (!task || !actor || !startedAt) return null;
   const c = (r.commands ?? {}) as Record<string, unknown>, cur = r.current as Record<string, unknown> | null, last = r.last as Record<string, unknown> | null;
   return {
-    task, actor, harness: program(r.harness), telemetry: r.telemetry !== false, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
+    task, actor, log: cleanRunFacts({ log: r.log })?.log ?? null, harness: program(r.harness), telemetry: r.telemetry !== false, startedAt, endedAt: time(r.endedAt), at: time(r.at) ?? startedAt,
     commands: { started: count(c.started), completed: count(c.completed) },
     current: cur && typeof cur === "object" && tool(cur.name) ? { name: tool(cur.name)!, summary: program(cur.summary), since: time(cur.since) ?? startedAt } : null,
     last: last && typeof last === "object" && tool(last.name) ? { name: tool(last.name)!, summary: program(last.summary), at: time(last.at) ?? startedAt, error: last.error === true } : null,
@@ -116,7 +118,8 @@ export function nextProgress(prev: ProgressRecord | null, report: NonNullable<Re
   const same = !!prev && prev.startedAt === report.startedAt && sig(prev) === sig(report);
   const runs = [...(prev?.runs ?? []).filter((x) => x.startedAt !== report.startedAt), { actor: report.actor, startedAt: report.startedAt, costUsd: report.costUsd, tokens: report.tokens }]
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt)).slice(-RUNS_KEPT);
-  return { ...report, runner, receivedAt: now, changedAt: same ? prev!.changedAt : now, runs };
+  const attempt = prev ? (prev.attempt ?? prev.runs.length) + (prev.startedAt === report.startedAt ? 0 : 1) : 1;
+  return { ...report, runner, attempt, receivedAt: now, changedAt: same ? prev!.changedAt : now, runs };
 }
 
 // How a progress record reads now: its figures, its ages and the stall it shows.
@@ -129,7 +132,7 @@ export function progressView(p: ProgressRecord, now: Date) {
     : quietMs >= STALL_MS && p.childAlive === false ? `no change in ${Math.floor(quietMs / 60_000)} minutes and no child process alive`
     : null;
   return {
-    task: p.task, actor: p.actor, runner: p.runner, startedAt: p.startedAt, endedAt: p.endedAt, ended,
+    task: p.task, actor: p.actor, runner: p.runner, log: p.log ?? null, attempt: p.attempt ?? p.runs.length, startedAt: p.startedAt, endedAt: p.endedAt, ended,
     harness: p.harness ?? null, telemetry: p.telemetry !== false,
     commands: p.telemetry === false ? null : p.commands, commits: p.commits, changedFiles: p.changedFiles,
     current: p.current && !ended ? { ...p.current, ageMs: ageMs(p.current.since, now) } : null,
