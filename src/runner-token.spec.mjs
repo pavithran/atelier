@@ -140,7 +140,7 @@ it("denies every owner, review and integration operation with identity and no se
     ["POST", `/projects/${t.name}/decisions`], ["POST", `/projects/${t.name}/git-token`, { kind: "landing", item: "t1", head: "a".repeat(40) }],
     ...["accept", "merge", "override", "criteria", "decide", "dispatch", "handoff", "review", "review-claim", "integrated", "refreshed", "landing", "block", "unblock"].map((verb) => ["POST", `${t.base}/${verb}`]),
     ["PATCH", t.base], ["POST", `${t.base}/plan/approve`], ["GET", "/home"], ["GET", "/queue"], ["GET", "/projects"], ["GET", `/projects/${t.name}/standing`],
-    ["POST", "/models/x/status"], ["POST", "/usage/codex"],
+    ["POST", "/models/x/status"],
   ];
   for (const [method, path, body = {}] of forbidden) {
     const res = await t.api(method, path, method === "GET" ? undefined : body);
@@ -340,4 +340,21 @@ it("a poll naming some of the token's projects records an offer for those alone"
   expect((await I().runnerOffers()).find((o) => o.runner === "home:studio").projects).toEqual([]);
   expect((await t.api("POST", "/queue", { ...t.offer, projects: [t.name] })).status).toBe(200);
   expect((await I().runnerOffers()).find((o) => o.runner === "home:studio").projects).toEqual([t.name]);
+});
+
+it("accepts usage only for the authenticated runner and keeps global reads private", async () => {
+  const t = await setup();
+  const body = { windows: [], models: [], balances: [], notes: [] };
+  expect((await t.api("POST", "/usage/claude-code", body)).status).toBe(200);
+  expect((await t.api("POST", "/usage/claude-code", body, ACTOR, "home:impostor")).status).toBe(403);
+  for (const path of ["/usage", "/usage?level=owner", "/usage/claude-code"]) expect((await t.api("GET", path)).status).toBe(403);
+  expect((await t.api("DELETE", "/usage/claude-code", body)).status).toBe(403);
+  expect((await t.api("POST", "/usage/claude-code", { windows: "invalid" })).status).toBe(400);
+  const reports = await (await t.request("GET", "/usage")).json();
+  expect(reports.reports.some((r) => r.tool === "claude-code" && r.runner === "home:studio")).toBe(true);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(t.token.expiresAt));
+  expect((await t.api("POST", "/usage/claude-code", body)).status).toBe(401);
+  clock.mockRestore();
+  await I().revokeAgentToken(t.token.id);
+  expect((await t.api("POST", "/usage/claude-code", body)).status).toBe(401);
 });

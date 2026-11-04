@@ -1725,14 +1725,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     throw new RuleError("not_found", "no such route", 404);
   }
   // Usage, limits and balances. A runner reports one tool at a time under
-  // its name, as it reports a model's status: the owner token, and the
-  // runner named in X-Atelier-Runner. The owner reads every report, the
+  // its authenticated runner name, or with the developer token and the
+  // runner named in X-Atelier-Runner. The developer reads every report, the
   // thresholds in force and the alerts in force.
   if (parts[0] === "usage") {
     const I = index(env);
     if (parts.length === 1 && m === "GET") return json({ thresholds: thresholds(env), reports: await I.usage(), alerts: await I.usageAlerts(), gateway: await readGateway(env) });
     if (parts.length === 2 && m === "POST") {
-      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      const runner = parseRunner(c.token?.runner ?? req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a usage report names its runner in X-Atelier-Runner", 400);
       return json(await I.putUsage(cleanReport(parts[1], body, new Date().toISOString(), runner.runner), thresholds(env), c.url.origin));
     }

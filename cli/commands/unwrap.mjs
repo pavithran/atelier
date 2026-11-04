@@ -1,4 +1,5 @@
 // atelier unwrap. Its forms, flags and help are declared in src/usage/commands/unwrap.ts.
+import { usageLines } from "../../src/usage/summary.ts";
 import { line } from "../../src/decisions.ts";
 import { contributorsOf, validActor } from "../../src/rules.ts";
 import { readFileSync } from "node:fs";
@@ -38,6 +39,7 @@ export default async function unwrapCommand() {
   const standing = await call("GET", `${P(name)}/standing`, undefined, as);
   console.log(formatStanding(standing, OWNER_NAME, server()));
   console.log((await modelLines(name, as, read?.items)).join("\n"));
+  console.log(usageLines(await request("GET", "/usage", undefined, as).catch(() => null)).join("\n"));
   const mode = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
   const stages = stageLines(stageEntries(read?.items, readyOf(mode)), "");
   if (stages.length) console.log(stages.join("\n"));

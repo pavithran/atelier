@@ -85,6 +85,7 @@ globalThis.fetch = async (url, options) => {
   else if (process.env.FAKE_STUCK && path.endsWith("/stuck/episodes")) result = JSON.parse(process.env.FAKE_STUCK).episodes;
   else if (path === "/api/projects") result = [{ name: "demo", title: "Demo" }];
   else if (path === "/api/runners") result = JSON.parse(process.env.FAKE_RUNNERS ?? "[]");
+  else if (path === "/api/usage") result = { reports: [] };
   else if (path.endsWith("/baseline-head")) result = { head: ${JSON.stringify(head)} };
   else if (path.endsWith("/sessions")) result = [previous];
   else if (path === "/api/projects/demo") result = { items: [], project: { policy: { checks: JSON.parse(process.env.FAKE_CHECKS ?? '["exit 7"]'), ...(process.env.FAKE_IDENTITY ? { commitIdentity: JSON.parse(process.env.FAKE_IDENTITY) } : {}) } } };
