@@ -1,5 +1,47 @@
 # Runners and dispatch
 
+## Studio builder refresh
+
+Production ship still refreshes PAVI's own runner copy over SSH. For the
+atelier-build copy it publishes a Git bundle and then its requested head in
+`/Users/atelier-build/flags/runner-refresh.{bundle,head}`. It never runs Git
+or npm in that user's copy. No `safe.directory` exception is needed.
+Ship reads `runner-refresh.applied` once and reports either that the builder
+copy reached the commit or that it has not reached it and is queued. A busy
+builder can therefore finish refreshing after ship returns.
+
+PAVI must install this integration once with his administrator password:
+copy `scripts/studio/refresh-build-runners.sh` from the reviewed revision to
+`/Users/atelier-build/control/refresh-build-runners.sh`, and update
+`/Users/atelier-build/control/loop.zsh`, run by `zone.atelier.build.control`,
+to source that installed file. Run the
+control service as atelier-build. Export `TMPDIR=/Users/atelier-build/tmp`
+in the loop before starting any runner, including its initial start, and
+ensure that directory exists and is writable by atelier-build. Each poll
+must call `refresh_build_runners builders_idle restart_builders` before
+starting more jobs. Supply those two functions from the existing loop:
+`builders_idle` succeeds only when every builder is idle, and
+`restart_builders` restarts all builder runners and succeeds only when all
+starts succeed. Serialize this with the loop's ordinary runner starts and
+stops so no job starts between the idle check and restart. Preserve the
+loop's other control operations, then restart the control service once.
+
+The helper checks its user, checks idle, fetches and verifies the requested
+commit, resets, runs `npm ci`, and restarts with TMPDIR. It writes the
+applied marker only after restart succeeds. Failures leave the request for
+the next idle poll. Future refreshes need no password. The only callers of
+this handoff are `scripts/ship-refresh-runners.mjs` and the installed control
+loop; no API or generated page uses it.
+
+Local tests simulate the loop callbacks. They cannot reproduce launchd's
+user identity, the live idle predicate, SSH permissions or the service's
+inherited environment. Before and after deploying this integration, the
+Studio smoke check must exercise a busy poll (no reset or restart), then an
+idle poll, verify the runner HEAD and applied marker equal the shipped
+commit, and inspect every restarted builder's TMPDIR. A failed npm install
+or restart must leave the new commit unacknowledged. Do not deploy if this
+check fails.
+
 For developer-token examples, set the acting model for the session:
 
 ```sh
