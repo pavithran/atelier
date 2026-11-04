@@ -1,3 +1,4 @@
+import { readMainSuite, mainSuiteLines } from "../main-suite.mjs";
 // atelier stuck. Forms, flags and help live in src/usage/commands/stuck.ts.
 import { OWNER, P, args, call, die, project } from "../atelier.mjs";
 
@@ -12,7 +13,10 @@ export default async function stuckCommand() {
     }
   }
   const report = await call("GET", `${P(name)}/stuck?${query}`, undefined, as);
+  const mainSuite = readMainSuite();
+  if (mainSuite) report.mainSuite = mainSuite;
   if (args.json) return console.log(JSON.stringify(report, null, 2));
+  for (const line of mainSuiteLines(mainSuite)) console.log(line);
   console.log(`Stuck in ${report.project} — observed ${report.observedAt}`);
   console.log(`Limits (age > limit): ${Object.entries(report.limits).map(([k, v]) => `${k}=${v}`).join(", ")}`);
   for (const source of report.unavailable) console.log(`UNAVAILABLE: ${source}`);
