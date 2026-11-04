@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { checkMain, suiteResult, mainSuiteLines, studioMainSuite } from "../scripts/main-suite.mjs";
+import { checkMain, suiteResult, mainSuiteLines, studioMainSuite, suiteCommandOptions } from "../scripts/main-suite.mjs";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -71,7 +71,18 @@ exit 1
    assert.deepEqual(red.failures, ["fixture:1: example failure"]);
    assert.match(readFileSync(join(root, "main-suite.log"), "utf8"), new RegExp(head));
    git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-qm", "next");
-   writeFileSync(join(bin, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+   const log = join(root, "main-suite.log"), previousLog = readFileSync(log, "utf8");
+   writeFileSync(join(bin, "npm"), `#!/bin/sh
+test -s '${log}' || exit 9
+exit 1
+`, { mode: 0o755 });
+   await studioMainSuite(join(repo, ".git"), work, file);
+   assert.equal(readMainSuite(file).status, "incomplete");
+   assert.equal(readFileSync(log, "utf8"), previousLog);
+   writeFileSync(join(bin, "npm"), `#!/bin/sh
+test -s '${log}' || exit 9
+exit 0
+`, { mode: 0o755 });
    await studioMainSuite(join(repo, ".git"), work, file);
    const green = readMainSuite(file);
    assert.equal(green.status, "green"); assert.equal(green.lastGreen, git("rev-parse", "HEAD"));
@@ -100,3 +111,21 @@ test("red main retains last green and names failures; green clears warning", () 
  assert.match(mainSuiteLines(red).join("\n"), /refuses access/);
  assert.deepEqual(mainSuiteLines(suiteResult("fixed", red, { status: 0, output: "" })), []);
 });
+
+ test("unfinished suites are incomplete and retain last green without a red warning", () => {
+ for (const result of [
+   { status: null, error: { code: "ETIMEDOUT" }, output: "Failing tests:\n  partial failure\n" },
+   { status: 1, output: "test/run.mjs: command ran past 3540 s; its process group was killed" },
+   { status: 1, output: "install failed" },
+ ]) {
+   const incomplete = suiteResult("new", { lastGreen: "good" }, result);
+   assert.equal(incomplete.status, "incomplete");
+   assert.equal(incomplete.lastGreen, "good");
+   assert.deepEqual(incomplete.failures, []);
+   assert.deepEqual(mainSuiteLines(incomplete), ["Main suite: last run did not finish"]);
+ }
+ });
+ test("background suite defaults to six workers and accepts its own override", () => {
+ assert.equal(suiteCommandOptions({ ATELIER_TEST_WORKERS: "1" }).env.ATELIER_TEST_WORKERS, "6");
+ assert.equal(suiteCommandOptions({ ATELIER_MAIN_SUITE_WORKERS: "3" }).env.ATELIER_TEST_WORKERS, "3");
+ });
