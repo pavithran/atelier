@@ -160,7 +160,7 @@ test("a server a route level lower than the CLI's refuses, naming both levels an
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, items\.brief-criteria\.v1/);
   assert.match(r.output, /route level 13/);
-  assert.match(r.output, /Deploy the server/);
+  assert.match(r.output, /Run atelier ship from a checkout at the server.s commit/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
   assert.equal(f.box.lease, null);
@@ -181,7 +181,7 @@ test("a server a route level lower than the CLI's refuses --wait at start, sayin
   const r = await f.run(f.checkout, "land", "t1", "--wait");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, items\.brief-criteria\.v1/);
-  assert.match(r.output, /Deploy the server/);
+  assert.match(r.output, /Run atelier ship from a checkout at the server.s commit/);
   // Nothing was asked of the lease — no queued ask, no take — and the lease
   // and the queue stand exactly as they were.
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
@@ -196,7 +196,7 @@ test("a server that reports no route level refuses, saying to deploy", async (t)
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /neither capabilities nor a route level/);
-  assert.match(r.output, /Deploy the server/);
+  assert.match(r.output, /Run atelier ship from a checkout at the server.s commit/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(f.box.lease, null);
 });

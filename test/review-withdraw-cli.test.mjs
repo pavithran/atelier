@@ -86,6 +86,6 @@ test("a server without reviews.withdraw.v1 is named before any request, so a dep
   const r = await f.run(["review-withdraw", "t9", "--reason", "Stuck"]);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /lacks capabilities reviews\.withdraw\.v1/);
-  assert.match(r.stderr, /Deploy the server/);
+  assert.match(r.stderr, /Run atelier ship from a checkout at the server.s commit/);
   assert.deepEqual(f.requests, []);
 });

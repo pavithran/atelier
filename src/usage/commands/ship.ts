@@ -2,7 +2,6 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "ship",
-  capabilities: ["ship.step-start.v1"],
   forms: [
     {
       group: "Developer", line: 5, slot: 10,

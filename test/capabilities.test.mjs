@@ -39,7 +39,7 @@ test("a missing capability is named with the server revision and the deployment 
   assert.deepEqual(r.missing, ["a.two.v1"]);
   assert.match(r.message, /lacks capabilities a\.two\.v1/);
   assert.match(r.message, /main at 01234567/);
-  assert.match(r.message, /Deploy the server .*npm run deploy/);
+  assert.match(r.message, /Run atelier ship from a checkout at the server.s commit/);
   assert.match(checkCapabilities({ capabilities: [] }, need).message, /unrecorded revision/);
 });
 
@@ -98,7 +98,7 @@ test("new declarations, including queued legacy metadata, require published name
       const old = future.checkCapabilities(version, [name]);
       assert.equal(old.ok, false);
       assert.deepEqual(old.missing, [name]);
-      assert.match(old.message, /Deploy the server .*npm run deploy/);
+      assert.match(old.message, /Run atelier ship from a checkout at the server.s commit/);
     }
     assert.equal(future.checkCapabilities({ routeLevel: 0, capabilities: future.SERVER_CAPABILITIES }, [name]).ok, true);
   }
@@ -148,7 +148,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["abandon", "accept", "block", "board", "branch", "catch-up", "claim", "clear-secret", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "import-tasks", "index", "init", "integrated", "integration-failed", "land", "ledger", "merge", "migrate", "mode", "models", "new", "plan", "projects", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "ship", "start", "stuck", "token", "unblock", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["abandon", "accept", "block", "board", "branch", "catch-up", "claim", "clear-secret", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "import-tasks", "index", "init", "integrated", "integration-failed", "land", "ledger", "merge", "migrate", "mode", "models", "new", "plan", "projects", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "unblock", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
@@ -490,7 +490,7 @@ test("independent capability additions merge cleanly, including the same and new
             const old = checkCapabilities(version, [name]);
             assert.equal(old.ok, false);
             assert.deepEqual(old.missing, [name]);
-            assert.match(old.message, /Deploy the server .*npm run deploy/);
+            assert.match(old.message, /Run atelier ship from a checkout at the server.s commit/);
           }
           assert.deepEqual(checkCapabilities({ routeLevel: ROUTE_LEVEL, capabilities: published }, [name]), { ok: true, via: "capabilities" });
           const firstOnly = [...SERVER_CAPABILITIES, names[first.startsWith("ours") ? 0 : 1]];
@@ -575,7 +575,7 @@ test("a server missing one capability a command needs refuses it before its firs
       const f = await stub(t, { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES.filter((n) => n !== missing) });
       const r = await f.run(argv);
       assert.equal(r.status, 1, `${argv.join(" ")} without ${missing}: ${r.output}`);
-      assert.match(r.output, new RegExp(`^atelier: the server \\(main at 01234567\\) lacks capabilities ${missing.replaceAll(".", "\\.")}: it publishes .*Deploy the server from a checkout that declares them \\(npm run deploy, which records the commit it deploys\\), then run atelier ${argv[0]} again\\n$`), `${argv.join(" ")} without ${missing}`);
+      assert.match(r.output, new RegExp(`^atelier: the server \\(main at 01234567\\) lacks capabilities ${missing.replaceAll(".", "\\.")}: it publishes .*Run atelier ship from a checkout at the server’s commit to deploy a checkout that declares them, then run atelier ${argv[0]} again\\n$`), `${argv.join(" ")} without ${missing}`);
       assert.deepEqual(f.requests, [{ method: "GET", path: "/api/version" }], `${argv.join(" ")} without ${missing} made a request beyond the version`);
     }
   }
@@ -728,4 +728,9 @@ test("models.trend.v1 is a named capability that models show --trend reads witho
 test("way-back renewal requires its capability only when renewal is requested", () => {
   assert.deepEqual(requiredForCommand("projects", "move-host", {}), ["projects.move-host.v1"]);
   assert.deepEqual(requiredForCommand("projects", "move-host", { "renew-way-back": true }), ["projects.move-host.v1", "projects.way-back-renew.v1"]);
+});
+
+test("ship never gates deployment on optional telemetry", () => {
+  assert.deepEqual(requiredForCommand("ship"), []);
+  assert.doesNotMatch(checkCapabilities({ capabilities: [] }, need).message, /npm run deploy/);
 });
