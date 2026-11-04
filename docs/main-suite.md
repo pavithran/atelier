@@ -3,8 +3,9 @@
 `zone.atelier.main-suite` observes the canonical Atelier bare repository once
 per minute. launchd runs only one instance of a job at a time. Each invocation
 reads the newest `refs/heads/main`; a completed head is skipped. Moves during
-a run are coalesced into the next observation. There are no retries or gates.
-A failed head is not rerun until main changes.
+a run are coalesced into the next observation. There are no gates.
+A completed failed head is not rerun until main changes; an incomplete head
+can run again.
 
 Like `ship-suite-studio.mjs`, the job checks out the exact commit in a clean
 clone, runs `npm ci` and `npm test`, and removes the clone. It uses six test
