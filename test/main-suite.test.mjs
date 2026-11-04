@@ -96,7 +96,8 @@ test("landing, claiming and shipping have no main-suite dependency or gate", () 
  }
  const plist = readFileSync("scripts/studio/zone.atelier.main-suite.plist.template", "utf8");
  assert.match(plist, /StartInterval<\/key><integer>60/);
- assert.match(plist, /Nice<\/key><integer>20/);
+ assert.match(plist, /Nice<\/key><integer>10/);
+ assert.doesNotMatch(plist, /<key>(ProcessType|LowPriorityIO)<\/key>/);
  assert.match(plist, /UserName<\/key><string>atelier-suite/);
  assert.doesNotMatch(plist, /load.mjs|TOKEN/);
  for (const file of ["cli/commands/status.mjs", "cli/commands/stuck.mjs"]) {

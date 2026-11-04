@@ -9,7 +9,9 @@ can run again.
 
 Like `ship-suite-studio.mjs`, the job checks out the exact commit in a clean
 clone, runs `npm ci` and `npm test`, and removes the clone. It uses six test
-workers by default (override with `ATELIER_MAIN_SUITE_WORKERS`), nice 20, background process scheduling and low priority I/O. It does
+workers by default (override with `ATELIER_MAIN_SUITE_WORKERS`), nice 10,
+no background process class and no low-priority I/O. The background process
+class caused timing failures in the tests. It does
 not reserve the landing/build test pool: landing, claim and ship never read
 or wait for its result. Their required checks remain unchanged.
 
@@ -36,9 +38,10 @@ path to preserve the last green commit.
 
 ## Install
 
-The Studio runs this job as a LaunchAgent under `pavi`, using
+The suite can run on the Studio as pavi's LaunchAgent with no password, using
 `~/.config/atelier/main-suite/run.zsh`. That wrapper mirrors main and runs
-the suite at nice 20 with background scheduling and low priority I/O.
+the shipped `scripts/main-suite.mjs` from the runner copy at nice 10,
+with no background process class and no low-priority I/O.
 Reviews already run tests as pavi, and main's code has been reviewed.
 No new service user or ACLs are needed. Keep the existing LaunchAgent and
 wrapper; do not install the historical LaunchDaemon template.
@@ -52,7 +55,7 @@ Use only one job; do not launch concurrent manual invocations.
 Before and after deployment, check on the Studio that the pavi LaunchAgent
 starts the wrapper after a main move, never overlaps invocations, and skips
 intermediate heads. Verify six workers by default, the worker override,
-nice 20, background scheduling and low priority I/O. Check that normal builds
+nice 10, no background process class and no low-priority I/O. Check that normal builds
 and release checks continue independently. Verify a red fixture names failures
 in status/stuck, an incomplete fixture prints only the plain unfinished line,
 and green clears it. Check that a new run preserves the completed log.
