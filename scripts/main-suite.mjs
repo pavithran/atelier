@@ -7,10 +7,16 @@ import { MAIN_SUITE_FILE, readMainSuite, mainSuiteLines } from "../cli/main-suit
 export { mainSuiteLines };
 
 export function suiteResult(commit, previous, result) {
-  const green = result.status === 0;
+  const unfinished = result.incomplete || result.error || result.signal || /process group was killed/.test(result.output);
+  const green = result.status === 0 && !unfinished;
   const failures = result.output.match(/Failing tests:\n((?:  .+\n?)+)/)?.[1].trim().split(/\n  /) ?? [];
-  return { commit, status: green ? "green" : "red", lastGreen: green ? commit : previous?.lastGreen ?? null,
-    failures: green ? [] : failures.length ? failures : ["Suite did not complete; see main-suite.log"], completedAt: new Date().toISOString() };
+  return { commit, status: green ? "green" : !unfinished && failures.length ? "red" : "incomplete", lastGreen: green ? commit : previous?.lastGreen ?? null,
+    failures: green || unfinished ? [] : failures, completedAt: new Date().toISOString() };
+}
+
+export function suiteCommandOptions(env = process.env) {
+  return { encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    timeout: 59 * 60_000, env: { ...env, ATELIER_TEST_WORKERS: env.ATELIER_MAIN_SUITE_WORKERS ?? "6", ATELIER_TEST_TIMEOUT_MS: "3540000" } };
 }
 
 let running = false;
@@ -19,7 +25,7 @@ export async function checkMain({ head, read, run, save }) {
   running = true;
   try {
     const commit = head(), previous = read();
-    if (previous?.commit === commit) return;
+    if (previous?.commit === commit && previous.status !== "incomplete") return;
     const result = await run(commit);
     save(suiteResult(commit, previous, result));
   } finally { running = false; }
@@ -27,8 +33,7 @@ export async function checkMain({ head, read, run, save }) {
 
 export async function studioMainSuite(repo, work, file = MAIN_SUITE_FILE) {
   mkdirSync(work, { recursive: true });
-  const command = (cmd, args, cwd) => spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-    timeout: 59 * 60_000, env: { ...process.env, ATELIER_TEST_WORKERS: "1", ATELIER_TEST_TIMEOUT_MS: "3540000" } });
+  const command = (cmd, args, cwd) => spawnSync(cmd, args, { ...suiteCommandOptions(), cwd });
   const git = (...args) => {
     const r = command("git", args, work);
     if (r.error || r.status !== 0) throw Error(r.stderr || r.error?.message || "git failed");
@@ -47,13 +52,14 @@ export async function studioMainSuite(repo, work, file = MAIN_SUITE_FILE) {
         for (const args of [["ci", "--no-audit", "--no-fund"], ["test"]]) {
           const r = command("npm", args, source);
           output += (r.stdout ?? "") + (r.stderr ?? "") + (r.error?.message ?? "");
-          writeFileSync(join(dirname(file), "main-suite.log"), output);
-          if (r.status !== 0 || r.error) return { status: 1, output };
+          writeFileSync(join(dirname(file), "main-suite.log.next"), output);
+          if (r.status !== 0 || r.error) return { incomplete: args[0] !== "test", status: r.status, error: r.error, signal: r.signal, output };
         }
         return { status: 0, output };
       } finally { rmSync(source, { recursive: true, force: true }); }
     },
     save: result => {
+      if (result.status !== "incomplete") renameSync(join(dirname(file), "main-suite.log.next"), join(dirname(file), "main-suite.log"));
       writeFileSync(file + ".next", JSON.stringify(result) + "\n", { mode: 0o644 });
       renameSync(file + ".next", file);
     },

@@ -8,6 +8,7 @@ export function readMainSuite(file) {
 }
 export function mainSuiteLines(result = readMainSuite()) {
   if (!result || result.status === "green") return [];
+  if (result.status === "incomplete") return ["Main suite: last run did not finish"];
   return [`Main suite RED: ${result.commit}; last green: ${result.lastGreen ?? "none recorded"}`,
     ...result.failures.map(name => `  ${name}`)];
 }
