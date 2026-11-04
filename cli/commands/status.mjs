@@ -1,3 +1,4 @@
+import { readMainSuite, mainSuiteLines } from "../main-suite.mjs";
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
 import { developerDecisionLines, formatRunners, cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, criteriaJson, criteriaLines, formatStatusBrief, projectInbox, readStuck, readyOf, stageEntries, overdueTick, withOverdueTick, stageLines, statusJson, stuckLines, tickLines } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
@@ -19,6 +20,9 @@ const withUsage = (text, lines) => (lines.length ? `${lines.join("\n")}\n\n${tex
 
 // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
 export default async function statusCommand() {
+  const mainSuite = readMainSuite();
+  const mainWarning = mainSuiteLines(mainSuite).join("\n");
+  if (mainWarning && !args.json) console.log(mainWarning);
   if (args.since !== undefined && !args.new) die("--since belongs to status --new");
   if (args.new) return newCommand();
   if (args.brief) {
@@ -35,7 +39,7 @@ export default async function statusCommand() {
       landingLease(name, as),
     ]);
     const text = formatStatusBrief({ standing, version, queue, lease, usage });
-    if (args.json) return console.log(JSON.stringify({ brief: text.split("\n") }, null, 2));
+    if (args.json) return console.log(JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), brief: text.split("\n") }, null, 2));
     console.log(text);
     pointToGuide([name]);
     return;
@@ -66,7 +70,7 @@ export default async function statusCommand() {
     const modeRead = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
     const criteria = { mode: modeRead?.mode === "fast" ? modeRead.line : null, policy: record?.project?.policy ?? null, criteriaDeadlocks: Array.isArray(modeRead?.criteriaDeadlocks) ? modeRead.criteriaDeadlocks : [] };
     const criteriaText = criteriaLines(criteria).join("\n");
-    if (args.json) return console.log(JSON.stringify({ project: standing, developerDecisions: developerDecisionLines(record?.events), stuck, ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+    if (args.json) return console.log(JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), project: standing, developerDecisions: developerDecisionLines(record?.events), stuck, ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
     const offers = await request("GET", "/runners", undefined, as).catch(() => null);
     const runners = Array.isArray(offers) ? "\n\n" + formatRunners(offers, Date.now(), args["all-runners"]).join("\n") : "";
     // The project's tasks, for expired blocks and the clean-up count.
@@ -112,7 +116,7 @@ export default async function statusCommand() {
     const stuck = await readStuck((path) => request("GET", path, undefined, OWNER).catch(() => null), P(p.name), p.name, items);
     return { developerDecisions: developerDecisionLines(read?.events), stuck, wayBack: read?.wayBack ?? null, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
   }));
-  if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
+  if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null).map(view => ({ ...view, ...(mainSuite ? { mainSuite } : {}) })), null, 2));
   const strays = formatStrays(localStrays());
   const branches = formatAllDeveloperBranches(views);
   const decisions = views.filter((v) => v.developerDecisions.length).map((v) => `${v.name}\n${v.developerDecisions.join("\n")}`).join("\n\n");
@@ -180,10 +184,11 @@ export async function newCommand(deps = {}) {
 // the write's callback and the stream's error are what say it): false for an
 // unread outcome or a failed write, and nothing is printed after a failed one.
 async function say(outcome, { name, as, how, after = false }) {
+  const mainSuite = readMainSuite();
   const unread = outcome.status === "unread";
   if (unread) process.exitCode = 1;
   const text = args.json
-    ? JSON.stringify({ project: name, actor: as, since: how, status: outcome.status, ...(unread ? { reason: outcome.reason } : { complete: outcome.result.complete, tasks: outcome.result.tasks }) }, null, 2)
+    ? JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), project: name, actor: as, since: how, status: outcome.status, ...(unread ? { reason: outcome.reason } : { complete: outcome.result.complete, tasks: outcome.result.tasks }) }, null, 2)
     : unread ? (after ? `Bookmark: unread. ${outcome.reason}.` : formatNew({ result: { unread: outcome.reason }, project: name, as, how, brief: args.brief }))
       : formatNew({ result: outcome.result, project: name, as, how, brief: args.brief });
   const written = await new Promise((done) => {

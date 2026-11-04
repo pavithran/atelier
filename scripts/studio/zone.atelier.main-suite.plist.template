@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>zone.atelier.main-suite</string>
+  <key>UserName</key><string>atelier-suite</string>
+  <key>ProgramArguments</key><array>
+    <string>@NODE@</string><string>@CODE@/scripts/main-suite.mjs</string>
+    <string>@REPO@</string><string>@WORK@</string>
+  </array>
+  <key>WorkingDirectory</key><string>@WORK@</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>@BIN@:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>@HOME@</string>
+    <key>TMPDIR</key><string>@TMP@</string>
+  </dict>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>Nice</key><integer>20</integer>
+  <key>LowPriorityIO</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>@WORK@/launch.log</string>
+  <key>StandardErrorPath</key><string>@WORK@/launch.log</string>
+</dict></plist>
