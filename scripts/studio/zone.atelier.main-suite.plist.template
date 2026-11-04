@@ -15,9 +15,7 @@
   </dict>
   <key>StartInterval</key><integer>60</integer>
   <key>RunAtLoad</key><true/>
-  <key>Nice</key><integer>20</integer>
-  <key>LowPriorityIO</key><true/>
-  <key>ProcessType</key><string>Background</string>
+  <key>Nice</key><integer>10</integer>
   <key>StandardOutPath</key><string>@WORK@/launch.log</string>
   <key>StandardErrorPath</key><string>@WORK@/launch.log</string>
 </dict></plist>
