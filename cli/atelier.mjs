@@ -2004,7 +2004,11 @@ export async function localStanding(name, as) {
 // (withinTree), for the runner's start guard.
 export function liveHere(project = null, { ownTree = false } = {}) {
   const ps = spawnSync("ps", ["-axo", "pid=,ppid=,etime=,args="], { encoding: "utf8", maxBuffer: 64 << 20 });
-  const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpcn"], { encoding: "utf8", maxBuffer: 64 << 20 });
+  const lsofArgs = ["-a", "-d", "cwd", "-Fpcn"];
+  const options = { encoding: "utf8", maxBuffer: 64 << 20 };
+  let lsof = spawnSync("lsof", lsofArgs, options);
+  // LaunchDaemons can omit /usr/sbin, where macOS installs lsof.
+  if (lsof.error?.code === "ENOENT") lsof = spawnSync("/usr/sbin/lsof", lsofArgs, options);
   if (ps.error || ps.status !== 0 || !lsof.stdout) return null;
   const testRoot = ownTree ? Number(process.env.ATELIER_TEST_PROCESS) || 0 : 0;
   const rows = parsePs(ps.stdout);
