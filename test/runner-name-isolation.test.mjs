@@ -23,9 +23,10 @@ after(() => {
 const stand = join(dir, "atelier.mjs");
 writeFileSync(stand, "setInterval(() => {}, 1000);\n");
 const NAME = `home:clash-${process.pid}`;
+const daemonPath = `${process.env.HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
 const start = () => spawnSync(process.execPath, [resolve("cli/atelier.mjs"), "runner", "--name", NAME, "--once"], {
   encoding: "utf8", timeout: 30_000,
-  env: { ...process.env, ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_TOKEN: "atl_00112233445566778899aabbccddeeff", NO_COLOR: "1" },
+  env: { ...process.env, PATH: daemonPath, ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_TOKEN: "atl_00112233445566778899aabbccddeeff", NO_COLOR: "1" },
 });
 const waitFor = async (pid) => {
   for (let i = 0; i < 100; i++) {
@@ -34,6 +35,16 @@ const waitFor = async (pid) => {
   }
   throw new Error(`the stand-in runner ${pid} never showed in ps`);
 };
+
+test("liveHere reads live processes with the daemon PATH, without /usr/sbin", () => {
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { liveHere } from ${JSON.stringify(new URL("../cli/atelier.mjs", import.meta.url).href)};
+     import { strict as assert } from "node:assert";
+     assert.ok(liveHere(), "the process table must be readable");`], {
+    encoding: "utf8", env: { ...process.env, PATH: daemonPath },
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});
 
 test("withinTree keeps the rows under the root, the root included, and nothing outside it", () => {
   const rows = [{ pid: 1, ppid: 0 }, { pid: 10, ppid: 1 }, { pid: 11, ppid: 10 }, { pid: 12, ppid: 11 }, { pid: 20, ppid: 1 }, { pid: 21, ppid: 20 }];
@@ -51,6 +62,7 @@ test("a runner of the same name outside this test file's process tree does not r
   await waitFor(pid);
   const r = start();
   assert.doesNotMatch(r.stdout + r.stderr, /already running on this Mac/);
+  assert.doesNotMatch(r.stdout + r.stderr, /the process table could not be read/);
 });
 
 test("a second runner of the name inside this test file's tree is still refused", async () => {
