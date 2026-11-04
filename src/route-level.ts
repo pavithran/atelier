@@ -171,7 +171,7 @@ export function checkCapabilities(version: unknown, required: readonly string[])
   const v = version !== null && typeof version === "object" && !Array.isArray(version) ? version as Record<string, unknown> : null;
   const commit = typeof v?.commit === "string" && v.commit ? v.commit.slice(0, 8) : null;
   const revision = commit ? `main at ${commit}` : "an unrecorded revision";
-  const remedy = "Deploy the server from a checkout that declares them (npm run deploy, which records the commit it deploys)";
+  const remedy = "Run atelier ship from a checkout at the server’s commit to deploy a checkout that declares them";
   const fail = (kind: CapabilityFailure, missing: string[], message: string): CapabilityCheck => ({ ok: false, kind, missing, message });
   if (!v) return fail("unavailable", [...required], `the server did not answer GET /api/version with a version, so its capabilities (${required.join(", ") || "none"}) cannot be checked. Check that the server is reachable and deployed. ${remedy}`);
   let have: Set<string>, via: "capabilities" | "legacy";

@@ -59,7 +59,7 @@ export default async function shipCommand() {
       name, cwd, branch: p.branch, baselineHead, inProgress, repositoryIsBaseline: repository === "server",
       paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
       git: (a, o = {}) => git(a, o),
-      request: (method, path, body) => call(method, path, body, OWNER),
+      request: (method, path, body) => (path.endsWith("/actions/starts") ? request : call)(method, path, body, OWNER),
       read: (path) => request("GET", path, undefined, OWNER),
       stage: (text) => { cliState.doneStep = text ?? undefined; },
       fail: (message) => die(message),

@@ -872,7 +872,7 @@ test("the runner refuses at start on a lower route level and polls nothing", asy
       workspacePath: () => { throw new Error("no task should be claimed"); },
       version: async () => version,
       async queue() { polls++; return []; },
-    }), /Deploy the server/, `${basename(config)} against ${JSON.stringify(version)}`);
+    }), /Run atelier ship from a checkout at the server.s commit/, `${basename(config)} against ${JSON.stringify(version)}`);
     assert.equal(polls, 0, "a runner that refuses at start never polls the queue");
   }
 });

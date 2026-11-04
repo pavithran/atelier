@@ -146,7 +146,7 @@ const SECRET = "s3cret-value-for-the-deploy";
 // the command: the oldest active one for the kind and revision is used once.
 function standIn(state) {
   return createServer(async (req, res) => {
-    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: state.capabilities ?? SERVER_CAPABILITIES })); }
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
@@ -171,7 +171,7 @@ function standIn(state) {
       a.consumed = { by: "owner", at: new Date().toISOString() };
       return send(200, view(a));
     }
-    if (path === "/api/projects/demo/actions/starts") return send(201, { recorded: true });
+    if (path === "/api/projects/demo/actions/starts") return send(state.startsStatus ?? 201, state.startsStatus ? { error: state.startsStatus === 404 ? "not_found" : "refused" } : { recorded: true });
     if (path === "/api/projects/demo/actions/runs") { state.runs.push(body); return send(201, body); }
     // The checkout lease (G9) as the server keeps it, for one holder at a
     // time, and the deploys ship records.
@@ -908,3 +908,25 @@ test("a failing declared Studio suite stops production before deploy or later ch
  assert.match(f.state.runs[1].outputTail, new RegExp(f.head));
  assert.doesNotMatch(r.stdout, /^should-not-run$/m);
  });
+
+test("ship runs without optional step-start telemetry and warns once", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"] });
+  f.state.capabilities = SERVER_CAPABILITIES.filter(n => n !== "ship.step-start.v1");
+  f.state.startsStatus = 404;
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(readFileSync(f.marker, "utf8"), "deployed\n");
+  assert.deepEqual(f.state.runs.map(r => r.step), ["commit", "deploy", "verify-delivery", "wrap"]);
+  assert.equal((r.stdout + r.stderr).split("\n").filter(l => /Warning:.*step starts/.test(l)).length, 1);
+  assert.equal(f.state.requests.filter(r => r.path.endsWith("/starts")).length, 1);
+});
+
+for (const status of [401, 403, 409, 500]) test(`ship refuses a step-start error ${status}`, async (t) => {
+  const f = await fixture(t, { approve: ["deploy"] });
+  f.state.startsStatus = status;
+  const r = await f.run(["ship"]);
+  assert.notEqual(r.status, 0, r.stdout + r.stderr);
+  assert.ok(!existsSync(f.marker), "no deploy after telemetry refusal");
+  assert.ok(!f.state.runs.some(r => r.step === "deploy"));
+  assert.doesNotMatch(r.stdout + r.stderr, /Shipped demo|Warning:.*step starts/);
+});

@@ -49,7 +49,7 @@ test("start route checks the authenticated owner before writing", async () => {
   assert.deepEqual(writes, [{ body, actor: "owner" }]);
 });
 
-test("ship requires the published step-start capability before running", () => {
+test("ship publishes step-start support without requiring it to deploy", () => {
   assert.ok(SERVER_CAPABILITIES.includes("ship.step-start.v1"));
-  assert.ok(shipSpec.capabilities.includes("ship.step-start.v1"));
+  assert.deepEqual(shipSpec.capabilities ?? [], []);
 });

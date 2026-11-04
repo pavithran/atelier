@@ -503,9 +503,19 @@ export async function ship(ctx) {
     exitStatus: r.status ?? null, signal: r.signal ?? null, durationMs: r.durationMs ?? 0, passed: r.passed,
     outputTail: ctx.redact(r.output ?? "", ctx.secrets).slice(-TAIL), ship: id, note: extra ?? "",
   });
-  const starting = (step, command) => request("POST", `${P}/actions/starts`, {
-    ship: id, step, command: ctx.redact(command, ctx.secrets), commit,
-  });
+  let startsUnavailable = false;
+  const starting = async (step, command) => {
+    if (startsUnavailable) return;
+    try {
+      await request("POST", `${P}/actions/starts`, {
+        ship: id, step, command: ctx.redact(command, ctx.secrets), commit,
+      });
+    } catch (error) {
+      if (error.refusal?.code !== "not_found" && error.refusal?.code !== "404") throw error;
+      startsUnavailable = true;
+      print("Warning: the server cannot record ship step starts; continuing without start telemetry.");
+    }
+  };
   const rest = (from) => plan.steps.slice(from).map((s) => s.step).filter((s) => !WITH_PUSH.has(s) || ctx.push);
   // The deploy record (G9): once the ship has begun it records itself, the
   // head, who and the result, whether it ships or fails.
