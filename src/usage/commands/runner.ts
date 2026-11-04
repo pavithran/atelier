@@ -22,15 +22,16 @@ const spec: CommandSpec = {
     },
     {
       group: "Local", line: 3, slot: 10,
-      form: "runner --usage [--name home:NAME] [--dry-run] [--config PATH]",
+      form: "runner --usage [--name home:NAME] [--dry-run] [--config PATH] [--claude-status-file PATH]",
       aside: "each tool's windows, served models, costs and balances",
-      about: "Reports how much of each tool's allowance this machine has used: Codex's 5-hour and weekly windows, the requests and tokens zcode, opencode and Claude Code recorded by served model over the last 5 hours, 24 hours and 7 days (with cost, for opencode), and the DeepSeek balance when the runner config names its Keychain entry. After the tools' own figures it prints what the server read of the AI Gateway: each model's calls, tokens, cost and durations, and the calls per task the runners' cf-aig-metadata tags name; then each model's speed over the last 14 days (median build, review and claim-to-merge times with n, and the share of runs that stalled). Each tool's summary goes to the server under the runner's name, for the Usage page and its alerts; `--dry-run` reports nothing. It runs once, not as part of the runner loop. Claude Code's tokens by model per day are read from its session logs (counts only). Claude's plan percent, Antigravity and Gemini's spend are listed under Not reported with the reason and the best figure there is.",
+      about: "Reports how much of each tool's allowance this machine has used: Codex's 5-hour and weekly windows, the requests and tokens zcode, opencode and Claude Code recorded by served model over the last 5 hours, 24 hours and 7 days (with cost, for opencode), and the DeepSeek balance when the runner config names its Keychain entry. After the tools' own figures it prints what the server read of the AI Gateway: each model's calls, tokens, cost and durations, and the calls per task the runners' cf-aig-metadata tags name; then each model's speed over the last 14 days (median build, review and claim-to-merge times with n, and the share of runs that stalled). Each tool's summary goes to the server under the runner's name, for the Usage page and its alerts; `--dry-run` reports nothing. It runs once, not as part of the runner loop. Claude Code's tokens by model per day are read from its session logs (counts only). `--claude-status-file` reads a recent capture of Claude Code status-line JSON for plan percent and reset. Without a capture, Claude's plan percent is unavailable. Antigravity and Gemini's spend are listed under Not reported with the reason and the best figure there is.",
     },
   ],
-  flags: { name: false, once: true, config: false, "claude-token-file": false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true, replace: true },
+  flags: { name: false, once: true, config: false, "claude-token-file": false, "claude-status-file": false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true, replace: true },
   help: {
     flags: {
       "--name home:NAME": "this runner's name; home: and this machine's host name unless given",
+      "--claude-status-file PATH": "with --usage, reads only rate_limits from a Claude status-line JSON capture no older than three hours",
       "--once": "handles at most one task, then exits",
       "--config PATH": "the runner config file; runner.json in the config folder unless given",
       "--claude-token-file PATH": "with `runner setup`, the file holding a `claude setup-token` token, which the config then names as claudeTokenFile; only the path is written, and an existing config's path is kept when the flag is absent",

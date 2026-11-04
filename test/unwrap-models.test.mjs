@@ -24,6 +24,7 @@ const env = { ATELIER_TOKEN: ${JSON.stringify(token)}, OWNER_ACTOR: "owner" };
 env.LEDGER = new Namespace({ dir: ${JSON.stringify(join(root, "data"))}, Class: Ledger, env });
 globalThis.fetch = (url, options) => {
   appendFileSync(${JSON.stringify(join(root, "requests.jsonl"))}, JSON.stringify({ method: options.method, path: new URL(url).pathname }) + "\\n");
+  if (process.env.TEST_USAGE_REFUSED === "yes" && new URL(url).pathname === "/api/usage") return Promise.resolve(new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }));
   return worker.fetch(new Request(url, options), env);
 };
 `);
@@ -32,7 +33,7 @@ const cli = resolve("cli/atelier.mjs");
 const run = (project, ...args) => {
   writeFileSync(join(root, "requests.jsonl"), "");
   return new Promise((done) => execFile(process.execPath, ["--import", resolve("src/runtime/loader.mjs"), "--import", preload, cli, ...args, "--project", project, "--as", "claude-code/opus-5.5"], {
-    cwd: root, timeout: 30_000, env: { ...process.env, ATELIER_CONFIG_DIR: join(root, "config"), ATELIER_CACHE: join(root, "cache"), ATELIER_SERVER: "https://atelier.test", ATELIER_TOKEN: token, ATELIER_ACTOR: "owner", ATELIER_ACTING: "codex/gpt-6-astra" },
+    cwd: root, timeout: 30_000, env: { ...process.env, ATELIER_CONFIG_DIR: join(root, "config"), ATELIER_CACHE: join(root, "cache"), ATELIER_SERVER: "https://atelier.test", ATELIER_TOKEN: token, TEST_USAGE_REFUSED: project === "usage-refused" ? "yes" : "no", ATELIER_ACTOR: "owner", ATELIER_ACTING: "codex/gpt-6-astra" },
   }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr, requests: readFileSync(join(root, "requests.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) })));
 };
 async function project(name) {
@@ -110,4 +111,32 @@ test("usage summary distinguishes unreadable, absent, stale and expired readings
   assert.equal(lines.filter((l) => l.includes("99% used")).length, 2);
   assert.match(lines[0], /stale.*99% used.*past; await a new reading/);
   assert.match(usageLines({ reports: [{ ...report, windows: [{ name: "weekly", usedPercent: 5, resetsAt: null }] }] })[0], /next reset unknown/);
+});
+
+test("unwrap continues through a 403 on usage without disclosing a figure", async () => {
+  await project("usage-refused");
+  const result = await run("usage-refused", "unwrap");
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /Usage codex: no figure; usage reports could not be read/);
+  assert.match(result.stdout, /Next models: unknown/);
+  assert.match(result.stdout, /State file:|Session|session/);
+  assert.doesNotMatch(result.stdout, /Warning:|% left/);
+});
+
+test("unwrap names an alternative builder and an independent reviewer from live offers", async () => {
+  const L = await project("usage-advice");
+  const I = namespace.get(namespace.idFromName("__index"));
+  const at = new Date().toISOString();
+  const pool = [["codex", "gpt-6.1-sol", "openai"], ["claude-code", "opus-5.5", "anthropic"], ["antigravity", "gemini-4-argon", "google"]];
+  for (const [harness, id, family] of pool) await I.putModel({ harness, id, family, where: "home", provider: "subscription", aliases: [], note: "", addedAt: at, addedBy: "owner" });
+  await I.putRunnerOffer({ runner: "home:studio", kind: "home", agents: pool.map(([agent, model]) => ({ agent, models: [model] })), jobs: ["build", "review"] }, at);
+  for (const [tool, usedPercent] of [["codex", 0], ["claude-code", 10], ["antigravity", 95]]) await I.putUsage({ tool, runner: "home:studio", at, windows: [{ name: "weekly", usedPercent, resetsAt: "2027-01-01T00:00:00.000Z", at }], models: [], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 }, "https://atelier.test");
+  await namespace.object("project:usage-advice").live.sql.exec(`INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES ('t1', 'Review me', '[]', 'submitted', ?, ?)`, at, at);
+  await namespace.object("project:usage-advice").live.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES ('t1', ?, 'codex/gpt-6.1-sol', 'push.observed', '{}')`, at);
+  const result = await run("usage-advice", "unwrap");
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /Warning: antigravity:.*Use build: codex\/gpt-6.1-sol.*review next build: claude-code\/opus-5.5/);
+  assert.match(result.stdout, /Next review t1: claude-code\/opus-5.5/);
+  assert.match(result.stdout, /codex.*100% left/);
+  assert.ok(result.requests.every((r) => r.method === "GET"));
 });

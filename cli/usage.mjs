@@ -27,8 +27,8 @@
 //             timestamp and token counts (input, output and cache creation;
 //             cache reads are not counted), read as counts only.
 // Listed with the reason, and the best figure there is, because this machine
-// holds no readable record of them: Claude's plan limits (the Claude app
-// shows them), Antigravity (its records are not read yet) and Gemini's spend
+// holds no readable record of them: Claude's plan limits without a status-line capture,
+// Antigravity (no verified quota schema) and Gemini's spend
 // (Google serves no balance).
 //
 // What is reported is counts, windows, model names, costs and balances.
@@ -37,7 +37,7 @@
 // name a record supplies is cleaned before it is printed or reported
 // (cleanBody).
 
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -55,7 +55,7 @@ const LOOKBACK_MS = SPAN_MS["7d"] + 60_000;
 // Rows read at most; a record longer than this is reported as cut.
 export const ROW_LIMIT = 50_000;
 const DEEPSEEK_KEY_ENV = "DEEPSEEK_API_KEY";
-const USAGE = "usage: atelier runner --usage [--name home:NAME] [--dry-run] [--config PATH]";
+const USAGE = "usage: atelier runner --usage [--name home:NAME] [--dry-run] [--config PATH] [--claude-status-file PATH]";
 
 const stamp = (ms) => new Date(ms).toISOString().slice(0, 16) + "Z";
 const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
@@ -196,6 +196,17 @@ export function claudeDaily(calls, now) {
   return [...days].sort((a, b) => b[0].localeCompare(a[0])).map(([key, tokens]) => `  ${key}: ${millions(tokens)} tokens`);
 }
 
+// Only allowance fields from Claude's status-line input are retained.
+export function parseClaudeStatus(text, now) {
+  let value;
+  try { value = JSON.parse(text); } catch { return []; }
+  return [["five_hour", "5-hour"], ["seven_day", "weekly"]].flatMap(([field, name]) => {
+    const w = value?.rate_limits?.[field];
+    if (typeof w?.used_percentage !== "number" || !Number.isFinite(w.used_percentage) || w.used_percentage < 0 || w.used_percentage > 100 || typeof w.resets_at !== "number" || !Number.isFinite(w.resets_at) || w.resets_at <= 0 || w.resets_at > 8.64e12) return [];
+    return [{ name, usedPercent: w.used_percentage, resetsAt: iso(w.resets_at * 1000), at: iso(now) }];
+  });
+}
+
 // ── Codex: the windows discover.mjs reads ──────────────────────────────────
 
 export function codexWindows(found) {
@@ -264,7 +275,7 @@ export async function gatherUsage(io, config, scrub) {
     } catch (error) { skipped.push(`${tool}: record not read: ${error.message}`); }
   }
 
-  // Claude Code: tokens by model, and the best figure for the plan percent no record holds.
+  // Session counts are separate from the optional status-line allowance.
   let claudeDay = [];
   if (io.paths.claude) {
     const found = existsSync(io.paths.claude) ? await io.readClaude(io.paths.claude, now - LOOKBACK_MS) : { error: `no session logs at ${io.paths.claude}` };
@@ -278,6 +289,20 @@ export async function gatherUsage(io, config, scrub) {
       const day = models.reduce((sum, m) => sum + m.spans["24h"].tokens, 0);
       skipped.push(`claude plan percent: no record on this machine, and the Claude app shows it; best figure: ${millions(day)} tokens in the last 24 hours, from Claude Code's session logs`);
     }
+  }
+  if (io.claudeStatusFile) {
+    try {
+      const status = statSync(io.claudeStatusFile);
+      const age = now - status.mtimeMs;
+      const windows = age > 3 * 3_600_000 || age < -60_000 || status.size > 1024 * 1024 ? [] : parseClaudeStatus(readFileSync(io.claudeStatusFile, "utf8"), now - Math.max(0, age));
+      if (!windows.length) skipped.push("claude plan percent: status-line capture is stale or has no valid rate_limits");
+      else {
+        let report = reports.find((r) => r.tool === "claude-code");
+        if (!report) { report = { tool: "claude-code", body: { windows: [], models: [], balances: [], notes: [] } }; reports.push(report); }
+        report.body.windows = windows;
+        for (let n = skipped.length - 1; n >= 0; n--) if (skipped[n].startsWith("claude plan percent:")) skipped.splice(n, 1);
+      }
+    } catch { skipped.push("claude plan percent: status-line capture could not be read"); }
   }
   if (existsSync(io.paths.antigravity ?? "")) skipped.push(`antigravity: its records at ${io.paths.antigravity} are not read yet, so no figure`);
   skipped.push("gemini spend: Google serves no balance, so no figure");
@@ -393,13 +418,14 @@ export function describeSpeed(view, safe) {
 // ── the command ────────────────────────────────────────────────────────────
 
 export function usageOptions(args, host = hostname()) {
-  if (args._.length !== 1 || Object.keys(args.multi).some((k) => !["usage", "name", "dry-run", "config"].includes(k) || args.multi[k].length !== 1)) throw new Error(USAGE);
+  if (args._.length !== 1 || Object.keys(args.multi).some((k) => !["usage", "name", "dry-run", "config", "claude-status-file"].includes(k) || args.multi[k].length !== 1)) throw new Error(USAGE);
   for (const flag of ["usage", "dry-run"]) if (args[flag] !== undefined && args[flag] !== true) throw new Error(USAGE);
   if (args.config !== undefined && typeof args.config !== "string") throw new Error(USAGE);
+  if (args["claude-status-file"] !== undefined && typeof args["claude-status-file"] !== "string") throw new Error(USAGE);
   let name = args.name;
   if (name === undefined) name = `home:${host.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64) || "runner"}`;
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
-  return { name: name.toLowerCase(), dryRun: args["dry-run"] === true, configPath: args.config };
+  return { name: name.toLowerCase(), dryRun: args["dry-run"] === true, configPath: args.config, ...(args["claude-status-file"] ? { claudeStatusFile: args["claude-status-file"] } : {}) };
 }
 
 function defaultIo() {
@@ -419,7 +445,7 @@ function defaultIo() {
 // supplies only what it replaces.
 export async function runUsage(args, given = {}) {
   const opts = usageOptions(args);
-  const io = { ...defaultIo(), ...given };
+  const io = { ...defaultIo(), ...given, claudeStatusFile: opts.claudeStatusFile };
   const secrets = new Set();
   const scrub = { add: (value) => { if (value) secrets.add(value); } };
   const withoutKeys = (text) => [...secrets].reduce((s, secret) => s.split(secret).join("[key removed]"), String(text ?? ""));
