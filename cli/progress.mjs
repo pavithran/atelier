@@ -5,7 +5,9 @@
 // figure is read, never judged here:
 //   - commands run: tool calls started and completed, from the builder's
 //     stream-json log (claude -p --output-format stream-json --verbose,
-//     which the claude-code adapter writes to ATELIER_PROGRESS_LOG);
+//     which the claude-code adapter writes to ATELIER_PROGRESS_LOG; only that
+//     harness has one, and the log is named only while the file exists, so
+//     another harness's line says it has no log);
 //   - the current step: the last tool call started and not yet completed,
 //     with when this runner first saw it;
 //   - whether a child process is alive: a process the model's CLI started
@@ -16,6 +18,15 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { toolName } from "../src/tool-names.ts";
+
+// The log is named only while the file is there to read (t489): the adapter
+// opens it once the harness has begun, and only the Claude Code adapter
+// writes one at all, so another harness (codex, opencode) never has a file
+// to name and the line says it has none.
+const logNamed = (log) => {
+  if (!log) return null;
+  try { return statSync(log).isFile() ? log : null; } catch { return null; }
+};
 
 const oneLine = (text) => String(text ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").replace(/\s+/g, " ").trim();
 // What a tool call ran, as the program's name alone: a command's first word
@@ -135,7 +146,9 @@ export function progressTracker({ now = Date.now, ps, git } = {}) {
   return {
     // Only the Claude Code adapter writes a stream-json log; another harness
     // (codex, opencode, a runner's own command) reports no command telemetry,
-    // which is said as such, never as no command run.
+    // which is said as such, never as no command run. Its log is named by
+    // report() only once the file exists, so a harness that writes none is
+    // never said to have one.
     begin({ project, task, actor, base, workspace, log, harness = null }) {
       run = { project, task, actor, base, workspace, log, harness, telemetry: harness === "claude-code", startedAt: new Date(now()).toISOString(), endedAt: null, pid: null, stream: newStream(), sent: false };
     },
@@ -152,7 +165,7 @@ export function progressTracker({ now = Date.now, ps, git } = {}) {
       const current = !run.endedAt && s.pending.size ? [...s.pending.values()].at(-1) : null;
       return [{
         project: run.project, task: run.task, actor: run.actor, harness: run.harness, telemetry: run.telemetry,
-        startedAt: run.startedAt, endedAt: run.endedAt, at, log: run.log ?? null,
+        startedAt: run.startedAt, endedAt: run.endedAt, at, log: logNamed(run.log),
         commands: { started: s.started, completed: s.completed },
         current, last: s.last,
         childAlive: below === null ? null : below.some((p) => p.depth >= 2),

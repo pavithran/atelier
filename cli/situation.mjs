@@ -88,7 +88,10 @@ export function progressText(p, lastCheck = null) {
     p.childAlive === null ? "child processes not readable" : p.childAlive ? "a child process is alive" : "no child process",
     check,
     ...(p.runner ? [`runner ${flat(p.runner)}`] : []),
-    ...(p.log ? [`log at ${flat(p.log)}`] : []),
+    // A log is named only when the runner reported the file there to read
+    // (t489): a harness that writes no progress log (codex, opencode) is said
+    // to have none, never a path that is not there.
+    ...(p.log ? [`log at ${flat(p.log)}`] : ["no log named"]),
     ...(p.attempt ? [`attempt ${p.attempt}`] : []),
     `elapsed ${span(p.elapsedMs)}`,
     p.costUsd !== null && p.costUsd !== undefined ? `$${Number(p.costUsd).toFixed(2)}` : p.tokens ? `${p.tokens} tokens` : "cost not reported",
