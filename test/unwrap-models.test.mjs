@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Namespace } from "../src/runtime/namespace.mjs";
 import { Ledger } from "../src/ledger.ts";
+import { usageLines } from "../src/usage/summary.ts";
 import { parseStanding } from "../src/standing.ts";
 
 const root = mkdtempSync(join(tmpdir(), "atelier-unwrap-models-"));
@@ -43,7 +44,7 @@ async function project(name) {
 }
 const modelLines = (r) => {
   assert.equal(r.code, 0, r.stderr);
-  assert.ok(r.requests.every((q) => q.method === "GET" && !q.path.includes("usage")));
+  assert.ok(r.requests.every((q) => q.method === "GET"));
   assert.ok(r.requests.filter((q) => /\/items\/t\d+$/.test(q.path)).length <= 5);
   return r.stdout.split("\n").filter((l) => l.startsWith("Models") || l.startsWith("  Build:") || l.startsWith("  Review:"));
 };
@@ -89,4 +90,24 @@ test("without a plan unwrap reports actual recent builders and recorded reviewer
   const result = await run("model-recent", "unwrap");
   assert.equal(result.requests.filter((q) => /\/items\/t\d+$/.test(q.path)).length, 5);
   assert.deepEqual(modelLines(result), ["Models: no plan set; recent tasks used (last 5 updated tasks):", "  Build: codex/gpt-6-astra (t1)", "  Review: claude-code/opus-5.5 (t1)"]);
+});
+
+test("unwrap includes usage and explicit missing limits", async () => {
+  await project("usage-plan");
+  await namespace.get(namespace.idFromName("__index")).putUsage({ tool: "codex", runner: "home:studio", at: new Date().toISOString(), windows: [{ name: "weekly", usedPercent: 42, resetsAt: "2027-01-01T00:00:00.000Z", at: null }], models: [], balances: [], notes: [] }, { weeklyPercent: null, windowPercent: null, dailySpend: null, balanceFloor: null }, "https://atelier.test");
+  const result = await run("usage-plan", "unwrap");
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /codex.*42% used.*2027-01-01/);
+  assert.match(result.stdout, /claude-code.*no figure.*plan/);
+  assert.match(result.stdout, /antigravity.*no figure.*quota/);
+});
+
+test("usage summary distinguishes unreadable, absent, stale and expired readings", () => {
+  assert.ok(usageLines(null).every((l) => l.includes("could not be read")));
+  assert.ok(usageLines({ reports: [] }).every((l) => l.includes("no figure")));
+  const report = { tool: "codex", runner: "home:mac", at: "2026-01-01T00:00:00Z", windows: [{ name: "weekly", usedPercent: 99, resetsAt: "2026-01-02T00:00:00Z" }], models: [], balances: [], notes: [] };
+  const lines = usageLines({ reports: [report, { ...report, runner: "home:studio" }] }, Date.parse("2026-01-03"));
+  assert.equal(lines.filter((l) => l.includes("99% used")).length, 2);
+  assert.match(lines[0], /stale.*99% used.*past; await a new reading/);
+  assert.match(usageLines({ reports: [{ ...report, windows: [{ name: "weekly", usedPercent: 5, resetsAt: null }] }] })[0], /next reset unknown/);
 });

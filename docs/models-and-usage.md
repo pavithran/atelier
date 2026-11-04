@@ -324,8 +324,10 @@ served with requests, tokens and cost over the last 5 hours, 24 hours and
 and when; a report older than three hours is marked stale, and a figure
 past a threshold is tagged. `GET /api/usage` returns the same reports with
 the thresholds and the alerts in force. A report is a status like a
-model's: `POST /api/usage/TOOL` takes the developer token and the runner's
-name in `X-Atelier-Runner`, and keeps one report per tool and runner.
+model's: `POST /api/usage/TOOL` accepts a runner token and derives the runner name
+from that token; a conflicting `X-Atelier-Runner` is refused. A developer
+token can still report with that header. It keeps one report per tool and
+runner. Runner tokens cannot read the global reports.
 
 Alerts go through the `NTFY_TOPIC` notification already used for decisions,
 once per crossing: when a report first shows a figure past its threshold
@@ -503,3 +505,43 @@ request and claim a review of a passing cross-family task, and verify the
 approval's head, criteria and admission snapshot. Withdraw during a second
 claimed review and verify that its late verdict is refused while the first
 approval remains valid. A failed smoke check blocks promotion.
+
+
+## Usage at session start
+
+Unwrap reads `GET /api/usage` beside the model plan. It prints each tool's
+reported percent and reset per runner, with the receipt time and a stale
+label after three hours. A reset already past needs a new reading; it does
+not imply zero usage. Missing windows are explicit, not estimated from
+counts, costs or balances. Shared Codex account windows are not added across
+machines. Claude session counts remain separate per runner.
+
+Claude Code's supported reader takes model, timestamp and token counts from
+`~/.claude/projects/**/*.jsonl`. These records do not establish the plan's
+percent or reset. No verified Antigravity quota reader exists here. Neither
+figure can be supplied from the records this project currently reads.
+The t469 workspace restriction prevented inspecting the host's private tool
+directories or installed apps, so this is not evidence that no other source
+exists on the host. No credentials were inspected and no new reader was added.
+Check the tools' own usage displays until a readable source is verified.
+
+Usage authorization remains independent of project membership and edit
+rights: an active runner token may write only its own tool reports, without
+a job claim; an agent token cannot write them. The developer reads global
+reports; browser reads retain their existing sign-in gate. Caller-requested
+levels grant no access.
+
+| Caller | POST response | Global response / unwrap | Search snippets / exports | Derived alerts / generated usage page |
+| --- | --- | --- | --- | --- |
+| Developer | Own submitted report | All reports | No new path | Existing full view |
+| Active runner | Its submitted report | Refused | No new path | No read access |
+| Agent or anonymous API caller | Refused | Refused | No new path | No new access |
+
+The existing runner usage sender and developer sender keep the same body
+contract. Usage and Models pages, gateway readers and alert calculations
+keep the same report schema. Unwrap is the new read caller; no page changes.
+Local tests prove authorization and storage, not the Studio's hourly service
+configuration or real provider files. Before and after deployment, run the
+hourly usage check on the Studio with its runner token and verify the server
+shows its Claude counts under that runner. Also check the Mac's report and
+confirm shared Codex percentages are displayed separately. Never print tokens.

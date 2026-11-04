@@ -117,6 +117,7 @@ export const RUNNER_ROUTES: readonly { method: string; pattern: string }[] = [
   { method: "GET", pattern: "runners/me" },
   { method: "POST", pattern: "queue" },
   { method: "POST", pattern: "runs" },
+  { method: "POST", pattern: "usage/*" },
   { method: "GET", pattern: "projects/:project" },
   { method: "GET", pattern: "projects/:project/decisions" },
   { method: "GET", pattern: "projects/:project/baseline-head" },

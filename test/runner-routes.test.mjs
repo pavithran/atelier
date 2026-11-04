@@ -60,6 +60,7 @@ const PLAN_DOCUMENT = { schema: "atelier.plan.v1", goal: "Ship", parts: [{ key: 
 // The reads runnerRoute allows that no runner call makes: configuration and
 // base reads a runner may make by hand (docs/runners.md), each exercised below.
 const SPARE_READS = [
+  ["POST", "/usage/codex"],
   ["GET", "/projects/p/decisions"],
   ["GET", "/projects/p/items/t1/brief"], ["GET", "/projects/p/items/t1/diff"], ["GET", `/projects/p/items/t1/logs/${"a".repeat(64)}`], ["GET", `/projects/p/items/t1/diffs/${"a".repeat(64)}`],
 ];
@@ -1111,7 +1112,7 @@ test("owner-only operations and write-token requests are refused by runnerRoute 
   const ownerOnly = [
     ...[...OWNER_INDEX_ROUTES, ...OWNER_MODEL_ROUTES].map(({ method, path }) => [method, path, ...(method === "POST" ? [{ dump: {} }] : [])]),
     ["GET", "/tokens"], ["POST", "/tokens", { actor: ACTOR }], ["DELETE", `/tokens/${token.id}`], ["GET", "/inbox"], ["GET", "/projects"], ["GET", "/queue"], ["GET", "/runs"], ["GET", "/runners"],
-    ["GET", "/models"], ["POST", "/models/x/status", { status: "ok" }], ["POST", "/usage/codex", {}], ["GET", "/usage"], ["GET", "/reliability"],
+    ["GET", "/models"], ["POST", "/models/x/status", { status: "ok" }], ["GET", "/usage"], ["GET", "/reliability"],
     ["PUT", P, {}], ["DELETE", P, {}], ["POST", `${P}/rename`, { to: "x" }], ["GET", `${P}/owners`], ["GET", `${P}/standing`], ["GET", `${P}/items`], ["POST", `${P}/items`, { title: "x" }],
     ["POST", `${P}/decisions`, { text: "x" }], ["GET", `${P}/landing-lease`], ["POST", `${P}/served`, {}],
     ...["dispatch", "undispatch", "edit", "block", "unblock", "clear-secret", "review", "review-claim", "review-release", "review-unparsable", "review-request", "land",

@@ -20,6 +20,7 @@ const HANDLERS = {
   "GET runners/me": () => ({ runner: "home:studio", projects: ["demo"], expiresAt: null }),
   "POST queue": () => ({ queue: [] }),
   "POST runs": empty,
+  "POST usage/*": empty,
   "GET projects/:project": ({ project }) => ({ project: { name: project, policy: {} } }),
   "GET projects/:project/decisions": empty,
   "GET projects/:project/baseline-head": empty,
