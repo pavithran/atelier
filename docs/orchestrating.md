@@ -688,7 +688,9 @@ Restart a runner when:
   failure counts (G5), and gives them back after a restart, so restarting
   changes nothing. Read the two failures above that line and fix their
   cause, then clear the skip with `atelier forget-skip tN` (`--runner
-  home:NAME` for one runner);
+  home:NAME` for one runner). For a review, asking again with
+  `atelier review-request tN --reviewer H/M` clears it as well, and
+  `atelier show tN` names a remembered stop while a request waits unclaimed;
 - **a review runner has printed nothing for a long time while a review
   waits**: restart it (t351, t353). A review it had claimed may need
   `atelier review-release ID`.

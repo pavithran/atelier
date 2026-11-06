@@ -66,6 +66,19 @@ export function taskOfKey(key: string): string | null {
   } catch { return null; }
 }
 
+// What one runner's memory holds of one task ("project/id"): whether any
+// entry holds it — the entries atelier forget-skip clears — and the last
+// reason it is passed by, in words, when the memory says one. Null when
+// nothing is remembered of the task.
+export function rememberedTask(memory: RunnerMemory, task: string): { why: string | null } | null {
+  const keyed = (keys: readonly string[]) => keys.some((k) => taskOfKey(k) === task);
+  const held = (list: readonly { key: string }[]) => list.some((e) => taskOfKey(e.key) === task);
+  const reasons = memory.reasons.filter((r) => r.task === task);
+  return keyed(memory.refused) || keyed(memory.gaveUp) || held(memory.failures) || held(memory.infrastructure) || held(memory.skipHeads) || held(memory.backoff) || reasons.length
+    ? { why: reasons.map((r) => r.why).at(-1) ?? null }
+    : null;
+}
+
 // The memory without the entries of the named tasks ("project/id"), and how
 // many entries went (atelier runner forget-skip, G5).
 export function dropTasks(memory: RunnerMemory, tasks: readonly string[]): { memory: RunnerMemory; removed: number } {
