@@ -1,0 +1,31 @@
+atelier atelier/t508 "unwrap marks a usage reading stale by the reading's own time"
+accepted head d6084a4598bc8a54faeef1063ccdc8428035d1a2
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+OBSERVED pass npm run typecheck — opencode/glm-5.3 2026-11-06T17:28:17.542Z
+REVIEW approve by claude-code/sonnet-5.5 at d6084a4598bc8a54faeef1063ccdc8428035d1a2, recorded by claude-code/sonnet-5.5
+CHECKED TREE 87e3ab52948cd70a7ca823807e9ff9fa47b3efa7: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-06T16:01:58.236Z pavi item.created
+2026-11-06T16:01:58.236Z claude-code/opus-5.5 criteria.revised
+2026-11-06T16:02:08.582Z pavi item.dispatched
+2026-11-06T17:09:54.117Z opencode/glm-5.3 item.claimed
+2026-11-06T17:09:54.154Z opencode/glm-5.3 workspace.created
+2026-11-06T17:26:40.019Z opencode/glm-5.3 push.observed
+2026-11-06T17:28:17.562Z opencode/glm-5.3 evidence.observed
+2026-11-06T17:28:17.763Z opencode/glm-5.3 item.submitted
+2026-11-06T17:29:01.645Z pavi land.start
+2026-11-06T17:29:02.921Z pavi review.requested
+2026-11-06T17:29:02.921Z pavi review.tier_needed
+2026-11-06T17:29:03.213Z pavi land.review
+2026-11-06T17:29:03.301Z pavi land.requested
+2026-11-06T17:29:22.056Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T17:29:34.703Z pavi review.requested
+2026-11-06T17:29:53.649Z claude-code/sonnet-5.5 review.approved
+2026-11-06T17:29:53.649Z atelier/orchestrator goal.notes
+2026-11-06T17:29:55.834Z codex/gpt-6-astra review.claimed
+2026-11-06T17:29:57.380Z atelier/orchestrator review.withdrawn
+2026-11-06T17:29:57.380Z pavi item.accepted
+2026-11-06T17:29:58.110Z pavi land.start
+2026-11-06T17:29:58.206Z pavi landing.leased
+2026-11-06T17:29:58.278Z pavi land.lease
+2026-11-06T17:29:59.172Z pavi checkout.leased
