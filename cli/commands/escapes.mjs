@@ -1,3 +1,4 @@
+// atelier escapes. Its forms, flags and help are declared in src/usage/commands/escapes.ts.
 import { OWNER, P, args, call, die, flat, project } from "../atelier.mjs";
 import { bound, collectEvents } from "./events.mjs";
 
