@@ -11,8 +11,8 @@
 // re-points no review request and releases no review claim: each of those
 // was a trigger, and each is now a fact the model reads
 // (`atelier show`, `atelier events`, the queue) and acts on by command. The
-// one action left is the developer's standing instruction to queue landable
-// tasks (decideLandQueue, src/standing.ts).
+// actions follow the developer's standing instructions: ask the named
+// reviewer at checked and queue landable tasks (src/standing.ts).
 
 import { servesProject, type SeenOffer } from "./dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
