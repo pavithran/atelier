@@ -400,9 +400,12 @@ test("atelier status names a test process running from a workspace, and says not
   });
   t.after(() => server.close());
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
+  // Studio runners can omit /usr/sbin, where macOS installs lsof.
+  // Stray detection needs it as well as the live-process listing does.
+  const path = [process.env.PATH, "/usr/sbin"].filter(Boolean).join(":");
   const status = () => new Promise((done) => {
     const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "status"], {
-      env: { ...process.env, ATELIER_CACHE: cache, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "test-token", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ATELIER_STRAY_AGE_S: "0" },
+      env: { ...process.env, PATH: path, ATELIER_CACHE: cache, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "test-token", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ATELIER_STRAY_AGE_S: "0" },
     });
     let output = "";
     child.stdout.on("data", (s) => output += s);
