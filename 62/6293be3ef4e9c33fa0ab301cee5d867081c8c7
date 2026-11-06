@@ -1,0 +1,29 @@
+atelier atelier/t501 "verify-delivery proves the shipped commit is live, not just any 200"
+accepted head 354b0849404c3dd20f1828c5500fa032292b67f3
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+OBSERVED pass npm run typecheck — opencode/glm-5.3 2026-11-06T16:25:34.141Z
+REVIEW approve by claude-code/sonnet-5.5 at 354b0849404c3dd20f1828c5500fa032292b67f3, recorded by claude-code/sonnet-5.5
+CHECKED TREE 8803c84b93277a0b9799c229fdb6bd4d8611fc7a: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-06T15:37:51.076Z pavi item.created
+2026-11-06T15:37:51.076Z claude-code/opus-5.5 criteria.revised
+2026-11-06T15:51:48.504Z pavi item.dispatched
+2026-11-06T15:51:53.885Z opencode/glm-5.3 item.claimed
+2026-11-06T15:51:53.937Z opencode/glm-5.3 workspace.created
+2026-11-06T16:21:33.362Z opencode/glm-5.3 push.observed
+2026-11-06T16:25:34.171Z opencode/glm-5.3 evidence.observed
+2026-11-06T16:25:34.382Z opencode/glm-5.3 item.submitted
+2026-11-06T16:25:47.097Z pavi land.start
+2026-11-06T16:25:48.986Z pavi review.requested
+2026-11-06T16:25:48.986Z pavi review.tier_needed
+2026-11-06T16:25:49.364Z pavi land.review
+2026-11-06T16:25:49.507Z pavi land.requested
+2026-11-06T16:26:12.155Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T16:26:12.198Z claude-code/sonnet-5.5 review.diff
+2026-11-06T16:27:30.054Z claude-code/sonnet-5.5 review.approved
+2026-11-06T16:27:30.054Z atelier/orchestrator goal.notes
+2026-11-06T16:27:36.565Z pavi item.accepted
+2026-11-06T16:27:37.456Z pavi land.start
+2026-11-06T16:27:37.538Z pavi landing.leased
+2026-11-06T16:27:37.643Z pavi land.lease
+2026-11-06T16:27:38.798Z pavi checkout.leased
