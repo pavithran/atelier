@@ -249,7 +249,7 @@ async function runLocal(t, setup, argv) {
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
-  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: state.checkout ? { demo: { path: state.checkout } } : {} }));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: state.checkout ? { demo: { path: state.checkout, branch: "main" } } : {} }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
     cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: cache, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
   });
@@ -340,6 +340,32 @@ test("the same facts are in --json, and no local section at all when no task has
   assert.equal("local" in JSON.parse(empty.output), false, "no local field when no task has a workspace here");
   // The developer's branches (t641) are the server's, read whatever is local.
   assert.deepEqual([...empty.seen.slice(0, 3), ...empty.seen.slice(3).sort()], ["GET /api/projects/demo/standing", "GET /api/projects/demo/branches", "GET /api/projects/demo", "GET /api/projects/demo/mode", "GET /api/projects/demo/stuck", "GET /api/projects/demo/stuck/episodes", "GET /api/projects/demo/stuck/tick"], "only the stuck episodes (t198), the last stage tick (t223) and the mode (t179, for the criteria review) are read besides the standing and branches");
+});
+
+// t293: a command the deploy gate runs that no required check runs is named
+// with the init that adds it, from the policy the server holds and the
+// checkout's package.json.
+test("status --project names a deploy-gate command no required check runs", async (t) => {
+  const scripts = {
+    deploy: "npm run verify:visual && wrangler deploy",
+    "verify:visual": "node scripts/verify-visual.mjs",
+    test: "node --test",
+  };
+  const policyOf = (checks) => ({ checks, protected: [], postMerge: { version: 1, steps: [{ name: "deploy", command: "npm run deploy", class: "deploy", when: "always", protect: ["package.json"], timeoutMs: 1200000 }], approval: { by: "owner", at: "2026-10-25T10:00:00.000Z", reason: "recorded" } } });
+  const r = await runLocal(t, ({ dir }) => {
+    const checkout = workspace(join(dir, "checkout"), [["a.txt", "one\n"]]);
+    writeFileSync(join(checkout, "package.json"), JSON.stringify({ scripts }));
+    return { checkout, policy: policyOf(["npm test"]) };
+  });
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("\nDeploy gate: npm run verify:visual runs after a merge or at ship and no required check runs it, so a task can land without it passing; add it with atelier init --check \"npm test\" --check \"npm run verify:visual\" --project demo.\n"), r.output);
+  const covered = await runLocal(t, ({ dir }) => {
+    const checkout = workspace(join(dir, "checkout"), [["a.txt", "one\n"]]);
+    writeFileSync(join(checkout, "package.json"), JSON.stringify({ scripts }));
+    return { checkout, policy: policyOf(["npm test", "npm run verify:visual"]) };
+  });
+  assert.equal(covered.code, 0, covered.output);
+  assert.ok(!covered.output.includes("Deploy gate"), covered.output);
 });
 
 // The kernel lock queue.sh holds while it lands: flock on Linux, lockf on macOS.

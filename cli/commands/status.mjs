@@ -12,6 +12,7 @@ import { serverFetch } from "../server-fetch.mjs";
 import { bookmarkKey, formatNew, newSince, parseSince, readBookmark, writeBookmark, FIRST_RUN_MS } from "../new-since.mjs";
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
+import { deployGateLines, packageScripts } from "../deploy-gate.mjs";
 
 // Usage warnings come first, as the token-expiry warnings do; a server that
 // cannot answer leaves the text as it was.
@@ -80,7 +81,10 @@ export default async function statusCommand() {
     // The standing's first line names the project; the stuck section follows it, before any ordinary item.
     const withStuck = (text, section) => { if (!section) return text; const i = text.indexOf("\n"); return i < 0 ? text + "\n\n" + section : text.slice(0, i) + "\n\n" + section + text.slice(i); };
     const stuckText = [...stuckLines(stuck, "", false), ...tickLines(stuck)].join("\n");
-    console.log(withOverdueTick(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (criteriaText ? "\n\n" + criteriaText : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), overdueTick(stuck)));
+    // t293: a command the deploy gate runs that no required check runs, from
+    // the policy the server holds and this checkout's package.json.
+    const gate = deployGateLines(record?.project?.policy, packageScripts(path), name);
+    console.log(withOverdueTick(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (criteriaText ? "\n\n" + criteriaText : "") + (gate.length ? "\n\n" + gate.join("\n") : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), overdueTick(stuck)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
@@ -111,10 +115,11 @@ export default async function statusCommand() {
     const path = cfg.projects?.[p.name]?.path;
     const mismatches = read?.project?.policy && path ? reviewDisagreements(read.project.policy, readInstructions(path)) : [];
     // The policy comes along so the listing can say a project runs in
-    // single-family mode (formatStatus).
+    // single-family mode (formatStatus), and the checkout's package.json so
+    // it can name a deploy-gate command no required check runs (t293).
     const items = Array.isArray(read?.items) ? read.items : null;
     const stuck = await readStuck((path) => request("GET", path, undefined, OWNER).catch(() => null), P(p.name), p.name, items);
-    return { developerDecisions: developerDecisionLines(read?.events), stuck, wayBack: read?.wayBack ?? null, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
+    return { developerDecisions: developerDecisionLines(read?.events), stuck, wayBack: read?.wayBack ?? null, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, scripts: packageScripts(path), mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null).map(view => ({ ...view, ...(mainSuite ? { mainSuite } : {}) })), null, 2));
   const strays = formatStrays(localStrays());

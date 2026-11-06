@@ -30,6 +30,7 @@ import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../s
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
 import { readinessLines } from "../src/runners/readiness.ts";
+import { deployGateLines } from "./deploy-gate.mjs";
 
 // A task's stage is stageOf's (src/rules.ts) and nothing here decides one.
 // `ready` is the fast-build reports the project's mode route lists
@@ -412,6 +413,9 @@ export function formatStatus(views, waiting = {}) {
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     lines.push(...tickLines(v.stuck, "  "));
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
+    // t293: a command the deploy gate runs that no required check runs, with
+    // the init that adds it.
+    lines.push(...deployGateLines(v.policy, v.scripts, v.name).map((l) => `  ${l}`));
     lines.push(...criteriaLines(v));
     lines.push(...stuckLines(v.stuck, "  ", false));
     if (!owner.length) {

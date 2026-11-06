@@ -398,3 +398,22 @@ test("init warns when the returned policy has no checks and names --check", () =
   const reset = command(["init", "--reset"]);
   assert.match(reset.stdout, /Warning:.*no required checks.*--check/);
 }));
+
+// t293: a command the deploy gate runs that no required check runs is named
+// with the init that adds it, the same warning `atelier status` prints.
+test("init names a deploy-gate command no required check runs, and the init that adds it", () => fixture(({ command, initial }) => {
+  writeFileSync(join(initial.projects.weblog.path, "package.json"), JSON.stringify({
+    scripts: {
+      deploy: "npm run verify:visual && wrangler deploy",
+      "verify:visual": "node scripts/verify-visual.mjs",
+      test: "node --test",
+    },
+  }));
+  const gap = command(["init", "--check", "npm test"]);
+  assert.equal(gap.status, 0, gap.stderr);
+  assert.match(gap.stdout, /Deploy gate: npm run verify:visual runs after a merge or at ship and no required check runs it, so a task can land without it passing; add it with atelier init --check "npm test" --check "npm run verify:visual"\./);
+  // Once a check runs it, the warning goes.
+  const covered = command(["init", "--check", "npm test", "--check", "npm run verify:visual"]);
+  assert.equal(covered.status, 0, covered.stderr);
+  assert.doesNotMatch(covered.stdout, /Deploy gate/);
+}));
