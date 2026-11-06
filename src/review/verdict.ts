@@ -519,13 +519,12 @@ const FINDING_LINE = new RegExp(`^finding${E}\\s*:?\\s*${E}\\s*\\[?([a-z_-]+)\\]
 // is read as a finding before this is tried.
 const COUNT_LINE = new RegExp(`^blocking${E}\\s*:\\s*${E}\\s*(\\d{1,6})\\s*${E}\\s*[.!]?\\s*${E}\\s*$`, "i");
 const SUMMARY_LINE = new RegExp(`^summary${E}\\s*:\\s*${E}\\s*(.*?)\\s*${E}\\s*$`, "i");
-// A CRITERION line starts with "criterion" and its number, bracketed or not,
-// colon or not, in any case; "Criteria:" is a heading and "criterion" in
-// prose carries no number. The head recognises the number in every form the
-// line parser reads, so a line that declares a criterion met or unmet is
-// never mistaken for prose. Only a reply asked for criteria (replyFormat)
-// has its CRITERION lines read; elsewhere they are prose.
-const CRITERION_HEAD = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?\\d`, "i");
+// A CRITERION line gives a number followed by a colon or a state, in any
+// case and with optional markdown. Numbered prose such as "Criterion 3 is
+// unmet" and headings such as "Criterion 3." are not declarations. A colon
+// still introduces a declaration with an invalid or missing state, so the
+// line parser can refuse it. Only replies asked for criteria read these lines.
+const CRITERION_HEAD = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?\\d+\\]?${E}\\s*(?::|${E}\\[?(?:unmet|not met|met|deferred)(?![a-z0-9]))`, "i");
 const criterionHead = (line: string) => CRITERION_HEAD.test(line);
 // The met or unmet word ends at anything but a letter or digit, so an
 // underscore closes formatting (**, __, backticks) rather than extending the
