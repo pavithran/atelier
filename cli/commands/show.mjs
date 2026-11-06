@@ -215,11 +215,18 @@ export function standingGoOf(d) {
 }
 
 // One review request nobody has claimed: whom it asks, since when and how
-// long ago, and the commands that withdraw it or ask another (G6).
+// long ago, and the commands that withdraw it or ask another (G6). A runner
+// that could serve it and remembers a stop for the task is named as why it
+// waits, with the command that clears the stop (miqra t67, 2026-11-06);
+// asking it again clears the stop as well.
 export function unclaimedLine(id, r, now = Date.now()) {
   const minutes = Math.max(0, Math.floor((now - Date.parse(r.openedAt)) / 60_000));
   const age = minutes < 60 ? `${minutes} minute${minutes === 1 ? "" : "s"}` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
-  return `Review request ${r.request}${r.tier ? " (the tier's)" : ""} asked of ${flat(r.reviewer)} at ${String(r.head).slice(0, 8)} is unclaimed, asked ${String(r.openedAt).slice(0, 16).replace("T", " ")} UTC, ${age} ago; withdraw it with atelier review-withdraw ${id} --request ${r.request} --reason TEXT, or ask another with atelier review-request ${id} --reviewer H/M`;
+  const stops = (Array.isArray(r.skips) ? r.skips : []).filter((s) => s && typeof s.runner === "string" && s.runner);
+  const said = stops.length
+    ? `; ${stops.map((s) => `${s.runner} remembers a stop for ${id}${typeof s.why === "string" && s.why ? ` (${flat(s.why)})` : ""}`).join("; ")}, so the request is not claimed: clear it with atelier forget-skip ${id}${stops.length === 1 ? ` --runner ${stops[0].runner}` : ""}`
+    : "";
+  return `Review request ${r.request}${r.tier ? " (the tier's)" : ""} asked of ${flat(r.reviewer)} at ${String(r.head).slice(0, 8)} is unclaimed, asked ${String(r.openedAt).slice(0, 16).replace("T", " ")} UTC, ${age} ago${said}; withdraw it with atelier review-withdraw ${id} --request ${r.request} --reason TEXT, or ask another with atelier review-request ${id} --reviewer H/M`;
 }
 
 // One goal note, numbered: where, what, who left it, and the task filed from it.
