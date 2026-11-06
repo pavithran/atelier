@@ -58,7 +58,10 @@ model is reported only by a home runner and a cloud model only by a cloud
 runner, and the Models page shows each report with the runner that made it.
 Changing how a model is reached (its harness, where it runs, provider,
 endpoint or Keychain entry) clears its status until it is checked again.
-An endpoint carrying a query string, or a Keychain entry name that looks
+A refusal stops counting in the dispatch candidates once it is older than
+seven days; they then say only when the model was last checked, since a
+status never ages out on its own and a provider that refused once may serve
+again. An endpoint carrying a query string, or a Keychain entry name that looks
 like a key, is refused.
 
 ## Vendor model cards

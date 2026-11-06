@@ -1376,6 +1376,7 @@ it("blocking findings on an overridden merge are recorded as a defect and notes,
   const filed = await L.fileFix(id, "owner", 1, ACTING);
   expect(filed).toMatchObject({ already: false, from: id });
   const fixId = filed.item.id;
+  expect((await events(L, fixId)).find((e) => e.kind === "item.fix_of")?.data).toMatchObject({ itemId: id, n: 1, by: GPT });
   expect(await L.item(fixId)).toMatchObject({ state: "open", brief: expect.stringContaining("It loses data.") });
   expect((await events(L, fixId)).find((e) => e.kind === "item.defect_of")?.data).toMatchObject({ itemId: id, head: merge, request: claim.request });
   expect((await L.fileFix(id, "owner", 1, ACTING)).already).toBe(true);

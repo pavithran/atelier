@@ -21,6 +21,13 @@ export interface ModelStatus {
   detail?: string;
 }
 
+// How long a runner's status counts: the discovery report shows a model last
+// served longer ago than this as nothing recent, and the dispatch candidates
+// (src/models/suggest.ts) stop refusing on a refusal older than it, saying
+// when the model was last checked instead — a status never ages out on its
+// own. Both read the same seven days.
+export const RECENT_MS = 7 * 86_400_000;
+
 // The owner's standing for a model, apart from the runner's report (status):
 // paused keeps it out of the pool until the owner turns it back on, and
 // reserved holds it back for a reason the note records (spent credits, a

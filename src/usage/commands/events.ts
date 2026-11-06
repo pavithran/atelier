@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Developer", line: 4, slot: 40,
       form: "events [--from DATE] [--to DATE] [--kind K]... [--json] [--project P]",
-      about: "Writes the project's ledger events to standard output as a JSON array, oldest first, each as {seq, at, item, actor, kind, stage, data}: the task it belongs to (null for the project's own), who acted, and the stage the task was at after the change. `--json` is accepted and changes nothing, as the output is always JSON. It reads the ledger a page at a time, so any size works. Keys, tokens and other secret values are replaced before they leave the server.",
+      about: "Writes the project's ledger events to standard output as a JSON array, oldest first, each as {seq, at, item, actor, kind, stage, data}: the task it belongs to (null for the project's own), who acted, and the stage the task was at after the change. `--json` is accepted and changes nothing, as the output is always JSON. It reads the ledger a page at a time, so any size works. Repair links appear as item.fix_of, with the repair task as item and the repaired task in data.itemId. Keys, tokens and other secret values are replaced before they leave the server.",
     },
   ],
   flags: {

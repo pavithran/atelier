@@ -1,6 +1,6 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
-import { latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
+import { latestNote, noteLine, RECENT_MS, standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, isInfrastructureOutcome, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord, type ReviewerPrecision } from "./precision.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
@@ -66,6 +66,19 @@ export function ranked(input: { pool: readonly ModelEntry[]; owner?: string; sum
 // default): the offer check asks runners for that job, as assign() will
 // (claimants). `constraints.to` and `.model` narrow the list as typed.
 export interface Candidate { actor: string; where: string; line: string; refusal: string | null }
+
+// What a runner's refused status leaves once it is older than RECENT_MS: not
+// a refusal, but the day the model was last checked, for the candidate line.
+// A status never ages out on its own, and a provider that refused once may
+// serve again — the 2026-11-06 finding had a twelve-day-old refusal still
+// refusing a model whose named dispatches built normally. A status with no
+// date that parses cannot be called old, so it still refuses.
+function staleRefusal(entry: Pick<ModelEntry, "status">, now = new Date()): string | null {
+  if (entry.status?.state !== "refused") return null;
+  const age = now.getTime() - Date.parse(entry.status.at);
+  return Number.isFinite(age) && age > RECENT_MS ? `Last checked ${entry.status.at.slice(0, 10)}.` : null;
+}
+
 export function builderCandidates(input: SuggestionInput, constraints: { to?: unknown; model?: unknown; job?: unknown } = {}): Candidate[] {
   const job = typeof constraints.job === "string" && constraints.job !== "build" ? constraints.job as Dispatch["job"] : undefined;
   const jobText = job ? `the ${job} job` : "a build";
@@ -81,7 +94,7 @@ export function builderCandidates(input: SuggestionInput, constraints: { to?: un
     const offered = offeredFor(entry);
     if (offered && !claimants({ to: entry.where, job, agent: entry.harness, model: entry.id }, input.offers ?? [])?.length) return `no live runner offers ${actor} for ${jobText} ${entry.where === "home" ? "at home" : "in the cloud"}`;
     if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
-    if (entry.status?.state === "refused") return "provider refused";
+    if (entry.status?.state === "refused" && !staleRefusal(entry)) return "provider refused";
     if (paidPerToken(entry)) return "per-token spending is not authorized";
     try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; return e.message; }
     return null;
@@ -92,7 +105,8 @@ export function builderCandidates(input: SuggestionInput, constraints: { to?: un
     .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
     .map(({ entry, reason }) => {
       const note = latestNote(entry, input.project, input.item.id);
-      return { actor: actorOf(entry), where: entry.where, line: [reason, ...(note ? [noteLine(note)] : [])].join(" "), refusal: refusalOf(entry) };
+      const checked = staleRefusal(entry);
+      return { actor: actorOf(entry), where: entry.where, line: [reason, ...(checked ? [checked] : []), ...(note ? [noteLine(note)] : [])].join(" "), refusal: refusalOf(entry) };
     });
 }
 
@@ -140,7 +154,7 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     const offered = offeredFor(entry);
     if (offered && !claimants({ to: entry.where, job, agent: entry.harness, model: entry.id }, input.offers ?? [])?.length) return `no live runner offers ${actor} for ${jobText} ${entry.where === "home" ? "at home" : "in the cloud"}, so no runner could claim its dispatch`;
     if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
-    if (entry.status?.state === "refused") return "provider refused";
+    if (entry.status?.state === "refused" && !staleRefusal(entry)) return "provider refused";
     if (paidPerToken(entry)) return "per-token spending is not authorized";
     try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; return e.message; }
     return "";
@@ -170,7 +184,8 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     const actor = actorOf(entry);
     if (refusal) { excluded.push(`${actor}: ${refusal}`); continue; }
     const note = latestNote(entry, input.project, input.item.id);
-    return { actor, where: entry.where, reasons: [why, ...said(row), `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
+    const checked = staleRefusal(entry);
+    return { actor, where: entry.where, reasons: [why, ...said(row), `Outcome score ${score.toFixed(3)}. ${reason}`, ...(checked ? [checked] : []), ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
   }
   // A failure says what became of the build assignments too (gpt-6-astra's
   // sixteenth review of t622, finding 2).

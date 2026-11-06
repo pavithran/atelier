@@ -782,10 +782,12 @@ model that can be probed (a Claude Code, zcode or Gemini API model; never a
 Codex or an AI Studio model). `--dry-run` prints the table and reports
 nothing. A harness that answers with a different model from the one
 registered is reported as refused, with the model it served, and listed under
-Mismatch. For zcode and Codex, whose records name the model the harness
-chose, any other model answering after the registered one last did counts,
-whether or not the pool registers it too; opencode's record names the model
-each call asked for, so it is not judged this way. The runner's own opencode
+Mismatch. For zcode, whose record names the model the harness chose, any other
+model answering after the registered one last did counts, whether or not the
+pool registers it too; Codex and opencode are not judged this way, since their
+records name the model each call asked for (Codex runs the model its command
+line names, so another model in its log is that call's model, not a
+substitution). The runner's own opencode
 runs keep their record in their own data folders, which are removed, so the
 opencode record shows only opencode used outside the runner. A model with no recent
 record is shown as "no recent record" and nothing is reported for it, so its

@@ -146,6 +146,23 @@ test("--duplicate-ok files the task it names, the title still the words given", 
   assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body]), [["POST", "/api/projects/demo/items", { title: "Fix the parser", scope: ["src/parser/**"] }]]);
 });
 
+test("new --fix-of sends the repair target to the server", (t) => {
+  const f = fixture(t);
+  const r = f.run(["new", "Repair the lexer", "--fix-of", "t14", "--duplicate-ok", "--project", "demo"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Repair the lexer", scope: [], fixOf: "t14" }]);
+});
+
+test("new --fix-of refuses malformed task IDs without filing", (t) => {
+  const f = fixture(t);
+  for (const target of ["t0", "14", "t14/other"]) {
+    const r = f.run(["new", "Repair the lexer", "--fix-of", target, "--project", "demo"]);
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /--fix-of must name a merged task/);
+  }
+  assert.deepEqual(f.requests(), []);
+});
+
 
 test("a title over 80 characters with --brief reports bad_title without a stack or filing", (t) => {
   const f = fixture(t);
