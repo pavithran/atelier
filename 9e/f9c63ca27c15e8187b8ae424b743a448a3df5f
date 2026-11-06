@@ -1,0 +1,35 @@
+atelier atelier/t495 "A REJECT whose criterion lines all agree is read as a verdict, even when prose…"
+accepted head 8be2f16c6a931dd363b6ef7a18ea8efad61f48ce
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-06T18:08:25.165Z
+REVIEW approve by claude-code/sonnet-5.5 at 8be2f16c6a931dd363b6ef7a18ea8efad61f48ce, recorded by claude-code/sonnet-5.5
+CHECKED TREE 4175a4e204546e4183a86e772ddae7ee52cc4bc3: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-06T03:37:06.007Z pavi item.created
+2026-11-06T03:37:06.596Z pavi item.edited
+2026-11-06T03:37:06.596Z claude-code/opus-5.5 criteria.revised
+2026-11-06T03:37:06.596Z pavi item.criteria_changed
+2026-11-06T18:05:15.686Z pavi item.dispatched
+2026-11-06T18:06:43.642Z codex/gpt-6.1-sol item.claimed
+2026-11-06T18:06:43.685Z codex/gpt-6.1-sol workspace.created
+2026-11-06T18:08:21.444Z codex/gpt-6.1-sol push.observed
+2026-11-06T18:08:25.179Z codex/gpt-6.1-sol evidence.observed
+2026-11-06T18:08:25.378Z codex/gpt-6.1-sol item.submitted
+2026-11-06T18:08:28.211Z pavi land.start
+2026-11-06T18:08:29.871Z pavi review.requested
+2026-11-06T18:08:29.871Z pavi review.tier_needed
+2026-11-06T18:08:30.303Z pavi land.review
+2026-11-06T18:08:30.439Z pavi land.requested
+2026-11-06T18:08:33.070Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T18:09:02.113Z pavi review.requested
+2026-11-06T18:09:10.023Z codex/gpt-6-astra review.claimed
+2026-11-06T18:09:35.244Z claude-code/sonnet-5.5 review.approved
+2026-11-06T18:09:35.244Z atelier/orchestrator goal.notes
+2026-11-06T18:09:41.812Z pavi land.start
+2026-11-06T18:09:42.558Z pavi land.review
+2026-11-06T18:09:42.895Z pavi landing.leased
+2026-11-06T18:09:43.007Z pavi land.lease
+2026-11-06T18:09:44.183Z atelier/orchestrator review.withdrawn
+2026-11-06T18:09:44.183Z pavi item.accepted
+2026-11-06T18:09:44.318Z pavi land.accept
+2026-11-06T18:09:44.990Z pavi checkout.leased
