@@ -32,6 +32,7 @@ export const EXCEPTIONS = {
   "cli/commands/init.mjs": { why: DATA, literals: [`${W}.*`] },
   "test/check-classes.spec.ts": { why: DATA, literals: [`${W}.jsonc`] },
   "test/checks.test.ts": { why: DATA, literals: [`${W} publish`, `${W} pages deploy dist`, `${W} secret put KEY`, `${W} d1 migrations apply DB --remote`] },
+  "test/deploy-gate.test.mjs": { why: DATA, literals: [`${W} deploy`] },
   "test/fixtures/attention.ts": { why: DATA, literals: [`${W}.toml`] },
   "test/ledger.spec.ts": { why: DATA, literals: [`${W}.*`] },
   "test/review-notice.test.ts": { why: DATA, literals: [`${W}.*`] },

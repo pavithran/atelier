@@ -9,6 +9,7 @@ import { appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusal
 import { discoverPrivate, guardedPush, moveProjectEntryOnDisk, privateGuardFor, remoteBases } from "../private-guard.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
+import { deployGateLines, packageScripts } from "../deploy-gate.mjs";
 import { OWNER, P, agentsMdOffer, apiToken, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, saveConfig, short, tailnetHost, wsConfig } from "../atelier.mjs";
 
 // The project owner, in the project's checkout.
@@ -226,6 +227,9 @@ export default async function initCommand() {
     : `${titled}: ${name}'s repository on this server now holds ${branch} @ ${short(git(["rev-parse", "HEAD"], { cwd: top }))}.`);
   console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
   if (!pol.checks.length) console.log("Warning: this project has no required checks; runner dispatches are refused until you register one with atelier init --check CMD.");
+  // t293: a command the deploy gate runs that no required check runs, the
+  // same warning `atelier status` prints, with the init that adds it.
+  for (const line of deployGateLines(pol, packageScripts(top))) console.log(line);
   for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
   if (pol.prepare) console.log(`Prepare:    ${pol.prepare.command} (inputs: ${pol.prepare.inputs.join(", ")}; outputs: ${pol.prepare.outputs.join(", ")})`);
