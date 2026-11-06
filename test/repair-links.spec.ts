@@ -1,13 +1,15 @@
 import { env, runInDurableObject } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
-import { itemFields } from "../src/rules.ts";
+import { itemFields, parseRuleError } from "../src/rules.ts";
 
 it("new repair links require an existing merged task, and detail lists both directions", async () => {
   const L = env.LEDGER.get(env.LEDGER.idFromName("project:repair-links"));
   await L.setProject({ name: "repair-links", repo: "repair-links", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() }, "owner");
   const original = await L.newItem("Original", [], "owner");
   await expect(L.newItem("Unknown", [], "owner", itemFields({ fixOf: "t99" }))).rejects.toThrow();
-  await expect(L.newItem("Unmerged", [], "owner", itemFields({ fixOf: original.id }))).rejects.toThrow(/not merged/);
+  // G8: the refusal names its next command, which works on the task it names.
+  const unmerged = parseRuleError(await L.newItem("Unmerged", [], "owner", itemFields({ fixOf: original.id })).then(() => { throw new Error("expected a not_merged refusal"); }, (e: unknown) => e as Error));
+  expect(unmerged).toMatchObject({ code: "not_merged", detail: `${original.id} is not merged`, next: `run atelier show ${original.id} for its state, then name a merged task with --fix-of` });
   expect(await L.items()).toHaveLength(1);
   for (const fixOf of ["unknown", "t0", 1, null]) expect(() => itemFields({ fixOf })).toThrow(/fixOf/);
   await runInDurableObject(L, (_instance, state) => {

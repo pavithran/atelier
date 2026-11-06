@@ -743,7 +743,7 @@ export interface PushAuthor { commit: string; actor: string }
 // init does not name one, its branch, and when it was created) is kept either way.
 export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: string): ProjectRecord {
   if (i.criteriaReview !== undefined && i.criteriaReview !== "parallel" && i.criteriaReview !== "before") {
-    throw new RuleError("bad_policy", "criteriaReview must be parallel or before", 400);
+    throw new RuleError("bad_policy", "criteriaReview must be parallel or before", 400, "run atelier init --criteria-review parallel");
   }
   const p = i.reset ? undefined : current?.policy;
   const title = i.title === undefined ? current?.title : i.title ?? undefined;
@@ -2880,7 +2880,7 @@ export class Ledger extends DurableObject<Env> {
     if (fields.fixOf !== undefined) {
       if (typeof fields.fixOf !== "string" || !/^t[1-9]\d*$/.test(fields.fixOf)) throw new RuleError("bad_field", "fixOf must name a task, such as t7", 400);
       const original = this.item(fields.fixOf);
-      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409);
+      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409, `run atelier show ${original.id} for its state, then name a merged task with --fix-of`);
       if (fields.revertOf !== undefined) throw new RuleError("bad_field", "a task cannot be both a repair and a revert", 400);
       const { fixOf, ...rest } = fields;
       return this.ctx.storage.transactionSync(() => {
