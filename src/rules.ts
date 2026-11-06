@@ -784,6 +784,8 @@ export interface ProjectPolicy {
   // Planner and review jobs are exempt; merge, integrate and refresh jobs
   // keep their own gates.
   requireCriteriaReview?: boolean;
+  // Parallel reviews gate review and landing; before keeps the build hold.
+  criteriaReview?: "parallel" | "before";
   // Globs of the files only one live item at a time may change: the queue
   // holds a dispatch whose scope overlaps a live item's within one of them
   // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
