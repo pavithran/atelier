@@ -261,8 +261,19 @@ last four adds its step to the class's order; leaving it out leaves the step out
   answers 200 there. Add `"redirect": "manual"` to check the first response
   without following redirects. For example, `{"request": "https://private.example",
   "status": 302, "redirect": "manual"}` expects an Access sign-in redirect;
-  a public HTTP 200 fails that check. The default is `"redirect": "follow"`.
-  A status check confirms the response code, not which service issued it.
+  a public HTTP 200 fails that check. `"redirect": "forbid"` fails any 3xx
+  answer, naming where it pointed, so a sign-in page that answers 200 only
+  after a redirect never passes. The default is `"redirect": "follow"`.
+  A status check confirms the response code, not which service issued it:
+  an old build or a sign-in page answers 200 as readily as the new one. To
+  prove the shipped commit is live, name what the answer must hold:
+  `"expect": TEXT` passes only when the body contains TEXT, with `{commit}`
+  standing for the full revision being shipped and `{short}` for its first
+  eight characters, as in `{"request": "https://app.example/version",
+  "status": 200, "expect": "{commit}"}`; `"header": NAME` looks for the text
+  in that response header instead of the body. A verify step that passes
+  with no expected text, and with no command of its own, is reported and
+  recorded as delivered with its version not proven.
 
 and may add `"retries"` (0 to 3: the run is tried again that many times if it
 fails, under the approval already taken, and every try is recorded),
@@ -369,9 +380,14 @@ It then prints the steps and runs them:
   After a successful deploy, a failed verify-delivery is recorded as failed,
   but wrap still runs. Ship then exits unsuccessfully with delivery unconfirmed,
   the commands to recheck from the checkout, and push still blocked. A request
-  recheck prints its HTTP status and the expected status; command checks reuse
+  recheck prints its HTTP status and the expected status, with the expected
+  text named beside it; command checks reuse
   their declared command with `ATELIER_SHIP_HEAD` set to the captured source
   commit. Install verification and a failed deploy still stop immediately. No successful ship record is written before wrap completes.
+  A verify-delivery that passes without an expected text, and with no command
+  of its own, does not stop the ship: its output and its record say
+  `delivered, version not proven`, because the request proved a server
+  answered, not that the new build is live.
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
   and reports how the checkout stands against the server's branch; a failing
