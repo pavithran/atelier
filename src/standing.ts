@@ -1,4 +1,5 @@
-// The models key is a session plan in either mode. The other standing
+// The models key is a session plan in either mode. dispatch-on-criteria
+// also acts in either mode, on the developer's instruction. The other standing
 // instructions (Atelier 2.0, G6) are the only automatic actions left
 // to the server and the tick. Each is a standing decision the developer
 // records with `atelier decide --standing KEY VALUE --quote "…"`, with their
@@ -27,6 +28,11 @@ export interface StandingKey {
 const onOff = (v: string) => (v === "on" || v === "off" ? v : null);
 
 export const STANDING: Record<string, StandingKey> = {
+  "dispatch-on-criteria": {
+    value: "harness/model or off",
+    says: (v) => v === "off" ? "criteria approval dispatches no task by itself" : `criteria approval dispatches an undispatched task home to ${v}, once its holds are cleared, in either mode`,
+    parse: (v) => v === "off" || (validActor(v) && v.includes("/")) ? v : null,
+  },
   models: {
     value: "non-empty text describing the models, roles and effort levels",
     says: () => "unwrap prints this model plan at the start of a session",
