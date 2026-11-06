@@ -85,6 +85,28 @@ test('constraints and refused providers fail closed', () => {
   assert.throws(() => suggestBuilder({ ...input, pool: [{ ...pool[0], status: { state: 'refused' } }] }), /provider refused/);
 });
 
+// A refused status never ages out on its own (the 2026-11-06 finding read 12
+// days old), so the dispatch candidates stop counting one older than
+// RECENT_MS (7 days) and say when the model was last checked instead.
+test('a refused status older than seven days refuses nothing, and the candidates say when it was last checked', () => {
+  const days = (n) => new Date(Date.now() - n * 86_400_000).toISOString();
+  const refusedAt = (at) => ({ ...pool[0], status: { state: 'refused', at, by: 'home:studio', detail: 'refused, served gpt-6-astra' } });
+  // Fresh, it refuses in both readers, as before.
+  assert.equal(suggestModule.builderCandidates({ ...input, pool: [refusedAt(days(1))] })[0].refusal, 'provider refused');
+  assert.throws(() => suggestBuilder({ ...input, pool: [refusedAt(days(1))] }), /provider refused/);
+  // Older than seven days, it refuses nothing: the candidate is eligible, and
+  // its line and the suggestion's reasons say when it was last checked.
+  const at = days(8);
+  const [candidate] = suggestModule.builderCandidates({ ...input, pool: [refusedAt(at)] });
+  assert.equal(candidate.refusal, null);
+  assert.ok(candidate.line.includes(`Last checked ${at.slice(0, 10)}.`), candidate.line);
+  const chosen = suggestBuilder({ ...input, pool: [refusedAt(at)] });
+  assert.equal(chosen.actor, item.owner);
+  assert.ok(chosen.reasons.includes(`Last checked ${at.slice(0, 10)}.`), chosen.reasons.join(' '));
+  // A status with no date cannot be called old, so it still refuses.
+  assert.equal(suggestModule.builderCandidates({ ...input, pool: [refusedAt(undefined)] })[0].refusal, 'provider refused');
+});
+
 // t394: under single-family mode the dispatch suggestion picks within the
 // company, whatever the ranking, and says so; with none of the company's
 // models in the pool it refuses rather than proposing another company's.
