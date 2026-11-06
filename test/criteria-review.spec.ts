@@ -2,6 +2,7 @@ import { env } from "./support/workers.ts";
 import { runInDurableObject } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { criteriaReviewLine } from "../src/brief.ts";
 import type { CriteriaReviewClaim, CriteriaReviewView, Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
@@ -763,4 +764,182 @@ it("a criteria reviewer held since it claimed cannot approve: its verdict is ref
     // A model held from reviewing but free to build still builds it.
     if (name === "build-only") expect((await L.claim(id, GLM, RUNNER)).item, name).toMatchObject({ state: "claimed", owner: GLM });
   }
+});
+
+
+it("parallel criteria review lets unasked and open builds run, but gates review and landing at the current revision", async () => {
+  const L = await setup("criteria-parallel", { ...gated, criteriaReview: "parallel" });
+  const { id } = await L.newItem("Search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+  expect(criteriaReviewLine(await L.criteriaReviewView(id))).toMatch(/^required before gate review and landing/);
+  await L.dispatch(id, "owner", BUILD);
+  await L.requestCriteriaReview(id, "owner", GLM, POOL);
+  await L.claim(id, OPUS, RUNNER);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/search.ts"] } satisfies Evidence);
+  await L.submit(id, OPUS);
+  await refusal(L.requestReview(id, "owner", GPT, POOL), "criteria_unreviewed", /criteria.review.*t1/);
+  await refusal(L.requestReviews(id, "owner", [GPT, GLM], POOL), "criteria_unreviewed", /criteria.review.*t1/);
+  await refusal(L.beginLanding(id, "owner", H1), "criteria_unreviewed", /criteria.review.*t1/);
+  await refusal(L.requestLand(id, "owner"), "criteria_unreviewed", /criteria.review.*t1/);
+  await refusal(L.queueProjectLanding(id, "owner"), "criteria_unreviewed", /criteria.review.*t1/);
+  await refusal(L.beginProjectLanding(id, "owner"), "criteria_unreviewed", /criteria.review.*t1/);
+  await refusal(L.accept(id, "owner"), "criteria_unreviewed", /criteria.review.*t1/);
+  expect(await L.readProjectLanding()).toBeNull();
+  expect((await L.queued()).reviews.filter((i) => i.dispatch?.job === "review")).toEqual([]);
+  const c = await L.claimCriteriaReview(id, GLM, RUNNER) as unknown as CriteriaReviewClaim;
+  await L.addCriteriaReview({ itemId: id, by: GLM, rev: c.rev, criteria: c.criteria, request: c.request, approve: true, summary: "Clear." }, true);
+  await L.editItem(id, "owner", { accept: ["Search answers within 100 ms"] });
+  await refusal(L.requestReview(id, "owner", GPT, POOL), "criteria_unreviewed", /criteria.review.*t1/);
+  await refusal(L.requestLand(id, "owner"), "criteria_unreviewed", /criteria.review.*t1/);
+  await reviewed(L, id, true);
+  expect((await L.requestLand(id, "owner")).queued).toBe(true);
+  await L.requestReview(id, "owner", GPT, POOL);
+  const r = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(r.item.accept).toEqual(["Search answers within 100 ms"]);
+  expect(r.item.brief).toMatch(/Revised acceptance criteria[\s\S]*100 ms/);
+  expect(r.events.some((e) => e.kind === "item.criteria_changed")).toBe(true);
+});
+
+it("parallel permits a claim before any criteria review is asked and preserves dispatch after a revision", async () => {
+  const L = await setup("criteria-parallel-unasked", { ...gated, criteriaReview: "parallel" });
+  const a = await L.newItem("First", ["src/**"], "owner", { accept: ["One"] });
+  await L.dispatch(a.id, "owner", BUILD);
+  await L.editItem(a.id, "owner", { accept: ["Two"] });
+  expect((await L.item(a.id)).dispatch).toBeTruthy();
+  expect((await L.claim(a.id, OPUS, RUNNER)).item.state).toBe("claimed");
+  await refusal(L.requestLand(a.id, "owner"), "criteria_unreviewed", /criteria.review/);
+  const b = await L.newItem("Open review", ["lib/**"], "owner", { accept: ["Three"] });
+  await L.requestCriteriaReview(b.id, "owner", GLM, POOL);
+  expect((await L.dispatch(b.id, "owner", BUILD)).dispatch).toBeTruthy();
+});
+
+
+it("init stores either timing, preserves it on re-init, resets to before and refuses invalid values", async () => {
+  const artifacts = {
+    create: async () => ({}),
+    get: async () => ({ info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }), createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }), [Symbol.dispose]() {} }),
+  } as unknown as Repos;
+  const init = (body: unknown, token = TOKEN, actor = "owner") => worker.fetch(new Request("https://atelier.test/api/projects/criteria-init", {
+    method: "PUT", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(actor === "owner" && token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
+  }), { ...testEnv, REPOS: artifacts });
+  expect((await init({ criteriaReview: "parallel" }, "invalid")).status).toBe(401);
+  const pol = async (body: unknown) => {
+    const res = await init(body);
+    expect(res.status, await res.clone().text()).toBe(200);
+    return ((await res.json()) as { project: { policy: ProjectPolicy } }).project.policy;
+  };
+  expect((await pol({ checks: ["npm test"] })).criteriaReview ?? "before").toBe("before");
+  expect((await pol({ criteriaReview: "parallel" })).criteriaReview).toBe("parallel");
+  expect((await pol({ title: "Keep timing" })).criteriaReview).toBe("parallel");
+  expect((await pol({ criteriaReview: "before" })).criteriaReview).toBe("before");
+  expect((await pol({ reset: true, checks: ["npm test"] })).criteriaReview ?? "before").toBe("before");
+  expect((await init({ criteriaReview: "later" })).status).toBe(400);
+  expect((await ledger("criteria-init").project()).policy.criteriaReview ?? "before").toBe("before");
+  const issued = await call("POST", "/tokens", "owner", { actor: GLM, projects: ["criteria-init"] });
+  const agent = await issued.json() as { token: string };
+  expect((await init({ criteriaReview: "parallel" }, agent.token, GLM)).status).toBe(403);
+});
+
+
+it("explicit before holds dispatch and claim just as the default does", async () => {
+  const L = await setup("criteria-explicit-before", { ...gated, criteriaReview: "before" });
+  const { id } = await L.newItem("First", ["src/**"], "owner", { accept: ["One"] });
+  await refusal(L.dispatch(id, "owner", BUILD), "criteria_unreviewed", /cannot be dispatched/);
+  await refusal(L.claim(id, OPUS, RUNNER), "criteria_unreviewed", /cannot be claimed/);
+  await reviewed(L, id, true);
+  await L.dispatch(id, "owner", BUILD);
+  expect((await L.claim(id, OPUS, RUNNER)).item.state).toBe("claimed");
+});
+
+it("parallel dispatches planned parts but asks no automatic gate review until criteria approval", async () => {
+  const L = await setup("criteria-parallel-plan", { ...gated, criteriaReview: "parallel" });
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, []);
+  await L.claim(item.id, OPUS, RUNNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, OPUS);
+  const part: PlanPart = { key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" };
+  const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, OPUS, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL, undefined, { a: { builder: OPUS, reviewer: GPT } });
+  const id = parts[0].id;
+  expect((await L.waiting()).map((i) => i.id)).toEqual([id]);
+  await L.claim(id, OPUS, RUNNER);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/a/x.ts"] } satisfies Evidence);
+  await L.submit(id, OPUS);
+  expect(await L.reviewWaiting()).toEqual([]);
+  await reviewed(L, id, true);
+  expect((await L.reviewWaiting()).map((i) => i.id)).toEqual([id]);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: H1, approve: true, note: "Good", at: new Date().toISOString() });
+  const integrator = "atelier/integrator";
+  await L.claim(item.id, integrator, RUNNER, true);
+  await L.integratePart(item.id, integrator, "a", H1, true);
+  await L.recordPush(item.id, integrator, H1, H1);
+  await L.submit(item.id, integrator);
+  await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a/x.ts"] } satisfies Evidence);
+  await L.accept(item.id, "owner");
+  await L.beginLanding(item.id, "owner", H1);
+  await L.merged(item.id, "owner", "c".repeat(40), true);
+  expect((await L.item(item.id)).state).toBe("merged");
+  expect((await L.item(id)).state).toBe("merged");
+});
+
+
+it("a builder's next brief carries criteria revised and approved during its claim", async () => {
+  const L = await setup("criteria-parallel-builder", { ...gated, criteriaReview: "parallel" });
+  const { id } = await L.newItem("First", ["src/**"], "owner", { accept: ["One"] });
+  await L.claim(id, OPUS, RUNNER);
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+  await L.editItem(id, "owner", { accept: ["Two"] });
+  await reviewed(L, id, true);
+  expect((await L.jobBrief(id, OPUS)).text).toMatch(/Revised acceptance criteria \(revision 2\)[\s\S]*1. Two/);
+});
+
+
+it("before keeps the existing brief after criteria are revised and approved during a build", async () => {
+  const L = await setup("criteria-before-brief", { ...gated, criteriaReview: "before" });
+  const { id } = await L.newItem("First", ["src/**"], "owner", { accept: ["One"], brief: "Build the search feature." });
+  await reviewed(L, id, true);
+  await L.claim(id, OPUS, RUNNER);
+  await L.editItem(id, "owner", { accept: ["Two"] });
+  await reviewed(L, id, true);
+  const brief = await L.jobBrief(id, OPUS);
+  expect(brief.text).toBe([
+    "## Review of the acceptance criteria",
+    "The acceptance criteria were reviewed before the build, apart from any review of the change. Each review is shown with its findings and the developer's recorded resolution of each; a finding with no resolution stands as the reviewer left it. Revision 2 is the criteria as they are now.",
+    "Criteria review 1, revision 1 (an earlier revision, since changed): zcode/glm-5.3 approved.\n```\nsummary: Clear.\n```",
+    "Criteria review 2, revision 2 (the criteria as they are now): zcode/glm-5.3 approved.\n```\nsummary: Clear.\n```",
+  ].join("\n\n"));
+  expect((await L.item(id)).accept).toEqual(["Two"]);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/search.ts"] } satisfies Evidence);
+  await L.submit(id, OPUS);
+  await L.requestReview(id, "owner", GPT, POOL);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.item.brief).not.toContain("Revised acceptance criteria");
+  expect(claim.item.brief).toBe("Build the search feature.");
+});
+
+
+it("parallel hides the revised criteria section until the current revision is approved", async () => {
+  const L = await setup("criteria-parallel-unapproved-brief", { ...gated, criteriaReview: "parallel" });
+  const { id } = await L.newItem("First", ["src/**"], "owner", { accept: ["One"] });
+  await L.claim(id, OPUS, RUNNER);
+  await reviewed(L, id, true);
+  await L.editItem(id, "owner", { accept: ["Two"] });
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+  await L.requestCriteriaReview(id, "owner", GLM, POOL);
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+  const c = await L.claimCriteriaReview(id, GLM, RUNNER) as unknown as CriteriaReviewClaim;
+  await L.addCriteriaReview({ itemId: id, by: GLM, rev: c.rev, criteria: c.criteria, request: c.request, approve: false, summary: "Needs work.", findings: [blocker()] }, true);
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+  await L.resolveCriteriaFinding(id, "owner", c.request, 1, "fixed", "The measurement is specified.");
+  await reviewed(L, id, true);
+  expect((await L.jobBrief(id, OPUS)).text).toMatch(/Revised acceptance criteria \(revision 2\)[\s\S]*1. Two/);
+  await L.editItem(id, "owner", { accept: ["Three"] });
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
 });

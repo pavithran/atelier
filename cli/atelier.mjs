@@ -1763,8 +1763,8 @@ function criteriaReviewLines(id, change) {
   if (change.criteriaApprovalLost) lines.push("The criteria review that approved the old criteria approves nothing now.");
   if (change.criteriaReviewRequired) {
     lines.push(change.added?.length
-      ? `This project requires a criteria review before a build: ask for one of the added criteria with atelier criteria-review ${id}.`
-      : `This project requires a criteria review before a build: ask for one with atelier criteria-review ${id}.`);
+      ? `This project requires a criteria review (before holds dispatch and claim; parallel holds gate review and landing): ask for one of the added criteria with atelier criteria-review ${id}.`
+      : `This project requires a criteria review (before holds dispatch and claim; parallel holds gate review and landing): ask for one with atelier criteria-review ${id}.`);
   }
   return lines;
 }
