@@ -51,6 +51,33 @@ it("approval dispatches home once, naming the standing decision, including after
   expect(await dispatches(L, id)).toHaveLength(1);
 });
 
+it("recording the instruction dispatches criteria already approved", async () => {
+  const { L } = await setup("record-after-approval", null);
+  const { id } = await made(L);
+  await approve(L, id);
+  await L.recordDecision({ standing: { key: "dispatch-on-criteria", value: "codex/gpt-6.1-sol" }, quote: "Dispatch approved tasks" }, "owner");
+  expect((await L.item(id)).dispatch).toMatchObject(BUILD);
+  expect(await dispatches(L, id)).toHaveLength(1);
+});
+
+it("reads leave a due task undispatched until the next stage tick", async () => {
+  const { L } = await setup("read-only");
+  const { id } = await made(L);
+  await L.block(id, "owner", "Open question");
+  await approve(L, id);
+  await L.unblock(id, "owner");
+  for (const read of [() => L.board(), () => L.inbox(new Date().toISOString()), () => L.detail(id), () => L.situationFacts(), () => L.waiting()]) {
+    await read();
+    expect((await L.item(id)).dispatch).toBeNull();
+    expect(await dispatches(L, id)).toHaveLength(0);
+  }
+  expect(await dispatches(L, id)).toHaveLength(0);
+  await L.stageTick(new Date());
+  expect((await L.item(id)).dispatch).toMatchObject(BUILD);
+  await L.stageTick(new Date());
+  expect(await dispatches(L, id)).toHaveLength(1);
+});
+
 it("withdrawal cancels a pending dispatch and unapproved revisions stay waiting", async () => {
   const { L, decision } = await setup("withdrawn");
   const a = await made(L);
@@ -105,6 +132,7 @@ it("open questions hold approval until the developer unblocks the task", async (
   await approve(L, id);
   expect((await L.item(id)).dispatch).toBeNull();
   await L.unblock(id, "owner");
+  await L.stageTick(new Date());
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
 });
 
@@ -118,6 +146,7 @@ it("a live core-file hold delays dispatch until the holder releases it", async (
   await approve(L, id);
   expect((await L.item(id)).dispatch).toBeNull();
   await L.release(holder.id, "codex/gpt-6.1-sol", "Done with core files");
+  await L.stageTick(new Date());
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
   await L.waiting();
   expect(await dispatches(L, id)).toHaveLength(1);
@@ -131,11 +160,12 @@ it("a crash while recording dispatch rolls back its completion record and retrie
   await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
     state.storage.sql.exec(`CREATE TRIGGER stop_dispatch BEFORE INSERT ON events WHEN NEW.kind = 'item.dispatched' BEGIN SELECT RAISE(ABORT, 'simulated crash'); END`);
   });
-  await expect(L.unblock(id, "owner")).rejects.toThrow(/simulated crash/);
+  await L.unblock(id, "owner");
+  await expect(L.stageTick(new Date())).rejects.toThrow(/simulated crash/);
   expect((await L.item(id)).dispatch).toBeNull();
   expect(await dispatches(L, id)).toHaveLength(0);
   await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => state.storage.sql.exec(`DROP TRIGGER stop_dispatch`).toArray());
-  await L.waiting();
+  await L.stageTick(new Date());
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
   expect(await dispatches(L, id)).toHaveLength(1);
 });
