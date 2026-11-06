@@ -1,0 +1,31 @@
+atelier atelier/t507 "Discovery marks Codex models refused when another Codex model ran last"
+accepted head 77de1d7e2250f3a1a2de505a7799a6fcd296d847
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+OBSERVED pass npm run typecheck — opencode/glm-5.3 2026-11-06T17:29:28.671Z
+REVIEW approve by claude-code/sonnet-5.5 at 77de1d7e2250f3a1a2de505a7799a6fcd296d847, recorded by claude-code/sonnet-5.5
+2026-11-06T15:59:13.864Z pavi item.created
+2026-11-06T15:59:13.864Z claude-code/opus-5.5 criteria.revised
+2026-11-06T15:59:18.515Z pavi item.dispatched
+2026-11-06T17:00:26.077Z opencode/glm-5.3 item.claimed
+2026-11-06T17:00:26.113Z opencode/glm-5.3 workspace.created
+2026-11-06T17:29:19.651Z opencode/glm-5.3 push.observed
+2026-11-06T17:29:28.697Z opencode/glm-5.3 evidence.observed
+2026-11-06T17:29:28.915Z opencode/glm-5.3 item.submitted
+2026-11-06T17:30:01.538Z pavi land.start
+2026-11-06T17:30:02.853Z pavi review.requested
+2026-11-06T17:30:02.853Z pavi review.tier_needed
+2026-11-06T17:30:03.198Z pavi land.review
+2026-11-06T17:30:03.294Z pavi land.requested
+2026-11-06T17:30:12.008Z atelier/orchestrator refresh.queued
+2026-11-06T17:30:24.102Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T17:30:34.924Z pavi review.requested
+2026-11-06T17:30:57.352Z claude-code/sonnet-5.5 review.approved
+2026-11-06T17:30:57.352Z atelier/orchestrator goal.notes
+2026-11-06T17:30:58.111Z codex/gpt-6-astra review.claimed
+2026-11-06T17:31:03.029Z atelier/orchestrator review.withdrawn
+2026-11-06T17:31:03.029Z pavi item.accepted
+2026-11-06T17:31:03.865Z pavi land.start
+2026-11-06T17:31:03.980Z pavi landing.leased
+2026-11-06T17:31:04.095Z pavi land.lease
+2026-11-06T17:31:05.104Z pavi checkout.leased
