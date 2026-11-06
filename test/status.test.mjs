@@ -344,7 +344,9 @@ test("the same facts are in --json, and no local section at all when no task has
 
 // t293: a command the deploy gate runs that no required check runs is named
 // with the init that adds it, from the policy the server holds and the
-// checkout's package.json.
+// checkout's package.json. The init it suggests runs in the project's own
+// checkout, which the line names, for init reads the project from the
+// checkout it runs in and from no flag.
 test("status --project names a deploy-gate command no required check runs", async (t) => {
   const scripts = {
     deploy: "npm run verify:visual && wrangler deploy",
@@ -352,17 +354,18 @@ test("status --project names a deploy-gate command no required check runs", asyn
     test: "node --test",
   };
   const policyOf = (checks) => ({ checks, protected: [], postMerge: { version: 1, steps: [{ name: "deploy", command: "npm run deploy", class: "deploy", when: "always", protect: ["package.json"], timeoutMs: 1200000 }], approval: { by: "owner", at: "2026-10-25T10:00:00.000Z", reason: "recorded" } } });
+  let checkout;
   const r = await runLocal(t, ({ dir }) => {
-    const checkout = workspace(join(dir, "checkout"), [["a.txt", "one\n"]]);
+    checkout = workspace(join(dir, "checkout"), [["a.txt", "one\n"]]);
     writeFileSync(join(checkout, "package.json"), JSON.stringify({ scripts }));
     return { checkout, policy: policyOf(["npm test"]) };
   });
   assert.equal(r.code, 0, r.output);
-  assert.ok(r.output.includes("\nDeploy gate: npm run verify:visual runs after a merge or at ship and no required check runs it, so a task can land without it passing; add it with atelier init --check \"npm test\" --check \"npm run verify:visual\" --project demo.\n"), r.output);
+  assert.ok(r.output.includes(`\nDeploy gate: npm run verify:visual runs after a merge or at ship and no required check runs it, so a task can land without it passing; add it with cd ${JSON.stringify(checkout)} && atelier init --check "npm test" --check "npm run verify:visual".\n`), r.output);
   const covered = await runLocal(t, ({ dir }) => {
-    const checkout = workspace(join(dir, "checkout"), [["a.txt", "one\n"]]);
-    writeFileSync(join(checkout, "package.json"), JSON.stringify({ scripts }));
-    return { checkout, policy: policyOf(["npm test", "npm run verify:visual"]) };
+    const at = workspace(join(dir, "checkout"), [["a.txt", "one\n"]]);
+    writeFileSync(join(at, "package.json"), JSON.stringify({ scripts }));
+    return { checkout: at, policy: policyOf(["npm test", "npm run verify:visual"]) };
   });
   assert.equal(covered.code, 0, covered.output);
   assert.ok(!covered.output.includes("Deploy gate"), covered.output);

@@ -111,12 +111,19 @@ export function uncheckedDeployCommands(policy, scripts) {
 
 // The warning itself, one line per command: what runs unguarded, and the init
 // that adds it among the required checks (which --check replaces whole, so
-// every check is named). `atelier status` passes the project's name, for it
-// runs from anywhere; `atelier init`, run in the checkout, passes none.
-export function deployGateLines(policy, scripts, project = null) {
+// every check is named). init takes the project from the checkout it runs in
+// and reads no flag for it, so a caller that runs from anywhere — `atelier
+// status` — must say where to run it: the checkout's path as the local config
+// holds it, which the suggested command cds into first, or null when this Mac
+// holds no checkout of the project, which the line says. `atelier init`, run
+// in the checkout already, passes neither and names no place.
+export function deployGateLines(policy, scripts, checkout) {
   const checks = Array.isArray(policy?.checks) ? policy.checks : [];
   return uncheckedDeployCommands(policy, scripts).map((command) => {
-    const all = [...checks, command].map((c) => JSON.stringify(c)).join(" --check ");
-    return `Deploy gate: ${command} runs after a merge or at ship and no required check runs it, so a task can land without it passing; add it with atelier init --check ${all}${project ? ` --project ${project}` : ""}.`;
+    const init = `atelier init --check ${[...checks, command].map((c) => JSON.stringify(c)).join(" --check ")}`;
+    const where = checkout === undefined ? init
+      : checkout === null ? `${init} in the project's checkout, which is not registered on this Mac`
+        : `cd ${JSON.stringify(checkout)} && ${init}`;
+    return `Deploy gate: ${command} runs after a merge or at ship and no required check runs it, so a task can land without it passing; add it with ${where}.`;
   });
 }

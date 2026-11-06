@@ -414,8 +414,10 @@ export function formatStatus(views, waiting = {}) {
     lines.push(...tickLines(v.stuck, "  "));
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     // t293: a command the deploy gate runs that no required check runs, with
-    // the init that adds it.
-    lines.push(...deployGateLines(v.policy, v.scripts, v.name).map((l) => `  ${l}`));
+    // the init that adds it, run in the checkout the local config names. A
+    // view that carries no checkout reads as a project this Mac holds none
+    // for, never as a bare init that would record whatever folder it ran in.
+    lines.push(...deployGateLines(v.policy, v.scripts, v.checkout ?? null).map((l) => `  ${l}`));
     lines.push(...criteriaLines(v));
     lines.push(...stuckLines(v.stuck, "  ", false));
     if (!owner.length) {
