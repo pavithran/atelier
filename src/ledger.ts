@@ -2287,6 +2287,7 @@ export class Ledger extends DurableObject<Env> {
   // The standing queue-landable instruction may queue a landing; without
   // readable runner offers it queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
+    this.dispatchApprovedCriteria();
     let offers: SeenOffer[] | null = null;
     try {
       offers = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
@@ -4004,7 +4005,6 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private dispatchWaiting(pushHistory = false): Waiting[] {
-    this.dispatchApprovedCriteria();
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
@@ -6958,7 +6958,9 @@ export class Ledger extends DurableObject<Env> {
     if (body.standing !== undefined && !["models", "dispatch-on-criteria"].includes(String((body.standing as { key?: unknown } | null)?.key).trim()) && actor === this.owner && this.mode().mode !== "fast") {
       throw new RuleError("not_fast", `${p.name} is not in fast mode, and a standing instruction is recorded only for a project in fast mode; nothing was recorded`, 409, `only the developer can: atelier mode fast --reason TEXT --project ${p.name}, then run the same command again`);
     }
-    return recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);
+    const decision = recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);
+    if (decision.standing?.key === "dispatch-on-criteria") this.dispatchApprovedCriteria();
+    return decision;
   }
 
   // The standing instructions that act now, by key: those recorded and not
@@ -6993,7 +6995,7 @@ export class Ledger extends DurableObject<Env> {
         try {
           id = e.kind === "task"
             ? this.newItem(String(e.title), [], actor, e.brief ? { brief: e.brief } : {}).id
-            : this.recordDecision({ text: e.text, quote: e.text }, actor, acting).id;
+            : recordDecision(this.decisionStore, actor, { text: e.text, quote: e.text }, new Date().toISOString(), acting).id;
         } catch (error) {
           const rule = error instanceof RuleError ? error : null;
           throw new RuleError("import_refused", `${source} line ${e.line}: ${rule ? `${rule.code}: ${rule.detail}` : String((error as Error)?.message ?? error)}; nothing was imported`, 409, `fix line ${e.line} of ${source}, then run atelier import-tasks ${source} --project ${project.name} again`);
