@@ -56,6 +56,12 @@ export default async function initCommand() {
   }
   const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
   const policy = {};
+  if (args["criteria-review"] !== undefined || reset) {
+    const timing = args["criteria-review"] ?? "before";
+    if (timing !== "parallel" && timing !== "before") die("--criteria-review needs parallel or before. Nothing was sent.");
+    policy.criteriaReview = timing;
+    if (args["criteria-review"] !== undefined) policy.requireCriteriaReview = true;
+  }
   const postMerge = postMergeArgs(args);
   if (postMerge !== undefined && args.multi?.["post-merge"]) {
     // The server's support is land.post-merge.v1, which init declares and
@@ -117,7 +123,7 @@ export default async function initCommand() {
   // --refuse-overlap=false or --refuse-overlap false, off.
   if (args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = args["refuse-overlap"] === true;
   if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
-  if (args["require-criteria-review"] !== undefined || reset) policy.requireCriteriaReview = args["require-criteria-review"] === true;
+  if (args["require-criteria-review"] !== undefined || reset) policy.requireCriteriaReview = args["require-criteria-review"] === true || args["criteria-review"] !== undefined;
   // --no-override is a switch too (t371): given, overrides of the
   // independent review are refused in the project; --no-override=false
   // allows them again, with the owner's confirmation.

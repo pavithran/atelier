@@ -50,7 +50,8 @@ export function criteriaReviewLine(view: Detail["criteriaReview"] | undefined): 
     : "";
   if (view.skipped) return `required by the project; ${view.skippedReason ?? "skipped because the project is in fast mode"}${flagged}`;
   const deadlock = view.deadlock ? `; ${view.deadlock}` : "";
-  return `${view.required ? "required before a build is dispatched or claimed; " : "not required by the project; "}${standing}${deadlock}${flagged}`;
+  const required = view.timing === "parallel" ? "required before gate review and landing; " : "required before a build is dispatched or claimed; ";
+  return `${view.required ? required : "not required by the project; "}${standing}${deadlock}${flagged}`;
 }
 
 export const SUMMARY_MAX = 600;

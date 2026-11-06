@@ -237,9 +237,10 @@ export interface CriteriaReviewClaim {
 
 // Where an item's criteria review stands, as the detail route and the
 // criteria-reviews route give it (t438): the status, every review and every
-// resolution, and whether the project requires the approval before a build.
+// resolution, and when the project requires approval.
 export interface CriteriaReviewView {
   required: boolean;
+  timing?: "parallel" | "before";
   // Set, with the reason, while fast mode skips the hold (t179); the
   // `required` setting itself is unchanged.
   skipped?: boolean;
@@ -381,6 +382,7 @@ export interface ProjectInit {
   eligible?: string[];
   refuseOverlap?: boolean;
   requireCriteria?: boolean;
+  criteriaReview?: "parallel" | "before";
   requireCriteriaReview?: boolean;  // builds need an approved criteria review (see ProjectPolicy.requireCriteriaReview)
   riskReviews?: ProjectPolicy["riskReviews"] | null;  // replaces the reviews each risk class needs; null clears them (see ProjectPolicy.riskReviews)
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
@@ -739,6 +741,9 @@ export interface PushAuthor { commit: string; actor: string }
 // `reset` starts the policy over; the project's identity (its title, when the
 // init does not name one, its branch, and when it was created) is kept either way.
 export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: string): ProjectRecord {
+  if (i.criteriaReview !== undefined && i.criteriaReview !== "parallel" && i.criteriaReview !== "before") {
+    throw new RuleError("bad_policy", "criteriaReview must be parallel or before", 400);
+  }
   const p = i.reset ? undefined : current?.policy;
   const title = i.title === undefined ? current?.title : i.title ?? undefined;
   const approval = i.approval === undefined ? p?.approval : i.approval ?? undefined;
@@ -818,7 +823,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
       ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
-      ...((i.requireCriteriaReview ?? p?.requireCriteriaReview) ? { requireCriteriaReview: true } : {}),
+      ...((i.requireCriteriaReview ?? (i.criteriaReview !== undefined ? true : p?.requireCriteriaReview)) ? { requireCriteriaReview: true } : {}),
+      ...((i.criteriaReview ?? p?.criteriaReview) ? { criteriaReview: i.criteriaReview ?? p?.criteriaReview } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       ...(riskReviews ? { riskReviews } : {}),
       // Carried only when set, so a project that allows overrides records nothing new.
@@ -3076,7 +3082,7 @@ export class Ledger extends DurableObject<Env> {
   // instruction (G6), as reaskReview does; without it the withdrawal is the
   // fact, and the model asks again.
   private reaskForCriteria(id: string, withdrawn: Row[], at: string): string[] {
-    if (this.standing().get("reask-on-resubmit") !== "on") return [];
+    if (this.standing().get("reask-on-resubmit") !== "on" || this.parallelCriteriaPending(id)) return [];
     const item = this.item(id);
     if (item.kind === "part" || item.state !== "submitted" || !item.head) return [];
     const asked: string[] = [];
@@ -3843,7 +3849,19 @@ export class Ledger extends DurableObject<Env> {
   // touching the setting, so leaving it restores the hold for every task not
   // yet claimed.
   private criteriaGate(): boolean {
-    return !!this.project().policy.requireCriteriaReview && this.mode().mode !== "fast";
+    const policy = this.project().policy;
+    return !!policy.requireCriteriaReview && policy.criteriaReview !== "parallel" && this.mode().mode !== "fast";
+  }
+
+  private parallelCriteriaPending(id: string): boolean {
+    const policy = this.project().policy;
+    return !!policy.requireCriteriaReview && policy.criteriaReview === "parallel" && this.mode().mode !== "fast" && !this.criteriaReviewStatus(id).approved;
+  }
+
+  private assertParallelCriteriaReviewed(id: string): void {
+    if (!this.parallelCriteriaPending(id)) return;
+    const status = this.criteriaReviewStatus(id);
+    throw new RuleError("criteria_unreviewed", `${id} waits for criteria review of revision ${status.rev}: ${status.reason}; ask with atelier criteria-review ${id} --reviewer H/M`, 409, `run atelier criteria-review ${id} --reviewer H/M`);
   }
 
   private assertCriteriaReviewed(item: Item, dispatch: Dispatch | null, what: "dispatched" | "claimed"): void {
@@ -5244,6 +5262,7 @@ export class Ledger extends DurableObject<Env> {
     if (quote !== undefined && overrideReason === undefined) throw new RuleError("bad_quote", "the developer's words (--quote) go with an override of the independent review: --override-review REASON --quote \"what the developer said\"", 400);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
+    this.assertParallelCriteriaReviewed(id);
     if (expected !== undefined) assertRevision(item, expected);
     // The lander merges no task before the tasks it waits on (G3).
     this.assertBlockersMerged(item, "accepted");
@@ -5397,6 +5416,7 @@ export class Ledger extends DurableObject<Env> {
     this.assertNoRefreshPush(id);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403, `only the developer can: atelier merge ${id}`);
     const item = this.item(id);
+    this.assertParallelCriteriaReviewed(id);
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409, `run atelier show ${id}, review it again, then atelier merge ${id}`);
     }
@@ -5623,6 +5643,7 @@ export class Ledger extends DurableObject<Env> {
   async queueProjectLanding(id: string, actor: string, leave = false, instance?: string): Promise<{ lease: LandingLease | null; waiting: WaitingLanding[] }> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     const item = this.item(id);
+    this.assertParallelCriteriaReviewed(id);
     this.fenceLandingInstance(id, instance);
     if (!leave) this.assertNotFenced(id);
     const at = new Date().toISOString();
@@ -5654,6 +5675,7 @@ export class Ledger extends DurableObject<Env> {
     this.assertNoRefreshPush(id);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403, `only the developer can: atelier land ${id}`);
     const item = this.item(id);
+    this.assertParallelCriteriaReviewed(id);
     this.fenceLandingInstance(id, instance);
     this.assertNotFenced(id);
     const at = new Date().toISOString();
@@ -8598,6 +8620,7 @@ export class Ledger extends DurableObject<Env> {
       // the row alone, and every claim, handoff and push makes a contributor
       // the reviewer must be independent of.
       const p = this.item(listed.id);
+      if (this.parallelCriteriaPending(p.id)) continue;
       // A request at a head the part has moved past is withdrawn, so the queue
       // offers only the current head's review.
       if (p.head) {
@@ -9071,8 +9094,9 @@ export class Ledger extends DurableObject<Env> {
     const need = this.claimNeed(item, !!row.wanted, tier, at);
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
+    const revised = this.revisedCriteriaSection(itemId);
     return {
-      item, head,
+      item: revised ? { ...item, brief: [item.brief, revised].filter(Boolean).join("\n\n") } : item, head,
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
       events: item.state === "merged" ? this.events(itemId, Number.MAX_SAFE_INTEGER).toReversed() : this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null, singleFamily: singleFamily(policy), tier,
@@ -9225,6 +9249,7 @@ export class Ledger extends DurableObject<Env> {
 
   private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = []): ReviewAsked {
     const item = this.reviewItem(id);
+    if (!wanted && item.state !== "merged") this.assertParallelCriteriaReviewed(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
     // A named reviewer is judged even when a request already stands, so a
@@ -9642,6 +9667,7 @@ export class Ledger extends DurableObject<Env> {
   // instruction (src/standing.ts, G6); without it the withdrawn request is a
   // fact (review.withdrawn, reason "the head moved") and the model asks again.
   private reaskReview(itemId: string, at: string): void {
+    if (this.parallelCriteriaPending(itemId)) return;
     if (this.standing().get("reask-on-resubmit") !== "on") return;
     const item = this.item(itemId);
     if (item.kind === "part" || item.state !== "submitted" || !item.head) return;
@@ -9902,7 +9928,7 @@ export class Ledger extends DurableObject<Env> {
     const required = !!this.project().policy.requireCriteriaReview;
     const skipped = required && this.mode().mode === "fast";
     const deadlock = required && !skipped ? this.criteriaDeadlock(id, status) : null;
-    return { required, ...(skipped ? { skipped: true, skippedReason: CRITERIA_SKIPPED_FAST } : {}), ...(deadlock ? { deadlock } : {}), status, authors: authorsOf(revisions), revisions, reviews, resolutions: this.criteriaResolutionsFor(id), checks: postDeployChecks(reviews, status.rev) };
+    return { required, ...(this.project().policy.criteriaReview ? { timing: this.project().policy.criteriaReview } : {}), ...(skipped ? { skipped: true, skippedReason: CRITERIA_SKIPPED_FAST } : {}), ...(deadlock ? { deadlock } : {}), status, authors: authorsOf(revisions), revisions, reviews, resolutions: this.criteriaResolutionsFor(id), checks: postDeployChecks(reviews, status.rev) };
   }
 
   // The deadlock that holds a build for good (t179): a review is wanted and
@@ -9927,12 +9953,19 @@ export class Ledger extends DurableObject<Env> {
     return out;
   }
 
-  // The criteria section of a build brief: the reviews' findings, and while
-  // fast mode skips the hold, the line saying so (t179).
+  // Sequence order also catches revisions made in the claim's millisecond.
+  private revisedCriteriaSection(id: string): string {
+    const changed = this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.criteria_changed' AND seq > (SELECT MIN(seq) FROM events WHERE item_id = ? AND kind = 'item.claimed') LIMIT 1`, id, id).toArray().length;
+    if (!changed) return "";
+    const item = this.item(id);
+    return `## Revised acceptance criteria (revision ${this.criteriaRevision(id)})\n\n${(item.accept ?? []).map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
+  }
+
   private criteriaBriefSection(id: string): string {
     const found = criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id));
     const skipped = this.project().policy.requireCriteriaReview && this.mode().mode === "fast" ? `## Review of the acceptance criteria\n\nThe project requires a criteria review, but ${CRITERIA_SKIPPED_FAST}.` : "";
-    return [skipped, skipped ? found.replace(/^## Review of the acceptance criteria\n\n/, "") : found].filter(Boolean).join("\n\n");
+    const revised = this.revisedCriteriaSection(id);
+    return [revised, skipped, skipped ? found.replace(/^## Review of the acceptance criteria\n\n/, "") : found].filter(Boolean).join("\n\n");
   }
 
   private lapseCriteriaReviews(id: string, now: Date): void {
@@ -10976,6 +11009,7 @@ export class Ledger extends DurableObject<Env> {
   // landing to run; one already queued keeps its place.
   requestLand(id: string, by: string, quote?: string): { item: string; by: string; at: string; quote?: string; queued: boolean; requeued?: { failedStep: string; attempt: number } } {
     const item = this.item(id);
+    this.assertParallelCriteriaReviewed(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409, "run atelier ls to pick another task");
     const at = new Date().toISOString();
     if (item.state === "blocked") throw new RuleError("blocked", `${id} is blocked, so it is not queued to land: ${item.blocked?.reason ?? "no reason recorded"}`, 409, `run atelier unblock ${id}, then atelier land ${id} --queue`);

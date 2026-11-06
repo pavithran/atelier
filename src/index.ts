@@ -2129,6 +2129,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // they are (the Ledger keeps them, and no decision reads them).
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
+      ...(has("criteriaReview") ? { criteriaReview: (() => {
+        if (body.criteriaReview !== "parallel" && body.criteriaReview !== "before") throw new RuleError("bad_policy", "criteriaReview must be parallel or before", 400);
+        return body.criteriaReview;
+      })() } : {}),
       ...(has("requireCriteriaReview") ? { requireCriteriaReview: Boolean(body.requireCriteriaReview) } : {}),
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
