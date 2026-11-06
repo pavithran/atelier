@@ -2308,6 +2308,11 @@ export class Ledger extends DurableObject<Env> {
             const criteria = this.sql.exec(`SELECT COUNT(*) AS n, MAX(decidedAt) AS at FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, item.id).one();
             const agreed = (criteria.n as number) > 0 && (item.accept?.length ?? 0) > 0;
             const { stage, detail } = stageOf(item, { events, ready, agreed, policy, evidence, reviews, owner: this.owner, fast: this.mode().mode === "fast" });
+            // Fast mode can already call this task landable; the instruction
+            // still asks at the ordinary checked gate, before any landing.
+            if (stageOf(item, { policy, evidence, reviews, owner: this.owner }).stage === "checked") {
+              this.askCheckedReview(item, offers ?? undefined);
+            }
             const clock = {
               agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
               reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
@@ -2368,6 +2373,20 @@ export class Ledger extends DurableObject<Env> {
       }
       return { complete, recorded: moves.length + acted, tasks };
     });
+  }
+
+  // The developer names the routing; the server chooses no reviewer.
+  private askCheckedReview(item: Item, offers: readonly SeenOffer[] | undefined): void {
+    const value = this.standing().get("review-on-checked");
+    if (!value || value === "off" || !item.owner || !item.head) return;
+    const reviewer = value.split(",").map((p) => p.split("=")).find(([company]) => company === actorFamily(item.owner!))?.[1];
+    if (!reviewer || contributorsOf(item).some((actor) => actorFamily(actor) === actorFamily(reviewer))) return;
+    if (this.reviewRequests(item.id).some((r) => r.head === item.head && (r.state === "open" || r.state === "claimed"))) return;
+    const decision = this.standingDecisions().find((d) => d.standing?.key === "review-on-checked");
+    if (!decision) return;
+    try {
+      this.ctx.storage.transactionSync(() => this.askReview(item.id, this.owner, reviewer, this.poolStanding(), false, false, undefined, offers, false, [], decision.id));
+    } catch { /* a refused request writes nothing; the next tick can retry */ }
   }
 
   // The gate's open review request at a head (the tier's, when `tier`), with how long ago it became open
@@ -9223,7 +9242,7 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = []): ReviewAsked {
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = [], standingDecision?: string): ReviewAsked {
     const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
@@ -9405,7 +9424,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: item.state === "merged" ? "post-merge" : "land", ...(standingDecision ? { standingDecision } : {}), ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved, pool, offers);
     return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number, ...(withdrew.length ? { withdrew } : {}) };
   }

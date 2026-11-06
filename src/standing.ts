@@ -15,6 +15,7 @@
 // episode is noticed after LIMITS.noticeAfterMs.
 
 import { TEXT_CONTROLS } from "./text.ts";
+import { POOL_FAMILIES } from "./models/pool.ts";
 import { RuleError, validActor } from "./rules.ts";
 
 export interface StandingKey {
@@ -40,6 +41,22 @@ export const STANDING: Record<string, StandingKey> = {
     value: "on or off",
     says: (v) => v === "on" ? "a review request withdrawn because the task's head moved is asked again of the same reviewer at the new head, once the gate needs it" : "a review request the head moved past stays withdrawn until it is asked again",
     parse: onOff,
+  },
+  "review-on-checked": {
+    value: "company=harness/model pairs separated by commas, or off",
+    says: (v) => v === "off" ? "no review is asked when checks pass" : `the stage tick asks the reviewer mapped to the builder's company when checks pass: ${v}`,
+    parse: (v) => {
+      if (v === "off") return v;
+      const seen = new Set<string>();
+      for (const pair of v.split(",")) {
+        const parts = pair.split("=");
+        if (parts.length !== 2) return null;
+        const [company, reviewer] = parts;
+        if (!POOL_FAMILIES.includes(company as typeof POOL_FAMILIES[number]) || seen.has(company) || !reviewer.includes("/") || !validActor(reviewer)) return null;
+        seen.add(company);
+      }
+      return v;
+    },
   },
   "post-merge-reviewer": {
     value: "a reviewer as harness/model, or off",
