@@ -1,0 +1,31 @@
+atelier atelier/t510 "Reading the board never dispatches: move dispatch-on-criteria off the read path"
+accepted head e40810322f6c20a47287b8a0e8e7eda5e176970c
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-06T19:30:23.098Z
+REVIEW approve by claude-code/sonnet-5.5 at e40810322f6c20a47287b8a0e8e7eda5e176970c, recorded by claude-code/sonnet-5.5
+CHECKED TREE 9aa47a46d7dd4fa11fc91474def4ada6d04cc6d6: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-06T18:31:50.898Z pavi item.created
+2026-11-06T18:31:50.898Z claude-code/opus-5.5 criteria.revised
+2026-11-06T18:31:57.017Z pavi item.dispatched
+2026-11-06T19:28:04.594Z codex/gpt-6.1-sol item.claimed
+2026-11-06T19:28:04.638Z codex/gpt-6.1-sol workspace.created
+2026-11-06T19:30:19.579Z codex/gpt-6.1-sol push.observed
+2026-11-06T19:30:23.129Z codex/gpt-6.1-sol evidence.observed
+2026-11-06T19:30:23.340Z codex/gpt-6.1-sol item.submitted
+2026-11-06T19:30:43.562Z pavi land.start
+2026-11-06T19:30:44.847Z pavi review.requested
+2026-11-06T19:30:44.847Z pavi review.tier_needed
+2026-11-06T19:30:45.117Z pavi land.review
+2026-11-06T19:30:45.195Z pavi land.requested
+2026-11-06T19:30:53.044Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T19:31:16.430Z pavi review.requested
+2026-11-06T19:31:31.133Z codex/gpt-6-astra review.claimed
+2026-11-06T19:31:53.196Z claude-code/sonnet-5.5 review.approved
+2026-11-06T19:31:53.196Z atelier/orchestrator goal.notes
+2026-11-06T19:31:54.517Z atelier/orchestrator review.withdrawn
+2026-11-06T19:31:54.517Z pavi item.accepted
+2026-11-06T19:31:55.220Z pavi land.start
+2026-11-06T19:31:55.291Z pavi landing.leased
+2026-11-06T19:31:55.402Z pavi land.lease
+2026-11-06T19:31:56.267Z pavi checkout.leased
