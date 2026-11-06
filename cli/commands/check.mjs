@@ -3,6 +3,8 @@ import { releaseSequence } from "../load.mjs";
 import { prepareChecks } from "../../src/check-preparation.ts";
 import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
+import { MANIFEST_PATH } from "../../src/merge-declarations.ts";
+import { declarationProblemsIn } from "../check-declarations.mjs";
 import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
 import { stopLine } from "../../src/check-limit.ts";
 import { appliesText, preparationBinding, refusalOf, refusalText, reusableResult } from "../../src/checks.ts";
@@ -12,6 +14,9 @@ import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone
 
 export const SANDBOX_GONE = "atelier: this project's policy names the container check mode (sandboxOnly), which Atelier no longer has; running the checks here, in a clean clone on this machine. The next atelier init writes the policy without it.\n";
 const FLAKE_NOTE = "failed once, then passed on a rerun at the same head";
+// What the declaration check is named by in a FAIL line and a report (t509):
+// the merge declarations a landing refuses the whole merge for.
+const DECLARATIONS = "merge declarations";
 
 // Observed evidence: run each required check (or the given command) in a
 // clean clone of exactly the head the server holds, and record the result.
@@ -81,6 +86,22 @@ export default async function checkCommand() {
     // regenerated or united, and where its generator logs are kept, goes at
     // the head of each check's output, which outlives the clone.
     if (args.merged) ({ main: mainHead, provenance } = await mergeWithMain(dir, id, name));
+    // The declarations a landing refuses the whole merge for (t509): the
+    // same check the merge pipeline makes, read here on the tree the checks
+    // run on — the head, or with --merged its merge with main — so a builder
+    // meets a broken declaration at check, before any review is asked, not
+    // at land after a full review round. It fails as a required check does:
+    // no command runs, nothing is recorded, and the problems name the file
+    // and the registry.
+    const declared = declarationProblemsIn(dir);
+    if (declared.length) {
+      doneChecks.push({ claim: DECLARATIONS, result: "failed", where: CLEAN_CLONE });
+      console.log(`FAIL  ${DECLARATIONS}  @ ${short(ws.head)}${mainHead ? ` merged with main ${short(mainHead)}` : ""}`);
+      console.log(`Declaration problems in ${MANIFEST_PATH}:\n${declared.map((p) => `  ${p}`).join("\n")}`);
+      console.log("In the workspace, fix the declaration, commit the correction, then run done again.");
+      if (!cliState.doneStep) process.exit(2);
+      return;
+    }
     // Preparation is skipped when every command is answered by a reused result.
     const toRun = cmds.filter((cmd) => !reusable(cmd) && !(!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false));
     const fixtureCommand = cliState.doneStep && policy.regenerate;
