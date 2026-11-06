@@ -923,3 +923,23 @@ it("before keeps the existing brief after criteria are revised and approved duri
   expect(claim.item.brief).not.toContain("Revised acceptance criteria");
   expect(claim.item.brief).toBe("Build the search feature.");
 });
+
+
+it("parallel hides the revised criteria section until the current revision is approved", async () => {
+  const L = await setup("criteria-parallel-unapproved-brief", { ...gated, criteriaReview: "parallel" });
+  const { id } = await L.newItem("First", ["src/**"], "owner", { accept: ["One"] });
+  await L.claim(id, OPUS, RUNNER);
+  await reviewed(L, id, true);
+  await L.editItem(id, "owner", { accept: ["Two"] });
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+  await L.requestCriteriaReview(id, "owner", GLM, POOL);
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+  const c = await L.claimCriteriaReview(id, GLM, RUNNER) as unknown as CriteriaReviewClaim;
+  await L.addCriteriaReview({ itemId: id, by: GLM, rev: c.rev, criteria: c.criteria, request: c.request, approve: false, summary: "Needs work.", findings: [blocker()] }, true);
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+  await L.resolveCriteriaFinding(id, "owner", c.request, 1, "fixed", "The measurement is specified.");
+  await reviewed(L, id, true);
+  expect((await L.jobBrief(id, OPUS)).text).toMatch(/Revised acceptance criteria \(revision 2\)[\s\S]*1. Two/);
+  await L.editItem(id, "owner", { accept: ["Three"] });
+  expect((await L.jobBrief(id, OPUS)).text).not.toContain("Revised acceptance criteria");
+});

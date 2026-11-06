@@ -19,3 +19,10 @@ test("the requirement help explains both timing policies", () => {
   assert.match(text, /before.*dispatch and claim/);
   assert.match(text, /parallel.*gate review and landing/);
 });
+
+
+test("the introductory requirement help explains both timing policies", () => {
+  const text = init.forms[0].about.split("`--require-criteria-review`")[1].split("`--no-override`")[0];
+  assert.match(text, /before.*dispatch and claim/);
+  assert.match(text, /parallel.*gate review and landing/);
+});

@@ -10022,7 +10022,7 @@ export class Ledger extends DurableObject<Env> {
 
   // Sequence order also catches revisions made in the claim's millisecond.
   private revisedCriteriaSection(id: string): string {
-    if (this.project().policy.criteriaReview !== "parallel") return "";
+    if (this.project().policy.criteriaReview !== "parallel" || !this.criteriaReviewStatus(id).approved) return "";
     const changed = this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.criteria_changed' AND seq > (SELECT MIN(seq) FROM events WHERE item_id = ? AND kind = 'item.claimed') LIMIT 1`, id, id).toArray().length;
     if (!changed) return "";
     const item = this.item(id);
