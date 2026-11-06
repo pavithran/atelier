@@ -413,7 +413,10 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
     ["paused", { ...luna, state: "paused", stateAt: AT }],
     ["reserved", { ...luna, state: "reserved", stateAt: AT }],
     ["role-restricted", { ...luna, roles: [role === "review" ? "build" : "review"] }],
-    ["refused", { ...luna, status: { state: "refused", at: AT, by: "cloud:x" } }],
+    // A refusal fresh enough to count: the dispatch suggestion stops refusing
+    // on one older than RECENT_MS (src/models/suggest.ts), so this fixture
+    // names now, not AT.
+    ["refused", { ...luna, status: { state: "refused", at: new Date().toISOString(), by: "cloud:x" } }],
     ["paid", { ...luna, provider: "openai" }],
   ];
   const lunaAssigned = (role: AssignmentRole) => ({ ...assigned(role, [LUNA]), choices: [{ actor: LUNA, model: "gpt-6-luna" }] });

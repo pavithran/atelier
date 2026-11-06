@@ -28,6 +28,7 @@ import command_diff from "./diff.ts";
 import command_dispatch from "./dispatch.ts";
 import command_done from "./done.ts";
 import command_edit from "./edit.ts";
+import command_escapes from "./escapes.ts";
 import command_events from "./events.ts";
 import command_fast from "./fast.ts";
 import command_file_fix from "./file-fix.ts";
@@ -133,6 +134,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/dispatch.ts", spec: command_dispatch },
   { path: "src/usage/commands/done.ts", spec: command_done },
   { path: "src/usage/commands/edit.ts", spec: command_edit },
+  { path: "src/usage/commands/escapes.ts", spec: command_escapes },
   { path: "src/usage/commands/events.ts", spec: command_events },
   { path: "src/usage/commands/fast.ts", spec: command_fast },
   { path: "src/usage/commands/file-fix.ts", spec: command_file_fix },

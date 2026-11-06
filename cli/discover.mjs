@@ -38,7 +38,7 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { redactKeys } from "../src/models/pool.ts";
+import { redactKeys, RECENT_MS } from "../src/models/pool.ts";
 import { readSecret } from "./credentials.mjs";
 import { execute } from "./runner.mjs";
 import { readConfig } from "./runner-config.mjs";
@@ -46,17 +46,25 @@ import { readConfig } from "./runner-config.mjs";
 export const PROBE_PROMPT = "Reply with OK";
 export const PROBE_TIMEOUT_MS = 120_000;
 export const SLOW_MS = 30_000;          // an answer slower than this is reported as slow
-export const RECENT_MS = 7 * 86_400_000; // a model last served longer ago than this is not shown as available
 export const LOOKBACK_MS = 30 * 86_400_000;
+// A model last served longer ago than RECENT_MS is not shown as available. The
+// constant is defined beside ModelStatus (src/models/pool.ts), shared with the
+// dispatch candidates' rule for a refusal gone old.
+export { RECENT_MS };
 const MAX_LINE = 256 * 1024;
 const TAIL_STEPS = [4, 16, 64].map((n) => n * 1024 * 1024);
 const GOOGLE_KEY_ENV = "GEMINI_API_KEY";
 const USAGE = "usage: atelier runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]";
 
 // Harnesses whose record names the model the harness itself chose, so a
-// different name there can be a silent substitution. OpenCode's record names
-// the model each call asked for, and many models share one record.
-const SELF_CHOOSING = new Set(["zcode", "codex"]);
+// different name there can be a silent substitution: only zcode, which
+// follows its app's provider settings and serves what they name. Codex is not
+// one: it runs the model each call names (-m), so another model in its record
+// is that call's model, never a substitution — reading it as one refused
+// every other Codex pool model whenever one answered last (2026-11-06).
+// OpenCode's record names the model each call asked for, and many models
+// share one record.
+const SELF_CHOOSING = new Set(["zcode"]);
 const LOCAL_SOURCES = new Set(["codex", "zcode", "opencode"]);
 
 // ── plain text ─────────────────────────────────────────────────────────────

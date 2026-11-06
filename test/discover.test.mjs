@@ -402,7 +402,7 @@ test("the same model under another spelling is not a mismatch, and a stale recor
   assert.match(renderTable([absent]), /^glm-5\.3 +zcode +subscription +not known +no recent record +none$/m);
 });
 
-test("a registered sibling that answers in place of the model is a mismatch: zcode and Codex name the model the harness chose", () => {
+test("a registered sibling that answers in place of the model is a mismatch: zcode names the model the harness chose", () => {
   // zcode is registered as glm-5.3 and has been serving deepseek-flash, which the pool registers for zcode too.
   const zcode = [POOL[1], entry("deepseek-flash", "zcode", "subscription")];
   const log = { seen: parseZcodeRows(ZCODE_ROWS) };
@@ -420,18 +420,34 @@ test("a registered sibling that answers in place of the model is a mismatch: zco
   // The other model answering before the registered one last did is not what is served now.
   const before = judgeLog(zcode[0], { seen: [{ model: "GLM-5.3", at: hoursAgo(1) }, { model: "deepseek-flash", at: hoursAgo(30) }] }, NOW);
   assert.deepEqual([before.state, before.mismatch], ["available", undefined]);
-
-  // The same for Codex: its CLI serves gpt-6-nova, another GPT model the pool registers.
-  const codex = [POOL[2], entry("gpt-6-nova", "codex", "subscription")];
-  const codexLog = { seen: [{ model: "gpt-6-nova", at: hoursAgo(1) }, { model: "gpt-6-astra", at: hoursAgo(30) }] };
-  const astra = decideRow(codex[0], ctxFor(codex[0], { log: codexLog }));
-  assert.deepEqual([astra.state, astra.mismatch, astra.served], ["refused", true, "gpt-6-nova"]);
-  assert.match(mismatchLines([astra])[0], /^codex\/gpt-6-astra is registered as gpt-6-astra but is served as gpt-6-nova\./);
-  assert.deepEqual([judgeLog(codex[1], codexLog, NOW).state, judgeLog(codex[1], codexLog, NOW).mismatch], ["available", undefined]);
   // Under another spelling, or an alias the pool gives, it is the same model.
-  assert.equal(judgeLog(codex[0], { seen: [{ model: "GPT-6_Astra", at: hoursAgo(1) }, { model: "gpt-6-nova", at: hoursAgo(30) }] }, NOW).state, "available");
+  assert.equal(judgeLog(zcode[0], { seen: [{ model: "GLM_5_3", at: hoursAgo(1) }, { model: "deepseek-flash", at: hoursAgo(30) }] }, NOW).state, "available");
   const aliased = entry("glm-5.3", "zcode", "subscription", "home", { aliases: ["deepseek-flash"] });
   assert.equal(judgeLog(aliased, log, NOW).state, "available");
+});
+
+test("a Codex log names the model each call asked for, so another model answering later refuses nothing", () => {
+  // The 2026-11-06 finding: Codex runs the model each call names, but the
+  // judgment read gpt-6-astra answering last as a substitution of every other
+  // Codex pool model, so gpt-6.1-sol showed "refused, served gpt-6-astra"
+  // while its named dispatches built normally. Its status comes from its own
+  // last request, never from another model's.
+  const sol = entry("gpt-6.1-sol", "codex", "subscription");
+  const astraLast = (solAt) => ({ seen: [{ model: "gpt-6-astra", at: hoursAgo(1) }, { model: "gpt-6.1-sol", at: solAt }] });
+  // Its own last request recent: available.
+  const row = decideRow(sol, ctxFor(sol, { log: astraLast(hoursAgo(30)) }));
+  assert.deepEqual([row.state, row.mismatch, row.served, row.post], ["available", false, "gpt-6.1-sol", true]);
+  assert.match(row.detail, /^log: last answered at 2026-10-04T15:00Z$/);
+  assert.deepEqual(mismatchLines([row]), []);
+  // Its own last request too long ago: unknown, nothing recent — still never refused.
+  const stale = decideRow(sol, ctxFor(sol, { log: astraLast(NOW - RECENT_MS - 1000) }));
+  assert.deepEqual([stale.state, stale.mismatch, stale.served, stale.post], ["unknown", false, "gpt-6.1-sol", true]);
+  assert.match(stale.detail, /last answered at 2026-09-28T20:59Z; nothing recent/);
+  // Nothing of it in the record at all: no recent record, nothing posted.
+  const absent = decideRow(sol, ctxFor(sol, { log: { seen: [{ model: "gpt-6-astra", at: hoursAgo(1) }] } }));
+  assert.deepEqual([absent.state, absent.label, absent.post], ["unknown", "no recent record", false]);
+  // The model that answered last is judged from its own requests too.
+  assert.deepEqual([judgeLog(POOL[2], astraLast(hoursAgo(30)), NOW).state, judgeLog(POOL[2], astraLast(hoursAgo(30)), NOW).mismatch], ["available", undefined]);
 });
 
 test("opencode's record names the model each call asked for, so several models in it are no substitution", () => {
@@ -537,7 +553,7 @@ test("each finding is reported under the runner's name, with the served model; m
   assert.match(text, /Reported 3 statuses to Atelier; 2 had nothing to report\.$/);
 });
 
-test("a harness serving another registered model is reported as refused with the model it served, for zcode and Codex", async (t) => {
+test("zcode serving another registered model is reported as refused with the model it served; a Codex log judges each model from its own requests", async (t) => {
   const pool = [POOL[1], entry("deepseek-flash", "zcode", "subscription"), POOL[2], entry("gpt-6-nova", "codex", "subscription")];
   const { io, calls } = fakeIo(t, {
     pool,
@@ -547,13 +563,12 @@ test("a harness serving another registered model is reported as refused with the
   const sent = bodies(calls);
   assert.deepEqual(Object.keys(sent).sort(), ["deepseek-flash", "glm-5.3", "gpt-6-astra", "gpt-6-nova"]);
   assert.deepEqual([sent["glm-5.3"].state, sent["glm-5.3"].served], ["refused", "deepseek-flash"]);
-  assert.deepEqual([sent["gpt-6-astra"].state, sent["gpt-6-astra"].served], ["refused", "gpt-6-nova"]);
+  assert.deepEqual([sent["gpt-6-astra"].state, sent["gpt-6-astra"].served], ["available", "gpt-6-astra"], "judged from its own last request, not from gpt-6-nova answering later");
   assert.equal(sent["deepseek-flash"].state, "available");
   assert.equal(sent["gpt-6-nova"].state, "available");
   const [text] = calls.printed;
   assert.match(text, /Mismatch:\n  zcode\/glm-5\.3 is registered as glm-5\.3 but is served as deepseek-flash\./);
-  assert.match(text, /\n  codex\/gpt-6-astra is registered as gpt-6-astra but is served as gpt-6-nova\./);
-  assert.doesNotMatch(text, /codex\/gpt-6-nova is registered|zcode\/deepseek-flash is registered/, "the model being served is not a mismatch");
+  assert.doesNotMatch(text, /codex\/gpt-6-astra is registered|codex\/gpt-6-nova is registered|zcode\/deepseek-flash is registered/, "only zcode's substitution is a mismatch");
 });
 
 test("a model absent from its harness's record is shown as no recent record, and nothing is reported for it", async (t) => {
