@@ -84,6 +84,7 @@ export default async function showCommand() {
   const notes = d.notes ?? [], unclaimed = d.openRequests ?? [], tier = d.tierReview ?? null, lapsed = d.lapsedRequests ?? [];
   if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(tier ? { tierReview: tier } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
+  blocks.push(...repairLines(d.repairs));
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   // The tasks it waits on (G3), each with its state: it is not offered,
   // claimed or accepted until every one is merged.
@@ -136,6 +137,7 @@ export function taskJson(d, queued = null, why = []) {
   // Each task it waits on that is not merged (G3) holds it too.
   const waits = (d.blockers ?? []).filter((b) => b.state !== "merged").map((b) => ({ kind: "blocked-by", blocker: b.id, state: b.state }));
   return {
+    ...(d.repairs ? { repairs: d.repairs } : {}),
     id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
     scope: i.scope, dispatch: i.dispatch ?? null, runner: i.runner ?? null, holds: [...held, ...waits], lastFailure: lastFailureOf(d),
     ...(d.blockers?.length ? { blockedBy: d.blockers.map((b) => ({ id: b.id, state: b.state })) } : {}),
@@ -148,6 +150,13 @@ export function taskJson(d, queued = null, why = []) {
     approvals: approvalsByHead(d),
     standingGo: standingGoOf(d),
   };
+}
+
+export function repairLines(repairs) {
+  return [
+    ...(repairs?.fixes ? [`Fixes: ${flat(repairs.fixes)}`] : []),
+    ...(repairs?.fixedBy?.length ? [`Fixed by: ${repairs.fixedBy.map(flat).join(", ")}`] : []),
+  ];
 }
 
 // The newest failure recorded of the task: a failed or stopped observed

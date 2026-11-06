@@ -174,6 +174,7 @@ export interface SecretClearance {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
+  fixOf?: string;
   // Creation only: the ledger resolves this task's recorded merge itself.
   revertOf?: string;
   nonGoals?: string[];
@@ -1581,6 +1582,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
+  if (input.fixOf !== undefined) {
+    if (typeof input.fixOf !== "string" || !/^t[1-9]\d*$/.test(input.fixOf)) throw new RuleError("bad_field", "fixOf must name a task, such as t7", 400);
+    out.fixOf = input.fixOf;
+  }
   // An older CLI's new --area and edit --area or --clear-area send this
   // field. Refuse it plainly, whatever its value, rather than store it.
   if (input.area !== undefined) throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410, "update the CLI; run atelier update");
