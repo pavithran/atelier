@@ -2556,8 +2556,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const id = parts[3];
   const verb = parts[4];
   // The task's newest run report rides with it (its facts and the log's host
-  // and path on the runner; never its output).
-  if (!verb && m === "GET") return json({ ...await L.detail(id), lastRun: lastRunOf((await index(env).runsForItem(project, id).catch(() => []))[0]) });
+  // and path on the runner; never its output). The runner offers ride with
+  // it too, so an open review request names the runners that remember a stop
+  // for the task and could serve it (miqra t67, 2026-11-06), which `show`
+  // says with the command that clears it. The Ledger cannot read the index,
+  // so the offers are read here and passed in; an index that cannot be read
+  // leaves the requests as they were.
+  if (!verb && m === "GET") {
+    const [offers, runs] = await Promise.all([index(env).runnerOffers().catch(() => null), index(env).runsForItem(project, id).catch(() => [])]);
+    return json({ ...await L.detail(id, offers), lastRun: lastRunOf(runs[0]) });
+  }
   if (verb === "runner-log" && parts.length === 5 && m === "GET") return json(await L.runnerLog(id));
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
@@ -3019,19 +3027,38 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "review-request": {
       requireOwner(env, actor);
+      // An ask that leaves a review request standing clears every runner's
+      // remembered stop for the task (miqra t67, 2026-11-06): a runner that
+      // failed the review twice at a head passes every request at that head
+      // by, whatever its number, and before this only atelier forget-skip
+      // cleared the stop, found by hand after a fresh request sat unclaimed
+      // 49 minutes. The ask is the developer's attention, so the stop goes
+      // here and the next poll can claim the request — forgetSkip for every
+      // runner, as the command does without --runner. An ask refused, or one
+      // answered "no review is needed", leaves the stops alone: no request
+      // stands for a runner to claim.
+      const clearStops = (stands: boolean) => stands ? index(env).forgetSkip(null, project, id) : Promise.resolve(0);
       // Two or more reviewers asked together at one head (G11).
       if (body.reviewers !== undefined) {
         if (!Array.isArray(body.reviewers) || (body.reviewers as unknown[]).some((r) => typeof r !== "string")) throw new RuleError("bad_request", "reviewers must be a list of harness/model names", 400);
-        return json(await L.requestReviews(id, actor, body.reviewers as string[], await index(env).models(), body.wanted === true, false, await index(env).runnerOffers(), body.hand === true));
+        const asked = await L.requestReviews(id, actor, body.reviewers as string[], await index(env).models(), body.wanted === true, false, await index(env).runnerOffers(), body.hand === true);
+        await clearStops(asked.asked.some((a) => a.needed));
+        return json(asked);
       }
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
       // The separate tier review, of the tier model named (G17): never asked
       // by the server itself.
-      if (body.tier === true) return json(await L.requestTierReview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), body.hand === true));
+      if (body.tier === true) {
+        const asked = await L.requestTierReview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), body.hand === true);
+        await clearStops(asked.needed);
+        return json(asked);
+      }
       const track = reviewer === null ? { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers(), body.hand === true));
+      const asked = await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers(), body.hand === true);
+      await clearStops(asked.needed);
+      return json(asked);
     }
     // The developer withdraws an open, unclaimed review request with a
     // reason (t627), so another reviewer can be asked at the same head.

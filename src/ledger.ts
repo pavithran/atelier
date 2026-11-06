@@ -89,7 +89,7 @@ import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
-import { dropTasks, type ProviderPause } from "./runners/memory.ts";
+import { dropTasks, rememberedTask, type ProviderPause } from "./runners/memory.ts";
 import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { candidatesText, ranked, summarize, type Candidate, type ReviewerRecords, type SuggestionRecords } from "./models/suggest.ts";
@@ -7479,11 +7479,25 @@ export class Ledger extends DurableObject<Env> {
 
   // The review requests open and unclaimed on the task, with when each was
   // asked: what `show` says of a request nobody has claimed (G6), which the
-  // model withdraws and asks again by command.
-  openRequests(id: string): { request: number; head: string; reviewer: string; tier: boolean; openedAt: string }[] {
+  // model withdraws and asks again by command. With the live runner offers
+  // each request also names the runners that could serve it and remember a
+  // stop for the task (miqra t67, 2026-11-06): a runner that failed the
+  // review twice at a head passes every request at that head by, whatever
+  // its number, so the request can sit unclaimed while its reviewer's runner
+  // remembers a stop nothing cleared. `show` says each stop with the command
+  // that clears it (atelier forget-skip, or asking again, which clears it).
+  openRequests(id: string, offers?: readonly SeenOffer[] | null): { request: number; head: string; reviewer: string; tier: boolean; openedAt: string; skips?: { runner: string; why: string | null }[] }[] {
+    const name = this.project().name;
+    const live = offers ? liveOffers(offers) : null;
     return this.sql.exec(`SELECT id, head, dispatch, tier, openedAt FROM review_requests WHERE item = ? AND state = 'open' AND superseded IS NULL ORDER BY id`, id).toArray().map((r) => {
       const d = JSON.parse(r.dispatch as string) as Dispatch;
-      return { request: r.id as number, head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : "any reviewer", tier: r.tier === 1, openedAt: (r.openedAt as string | null) ?? d.at };
+      const skips = live
+        ? live.flatMap((offer) => {
+          const remembered = offer.memory ? rememberedTask(offer.memory, `${name}/${id}`) : null;
+          return remembered && assign(d, offer, name) ? [{ runner: offer.runner, why: remembered.why }] : [];
+        })
+        : undefined;
+      return { request: r.id as number, head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : "any reviewer", tier: r.tier === 1, openedAt: (r.openedAt as string | null) ?? d.at, ...(skips?.length ? { skips } : {}) };
     });
   }
 
@@ -7610,7 +7624,7 @@ export class Ledger extends DurableObject<Env> {
     return { fixes, fixedBy: [...fixedBy] };
   }
 
-  detail(id: string) {
+  detail(id: string, offers?: readonly SeenOffer[] | null) {
     const item = this.item(id);
     const policy = this.project().policy;
     const evidence = this.evidenceFor(id);
@@ -7635,7 +7649,7 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const lastDeploy = this.lastDeploy();
-    return { item, repairs: this.repairLinks(id), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
+    return { item, repairs: this.repairLinks(id), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id, offers), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
