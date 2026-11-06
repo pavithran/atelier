@@ -21,7 +21,7 @@ export default async function decisionsCommand() {
   }
   console.log(formatDecisions(shown));
   // The standing instructions (G6), the only things the server or the tick
-  // does by itself, said apart: each acts only while the project is in fast mode.
+  // does by itself, said apart, with the mode each requires.
   const standing = decisions.filter((d) => d.status === "standing" && d.standing && d.standing.key !== "models");
-  if (standing.length) console.log(`Standing instructions: ${standing.map((d) => `${d.standing.key} = ${d.standing.value} (${d.id})`).join(", ")}. They act while ${name} is in fast mode.`);
+  if (standing.length) console.log(`Standing instructions: ${standing.map((d) => `${d.standing.key} = ${d.standing.value} (${d.id})`).join(", ")}. ${standing.some(d => d.standing.key === "dispatch-on-criteria") ? "dispatch-on-criteria acts in either mode; other instructions require fast mode." : `They act while ${name} is in fast mode.`}`);
 }

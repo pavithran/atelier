@@ -83,6 +83,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
+import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
@@ -3950,7 +3951,29 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  private dispatchingOnCriteria = false;
+
+  private dispatchApprovedCriteria(): void {
+    if (this.dispatchingOnCriteria) return;
+    this.dispatchingOnCriteria = true;
+    try {
+      dispatchOnCriteria({
+        decisions: standingDecisions(this.decisionStore),
+        items: () => this.items(),
+        approved: id => this.criteriaReviewStatus(id).approved,
+        dispatchedBefore: id => !!this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.dispatched' LIMIT 1`, id).toArray().length,
+        held: item => !!coreHold({ ...item, dispatch: { to: "home", agent: null, model: null, note: "", by: this.owner, at: new Date().toISOString() } }, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()),
+        dispatch: (id, agent, model, reason) => this.ctx.storage.transactionSync(() => {
+          this.dispatch(id, this.owner, { to: "home", agent, model }, undefined, reason);
+        }),
+      });
+    } finally {
+      this.dispatchingOnCriteria = false;
+    }
+  }
+
   private dispatchWaiting(pushHistory = false): Waiting[] {
+    this.dispatchApprovedCriteria();
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
@@ -6894,20 +6917,20 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A standing instruction (src/standing.ts, G6) is recorded for a project
-  // in fast mode alone, except the models session plan.
+  // in fast mode alone, except models and dispatch-on-criteria.
   recordDecision(body: Record<string, unknown>, actor: string, acting: string | null = null): DecisionView {
     const p = this.project();
-    if (body.standing !== undefined && String((body.standing as { key?: unknown } | null)?.key).trim() !== "models" && actor === this.owner && this.mode().mode !== "fast") {
+    if (body.standing !== undefined && !["models", "dispatch-on-criteria"].includes(String((body.standing as { key?: unknown } | null)?.key).trim()) && actor === this.owner && this.mode().mode !== "fast") {
       throw new RuleError("not_fast", `${p.name} is not in fast mode, and a standing instruction is recorded only for a project in fast mode; nothing was recorded`, 409, `only the developer can: atelier mode fast --reason TEXT --project ${p.name}, then run the same command again`);
     }
     return recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);
   }
 
   // The standing instructions that act now, by key: those recorded and not
-  // withdrawn, while the project is in fast mode; none outside it.
+  // withdrawn. dispatch-on-criteria also acts outside fast mode.
   standing(): Map<string, string> {
-    if (!this.fastMode()) return new Map();
-    return standingOf(standingDecisions(this.decisionStore));
+    const instructions = standingOf(standingDecisions(this.decisionStore));
+    return this.fastMode() ? instructions : new Map([...instructions].filter(([key]) => key === "dispatch-on-criteria"));
   }
 
   decisions(): DecisionView[] {
@@ -10297,6 +10320,7 @@ export class Ledger extends DurableObject<Env> {
     // named one) is unblocked by the approval, since the tick passes over a
     // blocked part and a blocked part holds a parallel slot.
     if (r.approve) this.unblockForCriteria(r.itemId, at);
+    if (r.approve) this.dispatchApprovedCriteria();
     this.afterPlanChange(r.itemId);
     return this.criteriaReviewsFor(r.itemId).find((x) => x.id === row.id)!;
   }
