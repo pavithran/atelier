@@ -1,0 +1,33 @@
+atelier atelier/t502 "Standing instruction: ask the review when a task reaches checked"
+accepted head 4d145dece70cfd88809fd99601b88d0690746edf
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-06T16:59:54.525Z
+REVIEW approve by claude-code/sonnet-5.5 at 4d145dece70cfd88809fd99601b88d0690746edf, recorded by claude-code/sonnet-5.5
+2026-11-06T15:38:10.586Z pavi item.created
+2026-11-06T15:38:10.586Z claude-code/opus-5.5 criteria.revised
+2026-11-06T15:51:50.236Z pavi item.dispatched
+2026-11-06T15:58:34.381Z pavi item.dispatched
+2026-11-06T16:52:08.324Z codex/gpt-6.1-sol item.claimed
+2026-11-06T16:52:08.373Z codex/gpt-6.1-sol workspace.created
+2026-11-06T16:57:44.997Z codex/gpt-6.1-sol push.observed
+2026-11-06T16:59:54.557Z codex/gpt-6.1-sol evidence.observed
+2026-11-06T16:59:54.758Z codex/gpt-6.1-sol item.submitted
+2026-11-06T17:00:39.499Z pavi land.start
+2026-11-06T17:00:40.892Z pavi review.requested
+2026-11-06T17:00:40.892Z pavi review.tier_needed
+2026-11-06T17:00:41.266Z pavi land.review
+2026-11-06T17:00:41.358Z pavi land.requested
+2026-11-06T17:01:03.192Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T17:01:13.104Z pavi review.requested
+2026-11-06T17:02:18.080Z claude-code/sonnet-5.5 review.approved
+2026-11-06T17:02:18.080Z atelier/orchestrator goal.notes
+2026-11-06T17:02:18.911Z codex/gpt-6-astra review.claimed
+2026-11-06T17:02:23.670Z atelier/orchestrator review.withdrawn
+2026-11-06T17:02:23.670Z pavi item.accepted
+2026-11-06T17:02:24.583Z pavi land.start
+2026-11-06T17:02:24.768Z pavi landing.queued
+2026-11-06T17:04:11.448Z atelier/orchestrator refresh.queued
+2026-11-06T17:04:12.722Z pavi landing.leased
+2026-11-06T17:04:12.849Z pavi land.lease
+2026-11-06T17:04:14.010Z pavi checkout.leased
