@@ -1,0 +1,34 @@
+atelier atelier/t509 "Check and submit find declaration problems that land would refuse"
+accepted head ce3b05773f35846e20329f71c8040734b93f3d1a
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+OBSERVED pass npm run typecheck — opencode/glm-5.3 2026-11-06T19:15:58.972Z
+REVIEW approve by claude-code/sonnet-5.5 at ce3b05773f35846e20329f71c8040734b93f3d1a, recorded by claude-code/sonnet-5.5
+CHECKED TREE b9e26c79bad2d461ee6bc6f8d94571ad53d98d71: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-06T16:57:39.843Z pavi item.created
+2026-11-06T16:57:39.843Z claude-code/opus-5.5 criteria.revised
+2026-11-06T18:05:16.852Z pavi item.dispatched
+2026-11-06T18:05:42.899Z opencode/glm-5.3 item.claimed
+2026-11-06T18:05:42.930Z opencode/glm-5.3 workspace.created
+2026-11-06T18:50:46.302Z opencode/glm-5.3 item.released
+2026-11-06T18:51:16.612Z opencode/glm-5.3 item.claimed
+2026-11-06T18:51:16.667Z opencode/glm-5.3 workspace.moved
+2026-11-06T19:15:43.666Z opencode/glm-5.3 push.observed
+2026-11-06T19:15:59.003Z opencode/glm-5.3 evidence.observed
+2026-11-06T19:15:59.205Z opencode/glm-5.3 item.submitted
+2026-11-06T19:16:16.822Z pavi land.start
+2026-11-06T19:16:18.109Z pavi review.requested
+2026-11-06T19:16:18.109Z pavi review.tier_needed
+2026-11-06T19:16:18.412Z pavi land.review
+2026-11-06T19:16:18.522Z pavi land.requested
+2026-11-06T19:16:34.275Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T19:16:49.884Z pavi review.requested
+2026-11-06T19:17:08.642Z codex/gpt-6-astra review.claimed
+2026-11-06T19:17:20.668Z claude-code/sonnet-5.5 review.approved
+2026-11-06T19:17:20.668Z atelier/orchestrator goal.notes
+2026-11-06T19:17:22.970Z atelier/orchestrator review.withdrawn
+2026-11-06T19:17:22.970Z pavi item.accepted
+2026-11-06T19:17:23.752Z pavi land.start
+2026-11-06T19:17:23.840Z pavi landing.leased
+2026-11-06T19:17:23.925Z pavi land.lease
+2026-11-06T19:17:24.926Z pavi checkout.leased
