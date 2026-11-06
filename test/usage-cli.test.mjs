@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -296,7 +297,8 @@ test("a report reads as text: windows, each span's models, balances and notes", 
 test("the command line is validated, and the runner name defaults to the machine's", () => {
   assert.deepEqual(usageOptions(args(), "Studio.local"), { name: "home:studio.local", dryRun: false, configPath: undefined });
   assert.deepEqual(usageOptions(args("name=home:Mac", "dry-run", "config=/c.json")), { name: "home:mac", dryRun: true, configPath: "/c.json" });
-  for (const bad of [args("once"), args("probe"), args("name=studio"), args("dry-run=yes"), { ...args(), _: ["runner", "x"] }, args("name=home:a", "name=home:b")]) assert.throws(() => usageOptions(bad), /usage: atelier runner --usage|use --name home:NAME/);
+  assert.deepEqual(usageOptions(args("as=codex/gpt-6.1-sol"), "Studio.local"), { name: "home:studio.local", dryRun: false, configPath: undefined });
+  for (const bad of [args("once"), args("probe"), args("name=studio"), args("dry-run=yes"), args("as"), args("as="), { ...args(), _: ["runner", "x"] }, args("name=home:a", "name=home:b")]) assert.throws(() => usageOptions(bad), /usage: atelier runner --usage|use --name home:NAME/);
 });
 
 test("the runner config names the Keychain entry for a balance, never a key", () => {
@@ -413,6 +415,26 @@ test("an interrupt stops the reports", async (t) => {
   assert.equal(reported, 1);
 });
 
+// The audit of 2026-11-06: `runner --usage` on the developer's token reported
+// nothing, because every tool's summary was refused with the same 400, a
+// write with the developer token names the harness/model acting, and the
+// command ended with one error per vendor. The first such refusal now ends
+// the posting, and the command says once how to name the model.
+const ACTING_REFUSED = "400 a write with the developer token names the harness/model acting: the developer's own use is the signed-in pages, so every command on the developer token says which model runs it";
+
+test("a post refused for naming no acting model is said once, not once per tool", async (t) => {
+  let attempted = 0;
+  const { io, calls } = fakeIo(t, { io: { report: async () => { attempted++; throw new Error(ACTING_REFUSED); } } });
+  await assert.rejects(runUsage(args("name=home:test"), io), (error) => /set ATELIER_ACTING/.test(error.message) && !/zcode: 400/.test(error.message));
+  assert.equal(attempted, 1, "the first refusal ends the posting");
+  assert.match(calls.printed.join("\n"), /Reported 0 usage summaries to Atelier\./);
+  // A tool that failed for its own reason first is still named beside the remedy.
+  let tried = 0;
+  const mixed = fakeIo(t, { io: { report: async (tool) => { tried++; if (tool === "codex") throw new Error("503 the server is busy"); throw new Error(ACTING_REFUSED); } } });
+  await assert.rejects(runUsage(args("name=home:test"), mixed.io), /set ATELIER_ACTING.*; codex: 503 the server is busy/);
+  assert.equal(tried, 2);
+});
+
 test("t260: the server's speed record is printed after the gateway's, and a failed read does not stop the report", async (t) => {
   const speed = { days: 14, since: "2026-09-23T12:00:00.000Z", until: "2026-10-07T12:00:00.000Z", minSamples: 3, models: [
     { model: "opus-5.5", actors: ["claude-code/opus-5.5"], build: { n: 3, median: 1200, runs: 4, stalled: 1 }, review: { n: 0, median: null, runs: 0, stalled: 0 }, task: { n: 1, median: null } },
@@ -450,6 +472,85 @@ test("runner --usage --dry-run runs from the command line, reads nothing it does
   assert.equal(help.code, 0);
   assert.match(help.stdout, /runner --usage \[--name home:NAME\] \[--dry-run\] \[--config PATH\]/);
   assert.match((await run(["help"])).stdout, /runner --usage/);
+});
+
+// A home of the test's own with a codex session log and a Claude Code log, so
+// `runner --usage` gathers two summaries and posts them; no zcode or opencode
+// database and no runner config, so nothing else is asked for.
+function usageHome(t) {
+  const dir = tempDir(t, "atelier-usage-home-");
+  writeCodex(join(dir, ".codex", "sessions"));
+  const root = join(dir, ".claude", "projects", "-Users-x-test");
+  mkdirSync(root, { recursive: true });
+  const file = join(root, `${SESSION}.jsonl`);
+  writeFileSync(file, JSON.stringify({ type: "assistant", timestamp: new Date(Date.now() - 3_600_000).toISOString(), message: { id: "msg_1", model: "claude-opus-5-5", role: "assistant", usage: { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 70 } } }) + "\n");
+  utimesSync(file, Date.now(), Date.now());
+  return dir;
+}
+
+// A stand-in Atelier on localhost: it keeps what each request carried, answers
+// the reads, and answers the posts as the test wants.
+async function usageStandIn(t, refusePosts) {
+  const seen = [];
+  const server = createServer(async (req, res) => {
+    let body = ""; for await (const chunk of req) body += chunk;
+    seen.push({ method: req.method, url: req.url, acting: req.headers["x-atelier-acting"], runner: req.headers["x-atelier-runner"], body: body ? JSON.parse(body) : null });
+    const refused = refusePosts && req.method === "POST";
+    res.writeHead(refused ? 400 : 200, { "content-type": "application/json" });
+    res.end(refused ? JSON.stringify({ error: "acting_required", detail: "a write with the developer token names the harness/model acting: the developer's own use is the signed-in pages, so every command on the developer token says which model runs it" }) : "{}");
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => server.close());
+  return { seen, port: server.address().port };
+}
+
+// The command against the stand-in. The environment is built fresh, so no
+// ATELIER_ACTING or ATELIER_ACTOR around the test reaches the command.
+function usageCli(dir, port) {
+  return (argv, env = {}) => new Promise((done) => {
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...argv], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: dir, ATELIER_CONFIG_DIR: dir, ATELIER_SERVER: `http://127.0.0.1:${port}`, ATELIER_TOKEN: "test-token", ...env },
+    });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (c) => { stdout += c; });
+    child.stderr.on("data", (c) => { stderr += c; });
+    child.on("close", (code) => done({ code, stdout, stderr }));
+  });
+}
+
+test("runner --usage posts each summary naming the acting model, from ATELIER_ACTING or --as", async (t) => {
+  const { seen, port } = await usageStandIn(t, false);
+  const run = usageCli(usageHome(t), port);
+  const posts = () => seen.filter((r) => r.method === "POST");
+  const env = await run(["runner", "--usage", "--name", "home:test"], { ATELIER_ACTING: "claude-code/opus-5.5" });
+  assert.equal(env.code, 0, env.stderr);
+  assert.deepEqual(posts().map((r) => [r.url, r.acting, r.runner]), [
+    ["/api/usage/codex", "claude-code/opus-5.5", "home:test"],
+    ["/api/usage/claude-code", "claude-code/opus-5.5", "home:test"],
+  ]);
+  assert.match(env.stdout, /Reported 2 usage summaries to Atelier\./);
+  seen.length = 0;
+  const flag = await run(["runner", "--usage", "--name", "home:test", "--as", "codex/gpt-6.1-sol"]);
+  assert.equal(flag.code, 0, flag.stderr);
+  assert.deepEqual(posts().map((r) => [r.url, r.acting]), [
+    ["/api/usage/codex", "codex/gpt-6.1-sol"],
+    ["/api/usage/claude-code", "codex/gpt-6.1-sol"],
+  ]);
+  assert.match(flag.stdout, /Reported 2 usage summaries to Atelier\./);
+  const by = Object.fromEntries(posts().map((r) => [r.url, r.body]));
+  assert.deepEqual(by["/api/usage/codex"].windows.map((w) => w.name), ["5-hour", "weekly"]);
+  assert.deepEqual(by["/api/usage/claude-code"].models.map((m) => m.model), ["claude-opus-5-5"]);
+});
+
+test("runner --usage with no acting model named says once to set ATELIER_ACTING, not one 400 per vendor", async (t) => {
+  const { seen, port } = await usageStandIn(t, true);
+  const r = await usageCli(usageHome(t), port)(["runner", "--usage", "--name", "home:test"]);
+  assert.equal(r.code, 1);
+  assert.equal(r.stderr.match(/set ATELIER_ACTING/g)?.length, 1, `one line says how to name the model: ${r.stderr}`);
+  assert.doesNotMatch(r.stderr, /codex: 400|claude-code: 400/, "no one 400 error per vendor");
+  assert.equal(seen.filter((x) => x.method === "POST").length, 1, "the first refused post ends the posting");
+  assert.match(r.stdout, /Reported 0 usage summaries to Atelier\./);
 });
 
 // ── Claude Code's session logs (t727) ──────────────────────────────────────
