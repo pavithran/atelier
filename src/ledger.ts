@@ -83,6 +83,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
+import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
@@ -2308,6 +2309,11 @@ export class Ledger extends DurableObject<Env> {
             const criteria = this.sql.exec(`SELECT COUNT(*) AS n, MAX(decidedAt) AS at FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, item.id).one();
             const agreed = (criteria.n as number) > 0 && (item.accept?.length ?? 0) > 0;
             const { stage, detail } = stageOf(item, { events, ready, agreed, policy, evidence, reviews, owner: this.owner, fast: this.mode().mode === "fast" });
+            // Fast mode can already call this task landable; the instruction
+            // still asks at the ordinary checked gate, before any landing.
+            if (stageOf(item, { policy, evidence, reviews, owner: this.owner }).stage === "checked") {
+              this.askCheckedReview(item, offers ?? undefined);
+            }
             const clock = {
               agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
               reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
@@ -2368,6 +2374,20 @@ export class Ledger extends DurableObject<Env> {
       }
       return { complete, recorded: moves.length + acted, tasks };
     });
+  }
+
+  // The developer names the routing; the server chooses no reviewer.
+  private askCheckedReview(item: Item, offers: readonly SeenOffer[] | undefined): void {
+    const value = this.standing().get("review-on-checked");
+    if (!value || value === "off" || !item.owner || !item.head) return;
+    const reviewer = value.split(",").map((p) => p.split("=")).find(([company]) => company === actorFamily(item.owner!))?.[1];
+    if (!reviewer || contributorsOf(item).some((actor) => actorFamily(actor) === actorFamily(reviewer))) return;
+    if (this.reviewRequests(item.id).some((r) => r.head === item.head && (r.state === "open" || r.state === "claimed"))) return;
+    const decision = this.standingDecisions().find((d) => d.standing?.key === "review-on-checked");
+    if (!decision) return;
+    try {
+      this.ctx.storage.transactionSync(() => this.askReview(item.id, this.owner, reviewer, this.poolStanding(), false, false, undefined, offers, false, [], decision.id));
+    } catch { /* a refused request writes nothing; the next tick can retry */ }
   }
 
   // The gate's open review request at a head (the tier's, when `tier`), with how long ago it became open
@@ -3931,7 +3951,29 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  private dispatchingOnCriteria = false;
+
+  private dispatchApprovedCriteria(): void {
+    if (this.dispatchingOnCriteria) return;
+    this.dispatchingOnCriteria = true;
+    try {
+      dispatchOnCriteria({
+        decisions: standingDecisions(this.decisionStore),
+        items: () => this.items(),
+        approved: id => this.criteriaReviewStatus(id).approved,
+        dispatchedBefore: id => !!this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.dispatched' LIMIT 1`, id).toArray().length,
+        held: item => !!coreHold({ ...item, dispatch: { to: "home", agent: null, model: null, note: "", by: this.owner, at: new Date().toISOString() } }, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()),
+        dispatch: (id, agent, model, reason) => this.ctx.storage.transactionSync(() => {
+          this.dispatch(id, this.owner, { to: "home", agent, model }, undefined, reason);
+        }),
+      });
+    } finally {
+      this.dispatchingOnCriteria = false;
+    }
+  }
+
   private dispatchWaiting(pushHistory = false): Waiting[] {
+    this.dispatchApprovedCriteria();
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
@@ -6875,20 +6917,20 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A standing instruction (src/standing.ts, G6) is recorded for a project
-  // in fast mode alone, except the models session plan.
+  // in fast mode alone, except models and dispatch-on-criteria.
   recordDecision(body: Record<string, unknown>, actor: string, acting: string | null = null): DecisionView {
     const p = this.project();
-    if (body.standing !== undefined && String((body.standing as { key?: unknown } | null)?.key).trim() !== "models" && actor === this.owner && this.mode().mode !== "fast") {
+    if (body.standing !== undefined && !["models", "dispatch-on-criteria"].includes(String((body.standing as { key?: unknown } | null)?.key).trim()) && actor === this.owner && this.mode().mode !== "fast") {
       throw new RuleError("not_fast", `${p.name} is not in fast mode, and a standing instruction is recorded only for a project in fast mode; nothing was recorded`, 409, `only the developer can: atelier mode fast --reason TEXT --project ${p.name}, then run the same command again`);
     }
     return recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);
   }
 
   // The standing instructions that act now, by key: those recorded and not
-  // withdrawn, while the project is in fast mode; none outside it.
+  // withdrawn. dispatch-on-criteria also acts outside fast mode.
   standing(): Map<string, string> {
-    if (!this.fastMode()) return new Map();
-    return standingOf(standingDecisions(this.decisionStore));
+    const instructions = standingOf(standingDecisions(this.decisionStore));
+    return this.fastMode() ? instructions : new Map([...instructions].filter(([key]) => key === "dispatch-on-criteria"));
   }
 
   decisions(): DecisionView[] {
@@ -9223,7 +9265,7 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = []): ReviewAsked {
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = [], standingDecision?: string): ReviewAsked {
     const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
@@ -9405,7 +9447,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: item.state === "merged" ? "post-merge" : "land", ...(standingDecision ? { standingDecision } : {}), ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved, pool, offers);
     return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number, ...(withdrew.length ? { withdrew } : {}) };
   }
@@ -10278,6 +10320,7 @@ export class Ledger extends DurableObject<Env> {
     // named one) is unblocked by the approval, since the tick passes over a
     // blocked part and a blocked part holds a parallel slot.
     if (r.approve) this.unblockForCriteria(r.itemId, at);
+    if (r.approve) this.dispatchApprovedCriteria();
     this.afterPlanChange(r.itemId);
     return this.criteriaReviewsFor(r.itemId).find((x) => x.id === row.id)!;
   }

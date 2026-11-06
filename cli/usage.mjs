@@ -3,12 +3,16 @@
 //
 // `atelier runner --usage` reads what each tool records on this machine and
 // reports one summary per tool through POST /api/usage/TOOL under the
-// runner's name, as `--discover` reports a model's status. It is a one-shot
-// command, run from a LaunchAgent or by hand, not a step inside the runner
-// loop: the loop polls the queue every 30 seconds and must stay cheap, while
-// this reads session logs that can be gigabytes and asks DeepSeek for a
-// balance; and the owner may want it on a machine that runs the tools but no
-// runner loop at all. It is a port of atelier-ops' usage-report.
+// runner's name, as `--discover` reports a model's status. On the
+// developer's token each post names the harness/model acting (G18), from
+// --as or ATELIER_ACTING; with none named, the first refusal ends the
+// posting and the command says once how to name one, instead of failing
+// each post. It is a one-shot command, run from a LaunchAgent or by hand,
+// not a step inside the runner loop: the loop polls the queue every 30
+// seconds and must stay cheap, while this reads session logs that can be
+// gigabytes and asks DeepSeek for a balance; and the owner may want it on a
+// machine that runs the tools but no runner loop at all. It is a port of
+// atelier-ops' usage-report.
 //
 // Sources, each read only:
 //   Codex     ~/.codex/sessions/**/*.jsonl, the newest "rate_limits" record,
@@ -417,11 +421,21 @@ export function describeSpeed(view, safe) {
 
 // ── the command ────────────────────────────────────────────────────────────
 
+// The server's refusal when a write on the developer token names no acting
+// model (ownerWriteRefusal in src/models/judgement.ts, G18), as the CLI's
+// postAsRunner reports it: the status beside the detail. The wording is the
+// server's own; a server that words it differently has each failure named
+// per tool, as before.
+const ACTING_REFUSAL = /a write with the developer token names the harness\/model acting/;
+
 export function usageOptions(args, host = hostname()) {
-  if (args._.length !== 1 || Object.keys(args.multi).some((k) => !["usage", "name", "dry-run", "config", "claude-status-file"].includes(k) || args.multi[k].length !== 1)) throw new Error(USAGE);
+  if (args._.length !== 1 || Object.keys(args.multi).some((k) => !["usage", "name", "dry-run", "config", "claude-status-file", "as"].includes(k) || args.multi[k].length !== 1)) throw new Error(USAGE);
   for (const flag of ["usage", "dry-run"]) if (args[flag] !== undefined && args[flag] !== true) throw new Error(USAGE);
   if (args.config !== undefined && typeof args.config !== "string") throw new Error(USAGE);
   if (args["claude-status-file"] !== undefined && typeof args["claude-status-file"] !== "string") throw new Error(USAGE);
+  // --as names the harness/model acting on the developer's token (G18), as
+  // ATELIER_ACTING does for a session: the posts carry it as X-Atelier-Acting.
+  if (args.as !== undefined && (typeof args.as !== "string" || !args.as.trim())) throw new Error(USAGE);
   let name = args.name;
   if (name === undefined) name = `home:${host.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64) || "runner"}`;
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -483,7 +497,7 @@ export async function runUsage(args, given = {}) {
   }
 
   const failed = [], alerts = [];
-  let reported = 0;
+  let reported = 0, noActing = false;
   if (!opts.dryRun) {
     for (const r of reports) {
       if (io.signal?.aborted) throw new Error("interrupted");
@@ -491,12 +505,24 @@ export async function runUsage(args, given = {}) {
         const answer = await io.report(r.tool, r.body, opts.name);
         reported++;
         for (const a of answer?.alerts ?? []) alerts.push(safe(a, 200));
-      } catch (error) { failed.push(`${r.tool}: ${safe(error.message)}`); }
+      } catch (error) {
+        // A write on the developer token that names no acting model is
+        // refused for every tool alike, so the first refusal ends the
+        // posting and the command says once how to name one. A report on a
+        // runner's or an agent's own token never meets the refusal, and a
+        // refusal worded differently is still reported per tool.
+        if (ACTING_REFUSAL.test(String(error.message))) { noActing = true; break; }
+        failed.push(`${r.tool}: ${safe(error.message)}`);
+      }
     }
   }
   out.push("", opts.dryRun ? "Dry run: nothing was reported to Atelier." : `Reported ${reported} usage summar${reported === 1 ? "y" : "ies"} to Atelier.`);
   if (alerts.length) out.push(`Alerts: ${alerts.join("; ")}.`);
   io.print(withoutKeys(out.join("\n")));
+  if (noActing) {
+    const held = reports.length - reported;
+    throw new Error(`could not report ${held} usage summar${held === 1 ? "y" : "ies"}: a write with the developer token names the harness/model acting, and none was named; set ATELIER_ACTING (or pass --as H/M) naming the harness/model you are, such as claude-code/opus-5.5, and run the command again${failed.length ? `; ${failed.join("; ")}` : ""}`);
+  }
   if (failed.length) throw new Error(`could not report ${failed.length} usage summar${failed.length === 1 ? "y" : "ies"}: ${failed.join("; ")}`);
   return reports;
 }
