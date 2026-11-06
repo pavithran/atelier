@@ -41,6 +41,7 @@ test/merge-manifest-declarations.test.mjs checks bin/merge-manifest.json declare
 # Source scans: what the code must keep doing.
 test/single-family-scan.test.ts scans src/ for every path that assigns work and fails on one that skips the single-family eligibility check
 test/retired-governance-scan.test.ts scans src/ and cli/ for reads of the retired ControlPlane policy fields
+test/gateway.test.ts scans the gateway and usage sources, the README and docs/models-and-usage.md, for the removed log pull and gateway token; its other tests run the gateway reader in memory with a fake fetch
 test/no-cloudflare-imports.test.mjs scans every source file and lockfile for an import of a removed Cloudflare tool
 test/standing-sites.test.mjs scans src/ledger.ts and src/dispatch/rules.ts for dispatch and review-request sites that bypass the standing checks
 test/pool-standing.test.mjs scans src/ for model-choosing paths that skip the one model-standing check
@@ -65,10 +66,12 @@ test/fixtures/design/contrast.test.ts pins docs/design/contrast.md to the theme 
 test/fixtures/design/docs.test.ts holds the design critique, plan and mockups in docs/design to one another
 test/fixtures/design/screens.test.ts checks every page state in the design brief has its manifest entry and screenshots
 test/ship-environments.test.mjs pins the staging and production ship orders in docs/atelier/ship-staging.json and ship.json
+test/ship-suite-studio.test.mjs pins the ship.md example to the production order in docs/atelier/ship.json; its other tests run the Studio suite over stubbed ssh and fixture repositories
 test/ship-refresh-runners.test.mjs pins the production order's delivery verification before scripts/ship-refresh-runners.mjs runs
 test/ship-scripts.test.mjs pins Atelier's own ship file in docs/atelier/ship.json; its other tests run the privacy scan over throwaway repositories
 test/privacy-scan-allow.test.mjs pins the shipped allowance list in docs/atelier/privacy-allow.json; its other tests run the privacy scan over throwaway repositories
 test/git-command.test.mjs pins the backup daemon's plist template in scripts/studio; its other tests run the git command rules over throwaway repositories
+test/review-oneshot.test.mjs pins the one-shot review's details in docs/orchestrating.md; its other tests run the one-shot review with stubbed commands and a fake task IO
 
 # Shipped scripts pinned to what running them showed.
 test/setup-server.test.mjs pins the Studio setup scripts against the fixtures of the 2026-10-28 run, dry runs only
