@@ -23,6 +23,10 @@ export function liveDuplicates(title, scope, items) {
 export default async function newCommand() {
   const title = args._.slice(1).join(" ");
   const fields = fieldsArg("new");
+  if (args["fix-of"] !== undefined) {
+    if (typeof args["fix-of"] !== "string" || !/^t[1-9]\d*$/.test(args["fix-of"])) die("--fix-of must name a merged task, such as t7");
+    fields.fixOf = args["fix-of"];
+  }
   if (!title && !fields.brief) die(COMMAND_USAGE.new);
   const scope = listArg("scope", "new");
   // Use the same normalized or derived title as the server, and report its

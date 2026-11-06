@@ -2850,6 +2850,18 @@ export class Ledger extends DurableObject<Env> {
   // an older CLI sends, becomes the brief with a short title derived from
   // it. The item answers with `derived` set then, so the CLI can say so.
   newItem(title: string, scope: string[], actor: string, fields: ItemFields = {}): Item & { derived?: true; revert?: { itemId: string; mergeCommit: string } } {
+    if (fields.fixOf !== undefined) {
+      if (typeof fields.fixOf !== "string" || !/^t[1-9]\d*$/.test(fields.fixOf)) throw new RuleError("bad_field", "fixOf must name a task, such as t7", 400);
+      const original = this.item(fields.fixOf);
+      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409);
+      if (fields.revertOf !== undefined) throw new RuleError("bad_field", "a task cannot be both a repair and a revert", 400);
+      const { fixOf, ...rest } = fields;
+      return this.ctx.storage.transactionSync(() => {
+        const made = this.newItem(title, scope, actor, rest);
+        this.log(made.id, actor, "item.fix_of", { itemId: fixOf }, made.createdAt);
+        return made;
+      });
+    }
     if (fields.revertOf !== undefined) {
       const original = this.item(fields.revertOf);
       if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409, `run atelier show ${original.id}`);
@@ -2903,6 +2915,7 @@ export class Ledger extends DurableObject<Env> {
   // number, which `restore` reads back to put them in place again.
   editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string, restore?: number): Item & { criteriaChange?: CriteriaChange; dropped?: EditDropped; restore?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403, `only the developer can: atelier edit ${id}`);
+    if ("fixOf" in fields) throw new RuleError("bad_field", "fixOf is set only when creating a task", 400);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`, 409, "run atelier ls to pick another task");
@@ -7521,6 +7534,18 @@ export class Ledger extends DurableObject<Env> {
       .map((i) => ({ item: i.id, state: i.state, owner: i.owner, head: i.head, since: i.updatedAt }));
   }
 
+  repairLinks(id: string): { fixes: string | null; fixedBy: string[] } {
+    const rows = this.sql.exec(`SELECT item_id, data FROM events WHERE kind = 'item.fix_of' AND (item_id = ? OR json_extract(data, '$.itemId') = ?) ORDER BY seq`, id, id).toArray();
+    let fixes: string | null = null;
+    const fixedBy = new Set<string>();
+    for (const row of rows) {
+      const target = (JSON.parse(row.data as string) as { itemId: string }).itemId;
+      if (row.item_id === id) fixes = target;
+      if (target === id) fixedBy.add(row.item_id as string);
+    }
+    return { fixes, fixedBy: [...fixedBy] };
+  }
+
   detail(id: string) {
     const item = this.item(id);
     const policy = this.project().policy;
@@ -7546,7 +7571,7 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const lastDeploy = this.lastDeploy();
-    return { item, ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
+    return { item, repairs: this.repairLinks(id), ...(lastDeploy ? { lastDeploy } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: this.liveReviewOf(item), reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id), landing: this.landingRecord(id), notes: this.numberedNotes(id), openRequests: this.openRequests(id), lapsedRequests: this.lapsedRequests(id), tierReview: this.tierReviewNow(id), blockers: (item.blockedBy ?? []).map((b) => this.blockerOf(b)), progress: this.progressOf(id), landJob: this.landJobOf(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
