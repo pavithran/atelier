@@ -2130,7 +2130,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
       ...(has("criteriaReview") ? { criteriaReview: (() => {
-        if (body.criteriaReview !== "parallel" && body.criteriaReview !== "before") throw new RuleError("bad_policy", "criteriaReview must be parallel or before", 400);
+        if (body.criteriaReview !== "parallel" && body.criteriaReview !== "before") throw new RuleError("bad_policy", "criteriaReview must be parallel or before", 400, "run atelier init --criteria-review parallel");
         return body.criteriaReview;
       })() } : {}),
       ...(has("requireCriteriaReview") ? { requireCriteriaReview: Boolean(body.requireCriteriaReview) } : {}),

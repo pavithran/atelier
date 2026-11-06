@@ -834,7 +834,13 @@ it("init stores either timing, preserves it on re-init, resets to before and ref
   expect((await pol({ title: "Keep timing" })).criteriaReview).toBe("parallel");
   expect((await pol({ criteriaReview: "before" })).criteriaReview).toBe("before");
   expect((await pol({ reset: true, checks: ["npm test"] })).criteriaReview ?? "before").toBe("before");
-  expect((await init({ criteriaReview: "later" })).status).toBe(400);
+  // G8: the route and the Ledger's own merge of the policy both refuse an
+  // invalid timing naming the command that records a valid one.
+  const refused = await init({ criteriaReview: "later" });
+  expect(refused.status).toBe(400);
+  expect(await refused.json()).toMatchObject({ error: "bad_policy", next: "run atelier init --criteria-review parallel" });
+  const direct = parseRuleError(await ledger("criteria-init").initProject({ name: "criteria-init", repo: "criteria-init", reset: false, criteriaReview: "later" } as never, "owner").then(() => { throw new Error("expected a bad_policy refusal"); }, (e: unknown) => e as Error));
+  expect(direct).toMatchObject({ code: "bad_policy", next: "run atelier init --criteria-review parallel" });
   expect((await ledger("criteria-init").project()).policy.criteriaReview ?? "before").toBe("before");
   const issued = await call("POST", "/tokens", "owner", { actor: GLM, projects: ["criteria-init"] });
   const agent = await issued.json() as { token: string };
