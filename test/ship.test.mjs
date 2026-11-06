@@ -427,6 +427,57 @@ test("a failed delivery check records the deploy and wraps before reporting deli
   assert.notEqual(git(f.github, "rev-parse", "main"), f.head, "push remains blocked");
 });
 
+// t501: the verify that names the shipped commit cannot be satisfied by an
+// old build answering 200, and the ship proves the version when it passes.
+test("verify-delivery proves the shipped commit is live: an old commit answering 200 fails, the shipped commit passes", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: (url) => ({
+    schema_version: 1, kind: "atelier.ship", class: "web",
+    deploy: { run: ["bin/deploy.sh"] },
+    "verify-deploy": { request: `${url}/version`, status: 200, expect: "{commit}" },
+    push: { remote: "github", branch: "main" },
+  }) });
+  // The dry run shows what the answer must hold.
+  const dry = await f.run(["ship", "--dry-run"]);
+  assert.match(dry.stdout, new RegExp(`GET ${f.url}/version, expecting 200, holding "\\{commit\\}" in its body`));
+  // The live site serves an old commit with 200: the ship records the failed
+  // verify, wraps, and stops with the delivery unconfirmed, nothing pushed.
+  const r = await f.run(["ship", "--push"]);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, new RegExp(`Delivery is unconfirmed at ${f.head.slice(0, 8)}`));
+  const verified = f.state.runs.find((x) => x.step === "verify-delivery");
+  assert.equal(verified.passed, false);
+  assert.match(verified.outputTail, new RegExp(`answered 200, but the body does not hold "${f.head}"; expected 200 with it there`));
+  assert.match(r.stderr, new RegExp(`curl.*--location.*${f.url}/version.*# expected 200 holding "${f.head}" in the body`));
+  assert.equal(f.state.deploys.at(-1).result, "failed");
+  assert.equal(f.state.deploys.at(-1).step, "verify-delivery");
+  assert.notEqual(git(f.github, "rev-parse", "main"), f.head, "push remains blocked");
+  // The same ship once the site serves the shipped commit passes, proves the
+  // version and pushes: no unproven note anywhere.
+  f.state.liveCommit = f.head;
+  f.state.approvals.push({ id: "a2", kind: "deploy", commit: f.head, note: "", by: "owner", at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString() });
+  const again = await f.run(["ship", "--push"]);
+  assert.equal(again.status, 0, again.stderr + again.stdout);
+  assert.equal(git(f.github, "rev-parse", "main"), f.head, "the shipped head was pushed");
+  assert.match(again.stdout, new RegExp(`Shipped demo at ${f.head.slice(0, 8)}: commit, deploy, verify-delivery, wrap, push ran, each recorded on the ledger\\.\\n$`));
+  assert.doesNotMatch(again.stdout, /version not proven/, "the expected text proved the version");
+  assert.equal(f.state.deploys.at(-1).result, "shipped");
+  assert.equal(f.state.deploys.at(-1).note, undefined);
+});
+
+// t501: a project with no version route keeps today's behaviour, and the
+// report says the delivery was not proven to be the new build.
+test("a verify request without an expected text still passes on status alone, and the ship says the version was not proven", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"] });
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(readFileSync(f.marker, "utf8"), "deployed\n", "the deploy ran");
+  assert.match(f.state.runs.find((x) => x.step === "verify-delivery").outputTail, /\/live answered 200; expected 200$/);
+  assert.equal(f.state.runs.find((x) => x.step === "verify-delivery").note, "verifies the deploy");
+  assert.match(r.stdout, /verify-delivery: delivered, version not proven: no request named what its answer must hold, so an old build or a sign-in page would pass/);
+  assert.match(r.stdout, /Shipped demo at [0-9a-f]{8}: commit, deploy, verify-delivery, wrap ran, each recorded on the ledger\. Delivered, version not proven\./);
+  assert.equal(f.state.deploys[0].note, "delivered, version not proven");
+});
+
 test("request verification can check an Access redirect without following it", async (t) => {
   let signins = 0;
   const server = createServer((req, res) => {
@@ -447,10 +498,107 @@ test("request verification can check an Access redirect without following it", a
   assert.equal((await runRequest({ ...run, request: request.replace("/private", "/public") })).passed, false, "a public 200 does not satisfy the Access 302 check");
   for (const redirect of [false, "error", "bogus"]) {
     const bad = plan(t, { "docs/atelier/ship.json": { ...WEB_SHIP, "verify-deploy": { request, redirect } } });
-    assert.match(bad.problems.join("\n"), /"redirect" must be follow or manual/);
+    assert.match(bad.problems.join("\n"), /"redirect" must be follow, manual or forbid/);
   }
   const command = plan(t, { "docs/atelier/ship.json": { ...WEB_SHIP, "verify-deploy": { run: ["true"], redirect: "manual" } } });
-  assert.match(command.problems.join("\n"), /"redirect" must be follow or manual, on a "request"/);
+  assert.match(command.problems.join("\n"), /"redirect" must be follow, manual or forbid, on a "request"/);
+});
+
+// t501: verify-delivery must prove the shipped commit is live, not just that
+// something answered. A request may name the text its answer must hold, with
+// {commit} and {short} standing for the revision being shipped, looked for in
+// the body or in a named response header, and may forbid redirects, so an old
+// build or a sign-in page behind one fails it.
+test("a verify request may name the text its answer must hold, in the body or a named header", async (t) => {
+  const served = { commit: "0".repeat(40) };
+  const server = createServer((req, res) => {
+    if (req.url === "/plain") { res.writeHead(200); return res.end("hello"); }
+    res.writeHead(200, { "x-build": served.commit });
+    res.end(JSON.stringify({ commit: served.commit }));
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/version`;
+  const head = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const run = (verify) => plan(t, { "docs/atelier/ship.json": { ...WEB_SHIP, "verify-deploy": verify } }).steps.find((s) => s.step === "verify-delivery").runs[0];
+  const body = run({ request: url, status: 200, expect: "{commit}" });
+  assert.equal(body.label, `GET ${url}, expecting 200, holding "{commit}" in its body`);
+  // The server still serves the old commit, with 200: that fails the verify.
+  const old = await runRequest(body, head);
+  assert.equal(old.passed, false);
+  assert.match(old.output, new RegExp(`^${url} answered 200, but the body does not hold "${head}"; expected 200 with it there$`));
+  // The same request, with the shipped commit served, passes.
+  served.commit = head;
+  const now = await runRequest(body, head);
+  assert.equal(now.passed, true);
+  assert.match(now.output, new RegExp(`^${url} answered 200 holding "${head}" in the body; expected 200 with it there$`));
+  // {short} names the first eight characters, and "header" looks in that
+  // response header instead of the body.
+  const header = run({ request: url, status: 200, expect: "{short}", header: "x-build" });
+  assert.equal(header.label, `GET ${url}, expecting 200, holding "{short}" in the x-build header`);
+  served.commit = "9".repeat(40);
+  assert.equal((await runRequest(header, head)).passed, false, "the header holds another commit");
+  served.commit = head;
+  const held = await runRequest(header, head);
+  assert.equal(held.passed, true);
+  assert.match(held.output, /holding "abcdefab" in the x-build header/);
+  // An answer whose body does not hold the text fails, and so does one
+  // without the named header, whatever its status.
+  assert.equal((await runRequest({ ...body, request: url.replace("/version", "/plain") }, head)).passed, false);
+  const bare = await runRequest({ ...header, request: url.replace("/version", "/plain") }, head);
+  assert.equal(bare.passed, false);
+  assert.match(bare.output, /the x-build header does not hold "abcdefab"/);
+});
+
+test("a request that forbids redirects fails a 3xx answer, naming where it pointed", async (t) => {
+  let signins = 0;
+  const server = createServer((req, res) => {
+    if (req.url === "/private") { res.writeHead(302, { location: "/signin" }); res.end(); }
+    else { signins++; res.writeHead(200); res.end("sign in"); }
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => server.close());
+  const request = `http://127.0.0.1:${server.address().port}/private`;
+  const head = "b".repeat(40);
+  const p = plan(t, { "docs/atelier/ship.json": { ...WEB_SHIP, "verify-deploy": { request, status: 200, redirect: "forbid" } } });
+  assert.deepEqual(p.problems, []);
+  const run = p.steps.find((s) => s.step === "verify-delivery").runs[0];
+  assert.equal(run.label, `GET ${request}, expecting 200, redirects forbidden`);
+  // The redirect itself is the answer, and it fails, saying where it pointed;
+  // the sign-in page behind it is never asked.
+  const refused = await runRequest(run, head);
+  assert.equal(refused.passed, false);
+  assert.match(refused.output, new RegExp(`^${request} answered 302 pointing at http://127\\.0\\.0\\.1:\\d+/signin; redirects are forbidden here$`));
+  assert.equal(signins, 0, "a forbidden redirect is never followed");
+  // With redirects followed, today's behaviour, the sign-in page's 200 passes:
+  // the hole this closes.
+  const followed = await runRequest({ ...run, redirect: "follow" }, head);
+  assert.equal(followed.passed, true, "a followed redirect reaches the sign-in page's 200");
+  assert.equal(signins, 1);
+  // A 3xx answer that is only checked manually, expecting it, still passes.
+  const manual = await runRequest({ ...run, redirect: "manual", status: 302 }, head);
+  assert.equal(manual.passed, true);
+  assert.equal(signins, 1);
+});
+
+test("the expected text and the named header are read strictly", (t) => {
+  const base = { schema_version: 1, kind: "atelier.ship", class: "web", deploy: { run: ["./d"] }, "verify-deploy": { run: ["./v"] } };
+  const problems = (verify) => plan(t, { "docs/atelier/ship.json": { ...base, "verify-deploy": verify } }).problems.join("\n");
+  assert.equal(problems({ request: "https://x.test", status: 200, expect: "{commit}" }), "");
+  assert.equal(problems({ request: "https://x.test", status: 200, expect: "{short}", header: "x-build" }), "");
+  for (const [verify, problem] of [
+    [{ run: ["./v"], expect: "{commit}" }, /"expect" must be the text the answer must hold, on a "request"/],
+    [{ request: "https://x.test", expect: "" }, /"expect" must be the text the answer must hold, on a "request"/],
+    [{ request: "https://x.test", expect: 12 }, /"expect" must be the text the answer must hold, on a "request"/],
+    [{ request: "https://x.test", header: "x-build" }, /"header" must name the response header "expect" is looked for in, on a "request" with an "expect"/],
+    [{ run: ["./v"], header: "x-build" }, /"header" must name the response header "expect" is looked for in, on a "request" with an "expect"/],
+    [{ request: "https://x.test", expect: "{commit}", header: "" }, /"header" must name the response header "expect" is looked for in, on a "request" with an "expect"/],
+    [{ request: "https://x.test", redirect: "forbid", status: 302 }, /"redirect": "forbid" fails every 3xx answer, so it cannot expect status 302/],
+    [{ request: "https://x.test", redirect: "forbid", status: 301 }, /"redirect": "forbid" fails every 3xx answer, so it cannot expect status 301/],
+    [{ request: "https://x.test", expect: "{commit}", bogus: 1 }, /has a field atelier ship does not read: bogus/],
+  ]) assert.match(problems(verify), problem);
+  assert.equal(problems({ request: "https://x.test", redirect: "forbid", status: 200 }), "");
+  assert.equal(problems({ request: "https://x.test", redirect: "forbid" }), "");
 });
 
 for (const wrapOutcome of ["crash", "failed", "passed"]) test(`an unreachable delivery check with wrap ${wrapOutcome} never records ship success`, async (t) => {
