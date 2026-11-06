@@ -22,6 +22,25 @@ test("each window prints percent left and its reset without combining accounts",
   assert.doesNotMatch(lines, /Usage gemini:/);
 });
 
+test("a window is stale by its own reading time, not the report's receipt", () => {
+  // An hourly sender re-posts an old reading: the report is fresh, so only the
+  // window's own reading time can say how old the figure is.
+  const window = (at) => ({ name: "weekly", usedPercent: 81, resetsAt: new Date(now + 4 * 86_400_000).toISOString(), at });
+  const lines = summary.usageLines({ reports: [report("codex", 81, { windows: [
+    window(new Date(now - 24 * 3_600_000).toISOString()),
+    { name: "5-hour", usedPercent: 12, resetsAt: new Date(now + 3_600_000).toISOString(), at: new Date(now).toISOString() },
+  ] })] }, now);
+  assert.match(lines[0], /81% used, 19% left, stale, read 2026-11-03T12:00:00\.000Z, next reset/);
+  assert.match(lines[0], /12% used, 88% left, next reset/);
+  assert.doesNotMatch(lines[0], /; stale\)/, "the report itself is fresh");
+  // A window read within three hours prints as current, at the boundary too.
+  for (const at of [now, now - 3 * 3_600_000]) {
+    const line = summary.usageLines({ reports: [report("codex", 81, { windows: [window(new Date(at).toISOString())] })] }, now)[0];
+    assert.match(line, /81% used, 19% left, next reset/);
+    assert.doesNotMatch(line, /stale/);
+  }
+});
+
 test("a warning names the next builder and a reviewer independent of every contributor", () => {
   const text = advice();
   assert.match(text, /Warning: antigravity/);

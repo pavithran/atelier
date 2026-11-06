@@ -1,4 +1,5 @@
-// The models key is a session plan in either mode. The other standing
+// The models key is a session plan in either mode. dispatch-on-criteria
+// also acts in either mode, on the developer's instruction. The other standing
 // instructions (Atelier 2.0, G6) are the only automatic actions left
 // to the server and the tick. Each is a standing decision the developer
 // records with `atelier decide --standing KEY VALUE --quote "…"`, with their
@@ -15,6 +16,7 @@
 // episode is noticed after LIMITS.noticeAfterMs.
 
 import { TEXT_CONTROLS } from "./text.ts";
+import { POOL_FAMILIES } from "./models/pool.ts";
 import { RuleError, validActor } from "./rules.ts";
 
 export interface StandingKey {
@@ -26,6 +28,11 @@ export interface StandingKey {
 const onOff = (v: string) => (v === "on" || v === "off" ? v : null);
 
 export const STANDING: Record<string, StandingKey> = {
+  "dispatch-on-criteria": {
+    value: "harness/model or off",
+    says: (v) => v === "off" ? "criteria approval dispatches no task by itself" : `criteria approval dispatches an undispatched task home to ${v}, once its holds are cleared, in either mode`,
+    parse: (v) => v === "off" || (validActor(v) && v.includes("/")) ? v : null,
+  },
   models: {
     value: "non-empty text describing the models, roles and effort levels",
     says: () => "unwrap prints this model plan at the start of a session",
@@ -40,6 +47,22 @@ export const STANDING: Record<string, StandingKey> = {
     value: "on or off",
     says: (v) => v === "on" ? "a review request withdrawn because the task's head moved is asked again of the same reviewer at the new head, once the gate needs it" : "a review request the head moved past stays withdrawn until it is asked again",
     parse: onOff,
+  },
+  "review-on-checked": {
+    value: "company=harness/model pairs separated by commas, or off",
+    says: (v) => v === "off" ? "no review is asked when checks pass" : `the stage tick asks the reviewer mapped to the builder's company when checks pass: ${v}`,
+    parse: (v) => {
+      if (v === "off") return v;
+      const seen = new Set<string>();
+      for (const pair of v.split(",")) {
+        const parts = pair.split("=");
+        if (parts.length !== 2) return null;
+        const [company, reviewer] = parts;
+        if (!POOL_FAMILIES.includes(company as typeof POOL_FAMILIES[number]) || seen.has(company) || !reviewer.includes("/") || !validActor(reviewer)) return null;
+        seen.add(company);
+      }
+      return v;
+    },
   },
   "post-merge-reviewer": {
     value: "a reviewer as harness/model, or off",

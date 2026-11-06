@@ -20,7 +20,13 @@ export function usageLines(value: { reports?: UsageReport[] } | null, now = Date
     const found = reports.filter((r) => r.tool === tool);
     if (!found.length) return [`Usage ${plain(tool, 32)}: no figure; ${value ? usageReasons[tool] ?? "no report" : "usage reports could not be read"}.`];
     return found.map((r) => {
-      const windows = r.windows.map((w) => `${plain(w.name, 40)} ${w.usedPercent}% used, ${Math.max(0, Math.round((100 - w.usedPercent) * 10) / 10)}% left, next reset ${w.resetsAt ?? "unknown"}${w.resetsAt && Date.parse(w.resetsAt) <= now ? " (past; await a new reading)" : ""}`).join("; ");
+      // A window is stale by its own reading time, as usageAdvice judges it
+      // (t508): a runner may re-post an old reading on schedule, and a fresh
+      // receipt time would hide its age.
+      const windows = r.windows.map((w) => {
+        const stale = w.at && now - Date.parse(w.at) > STALE_MS ? `, stale, read ${w.at}` : "";
+        return `${plain(w.name, 40)} ${w.usedPercent}% used, ${Math.max(0, Math.round((100 - w.usedPercent) * 10) / 10)}% left${stale}, next reset ${w.resetsAt ?? "unknown"}${w.resetsAt && Date.parse(w.resetsAt) <= now ? " (past; await a new reading)" : ""}`;
+      }).join("; ");
       return `Usage ${plain(tool, 32)} (${plain(r.runner, 80)}; reported ${r.at}${isStale(r, now) ? "; stale" : ""}): ${windows || `no figure; ${usageReasons[tool] ?? "no allowance window reported"}`}.`;
     });
   });
