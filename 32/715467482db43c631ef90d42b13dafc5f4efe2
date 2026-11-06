@@ -1,0 +1,36 @@
+atelier atelier/t496 "A new review request clears the runner's remembered skip, and an unclaimed…"
+accepted head d07a9dcb9d00bab37eb5117edd876f2ff145b100
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+OBSERVED pass npm run typecheck — opencode/glm-5.3 2026-11-06T19:27:44.628Z
+REVIEW approve by claude-code/sonnet-5.5 at d07a9dcb9d00bab37eb5117edd876f2ff145b100, recorded by claude-code/sonnet-5.5
+CHECKED TREE adb06a3a3c7cab3a08d638194b33e500581d2ce9: the merge produced exactly the tree these checks passed on (npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-11-06T03:37:07.366Z pavi item.created
+2026-11-06T03:37:07.923Z pavi item.edited
+2026-11-06T03:37:07.923Z claude-code/opus-5.5 criteria.revised
+2026-11-06T03:37:07.923Z pavi item.criteria_changed
+2026-11-06T18:05:16.273Z pavi item.dispatched
+2026-11-06T18:08:55.684Z opencode/glm-5.3 item.claimed
+2026-11-06T18:08:55.716Z opencode/glm-5.3 workspace.created
+2026-11-06T18:53:59.675Z opencode/glm-5.3 item.released
+2026-11-06T18:54:29.991Z opencode/glm-5.3 item.claimed
+2026-11-06T18:54:30.046Z opencode/glm-5.3 workspace.moved
+2026-11-06T19:27:40.867Z opencode/glm-5.3 push.observed
+2026-11-06T19:27:44.654Z opencode/glm-5.3 evidence.observed
+2026-11-06T19:27:44.850Z opencode/glm-5.3 item.submitted
+2026-11-06T19:28:25.646Z pavi land.start
+2026-11-06T19:28:27.040Z pavi review.requested
+2026-11-06T19:28:27.040Z pavi review.tier_needed
+2026-11-06T19:28:27.375Z pavi land.review
+2026-11-06T19:28:27.446Z pavi land.requested
+2026-11-06T19:28:31.979Z claude-code/sonnet-5.5 review.claimed
+2026-11-06T19:28:58.808Z pavi review.requested
+2026-11-06T19:29:22.213Z claude-code/sonnet-5.5 review.approved
+2026-11-06T19:29:22.213Z atelier/orchestrator goal.notes
+2026-11-06T19:29:25.986Z codex/gpt-6-astra review.claimed
+2026-11-06T19:29:26.582Z atelier/orchestrator review.withdrawn
+2026-11-06T19:29:26.582Z pavi item.accepted
+2026-11-06T19:29:27.361Z pavi land.start
+2026-11-06T19:29:27.435Z pavi landing.leased
+2026-11-06T19:29:27.509Z pavi land.lease
+2026-11-06T19:29:28.406Z pavi checkout.leased
