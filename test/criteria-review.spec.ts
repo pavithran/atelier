@@ -856,6 +856,7 @@ it("parallel dispatches planned parts but asks no automatic gate review until cr
   const L = await setup("criteria-parallel-plan", { ...gated, criteriaReview: "parallel" });
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, []);
   await L.claim(item.id, OPUS, RUNNER);
+  await L.setWorkspace(item.id, `fork-${item.id}`, H0, OPUS);
   const part: PlanPart = { key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" };
   const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
   if (!post.valid) throw new Error(post.errors.join("; "));
@@ -871,6 +872,19 @@ it("parallel dispatches planned parts but asks no automatic gate review until cr
   expect(await L.reviewWaiting()).toEqual([]);
   await reviewed(L, id, true);
   expect((await L.reviewWaiting()).map((i) => i.id)).toEqual([id]);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: H1, approve: true, note: "Good", at: new Date().toISOString() });
+  const integrator = "atelier/integrator";
+  await L.claim(item.id, integrator, RUNNER, true);
+  await L.integratePart(item.id, integrator, "a", H1, true);
+  await L.recordPush(item.id, integrator, H1, H1);
+  await L.submit(item.id, integrator);
+  await L.addEvidence({ itemId: item.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a/x.ts"] } satisfies Evidence);
+  await L.accept(item.id, "owner");
+  await L.beginLanding(item.id, "owner", H1);
+  await L.merged(item.id, "owner", "c".repeat(40), true);
+  expect((await L.item(item.id)).state).toBe("merged");
+  expect((await L.item(id)).state).toBe("merged");
 });
 
 
@@ -882,4 +896,30 @@ it("a builder's next brief carries criteria revised and approved during its clai
   await L.editItem(id, "owner", { accept: ["Two"] });
   await reviewed(L, id, true);
   expect((await L.jobBrief(id, OPUS)).text).toMatch(/Revised acceptance criteria \(revision 2\)[\s\S]*1. Two/);
+});
+
+
+it("before keeps the existing brief after criteria are revised and approved during a build", async () => {
+  const L = await setup("criteria-before-brief", { ...gated, criteriaReview: "before" });
+  const { id } = await L.newItem("First", ["src/**"], "owner", { accept: ["One"], brief: "Build the search feature." });
+  await reviewed(L, id, true);
+  await L.claim(id, OPUS, RUNNER);
+  await L.editItem(id, "owner", { accept: ["Two"] });
+  await reviewed(L, id, true);
+  const brief = await L.jobBrief(id, OPUS);
+  expect(brief.text).toBe([
+    "## Review of the acceptance criteria",
+    "The acceptance criteria were reviewed before the build, apart from any review of the change. Each review is shown with its findings and the developer's recorded resolution of each; a finding with no resolution stands as the reviewer left it. Revision 2 is the criteria as they are now.",
+    "Criteria review 1, revision 1 (an earlier revision, since changed): zcode/glm-5.3 approved.\n```\nsummary: Clear.\n```",
+    "Criteria review 2, revision 2 (the criteria as they are now): zcode/glm-5.3 approved.\n```\nsummary: Clear.\n```",
+  ].join("\n\n"));
+  expect((await L.item(id)).accept).toEqual(["Two"]);
+  await L.setWorkspace(id, `fork-${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/search.ts"] } satisfies Evidence);
+  await L.submit(id, OPUS);
+  await L.requestReview(id, "owner", GPT, POOL);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.item.brief).not.toContain("Revised acceptance criteria");
+  expect(claim.item.brief).toBe("Build the search feature.");
 });
