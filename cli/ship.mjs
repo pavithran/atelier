@@ -102,7 +102,7 @@ function buildSteps(order, runsFor, hint, push, problems) {
 
 // Atelier's own ship file. Its schema is in docs/ship.md.
 const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "install", "verify-install", "deploy", "verify-deploy", "push", ...ADDED]);
-const RUN_KEYS = new Set(["run", "request", "status", "redirect", "timeout_seconds", "approval", "description", "if_changed", "retries", "terminal"]);
+const RUN_KEYS = new Set(["run", "request", "status", "redirect", "expect", "header", "timeout_seconds", "approval", "description", "if_changed", "retries", "terminal"]);
 const DELIVERY_FIELDS = { install: ["installable", "hybrid"], "verify-install": ["installable", "hybrid"], deploy: ["web", "hybrid"], "verify-deploy": ["web", "hybrid"] };
 
 function atelierShip(doc, problems, notes, file) {
@@ -159,7 +159,9 @@ function parseIfChanged(v, where, problems) {
 }
 
 // One run, or a list of them: {"run": [argv...]} or {"request": URL, "status": 200},
-// each with an optional timeout_seconds and approval kind.
+// a request naming what its answer must hold ("expect", with {commit} and
+// {short} placeholders, looked for in the body or in a "header") and whether
+// a redirect is allowed, each with an optional timeout_seconds and approval kind.
 function parseRuns(value, field, problems, file) {
   const list = value === undefined ? [] : Array.isArray(value) ? value : [value];
   return list.map((r, i) => {
@@ -182,7 +184,9 @@ function parseRuns(value, field, problems, file) {
       if (r.terminal !== true || r.run === undefined) { problems.push(`${where} "terminal" must be true, on a "run"`); return null; }
       extra.terminal = true;
     }
-    if (r.redirect !== undefined && (r.request === undefined || !["follow", "manual"].includes(r.redirect))) { problems.push(`${where} "redirect" must be follow or manual, on a "request"`); return null; }
+    if (r.redirect !== undefined && (r.request === undefined || !["follow", "manual", "forbid"].includes(r.redirect))) { problems.push(`${where} "redirect" must be follow, manual or forbid, on a "request"`); return null; }
+    if (r.expect !== undefined && (typeof r.expect !== "string" || !r.expect || r.request === undefined)) { problems.push(`${where} "expect" must be the text the answer must hold, on a "request"`); return null; }
+    if (r.header !== undefined && (typeof r.header !== "string" || !r.header || r.request === undefined || r.expect === undefined)) { problems.push(`${where} "header" must name the response header "expect" is looked for in, on a "request" with an "expect"`); return null; }
     if (r.run !== undefined && r.request === undefined) {
       if (!Array.isArray(r.run) || !r.run.length || r.run.some((w) => typeof w !== "string" || !w)) { problems.push(`${where} "run" must be the command and its arguments, as a list of strings`); return null; }
       return { label: r.run.map(quote).join(" "), argv: [...r.run], timeoutMs: seconds(r.timeout_seconds, RUN_SECONDS) * 1000, kind, ...extra };
@@ -193,7 +197,10 @@ function parseRuns(value, field, problems, file) {
       if (!url || !["https:", "http:"].includes(url.protocol)) { problems.push(`${where} "request" must be an http or https URL`); return null; }
       const status = r.status ?? 200;
       if (!Number.isInteger(status) || status < 100 || status > 599) { problems.push(`${where} "status" must be an HTTP status, such as 200`); return null; }
-      return { label: `GET ${r.request}, expecting ${status}${r.redirect === "manual" ? ", without following redirects" : ""}`, request: r.request, status, redirect: r.redirect ?? "follow", timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind, ...extra };
+      if (r.redirect === "forbid" && status >= 300 && status < 400) { problems.push(`${where} "redirect": "forbid" fails every 3xx answer, so it cannot expect status ${status}`); return null; }
+      const asked = r.redirect === "manual" ? ", without following redirects" : r.redirect === "forbid" ? ", redirects forbidden" : "";
+      const held = r.expect !== undefined ? `, holding ${JSON.stringify(r.expect)}${r.header ? ` in the ${r.header} header` : " in its body"}` : "";
+      return { label: `GET ${r.request}, expecting ${status}${asked}${held}`, request: r.request, status, redirect: r.redirect ?? "follow", expect: r.expect, header: r.header, timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind, ...extra };
     }
     problems.push(`${where} needs "run" or "request", not both`);
     return null;
@@ -379,16 +386,54 @@ export async function runTerminal(argv, { cwd, env, timeoutMs }) {
 // The one GET this module makes, for runRequest and the if_changed read.
 const get = (url, options) => fetch(url, options);
 
-// A GET of the URL that must answer with the expected status.
-export async function runRequest(run) {
+// The text a request's answer must hold, with {commit} and {short} standing
+// for the revision being shipped: its full form and its first eight
+// characters. Null when the request names none.
+const expectedText = (run, commit) => run.expect?.replaceAll("{commit}", commit ?? "").replaceAll("{short}", short(commit ?? "")) ?? null;
+
+// The answer's body as text, kept to the last megabyte: any version route
+// answers far less, and a text past that cut fails the check as a shorter
+// body that does not hold it.
+async function readBody(res) {
+  const decoder = new TextDecoder();
+  let text = "";
+  if (!res.body) return text;
+  for await (const chunk of res.body) {
+    text += decoder.decode(chunk, { stream: true });
+    if (text.length >= KEEP) { await res.body.cancel(); return text.slice(0, KEEP); }
+  }
+  return text + decoder.decode();
+}
+
+// A GET of the URL that must answer with the expected status, hold the
+// expected text (in its body, or in the header the run names) and, when
+// redirects are forbidden, not redirect at all: a sign-in page or an old
+// build answering 200 must not pass for the shipped commit (t501).
+export async function runRequest(run, commit) {
   const started = Date.now();
+  const done = (passed, output) => ({ status: null, signal: null, durationMs: Date.now() - started, passed, output });
   try {
-    const res = await get(run.request, { redirect: run.redirect ?? "follow", signal: AbortSignal.timeout(run.timeoutMs) });
-    await res.body?.cancel();
+    const res = await get(run.request, { redirect: (run.redirect ?? "follow") === "follow" ? "follow" : "manual", signal: AbortSignal.timeout(run.timeoutMs) });
+    if (run.redirect === "forbid" && res.status >= 300 && res.status < 400) {
+      await res.body?.cancel();
+      let to = res.headers.get("location");
+      if (to) { try { to = new URL(to, run.request).href; } catch { /* the server's own words */ } }
+      return done(false, `${run.request} answered ${res.status}${to ? ` pointing at ${to}` : ""}; redirects are forbidden here`);
+    }
     const moved = res.url && res.url !== run.request ? ` at ${res.url}` : "";
-    return { status: null, signal: null, durationMs: Date.now() - started, passed: res.status === run.status, output: `${run.request} answered ${res.status}${moved}; expected ${run.status}` };
+    const want = expectedText(run, commit);
+    const where = run.header ? `the ${run.header} header` : "the body";
+    const holding = want === null ? null : run.header ? res.headers.get(run.header) : await readBody(res);
+    if (want === null || run.header) await res.body?.cancel();
+    const passed = res.status === run.status && (want === null || holding?.includes(want) === true);
+    const output = want === null
+      ? `${run.request} answered ${res.status}${moved}; expected ${run.status}`
+      : passed
+        ? `${run.request} answered ${res.status}${moved} holding ${JSON.stringify(want)} in ${where}; expected ${run.status} with it there`
+        : `${run.request} answered ${res.status}${moved}, but ${where} does not hold ${JSON.stringify(want)}; expected ${run.status} with it there`;
+    return done(passed, output);
   } catch (error) {
-    return { status: null, signal: null, durationMs: Date.now() - started, passed: false, output: `${run.request} could not be reached: ${error.message}` };
+    return done(false, `${run.request} could not be reached: ${error.message}`);
   }
 }
 
@@ -498,6 +543,7 @@ export async function ship(ctx) {
   const id = `s-${Date.now().toString(36)}`;
   const ran = [];
   let unconfirmed = null;
+  let unproven = false;
   const record = (step, r, extra) => request("POST", `${P}/actions/runs`, {
     step, kind: r.kind ?? null, approval: r.approval ?? null, command: r.command ?? null, commit,
     exitStatus: r.status ?? null, signal: r.signal ?? null, durationMs: r.durationMs ?? 0, passed: r.passed,
@@ -567,7 +613,7 @@ export async function ship(ctx) {
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
           await starting(s.step, command);
-          const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run);
+          const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run, head);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });
           if (!run.argv) print(`${s.step}: ${r.output}`);
@@ -588,7 +634,7 @@ export async function ship(ctx) {
       if (s.step === "verify-delivery" && s.verifies === "deploy") {
         const rechecks = s.runs.filter(r => !r.skip).map(r => r.argv
           ? `ATELIER_SHIP_HEAD=${quote(head)} ${r.argv.map(quote).join(" ")}`
-          : `curl --silent --show-error --max-time ${r.timeoutMs / 1000} --output /dev/null --write-out '%{http_code}\\n'${r.redirect === "manual" ? "" : " --location"} ${quote(r.request)} # expected ${r.status}`);
+          : `curl --silent --show-error --max-time ${r.timeoutMs / 1000} --output /dev/null --write-out '%{http_code}\\n'${(r.redirect ?? "follow") === "follow" ? " --location" : ""} ${quote(r.request)} # expected ${r.status}${r.expect !== undefined ? ` holding ${JSON.stringify(expectedText(r, head))} in ${r.header ? `the ${r.header} header` : "the body"}` : ""}`);
         unconfirmed = `Delivery is unconfirmed at ${short(commit)}: ${how}. Deploy passed. Recheck from ${quote(cwd)}:\n${rechecks.map(c => `  ${c}`).join("\n")}`;
         print(unconfirmed);
         ran.push("verify-delivery (unconfirmed)");
@@ -608,10 +654,18 @@ export async function ship(ctx) {
       await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: "verify-delivery", ran, note: unconfirmed.slice(0, 1000) });
       fail(`${unconfirmed}\nWrap passed. Not run: ${rest(i + 1).join(", ") || "nothing"}. Each step that ran is recorded on the ledger.`);
     }
+    // A verify step that passed, whose runs are requests that name no
+    // expected text, proved a server answered, not that the new build is
+    // live: an old build or a sign-in page would pass the same check (t501).
+    // The report says so, and the ship's record keeps it.
+    if (s.step === "verify-delivery" && s.runs.some((r) => !r.skip) && !s.runs.filter((r) => !r.skip).some((r) => r.argv || r.expect)) {
+      unproven = true;
+      print(`${s.step}: delivered, version not proven: no request named what its answer must hold, so an old build or a sign-in page would pass`);
+    }
     ran.push(s.runs.length && s.runs.every((r) => r.skip) ? `${s.step} (skipped)` : s.step);
   }
-  await ctx.deployed?.({ ship: id, head: commit, result: "shipped", ran });
-  print(`Shipped ${name} at ${short(commit)}: ${ran.join(", ")} ran, each recorded on the ledger.`);
+  await ctx.deployed?.({ ship: id, head: commit, result: "shipped", ran, ...(unproven ? { note: "delivered, version not proven" } : {}) });
+  print(`Shipped ${name} at ${short(commit)}: ${ran.join(", ")} ran, each recorded on the ledger.${unproven ? " Delivered, version not proven." : ""}`);
   if (pushStep && !ctx.push) {
     print(target
       ? `Not pushed (no --push). To push this revision, run atelier ship --push, or push by hand: git -C ${quote(cwd)} ${pushLabel(target, branch)}`
