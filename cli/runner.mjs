@@ -4780,7 +4780,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     dispatchBuilder: (request) => dispatchAsDeveloper(executeChild, { ...request, signal: controller.signal }),
     wake: (message) => ntfyWake(executeChild, message, { signal: controller.signal }),
     readItem: async ({ project, id, actor }) => {
-      const { server } = api ?? await import("./atelier.mjs");
+      // The CLI hands in `api`; without it there is no server to read from, and no dispute is looked for.
+      if (!api?.server) throw new Error("this runner has no server to read the task from");
+      const { server } = api;
       return readRunnerItem(runnerTransport({ server: server(), credential, runner: offer.runner }), { project, id, actor, signal: controller.signal });
     },
     removeFile: (file) => rmSync(file, { force: true }),
