@@ -489,3 +489,32 @@ To require a developer decision for a task, set
 `atelier edit ID --next-gate developer`. A landing refuses that task until the
 developer runs `atelier accept ID`. Other next-gate text remains descriptive.
 Plans still use their integration and acceptance workflow.
+
+A developer can record review and landing intent with the build dispatch:
+`atelier dispatch ID --agent H --model M --reviewer H/M --land`.
+The dispatch keeps the named reviewer. With `--land` and no `--reviewer`, it
+uses the project's `review-on-checked` mapping for the named builder's company;
+without a matching mapping it refuses. Submit asks the review under the current
+gate, reviewer admission and independence rules, then queues the ordinary land
+job. The lander needs a registered checkout and a runner offering `land`.
+A refusal leaves the task submitted and records `submission.review_wait`;
+resubmitting the same head retries, and the checked-stage tick retries too.
+
+`atelier status` and `status --brief` list a submitted task with no gate review
+at its current head under "Waiting on the orchestrator", with
+`atelier land ID --reviewer H/M --project NAME`. Status JSON includes the same
+command in `orchestratorWaits`; item snapshots carry `reviewAskedHead` (null
+when none). This field comes from the ledger's current gate review requests,
+including answered requests, excluding withdrawn, released and tier requests.
+An omitted field means an older server did not supply this information.
+
+`atelier-pulse` in ai-projects-ops (`bin/atelier-pulse`) implements the wake
+itself. It reads `item.submitted` and `review.requested` from `atelier events`,
+waking for a submitted head with no review asked and staying quiet when a
+review is asked for that head. This repository provides the dispatch-time
+review request and the status wait. The walters-coach regression test here
+covers the status half; pulse coverage belongs to ai-projects-ops.
+Before and after deployment, smoke-check a dispatch with `--reviewer --land`
+through submit, review approval and merge on a registered checkout. Also check
+that the installed pulse wakes once for an unasked head and stays quiet for an
+asked head. Local tests do not exercise the external pulse or a live runner.
