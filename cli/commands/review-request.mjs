@@ -13,20 +13,12 @@ export default async function reviewRequestCommand() {
   // G11: two or more reviewers are asked together, at one head, in one call.
   if (reviewers.length > 1) {
     if (reviewers.some((r) => typeof r !== "string" || !r.includes("/"))) die("--reviewer names the reviewer as harness/model, once per reviewer: atelier review-request ID --reviewer H/M --reviewer H/M");
-    if (args["tier-review"]) die("--tier-review asks one tier model; name one --reviewer");
     const r = await call("POST", `${I(name, id)}/review-request`, { reviewers, wanted: true, ...(args.hand ? { hand: true } : {}) }, OWNER);
     console.log(JSON.stringify(r));
     return;
   }
   if (args.reviewer !== undefined && (typeof args.reviewer !== "string" || !args.reviewer.includes("/"))) die("--reviewer names the reviewer as harness/model: atelier review-request ID --reviewer H/M");
   const named = typeof args.reviewer === "string";
-  // --tier-review asks the separate review of the project's review tier, beside the
-  // gate's, of the tier model named.
-  if (args["tier-review"]) {
-    const t = await call("POST", `${I(name, id)}/review-request`, { tier: true, ...(named ? { reviewer: args.reviewer } : {}), ...(args.hand ? { hand: true } : {}) }, OWNER);
-    if (t.needed === false) die(`${id} needs no separate tier review: ${t.reason}`);
-    return console.log(JSON.stringify(t));
-  }
   const r = await call("POST", `${I(name, id)}/review-request`, { ...(named ? { reviewer: args.reviewer, wanted: true } : {}), ...(args.hand ? { hand: true } : {}) }, OWNER);
   if (!named && r.needed === false) die(`${id} needs no review now: ${r.reason}. To ask one all the same, name the reviewer: atelier review-request ${id} --reviewer H/M`);
   console.log(JSON.stringify(r));

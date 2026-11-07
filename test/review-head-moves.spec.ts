@@ -170,26 +170,22 @@ it("the owner naming another reviewer at the new head replaces the carried reque
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}@${i.head!.slice(0, 1)}`)).toEqual([`${GEMINI}@b`]);
 });
 
-// G17: the tier review is recorded as needed (review.tier_needed, with the
-// candidates) at each head the gate request is carried to, and asked by command.
-it("a tier review is recorded as needed at the old head and again at the carried head; the model asks it by command beside the gate request", async () => {
-  const L = await setup("move-tier", { ...policy, reviewTier: [OPUS, SONNET] });
+// t518: the tier review is gone. A request carried to a moved head records no
+// review.tier_needed, whatever reviewTier an old policy holds, and asks no tier request.
+it("a carried gate request records no tier_needed at any head and asks no tier request", async () => {
+  const L = await setup("move-tier", { ...policy, reviewTier: [OPUS, SONNET] } as typeof policy);
   await standingReask(L);
   const id = await task(L);
   await submittedAt(L, id, A);
   await L.requestReview(id, "owner", GPT, POOL);
-  const needed = async () => (await events(L, id)).filter((e) => e.kind === "review.tier_needed").map((e) => e.data.head).sort();
-  expect(await needed()).toEqual([A]);
-  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
+  const noted = async () => (await events(L, id)).filter((e) => e.kind === "review.tier_needed" || e.data.tier === true || e.data.topTier === true);
+  expect(await noted()).toEqual([]);
   await landingMerge(L, id, B);
-  expect(await needed()).toEqual([A, B]);
-  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
-  expect(await L.requestTierReview(id, "owner", SONNET, POOL, undefined)).toMatchObject({ requested: true, head: B, reviewer: SONNET });
-  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}@${i.head!.slice(0, 1)}`)).toEqual([`${GPT}@b`, `${SONNET}@b`]);
-  // The tier request at B is closed with the gate's when the head moves again, and not carried (G6).
+  expect(await noted()).toEqual([]);
+  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}@${i.head!.slice(0, 1)}`)).toEqual([`${GPT}@b`]);
   await landingMerge(L, id, C);
-  expect((await L.reviewRequests(id)).filter((r) => r.tier).map((r) => ({ head: r.head, state: r.state }))).toEqual([{ head: B, state: "withdrawn" }]);
-  expect(await needed()).toEqual([A, B, C]);
+  expect(await noted()).toEqual([]);
+  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
 });
 
 it("a request left open at an old head is closed by the first claim, which gets the current head's, and never loops", async () => {

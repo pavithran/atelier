@@ -757,45 +757,49 @@ it("GET /api/version answers without a token, and every other /api route still n
   expect((await worker.fetch(new Request("https://atelier.test/api/projects"), noToken)).status).toBe(401);
 });
 
-it("a landing's review request with an explicit --reviewer outside the tier asks the review tier beside it, and the acceptance withdraws a tier review still open without waiting for it", async () => {
-  const SOL = "codex/gpt-6.1-sol", SONNET = "claude-code/sonnet-5.5", GEMINI = "antigravity/gemini-3.1-pro";
-  const L = await setup("land-tier", { ...policy, reviewTier: [OPUS, SONNET, SOL] });
+// t518: the separate tier review is gone, and approval from a company other
+// than the builder's stays the rule. A project whose recorded policy still
+// holds the old reviewTier list is a project like any other here.
+const OLD_TIER = [OPUS, "claude-code/sonnet-5.5", "codex/gpt-6.1-sol"];
+const withOldTier = (tier: boolean): ProjectPolicy => (tier ? { ...policy, reviewTier: OLD_TIER } : policy) as ProjectPolicy;
+
+for (const tier of [false, true]) it(`a task approved by one cross-company reviewer lands with no tier request and nothing waiting for one (${tier ? "an old policy holds a reviewTier" : "no reviewTier"})`, async () => {
+  const L = await setup(`land-one-reviewer-${tier}`, withOldTier(tier));
   const id = (await L.newItem("Landing", [], "owner")).id;
   const head = "a".repeat(40);
   await submittedTask(L, id, head);
-  // The owner's --reviewer wins over the tier, and is outside it.
-  const asked = await L.requestReview(id, "owner", GPT, POOL);
-  expect(asked).toMatchObject({ requested: true, reviewer: GPT });
-  // G17: no tier review is asked beside it by itself; the tier review is a recorded need, with candidates.
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: true, reviewer: GPT });
+  // Only the gate's request is open: no tier request, no tier_needed, no topTier.
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([GPT]);
-  expect((await L.detail(id) as unknown as { tierReview: { candidates: { actor: string }[] } }).tierReview.candidates.map((c) => c.actor)).toContain(SONNET);
-  // The developer asks it by command, naming a tier model; the builder (OPUS) is refused, SONNET, of the builder's family, is asked.
-  const TIER_POOL = [...POOL, { ...entry("sonnet-5.5", "claude-code"), where: "home" as const }];
-  await refusal(L.requestTierReview(id, "owner", null, TIER_POOL, undefined, true), "reviewer_needed", /tier review names no reviewer/);
-  await refusal(L.requestTierReview(id, "owner", OPUS, TIER_POOL, undefined, true), "tier_refused", /contributed/);
-  expect(await L.requestTierReview(id, "owner", SONNET, TIER_POOL, undefined, true)).toMatchObject({ needed: true, requested: true, reviewer: SONNET });
-  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([GPT, SONNET]);
-  // Asking again returns the gate's request, not the tier's, and makes no second tier request.
-  expect(await L.requestReview(id, "owner", null, POOL)).toMatchObject({ requested: false, reviewer: GPT });
-  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toHaveLength(1);
-  // The tier review is claimed; the gate's approval comes in and the task is
-  // accepted at once, without waiting for it: its request is withdrawn.
-  const reviewClaim3 = await L.claimReview(id, SONNET, RUNNER) as unknown as ReviewClaim;
-  const reviewClaim4 = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
-  await L.addReview({ request: reviewClaim4.request, itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
+  expect((await L.detail(id) as unknown as Record<string, unknown>).tierReview).toBeUndefined();
+  expect((await events(L, id)).map((e) => e.kind)).not.toContain("review.tier_needed");
+  expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { reviewer: GPT } });
+  expect((await events(L, id)).find((e) => e.kind === "review.requested")!.data).not.toHaveProperty("topTier");
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Fine.", at: new Date().toISOString() });
+  // The one approval lets the owner accept and the landing take its lease.
   await L.accept(id, "owner", head);
-  expect((await L.reviewRequests(id)).find((r) => r.tier)).toMatchObject({ state: "withdrawn" });
-  expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: SONNET, tier: true } });
-  // The tier verdict arriving late is refused and does not reopen the accepted task.
-  await refusal(L.addReview({ request: reviewClaim3.request, itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: false, note: "Late.", at: new Date().toISOString() }), "stale_request", /withdrawn or replaced/);
+  await L.beginLanding(id, "owner", head);
   expect(await L.item(id)).toMatchObject({ state: "accepted" });
-  // Where every tier model built the change or reviews it for the gate, no tier review is asked.
-  const solo = await setup("land-tier-none", { ...policy, reviewTier: [OPUS, GEMINI] });
-  const t = (await solo.newItem("Solo", [], "owner")).id;
-  await submittedTask(solo, t, head);
-  await solo.requestReview(t, "owner", GEMINI, NAMED_POOL);
-  expect((await solo.reviewRequests(t)).filter((r) => r.tier)).toEqual([]);
-  expect(await solo.requestTierReview(t, "owner", null, NAMED_POOL, undefined, true)).toMatchObject({ needed: false });
+  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
+});
+
+// Criterion 7 (t518): an approval from the builder's own company never lets
+// a task be accepted or land, with the old tier list or without it, and
+// whether the approval came on a request or not.
+for (const tier of [false, true]) it(`a task approved only by a reviewer of the builder's own company is refused at acceptance and landing (${tier ? "an old policy holds a reviewTier naming the reviewer" : "no reviewTier"})`, async () => {
+  const SONNET = "claude-code/sonnet-5.5";
+  const L = await setup(`land-same-company-${tier}`, withOldTier(tier));
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "b".repeat(40);
+  await submittedTask(L, id, head);
+  // Its approval, recorded anyway, does not count.
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: true, note: "Same company: fine.", at: new Date().toISOString() }, undefined, true);
+  await refusal(L.accept(id, "owner", head), "not_ready", /another family/);
+  await refusal(L.beginLanding(id, "owner", head), "acceptance_changed", /no longer accepted/);
+  expect(await L.item(id)).toMatchObject({ state: "submitted" });
+  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
 });
 
 // t394: the acceptance records the family mode in force and each contributor
@@ -826,21 +830,6 @@ it("an acceptance records the family mode in force and each contributor's compan
   // A later return to the default does not change what the acceptance recorded.
   await L.initProject({ name: "land-acceptance-family", repo: "land-acceptance-family--baseline", reset: false, familyMode: { single: null, by: "owner" } }, "owner");
   expect((await L.detail(id) as unknown as { acceptanceFamily: { singleFamily: string | null } }).acceptanceFamily.singleFamily).toBe("anthropic");
-});
-
-it("a tier approval alone does not let the task be accepted", async () => {
-  const L = await setup("land-tier-gate", { ...policy, reviewTier: ["claude-code/sonnet-5.5"] });
-  const id = (await L.newItem("Landing", [], "owner")).id;
-  const head = "b".repeat(40);
-  await submittedTask(L, id, head);
-  await L.requestReview(id, "owner", GPT, POOL);
-  // G17: the tier review is asked by command, naming the tier model.
-  await L.requestTierReview(id, "owner", "claude-code/sonnet-5.5", [...POOL, { ...entry("sonnet-5.5", "claude-code"), where: "home" as const }], undefined, true);
-  const reviewClaim5 = await L.claimReview(id, "claude-code/sonnet-5.5", RUNNER) as unknown as ReviewClaim;
-  await L.addReview({ request: reviewClaim5.request, itemId: id, criteria: await L.criteria(id), by: "claude-code/sonnet-5.5", head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
-  await refusal(L.accept(id, "owner", head), "not_ready", /another family/);
-  // The gate's request still stands for GPT.
-  expect((await L.reviewRequests(id)).find((r) => !r.tier)).toMatchObject({ state: "open" });
 });
 
 // t394: under single-family mode a landing names a different model of the
@@ -879,13 +868,12 @@ it("under single-family mode a landing's review goes to a different model of the
 });
 
 // t394, the review of e5cb758c: a claim is refused for another company's model
-// as a handoff to one is (G17: a dispatch always names its model); a separate tier review is asked only of the
-// company's tier models; and a landing that resumes on its standing request
+// as a handoff to one is (G17: a dispatch always names its model); and a landing that resumes on its standing request
 // judges that request's reviewer by the same mode.
-it("under single-family mode no other company's model claims, takes a handoff or is asked for the tier, and a landing resumes on its standing review", async () => {
-  const SONNET = "claude-code/sonnet-5.5", SOL = "codex/gpt-6.1-sol", FABLE = "claude-code/fable-5.1";
+it("under single-family mode no other company's model claims or takes a handoff, and a landing resumes on its standing review", async () => {
+  const SONNET = "claude-code/sonnet-5.5";
   const single: ProjectPolicy = { ...policy, familyMode: { single: "anthropic", by: "owner", at: AT } };
-  const L = await setup("land-single-family-guards", { ...single, reviewTier: [SOL, FABLE] });
+  const L = await setup("land-single-family-guards", single);
   const id = (await L.newItem("Guards", [], "owner")).id;
   // G17: a dispatch names its model, so the claim guard is met on a task not yet dispatched.
   await refusal(L.claim(id, GPT, RUNNER), "single_family", /^codex\/gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode \(anthropic\)/);
@@ -894,52 +882,11 @@ it("under single-family mode no other company's model claims, takes a handoff or
   const head = "d".repeat(40);
   await submittedTask(L, id, head);
   await refusal(L.handoff(id, OPUS, GPT, "over to you"), "single_family", /^codex\/gpt-6-astra is not one of anthropic's models/);
-  // The gate goes to SONNET, outside the tier. G17: the tier review is asked by command; SOL is another company's and refused, so FABLE is named.
+  // The gate goes to SONNET, a model of the company.
   expect(await L.requestReview(id, "owner", SONNET, [...POOL, entry("sonnet-5.5", "claude-code")])).toMatchObject({ requested: true, reviewer: SONNET });
-  const tierPool = [...POOL, entry("sonnet-5.5", "claude-code"), entry("gpt-6.1-sol", "codex"), entry("fable-5.1", "claude-code")];
-  await refusal(L.requestTierReview(id, "owner", SOL, tierPool, undefined, true), "tier_refused", /codex\/gpt-6\.1-sol cannot give t1's tier review/);
-  expect(await L.requestTierReview(id, "owner", FABLE, tierPool, undefined, true)).toMatchObject({ requested: true, reviewer: FABLE });
-  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([SONNET, FABLE]);
+  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([SONNET]);
   // The landing resumes on SONNET's open request: a different anthropic model is no refusal under the mode.
   const records = { project: "land-single-family-guards", sources: [], runs: [] };
   expect(await L.requestReview(id, "owner", null, POOL, false, false, records)).toMatchObject({ requested: false, reviewer: SONNET, head });
-});
-
-// G17: no tier model is picked first; the developer names one, and its one review serves the gate and the tier.
-it("a landing's review named as a tier model of another family serves the gate and the tier in one review", async () => {
-  const GEMINI = "antigravity/gemini-3.1-pro";
-  const pool = [...POOL, entry("gemini-3.1-pro", "antigravity")];
-  const L = await setup("land-tier-first", { ...policy, reviewTier: [OPUS, GPT] });
-  const id = (await L.newItem("Landing", [], "owner")).id;
-  const head = "c".repeat(40);
-  await submittedTask(L, id, head);
-  await refusal(L.requestReview(id, "owner", null, pool), "reviewer_needed", /names no reviewer, and Atelier picks none/);
-  expect(await L.requestReview(id, "owner", GPT, pool)).toMatchObject({ requested: true, reviewer: GPT });
-  // No separate tier request: the gate's request, asked of a tier model, is the tier's too.
-  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([GPT]);
-  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
-  expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { reviewer: GPT, topTier: true } });
-  const reviewClaim6 = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
-  await L.addReview({ request: reviewClaim6.request, itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
-  expect((await L.reviewsFor(id))[0]).toMatchObject({ by: GPT, topTier: true });
-  expect((await L.reviewsFor(id))[0].tier).toBeUndefined();
-  await L.accept(id, "owner", head);
-  expect(await L.item(id)).toMatchObject({ state: "accepted" });
-  // Without a tier, the same pool asks the reviewer named.
-  const plain = await setup("land-tier-first-none");
-  const t = (await plain.newItem("Plain", [], "owner")).id;
-  await submittedTask(plain, t, head);
-  expect(await plain.requestReview(t, "owner", GEMINI, pool)).toMatchObject({ reviewer: GEMINI });
-});
-
-it("an explicit --reviewer that is a tier model of another family serves the tier, and no separate tier request is made", async () => {
-  const SONNET = "claude-code/sonnet-5.5";
-  const L = await setup("land-tier-named", { ...policy, reviewTier: [OPUS, GPT, SONNET] });
-  const id = (await L.newItem("Landing", [], "owner")).id;
-  const head = "d".repeat(40);
-  await submittedTask(L, id, head);
-  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: true, reviewer: GPT });
-  expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
-  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([GPT]);
 });
 

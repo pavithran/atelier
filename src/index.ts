@@ -22,7 +22,7 @@ import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
-import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
+import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -469,7 +469,7 @@ function index(env: Env) {
   return guardLedger(env.LEDGER.get(env.LEDGER.idFromName("__index")), "__index", (env as unknown as Settings).DEPLOYED_MAIN, Date.now, ACTING_OF.get(env) ?? null);
 }
 // Sends the pool to every project's Ledger after the owner changes it, so the
-// ticks that run there without the index (tier reviews, a plan's reviews)
+// ticks that run there without the index (a plan's reviews)
 // skip a model just paused, reserved or kept from reviewing. A project that
 // cannot be reached keeps its last copy; the change itself stands.
 async function sendPool(env: Env): Promise<string[]> {
@@ -543,7 +543,6 @@ async function namedBuilderReasons(env: Env, projectKey: string, body: Record<st
 // only where what is stored from it is read by an exact reader of t622's:
 //
 //   route (under /projects/P)                  converted       read by
-//   PUT /projects/P (init)                     reviewTier      tierIds, marked exactNames (src/review/tier.ts)
 //   items/ID/plan (a plan document)            parts[].prefer  routePart, the proposal marked (src/plans/route.ts)
 //   items/ID/dispatch with --suggest           a bare model    suggestBuilder's --model filter (src/models/suggest.ts)
 //
@@ -560,7 +559,7 @@ async function namedBuilderReasons(env: Env, projectKey: string, body: Record<st
 // registeredActing, which keeps the declaration for retries. The pool is
 // read only when such a field is present.
 type NameFields = Record<string, unknown>;
-const CHOICES: Record<string, string[]> = { dispatch: ["model"], plan: ["parts"], init: ["reviewTier"] };
+const CHOICES: Record<string, string[]> = { dispatch: ["model"], plan: ["parts"] };
 // Which choice fields a request carries, by its route: the item's verb, a
 // plan's sub-verb, a new plan, or the project init.
 function choiceRoute(parts: readonly string[], method: string, body: NameFields): string | null {
@@ -1090,28 +1089,6 @@ function triageArg(value: unknown): string | null {
   const refusal = triageSettingRefusal(value);
   if (refusal) throw new RuleError("bad_triage", refusal, 400);
   return value as string;
-}
-
-// The project's review tier (src/review/tier.ts) as init sends it: a list
-// of harness/model actors, or one string of them separated by commas. Blank
-// entries are dropped and repeats kept once, in the owner's order; an empty
-// list clears the tier.
-function parseReviewTier(value: unknown): string[] {
-  const raw = typeof value === "string" ? value.split(",") : value;
-  if (!Array.isArray(raw) || !raw.every((a) => typeof a === "string")) {
-    throw new RuleError("bad_review_tier", "the review tier is a list of harness/model actors, such as claude-code/opus-5.5,codex/gpt-6.1-sol, or \"\" to clear it", 400);
-  }
-  const out: string[] = [];
-  for (const entry of raw.map((a) => a.trim()).filter(Boolean)) {
-    if (!validActor(entry) || !entry.includes("/")) throw new RuleError("bad_review_tier", `"${entry}" is not harness/model; the review tier lists actors such as claude-code/opus-5.5`, 400);
-    // Deduplicated by exact id: the tier's names were converted to exact pool
-    // ids where they entered (canonicalNames), and two entries of one model
-    // (codex/gpt-6-astra:a and :b) are two tier models (gpt-6-astra's
-    // nineteenth review of t622, finding 1).
-    if (!out.includes(entry)) out.push(entry);
-  }
-  if (out.length > REVIEW_TIER_MAX) throw new RuleError("too_long", `the review tier lists at most ${REVIEW_TIER_MAX} models`, 400);
-  return out;
 }
 
 // The company a project runs on alone (`atelier init --single-family`,
@@ -2115,8 +2092,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The model that triages a landing before its review (t475):
       // harness/model, or null or "" to clear it.
       ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
-      // The top review tier: harness/model actors, or [] or "" to clear it.
-      ...(has("reviewTier") ? { reviewTier: body.reviewTier === null ? [] : parseReviewTier(body.reviewTier) } : {}),
       // The resolvers of refreshes' mechanical conflicts (t462): harness/model
       // frontier actors, or [] or "" to clear them.
       ...(has("resolvers") ? { resolvers: body.resolvers === null ? [] : (() => {
@@ -2149,8 +2124,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // (settleCommitIdentity), so an invalid one is refused before anything is made.
       ...(IDENTITY_FIELDS.some(has) ? { commitIdentity: Object.fromEntries(IDENTITY_FIELDS.filter(has).map((k) => [k, body[k]])) } : {}),
     };
-    // Its model names were converted where the request entered (canonicalNames).
-    init.namesExact = true;
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
     mergeProject(await L.project().catch(() => null), init, new Date().toISOString());
@@ -3046,13 +3019,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return json(asked);
       }
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      // The separate tier review, of the tier model named (G17): never asked
-      // by the server itself.
-      if (body.tier === true) {
-        const asked = await L.requestTierReview(id, actor, reviewer, await index(env).models(), await index(env).runnerOffers(), body.hand === true);
-        await clearStops(asked.needed);
-        return json(asked);
-      }
+      // The separate tier review was removed (t518): an older CLI's --tier-review is
+      // refused rather than answered as a gate review.
+      if (body.tier === true) throw new RuleError("tier_review_removed", "the separate tier review was removed; ask the gate's review with atelier review-request ID --reviewer H/M", 410, `run atelier review-request ${id} --reviewer H/M`);
       const track = reviewer === null ? { ...await reviewerRecords(index(env), (p) => ledgerOf(env, p), ownerActor(env)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.

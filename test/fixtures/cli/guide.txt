@@ -30,8 +30,7 @@ task with exactly one holder. Never edit the project checkout directly.
    of the selected company from every contributor counts; a contributor
    never reviews its own work.
 8. `atelier update` rebases your workspace onto whatever has merged since.
-9. Every 5 minutes the server records a task stuck at a stage past its limit.
-   It records the fact and acts on nothing: a stalled review, an unclaimed
+9. A stalled task is not recorded as an event and nothing acts on it: a stalled review, an unclaimed
    request or a lapsed claim waits for a command (`atelier review-request`,
    `atelier handoff`, `atelier release`). Every refusal ends with a
    `next:` line naming the command that resolves it.

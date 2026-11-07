@@ -111,12 +111,8 @@ test("a review request is bound to its reviewer only by bindReview, which judges
   // leave the company to the bind. (The tick's repointReview went with G6,
   // and replaceReviewClaim's automatic reopen with its review.)
   assert.deepEqual([...new Set(sites(/INSERT INTO review_requests/))].sort(), [
-    "askReview", "reaskForCriteria", "reaskReview", "requestTierReview", "reviewTick",
+    "askReview", "reaskForCriteria", "reaskReview", "reviewTick",
   ], "a new path makes a review request; list it here once its reviewer is checked for the mode");
-  // The tier review is asked only by the model's command (G17), of a tier
-  // model tierNeed judged under the mode (tierCandidates).
-  passes("requestTierReview", "this.tierNeed(");
-  passes("tierNeed", "tierCandidates(");
   passes("reaskForCriteria", "companyRefusal(");
   passes("reaskReview", "companyRefusal(");
   passes("initProject", "this.withdrawForeignRequests(");
