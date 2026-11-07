@@ -16,7 +16,7 @@ async function setup(name: string, intent: boolean | "default" = true, chosen = 
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: new Date().toISOString() }, "owner");
   await L.poolChanged(pool);
-  if (intent === "default") await L.setMode("owner", "fast", "Test the recorded reviewer mapping");
+  if (intent === "default") await L.setMode("owner", "fast", "Test the recorded reviewer mapping", builder, "Use fast mode to test the recorded reviewer mapping");
   if (intent === "default") await L.recordDecision({ standing: { key: "review-on-checked", value: `openai=${reviewer}` }, quote: "Use this reviewer for OpenAI builds" }, "owner");
   const { id } = await L.newItem("Review the submitted task", ["src/**"], "owner", { accept: ["Works"] });
   await L.dispatch(id, "owner", { agent: "codex", model: "gpt-6-astra", ...(intent ? { ...(intent === "default" ? {} : { reviewer: chosen }), land: true } : {}) });
