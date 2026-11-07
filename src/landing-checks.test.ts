@@ -67,3 +67,25 @@ test("guide shows miqra's full visual suite as a path-scoped landing check", () 
   assert.deepEqual(settleCheckPaths(declaration.checks, paths, undefined), paths);
   assert.equal(settleCheckClasses(declaration.checks, undefined, undefined, true).length, declaration.checks.length);
 });
+
+test("landing checks use the current policy and require every newly declared scoped command", () => {
+  const extra = "npm run verify:journeys";
+  const updated = {
+    ...policy,
+    checks: [command, extra],
+    checkPaths: [...policy.checkPaths!, { command: extra, paths: ["src/**"] }],
+  };
+  const refusal = parseRuleError(enter([run()], updated));
+  assert.equal(refusal?.code, "not_ready");
+  assert.match(refusal!.detail, /npm run verify:journeys/);
+  assert.match(String(enter([run(), run({ claim: extra })], updated)), /past checks/);
+});
+
+test("unknown paths require a runner pass and a failed retry can recover", () => {
+  assert.equal(parseRuleError(enter([run({ changedPaths: null, claim: "npm ci" })]))?.code, "not_ready");
+  assert.match(String(enter([run({ changedPaths: null })])), /past checks/);
+  assert.match(String(enter([
+    run({ passed: false }),
+    run({ at: "2026-11-06T13:00:00Z" }),
+  ])), /past checks/);
+});
