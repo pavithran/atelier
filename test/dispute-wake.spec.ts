@@ -43,11 +43,11 @@ function setup(L: Ledger, name: string) {
   L.recordPush("t1", A, H1, H1);
 }
 // A call to the Worker as the builder (or the owner), reaching this test's ledger instance.
-function call(L: Ledger, name: string, actor: string, method: string, path: string, body?: Record<string, unknown>) {
+function call(L: Ledger, name: string, actor: string, method: string, path: string, body?: Record<string, unknown>, extra: Partial<typeof env> = {}) {
   const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: (id: DurableObjectId) => (id.toString() === env.LEDGER.idFromName(`project:${name}`).toString() ? L : env.LEDGER.get(id)) } as unknown as typeof env.LEDGER;
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1${path}`, {
     method, headers: actor === "owner" ? OWNER : { authorization: `Bearer ${tokens.get(`${name} ${actor}`)}`, "x-atelier-actor": actor, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}),
-  }), { ...env, LEDGER, ATELIER_TOKEN: "test-token", NTFY_TOPIC: "dispute-test-secret" } as typeof env);
+  }), { ...env, LEDGER, ATELIER_TOKEN: "test-token", NTFY_TOPIC: "dispute-test-secret", ...extra } as typeof env);
 }
 const block = (L: Ledger, name: string, actor: string, reason: string, extra: Record<string, unknown> = {}) => call(L, name, actor, "POST", "/block", { reason, ...extra });
 const ntfy = (send: { mock: { calls: unknown[][] } }) => send.mock.calls.filter((c) => String(c[0] instanceof Request ? c[0].url : c[0]).includes("ntfy.sh"));
@@ -195,5 +195,36 @@ it("a refused redispatch of a rejected task records one notice, and a repeat add
     expect(recorded[0].data).toMatchObject({ head: H1, reason: expect.stringContaining("only an open task can be sent to a runner") });
     expect((await redispatch({ note })).status).toBeGreaterThanOrEqual(400);
     expect(notices(L, "item.redispatch_refused_notice")).toHaveLength(1);
+  });
+});
+
+// astra's finding at 5df7558e: every rejection still posted to ntfy through
+// notifyRejection. Per PAVI ("drop ntfy") a rejection sends nothing: driven
+// through the review route, with an origin and NTFY_TOPIC set, a first and a
+// second rejection make no outbound request, and the second records its notice.
+it("a first and a second rejection through the review route make no outbound request", async () => {
+  await prepare("reject-silent");
+  await fixture("reject-silent", async (state) => {
+    const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+    try {
+      const L = new Ledger(state, { ...env, NTFY_TOPIC: "dispute-test-secret" } as typeof env);
+      setup(L, "reject-silent");
+      L.addEvidence({ itemId: "t1", head: H1, claim: "npm test", grade: "observed", passed: true, by: A, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" });
+      expect((await call(L, "reject-silent", A, "POST", "/submit", {})).status).toBe(200);
+      send.mockClear();
+      let head = H1;
+      const REPOS = { get: async () => ({ log: async () => [{ hash: head }], [Symbol.dispose]() {} }) } as unknown as Repos;
+      const reject = () => call(L, "reject-silent", R1, "POST", "/review", { head, criteria: NO_CRITERIA, approve: false, note: "One bug.", findings: [{ file: "src/a.ts", line: 1, severity: "blocking", text: "wrong" }] }, { REPOS });
+      const first = await reject();
+      expect([first.status, first.status === 200 ? "" : await first.text()]).toEqual([200, ""]);
+      expect(send).not.toHaveBeenCalled();
+      expect(notices(L, "item.second_rejection_notice")).toHaveLength(0);
+      head = H2;
+      L.recordPush("t1", A, H2, H2);
+      const second = await reject();
+      expect([second.status, second.status === 200 ? "" : await second.text()]).toEqual([200, ""]);
+      expect(send).not.toHaveBeenCalled();
+      expect(notices(L, "item.second_rejection_notice")).toHaveLength(1);
+    } finally { send.mockRestore(); }
   });
 });

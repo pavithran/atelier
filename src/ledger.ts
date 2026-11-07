@@ -92,7 +92,7 @@ import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
 import { dropTasks, rememberedTask, type ProviderPause } from "./runners/memory.ts";
 import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
-import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { missingReviews, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { candidatesText, ranked, summarize, type Candidate, type ReviewerRecords, type SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
@@ -4653,21 +4653,6 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  // A rejection tells the owner when it is recorded. notify() speaks once per
-  // head of a submission, so a rejection at a head already notified would be
-  // silent there; this sends its own message through the same delivery.
-  private notifyRejection(r: Review, origin?: string): void {
-    try {
-      if (origin) this.setNotificationOrigin(r.itemId, origin);
-      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, r.itemId).toArray()[0];
-      if (!topic || !saved) return;
-      this.deliver(rejectionRequest(notificationRequest(topic, saved.origin as string, this.project().name, this.detail(r.itemId)), r));
-    } catch {
-      console.error("Atelier notification could not be scheduled");
-    }
-  }
-
   // Delivery runs in the background: a failure is logged without the
   // response body or the topic, and nothing is retried. It holds the
   // restart gate, so a restart after a deploy waits for it.
@@ -4866,7 +4851,6 @@ export class Ledger extends DurableObject<Env> {
       if (!fastReceiptOf && (r.findings ?? []).some((f) => f.severity === "blocking")) this.log(item.id, ORCHESTRATOR, "item.defect", { head: item.acceptedHead, mergeCommit: r.head, note: r.note, request: r.request }, at);
     }
     this.notify(r.itemId, origin);
-    if (!r.approve) this.notifyRejection(r, origin);
     if (!r.approve) this.noticeSecondRejection(item, r, reviewId, at);
     this.afterPlanChange(r.itemId);
   }
