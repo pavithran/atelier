@@ -1,4 +1,5 @@
 import { receiveRunnerLog, type RunnerLog } from "./runner-log.ts";
+import { assertLandingChecks } from "./landing-checks.ts";
 import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
 import { decideLandQueue, landerLive, type LandQueued, type LandQueueVerdict } from "./stage-tick.ts";
@@ -5449,6 +5450,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409, `run atelier show ${id}, review it again, then atelier merge ${id}`);
     }
+    assertLandingChecks(id, this.project().policy, this.evidenceFor(id), head);
     // A task accepted before a blocker was added keeps its acceptance, but
     // no merge of it begins until every blocker is merged (G3).
     this.assertBlockersMerged(item, "merged");
