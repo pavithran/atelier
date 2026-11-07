@@ -261,9 +261,10 @@ test("each diagram label is short enough for its box at the drawn size", () => {
   }
 });
 
-// t473: only claimed items and the item a live landing lease names hold core
-// files. Nothing the owner or an agent reads may still say a submitted or
-// accepted item holds them, or that a hold lasts until the item merges.
+// t537: an item holds core files from its first claim until it merges or is
+// abandoned (it was t473's rule that only claimed items and a landing held).
+// Nothing the owner or an agent reads may still say a submitted or accepted
+// item holds nothing, or that a hold lifts when its holder submits.
 test("the How page, help and docs state the current core-file hold rule", () => {
   const texts: [string, string][] = [
     ...RULES.map((r): [string, string] => [`rule ${r.title}`, `${r.enforced} ${r.why}`]),
@@ -272,14 +273,14 @@ test("the How page, help and docs state the current core-file hold rule", () => 
     ["src/usage.ts", readFileSync(join(root, "src/usage.ts"), "utf8")],
     ...["docs/orchestrator.md", "docs/orchestrating.md", "README.md"].map((f): [string, string] => [f, readFileSync(join(root, f), "utf8")]),
   ];
-  const stale = [/live item(?:'s)? \(claimed, submitted or accepted/, /live task's in a core file/,/one claimed, submitted or accepted/, /a submitted or accepted plan item does/, /(?:merges|merged) or is abandoned/, /until (?:that|the live) item merges/];
+  const stale = [/live item(?:'s)? \(claimed, submitted or accepted/, /live task's in a core file/,/one claimed, submitted or accepted/, /a submitted or accepted plan item does/, /submitted or accepted item that is not landing holds nothing/, /claimed blocker submits or is released/, /until it submits, is released or ends its landing/];
   for (const [where, text] of texts) {
     const flat = text.replace(/\s+/g, " ");
     for (const old of stale) assert.doesNotMatch(flat, old, `${where} still states the old core-file hold rule`);
   }
   const core = RULES.find((r) => r.title === "Core files are built one change at a time")!;
-  assert.match(core.enforced, /claimed item or of the item named by a live landing lease/);
-  assert.match(core.enforced, /submitted or accepted item that is not landing holds nothing/);
+  assert.match(core.enforced, /claimed and not yet merged or abandoned/);
+  assert.match(core.enforced, /open item never claimed holds nothing/);
   assert.match(core.enforced, /once each blocker merges or is abandoned/);
 });
 

@@ -69,7 +69,7 @@ it("init records the core files, keeps them on a re-init, clears them with an em
   expect(mergeProject(set, { ...base, reset: true }, "later").policy).not.toHaveProperty("coreFiles");
 });
 
-it("the queue holds core overlaps during building and landing, but offers them while awaiting landing", async () => {
+it("the queue holds core overlaps from the holder's first claim until it merges", async () => {
   const name = "core-queue";
   const L = await project(name, ["src/ledger.ts"]);
   const live = await L.newItem("Live work", ["src/**"], "owner");
@@ -93,16 +93,16 @@ it("the queue holds core overlaps during building and landing, but offers them w
   expect(owner.find((q) => q.item.id === core)?.item.held).toMatchObject({ id: live.id, owner: A, state: "claimed", core: "src/ledger.ts" });
   expect(owner.filter((q) => q.item.held).map((q) => q.item.id)).toEqual([core]);
 
-  // Submission and acceptance release the hold until a landing lease is acquired.
+  // Submission, acceptance and landing do not release the hold; the merge does (t537).
   await L.recordPush(live.id, A, H1, H1);
   const evidence: Evidence = { itemId: live.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a.ts"] };
   await L.addEvidence(evidence);
   await L.submit(live.id, A);
-  expect(await offered()).toContain(core);
+  expect(await offered()).not.toContain(core);
   await L.addReview({ itemId: live.id, head: H1, criteria: await L.criteria(live.id), by: "zcode/glm-5.3", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept(live.id, "owner");
-  expect(await offered()).toContain(core);
-  expect((await listed()).some((q) => q.item.held)).toBe(false);
+  expect(await offered()).not.toContain(core);
+  expect((await listed()).find((q) => q.item.id === core)?.item.held).toMatchObject({ id: live.id, state: "accepted" });
   await L.beginProjectLanding(live.id, "owner");
   expect(await offered()).not.toContain(core);
   expect((await listed()).find((q) => q.item.id === core)?.item.held).toMatchObject({ id: live.id, state: "accepted" });
@@ -114,7 +114,7 @@ it("the queue holds core overlaps during building and landing, but offers them w
 // 2026-10-12: a runner gave up on t396 and kept its claim, so its core-file
 // hold stopped fifteen dispatches for three hours with nobody working (t584).
 // Its release now carries the runner's word, and the hold lifts with it.
-it("a claim a runner gives up lifts the core-file hold at once and reaches the inbox until the task is taken again", async () => {
+it("a claim a runner gives up reaches the inbox, and keeps its core-file hold until the task is taken again", async () => {
   const name = "core-gave-up";
   const L = await project(name, ["src/ledger.ts"]);
   const live = await L.newItem("Merge main", ["src/**"], "owner");
@@ -128,7 +128,9 @@ it("a claim a runner gives up lifts the core-file hold at once and reaches the i
   expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toBeDefined();
 
   await L.release(live.id, A, `${GAVE_UP}the merge failed twice (its commits are pushed)`);
-  expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toBeUndefined();
+  // The give-up still reaches the inbox, but the task was claimed once and has
+  // not merged, so it holds until it merges or is abandoned (t537).
+  expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toMatchObject({ id: live.id, state: "open" });
   const entry = (await L.inbox(new Date().toISOString())).find((e) => e.itemId === live.id);
   expect(entry).toMatchObject({ kind: "gave-up" });
   // Round 11: a give-up's note is read as facts alone.

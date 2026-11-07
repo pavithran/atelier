@@ -109,9 +109,9 @@ it("a claim whose run ended is not renewed, nor offered back to its runner, whil
   expect((await L.item("t1")).state).toBe("claimed");
   expect((await L.heldJobs(OTHER.runner)).map((j) => [j.id, j.held ?? null])).toEqual([["t2", null]]);
 
-  // Once t2 lets go, t1 runs again.
-  await L.release("t2", A, "done with it");
+  // Once t2 lets go for good (a release alone leaves it holding, t537), t1 runs again.
+  await L.abandon("t2", "owner", "done with it");
   expect((await L.heldJobs(RUNNER.runner)).map((j) => [j.id, j.held ?? null])).toEqual([["t1", null]]);
   await L.claim("t1", A, RUNNER);
-  expect((await L.waiting()).find((w) => w.id === "t2")?.held?.id).toBe("t1");
+  expect((await L.item("t1")).state).toBe("claimed");
 });

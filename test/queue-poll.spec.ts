@@ -94,7 +94,7 @@ it("queued reads the waiting tasks, their push actors and their core-file holds 
   const expected = items
     .filter((i) => i.state === "open" && !i.owner && i.dispatch)
     .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
-    .map((i) => {
+    .map(({ everClaimed, ...i }: (typeof items)[number] & { everClaimed?: boolean }) => {
       const h = coreHold(i, items, coreFiles);
       return h ? { ...i, held: { ...h, blockers: [h], chains: [{ path: [i.id, h.id], deadlock: false }], since: expect.any(String), elapsedMs: expect.any(Number), warning: false } } : i;
     });
