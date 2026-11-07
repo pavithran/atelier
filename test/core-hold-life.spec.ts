@@ -1,7 +1,8 @@
-import { env } from "./support/workers.ts";
+import { env, runInDurableObject } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { Evidence } from "../src/rules.ts";
+import { reportLimits, stuckReport } from "../src/stuck/report.ts";
 
 // The core-file hold lasts the holder's whole life (src/dispatch/core-hold.ts):
 // from its first claim until it merges or is abandoned. Every test enters
@@ -127,31 +128,111 @@ it("criterion 4: a dispatch with overlapOk goes out while a submitted holder ove
   expect(await offered(name)).toContain(waiting);
 });
 
-// The runner token's claim, the other half of the path: a poll offers both
-// tasks before the holder claims; the holder then claims and submits, and the
-// waiting task's claim is answered 409 held, naming the holder and its stage.
-// With overlapOk the same claim succeeds.
-for (const overlapOk of [false, true]) it(`claim: a runner's claim of an overlapping task after the holder submitted is ${overlapOk ? "allowed by overlapOk" : "answered 409 held"}`, async () => {
-  const name = `hold-life-claim-${overlapOk}`;
+// The runner token's claim, the other half of the path. A runner token
+// claims the waiting task after the holder reached `state`; a hold answers
+// 409 {error: "held"} naming the holder and its stage. Past the hold the claim
+// reaches the repository step, which this test pool cannot serve: it fails
+// with the git reader's RepoError (code NOT_FOUND, logged; the body is a bare
+// 500 "internal"), never 409 held. A hold cannot pass as that: it is a 409.
+// The runner polls while both tasks are offered, as the real runner does; the
+// holder then claims, and `claim()` is the waiting task's claim by that runner.
+async function claimPair(name: string, extra: { overlapOk?: boolean } = {}) {
   const L = await project(name);
   const holder = await L.newItem("Holder", ["src/ledger.ts"], "owner");
   const waiting = await L.newItem("Waiting", ["src/ledger.ts"], "owner");
-  const agents = [{ agent: "codex", models: ["gpt-6-astra"] }];
-  for (const [id, extra] of [[holder.id, {}], [waiting.id, overlapOk ? { overlapOk: true } : {}]] as const) await L.dispatch(id, "owner", { agent: "codex", model: "gpt-6-astra", ...extra });
+  await L.dispatch(holder.id, "owner", { agent: "codex", model: "gpt-6-astra" });
+  await L.dispatch(waiting.id, "owner", { agent: "codex", model: "gpt-6-astra", ...extra });
   const runner = `home:${name}`;
-  const issued = await call("POST", "/tokens", { runner, projects: [name] });
-  const { token } = await issued.json() as { token: string };
+  const { token } = await (await call("POST", "/tokens", { runner, projects: [name] })).json() as { token: string };
   const asRunner = (path: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": A, "content-type": "application/json" }, body: JSON.stringify(body) }), testEnv);
-  expect((await asRunner("/queue", { runner, agents, jobs: ["build"] })).status).toBe(200);
+  expect((await asRunner("/queue", { runner, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build"] })).status).toBe(200);
   await L.claim(holder.id, A, { runner: "home:other", kind: "home" });
-  await submit(L, holder.id);
-  const res = await asRunner(`/projects/${name}/items/${waiting.id}/claim`, {});
-  const answer = await res.json() as { error?: string; detail?: string };
-  // The claim then reaches the repository step, which this pool cannot serve
-  // (RepoError, 500); what matters here is that no hold or refusal stops it.
-  if (overlapOk) { expect(answer.error).not.toBe("held"); expect(answer.error).not.toBe("runner_forbidden"); return; }
-  expect(res.status, JSON.stringify(answer)).toBe(409);
-  expect(answer.error).toBe("held");
-  expect(answer.detail).toContain(`${holder.id} (submitted by ${A}): both scopes reach core file src/ledger.ts`);
-  expect(answer.detail).not.toContain("running on");
+  // The worker logs a failed claim's cause (RepoError) and answers a bare 500.
+  const claim = async () => {
+    const logged: string[] = [], was = console.error;
+    console.error = (...a: unknown[]) => { logged.push(a.map(String).join(" ")); };
+    try { const res = await asRunner(`/projects/${name}/items/${waiting.id}/claim`, {}); return { res, answer: await res.json() as { error?: string; detail?: string }, logged: logged.join("\n") }; }
+    finally { console.error = was; }
+  };
+  return { L, holder: holder.id, waiting: waiting.id, claim };
+}
+type Claimed = Awaited<ReturnType<Awaited<ReturnType<typeof claimPair>>["claim"]>>;
+function expectHeld({ res, answer }: Claimed, holder: string, stage: string, label: string) {
+  expect(res.status, `${label}: ${JSON.stringify(answer)}`).toBe(409);
+  expect(answer.error, label).toBe("held");
+  expect(answer.detail, label).toContain(`${holder} (${stage}`);
+  expect(answer.detail, label).toContain("src/ledger.ts");
+}
+function expectPastHold({ res, answer, logged }: Claimed, label: string) {
+  const text = JSON.stringify(answer);
+  expect(res.status, `${label}: ${text}`).not.toBe(409);
+  expect(answer.error, label).not.toBe("held");
+  expect(answer.error, label).not.toBe("runner_forbidden");
+  // The pool's repository step failed: the claim got there, past every check.
+  expect(res.status, `${label}: ${text}`).toBe(500);
+  expect(logged, label).toMatch(/RepoError code=NOT_FOUND message="repository not found/);
+}
+const cap = async (L: Ledger, holder: string) => {
+  for (let n = 0; n < 3; n++) {
+    const head = n === 0 ? H1 : String(n + 1).repeat(40);
+    if (n > 0) { await L.recordPush(holder, A, head, head); await L.submit(holder, A); }
+    await L.addReview({ itemId: holder, head, criteria: await L.criteria(holder), by: R, approve: false, note: "no", at: new Date().toISOString(), findings: [{ file: "src/a.ts", line: 1, severity: "blocking", text: "wrong" }] }, undefined, true);
+  }
+};
+
+it("claim: a holder open again after a real rejection, accepted, or round-capped still answers 409 held", async () => {
+  for (const [label, state, move] of [
+    ["open again", "open", async (L: Ledger, id: string) => { await review(L, id, false); expect((await L.item(id)).state).toBe("submitted"); await L.release(id, A, "handing back after a rejection"); }],
+    ["accepted", "accepted", async (L: Ledger, id: string) => { await review(L, id, true); await L.accept(id, "owner"); }],
+    ["blocked", "blocked", async (L: Ledger, id: string) => { await cap(L, id); }],
+  ] as const) {
+    const name = `hold-life-claim-${label.replace(" ", "-")}`;
+    const { L, holder, claim } = await claimPair(name);
+    await submit(L, holder);
+    await move(L, holder);
+    expect((await L.item(holder)).state, label).toBe(state);
+    expectHeld(await claim(), holder, state, label);
+  }
+});
+
+it("claim: once the holder merges or is abandoned, the waiting task's claim is past the hold", async () => {
+  for (const end of ["merged", "abandoned"] as const) {
+    const name = `hold-life-claim-${end}`;
+    const { L, holder, claim } = await claimPair(name);
+    await submit(L, holder);
+    expectHeld(await claim(), holder, "submitted", `${end} before`);
+    if (end === "merged") { await review(L, holder, true); await L.accept(holder, "owner"); await L.merged(holder, "owner", "f".repeat(40), true); }
+    else await L.abandon(holder, "owner", "not needed");
+    expectPastHold(await claim(), end);
+  }
+});
+
+it("claim: overlapOk lets the claim past a submitted holder", async () => {
+  const name = "hold-life-claim-overlap-ok";
+  const { L, holder, claim } = await claimPair(name, { overlapOk: true });
+  await submit(L, holder);
+  expectPastHold(await claim(), "overlapOk");
+});
+
+it("claim: a claim of a held task is answered 409 held naming the holder and its stage", async () => {
+  const name = "hold-life-claim-submitted";
+  const { L, holder, claim } = await claimPair(name);
+  await submit(L, holder);
+  const answer = await claim();
+  expectHeld(answer, holder, "submitted", "submitted");
+  expect(answer.answer.detail).not.toContain("running on");
+});
+
+it("stuck report: a task held by a round-capped holder gets a core-hold entry", async () => {
+  const name = "hold-life-stuck-blocked";
+  const { L, holder, waiting } = await pair(name);
+  await submit(L, holder);
+  await cap(L, holder);
+  expect((await L.item(holder)).state).toBe("blocked");
+  const snapshot = await runInDurableObject(L, async (instance: { stuckSnapshot(): never }) => instance.stuckSnapshot());
+  const later = new Date(Date.now() + 24 * 3_600_000);
+  const report = stuckReport(name, "https://atelier.test", later, reportLimits(), snapshot, [], [], []);
+  const entry = report.entries.find((e: { subject: string; kind: string }) => e.subject === waiting && e.kind === "core-hold");
+  expect(entry, JSON.stringify(report.entries)).toBeDefined();
+  expect(entry!.reason).toContain(holder);
 });

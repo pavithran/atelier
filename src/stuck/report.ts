@@ -163,8 +163,9 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     }
     for (const item of live.filter((i) => i.state === "open" && i.dispatch)) {
       // Since t473 a submitted blocker holds only while the landing lease names it.
-      const held = coreHold(item, live, snapshot.coreFiles, lease, time, runners);
-      const blocker = held && live.find((i) => i.id === held.id);
+      // Blocked holders count too: a round-capped task holds until it merges or is abandoned.
+      const held = coreHold(item, items, snapshot.coreFiles, lease, time, runners);
+      const blocker = held && items.find((i) => i.id === held.id);
       if (!blocker) continue;
       const hold = holdStart(blocker, events), push = pushObservedAt(blocker, events);
       const since = push && push > hold ? push : hold;
