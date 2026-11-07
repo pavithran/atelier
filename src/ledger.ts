@@ -45,7 +45,7 @@ import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
-import { notificationRequest, usageAlertRequest } from "./notify.ts";
+import { disputeRequest, notificationRequest, usageAlertRequest } from "./notify.ts";
 import { ago } from "./floor.ts";
 
 // The note on the release a dispatch makes of a held task; the holder reads it
@@ -83,6 +83,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
+import { isDispute } from "./dispatch/rework.ts";
 import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
@@ -4961,7 +4962,7 @@ export class Ledger extends DurableObject<Env> {
   // go on, and either unblocks it. The task keeps its owner, workspace and
   // dispatch record meanwhile; unblocking returns it to the state it was in.
   // An open task has no holder, so only the owner blocks or unblocks it.
-  block(id: string, actor: string, reason: unknown, proved = false, until?: unknown, direction: OwnerDirection | null = null): Item {
+  block(id: string, actor: string, reason: unknown, proved = false, until?: unknown, direction: OwnerDirection | null = null, origin?: string): Item {
     const text = blockReason(reason);
     const now = new Date();
     const day = blockUntil(until, now);
@@ -4973,7 +4974,21 @@ export class Ledger extends DurableObject<Env> {
     const record: Block = { reason: text, by: actor, at, from: item.state, ...(day ? { until: day } : {}), ...said };
     this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
     this.log(id, actor, "item.blocked", { reason: text, from: item.state, ...(day ? { until: day } : {}), ...(direction ? { confirmed: "direction", ...said } : {}) }, at, proved);
+    // The task's builder disputing a finding (t521) wakes a session: one
+    // message, sent from here, the task staying blocked and nothing dispatched.
+    if (isDispute(text) && actor === item.owner && actor !== this.owner) this.notifyDispute(id, actor, text, origin, at);
     return this.item(id);
+  }
+
+  private notifyDispute(id: string, actor: string, reason: string, origin: string | undefined, at: string): void {
+    const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+    let sent = false;
+    try {
+      if (topic && origin) { this.deliver(disputeRequest(topic, origin, this.project().name, id, this.item(id).title, reason)); sent = true; }
+    } catch {
+      console.error("Atelier dispute notification could not be scheduled");
+    }
+    this.log(id, actor, "item.dispute_notified", { reason, sent }, at);
   }
 
   //

@@ -32,7 +32,7 @@ import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
-import { isDispute, reworkNote, routeRejection, unparsableRoute } from "../src/dispatch/rework.ts";
+import { reworkNote, routeRejection, unparsableRoute } from "../src/dispatch/rework.ts";
 import { diffPromptMax, largeDiffNote, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/large-diff.ts";
 import { BUILD_RULES } from "../src/brief-rules.ts";
 import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
@@ -2179,9 +2179,6 @@ export async function runTask(assignment, config, name, io) {
     }
     if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
     await checkValidationReport(result);
-    // A builder that disputes a finding blocks its task with the dispute as
-    // the reason (t521): one session is woken and the task waits.
-    if (result?.code === 0 && io.readItem) await wakeOnDispute(io, { project, id: item.id, actor });
     // A timeout is read like any other failure: the head it left is looked at
     // below, so a harness that moved it and then timed out says so (t363).
     if (!result?.timedOut && io.stopped()) throw new Error("interrupted");
@@ -3031,14 +3028,6 @@ export async function ntfyWake(run, message, { env = process.env, signal } = {})
   if (r.code !== 0) throw new Error(`the notification channel refused it (curl exited ${r.code}): ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 200)}`);
 }
 
-// The task as the server holds it, read through the runner's transport (the
-// declared `item-read` call), for a builder's dispute (its block reason).
-export async function readRunnerItem(transport, { project, id, actor, signal }) {
-  const res = await transport.send("item-read", { project, item: id }, { actor, signal, timeoutMs: 10_000, redirect: "error" });
-  if (!res.ok) throw new Error(`item ${id}: ${res.status}`);
-  return res.data?.item ?? res.data;
-}
-
 // The owner's dispatch of a rejected task to its builder: `atelier dispatch`
 // as the developer, as a land job runs, with the runner's own name and token
 // left out of its environment. A machine that holds no developer token fails
@@ -3047,18 +3036,6 @@ export async function dispatchAsDeveloper(run, { project, id, agent, model, note
   const child = { ...env }; delete child.ATELIER_RUNNER_NAME; delete child.ATELIER_RUNNER_TOKEN;
   const r = await run([process.execPath, cli, "dispatch", id, "--project", project, "--agent", agent, "--model", model, "--note", reviewersWords], { env: child, capture: true, captureError: true, signal, timeoutMs: 60_000 });
   if (r.code !== 0) throw new Error(`atelier dispatch exited ${r.code}: ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 300)}`);
-}
-
-// A builder's dispute of a finding (t521) is a block of its own task with the
-// reason `disputes finding N: why`. The task waits as any blocked task does;
-// this wakes a session once for it.
-export async function wakeOnDispute(io, { project, id, actor }) {
-  let item;
-  try { item = await io.readItem?.({ project, id, actor }); }
-  catch { return false; }
-  if (item?.state !== "blocked" || !isDispute(item.blocked?.reason)) return false;
-  await wakeSession(io, `${project}/${id}: the builder ${item.owner ?? actor} ${item.blocked.reason}; the task waits for a session`);
-  return true;
 }
 
 // The merge commit a post-merge review reads (t591), fetched into the review
@@ -4775,16 +4752,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   const io = {
     progress,
-    // A rejection's three hooks (t521): the builder's dispatch, the
+    // A rejection's two hooks (t521): the builder's dispatch, the
     // notification that wakes a session, and the read of a builder's dispute.
     dispatchBuilder: (request) => dispatchAsDeveloper(executeChild, { ...request, signal: controller.signal }),
     wake: (message) => ntfyWake(executeChild, message, { signal: controller.signal }),
-    readItem: async ({ project, id, actor }) => {
-      // The CLI hands in `api`; without it there is no server to read from, and no dispute is looked for.
-      if (!api?.server) throw new Error("this runner has no server to read the task from");
-      const { server } = api;
-      return readRunnerItem(runnerTransport({ server: server(), credential, runner: offer.runner }), { project, id, actor, signal: controller.signal });
-    },
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),

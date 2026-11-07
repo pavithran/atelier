@@ -2835,7 +2835,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
-      return json(await L.block(id, actor, body.reason, !!c.token, body.until, itemDirection(c, "block", id, ref.name, env)));
+      return json(await L.block(id, actor, body.reason, !!c.token, body.until, itemDirection(c, "block", id, ref.name, env), c.url.origin));
     case "unblock": {
       // A block that is a fact (G7: a run stopped at its limit) is lifted by
       // the model as a fact: no developer's words are asked for, though words

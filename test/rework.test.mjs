@@ -146,24 +146,8 @@ test("an unreadable reply is asked of the reviewer once; a second unreadable rep
   assert.equal(sent(recovered.calls, "dispatch").length, 1);
 });
 
-// Criterion 4.
-test("a builder's dispute of a finding wakes a session once, and the task waits blocked", async () => {
-  const { wakeOnDispute } = await import("../cli/runner.mjs");
-  const run = async (item) => {
-    const wakes = [], logs = [];
-    const io = { log: (s) => logs.push(s), wake: async (m) => wakes.push(m), readItem: async () => item };
-    return { woke: await wakeOnDispute(io, { project: "atelier", id: "t21", actor: BUILDER }), wakes };
-  };
-  const disputed = await run({ id: "t21", state: "blocked", owner: BUILDER, blocked: { reason: disputeReason(1, "The retry is in needed.ts:90."), by: BUILDER } });
-  assert.equal(disputed.woke, true);
-  assert.equal(disputed.wakes.length, 1);
-  assert.match(disputed.wakes[0], /disputes finding 1/);
-  assert.match(disputed.wakes[0], /waits/);
-  // Any other state, or any other block, wakes nobody.
-  assert.equal((await run({ id: "t21", state: "claimed", owner: BUILDER })).wakes.length, 0);
-  assert.equal((await run({ id: "t21", state: "blocked", owner: BUILDER, blocked: { reason: "waiting on the schema" } })).wakes.length, 0);
-});
-
+// Criterion 4: a builder's dispute block is notified by the ledger itself
+// (test/dispute-wake.spec.ts); the runner reads no task for it.
 test("a runner with no way to dispatch leaves the rejection to a session, once", async () => {
   const { io, wakes, calls } = fixture({ round: 1 });
   delete io.dispatchBuilder;
@@ -173,12 +157,12 @@ test("a runner with no way to dispatch leaves the rejection to a session, once",
   assert.match(wakes[0], /no way to dispatch/);
 });
 
-// The production hooks (t521): the io the runner builds must carry the three
+// The production hooks (t521): the io the runner builds must carry the two
 // hooks, not only the test fixtures.
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRunner, ntfyWake, readRunnerItem, dispatchAsDeveloper } from "../cli/runner.mjs";
+import { runRunner, ntfyWake, dispatchAsDeveloper } from "../cli/runner.mjs";
 
 test("the runner's own io carries the builder dispatch, the notification and the dispute read", async () => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-rework-io-"));
@@ -186,7 +170,7 @@ test("the runner's own io carries the builder dispatch, the notification and the
   writeFileSync(path, JSON.stringify({ agents: [{ agent: "opencode", models: ["glm"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] }] }));
   let io;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, { oneShot: async (job) => { io = job.io; }, api: { server: () => "https://atelier.test" }, credential: "runner-token" });
-  for (const hook of ["dispatchBuilder", "wake", "readItem"]) assert.equal(typeof io?.[hook], "function", `io.${hook} is connected`);
+  for (const hook of ["dispatchBuilder", "wake"]) assert.equal(typeof io?.[hook], "function", `io.${hook} is connected`);
 });
 
 test("ntfyWake sends one message to the topic, and refuses without one", async () => {
@@ -201,16 +185,6 @@ test("ntfyWake sends one message to the topic, and refuses without one", async (
   await assert.rejects(() => ntfyWake(run(22), "x", { env: { NTFY_TOPIC: "t" } }), /channel down/);
 });
 
-test("readRunnerItem reads the item through the declared item-read call and returns the task", async () => {
-  const seen = [];
-  const send = (res) => ({ send: async (name, params, init) => { seen.push({ name, params, init }); return res; } });
-  const item = await readRunnerItem(send({ ok: true, data: { item: { id: "t21", state: "blocked", blocked: { reason: "disputes finding 1: why" } } } }), { project: "atelier", id: "t21", actor: BUILDER });
-  assert.deepEqual(seen[0].params, { project: "atelier", item: "t21" });
-  assert.equal(seen[0].init.actor, BUILDER);
-  assert.equal(item.blocked.reason, "disputes finding 1: why");
-  await assert.rejects(() => readRunnerItem(send({ ok: false, status: 403 }), { project: "atelier", id: "t21", actor: BUILDER }), /403/);
-});
-
 test("dispatchAsDeveloper runs atelier dispatch without the runner's name or token, and fails on a refusal", async () => {
   const runs = [];
   const run = (code) => async (argv, options) => { runs.push({ argv, options }); return { code, output: "", stderr: "no developer token" }; };
@@ -219,32 +193,4 @@ test("dispatchAsDeveloper runs atelier dispatch without the runner's name or tok
   assert.deepEqual(argv.slice(2), ["dispatch", "t21", "--project", "atelier", "--agent", "claude-code", "--model", "sonnet-5.5", "--note", "n"]);
   assert.deepEqual(options.env, { KEEP: "1" });
   await assert.rejects(() => dispatchAsDeveloper(run(1), { project: "atelier", id: "t21", agent: "a", model: "m", note: "n", env: {} }), /no developer token/);
-});
-
-// Criterion 4, through runTask: the builder's run ends with its block of the
-// task recorded, and the runner's read of the task wakes one session.
-import { runTask } from "../cli/runner.mjs";
-
-test("runTask reads the task after the builder's run and wakes one session for a dispute", async () => {
-  const entry = { agent: "opencode", models: ["glm"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
-  const run = async (item) => {
-    const wakes = [], reads = [];
-    const io = {
-      log: () => {}, stopped: () => false, env: { PATH: "/usr/bin" }, ownerTokens: () => [],
-      workspacePath: (project, id) => `/cache/work/${project}/${id}`,
-      async cli() {}, async reset() {}, async head() { return "before"; }, async headMessage() { return ""; }, async isAncestor() { return true; },
-      async brief() { return { file: "/b" }; }, async harness() { return { code: 0, output: "" }; }, async removeBrief() {},
-      async identityRefusals() { return []; }, async dataHome() { return { dir: "/d" }; }, async removeDataHome() {},
-      async commitWork() { return null; },
-      async readItem(request) { reads.push(request); return item; },
-      async wake(message) { wakes.push(message); },
-    };
-    await runTask({ project: "atelier", item: { id: "t21", title: "T", scope: ["a"] }, agent: entry.agent, model: entry.models[0], actor: "opencode/glm" }, { agents: [entry] }, "home:studio", io).catch(() => {});
-    return { wakes, reads };
-  };
-  const disputed = await run({ id: "t21", state: "blocked", owner: "opencode/glm", blocked: { reason: disputeReason(1, "The retry is in needed.ts:90.") } });
-  assert.equal(disputed.reads.length, 1);
-  assert.equal(disputed.wakes.length, 1);
-  assert.match(disputed.wakes[0], /disputes finding 1/);
-  assert.equal((await run({ id: "t21", state: "claimed", owner: "opencode/glm" })).wakes.length, 0);
 });
