@@ -76,7 +76,7 @@ import { baseReadGrant, taskReadGrant } from "./read-grant.mjs";
 // owner names with --reviewer whether or not the gate needs it, and waits
 // for the verdict, then accepts and merges. It waits for the gate's review
 // only, which the server routes to the review tier first so one review serves
-// both; a separate tier review asked beside it (src/review/tier.ts) stops
+// both; a separate tier review asked beside it (removed in t518) stops
 // the landing when it rejects, never holds it, and the server withdraws a
 // tier request still open when the task is accepted. Every step, its duration and the
 // commits that came from main are recorded on the ledger as land.* events

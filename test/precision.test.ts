@@ -7,7 +7,6 @@ import { routeParts, type RouteInput } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import type { Item, ProjectPolicy } from "../src/rules.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
-import { pickTierReviewer } from "../src/review/tier.ts";
 
 // Review precision (t263): each reviewer model's share of judged blocking
 // findings that held up, over a window, and routing ordering qualifying
@@ -122,28 +121,9 @@ test("pickReviewer: the most precise reviewer of a contributor's family is passe
   assert.ok(paused.passedOver.some((c) => c.actor === GPT && c.reasons.includes("paused (availability of codex)")));
 });
 
-test("pickReviewer: the previous round's reviewer still comes first; the tier is asked by precision, then in its own order", () => {
+test("pickReviewer: the previous round's reviewer still comes first", () => {
   const precision = record(DAY);
   assert.equal(pick({ previous: GEMINI, precision }).reviewer!.actor, GEMINI);
-  const tier = [GEMINI, GPT];
-  assert.equal(pick({ tier }).reviewer!.actor, GEMINI);
-  const r = pick({ tier, precision });
-  assert.equal(r.reviewer!.actor, GPT);
-  assert.equal(r.reviewer!.reasons[0], "A model of the project's review tier, asked first so its review serves as the tier review too; the tier is asked by review precision, then in its own order");
-  // A same-family tier model is passed over however precise.
-  const sameFamily = pick({ tier: [SONNET, GEMINI], precision: record([...many(SONNET, "confirmed", 20)]) });
-  assert.equal(sameFamily.reviewer!.actor, GEMINI);
-  assert.deepEqual(sameFamily.passedOver.map((c) => c.actor), [SONNET]);
-});
-
-test("pickTierReviewer: the separate tier review goes to the most precise tier model that may give it", () => {
-  const may = () => true;
-  assert.equal(pickTierReviewer([GEMINI, GPT], [OPUS], [], may), GEMINI);
-  assert.equal(pickTierReviewer([GEMINI, GPT], [OPUS], [], may, record(DAY)), GPT);
-  // Precision never brings back a contributor, the gate's reviewer, or one the policy refuses.
-  assert.equal(pickTierReviewer([GEMINI, GPT], [GPT], [], may, record(DAY)), GEMINI);
-  assert.equal(pickTierReviewer([GEMINI, GPT], [OPUS], [GPT], may, record(DAY)), GEMINI);
-  assert.equal(pickTierReviewer([GEMINI, GPT], [OPUS], [], (a) => a !== GPT, record(DAY)), GEMINI);
 });
 
 // ── plan routing ───────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ export default async function dispatchCommand() {
   if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
   if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
   const note = noteFromFile(id) ?? args.note;
-  const body = { to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}), ...(args.release === true ? { release: true } : {}) };
+  const body = { ...(args.reviewer !== undefined ? { reviewer: args.reviewer } : {}), ...(args.land === true ? { land: true } : {}), to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}), ...(args.release === true ? { release: true } : {}) };
   // With no --agent the server picks no builder (G17): it refuses, printing
   // the candidates with their reliability lines, and the model names one.
   // --overlap-ok with no destination, note or job releases a waiting
