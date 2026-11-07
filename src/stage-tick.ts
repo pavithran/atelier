@@ -3,13 +3,15 @@
 // stage.stuck or stage.cleared (t518); ledgers that hold them still read.
 // Pure functions: the Ledger reads the tasks and acts on them.
 //
-// The tick acts on no judgment of its own (PAVI, 2026-10-28: Atelier is a
-// tool for an intelligent model orchestrator). It reroutes no dispatch,
-// re-points no review request and releases no review claim: each of those
-// was a trigger, and each is now a fact the model reads
-// (`atelier show`, `atelier events`, the queue) and acts on by command. The
-// actions follow the developer's standing instructions: ask the named
-// reviewer at checked and queue landable tasks (src/standing.ts).
+// The tick acts on its own in one case: it queues the landing of a task whose
+// checks passed and whose head a reviewer of another company approved (t520,
+// superseding PAVI's 2026-10-28 rule that the tick holds no judgment; PAVI,
+// 2026-11-06: "Yes, filed to deployed"). It reroutes no dispatch,
+// re-points no review request and releases no review claim: each of those was
+// a trigger, and each is a fact the model reads (`atelier show`,
+// `atelier events`, the queue) and acts on by command. The other actions
+// follow the developer's standing instructions: ask the named reviewer at
+// checked (src/standing.ts).
 
 import { servesProject, type SeenOffer } from "./dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "./landing-lease.ts";
@@ -35,15 +37,19 @@ export function tickLine(ranAt: string | null, now: Date, staleMs: number): { li
   return { line: `Stage tick last ran ${minutes < 1 ? "under a minute" : `${minutes} minute${minutes === 1 ? "" : "s"}`} ago (${ranAt})${stale ? `: older than ${staleMs / 60_000} minutes` : ""}`, stale };
 }
 
-// A landable task the tick queues a land job for (t253), under the
-// developer's standing queue-landable instruction alone (G6). The job is
-// keyed by task and head, and each queueing is a stage.land-queued event, so
-// a repeated tick or a lost reply queues nothing twice.
+// A landable task the tick queues a land job for (t253, t520). Landable means
+// the checks passed at the head and a reviewer of another company approved it
+// (crossCompanyApproval in src/rules.ts), so the tick queues the landing with
+// no accept, no fast mode and no standing instruction, and does not wait out
+// the stage limit. The job is keyed by task and head, and each queueing is a
+// stage.land-queued event, so a repeated tick or a lost reply queues nothing
+// twice.
 export interface LandQueued { at: string; main: string | null; reason: "first" | "lease-lapsed" | "main-moved" }
 export interface LandQueueInput {
   item: string;
-  accepted: boolean;                       // the task is accepted at its head
-  fast: boolean;                           // the project is in fast mode
+  heldForDeveloper: boolean;               // the task is marked for the developer's accept and is not accepted at its head
+  off: boolean;                            // the developer's standing queue-landable off
+  failed: { failedStep: string; attempt: number } | null;   // a landing failed at this head and has not been queued again by the developer
   lease: LandingLease | null;              // the project's landing lease, if any row stands
   lander: boolean;                         // a live runner offers the land job and holds this project's checkout
   queued: readonly LandQueued[];           // the queueings recorded for this task and head, oldest first
@@ -59,14 +65,19 @@ export function landerLive(offers: readonly SeenOffer[], names: readonly string[
   return offers.some((o) => servesProject(o) && (o.jobs ?? []).includes("land") && names.some((n) => (o.checkouts ?? []).includes(n)));
 }
 
-// What the tick does with a task found landable past its limit. A task not
-// accepted, outside fast mode, is told to wait for accept. A live lease means
-// a landing is under way. With no lander runner live nothing can run the job,
-// which is told. Otherwise the first queueing is made once; a lease that
-// lapsed since the last queueing queues the job again, and so does main
-// moving, up to LIMITS.landRequeuesForMain times, after which it stops.
+// What the tick does with a landable task. A task marked for the developer
+// waits for atelier accept, and the developer's queue-landable off queues
+// nothing. A landing that failed at this head is not queued again: it waits
+// for a new head or for atelier land ID --queue, so a conflict or a failed
+// check is never retried in a loop. A live lease means a landing is under
+// way. With no lander runner live nothing can run the job, which is told.
+// Otherwise the first queueing is made once; a lease that lapsed since the
+// last queueing queues the job again, and so does main moving, up to
+// LIMITS.landRequeuesForMain times, after which it stops.
 export function decideLandQueue(i: LandQueueInput): LandQueueVerdict {
-  if (!i.accepted && !i.fast) return { acts: false, note: `${i.item} is landable but not accepted, and the project is not in fast mode; the developer runs atelier accept ${i.item} for the tick to queue its landing` };
+  if (i.heldForDeveloper) return { acts: false, note: `${i.item} is marked for the developer's accept; the developer runs atelier accept ${i.item}, then the tick queues its landing` };
+  if (i.off) return { acts: false, note: "the developer's standing instruction queue-landable off stops the queueing; withdraw it for the tick to queue landings" };
+  if (i.failed) return { acts: false, note: `a landing of ${i.item} failed at ${i.failed.failedStep} (attempt ${i.failed.attempt}) at this head, so the tick queues no more; a new head, or atelier land ${i.item} --queue, lets it run again` };
   const lease = i.lease;
   if (lease && !landingLeaseLapsed(lease, i.now.getTime())) return { acts: true, note: `a landing of ${lease.item} holds the lease` };
   if (!i.lander) return { acts: false, note: "no live runner offers the land job for this project, so no landing is queued; start a runner that lists land in its jobs and holds the registered checkout, or run atelier land here" };

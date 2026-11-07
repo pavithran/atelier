@@ -149,7 +149,7 @@ test("the reroute and re-point deciders are gone from the tick", async () => {
 
 import { decideLandQueue, landerLive, type LandQueueInput } from "../src/stage-tick.ts";
 
-const land = (over: Partial<LandQueueInput> = {}): LandQueueInput => ({ item: "t1", accepted: true, fast: false, lease: null, lander: true, queued: [], main: "m1", now: at(HOUR), ...over });
+const land = (over: Partial<LandQueueInput> = {}): LandQueueInput => ({ item: "t1", heldForDeveloper: false, off: false, failed: null, lease: null, lander: true, queued: [], main: "m1", now: at(HOUR), ...over });
 const q = (ms: number, main = "m1", reason: "first" | "lease-lapsed" | "main-moved" = "first") => ({ at: at(ms).toISOString(), main, reason });
 
 test("queues one land job for an accepted task, and not again on a later tick", () => {
@@ -158,11 +158,11 @@ test("queues one land job for an accepted task, and not again on a later tick", 
   assert.deepEqual([again.queue, again.acts], [undefined, true]);
 });
 
-test("a task not accepted and not in fast mode is told to accept; fast mode queues it", () => {
-  const v = decideLandQueue(land({ accepted: false }));
+test("a task marked for the developer is told to wait for accept; an unmarked one needs none (t520)", () => {
+  const v = decideLandQueue(land({ heldForDeveloper: true }));
   assert.equal(v.acts, false);
   assert.match(v.note, /atelier accept t1/);
-  assert.equal(decideLandQueue(land({ accepted: false, fast: true })).queue, "first");
+  assert.equal(decideLandQueue(land()).queue, "first");
 });
 
 test("a live lease queues nothing; a lapsed one queues the job again, once", () => {

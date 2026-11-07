@@ -7,8 +7,9 @@
 // never counts; its rejection is a rejection like any other. The landing
 // (cli/land.mjs) and the brief read this judgment.
 
+import { completeBinding, preparationBinding } from "./checks.ts";
 import { offering, type SeenOffer } from "./dispatch/rules.ts";
-import { approvalsNeeded, changeClass, DEFAULT_OWNER, evidenceAt, gateApprovals, sameActor, type Evidence, type Finding, type Item, type ProjectPolicy, type Review } from "./rules.ts";
+import { approvalsNeeded, changeClass, countingRunsAt, DEFAULT_OWNER, evidenceAt, foldPath, gateApprovals, sameActor, type Evidence, type Finding, type Item, type ProjectPolicy, type Review } from "./rules.ts";
 
 export interface LandingReview {
   by: string;
@@ -145,4 +146,45 @@ export function reviewStall(head: string, since: string, reviewer: string | null
   if (bad) return { kind: "unparsable", by: bad.by, note: bad.note ?? "" };
   if (!live) return { kind: "no_request" };
   return null;
+}
+
+// The builder's passing checks a landing may reuse instead of running them on
+// the merged tree again (t520). Every required check that applies must have
+// its latest run at the head observed and passed, as an ordinary run (never a
+// merged one) whose receipt is complete, names the check's command and the
+// project's preparation as they are now, and shares one base, the merge base
+// of the head with main when the builder checked. Answers that base and the
+// paths the task touches (the paths measured at the head), or why not.
+export type ReusableChecks = { ok: true; base: string; touched: string[]; evidence: number[]; commands: string[] } | { ok: false; why: string };
+export function reusableChecks(policy: ProjectPolicy, evidence: Evidence[], head: string): ReusableChecks {
+  const view = evidenceAt(policy, evidence, head);
+  if (view.changedPaths === null) return { ok: false, why: "the paths the task touches were never measured at this head" };
+  if (!view.checks.length) return { ok: false, why: "no required check applies to this change" };
+  const preparation = preparationBinding(policy.prepare);
+  const bases = new Set<string>(), ids: number[] = [];
+  for (const { claim } of view.checks) {
+    const run = countingRunsAt(policy, evidence, head, claim).pop() as (Evidence & { id?: number; reuse?: unknown }) | undefined;
+    if (!run || run.grade !== "observed" || run.passed !== true || run.notApplicable) return { ok: false, why: `\`${claim}\` has no passing observed run at this head` };
+    const reuse = run.reuse;
+    if (!completeBinding(reuse) || reuse.mode !== "ordinary" || reuse.head !== head || reuse.command !== claim) return { ok: false, why: `\`${claim}\` has no complete receipt for an ordinary run at this head` };
+    if (reuse.preparation !== preparation) return { ok: false, why: `the checks' preparation changed since \`${claim}\` ran` };
+    bases.add(reuse.base);
+    if (typeof run.id === "number") ids.push(run.id);
+  }
+  if (bases.size !== 1) return { ok: false, why: "the passing runs were made against different bases" };
+  return { ok: true, base: [...bases][0], touched: view.changedPaths, evidence: ids, commands: view.checks.map((c) => c.claim) };
+}
+
+// Whether the builder's checks stand for the merged tree: main has moved no
+// path the task touches since their base. `moved` is the paths main changed
+// from that base to the main the merge was made on, or null when they could
+// not be read, which reuses nothing. Paths compare as a Mac stores them.
+export function reuseVerdict(found: ReusableChecks, moved: readonly string[] | null): { reuse: boolean; why: string; touching: string[] } {
+  if (!found.ok) return { reuse: false, why: found.why, touching: [] };
+  if (moved === null) return { reuse: false, why: "the paths main moved since the builder's checks could not be read", touching: [] };
+  const mine = new Set(found.touched.map(foldPath));
+  const touching = moved.filter((p) => mine.has(foldPath(p)));
+  return touching.length
+    ? { reuse: false, why: `main moved ${touching.length} path${touching.length === 1 ? "" : "s"} the task touches since the builder's checks (${touching.slice(0, 5).join(", ")}${touching.length > 5 ? ", …" : ""})`, touching }
+    : { reuse: true, why: `main moved ${moved.length} path${moved.length === 1 ? "" : "s"} since the builder's checks, none that the task touches`, touching };
 }

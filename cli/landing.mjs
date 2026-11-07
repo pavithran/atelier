@@ -4,6 +4,7 @@ import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, m
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
+import { reusableChecks, reuseVerdict } from '../src/landing-verdict.ts';
 import { foldPath } from '../src/rules.ts';
 import { taskReadGrant } from './read-grant.mjs';
 
@@ -445,4 +446,25 @@ export function treeEntries(listing) {
     const tab = line.indexOf('\t');
     return { mode: line.slice(0, line.indexOf(' ')), path: line.slice(tab + 1) };
   });
+}
+
+// Whether a landing may reuse the builder's passing checks for the merge it
+// made (t520). The merge commit is main's tip merged with the task's head, so
+// its first parent is the main the checks must still stand for. The checks
+// stand when main has moved no path the task touches since the base they
+// were run against (reusableChecks and reuseVerdict, src/landing-verdict.ts).
+// Anything that cannot be read reuses nothing. Answers the verdict, the main
+// it was made against, and the checks it read.
+export function reuseDecision({ cwd, policy, evidence, head, mergeCommit }) {
+  const found = reusableChecks(policy, evidence ?? [], head);
+  const git = (...args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const parents = git('rev-list', '--parents', '-n', '1', mergeCommit);
+  const [, main, second, ...rest] = parents.status === 0 ? parents.stdout.trim().split(/\s+/) : [];
+  if (!main || second !== head || rest.length) return { ...reuseVerdict({ ok: false, why: `the merge ${mergeCommit.slice(0, 8)} is not main merged with ${head.slice(0, 8)}` }, []), found, main: null };
+  let moved = null;
+  if (found.ok) {
+    const diff = git('diff', '--name-only', '--no-renames', '-z', found.base, main);
+    if (diff.status === 0) moved = diff.stdout.split('\0').filter(Boolean);
+  }
+  return { ...reuseVerdict(found, moved), found, main };
 }

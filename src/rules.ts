@@ -2146,6 +2146,21 @@ export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evide
   return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, view.changedPaths, owner, options);
 }
 
+// The approval that lets Atelier land a task with no session (t520): a
+// review standing at the item's head and criteria that the gate admits as
+// independent, from a model of a company none of the task's contributors
+// belongs to. A project in single-family mode admits same-company reviewers
+// of other models for protected changes; that approval never lands a task by
+// itself. A change that needs no review still needs this approval. Null when
+// there is none.
+export function crossCompanyApproval(item: Item, policy: ProjectPolicy, reviews: Review[], owner = DEFAULT_OWNER): Review | null {
+  const contributors = contributorsOf(item);
+  const companies = new Set(contributors.map(actorFamily));
+  const single = singleFamily(policy);
+  return countingReviews(reviews, bindingOf(item), policy, owner)
+    .find((r) => independentApproval(r, "protected", contributors, owner, single) && !companies.has(actorFamily(r.by))) ?? null;
+}
+
 // Code needs at least one cross-company approval; a project may require more.
 export function approvalsNeeded(policy: ProjectPolicy, kind: ChangeClass | null, paths: readonly string[] | null | undefined): { count: number; as: "protected" | "coordinated" | null; risk: RiskClass | null } {
   const need = riskNeed(paths, policy);
