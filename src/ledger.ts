@@ -2385,6 +2385,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The developer names the routing; the server chooses no reviewer.
   private askCheckedReview(item: Item, offers: readonly SeenOffer[] | undefined): void {
+    if (item.dispatch?.reviewer) { this.askSubmissionReview(item.id); return; }
     const value = this.standing().get("review-on-checked");
     if (!value || value === "off" || !item.owner || !item.head) return;
     const reviewer = value.split(",").map((p) => p.split("=")).find(([company]) => company === actorFamily(item.owner!))?.[1];
@@ -3222,6 +3223,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   items(): Item[] {
+    const asked = new Map(this.sql.exec(`SELECT DISTINCT r.item, r.head FROM review_requests r JOIN items i ON i.id = r.item AND i.head = r.head WHERE r.tier IS NULL AND r.superseded IS NULL AND r.state IN ('open', 'claimed', 'answered')`).toArray().map(r => [r.item as string, r.head as string]));
     const actors = this.itemActors();
     // A blocking finding on a file a live item's scope lacks (t270) rides on
     // the item as scopeGap, so a list of items (status) can say so. Only the
@@ -3237,7 +3239,7 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -3702,6 +3704,27 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, id);
   }
 
+  private submissionDispatchInput(input: Record<string, unknown>): Record<string, unknown> {
+    if (input.land !== true || input.reviewer !== undefined) return input;
+    const mapping = this.standing().get("review-on-checked");
+    const reviewer = mapping?.split(",").map(p => p.split("=")).find(([family]) => family === actorFamily(`${input.agent}/${input.model}`))?.[1];
+    return reviewer ? { ...input, reviewer } : input;
+  }
+
+  private askSubmissionReview(id: string): void {
+    const item = this.item(id), d = item.dispatch;
+    if (item.state !== "submitted" || !d?.reviewer) return;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.requestReview(id, this.owner, d.reviewer!, this.poolStanding(), false);
+        if (d.land) this.requestLand(id, this.owner);
+      });
+    } catch (error) {
+      if (!(error instanceof RuleError)) throw error;
+      this.log(id, "atelier", "submission.review_wait", { head: item.head, reason: error.message, next: `atelier land ${id} --reviewer ${d.reviewer}` }, new Date().toISOString());
+    }
+  }
+
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
   // A task held by an agent (claimed, submitted or accepted) can
@@ -3734,6 +3757,7 @@ export class Ledger extends DurableObject<Env> {
     // again with an override starts a fresh build, so an earlier merge-main
     // job and head are not carried over (t517).
     const waiting = waitingDispatch(item);
+    input = this.submissionDispatchInput(input);
     const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waiting);
     // Every dispatch names its agent and its model (G17): one that leaves
     // either to the runner is a pick the server does not make, by the API,
@@ -3864,7 +3888,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) {
-      const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
+      const d = this.standingDispatch(this.submissionDispatchInput(input), "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
       this.assertMergeMainWorkspace(item, d);
       assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner, this.holds(item));
       this.assertCriteriaReviewed(item, d, "dispatched");
@@ -4938,13 +4962,17 @@ export class Ledger extends DurableObject<Env> {
     // A rerun of the submit that already stands: the caller names the head it
     // submits, and it is the one submitted and still the task's head. A newer
     // head, or none named, is a submit like any other.
-    if (head !== undefined && head === item.head && item.state === "submitted" && this.lastEvent(id, ["item.submitted"])?.data.head === head) return { ...item, already: true };
+    if (head !== undefined && head === item.head && item.state === "submitted" && this.lastEvent(id, ["item.submitted"])?.data.head === head) {
+      this.askSubmissionReview(id);
+      return { ...item, already: true };
+    }
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
     this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
     // A request the head's move withdrew is carried to this head, where the
     // gate still needs it reviewed (reaskReview).
     this.reaskReview(id, at);
+    this.askSubmissionReview(id);
     this.notify(id, origin);
     this.afterPlanChange(id);
     return this.item(id);
