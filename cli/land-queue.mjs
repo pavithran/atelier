@@ -252,6 +252,8 @@ export function failureReport(id, output, record = null) {
 //                and review state; throws when it cannot be read
 //   waiting      what the last run of this job stopped on, { key, kind,
 //                reason }, or null
+//   sendBack     async (record) => { ok, reason? }: sends a task whose landing
+//                stopped on a conflict back to its builder (t520)
 // A landing that exits 0 has landed only if the task is merged afterwards
 // (t285): `atelier land` also exits 0 when it stops at the review ask or a
 // rejection. Such a run resolves { ok: false, waiting: "asked" | "rejected",
@@ -298,5 +300,15 @@ export async function runLandJob(id, io) {
   }
   const output = result.timedOut ? `${result.output}\natelier land failed (timed out)` : result.output;
   const record = await io.landingRecord?.().catch(() => null) ?? null;
-  return { ok: false, refused: false, failed: true, reason: failureReport(id, output, record) };
+  const failure = { ok: false, refused: false, failed: true, reason: failureReport(id, output, record) };
+  // A landing that stopped on a conflict (t520) goes back to its builder with
+  // the files; the job is not run again for this head, so the same conflict
+  // is never retried, and the builder's new head is what lands next.
+  if (io.sendBack && record?.failedStep === "merge-main" && record.files?.length) {
+    const sent = await Promise.resolve().then(() => io.sendBack(record)).catch((error) => ({ ok: false, reason: error.message }));
+    return sent?.ok
+      ? { ...failure, sentBack: true, reason: `${failure.reason}\n${id} was sent back to its builder to merge main and resolve the conflict.` }
+      : { ...failure, reason: `${failure.reason}\n${id} could not be sent back to its builder: ${sent?.reason ?? "no reason given"}.` };
+  }
+  return failure;
 }

@@ -233,6 +233,44 @@ lander's log has one line per attempt, naming the failing step, the attempt
 and the tail. `atelier land t9 --queue` queues it again (the record notes
 `requeued`), and a new head lets it run.
 
+## Landing by itself
+
+A task lands with no session once its required checks passed at its head and a
+reviewer of another company approved that head (t520). The stage tick queues
+the land job at once: no `atelier accept`, no fast mode, no standing
+instruction and no wait past a stage limit are needed. A runner that lists the
+land job and holds the registered checkout runs `atelier land` in it, one
+landing at a time per project under the landing lease, and the second of two
+approved tasks is merged and tested on a main that holds the first.
+
+The tick queues nothing when:
+
+- the approval is for an older head than the task's current one, or is from a
+  reviewer of the builder's own company, even in a single-family project where
+  the gate admits it (`crossCompanyApproval`, `src/rules.ts`);
+- the task is marked `--next-gate developer` and not accepted at its head;
+- a landing failed at this head and the developer has not queued it again, so a
+  conflict or a failed check is not retried in a loop;
+- the developer recorded `atelier decide --standing queue-landable off` (fast
+  mode), or no live runner offers the job.
+
+The landing tests the tree main will become. The builder's passing checks at
+the same head are reused instead of run again when every required check has a
+complete receipt for an ordinary run, and main has moved no path the task
+touches between the receipt's base and the main the merge was made on
+(`reusableChecks` and `reuseVerdict`, `src/landing-verdict.ts`;
+`reuseDecision`, `cli/landing.mjs`). The `land.checks` event then carries
+`reused: true`, the base and main it was read against, and one `reused: CHECK`
+line per check; otherwise the checks run on the merged tree, and a failure
+pushes nothing. A regeneration that changes the tree, or a receipt that cannot
+be read, reuses nothing. If main moves between the check and the push, the push
+is refused and the merge is made again on the new main, and checked under the
+same rule, twice at most.
+
+A landing that stops on a conflict is sent back to the task's builder by the
+runner (`atelier dispatch ID --job merge-main`, with the files in the note) and
+is not run again at that head.
+
 `atelier land t9 --queue --cancel` removes a queued landing. Run when nothing
 is queued, it says so, exits 0 and changes nothing. A landing of the task
 that holds the lease and has begun its merge (`merge-main` or later) is not
