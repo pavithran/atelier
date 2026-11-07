@@ -11,7 +11,7 @@ let seq = 0;
 // An event `m` minutes before NOW (negative: after).
 const ev = (ago: number, itemId: string | null, kind: string, data: Record<string, unknown> = {}): BarEvent =>
   ({ seq: ++seq, at: new Date(NOW - ago * MIN).toISOString(), itemId, kind, data });
-const ran = (ago: number, step: string, passed: boolean) => ev(ago, null, "action.ran", { step, passed });
+const ran = (ago: number, step: string, passed: boolean, ship?: string) => ev(ago, null, "action.ran", { step, passed, ...(ship ? { ship } : {}) });
 
 // A task filed 100 min ago and merged 40 min ago, deployed 10 min ago.
 const clean = (id: string, filed = 100, merged = 40) => [ev(filed, id, "item.created", { title: `Add ${id}` }), ev(merged, id, "item.merged", {}), ev(merged, id, "item.accepted")];
@@ -54,6 +54,15 @@ test("a deploy counts only from a passed deploy step, not any action.ran (criter
   assert.equal(bar(after, "demo", "deployMedian").value, 95);
 });
 
+test("a deploy whose last command failed is not a deploy, however many commands passed first", () => {
+  const events = [...clean("t1"), ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1")];
+  assert.equal(bar(computeBars([{ name: "demo", events }], NOW), "demo", "deployMedian").value, null);
+  const retried = [...clean("t1"), ran(20, "deploy", false, "s2"), ran(15, "deploy", true, "s2")];
+  assert.equal(bar(computeBars([{ name: "demo", events: retried }], NOW), "demo", "deployMedian").value, 85, "a retry that passed ends the step passed");
+  const both = [...events, ran(5, "deploy", true, "s3")];
+  assert.equal(bar(computeBars([{ name: "demo", events: both }], NOW), "demo", "deployMedian").value, 95, "a later whole deploy counts");
+});
+
 test("a deploy before the merge does not deploy it", () => {
   const r = computeBars([{ name: "demo", events: [...clean("t1"), ran(50, "deploy", true)] }], NOW);
   assert.equal(bar(r, "demo", "deployMedian").value, null);
@@ -62,7 +71,8 @@ test("a deploy before the merge does not deploy it", () => {
 test("a merge with a fix_of linked to it is not sound (criterion 3)", () => {
   const events = [...clean("t1"), ...clean("t2"), ev(5, "t3", "item.created", { title: "Fix t1" }), ev(5, "t3", "item.fix_of", { itemId: "t1" })];
   const r = computeBars([{ name: "demo", events }], NOW, { t1: 5_000_000, t2: 100_000 });
-  assert.equal(bar(r, "demo", "tokens").value, 100_000, "only t2 is sound");
+  assert.equal(bar(r, "demo", "tokens").value, 5_100_000, "5.1M spent, one sound merge");
+  assert.equal(bar(r, "demo", "tokens").status, "fail");
   assert.equal(bar(r, "demo", "escapes").value, 0.5, "one of two merges has a later repair link");
   assert.equal(bar(r, "demo", "escapes").status, "fail");
 });
@@ -71,7 +81,7 @@ test("a merge that turned main red within 7 days is not sound (criterion 6)", ()
   const events = [...clean("t1"), ...clean("t2"), ...clean("t3")];
   events.push(ev(30, "t1", "evidence.observed", { merged: true, passed: false }), ev(-8 * 24 * 60, "t2", "evidence.observed", { merged: true, passed: false }));
   const r = computeBars([{ name: "demo", events }], NOW, { t1: 9_000_000, t2: 200_000, t3: 400_000 });
-  assert.equal(bar(r, "demo", "tokens").value, 300_000, "t1 caused a red main; t2's failure came more than 7 days after its merge");
+  assert.equal(bar(r, "demo", "tokens").value, 4_800_000, "t1 caused a red main, so 9.6M over t2 and t3; t2's failure came more than 7 days after its merge");
   assert.equal(bar(r, "demo", "redMerges").value, 1);
   assert.equal(bar(r, "demo", "redMerges").status, "fail");
 });

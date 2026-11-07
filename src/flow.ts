@@ -235,8 +235,16 @@ function measure(name: string, input: readonly BarEvent[], now: number, tokens: 
   for (const e of events) if (e.itemId) (byItem.get(e.itemId) ?? byItem.set(e.itemId, []).get(e.itemId)!).push(e);
   const linked = new Set<string>();
   for (const e of events) if (e.kind === "item.fix_of" && typeof e.data?.itemId === "string") linked.add(e.data.itemId);
-  // A deploy is a deploy step that passed; any other action.ran is not one.
-  const deploys = events.filter((e) => e.kind === "action.ran" && e.data?.step === "deploy" && e.data?.passed === true).map((e) => Date.parse(e.at)).sort((a, b) => a - b);
+  // A deploy is a ship's deploy step that finished passed. A step with several
+  // commands records one event each, so a ship counts only when its last
+  // deploy event passed (a failed command ends the ship); events with no ship
+  // id stand alone.
+  const shipRuns = new Map<string, BarEvent>();
+  for (const e of events) {
+    if (e.kind !== "action.ran" || e.data?.step !== "deploy") continue;
+    shipRuns.set(typeof e.data?.ship === "string" ? e.data.ship : `seq:${e.seq}`, e);
+  }
+  const deploys = [...shipRuns.values()].filter((e) => e.data?.passed === true).map((e) => Date.parse(e.at)).sort((a, b) => a - b);
 
   const merges: Merge[] = [];
   for (const [id, list] of byItem) {
@@ -291,14 +299,16 @@ function barsOf(scope: string, m: Measures, haveTokens: boolean): BarScope {
   const empty = (id: string, label: string, target: string, source: string) => make(id, label, null, "no merges", target, "no merges", source, none);
 
   let tokens: Bar;
-  const tSrc = "item.merged, item.fix_of and evidence events (soundness); weighted tokens from the --tokens file";
+  const tSrc = "item.merged, item.fix_of and evidence events (soundness); weighted tokens of every merge from the --tokens file, over the sound merges";
   if (!n) tokens = empty("tokens", "Weighted Claude tokens per sound merge", "under 0.7M", tSrc);
   else {
-    const withTokens = sound.filter((x) => x.tokens !== null);
-    if (!haveTokens || !withTokens.length) tokens = make("tokens", "Weighted Claude tokens per sound merge", null, "unmeasured", "under 0.7M", "unmeasured", tSrc, !haveTokens ? "the ledger records no token use; pass --tokens FILE" : `${sound.length} sound merge(s), none with tokens in the file`);
+    const measured = m.merges.filter((x) => x.tokens !== null);
+    if (!haveTokens || !measured.length) tokens = make("tokens", "Weighted Claude tokens per sound merge", null, "unmeasured", "under 0.7M", "unmeasured", tSrc, !haveTokens ? "the ledger records no token use; pass --tokens FILE" : `${n} merge(s), none with tokens in the file`);
+    else if (!sound.length) tokens = make("tokens", "Weighted Claude tokens per sound merge", null, "unmeasured", "under 0.7M", "unmeasured", tSrc, `${n} merge(s), none sound`);
     else {
-      const v = withTokens.reduce((s, x) => s + x.tokens!, 0) / withTokens.length;
-      tokens = make("tokens", "Weighted Claude tokens per sound merge", v, `${(v / 1e6).toFixed(2)}M`, "under 0.7M", v < TOKEN_BAR ? "pass" : "fail", tSrc, `${withTokens.length} of ${sound.length} sound merge(s) have tokens; ${n - sound.length} merge(s) not sound`);
+      // All spending counts, sound or not, over the sound merges it bought.
+      const v = measured.reduce((s, x) => s + x.tokens!, 0) / sound.length;
+      tokens = make("tokens", "Weighted Claude tokens per sound merge", v, `${(v / 1e6).toFixed(2)}M`, "under 0.7M", v < TOKEN_BAR ? "pass" : "fail", tSrc, `tokens of ${measured.length} of ${n} merge(s) over ${sound.length} sound merge(s); ${n - measured.length} merge(s) without tokens`);
     }
   }
 
