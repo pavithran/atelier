@@ -16,6 +16,7 @@ async function setup(name: string, intent: boolean | "default" = true, chosen = 
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: new Date().toISOString() }, "owner");
   await L.poolChanged(pool);
+  if (intent === "default") await L.setMode("owner", "fast", "Test the recorded reviewer mapping");
   if (intent === "default") await L.recordDecision({ standing: { key: "review-on-checked", value: `openai=${reviewer}` }, quote: "Use this reviewer for OpenAI builds" }, "owner");
   const { id } = await L.newItem("Review the submitted task", ["src/**"], "owner", { accept: ["Works"] });
   await L.dispatch(id, "owner", { agent: "codex", model: "gpt-6-astra", ...(intent ? { ...(intent === "default" ? {} : { reviewer: chosen }), land: true } : {}) });
@@ -42,6 +43,8 @@ test("walters-coach: a checked submit without a review is an orchestrator wait i
   await L.submit(id, builder);
   const items = await L.items();
   assert.equal(items[0].reviewAskedHead, null);
+  const event = (await L.events(id)).find(e => e.kind === "item.submitted")!;
+  assert.equal(wakesForSubmission(event, items), true);
   const text = formatStatus([{ name, items, inbox: await L.inbox(new Date().toISOString()) }]);
   assert.match(text, /Waiting on the orchestrator/);
   assert.match(text, new RegExp(`atelier land ${id} --reviewer H/M`));
@@ -95,6 +98,8 @@ test("dispatch uses the project's named reviewer mapping when --land omits --rev
   const items = await L.items();
   assert.equal(items[0].reviewAskedHead, head);
   assert.equal((await L.reviewRequests(id))[0].reviewer, reviewer);
+  assert.equal((await L.item(id)).reviewAskedHead, head);
+  assert.equal((await L.ownerRead(new Date().toISOString())).items[0].reviewAskedHead, head);
   const offer = { ...runner, agents: [], jobs: ["land"], checkouts: [name] };
   assert.equal((await L.landJobs(offer, [name]))[0]?.id, id);
   assert.doesNotMatch(formatStatus([{ name, items, inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);

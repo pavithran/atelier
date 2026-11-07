@@ -3164,7 +3164,7 @@ export class Ledger extends DurableObject<Env> {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("no_item", `no item ${id}`, 404, "run atelier ls --project P, or atelier ls --all");
     const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`, id).toArray();
-    return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
+    return this.withReviewAsked([{ ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) }])[0];
   }
 
   // The scopeGap of a live item's detail, as items() sets it on each item.
@@ -4228,6 +4228,14 @@ export class Ledger extends DurableObject<Env> {
     return coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
   }
 
+  // Read only these tasks' current-head gate requests.
+  private withReviewAsked(items: Item[]): Item[] {
+    const ids = items.filter(i => i.head).map(i => i.id);
+    if (!ids.length) return items;
+    const asked = new Map(this.sql.exec(`SELECT DISTINCT r.item, r.head FROM review_requests r JOIN items i ON i.id = r.item AND i.head = r.head WHERE r.item IN (SELECT value FROM json_each(?)) AND r.tier IS NULL AND r.superseded IS NULL AND r.state IN ('open', 'claimed', 'answered')`, JSON.stringify(ids)).toArray().map(r => [r.item as string, r.head as string]));
+    return items.map(item => ({ ...item, reviewAskedHead: asked.get(item.id) ?? null }));
+  }
+
   // Items as item() reads them, from their rows, with each one's push actors
   // read from the event log in one query for all of them (the ids go as one
   // JSON list, so any number fits in one bound value).
@@ -4241,7 +4249,7 @@ export class Ledger extends DurableObject<Env> {
       history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
       histories.set(id, history);
     }
-    return rows.map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
+    return this.withReviewAsked(rows.map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) })));
   }
 
   // The jobs a runner's dead run left behind: the claims it holds whose
@@ -7695,7 +7703,7 @@ export class Ledger extends DurableObject<Env> {
     const rows = this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const gated = rows.filter((r) => r.state === "submitted" || r.state === "accepted");
     const full = new Map((gated.length ? this.withPushActors(gated) : []).map((i) => [i.id, i]));
-    return rows.map((r) => full.get(r.id as string) ?? toItem(r));
+    return this.withReviewAsked(rows.map((r) => full.get(r.id as string) ?? toItem(r)));
   }
 
   // What an owner page's bar and cards read of a project in one call: its
@@ -12180,6 +12188,7 @@ function toItem(r: Row): Item {
     workspace: (r.fork as string | null) ?? null,
     base: (r.base as string | null) ?? null,
     head: (r.head as string | null) ?? null,
+    reviewAskedHead: null,
     acceptedHead: (r.accepted_head as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
