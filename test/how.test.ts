@@ -280,7 +280,7 @@ test("the How page, help and docs state the current core-file hold rule", () => 
   const core = RULES.find((r) => r.title === "Core files are built one change at a time")!;
   assert.match(core.enforced, /claimed item or of the item named by a live landing lease/);
   assert.match(core.enforced, /submitted or accepted item that is not landing holds nothing/);
-  assert.match(core.enforced, /once each claimed blocker submits or is released and each landing ends/);
+  assert.match(core.enforced, /once each blocker merges or is abandoned/);
 });
 
 // t595's review (codex/gpt-6-astra and antigravity/gemini-4-argon, 2026-10-13):

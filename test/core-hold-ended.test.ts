@@ -85,9 +85,9 @@ test("the held line names each holder's state", () => {
     "waits on t313 (claimed by claude-code/opus-5.5, running on home:studio): both scopes reach core file cli/runner.mjs; "
     + "t200 (claimed by codex/gpt-6): both scopes reach core file cli/runner.mjs; "
     + "t201 (accepted by codex/gpt-6, landing): both scopes reach core file cli/runner.mjs");
-  assert.equal(holdRelease(h), "offered once t313 submits, is released or its run ends without a result, t200 submits or is released and the landing of t201 ends");
+  assert.equal(holdRelease(h), "offered once t313 merges or is abandoned, t200 merges or is abandoned and t201 merges or is abandoned");
   const [reason] = unclaimed(item("t273"), { held: { ...blockers[0] } });
-  assert.equal(reason.line, "Held: waits on t313 (claimed by claude-code/opus-5.5, running on home:studio): both scopes reach core file cli/runner.mjs; offered once t313 submits, is released or its run ends without a result, or at once with atelier dispatch t273 --overlap-ok.");
+  assert.equal(reason.line, "Held: waits on t313 (claimed by claude-code/opus-5.5, running on home:studio): both scopes reach core file cli/runner.mjs; offered once t313 merges or is abandoned, or at once with atelier dispatch t273 --overlap-ok.");
 });
 
 test("an unfinished note passes nothing by: it is no skip line of an open task", () => {
