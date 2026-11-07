@@ -2891,6 +2891,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
         ...(body.verification !== undefined ? { verification: cleanVerification(body.verification) } : {}),
+        ...(body.tests !== undefined ? { tests: body.tests as never } : {}),
         // A pre-review verdict is judged against main's head as the baseline
         // holds it now, which only the Worker can read (t524).
         ...(isPrereviewRequest(Number(body.request)) ? { mainNow: await mainHeadOf(env, L) } : {}),

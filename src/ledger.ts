@@ -1,3 +1,4 @@
+import { cleanTestRuns, testEvidenceVerdict } from "./review/verify.ts";
 import { receiveRunnerLog, type RunnerLog } from "./runner-log.ts";
 import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
@@ -4840,6 +4841,21 @@ export class Ledger extends DurableObject<Env> {
     const fastReceiptOf = item.state === "merged" && this.mergedFast(item.id);
     const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
     r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
+    // An approval carries proof that the tests covering the change ran and
+    // passed at this head (t523). The covering tests come from the project's
+    // declaration and the change's measured paths, never from the request.
+    // The owner's own verdict and a post-merge audit are not asked for it.
+    if (r.tests !== undefined) r = { ...r, tests: cleanTestRuns(r.tests) };
+    if (r.approve && item.state !== "merged" && !sameActor(r.by, this.owner)) {
+      const proof = testEvidenceVerdict({ approve: true, head: r.head, runs: r.tests ?? [], affected: policy.affectedTests, changed: evidenceAt(policy, this.evidenceFor(item.id), item.head).changedPaths });
+      if (!proof.ok && proof.wait) {
+        // Tests that could not run are recorded as a fact and the task waits:
+        // no approval, no rejection, and the claim stands until it lapses.
+        this.log(r.itemId, r.by, "review.tests_unrun", { head: r.head, tests: proof.tests, ...(r.request !== undefined ? { request: r.request } : {}), note: r.note }, at, proved);
+        return;
+      }
+      if (!proof.ok) throw new RuleError(proof.code, proof.message, 409, `run the tests that cover the change at ${r.head.slice(0, 8)}, then atelier review ${r.itemId} --approve --tests JSON; if they cannot run, the task waits`);
+    }
     this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?)`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0);
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);

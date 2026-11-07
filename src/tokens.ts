@@ -313,7 +313,7 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "criteria-review-claim", method: "POST", path: `${ITEM}/criteria-review-claim`, credential: "agent", body: [], via: "cli", command: "criteria-review-claim", jobs: CRITERIA },
   { name: "criteria-review", method: "POST", path: `${ITEM}/criteria-review`, credential: "agent", body: ["approve", "rev", "criteria", "request", "note", "findings", "checks"], via: "cli", command: "criteria-verdict", jobs: CRITERIA },
   { name: "criteria-review-failed", method: "POST", path: `${ITEM}/criteria-review-failed`, credential: "agent", body: ["request", "note"], via: "cli", command: "criteria-review-failed", jobs: CRITERIA },
-  { name: "review", method: "POST", path: `${ITEM}/review`, credential: "agent", body: ["head", "criteria", "request", "approve", "note", "findings", "verification"], via: "cli", command: "review", jobs: REVIEW },
+  { name: "review", method: "POST", path: `${ITEM}/review`, credential: "agent", body: ["head", "criteria", "request", "approve", "note", "findings", "verification", "tests"], via: "cli", command: "review", jobs: REVIEW },
   // The integrate and refresh jobs' own helpers, under the integrator's token.
   { name: "integrated", method: "POST", path: `${ITEM}/integrated`, credential: "agent", body: ["part", "mergeCommit"], via: "cli", command: "integrated", jobs: ["integrate"] },
   { name: "integration-failed", method: "POST", path: `${ITEM}/integration-failed`, credential: "agent", body: ["part", "reason", "kind"], via: "cli", command: "integration-failed", jobs: ["integrate"] },

@@ -13,7 +13,8 @@
 // confirm by implication. A reply with no such line at all is no answer, and
 // the caller asks again rather than treating silence as a refutation.
 
-import { actorFamily, companyRefusal, contributed, type Finding } from "../rules.ts";
+import { actorFamily, companyRefusal, contributed, matchesAny, RuleError, type Finding } from "../rules.ts";
+import { coveringTests, type AffectedTests } from "../affected-tests.ts";
 import type { PoolFamily } from "../models/pool.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { VERIFY_BASE_LINE, VERIFY_HEADING } from "./verdict.ts";
@@ -136,4 +137,60 @@ export function pickVerifier(candidates: readonly string[], reviewer: string, co
   const other = eligible.find((c) => actorFamily(c) !== actorFamily(reviewer)) ?? eligible[0];
   if (other) return { actor: other, independent: true, why: `${other} verifies, ${actorFamily(other) !== actorFamily(reviewer) ? `of another family than ${reviewer}` : `a different model from ${reviewer}`}` };
   return { actor: reviewer, independent: false, why: `no other model on this runner may verify, so ${reviewer} verifies in a fresh run` };
+}
+
+// The proof an approval carries that the tests covering the change ran (t523).
+// A reviewer lists each test it ran and what happened, for the head it
+// reviewed. An approval is recorded only when every test the project's
+// declaration names for the changed paths passed at that head.
+export interface TestRun { test: string; head: string; result: "passed" | "failed" | "could-not-run"; note?: string }
+export const TEST_RUNS_MAX = 200;
+
+export function cleanTestRuns(v: unknown): TestRun[] {
+  const bad = () => new RuleError("bad_tests", `tests must be a list of at most ${TEST_RUNS_MAX} {test, head, result}, the result passed, failed or could-not-run, the head a full commit hash`, 400, "send --tests as a JSON list of {test, head, result}");
+  if (!Array.isArray(v) || v.length > TEST_RUNS_MAX) throw bad();
+  return v.map((e) => {
+    const o = e as Record<string, unknown> | null;
+    if (!o || typeof o !== "object" || typeof o.test !== "string" || !o.test.trim() || o.test.length > 300 || typeof o.head !== "string" || !/^[a-f0-9]{40,64}$/.test(o.head)) throw bad();
+    if (o.result !== "passed" && o.result !== "failed" && o.result !== "could-not-run") throw bad();
+    if (o.note !== undefined && typeof o.note !== "string") throw bad();
+    return { test: o.test.trim(), head: o.head, result: o.result, ...(o.note ? { note: o.note.slice(0, 500) } : {}) };
+  });
+}
+
+export type TestVerdict =
+  | { ok: true; tests: string[] }
+  | { ok: false; code: "tests_missing" | "tests_failed" | "tests_not_run" | "tests_uncovered"; message: string; wait: boolean; tests: string[] };
+
+// Whether an approval's test runs prove the change. `changed` is the change's
+// measured paths from the Ledger's evidence, never the reviewer's word; the
+// level of proof comes from the project's declaration, not from the request.
+// A rejection needs none, and a project with no declaration names no test the
+// server could ask for.
+export function testEvidenceVerdict(i: { approve: boolean; head: string; runs: readonly TestRun[]; affected: Pick<AffectedTests, "check" | "map"> | undefined; changed: readonly string[] | null | undefined }): TestVerdict {
+  if (!i.approve || !i.affected) return { ok: true, tests: [] };
+  const cover = coveringTests(i.affected, i.changed);
+  const here = i.runs.filter((r) => r.head === i.head);
+  const refuse = (code: Extract<TestVerdict, { ok: false }>["code"], message: string, tests: string[] = [], wait = false): TestVerdict => ({ ok: false, code, message, wait, tests });
+  const failed = here.filter((r) => r.result === "failed").map((r) => r.test);
+  if (failed.length) return refuse("tests_failed", `${failed.join(", ")} failed at ${i.head.slice(0, 8)}; an approval needs the covering tests passing`, failed);
+  const passed = new Set(here.filter((r) => r.result === "passed").map((r) => r.test));
+  const unrun = new Set(here.filter((r) => r.result === "could-not-run").map((r) => r.test));
+  const wanted = cover.kind === "full" ? [cover.check] : cover.exact;
+  const globs = cover.kind === "full" ? [] : cover.globs;
+  const met: string[] = [], absent: string[] = [], notRun: string[] = [];
+  for (const t of wanted) (passed.has(t) ? met : unrun.has(t) ? notRun : absent).push(t);
+  for (const g of globs) {
+    const hit = [...passed].filter((p) => matchesAny(p, [g]));
+    if (hit.length) met.push(...hit);
+    else if ([...unrun].some((p) => matchesAny(p, [g]))) notRun.push(g);
+    else absent.push(g);
+  }
+  if (notRun.length) return refuse("tests_not_run", `${notRun.join(", ")} could not run at ${i.head.slice(0, 8)}; the task waits for a review that ran them (${cover.why})`, notRun, true);
+  if (absent.length) {
+    const others = [...passed].filter((p) => !met.includes(p));
+    return refuse(here.length && others.length ? "tests_uncovered" : "tests_missing",
+      `${here.length && others.length ? `the passing run of ${others.join(", ")} does not cover the changed paths; ` : `no test result for ${i.head.slice(0, 8)}; `}${absent.join(", ")} must pass (${cover.why})`, absent);
+  }
+  return { ok: true, tests: [...new Set(met)].sort() };
 }

@@ -444,6 +444,8 @@ export interface Review {
   at: string;
   findings?: Finding[];
   verification?: ReviewVerification;
+  // The tests the approval names, each as the reviewer ran it at the head (t523).
+  tests?: { test: string; head: string; result: "passed" | "failed" | "could-not-run"; note?: string }[];
   // Who recorded the review and how (src/ledger.ts addReview). `recordedBy`
   // is the actor whose token made the request: the reviewer itself when its
   // own agent token proved it (`proved` true), the project owner when the

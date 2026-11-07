@@ -134,3 +134,29 @@ const quote = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll(
 export function affectedCommand(run: string, tests: readonly string[]): string {
   return run.replaceAll(TESTS_TOKEN, tests.map(quote).join(" "));
 }
+
+// What covers a change, for a review's proof that the tests ran (t523). The
+// server holds the project's declaration and the change's measured paths but
+// not the head's file list, so this reads the declared map alone: a literal
+// test is named exactly, a glob entry is met by any test it matches. A list
+// command is not run by the server, and a path the map lacks or an unmeasured
+// change has no named cover, so the cover is the full suite, which the
+// declaration's check name stands for.
+export type Cover =
+  | { kind: "affected"; exact: string[]; globs: string[]; why: string }
+  | { kind: "full"; check: string; why: string };
+
+export function coveringTests(a: Pick<AffectedTests, "check" | "map">, changed: readonly string[] | null | undefined): Cover {
+  const full = (why: string): Cover => ({ kind: "full", check: a.check, why });
+  if (!Array.isArray(changed)) return full(UNMEASURED);
+  if (!a.map) return full("the declaration is a list command, which the server does not run");
+  const exact = new Set<string>(), globs = new Set<string>();
+  for (const path of changed) {
+    const entries = a.map.filter((e) => matchesAny(path, e.paths));
+    if (!entries.length) return full(`${path} is in no entry of the declared map`);
+    for (const e of entries) for (const t of e.tests) (/[*?[]/.test(t) ? globs : exact).add(t);
+  }
+  const named = [...exact, ...globs].sort();
+  const n = changed.length;
+  return { kind: "affected", exact: [...exact].sort(), globs: [...globs].sort(), why: `the declared map selects ${named.length ? named.join(", ") : "no test"} for ${n} changed path${n === 1 ? "" : "s"}` };
+}

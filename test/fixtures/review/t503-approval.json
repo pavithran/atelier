@@ -1,0 +1,6 @@
+{
+  "about": "The shape of the approval t503's reviewer (a Sonnet model) recorded on 2026-11-0x, replayed by test/review-tests-proof.test.mjs. The original note is in the ledger, not in this workspace, so the note below is written to say what the brief says those approvals said: the tests could not run. The changed path stands for t503's change, as a top-level file the test fixture can write.",
+  "changed": ["review-needed.js"],
+  "approve": true,
+  "note": "Approving. I could not run the test suite in my sandbox (node --test failed to start: EPERM), so I read the diff instead; the logic looks right and the change is small."
+}
