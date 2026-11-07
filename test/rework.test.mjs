@@ -190,23 +190,25 @@ test("the runner's own io carries the builder dispatch, the notification and the
 });
 
 test("ntfyWake sends one message to the topic, and refuses without one", async () => {
-  const sent = [];
-  await ntfyWake("atelier/t21: the second rejection", { env: { NTFY_TOPIC: "my topic" }, fetch: async (url, init) => { sent.push({ url, init }); return { ok: true, body: null }; } });
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].url, "https://ntfy.sh/my%20topic");
-  assert.equal(sent[0].init.body, "atelier/t21: the second rejection");
-  await assert.rejects(() => ntfyWake("x", { env: {}, fetch: async () => { throw new Error("must not be called"); } }), /NTFY_TOPIC/);
-  await assert.rejects(() => ntfyWake("x", { env: { NTFY_TOPIC: "t" }, fetch: async () => ({ ok: false, status: 500, body: null }) }), /500/);
+  const runs = [];
+  const run = (code) => async (argv) => { runs.push(argv); return { code, output: "", stderr: "channel down" }; };
+  await ntfyWake(run(0), "atelier/t21: the second rejection", { env: { NTFY_TOPIC: "my topic" } });
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].at(-1), "https://ntfy.sh/my%20topic");
+  assert.ok(runs[0].includes("atelier/t21: the second rejection"));
+  await assert.rejects(() => ntfyWake(run(0), "x", { env: {} }), /NTFY_TOPIC/);
+  assert.equal(runs.length, 1, "nothing is run without a topic");
+  await assert.rejects(() => ntfyWake(run(22), "x", { env: { NTFY_TOPIC: "t" } }), /channel down/);
 });
 
-test("readRunnerItem reads the item on the runner's credential and returns the task", async () => {
+test("readRunnerItem reads the item through the declared item-read call and returns the task", async () => {
   const seen = [];
-  const item = await readRunnerItem({ server: "https://atelier.test/", credential: "rt", runner: "home:studio", project: "atelier", id: "t21", actor: BUILDER,
-    fetch: async (url, init) => { seen.push({ url, init }); return { ok: true, json: async () => ({ item: { id: "t21", state: "blocked", blocked: { reason: "disputes finding 1: why" } } }) }; } });
-  assert.equal(seen[0].url, "https://atelier.test/api/projects/atelier/items/t21");
-  assert.equal(seen[0].init.headers.authorization, "Bearer rt");
+  const send = (res) => ({ send: async (name, params, init) => { seen.push({ name, params, init }); return res; } });
+  const item = await readRunnerItem(send({ ok: true, data: { item: { id: "t21", state: "blocked", blocked: { reason: "disputes finding 1: why" } } } }), { project: "atelier", id: "t21", actor: BUILDER });
+  assert.deepEqual(seen[0].params, { project: "atelier", item: "t21" });
+  assert.equal(seen[0].init.actor, BUILDER);
   assert.equal(item.blocked.reason, "disputes finding 1: why");
-  await assert.rejects(() => readRunnerItem({ server: "https://atelier.test", credential: "rt", project: "atelier", id: "t21", actor: BUILDER, fetch: async () => ({ ok: false, status: 403 }) }), /403/);
+  await assert.rejects(() => readRunnerItem(send({ ok: false, status: 403 }), { project: "atelier", id: "t21", actor: BUILDER }), /403/);
 });
 
 test("dispatchAsDeveloper runs atelier dispatch without the runner's name or token, and fails on a refusal", async () => {

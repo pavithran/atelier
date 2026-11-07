@@ -3021,28 +3021,22 @@ export async function sendBack(io, runnerIO, { project, claimed, posted }) {
 //
 // The notification is an ntfy message on the topic the server's stuck notices
 // use (NTFY_TOPIC); a runner without one says so, and the line stays in its log.
-export async function ntfyWake(message, { env = process.env, fetch = globalThis.fetch } = {}) {
+export async function ntfyWake(run, message, { env = process.env, signal } = {}) {
   const topic = env.NTFY_TOPIC?.trim();
   if (!topic) throw new Error("NTFY_TOPIC is not set on this runner, so no notification can be sent");
   const body = Array.from(String(message).replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ")).slice(0, 500).join("");
-  const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
-    method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000), body,
-    headers: { Title: "Atelier: a session is needed", Tags: "warning", Priority: "default", "Content-Type": "text/plain; charset=utf-8" },
-  });
-  await res.body?.cancel();
-  if (!res.ok) throw new Error(`the notification channel answered ${res.status}`);
+  const r = await run(["curl", "--silent", "--show-error", "--fail", "--max-time", "10", "--proto", "=https", "--request", "POST",
+    "--header", "Title: Atelier: a session is needed", "--header", "Tags: warning", "--header", "Priority: default",
+    "--header", "Content-Type: text/plain; charset=utf-8", "--data-raw", body, `https://ntfy.sh/${encodeURIComponent(topic)}`], { capture: true, captureError: true, signal, timeoutMs: 15_000 });
+  if (r.code !== 0) throw new Error(`the notification channel refused it (curl exited ${r.code}): ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 200)}`);
 }
 
-// The task as the server holds it, read on the runner's credential through the
-// declared `item` call, for a builder's dispute (its block reason).
-export async function readRunnerItem({ server, credential, runner, project, id, actor, signal, fetch = globalThis.fetch }) {
-  const res = await fetch(`${String(server).replace(/\/$/, "")}/api${callPath(declaredCall("item"), { project, item: id })}`, {
-    headers: { authorization: `Bearer ${credential}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}) },
-    redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
-  });
+// The task as the server holds it, read through the runner's transport (the
+// declared `item-read` call), for a builder's dispute (its block reason).
+export async function readRunnerItem(transport, { project, id, actor, signal }) {
+  const res = await transport.send("item-read", { project, item: id }, { actor, signal, timeoutMs: 10_000, redirect: "error" });
   if (!res.ok) throw new Error(`item ${id}: ${res.status}`);
-  const data = await res.json();
-  return data.item ?? data;
+  return res.data?.item ?? res.data;
 }
 
 // The owner's dispatch of a rejected task to its builder: `atelier dispatch`
@@ -4784,8 +4778,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // A rejection's three hooks (t521): the builder's dispatch, the
     // notification that wakes a session, and the read of a builder's dispute.
     dispatchBuilder: (request) => dispatchAsDeveloper(executeChild, { ...request, signal: controller.signal }),
-    wake: (message) => ntfyWake(message),
-    readItem: async ({ project, id, actor }) => readRunnerItem({ server: (api ?? await import("./atelier.mjs")).server(), credential, runner: offer.runner, project, id, actor, signal: controller.signal }),
+    wake: (message) => ntfyWake(executeChild, message, { signal: controller.signal }),
+    readItem: async ({ project, id, actor }) => {
+      const { server } = api ?? await import("./atelier.mjs");
+      return readRunnerItem(runnerTransport({ server: server(), credential, runner: offer.runner }), { project, id, actor, signal: controller.signal });
+    },
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
