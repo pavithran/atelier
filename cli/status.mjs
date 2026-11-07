@@ -1,3 +1,4 @@
+import { submissionWaits } from "./submission-review.mjs";
 import { actedLine } from "./commands/show.mjs";
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
@@ -105,7 +106,8 @@ export function taskLink(server, project, id) {
 // show, with the times a machine reader such as Observatory draws on.
 export function itemJson(i) {
   return { id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head,
-    createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt };
+    createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
+    ...(i.reviewAskedHead !== undefined ? { reviewAskedHead: i.reviewAskedHead } : {}) };
 }
 
 // The queue as JSON: each project with its notices, its items each carrying
@@ -121,6 +123,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
     const a = attentionFor(v.name, v.items, v.inbox, offers, now);
     return {
       name: v.name,
+      ...(submissionWaits(v.items, v.name).length ? { orchestratorWaits: submissionWaits(v.items, v.name) } : {}),
       ...(v.developerDecisions?.length ? { developerDecisions: v.developerDecisions } : {}),
       ...(v.wayBack ? { wayBack: v.wayBack } : {}),
       ...(v.title ? { title: v.title } : {}),
@@ -420,6 +423,8 @@ export function formatStatus(views, waiting = {}) {
     lines.push(...deployGateLines(v.policy, v.scripts, v.checkout ?? null).map((l) => `  ${l}`));
     lines.push(...criteriaLines(v));
     lines.push(...stuckLines(v.stuck, "  ", false));
+    const unasked = submissionWaits(items, v.name);
+    if (unasked.length) lines.push("  Waiting on the orchestrator", ...unasked.map(w => `    ${w.id}  ${w.reason}; ${w.command}`));
     if (!owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.
@@ -519,6 +524,8 @@ export function formatStatusBrief(b) {
   const reviewing = requests.map((q) => `${q.item.id} by ${oneLine(q.item.dispatch.agent ?? "any")}/${oneLine(q.item.dispatch.model ?? "any")}`);
   const asked = !b.queue ? "the review queue could not be read" : reviewing.length ? `${reviewing.length} waiting for a runner (${named(reviewing)})` : "none waiting for a runner";
   lines.push(`Reviews: ${submitted.length} submitted or accepted${submitted.length ? ` (${named(submitted.map((i) => `${i.id} ${i.state}`))})` : ""}; ${asked}.`);
+  const unasked = submissionWaits(s.live, s.project.name);
+  if (unasked.length) lines.push(`Waiting on the orchestrator: ${unasked.map(w => `${w.id}; ${w.command}`).join("; ")}.`);
   const lease = b.lease;
   lines.push(!lease ? "Landing: none running."
     : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`

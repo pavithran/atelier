@@ -33,6 +33,8 @@ export interface Item {
   base: string | null;      // the commit the task's branch started from
   head: string | null;      // last head Atelier verified on the task's branch
   acceptedHead: string | null;
+  // Current head with a live or answered gate review; null means none.
+  reviewAskedHead?: string | null;
   pushActors?: string[];     // holders and recorded push contributors
   createdAt: string;
   updatedAt: string;
