@@ -188,3 +188,33 @@ it("a final failed deploy record sends one notification, a repeat none, and a no
     } finally { send.mockRestore(); }
   });
 });
+
+it("a refused or failed send leaves the failure unnotified and the next record or tick sends it again", async () => {
+  await fixture("notify-deploy-retry", async (state) => {
+    const send = vi.spyOn(globalThis, "fetch");
+    try {
+      const L = ledger(state);
+      setup(L, "notify-deploy-retry");
+      const notified = () => (state.storage.sql.exec(`SELECT COUNT(*) AS n FROM events WHERE kind = 'deploy.notified'`).one().n as number);
+      send.mockResolvedValueOnce(new Response(null, { status: 500 }));
+      expect((await shipRecord(L, "notify-deploy-retry", { ...SHIP, final: true })).status).toBe(201);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(notified()).toBe(0);
+      send.mockRejectedValueOnce(new TypeError("network"));
+      await shipRecord(L, "notify-deploy-retry", { ...SHIP, final: true });
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(notified()).toBe(0);
+      // The tick leaves a fresh record alone, then resends it once it is over five minutes old.
+      send.mockResolvedValue(new Response(null));
+      await L.resendDeployFailures(new Date());
+      expect(send).toHaveBeenCalledTimes(2);
+      await L.resendDeployFailures(new Date(Date.now() + 6 * 60_000));
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(notified()).toBe(1);
+      await shipRecord(L, "notify-deploy-retry", { ...SHIP, final: true });
+      await L.resendDeployFailures(new Date(Date.now() + 12 * 60_000));
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(notified()).toBe(1);
+    } finally { send.mockRestore(); }
+  });
+});

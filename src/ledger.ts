@@ -2269,6 +2269,7 @@ export class Ledger extends DurableObject<Env> {
   // read makes the read incomplete, and an incomplete read queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     this.dispatchApprovedCriteria();
+    await this.resendDeployFailures(now);
     let offers: SeenOffer[] | null = null;
     try {
       offers = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
@@ -5919,17 +5920,50 @@ export class Ledger extends DurableObject<Env> {
   // failed: the head, who and the result, as a project event (ship.recorded)
   // that the events read and the newest of which show prints. The same run
   // recorded again (a retried request) is recorded once.
-  // A final failure of a new ship is announced once through the notification
-  // topic, when there is one; the repeat of a ship sends nothing.
-  recordDeploy(actor: string, body: Record<string, unknown>, origin?: string): DeployRecord {
+  // A final failure is announced at least once: the record is saved first,
+  // then the message is sent and awaited, and deploy.notified (the ship id)
+  // is written only when ntfy answered ok. A repeat of a ship without that
+  // event sends again; the stage tick does the same for one older than five
+  // minutes (resendDeployFailures). One with the event sends nothing.
+  async recordDeploy(actor: string, body: Record<string, unknown>, origin?: string): Promise<DeployRecord> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ships", 403, "only the developer can: atelier ship");
     const record = deployInput(body, actor, new Date().toISOString());
     const had = this.deploys(50).find((d) => d.ship === record.ship);
-    if (had) return had;
-    this.log(null, actor, "ship.recorded", { ...record }, record.at);
+    if (!had) {
+      this.log(null, actor, "ship.recorded", { ...record }, record.at);
+      if (record.result === "failed" && record.final && origin) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('deploy-origin', ?)`, new URL(origin).origin);
+    }
+    const saved = had ?? record;
+    if (saved.result === "failed" && saved.final) await this.announceDeployFailure(saved, origin);
+    return saved;
+  }
+
+  private deployNotified(ship: string): boolean {
+    return this.sql.exec(`SELECT data FROM events WHERE kind = 'deploy.notified'`).toArray().some((r) => (JSON.parse(r.data as string) as { ship?: string }).ship === ship);
+  }
+
+  private async announceDeployFailure(record: DeployRecord, origin?: string): Promise<boolean> {
     const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-    if (record.result === "failed" && record.final && topic && origin) this.deliver(deployFailedRequest(topic, origin, this.project().name, record.head, record.note ?? ""));
-    return record;
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'deploy-origin'`).toArray()[0];
+    const where = origin ?? (row ? String(row.value) : undefined);
+    if (!topic || !where || this.deployNotified(record.ship)) return false;
+    try {
+      const response = await fetch(deployFailedRequest(topic, where, this.project().name, record.head, record.note ?? ""), { redirect: "error", signal: AbortSignal.timeout(10_000) });
+      await response.body?.cancel();
+      if (!response.ok) { console.error("Atelier notification failed", response.status); return false; }
+    } catch {
+      console.error("Atelier notification failed");
+      return false;
+    }
+    this.log(null, "atelier", "deploy.notified", { ship: record.ship }, new Date().toISOString());
+    return true;
+  }
+
+  // The newest final failed ship with no deploy.notified, recorded over five
+  // minutes ago, is sent again: at most one per tick.
+  async resendDeployFailures(now: Date): Promise<void> {
+    const due = this.deploys(50).find((d) => d.result === "failed" && d.final && now.getTime() - Date.parse(d.at) > 5 * 60_000 && !this.deployNotified(d.ship));
+    if (due) await this.announceDeployFailure(due);
   }
 
   lastDeploy(): DeployRecord | null {
