@@ -4985,6 +4985,18 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         const shown = await asDeveloper(["show", taskId, "--json"]);
         return shown.code === 0 ? JSON.parse(shown.output).landing ?? null : null;
       },
+      // A landing that stopped on a conflict goes back to the task's builder
+      // (t520), as the developer would dispatch it: the builder merges main in
+      // its workspace and resolves the files the landing named.
+      sendBack: async (record) => {
+        const shown = await asDeveloper(["show", taskId, "--json"]);
+        const owner = (shown.code === 0 ? JSON.parse(shown.output).item?.owner : null) ?? item.owner ?? "";
+        const [agent, model] = String(owner).split("/");
+        if (!agent || !model) return { ok: false, reason: "the task records no builder" };
+        const note = `The landing stopped on a merge conflict with main in ${(record.files ?? []).join(", ")}. Merge main into your workspace, resolve it, and push.`.slice(0, 500);
+        const sent = await asDeveloper(["dispatch", taskId, "--job", "merge-main", "--agent", agent, "--model", model, "--note", automaticNote(note)]);
+        return sent.code === 0 ? { ok: true } : { ok: false, reason: String(sent.stderr || sent.output || `atelier dispatch exited ${sent.code}`).trim().split("\n").at(-1) };
+      },
       land: async () => {
         const r = await executeChild([process.execPath, fileURLToPath(new URL("./atelier.mjs", import.meta.url)), "land", item.id, "--project", project], { cwd: dir, env, capture: true, captureError: true, signal: controller.signal, timeoutMs: LAND_JOB_TIMEOUT_MS });
         return { code: r.code, output: [r.output, r.stderr].filter(Boolean).join("\n"), timedOut: r.timedOut };
@@ -4993,7 +5005,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     if (result.ok) { landWaits.delete(taskKey(task)); return { phase: "done" }; }
     if (result.waiting) landWaits.set(taskKey(task), { key: result.key, kind: result.waiting, reason: result.reason });
     else landWaits.delete(taskKey(task));
-    return { phase: "failed", refused: result.refused, waiting: result.waiting, failed: result.failed, reason: result.reason };
+    return { phase: "failed", refused: result.refused, waiting: result.waiting, failed: result.failed, sentBack: result.sentBack, reason: result.reason };
   };
   // A land job that was refused (the checkout dirty) is asked about again on
   // the next poll; one whose landing failed is passed by while the job is
