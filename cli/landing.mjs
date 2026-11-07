@@ -461,6 +461,11 @@ export function reuseDecision({ cwd, policy, evidence, head, mergeCommit }) {
   const parents = git('rev-list', '--parents', '-n', '1', mergeCommit);
   const [, main, second, ...rest] = parents.status === 0 ? parents.stdout.trim().split(/\s+/) : [];
   if (!main || second !== head || rest.length) return { ...reuseVerdict({ ok: false, why: `the merge ${mergeCommit.slice(0, 8)} is not main merged with ${head.slice(0, 8)}` }, []), found, main: null };
+  // A merge that regenerated declared outputs holds files the builder never
+  // checked. The merge commit's own trailers say so (cli/merge-pipeline.mjs),
+  // which holds across a crash and journal recovery.
+  const message = git('log', '-1', '--format=%B', mergeCommit);
+  if (message.status !== 0 || /^Atelier-Regenerated:/m.test(message.stdout)) return { ...reuseVerdict({ ok: false, why: `the merge ${mergeCommit.slice(0, 8)} regenerated declared outputs the builder's checks did not see` }, []), found, main };
   let moved = null;
   if (found.ok) {
     const diff = git('diff', '--name-only', '--no-renames', '-z', found.base, main);
