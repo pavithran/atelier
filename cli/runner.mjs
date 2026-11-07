@@ -3043,9 +3043,9 @@ export async function readRunnerItem(transport, { project, id, actor, signal }) 
 // as the developer, as a land job runs, with the runner's own name and token
 // left out of its environment. A machine that holds no developer token fails
 // here and sendBack wakes a session instead.
-export async function dispatchAsDeveloper(run, { project, id, agent, model, note, env = process.env, signal }) {
+export async function dispatchAsDeveloper(run, { project, id, agent, model, note: reviewersWords, env = process.env, signal }) {
   const child = { ...env }; delete child.ATELIER_RUNNER_NAME; delete child.ATELIER_RUNNER_TOKEN;
-  const r = await run([process.execPath, cli, "dispatch", id, "--project", project, "--agent", agent, "--model", model, "--note", note], { env: child, capture: true, captureError: true, signal, timeoutMs: 60_000 });
+  const r = await run([process.execPath, cli, "dispatch", id, "--project", project, "--agent", agent, "--model", model, "--note", reviewersWords], { env: child, capture: true, captureError: true, signal, timeoutMs: 60_000 });
   if (r.code !== 0) throw new Error(`atelier dispatch exited ${r.code}: ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 300)}`);
 }
 

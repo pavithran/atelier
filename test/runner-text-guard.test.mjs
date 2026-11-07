@@ -16,8 +16,9 @@ const SENDS = /\b(?:io\.cli|report|reportRun|reportSkip|reportRunSkip|reportRevi
 const BUILDERS = /\b(?:automaticNote|failureReleaseNote|factsOf|runFacts)\(/g;
 const RAW = /\.message\b|\bstderr\b|\bstdout\b|\.output\b/;
 // Words a model wrote on purpose, which stay (follow-ups of round 12): a
-// reviewer's summary and its unparsable reply's parse note, a validation_blocked report.
-const MODEL_WORDS = ["posted.summary", "parsed.summary", "parsed.error", "blockNote("];
+// reviewer's summary and its unparsable reply's parse note, a validation_blocked report,
+// and the reviewer's findings a rejected task's dispatch carries (t521).
+const MODEL_WORDS = ["posted.summary", "parsed.summary", "parsed.error", "blockNote(", "reviewersWords"];
 
 function callAt(s, open) {
   let depth = 0;
