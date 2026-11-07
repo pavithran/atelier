@@ -1,12 +1,12 @@
 // atelier ship. Its forms, flags and help are declared in src/usage/commands/ship.ts.
-import { existsSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { WRAP_MARKERS } from "../../src/sessions.ts";
 import { landingJournalFile, oldLandingJournalFile } from "../landing.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
+import { autoDeploy, autoDeployWaits, composeShip, fileDeployStore, runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
 import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
 import { holdCheckout, postOnExit, stayHeld } from "../checkout-hold.mjs";
 
@@ -14,6 +14,7 @@ import { holdCheckout, postOnExit, stayHeld } from "../checkout-hold.mjs";
 // checkout (cli/ship.mjs): each protected step only with an approval at the
 // revision shipped, each step recorded on the ledger.
 export default async function shipCommand() {
+  if (process.env.ATELIER_AUTO_DEPLOY) return deployOnLandingWorker();
   if (args._.length !== 1) die(COMMAND_USAGE.ship);
   const name = project(), as = await actor(OWNER);
   if (as !== OWNER) die(`only the developer ships: run ship as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
@@ -80,4 +81,42 @@ export default async function shipCommand() {
       checkpoint: (step, ran) => stayHeld(checkout, (lost) => deployed({ ...begun, result: "failed", step, ran: [...ran], note: lost.detail.slice(0, 1000) })),
     });
   } finally { process.off("exit", onExit); await checkout?.release(); }
+}
+
+// The process cli/post-merge.mjs starts after a merge, when the standing
+// instruction deploy-on-landing is on: ATELIER_AUTO_DEPLOY holds the landed
+// head and the commit last delivered. It deploys through autoDeploy
+// (cli/ship.mjs), which keeps one deploy running per checkout and queues the
+// newest head that lands meanwhile. Each deploy is an ordinary
+// `atelier ship`, run in the registered checkout once the merge lets go of
+// it, with the deploy approval the standing instruction gives; only a
+// `deploy` approval is ever given this way.
+async function deployOnLandingWorker() {
+  let landed;
+  try { landed = JSON.parse(process.env.ATELIER_AUTO_DEPLOY); } catch { die("ATELIER_AUTO_DEPLOY is set by a landing and holds JSON: {\"head\": SHA, \"since\": SHA or null}"); }
+  const name = project(), as = await actor(OWNER);
+  if (as !== OWNER) die(`only the developer ships: run ship as ${OWNER}`);
+  const cwd = cfg.projects?.[name]?.path;
+  if (!cwd || !existsSync(cwd)) die(`deploy on landing runs in ${name}'s registered checkout, and this machine has none`);
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
+  const dir = join(gitDir, "atelier-auto-deploy");
+  mkdirSync(dir, { recursive: true });
+  const print = (line) => appendFileSync(join(dir, "auto-deploy.log"), `${new Date().toISOString()} ${line}\n`);
+  const store = fileDeployStore(dir);
+  const env = { ...process.env };
+  delete env.ATELIER_AUTO_DEPLOY;
+  const here = (a, o = {}) => git(a, { cwd, ...o });
+  const result = await autoDeploy({
+    name, head: landed.head, on: true, store, print,
+    waitsFor: async () => autoDeployWaits({ plan: composeShip(cwd), git: here, cwd, head: here(["rev-parse", "HEAD"]), since: store.read().deployed ?? landed.since }),
+    deploy: async () => {
+      const { head } = await request("GET", `${P(name)}/baseline-head`, undefined, OWNER);
+      await request("POST", `${P(name)}/actions`, { kind: "deploy", commit: head, note: "given by the standing instruction deploy-on-landing", expires: "1h" }, OWNER);
+      const r = await runCommand([process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), "ship", "--project", name], { cwd, env, timeoutMs: 45 * 60_000 });
+      return { passed: r.passed, output: r.output };
+    },
+    record: (record) => request("POST", `${P(name)}/deploys`, record, OWNER),
+    notify: async (message) => { print(`NOTIFY ${message}`); },
+  });
+  print(`Deploy on landing ended: ${result.state}`);
 }

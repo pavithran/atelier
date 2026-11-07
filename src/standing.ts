@@ -7,7 +7,9 @@
 // (`atelier decisions withdraw dN --note "…"`), by the developer or a session
 // acting on the developer's token (G18). `atelier decisions` lists them. A
 // project that leaves fast mode keeps the records, and none of them acts
-// until it is in fast mode again.
+// until it is in fast mode again. deploy-on-landing and dispatch-on-criteria
+// are the two that act in either mode: a landing's own command reads the
+// first when the merge ends (cli/post-merge.mjs), where no mode is consulted.
 //
 // Without an instruction, nothing here happens by itself: a landable task is
 // recorded as a fact and landed by `atelier land`, a review request the head
@@ -68,6 +70,11 @@ export const STANDING: Record<string, StandingKey> = {
     value: "a reviewer as harness/model, or off",
     says: (v) => v === "off" ? "no post-merge review is asked by itself" : `the post-merge review of a task landed in fast mode is asked of ${v} as its merge is recorded`,
     parse: (v) => (v === "off" || validActor(v) ? v : null),
+  },
+  "deploy-on-landing": {
+    value: "on or off",
+    says: (v) => v === "on" ? "a merge whose landing checks passed deploys the new head by itself, one deploy at a time, retried once and then reported; a head that needs a remote migration, a secret or a Cloudflare resource change waits on PAVI" : "a landed head deploys only when a session runs atelier ship",
+    parse: onOff,
   },
   "notice-delay": {
     value: "a number of minutes from 1 to 1440",
