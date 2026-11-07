@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { treeDiff, type Entry, type Reader } from "../src/diff.ts";
-import { fingerprint, scanLine, scanTrees, type PushScan, type SecretHit } from "../src/secret-scan.ts";
+import { fingerprint, SCAN_BYTES, scanLine, scanTrees, type PushScan, type SecretHit } from "../src/secret-scan.ts";
 
 // The secret scanner (t332), driven with obviously fake keys so no real value
 // ever appears in a fixture. It reports file and line, never the value.
@@ -171,18 +171,19 @@ test("an ordinary committed image is scanned as bytes and neither blocks nor hit
   assert.deepEqual(scan, { hits: [], unscanned: [] });
 });
 
-test("a key inside an image's bytes is still a hit, and other binaries and image lookalikes still block", async () => {
+test("a key inside an image's bytes is still a hit, and other binaries still block, while a media name is never flagged", async () => {
   const s = store();
   const enc = new TextEncoder();
   const keyed = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, ...enc.encode(`\n${FAKE.openai}\n`)]);
   const other = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2, 3]);       // an ELF header
   const stub = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]);        // a PNG's first four bytes only
-  const scan = await fullScan(s, s.tree({}), s.tree({ "k.png": { blob: s.bytes(keyed) }, "x.bin": { blob: s.bytes(other) }, "s.png": { blob: s.bytes(stub) } }));
+  const scan = await fullScan(s, s.tree({}), s.tree({ "k.png": { blob: s.bytes(keyed) }, "x.bin": { blob: s.bytes(other) }, "s.png": { blob: s.bytes(stub) }, "s.dat": { blob: s.bytes(stub) } }));
   assert.deepEqual(scan.hits.map((h) => h.file), ["k.png"]);
-  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["s.png", "x.bin"]);
+  // The truncated PNG is flagged under a neutral name only (t518).
+  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["s.dat", "x.bin"]);
 });
 
-test("a false or truncated image signature still blocks, whatever the format", async () => {
+test("a false or truncated image signature under a neutral name still blocks, whatever the format", async () => {
   const s = store();
   const enc = new TextEncoder();
   const files: Record<string, Uint8Array> = {
@@ -194,14 +195,48 @@ test("a false or truncated image signature still blocks, whatever the format", a
     "woff.woff": new Uint8Array([...enc.encode("wOF"), 0, 1]),
     "woff2.woff2": new Uint8Array([...enc.encode("wOF1"), 0, 1]),
   };
-  const entries = Object.fromEntries(Object.entries(files).map(([n, b]) => [n, { blob: s.bytes(b) }]));
-  const scan = await fullScan(s, s.tree({}), s.tree(entries));
-  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), Object.keys(files).sort());
+  const neutral = Object.fromEntries(Object.entries(files).map(([n, b]) => [`${n}.dat`, { blob: s.bytes(b) }]));
+  const scan = await fullScan(s, s.tree({}), s.tree(neutral));
+  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), Object.keys(files).map((n) => `${n}.dat`).sort());
+  // The same bytes under their media names are scanned and not flagged.
+  const named = Object.fromEntries(Object.entries(files).map(([n, b]) => [n, { blob: s.bytes(b) }]));
+  assert.deepEqual(await fullScan(s, s.tree({}), s.tree(named)), { hits: [], unscanned: [] });
   // The complete signatures of GIF87a, GIF89a, WebP and both fonts read.
   const good = { "a.gif": [..."GIF87a"].map((c) => c.charCodeAt(0)), "b.gif": [..."GIF89a"].map((c) => c.charCodeAt(0)),
     "c.webp": [...enc.encode("RIFF"), 0, 0, 0, 0, ...enc.encode("WEBP")], "d.woff": [...enc.encode("wOFF"), 0], "e.woff2": [...enc.encode("wOF2"), 0] };
   const ok = await fullScan(s, s.tree({}), s.tree(Object.fromEntries(Object.entries(good).map(([n, b]) => [n, { blob: s.bytes(new Uint8Array([...b, 0, 1])) }]))));
   assert.deepEqual(ok, { hits: [], unscanned: [] });
+});
+
+// t518: the unscanned flag on binary media is gone. Each of a PNG, JPEG, MP4
+// and WebP, small or over SCAN_BYTES, adds no hit and no flag; an oversized
+// text file and an unknown binary are still flagged.
+test("a PNG, JPEG, MP4 and WebP add no flag, at any size, while an oversized text file and an unknown binary still do", async () => {
+  const s = store();
+  const enc = new TextEncoder();
+  const files: Record<string, number[]> = {
+    "a.png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    "b.jpg": [0xff, 0xd8, 0xff, 0xe0],
+    "c.mp4": [0, 0, 0, 0x18, ...enc.encode("ftypisom")],
+    "d.webp": [...enc.encode("RIFF"), 0, 0, 0, 0, ...enc.encode("WEBP")],
+  };
+  const small = Object.fromEntries(Object.entries(files).map(([n, b]) => [n, { blob: s.bytes(new Uint8Array([...b, 0xff, 0xfe, 0])) }]));
+  assert.deepEqual(await fullScan(s, s.tree({}), s.tree(small)), { hits: [], unscanned: [] });
+  const big = (b: number[]) => { const out = new Uint8Array(SCAN_BYTES + 1).fill(0xfe); out.set(b); out[20] = 0; return out; };
+  const large = Object.fromEntries(Object.entries(files).map(([n, b]) => [`big-${n}`, { blob: s.bytes(big(b)) }]));
+  assert.deepEqual(await fullScan(s, s.tree({}), s.tree(large)), { hits: [], unscanned: [] });
+  const text = new Uint8Array(SCAN_BYTES + 1).fill(0x61);
+  const scan = await fullScan(s, s.tree({}), s.tree({ "big.txt": { blob: s.bytes(text) }, "x.bin": { blob: s.bytes(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0, 1])) } }));
+  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["big.txt", "x.bin"]);
+});
+
+// A text file with a known secret pattern is still a hit, beside media.
+test("a text file with a key pattern is still a hit when media sits beside it", async () => {
+  const s = store();
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
+  const scan = await fullScan(s, s.tree({}), s.tree({ "a.png": { blob: s.bytes(png) }, ".env": { blob: s.blob(`OPENAI_API_KEY=${FAKE.openai}\n`) } }));
+  assert.deepEqual(scan.hits.map((h) => [h.file, h.line]), [[".env", 1]]);
+  assert.deepEqual(scan.unscanned, []);
 });
 
 test("a modified image keeps a retained key reported, because the whole image is scanned", async () => {

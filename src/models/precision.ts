@@ -16,7 +16,7 @@
 // actor, which is the developer's adjudication (t621).
 //
 // Routing reads the figure only to order reviewers that already qualify
-// (src/review/reviewer.ts, src/review/tier.ts, src/plans/route.ts): the term
+// (src/review/reviewer.ts, the tier review removed in t518, src/plans/route.ts): the term
 // is the precision smoothed by one finding held and one refuted, and with
 // fewer than PRECISION_MIN_JUDGED judged findings it is the neutral one
 // half, so a reviewer with too few judged findings is neither preferred nor

@@ -2,14 +2,11 @@
 // recognised family than every contributor to the item, available, not
 // refused, paid only when the owner allows it, and one whose review the
 // ledger will record and the gate will count. Candidates are asked in this
-// order: on a re-review, the previous round's reviewer; then, for a
-// protected change in a project with a review tier, the tier's models in the
-// tier's order, so one review serves the gate and the tier (src/review/tier.ts);
-// then the plan's routed reviewer for the part; then the part's alternates;
-// then the rest of the pool. Given the reviewers' precision on blocking
-// findings (src/models/precision.ts), the tier's models and the rest of the
-// pool are each asked in descending precision term, keeping the tier's own
-// order and model id order between equal terms; precision orders only, and
+// order: on a re-review, the previous round's reviewer; then the plan's
+// routed reviewer for the part; then the part's alternates; then the rest of
+// the pool. Given the reviewers' precision on blocking findings
+// (src/models/precision.ts), the pool is asked in descending precision term,
+// keeping model id order between equal terms; precision orders only, and
 // every rule below still applies to each candidate. Each choice carries its reasons in the words src/plans/route.ts
 // uses for the same rules, and when no model qualifies the result says why,
 // naming each model passed over.
@@ -42,7 +39,6 @@ export interface PickInput {
   part?: Pick<PlanPart, "taskKind" | "size"> | null;
   route?: Pick<PartRoute, "reviewer" | "alternates"> | null;  // the part's routing, frozen at approval
   previous?: string | null;                     // the reviewer of the last rejected round
-  tier?: readonly string[];                     // the review tier, asked before the routing; a tier model outside the pool is skipped
   avoid?: readonly { actor: string; reason: string }[];       // reviewers to pass over, such as one whose claim lapsed
   // Models whose approval of this head the gate already counts (t143): a
   // model counts once, however it is named or run, so none is asked again.
@@ -50,11 +46,11 @@ export interface PickInput {
   profiles?: readonly ModelProfile[];           // context windows; MODEL_PROFILES by default
   owner?: string;
   recordOrder?: readonly string[];             // eligible task suggestions, best outcome record first
-  precision?: PrecisionRecord | null;           // reviewers' precision on blocking findings; orders the tier and the pool only
+  precision?: PrecisionRecord | null;           // reviewers' precision on blocking findings; orders the pool only
   // The role assignments bearing on this review, most specific first
   // (applicableAssignments in src/models/assignments.ts). The one applied
-  // puts its eligible choices first within the tier and within the pool;
-  // it adds no model to the tier and moves none that fails a rule.
+  // puts its eligible choices first within the pool; it moves none that
+  // fails a rule.
   assigned?: readonly Assignment[];
   // The runners' offers as the index recorded them: a model no live runner
   // offers for the review job is passed over, since its review would wait
@@ -80,19 +76,15 @@ export interface ReviewerPick {
   assignment?: AssignmentOutcome;  // set when role assignments were given: the one applied, those skipped, the fallback
 }
 
-type Source = { kind: "previous" | "tier" | "routed" | "pool" } | { kind: "alternate"; index: number };
-
-// What orders the review tier when no assignment has an eligible choice in it.
-const TIER_FALLBACK = "the project's review tier is asked in its own order, by review precision when it is known";
+type Source = { kind: "previous" | "routed" | "pool" } | { kind: "alternate"; index: number };
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // The names an entry's review history may be recorded under, read only to
 // find its precision (src/models/precision.ts): events from before names
 // were converted where typed may name it by an alias.
 const namesOf = (entry: ModelEntry) => [entry.id, ...entry.aliases].map((id) => `${entry.harness}/${id}`.toLowerCase());
-// A candidate's entry: its exact harness/id (exactEntry). The tier is
-// converted where the developer wrote it, and the pool's own entries are
-// exact.
+// A candidate's entry: its exact harness/id (exactEntry). The pool's own
+// entries are exact.
 const findEntry = (pool: readonly ModelEntry[], actor: string) => exactEntry(pool, actor);
 // A declared identity (the previous round's reviewer, the plan's routed
 // reviewer and alternates, recorded as written) is found as main finds it,
@@ -127,24 +119,16 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   const wanted: { actor: string; source: Source }[] = [];
   if (input.previous) wanted.push({ actor: input.previous, source: { kind: "previous" } });
   const precision = input.precision ?? null;
-  // A tier model's names: its pool entry's id and aliases when the pool has it.
-  const tierNames = (actor: string) => { const entry = findEntry(input.pool, actor); return entry ? namesOf(entry) : [actor]; };
-  const tierOrder = byPrecision(input.tier ?? [], tierNames, precision);
   const order = (entry: ModelEntry) => {
     const index = input.recordOrder?.indexOf(actorOf(entry)) ?? -1;
     return index < 0 ? Number.MAX_SAFE_INTEGER : index;
   };
   const poolOrder = byPrecision([...input.pool].sort((a, b) => order(a) - order(b) || a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b))), namesOf, precision);
-  // Role assignments order the tier's and the pool's eligible models, each
-  // within its own place and each by every assignment bearing on the
-  // review: the tier stays ahead of the pool, and the previous round's
-  // reviewer and the plan's routing ahead of both. The tier is ordered by
-  // the most specific assignment with an eligible choice in the tier, and
-  // the pool by the one with an eligible choice in the pool, so a more
-  // specific assignment naming a model outside the tier never keeps a less
-  // specific one from ordering the tier (gemini-4-argon's third review of
-  // t622, finding 1). What the pick reports is the outcome for the place the
-  // reviewer came from.
+  // Role assignments order the pool's eligible models by every assignment
+  // bearing on the review, the previous round's reviewer and the plan's
+  // routing staying ahead of the pool. The pool is ordered by the most
+  // specific assignment with an eligible choice in it. What the pick reports
+  // is the outcome for the place the reviewer came from.
   const assigned = input.assigned ?? [];
   const refusal = (actor: string) => {
     const entry = findEntry(input.pool, actor);
@@ -152,18 +136,15 @@ export function pickReviewer(input: PickInput): ReviewerPick {
     const failed = judge(entry, contributors, input).failed;
     return failed.length ? failed.join("; ") : null;
   };
-  const tierBy = assigned.length ? orderByAssignment(tierOrder, (a) => a, assigned, refusal, TIER_FALLBACK) : null;
   const poolBy = assigned.length ? orderByAssignment(poolOrder, actorOf, assigned, (e) => refusal(actorOf(e)), FALLBACK.review) : null;
-  for (const actor of tierBy?.order ?? tierOrder) wanted.push({ actor, source: { kind: "tier" } });
   if (input.route?.reviewer) wanted.push({ actor: input.route.reviewer.actor, source: { kind: "routed" } });
   input.route?.alternates.forEach((c, index) => wanted.push({ actor: c.actor, source: { kind: "alternate", index } }));
   for (const entry of poolBy?.order ?? poolOrder) wanted.push({ actor: actorOf(entry), source: { kind: "pool" } });
   // The outcome and reasons for the reviewer chosen, by where it came from:
-  // the tier's or the pool's ordering, or, for a reviewer asked ahead of
-  // every assignment, each assignment skipped as coming after it.
+  // the pool's ordering, or, for a reviewer asked ahead of every assignment,
+  // each assignment skipped as coming after it.
   const said = (actor: string, source: Source): { outcome: AssignmentOutcome; lines: string[] } | null => {
     if (!assigned.length) return null;
-    if (source.kind === "tier") return { outcome: tierBy!.outcome, lines: tierBy!.reasons(actor) };
     if (source.kind === "pool") {
       const entry = findEntry(input.pool, actor)!;
       return { outcome: poolBy!.outcome, lines: poolBy!.reasons(entry) };
@@ -175,10 +156,7 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   const passedOver: Choice[] = [];
   const lead: string[] = [];
   for (const { actor, source } of wanted) {
-    const entry = source.kind === "tier" || source.kind === "pool" ? findEntry(input.pool, actor) : declaredEntry(input.pool, actor);
-    // The tier is a preference: a tier model the pool lacks is not a
-    // candidate passed over, and the routing is asked next.
-    if (source.kind === "tier" && !entry) continue;
+    const entry = source.kind === "pool" ? findEntry(input.pool, actor) : declaredEntry(input.pool, actor);
     // Two pool entries whose ids differ only in letter case are two
     // candidates: an entry is keyed by its exact id.
     const key = entry ? actorOf(entry) : actor.toLowerCase();
@@ -207,7 +185,6 @@ export function pickReviewer(input: PickInput): ReviewerPick {
 
 function position(source: Source, input: PickInput): string {
   if (source.kind === "previous") return "Reviewed the previous round; a re-review goes to the same reviewer first";
-  if (source.kind === "tier") return `A model of the project's review tier, asked first so its review serves as the tier review too${input.precision ? "; the tier is asked by review precision, then in its own order" : ""}`;
   if (source.kind === "routed") return "The plan's routed reviewer for this part";
   if (source.kind === "alternate") return `Alternate ${source.index + 1} in the plan's routing for this part`;
   const order = input.recordOrder ? "review precision, then outcome record, then actor name" : input.precision ? "review precision, then model id, then actor name" : "model id, then actor name";

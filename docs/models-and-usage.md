@@ -16,8 +16,8 @@ The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
+criteria review, handoffs and conflict contributors. Only that company's models
+qualify.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
@@ -143,14 +143,11 @@ Who decides, strongest first:
 2. An explicit choice for the one job: `atelier dispatch --model` or `--to`,
    a reviewer the developer names, a plan part's `prefer`, and the previous
    round's reviewer on a re-review.
-3. The project's review tier (`atelier init --review-tier`). Its models
-   appear in the tier's candidate list; an assignment orders them and adds
-   none to it. The developer or orchestrator must request the review.
-4. Assignments, most specific first: a role's own (security-review for
+3. Assignments, most specific first: a role's own (security-review for
    security, concurrency or gate work, claims-review for docs) before review,
    and this project's before every project's. The first with an eligible
    choice is applied; one with none is skipped and the reasons say why.
-5. The fallback: outcomes, review precision, reliability, speed and the
+4. The fallback: outcomes, review precision, reliability, speed and the
    spread across a plan, as before.
 
 The pool's roles (build, review, plan) are eligibility; an assignment's roles
@@ -254,11 +251,11 @@ newest verdict (`src/models/precision.ts`). Under 5 judged findings the row
 shows n and says it is too few to rank. Routing reads the same figure, from
 the project's own ledger, to order reviewers that already qualify: another
 family than every contributor, available, allowed and offered. The
-candidate lists from `pickReviewer`, `pickTierReviewer` and `routeParts`
+candidate lists from `pickReviewer` and `routeParts`
 use precision to order eligible models, at (held + 1) / (judged + 2).
 A reviewer with fewer than 5 judged findings orders as neutral, one half. These
 scorers ask no reviewer. The developer or orchestrator names the reviewer
-for a landing or separate tier review, and each plan part's builder and
+for a landing, and each plan part's builder and
 reviewer at approval. The plan tick uses that named reviewer; when it is
 unusable, the tick logs `plan.review_needed` and waits for an explicit
 choice. Precision never makes a reviewer
