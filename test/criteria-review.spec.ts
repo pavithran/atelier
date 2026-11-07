@@ -793,6 +793,10 @@ it("parallel criteria review lets unasked and open builds run, but gates review 
   await refusal(L.requestReview(id, "owner", GPT, POOL), "criteria_unreviewed", /criteria.review.*t1/);
   await refusal(L.requestLand(id, "owner"), "criteria_unreviewed", /criteria.review.*t1/);
   await reviewed(L, id, true);
+  // The edit sent the build back to its builder: it reads the revision and submits again.
+  expect((await L.item(id)).state).toBe("claimed");
+  await L.jobBrief(id, OPUS);
+  await L.submit(id, OPUS);
   expect((await L.requestLand(id, "owner")).queued).toBe(true);
   await L.requestReview(id, "owner", GPT, POOL);
   const r = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
