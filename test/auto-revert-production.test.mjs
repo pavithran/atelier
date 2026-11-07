@@ -60,7 +60,7 @@ function world(t, { steps, red = true }) {
     }
     if (path.endsWith("/git-token")) return { remote: origin, token: "" };
     if (path.endsWith("/landing-lease")) return method === "GET" ? { lease: null } : { ok: true };
-    if (path.endsWith("/items") && method === "POST") return { id: `t${100 + log.filter(l => l.path.endsWith("/items") && l.method === "POST").length}` };
+    if (path.endsWith("/items") && method === "POST") return { id: `t${99 + log.filter(l => l.path.endsWith("/items") && l.method === "POST").length}` };
     if (path.endsWith("/items/t7")) return { item: { id: "t7", owner: "claude-code/sonnet-5.5" } };
     if (path === "/projects/p") return { project: { policy: {} } };
     return {};
@@ -124,7 +124,7 @@ test("one notification to the owner's topic per revert, none for a repeat (crite
   assert.match(await w.sent[0].text(), /t7/);
   const head = w.originHead();
   // The same failure on the same merge, seen by a later executor: nothing more.
-  await assert.rejects(w.execute(), /failed/);
+  await assert.rejects(w.execute(), /already reverted/);
   assert.equal(w.sent.length, 1);
   assert.equal(w.posted("/items").length, 1);
   assert.equal(w.originHead(), head);
@@ -143,7 +143,7 @@ test("a restart that finds the run failed with an unfinished revert resumes it i
   assert.equal(Object.values(saved.failures)[0].reopened, undefined);
   assert.equal(w.sent.length, 0);
   // A new executor, from the saved state alone.
-  await assert.rejects(w.execute(), /was reverted/);
+  await assert.rejects(w.execute(), error => /already reverted/.test(error.message) || assert.fail(w.prints.join("\n")));
   assert.equal(w.originHead(), landed, "no second revert");
   assert.equal(w.posted("/items").length, 2, "one refused, one filed");
   assert.equal(w.posted("/items/t101/dispatch").length, 1);
@@ -159,7 +159,7 @@ test("a refused ntfy send leaves notified unset and the restart sends again (fin
   assert.equal(entry.reopened, true);
   assert.equal(entry.notified, undefined);
   w.ntfy(() => new Response("ok"));
-  await assert.rejects(w.execute(), /was reverted/);
+  await assert.rejects(w.execute(), /already reverted/);
   entry = Object.values(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures)[0];
   assert.equal(entry.notified, true);
   assert.equal(w.sent.length, 2, "the refused send and the one that returned ok");

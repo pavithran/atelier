@@ -128,6 +128,7 @@ export async function executePostMerge({ request, name, id, env = process.env, p
     try { outcome = await recover?.({ request, name, id, env, print, group, run, step, output: redactedOutput(output, Object.values(env).filter(value => typeof value === "string" && value.length >= 8)) }); }
     catch (error) { print(`automatic revert of ${id} stopped: ${error.message}`); }
     if (outcome?.action === "reverted") throw new Error(`post-merge ${step.name} failed; ${id} was reverted (${outcome.revert}) and a fix task was filed and dispatched`);
+    if (outcome?.action === "repeat") throw new Error(`post-merge ${step.name} failed; ${id} was already reverted and its fix task filed`);
     throw new Error(`post-merge ${step.name} failed; ${id} remains merged; later merges are blocked`);
   };
   while (run.state !== "complete") {
