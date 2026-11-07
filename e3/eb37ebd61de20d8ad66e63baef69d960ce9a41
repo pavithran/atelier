@@ -1,0 +1,33 @@
+atelier atelier/t516 "The orphans status test passes on a machine with live runners"
+accepted head 615302b1dd478c32c61f5831bd2009906e965639
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-06T23:49:27.929Z
+OBSERVED pass npm test — codex/gpt-6.1-sol 2026-11-07T00:00:32.820Z
+REVIEW approve by claude-code/sonnet-5.5 at 615302b1dd478c32c61f5831bd2009906e965639, recorded by claude-code/sonnet-5.5
+CHECKED TREE ae9c59e92792d2c5563c9cd6ec5e58119e96b2f9: the merge produced exactly the tree these checks passed on (npm run typecheck, npm test), so a deploy gate may accept them instead of running them again
+2026-11-06T23:46:52.135Z pavi item.created
+2026-11-06T23:46:52.135Z claude-code/opus-5.5 criteria.revised
+2026-11-06T23:46:54.718Z pavi item.dispatched
+2026-11-06T23:47:05.215Z codex/gpt-6.1-sol item.claimed
+2026-11-06T23:47:05.262Z codex/gpt-6.1-sol workspace.created
+2026-11-06T23:49:24.168Z codex/gpt-6.1-sol push.observed
+2026-11-06T23:49:27.952Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T00:00:32.844Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T00:00:33.747Z codex/gpt-6.1-sol item.submitted
+2026-11-07T00:01:12.808Z pavi land.start
+2026-11-07T00:01:14.009Z pavi review.requested
+2026-11-07T00:01:14.009Z pavi review.tier_needed
+2026-11-07T00:01:14.272Z pavi land.review
+2026-11-07T00:01:14.341Z pavi land.requested
+2026-11-07T00:01:23.376Z claude-code/sonnet-5.5 review.claimed
+2026-11-07T00:01:45.732Z pavi review.requested
+2026-11-07T00:02:10.337Z codex/gpt-6-astra review.claimed
+2026-11-07T00:02:16.379Z claude-code/sonnet-5.5 review.approved
+2026-11-07T00:02:16.379Z atelier/orchestrator goal.notes
+2026-11-07T00:02:18.805Z atelier/orchestrator review.withdrawn
+2026-11-07T00:02:18.805Z pavi item.accepted
+2026-11-07T00:02:19.573Z pavi land.start
+2026-11-07T00:02:19.637Z pavi landing.leased
+2026-11-07T00:02:19.743Z pavi land.lease
+2026-11-07T00:02:20.779Z pavi checkout.leased
