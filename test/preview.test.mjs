@@ -38,6 +38,7 @@ const PAGES = [
   ["/flow", "Flow", null],
   ["/models", "Models", "Models"],
   ["/usage", "Usage", "Usage"],
+  ["/now", "Now", "Now"],
   ["/studio", "Studio", "Studio"],
   ["/history", "History", "History"],
   ["/p/atelier", "atelier", "atelier"],
@@ -81,7 +82,7 @@ test("a project tab is drawn as that tab, not as task t1", async () => {
 // from a task, a commit from Flow, and the tasks History and Plans link to
 // were 404s). Query strings are kept: ?at=, ?page= and ?state= pages too.
 test("every link on every page the preview serves is itself served", async () => {
-  const start = ["/", "/decisions", "/home", "/studio", "/flow", "/history", "/models", "/usage", "/login", "/how", "/error", "/p/atelier"];
+  const start = ["/", "/decisions", "/now", "/home", "/studio", "/flow", "/history", "/models", "/usage", "/login", "/how", "/error", "/p/atelier"];
   const from = new Map(start.map((p) => [p, "(start)"]));
   const queue = [...start];
   const broken = [];

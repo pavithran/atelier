@@ -23,7 +23,7 @@ import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, redactKeys, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -71,6 +71,7 @@ import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { errorLine, RETRY_AFTER, retryableByRuntime } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
+import { buildNow, readEvents, type NowProject } from "./now.ts";
 
 export { Ledger };
 import { renderHow } from "./how.ts";
@@ -1700,6 +1701,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ ...record, unreached });
     }
     throw new RuleError("not_found", "no such route", 404);
+  }
+  // The Now view (t525): every live task across the projects and what landed
+  // today. The developer reads it; an agent or runner token has no route to it
+  // (agentRoute, runnerRoute), and the check here refuses any other actor.
+  if (parts[0] === "now" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await nowViewOf(env, new Date()));
   }
   // Usage, limits and balances. A runner reports one tool at a time under
   // its authenticated runner name, or with the developer token and the
@@ -4198,6 +4206,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.newItem(String(form.get("title") ?? ""), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner, brief.trim() ? { brief } : {});
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
     }
+    // The Revert link on the Now page: a task to revert the merged one, which
+    // records the merge commit as the CLI's revert does (Ledger.newItem).
+    if (verb === "revert") {
+      const made = await L.newItem("", [], owner, { revertOf: id });
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(made.id)}`, c.url).toString(), 303);
+    }
     // The Settings tab's permission for atelier mode fast, given as the task
     // page's override permission is: from the developer's own sign-in, with
     // the factor no agent holds (Astra's audit of 2026-10-13, finding 3).
@@ -4299,6 +4313,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "home" && parts.length === 1) return await homePage(c);
   if (parts[0] === "history") return await historyPage(c);
   if (parts[0] === "studio") return await studioPage(c);
+  if (parts[0] === "now" && parts.length === 1) return html(renderNow(await nowViewOf(env, new Date()), ownerName(env), live), 200, live.nonce);
   if (parts[0] === "flow") return await flowPage(c, live);
   if (parts[0] === "decisions") return await decisionsPage(c, live);
   if (parts[0] === "p" && parts.length >= 2) return await projectArea(c, parts, live, nonce);
@@ -4443,6 +4458,39 @@ async function floorViewsOf(env: Env, views: ProjectView[]): Promise<FloorView[]
     try { return { ...v, events: (await ledgerOf(env, v.project).events(undefined, 400)) as unknown as LedgerEvent[] }; }
     catch { v.unavailable = true; return null; }
   }))).filter((v): v is FloorView => v !== null);
+}
+
+// What the Now view reads of every project (t525): the tasks, the stage each
+// newest event recorded and since when, the owner's calls, the open review
+// requests, the landings, the runners' progress, the events and the deploys.
+// A project whose ledger cannot be read is named in `unread`, never counted as
+// empty.
+async function nowViewOf(env: Env, now: Date) {
+  const projects = await index(env).projects();
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  const unread: string[] = [];
+  const read = await Promise.all(projects.map(async (project): Promise<NowProject | null> => {
+    const L = ledgerOf(env, project);
+    try {
+      const { items, inbox } = await L.ownerRead(now.toISOString(), pool);
+      // Every event of the last 48 hours, page by page, so no merge of today falls outside a window.
+      const since = now.getTime() - 48 * 3_600_000;
+      const events = await readEvents((before) => L.events(undefined, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE, (last) => Date.parse(last.at) < since);
+      const recent = [...new Set(events.filter((e) => e.kind === "item.merged" && e.itemId && Date.parse(e.at) >= since).map((e) => e.itemId!))];
+      // The reviewer and the findings of a merged task may be older than the window: read its own record, page by page to its start.
+      const seen = new Set(events.map((e) => e.seq));
+      for (const id of recent) {
+        for (const e of await readEvents((before) => L.events(id, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE)) if (!seen.has(e.seq)) { seen.add(e.seq); events.push(e); }
+      }
+      const facts = await L.situationFacts(recent);
+      return {
+        name: project.name, title: titleOf(project), items: facts.items, stages: facts.stages,
+        owner: attentionFor(project.name, items, inbox, offers, now).owner, reviewRequests: facts.reviewRequests,
+        landings: facts.landings, progress: facts.progress ?? {}, events, deploys: await L.deploys(50),
+      };
+    } catch { unread.push(project.name); return null; }
+  }));
+  return { ...buildNow(read.filter((p): p is NowProject => p !== null), now), unread };
 }
 
 async function studioPage(c: Ctx): Promise<Response> {
@@ -4593,6 +4641,11 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
       }
     }
   }
+  // A merged task's Revert link (the Now page's, t525): the confirmation the
+  // form on it posts to /ui/NAME/tN/revert.
+  if (parts.length === 4 && parts[3] === "revert" && /^t[1-9]\d*$/.test(parts[2])) {
+    return html(renderRevert(await L.project(), await L.item(parts[2]), ownerName(env)));
+  }
   const res = await browse(env, c.url, ref, parts.slice(2));
   if (res) return res;
   if (parts.length === 3) return html(await taskPage(env, L, parts[2], undefined, live), 200, nonce);
@@ -4633,7 +4686,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects", "now"]);
 
 // A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
 // task 8; design section 4.4): what queue() did for a push event from
@@ -4915,7 +4968,7 @@ export default {
         // either way, so a guessed name learns nothing — a 404 for the rest
         // would say which names, anonymised or private, are real.
         const projectArea = parts[0] === "p" && parts.length >= 2;
-        const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
+        const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui", "now"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
         // Behind Access, a page the owner opens without a session starts one
         // and is served as signed in (t534). A form post is not a sign-in:

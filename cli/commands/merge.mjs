@@ -1,4 +1,4 @@
-import { executePostMerge } from "../post-merge.mjs";
+import { finishLanding } from "../post-merge.mjs";
 import { landingStartsAtAcceptedHead } from "../catch-up.mjs";
 // atelier merge. Its forms, flags and help are declared in src/usage/commands/merge.ts.
 import { existsSync } from "node:fs";
@@ -58,7 +58,7 @@ export default async function mergeCommand() {
         log: (line) => console.log(line.replace(/^REMOVED /, `Removed ${id}'s workspace `).replace(/^KEEP +(.*?): /, `Kept ${id}'s workspace $1: `)) });
     } catch (error) { console.log(`${id}'s workspace was left in place: ${error.message}`); }
   };
-  const postMerge = (name, id) => executePostMerge({ name, id, request: (method, path, body) => request(method, path, body, OWNER) });
+  const postMerge = (name, id, hasPostMerge = true) => finishLanding({ hasPostMerge, name, id, cwd, request: (method, path, body) => request(method, path, body, OWNER) });
   // A plan's branch is updated only by its integrator, which merges
   // recorded parts, so an accepted plan that conflicts with main would stay
   // accepted with no one able to update it. Its merge, already aborted,
@@ -563,8 +563,10 @@ export default async function mergeCommand() {
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
     else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
     await cleanWorkspace(name, id, p.branch, cwd);
-    if (recorded.postMerge || d.policy.postMerge || d.postMerge) { await stayHeld(checkoutLease); await postMerge(name, id); }
-    else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
+    // With no post-merge policy the landing still deploys by itself where the
+    // project's standing instruction deploy-on-landing is on.
+    await stayHeld(checkoutLease);
+    await postMerge(name, id, Boolean(recorded.postMerge || d.policy.postMerge || d.postMerge));
     break;
     }
   } finally {
