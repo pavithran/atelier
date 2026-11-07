@@ -1,7 +1,7 @@
 import { receiveRunnerLog, type RunnerLog } from "./runner-log.ts";
 import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
-import { decideLandQueue, findStageOverrun, landerLive, type LandQueued, type LandQueueVerdict } from "./stage-tick.ts";
+import { decideLandQueue, landerLive, type LandQueued, type LandQueueVerdict } from "./stage-tick.ts";
 import { LIMITS } from "./limits.ts";
 import { REPORT_DEFAULTS } from "./stuck/report.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
@@ -34,7 +34,7 @@ import {
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, postMergeNotes, fixTaskFromNote, reviewNotes, openNotes, noteKey, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
-  standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
+  standingFastReady, stageOf, crossCompanyApproval, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
   riskNeed,
 } from "./rules";
@@ -516,6 +516,10 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "r
   // step's own output, the files a merge stopped on, the check that failed,
   // and how many times main moved between the checks and the push (G2).
   fast: "boolean", tail: "tail", files: "strings", failedCheck: "string", rounds: "count",
+  // The checks step reused the builder's passing checks instead of running
+  // them on the merged tree (t520); the evidence they were read from is in
+  // statuses, and base is the merge base they were measured from.
+  reused: "boolean",
   // The attempt a step belongs to (the landing record's), which the Ledger
   // checks for a failure of a step under the lease.
   attempt: "attempt",
@@ -2265,8 +2269,9 @@ export class Ledger extends DurableObject<Env> {
   // Each live task's stage against its limit. The tick writes no stage.stuck
   // or stage.cleared (t518: neither led to an action in Nov 1-6); older
   // records holding them still read. It asks the standing review at checked,
-  // and the standing queue-landable instruction may queue a landing; without
-  // readable runner offers it queues nothing. A task whose facts cannot be
+  // and queues the landing of a task whose checks passed and whose head a
+  // reviewer of another company approved (t520); without readable runner
+  // offers it queues nothing. A task whose facts cannot be
   // read makes the read incomplete, and an incomplete read queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     this.dispatchApprovedCriteria();
@@ -2282,7 +2287,7 @@ export class Ledger extends DurableObject<Env> {
       let tasks = 0;
       const rows = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE kind = 'stage.land-queued' ORDER BY seq`).toArray();
       const recorded = rows.map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
-      const queueLandable = this.standing().get("queue-landable") === "on";
+      const queueOff = this.standing().get("queue-landable") === "off";
       try {
         const policy = this.project().policy, project = this.project().name;
         const items = this.items(), landing = this.projectLanding();
@@ -2302,25 +2307,21 @@ export class Ledger extends DurableObject<Env> {
             if (stageOf(item, { policy, evidence, reviews, owner: this.owner }).stage === "checked") {
               this.askCheckedReview(item, offers ?? undefined);
             }
-            const clock = {
-              agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
-              reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
-            };
-            // A landable task past its limit: under the standing
-            // queue-landable instruction its landing is queued for a lander (t253).
-            if (stage === "landable" && detail.head && findStageOverrun(item, stage, detail.head, now, clock)) {
-              if (queueLandable && offers) {
-                const live = liveOffers(offersFor(offers, project), now);
-                const names = [project, ...(this.project().formerly ?? [])];
-                const main = this.mainHead(), head = detail.head;
-                const verdict = decideLandQueue({
-                  item: item.id, accepted: item.state === "accepted" && item.acceptedHead === head, fast: this.mode().mode === "fast",
-                  lease: landing, main, now,
-                  lander: landerLive(live, names),
-                  queued: recorded.filter((e) => e.kind === "stage.land-queued" && e.item === item.id && e.data.head === head).map((e) => ({ at: String(e.data.at), main: (e.data.main as string | null) ?? null, reason: e.data.reason as LandQueued["reason"] })),
-                });
-                if (verdict.queue) landings.push({ id: item.id, head, main, verdict });
-              }
+            // A landable task a reviewer of another company approved at its
+            // head has its landing queued for a lander (t253, t520), with no
+            // accept, fast mode or standing instruction.
+            if (stage === "landable" && detail.head && offers && crossCompanyApproval(item, policy, reviews, this.owner)) {
+              const live = liveOffers(offersFor(offers, project), now);
+              const names = [project, ...(this.project().formerly ?? [])];
+              const main = this.mainHead(), head = detail.head;
+              const verdict = decideLandQueue({
+                item: item.id, off: queueOff, lease: landing, main, now,
+                heldForDeveloper: item.nextGate === "developer" && !(item.state === "accepted" && item.acceptedHead === head),
+                failed: (() => { const f = this.landingStopped(item); return f?.failedStep ? { failedStep: f.failedStep, attempt: f.attempt } : null; })(),
+                lander: landerLive(live, names),
+                queued: recorded.filter((e) => e.kind === "stage.land-queued" && e.item === item.id && e.data.head === head).map((e) => ({ at: String(e.data.at), main: (e.data.main as string | null) ?? null, reason: e.data.reason as LandQueued["reason"] })),
+              });
+              if (verdict.queue) landings.push({ id: item.id, head, main, verdict });
             }
           } catch { complete = false; }
         }
@@ -2350,8 +2351,8 @@ export class Ledger extends DurableObject<Env> {
     } catch { /* a refused request writes nothing; the next tick can retry */ }
   }
 
-  // The tick's land job for a landable task (t253), under the standing
-  // queue-landable instruction: the same land_jobs row `atelier land --queue`
+  // The tick's land job for a landable, cross-company approved task (t253,
+  // t520): the same land_jobs row `atelier land --queue`
   // writes, made again with a fresh time when the job is queued anew (the
   // owner's actor and quote stay on the row), and the stage.land-queued event
   // the next tick reads back.
