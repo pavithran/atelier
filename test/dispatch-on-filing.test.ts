@@ -169,3 +169,24 @@ it("a crash before the dispatch is recorded leaves the waiting mark and the task
   expect(await dispatchTo(L, b.id)).toBe(CODEX);
   expect((await L.criteriaReviewView(b.id)).buildWait).toBeUndefined();
 });
+
+it("criterion 3: work built on criteria revised during the build is not submitted until the builder fetches the revision", async () => {
+  const L = await setup("filing-undelivered");
+  const { id } = await file(L, "Revise during build", ["Fast"]);
+  const first = (await L.criteriaReviewWaiting()).find(i => i.id === id)!.dispatch!;
+  const reviewer = `${first.agent}/${first.model}`;
+  await L.claim(id, CODEX, RUNNER);
+  await L.jobBrief(id, CODEX);   // the builder starts on the first criteria
+  await L.editItem(id, "owner", { accept: ["Answers within 200 ms"] });
+  await L.requestCriteriaReview(id, "owner", reviewer, POOL);
+  const c = await L.claimCriteriaReview(id, reviewer, RUNNER) as unknown as CriteriaReviewClaim;
+  await L.addCriteriaReview({ itemId: id, by: reviewer, rev: c.rev, criteria: c.criteria, request: c.request, approve: true, summary: "Clear", findings: [] }, true);
+  const head = "a".repeat(40);
+  await L.setWorkspace(id, `filing-undelivered--${id}`, "0".repeat(40), CODEX);
+  await L.recordPush(id, CODEX, head, head);
+  const refused = await L.submit(id, CODEX).then(() => null, (e: unknown) => parseRuleError(e));
+  expect(refused?.code).toBe("criteria_undelivered");
+  expect((await L.item(id)).state).toBe("claimed");
+  await L.jobBrief(id, CODEX);   // the builder reads the revision
+  expect((await L.submit(id, CODEX)).state).toBe("submitted");
+});

@@ -3917,6 +3917,19 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id).kind !== "plan" && !!policy.requireCriteriaReview && this.criteriaParallel() && this.mode().mode !== "fast" && !this.criteriaReviewStatus(id).approved;
   }
 
+  // Work built on criteria that changed while it was under way is not
+  // submitted until the builder has fetched the brief that carries the
+  // revision. The revision reaches the builder only once a review approves it.
+  private assertCriteriaDelivered(id: string): void {
+    if (!this.criteriaParallel() || this.item(id).kind) return;
+    const changed = this.lastEvent(id, ["item.criteria_changed"]);
+    const claimed = this.lastEvent(id, ["item.claimed"]);
+    if (!changed || !claimed || changed.seq < claimed.seq) return;
+    const delivered = this.lastEvent(id, ["item.criteria_delivered"]);
+    if (delivered && delivered.seq > changed.seq && delivered.data.revised) return;
+    throw new RuleError("criteria_undelivered", `${id}'s acceptance criteria changed while it was built (revision ${this.criteriaRevision(id)}); the builder must read the revised criteria before submitting`, 409, `fetch the brief again, apply the revised criteria, then finish ${id}`);
+  }
+
   private assertParallelCriteriaReviewed(id: string): void {
     if (!this.parallelCriteriaPending(id)) return;
     const status = this.criteriaReviewStatus(id);
@@ -5008,6 +5021,7 @@ export class Ledger extends DurableObject<Env> {
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting", 409, "run atelier push, then atelier submit");
     // Cleaned first: a summary over its limit is refused before anything is written.
     const text = cleanSummary(summary);
+    this.assertCriteriaDelivered(id);
     // A rerun of the submit that already stands: the caller names the head it
     // submits, and it is the one submitted and still the task's head. A newer
     // head, or none named, is a submit like any other.
@@ -7974,6 +7988,9 @@ export class Ledger extends DurableObject<Env> {
       const gap = reviewScopeGap(item, this.reviewsFor(id));
       const scopeNote = gap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, gap)}` : "";
       const text = [...sections.map((f) => findingsSection(f)), scopeNote, criteria, prose].filter(Boolean).join("\n\n");
+      // The builder has now read the criteria as they stand, so a submit may
+      // follow; a revision after this mark must be fetched again.
+      if (this.criteriaParallel()) this.log(id, ORCHESTRATOR, "item.criteria_delivered", { rev: this.criteriaRevision(id), revised: criteria.includes("## Revised acceptance criteria") }, new Date().toISOString());
       // Past findings on the files in scope (t14), beside the text: the
       // runner alone can tell which of those files exist at the commit its
       // build starts from, so it filters and renders them. A field an older
