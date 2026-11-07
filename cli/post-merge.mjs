@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { currentStep, hash, redactedOutput } from "../src/post-merge.ts";
+import { currentStep, failureKey, hash, redactedOutput } from "../src/post-merge.ts";
+import { revertNotificationRequest } from "../src/notify.ts";
 import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
@@ -132,4 +133,63 @@ export async function executePostMerge({ request, name, id, env = process.env, p
   }
   print(`Post-merge run ${run.id} complete at ${run.after}.`);
   return run;
+}
+
+// The first-parent inverse of a landed merge, committed on the checked-out
+// default branch without a task workspace or a session. A conflict aborts the
+// revert and throws, leaving the tree clean.
+export function revertOnMain({ git, merge, ids, actor }) {
+  if (!hash(merge)) throw new Error("revert needs the recorded merge commit");
+  const result = git(["revert", "--no-commit", "-m", "1", merge], { allowFail: true });
+  if (result.status !== 0) {
+    git(["revert", "--abort"], { allowFail: true });
+    throw new Error(`git revert of ${merge} stopped: ${result.stderr || result.stdout}`);
+  }
+  git(["commit", "-m", `Revert ${ids.join(", ")}\n\nThis reverts merge commit ${merge}, relative to its first parent, because main or the release gate went red after it landed.\n\nAgent: ${actor}`]);
+  return git(["rev-parse", "HEAD"]).trim();
+}
+
+// After a landing: run the post-merge suite, then the release gate. A red one
+// is run again on the same tree; a failure that passes the second time is
+// flaky and nothing is reverted. A failure that stands is reverted with no
+// session: the revert is checked before it lands, the task reopens with the
+// failure and the owner is told once. A revert that fails its checks halts
+// all reverting and wakes a session (io.wake). A repeat of a failure already
+// handled does nothing. io.state records each stage after it is done
+// (src/post-merge.ts), so a crash leaves later stages unset and a retry
+// resumes without reverting twice.
+export async function guardLanding({ project, members, head, io }) {
+  let kind = "suite", red = await io.suite();
+  if (red.passed) { kind = "gate"; red = await io.gate(); }
+  if (red.passed) return { action: "green" };
+  if ((await (kind === "suite" ? io.suite() : io.gate())).passed) return { action: "flaky", kind };
+  const state = io.state, save = async () => { await io.save?.(state); };
+  if (state.halted) {
+    await io.wake(`automatic reverting is halted (${state.halted.reason}); ${members.join(", ")} turned ${kind === "gate" ? "the release gate" : "main"} red at ${head}`);
+    return { action: "halted", kind };
+  }
+  const key = failureKey(kind, red.output);
+  if (state.failures[key]?.notified) return { action: "repeat", kind };
+  const entry = state.failures[key] ??= { kind, members: [...members], merge: head };
+  if (!entry.landed) {
+    const sha = await io.revert(members, head);
+    const checked = await io.check(sha);
+    if (!checked.passed) {
+      state.halted = { reason: `the revert ${sha} failed its checks`, at: new Date().toISOString() };
+      await save();
+      await io.wake(`the revert of ${members.join(", ")} (${head}) failed its checks and was not landed; no more will be reverted: ${checked.output}`);
+      return { action: "halted", kind };
+    }
+    await io.land(sha);
+    entry.landed = sha; await save();
+  }
+  if (!entry.reopened) {
+    for (const id of members) await io.reopen(id, red.output);
+    entry.reopened = true; await save();
+  }
+  if (!entry.notified) {
+    await io.notify(revertNotificationRequest(io.topic, io.origin, project, { itemId: members[0], kind, mergeCommit: head, revertCommit: entry.landed }));
+    entry.notified = true; await save();
+  }
+  return { action: "reverted", kind, revert: entry.landed };
 }

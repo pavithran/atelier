@@ -172,3 +172,20 @@ export function recoverPostMerge(run: PostMergeRun, action: string, reason: unkn
     step!.outcome = "waived"; run.state = currentStep(run) ? run.paths === null ? "reserved" : "pending" : "complete";
   } else bad("unknown post-merge recovery action");
 }
+
+// Automatic revert of a landing that turns main or a release gate red. The
+// state below is the only memory of what was done: each marker is written
+// after the work it marks, so a crash leaves it unset and a retry resumes.
+export type RedKind = "suite" | "gate";
+export interface RevertEntry { kind: RedKind; members: string[]; merge: string; landed?: string; reopened?: true; notified?: true }
+export interface RevertState { halted: { reason: string; at: string } | null; failures: Record<string, RevertEntry> }
+export const newRevertState = (): RevertState => ({ halted: null, failures: {} });
+
+// The same failure reads the same across runs: colour, timings and counters
+// vary, the failing test lines do not. Falls back to the head of the output.
+export function failureKey(kind: RedKind, output: unknown): string {
+  const text = redactedText(output).replace(/\b\d+(?:\.\d+)?\s*(?:ms|s)\b/g, "#").replace(/\b(duration_ms|time|elapsed)\b[:=]?\s*[\d.]+/gi, "");
+  const lines = text.split("\n").map(l => l.replace(/\d+(?:\.\d+)?/g, "#").trim()).filter(Boolean);
+  const failing = lines.filter(l => /^(not ok|fail|✗|✖|error|assertionerror)/i.test(l));
+  return `${kind}:${(failing.length ? failing : lines.slice(0, 3)).join("|").slice(0, 400)}`;
+}

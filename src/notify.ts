@@ -58,3 +58,12 @@ export function stuckBatchRequests<T extends { item: string; reason: string }>(t
     return { request: ntfyRequest(topic, `${project}: ${n} stuck ${n === 1 ? "episode" : "episodes"}`, click, "warning", g.lines.join(SEPARATOR)), episodes: g.episodes };
   });
 }
+
+// An automatic revert (src/post-merge.ts): the landing of a task turned main's
+// suite or the release gate red and Atelier undid it, opening the task page.
+export function revertNotificationRequest(topic: string, origin: string, project: string, revert: { itemId: string; kind: "suite" | "gate"; mergeCommit: string; revertCommit: string }): Request {
+  const click = new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(revert.itemId)}`, new URL(origin).origin).href;
+  const what = revert.kind === "gate" ? "the release gate" : "the post-merge suite";
+  return ntfyRequest(topic, `${project}: ${revert.itemId} reverted`, click, "rewind",
+    `${revert.itemId} turned ${what} red after it landed (${revert.mergeCommit.slice(0, 12)}). Reverted in ${revert.revertCommit.slice(0, 12)}; the task is reopened with the failure.`);
+}
