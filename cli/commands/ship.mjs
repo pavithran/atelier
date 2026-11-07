@@ -6,7 +6,7 @@ import { WRAP_MARKERS } from "../../src/sessions.ts";
 import { landingJournalFile, oldLandingJournalFile } from "../landing.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { autoDeploy, autoDeployWaits, composeShip, fileDeployStore, runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
+import { autoDeploy, composeShip, fileDeployStore, fileDeployFailure, pinnedDeployCheck, runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
 import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
 import { holdCheckout, postOnExit, stayHeld } from "../checkout-hold.mjs";
 
@@ -56,6 +56,16 @@ export default async function shipCommand() {
   };
   process.on("exit", onExit);
   try {
+    // A deploy the worker started names the one head it is for. Under the
+    // lease just taken, that head is checked against the baseline and for
+    // what waits on PAVI, and approved, before the same ship deploys it.
+    if (process.env.ATELIER_DEPLOY_PIN) {
+      const pin = JSON.parse(process.env.ATELIER_DEPLOY_PIN);
+      const stop = pinnedDeployCheck({ pin, baselineHead, plan: composeShip(cwd), git: (a, o = {}) => git(a, { cwd, ...o }), cwd });
+      if (stop?.superseded) { console.log(`auto-deploy-superseded: ${stop.superseded}`); process.exitCode = 1; return; }
+      if (stop?.waits) { for (const why of stop.waits) console.log(`auto-deploy-waits: ${why}`); process.exitCode = 1; return; }
+      await request("POST", `${P(name)}/actions`, { kind: "deploy", commit: pin.head, note: "given by the standing instruction deploy-on-landing", expires: "1h" }, OWNER);
+    }
     await runShip({
       name, cwd, branch: p.branch, baselineHead, inProgress, repositoryIsBaseline: repository === "server",
       paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
@@ -105,18 +115,22 @@ async function deployOnLandingWorker() {
   const store = fileDeployStore(dir);
   const env = { ...process.env };
   delete env.ATELIER_AUTO_DEPLOY;
-  const here = (a, o = {}) => git(a, { cwd, ...o });
   const result = await autoDeploy({
     name, head: landed.head, on: true, store, print,
-    waitsFor: async () => autoDeployWaits({ plan: composeShip(cwd), git: here, cwd, head: here(["rev-parse", "HEAD"]), since: store.read().deployed ?? landed.since }),
-    deploy: async () => {
-      const { head } = await request("GET", `${P(name)}/baseline-head`, undefined, OWNER);
-      await request("POST", `${P(name)}/actions`, { kind: "deploy", commit: head, note: "given by the standing instruction deploy-on-landing", expires: "1h" }, OWNER);
-      const r = await runCommand([process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), "ship", "--project", name], { cwd, env, timeoutMs: 45 * 60_000 });
-      return { passed: r.passed, output: r.output };
+    deploy: async (at) => {
+      const since = store.read().deployed ?? landed.since ?? null;
+      const r = await runCommand([process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), "ship", "--project", name], { cwd, env: { ...env, ATELIER_DEPLOY_PIN: JSON.stringify({ head: at, since }) }, timeoutMs: 45 * 60_000 });
+      if (r.passed) return { passed: true, output: r.output };
+      if (/^auto-deploy-superseded:/m.test(r.output)) return { passed: false, superseded: true, output: r.output };
+      const waits = [...r.output.matchAll(/^auto-deploy-waits: (.*)$/gm)].map((m) => m[1]);
+      return waits.length ? { passed: false, waits, output: r.output } : { passed: false, output: r.output };
     },
     record: (record) => request("POST", `${P(name)}/deploys`, record, OWNER),
-    notify: async (message) => { print(`NOTIFY ${message}`); },
+    // A task filed in the project wakes a session, once for the head.
+    notify: async (message, head) => {
+      const filed = await fileDeployFailure({ request: (method, path, body) => request(method, path, body, OWNER), name, head, message });
+      print(`NOTIFY ${message}${filed.filed ? ` Filed as ${filed.id}.` : " A task for it is already open."}`);
+    },
   });
   print(`Deploy on landing ended: ${result.state}`);
 }

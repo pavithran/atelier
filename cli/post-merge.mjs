@@ -112,6 +112,15 @@ export async function deployOnLanding({ request, name, env = process.env, cwd = 
   }
 }
 
+// What follows a landing's merge. A project with a post-merge policy runs its
+// run, which ends in the deploy; one with none has nothing to run, and its
+// landing deploys here all the same (cli/commands/merge.mjs calls this for both).
+export async function finishLanding({ hasPostMerge, request, name, id, env = process.env, print = console.log, cwd, deploy = deployOnLanding, group }) {
+  if (hasPostMerge) return executePostMerge({ request, name, id, env, print, cwd, deploy, ...(group ? { group } : {}) });
+  if (await deploy({ request, name, env, print, cwd }) !== "started") print("The project branch was not pushed to its own remotes. Nothing was deployed.");
+  return null;
+}
+
 export async function executePostMerge({ request, name, id, env = process.env, print = console.log, group = runGroup, cwd, deploy = deployOnLanding }) {
   const path = `/projects/${encodeURIComponent(name)}/post-merge/${encodeURIComponent(id)}`;
   let { run } = await request("GET", path);

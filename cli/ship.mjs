@@ -861,10 +861,13 @@ export function fileDeployStore(dir, options) {
 // notification. Returns what happened to each head it dealt with.
 //   on          the standing instruction deploy-on-landing is on
 //   store       a deployStore
-//   waitsFor    async (head) => reasons it must wait on PAVI, [] when none
-//   deploy      async (head) => { passed, output }: ship, approved, with its delivery check
+//   waitsFor    optional, async (head) => reasons it must wait on PAVI, [] when none
+//   deploy      async (head) => { passed, output }: ship, approved, with its delivery check.
+//               It may answer { superseded: true } when the baseline had moved past
+//               `head` (nothing ran; the newer head deploys instead), or
+//               { waits: [reasons] } when the ship found the head waits on PAVI.
 //   record      async (record): writes a deploy record to the ledger
-//   notify      async (message): wakes a session
+//   notify      async (message, head): wakes a session
 export async function autoDeploy({ name, head, on, store, waitsFor, deploy, record, notify, print = () => {} }) {
   if (!on) return { state: "off", heads: [] };
   const claim = await store.claim(head);
@@ -880,7 +883,7 @@ export async function autoDeploy({ name, head, on, store, waitsFor, deploy, reco
 
   async function deployHead(at) {
     if (store.read().deployed === at) return { head: at, state: "current" };
-    const reasons = await waitsFor(at);
+    const reasons = waitsFor ? await waitsFor(at) : [];
     if (reasons.length) {
       await store.waiting(at, reasons);
       print(`Deploy on landing: ${short(at)} is waiting on PAVI, not deployed: ${reasons.join("; ")}`);
@@ -890,6 +893,15 @@ export async function autoDeploy({ name, head, on, store, waitsFor, deploy, reco
     for (let attempt = 1; attempt <= 2; attempt++) {
       print(`Deploy on landing: deploying ${short(at)}${attempt > 1 ? " (retry, the first try failed)" : ""}`);
       try { last = await deploy(at); } catch (error) { last = { passed: false, output: `the deploy could not run: ${error.message}` }; }
+      if (last.superseded) {
+        print(`Deploy on landing: ${short(at)} is no longer the baseline's head, so it was not deployed; the newer head deploys instead.`);
+        return { head: at, state: "superseded" };
+      }
+      if (last.waits?.length) {
+        await store.waiting(at, last.waits);
+        print(`Deploy on landing: ${short(at)} is waiting on PAVI, not deployed: ${last.waits.join("; ")}`);
+        return { head: at, state: "waiting", reasons: last.waits };
+      }
       if (last.passed) {
         await store.delivered(at);
         print(`Deploy on landing: ${short(at)} is live.`);
@@ -899,9 +911,35 @@ export async function autoDeploy({ name, head, on, store, waitsFor, deploy, reco
     const note = String(last.output ?? "").trim().slice(-600) || "no output";
     await record({ ship: `auto-${at.slice(0, 12)}`, head: at, result: "failed", step: "deploy", ran: [], note: `deploy on landing failed twice: ${note}`.slice(0, 1000) });
     if (!store.read().notified.includes(at)) {
-      await notify(`${name}: deploying ${short(at)} on landing failed twice. Last output: ${note.slice(-300)}. Inspect it with atelier show --project ${name}, fix the cause, then run atelier ship.`);
+      await notify(`${name}: deploying ${short(at)} on landing failed twice. Last output: ${note.slice(-300)}. Inspect it with atelier show --project ${name}, fix the cause, then run atelier ship.`, at);
       await store.announced(at);
     }
     return { head: at, state: "failed", attempts: 2 };
   }
+}
+
+// What a deploy's own ship checks once it holds the checkout, so the check, the
+// approval and the deploy all concern one head (t519). `pin` is the head the
+// worker was asked to deploy and the commit last delivered. Answers
+// { superseded } when the baseline is no longer that head, { waits } when
+// the head needs PAVI first, or null when the ship may go on to approve and
+// run it. The migration check reads the checkout, which is at the baseline's
+// head here, since the caller holds the checkout lease.
+export function pinnedDeployCheck({ pin, baselineHead, plan, git, cwd }) {
+  if (baselineHead !== pin.head) return { superseded: `the baseline's head is ${short(baselineHead)}, not ${short(pin.head)}` };
+  const head = git(["rev-parse", "HEAD"], { cwd });
+  if (head !== pin.head) return null; // ship's own refusal says the checkout is not at the baseline
+  const waits = autoDeployWaits({ plan, git, cwd, head, since: pin.since });
+  return waits.length ? { waits } : null;
+}
+
+// The notification of a deploy that failed twice, as a task filed in the
+// project: the one channel that reaches a session. A task with this title
+// that is still open is the notification already given, so none is filed twice.
+export async function fileDeployFailure({ request, name, head, message }) {
+  const title = `Deploy of ${short(head)} failed on landing`;
+  const { items } = await request("GET", `/projects/${encodeURIComponent(name)}`);
+  if ((Array.isArray(items) ? items : []).some((i) => i.title === title && i.state !== "merged" && i.state !== "abandoned")) return { filed: false };
+  const item = await request("POST", `/projects/${encodeURIComponent(name)}/items`, { title, scope: [], brief: message });
+  return { filed: true, id: item.id };
 }

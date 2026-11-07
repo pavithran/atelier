@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { autoDeploy, autoDeployWaits, composeShip, fileDeployStore, memoryDeployStore } from "../cli/ship.mjs";
-import { deployOnLanding, executePostMerge } from "../cli/post-merge.mjs";
+import { autoDeploy, autoDeployWaits, composeShip, fileDeployFailure, fileDeployStore, memoryDeployStore, pinnedDeployCheck } from "../cli/ship.mjs";
+import { deployOnLanding, executePostMerge, finishLanding } from "../cli/post-merge.mjs";
 import { STANDING, parseStanding } from "../src/standing.ts";
 
 // t519: a landed head whose gates are green deploys by itself. Every effect
@@ -354,4 +354,83 @@ test("ship --dry-run shows the wait in its plan", async (t) => {
     print: (l) => lines.push(l), fail: (m) => { throw new Error(m); }, inProgress: () => [], baselineHead: c.head, paired: () => c.head, dryRun: true, push: false,
   });
   assert.match(lines.join("\n"), /Note: not deployed on landing, waiting on PAVI: a database migration changed/);
+});
+
+// ── review findings: the caller's guard, one bound head, a real notification ─
+
+test("a landing whose project has no post-merge policy deploys too, and says nothing was deployed when it is off", async () => {
+  const started = [], lines = [];
+  const { request } = postMergeRequests({ standing: ["on"] });
+  await finishLanding({ hasPostMerge: false, request, name: "demo", id: "t1", print: (l) => lines.push(l), cwd: "/checkout", deploy: (ctx) => deployOnLanding({ ...ctx, start: (st) => started.push(st) }) });
+  assert.deepEqual(started.map((st) => st.head), [H2]);
+  const off = [];
+  const none = postMergeRequests({ standing: [] });
+  await finishLanding({ hasPostMerge: false, request: none.request, name: "demo", id: "t1", print: (l) => off.push(l), deploy: (ctx) => deployOnLanding({ ...ctx, start: () => assert.fail("started") }) });
+  assert.match(off.join("\n"), /Nothing was deployed/);
+  // With a policy, the run is executed and the deploy follows it.
+  const after = [];
+  await finishLanding({ hasPostMerge: true, request: postMergeRequests({ standing: ["on"], run: { id: "r1", state: "complete", after: H2 } }).request, name: "demo", id: "t1", print: () => {}, deploy: async () => { after.push(1); } });
+  assert.equal(after.length, 1);
+});
+
+test("the ship a deploy runs is bound to the head it was asked for: a moved baseline supersedes it", (t) => {
+  const c = checkout(t, WEB, { "src/a.ts": "x" });
+  const check = (over) => pinnedDeployCheck({ pin: { head: c.head, since: c.since }, baselineHead: c.head, plan: composeShip(c.dir), git: c.git, cwd: c.dir, ...over });
+  assert.equal(check({}), null, "the pinned head is the baseline and nothing waits");
+  assert.match(check({ baselineHead: H3 }).superseded, /baseline's head is 33333333, not /);
+  const migrating = checkout(t, WEB, { "migrations/0001.sql": "x" });
+  const stop = pinnedDeployCheck({ pin: { head: migrating.head, since: migrating.since }, baselineHead: migrating.head, plan: composeShip(migrating.dir), git: migrating.git, cwd: migrating.dir });
+  assert.match(stop.waits.join("\n"), /a database migration changed/);
+});
+
+test("a deploy superseded by a newer baseline is not marked delivered, not retried, and the queued head deploys", async () => {
+  const r = rig();
+  let release;
+  const gate = new Promise((done) => { release = done; });
+  r.fakeDeploy = async (head) => { r.deploys.push(head); if (head === H1) await gate; return head === H1 ? { passed: false, superseded: true, output: "moved" } : { passed: true, output: "" }; };
+  const first = r.run(H1);
+  await new Promise((done) => setImmediate(done));
+  r.store.claim(H2); // a newer landing queues itself while H1 is deploying
+  release();
+  const out = await first;
+  assert.deepEqual(r.deploys, [H1, H2], "H1 was tried once; H2 deploys once");
+  assert.deepEqual(out.heads.map((h) => [h.head, h.state]), [[H1, "superseded"], [H2, "deployed"]]);
+  assert.equal(r.store.read().deployed, H2, "only the head that deployed is marked delivered");
+  assert.deepEqual(r.records, []);
+  assert.deepEqual(r.notes, []);
+});
+
+test("a head the ship found waiting on PAVI is shown as waiting, never retried or announced", async () => {
+  const r = rig();
+  r.fakeDeploy = async (head) => { r.deploys.push(head); return { passed: false, waits: ["a database migration changed"], output: "" }; };
+  const out = await r.run(H1);
+  assert.equal(out.state, "waiting");
+  assert.deepEqual(r.deploys, [H1]);
+  assert.equal(r.store.read().waiting.head, H1);
+  assert.equal(r.store.read().deployed, null);
+  assert.deepEqual(r.notes, []);
+});
+
+test("the failure notification is a task filed once in the project, which wakes a session", async () => {
+  const filed = [];
+  let items = [];
+  const request = async (method, path, body) => {
+    if (method === "GET") return { items };
+    filed.push({ path, body });
+    items = [...items, { id: `t${items.length + 1}`, title: body.title, state: "open" }];
+    return { id: items.at(-1).id };
+  };
+  const ask = () => fileDeployFailure({ request, name: "demo", head: H1, message: "failed twice" });
+  assert.deepEqual(await ask(), { filed: true, id: "t1" });
+  assert.equal(filed[0].path, "/projects/demo/items");
+  assert.deepEqual(filed[0].body, { title: "Deploy of 11111111 failed on landing", scope: [], brief: "failed twice" });
+  assert.deepEqual(await ask(), { filed: false }, "an open task is the notification already given");
+  items[0].state = "abandoned";
+  assert.equal((await ask()).filed, true, "once it is closed, a new failure is filed");
+  // Wired through the engine: a second failure files exactly one task.
+  const r = rig({ outcomes: [{ passed: false }, { passed: false }] });
+  items = []; filed.length = 0;
+  r.run = (head) => autoDeploy({ name: "demo", head, on: true, store: r.store, deploy: r.fakeDeploy, record: async (rec) => r.records.push(rec), notify: (m, h) => fileDeployFailure({ request, name: "demo", head: h, message: m }) });
+  await r.run(H1);
+  assert.equal(filed.length, 1);
 });
