@@ -2337,6 +2337,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     return json(await L.recordDeploy(actor, body), 201);
   }
+  // The notice of an automatic revert (t524): one revert.notice event per
+  // reverted merge, however often it is posted.
+  if (parts[2] === "revert-notices" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    return json(await L.recordRevertNotice(actor, body), 201);
+  }
   if (parts[2] === "post-merge" && parts.length === 4) {
     const item = parts[3];
     if (m === "GET") return json({ run: await L.postMergeRun(item) });

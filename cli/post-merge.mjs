@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentStep, failingTestOf, failureKey, hash, newRevertState, redactedOutput } from "../src/post-merge.ts";
-import { revertFailedNotificationRequest, revertNotificationRequest, sendNoticeOnce, sendNotification } from "../src/notify.ts";
 import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
@@ -191,45 +190,54 @@ export function revertOnMain({ git, merge, ids, actor }) {
 // failure that passes the second time is flaky and nothing is reverted. A
 // failure that stands is reverted with no session: the revert is checked before
 // it lands, a fix task carrying the failure is filed against the merged task
-// (fixOf; the server has no reopen of a merged task) and dispatched, and the
-// owner is told once. A revert that fails its checks halts all reverting,
-// records a failed deploy event that the pulse and check wake on, and tells the
-// owner (io.wake). io.state records each stage after it is done
+// (fixOf; the server has no reopen of a merged task), one revert.notice event is
+// recorded in the ledger, and the fix task is dispatched. A revert that fails
+// its checks halts all reverting, records a failed deploy event that the pulse
+// and check wake on (io.wake). io.state records each stage after it is done
 // (src/post-merge.ts) and io.save persists it, so a crash leaves later stages
 // unset and a retry resumes without reverting twice. A stage that unfinished
 // work remains in is resumed before anything is run, green or red. The revert
 // is looked up before it is made (revertOnMain) and pushing a commit already
 // pushed does nothing, so a crash between landing and its marker repeats
-// nothing. The fix task and the notification cannot be looked up: each is
-// marked only after it was made or the send returned ok, so a crash between
-// the two repeats at most that one step. The notification is marked "sending"
-// before the request (sendNoticeOnce in src/notify.ts): a crash after the send
-// is never resent, and io.unknown records that it may not have arrived. With no
-// topic set nothing is sent and the notice stays pending until one is.
+// nothing. The notice is keyed by the reverted merge in the ledger's store,
+// which records it once however often it is posted. The fix task is marked only
+// after it was made, so a crash between the two files at most one more.
+//
+// Recovery is complete only when every fix task is dispatched (or blocked with
+// the reason, which wakes a session): io.dispatch answers "waiting" while its
+// criteria review is open, and each later run of the executor on this landing
+// (its restart path, which a failed run is resumed through) tries again until
+// the review approves it.
 export async function guardLanding({ project, members, head, io }) {
   const state = io.state, save = async () => { await io.save?.(state); };
-  // The fix task and the notice are independent: a fix task that cannot be
-  // filed or handed on does not hold back the notification, and its failure is
-  // thrown after the notice was tried, so a retry resumes it.
+  // Filing, the notice and dispatch are independent: one that fails does not
+  // hold back the others, and its failure is thrown after they were tried, so
+  // a retry resumes it.
   const finish = async entry => {
     let failure = null;
+    const attempt = async fn => { try { await fn(); } catch (error) { failure ??= error; } };
+    entry.fixes ??= {};
+    await attempt(async () => {
+      for (const member of entry.members) {
+        const fix = entry.fixes[member] ??= {};
+        if (!fix.task) { fix.task = await io.file(member, entry.output); await save(); }
+      }
+    });
+    if (!entry.noticed) await attempt(async () => { await io.notice(entry); entry.noticed = true; await save(); });
     if (!entry.reopened) {
-      try {
-        entry.fixes ??= {};
+      await attempt(async () => {
+        let waiting = false;
         for (const member of entry.members) {
-          const fix = entry.fixes[member] ??= {};
-          if (!fix.task) { fix.task = await io.file(member, entry.output); await save(); }
-          if (!fix.dispatched) { await io.dispatch(fix.task, member); fix.dispatched = true; await save(); }
+          const fix = entry.fixes[member];
+          if (!fix?.task) { waiting = true; continue; }
+          if (fix.dispatched) continue;
+          const outcome = await io.dispatch(fix.task, member);
+          if (outcome === "waiting") { waiting = true; io.waiting?.(fix.task, member); continue; }
+          fix.dispatched = outcome; await save();
         }
-        entry.reopened = true; await save();
-      } catch (error) { failure = error; }
+        if (!waiting) { entry.reopened = true; await save(); }
+      });
     }
-    const first = entry.fixes?.[entry.members[0]]?.task;
-    const request = io.topic ? revertNotificationRequest(io.topic, io.origin, project, { itemId: entry.members[0], kind: entry.kind, mergeCommit: entry.merge, revertCommit: entry.landed }) : null;
-    let sent;
-    try { sent = await sendNoticeOnce(entry, { request, save: () => save(), deliver: io.notify, unknown: async () => { await io.unknown?.(entry, first); } }); }
-    catch (error) { failure ??= error; }
-    if (sent === "pending") io.pending?.(entry);
     if (failure) throw failure;
   };
   // One wake per landed head, whatever restarts the executor goes through.
@@ -239,7 +247,7 @@ export async function guardLanding({ project, members, head, io }) {
     await io.wake(reason);
     (halted.woken ??= []).push(head); await save();
   };
-  for (const entry of Object.values(state.failures)) if (entry.landed && (!entry.reopened || (!entry.notified && entry.notice !== "unknown"))) await finish(entry);
+  for (const entry of Object.values(state.failures)) if (entry.landed && (!entry.reopened || !entry.noticed)) await finish(entry);
   let kind = "suite", red = await io.suite();
   if (red.passed) { kind = "gate"; red = await io.gate(); }
   if (red.passed) return { action: "green" };
@@ -279,12 +287,14 @@ export async function guardLanding({ project, members, head, io }) {
 // nothing is reverted. Only check steps revert; a failed deploy or publication
 // has effects a revert does not undo. The server has no way to reopen a merged
 // task, so a fix task (fixOf) carrying the failing output is filed and
-// dispatched to the reverted task's builder. The revert is pushed the way the
+// dispatched to the reverted task's builder. Per PAVI ("drop ntfy"), nothing is
+// sent to ntfy: the notice is a ledger event, and delivery to devices is a
+// separate task. The revert is pushed the way the
 // lander pushes main: from the checkout to its owner remote, under the project's
 // landing lease. `deps` is the CLI's own module unless a test supplies one.
 export async function recoverFailedLanding({ request, name, id, env, print, group, run, step, output, deps }) {
   if (step.class !== "check") return null;
-  const { cfg, landingGit, entryPath, server } = deps ?? await import("./atelier.mjs");
+  const { cfg, landingGit, entryPath } = deps ?? await import("./atelier.mjs");
   const entry = cfg.projects?.[name], cwd = entryPath(entry);
   if (!cwd) { print(`${name} has no checkout on this Mac; ${id} is not reverted automatically`); return null; }
   const git = (args, opts = {}) => landingGit(args, { cwd, ...opts });
@@ -300,10 +310,8 @@ export async function recoverFailedLanding({ request, name, id, env, print, grou
     return { passed: result.passed, output: redactedOutput(result.output) };
   };
   const base = `/projects/${encodeURIComponent(name)}`;
-  const topic = env.ATELIER_NTFY_TOPIC ?? env.NTFY_TOPIC;
-  const origin = (() => { try { return server(); } catch { return "https://atelier.invalid"; } })();
   const io = {
-    state, topic, origin,
+    state,
     suite: kind === "suite" ? again : async () => ({ passed: true, output: "" }),
     gate: kind === "gate" ? again : async () => ({ passed: true, output: "" }),
     save: async s => { writeFileSync(`${stateFile}.tmp`, JSON.stringify(s)); renameSync(`${stateFile}.tmp`, stateFile); },
@@ -339,36 +347,44 @@ export async function recoverFailedLanding({ request, name, id, env, print, grou
       });
       return made.id;
     },
-    // The fix task goes to the reverted task's builder, unless the project
-    // holds a build for a review of its criteria: then that review is asked, by
-    // the candidate the server lists first, and src/dispatch/on-criteria.ts
-    // dispatches the task once it is approved. With no candidate the task is
-    // blocked with the reason, which wakes a session. Nothing here throws
-    // criteria_unreviewed, and neither the revert nor the notice waits on it.
+    // The one notice of this revert, keyed in the ledger by the reverted merge.
+    notice: async entry => {
+      const first = entry.members[0];
+      await request("POST", `${base}/revert-notices`, {
+        item: first, merge: entry.merge, revert: entry.landed, fix: entry.fixes?.[first]?.task ?? null, kind: entry.kind,
+        failure: `${entry.members.join(", ")} turned ${entry.kind === "gate" ? "the release gate" : "the post-merge suite"} red: ${failingTestOf(entry.output)}`,
+      });
+    },
+    // The fix task goes to the reverted task's builder. Where the project holds
+    // a build for a review of its criteria, the dispatch is refused
+    // (criteria_unreviewed, which changes nothing) and the review is asked, by
+    // the candidate the server lists first; the answer is "waiting", and a later
+    // run dispatches it here once the review approves. A dispatch made in the
+    // meantime (a standing decision, or by hand) or a block counts as done. With
+    // no reviewer that qualifies, or findings only the owner can settle, the
+    // task is blocked with the reason, which wakes a session.
     dispatch: async (task, member) => {
-      const { project } = await request("GET", base);
-      const policy = project?.policy ?? {};
-      const fast = policy.requireCriteriaReview ? (await request("GET", `${base}/mode`)).mode === "fast" : false;
-      const gated = !!policy.requireCriteriaReview && policy.criteriaReview !== "parallel" && !fast;
-      const refused = error => error?.refusal?.code === "criteria_unreviewed";
-      if (!gated) {
-        const { item } = await request("GET", `${base}/items/${encodeURIComponent(member)}`);
-        const [agent, ...model] = String(item?.owner ?? "").split("/");
-        if (!agent || !model.length) throw new Error(`${member} records no builder to dispatch ${task} to; run atelier dispatch ${task} --agent H --model M`);
-        try {
-          await request("POST", `${base}/items/${encodeURIComponent(task)}/dispatch`, { agent, model: model.join("/"), note: `Fix of ${member}, reverted automatically; the failing output is in the brief.` });
-          return;
-        } catch (error) { if (!refused(error)) throw error; }
-      }
-      const ask = reviewer => request("POST", `${base}/items/${encodeURIComponent(task)}/criteria-review-request`, reviewer ? { reviewer } : {});
+      const path = `${base}/items/${encodeURIComponent(task)}`;
+      const { item: fix } = await request("GET", path);
+      if (fix?.dispatch || fix?.owner || fix?.state !== "open") return fix?.state === "blocked" ? "blocked" : "dispatched";
+      const { item } = await request("GET", `${base}/items/${encodeURIComponent(member)}`);
+      const [agent, ...model] = String(item?.owner ?? "").split("/");
+      if (!agent || !model.length) throw new Error(`${member} records no builder to dispatch ${task} to; run atelier dispatch ${task} --agent H --model M`);
+      try {
+        await request("POST", `${path}/dispatch`, { agent, model: model.join("/"), note: `Fix of ${member}, reverted automatically; the failing output is in the brief.` });
+        return "dispatched";
+      } catch (error) { if (error?.refusal?.code !== "criteria_unreviewed") throw error; }
       const stuck = async reason => {
-        const { item } = await request("GET", `${base}/items/${encodeURIComponent(task)}`);
-        if (item?.state === "blocked") return;
         // A model's block on the developer token carries the developer's words;
         // these are the ones that approved this recovery.
-        await request("POST", `${base}/items/${encodeURIComponent(task)}/block`, { reason: reason.slice(0, 500), quote: AUTO_REVERT_APPROVAL });
+        await request("POST", `${path}/block`, { reason: reason.slice(0, 500), quote: AUTO_REVERT_APPROVAL });
         print(`${task}, the fix of ${member}, is blocked: ${reason}`);
+        return "blocked";
       };
+      const { status } = await request("GET", `${path}/criteria-reviews`);
+      if (status?.need === "owner") return stuck(`the criteria review of the fix of ${member} has findings only the owner can settle: ${status.reason}`);
+      if (status?.need !== "review") return "waiting";
+      const ask = reviewer => request("POST", `${path}/criteria-review-request`, reviewer ? { reviewer } : {});
       try {
         try { await ask(null); }
         catch (error) {
@@ -379,24 +395,17 @@ export async function recoverFailedLanding({ request, name, id, env, print, grou
         }
       } catch (error) {
         if (!error?.refusal) throw error;
-        await stuck(`no criteria review could be asked for the fix of ${member}: ${String(error.refusal.detail).split("\n")[0]}`);
+        return stuck(`no criteria review could be asked for the fix of ${member}: ${String(error.refusal.detail).split("\n")[0]}`);
       }
+      return "waiting";
     },
-    notify: sendNotification,
-    unknown: async (entry, task) => {
-      const note = `the notice of ${entry.members.join(", ")}'s revert may not have been sent: a send was started and its outcome was lost${task ? ` (fix task ${task})` : ""}; check the ntfy topic`;
-      print(note);
-      await request("POST", `${base}/deploys`, { ship: `notify-unknown-${entry.merge.slice(0, 16)}`, head: entry.merge, result: "failed", step: "notify.unknown", note });
-    },
-    pending: entry => print(`${entry.members.join(", ")} was reverted but no ntfy topic is set (ATELIER_NTFY_TOPIC), so the owner was not notified; the notice goes out once one is set`),
+    waiting: (task, member) => print(`${task}, the fix of ${member}, waits for its criteria review; the executor's next run dispatches it once the review approves`),
     // A revert that could not land: a failed deploy event, which the pulse and
-    // the check already wake a session on, and one ntfy message. The event is
-    // keyed by the merge, so a retry records it once.
+    // the check already wake a session on. The event is keyed by the merge, so
+    // a retry records it once.
     wake: async reason => {
       print(reason);
       await request("POST", `${base}/deploys`, { ship: `auto-revert-${run.after.slice(0, 16)}`, head: run.after, result: "failed", step: "auto-revert", note: reason.slice(0, 1000) });
-      if (!topic) { print("no ntfy topic is set (ATELIER_NTFY_TOPIC), so the owner was told by the failed deploy event alone"); return; }
-      await sendNotification(revertFailedNotificationRequest(topic, origin, name, { itemId: run.members[0], mergeCommit: run.after, reason }));
     },
   };
   return guardLanding({ project: name, members: run.members, head: run.after, io });

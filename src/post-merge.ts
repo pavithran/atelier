@@ -180,14 +180,14 @@ export function recoverPostMerge(run: PostMergeRun, action: string, reason: unkn
 // state below is the only memory of what was done: each marker is written
 // after the work it marks, so a crash leaves it unset and a retry resumes.
 export type RedKind = "suite" | "gate";
-// `reopened` is set once every member has a fix task filed and handed on
-// (fixes holds each one's progress; `dispatched` is set when it was dispatched,
-// its criteria review asked, or it was blocked for want of a reviewer);
-// `notified` once the ntfy send returned ok. `notice` is "sending" from before
-// the request until its outcome is saved, and "unknown" once a restart found it
-// still "sending" (src/notify.ts, sendNoticeOnce).
-export interface RevertFix { task?: string; dispatched?: true }
-export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; fixes?: Record<string, RevertFix>; reopened?: true; notified?: true; notice?: "sending" | "unknown" }
+// `fixes` holds each member's fix task and how it was handed on: `dispatched`
+// is "dispatched" or "blocked" (a block wakes a session). `reopened` is set once
+// every member's fix task is one or the other; while a criteria review is
+// still open it stays unset and the next run tries again. `noticed` is set
+// once the ledger recorded the revert.notice event (which it keys by the
+// merge, so a resend records nothing more).
+export interface RevertFix { task?: string; dispatched?: "dispatched" | "blocked" }
+export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; fixes?: Record<string, RevertFix>; reopened?: true; noticed?: true }
 export interface RevertState { halted: { reason: string; at: string; woken?: string[] } | null; failures: Record<string, RevertEntry> }
 export const newRevertState = (): RevertState => ({ halted: null, failures: {} });
 

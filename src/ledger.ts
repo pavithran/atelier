@@ -5929,6 +5929,31 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
+  // The one notice of an automatic revert (t524): a revert.notice event on the
+  // reverted task, naming the merge, the revert, the fix task and the failure.
+  // PAVI dropped ntfy for it ("drop ntfy"); delivery to devices is a separate
+  // task, and sessions read the event from the ledger. The revert_notices
+  // table's key on the merge makes the store refuse a second notice for the
+  // same reverted merge, so a resume or a repeat records nothing more.
+  recordRevertNotice(actor: string, body: Record<string, unknown>): { recorded: boolean; merge: string } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records an automatic revert", 403, "the post-merge executor records it with the developer token");
+    const item = String(body.item ?? ""), merge = String(body.merge ?? ""), revert = String(body.revert ?? "");
+    const fix = body.fix === undefined || body.fix === null ? null : String(body.fix);
+    const kind = body.kind === "gate" ? "gate" : body.kind === "suite" ? "suite" : null;
+    if (!kind) throw new RuleError("bad_request", "kind is suite or gate", 400);
+    if (!/^[a-f0-9]{40,64}$/.test(merge) || !/^[a-f0-9]{40,64}$/.test(revert)) throw new RuleError("bad_request", "merge and revert are full commit hashes", 400);
+    if (fix !== null) this.item(fix);
+    this.item(item);
+    const failure = Array.from(String(body.failure ?? "")).slice(0, 1000).join("");
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS revert_notices (merge TEXT PRIMARY KEY, at TEXT NOT NULL)`);
+    const at = new Date().toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      if (this.sql.exec(`INSERT OR IGNORE INTO revert_notices (merge, at) VALUES (?, ?)`, merge, at).rowsWritten === 0) return { recorded: false, merge };
+      this.log(item, actor, "revert.notice", { item, merge, revert, fix, kind, failure }, at);
+      return { recorded: true, merge };
+    });
+  }
+
   lastDeploy(): DeployRecord | null {
     return this.deploys(1)[0] ?? null;
   }

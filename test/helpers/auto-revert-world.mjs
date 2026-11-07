@@ -9,14 +9,14 @@ import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finis
 // The production path end to end: executePostMerge runs the suite in a clone,
 // and its default recovery (recoverFailedLanding) reverts in a real checkout and
 // pushes to a real bare remote. Only the server (a state machine over
-// src/post-merge.ts) and the ntfy request are stood in for.
+// src/post-merge.ts, and the revert notices keyed by merge as the ledger's
+// table keys them) is stood in for.
 const at = "2026-11-07T12:00:00Z";
 const IDENTITY = { GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.test" };
 
 export function world(t, { steps, red = true, real }) {
   const root = mkdtempSync(join(tmpdir(), "atelier-auto-revert-prod-"));
-  const realFetch = globalThis.fetch;
-  t.after(() => { globalThis.fetch = realFetch; rmSync(root, { recursive: true, force: true }); });
+  t.after(() => { rmSync(root, { recursive: true, force: true }); });
   const sh = (cwd, args, extra = {}) => {
     const r = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8", env: { ...process.env, ...IDENTITY, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } });
     if (extra.allowFail) return r;
@@ -41,9 +41,8 @@ export function world(t, { steps, red = true, real }) {
   const run = reservePostMerge(policy, ["t7"], before, "run-1", at);
   run.after = merge; preparePostMerge(run, []);
 
-  const log = [], sent = [];
-  let counter = 0, failNext = {}, ntfy = () => new Response("ok");
-  globalThis.fetch = async request => { sent.push(request); return ntfy(request); };
+  const log = [], notices = [], noticed = new Set();
+  let counter = 0, failNext = {};
   const request = async (method, path, body) => {
     log.push({ method, path, body });
     // `real` answers the ledger's own routes where a test runs against it.
@@ -61,7 +60,14 @@ export function world(t, { steps, red = true, real }) {
     if (path.endsWith("/git-token")) return { remote: origin, token: "" };
     if (path.endsWith("/landing-lease")) return method === "GET" ? { lease: null } : { ok: true };
     if (path.endsWith("/items") && method === "POST") return { id: `t${99 + log.filter(l => l.path.endsWith("/items") && l.method === "POST").length}` };
+    if (path.endsWith("/revert-notices")) {
+      if (noticed.has(body.merge)) return { recorded: false, merge: body.merge };
+      noticed.add(body.merge); notices.push(body);
+      return { recorded: true, merge: body.merge };
+    }
     if (path.endsWith("/items/t7")) return { item: { id: "t7", owner: "claude-code/sonnet-5.5" } };
+    const fix = /\/items\/(t\d+)$/.exec(path);
+    if (fix && method === "GET") return { item: { id: fix[1], state: "open", owner: null, dispatch: log.some(l => l.method === "POST" && l.path.endsWith(`/items/${fix[1]}/dispatch`)) ? {} : null } };
     if (path === "/projects/p") return { project: { policy: {} } };
     return {};
   };
@@ -73,14 +79,13 @@ export function world(t, { steps, red = true, real }) {
     return r.stdout.trim();
   };
   const deps = { cfg: { projects: { p: { path: work, branch: "main" } } }, landingGit, entryPath: e => e.path, server: () => "https://atelier.test" };
-  const env = { PATH: process.env.PATH, HOME: root, ATELIER_NTFY_TOPIC: "pavi-topic" };
+  const env = { PATH: process.env.PATH, HOME: root };
   const prints = [];
   // One executor process: a restart is another call over the same saved state.
   const execute = (over = {}) => executePostMerge({ request, name: "p", id: "t7", env, print: line => prints.push(line), recover: a => recoverFailedLanding({ ...a, deps }), ...over });
   return {
-    root, origin, work, outside, merge, run, log, sent, prints, execute, sh, env,
+    root, origin, work, outside, merge, run, log, notices, prints, execute, sh, env,
     failNext: (key, n = 1) => { failNext[key] = n; },
-    ntfy: fn => { ntfy = fn; },
     originHead: () => sh(origin, ["rev-parse", "main"]),
     posted: suffix => log.filter(l => l.method === "POST" && l.path.endsWith(suffix)),
     stateFile: () => join(sh(work, ["rev-parse", "--absolute-git-dir"]), "atelier-auto-revert.json"),

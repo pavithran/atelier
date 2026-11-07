@@ -230,9 +230,6 @@ const ACCEPTED_REACHES = {
   // runRequest, the HTTP smoke step of `atelier ship`; the runner reaches only
   // runCommand from cli/ship.mjs, through cli/land.mjs (ACCEPTED_IMPORTS).
   "cli/ship.mjs": ["fetch("],
-  // sendNotification, the one ntfy message of an automatic revert (t524): it
-  // posts to the owner's ntfy topic, not to the Atelier server.
-  "src/notify.ts": ["fetch("],
 };
 // The exception for cli/ship.mjs holds only while nothing the runner reaches
 // takes runRequest from it, or anything that calls it: the runner's modules
