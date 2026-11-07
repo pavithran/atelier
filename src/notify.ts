@@ -32,13 +32,6 @@ export function usageAlertRequest(topic: string, origin: string, title: string, 
   return ntfyRequest(topic, title, new URL("/usage", new URL(origin).origin).href, "warning", body);
 }
 
-// A builder's dispute of a finding (t521): the task waits blocked and this
-// asks for a session, opening the task page.
-export function disputeRequest(topic: string, origin: string, project: string, id: string, title: string, reason: string): Request {
-  const click = new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, new URL(origin).origin).href;
-  return ntfyRequest(topic, `${project}/${id}: a builder disputes a finding`, click, "warning", `${title}: ${reason}. The task waits for a session.`);
-}
-
 // Stuck episodes still open an hour after they were first seen (src/stuck/notices.ts),
 // as messages opening the Status page. A message body holds at most BODY_LIMIT
 // characters, so a long batch is split into several messages, each carrying

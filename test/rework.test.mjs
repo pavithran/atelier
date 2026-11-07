@@ -117,14 +117,17 @@ test("an approval, a part, and a tier review dispatch nothing", async () => {
 });
 
 // Criterion 3.
-test("a second rejection of the task wakes a session through one notification and dispatches nothing", async () => {
-  const { io, calls, wakes } = fixture({ round: 2 });
+// The one notification is the ledger's (test/dispute-wake.spec.ts); the
+// runner dispatches nothing and sends no message of its own.
+test("a second rejection of the task dispatches nothing and leaves its one notification to the ledger", async () => {
+  const { io, calls, wakes, logs } = fixture({ round: 2 });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "reject");
   assert.equal(sent(calls, "dispatch").length, 0);
-  assert.equal(wakes.length, 1);
-  assert.match(wakes[0], /t21/);
-  assert.match(wakes[0], /second rejection/);
+  assert.equal(wakes.length, 0);
+  assert.ok(logs.some((l) => /t21: this is the second rejection.*the ledger records the notice/.test(l)));
+  const route = routeRejection({ round: 2, builder: BUILDER, kind: "task" });
+  assert.equal(route.second, true);
 });
 
 // Criterion 5.

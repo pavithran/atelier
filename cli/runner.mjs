@@ -2993,6 +2993,9 @@ export async function sendBack(io, runnerIO, { project, claimed, posted }) {
   const id = claimed.item.id;
   const route = routeRejection({ round: claimed.need?.round ?? 1, builder: claimed.item.owner ?? null, kind: claimed.item.kind ?? null, owner: claimed.owner });
   if (route.action === "none") return route;
+  // A second rejection's notice is the ledger's, recorded with the verdict,
+  // so the runner sends none of its own.
+  if (route.action === "wake" && route.second) { io.log(`${project}/${id}: ${route.reason}; the ledger records the notice that wakes a session`); return route; }
   if (route.action === "wake") { await wakeSession(io, `${project}/${id}: ${route.reason}`); return route; }
   const note = reworkNote(id, claimed.head, posted.findings ?? [], posted.summary ?? "");
   // The dispatch is the hook `io.dispatchBuilder`: the runner declares no

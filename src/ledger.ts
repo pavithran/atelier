@@ -45,7 +45,7 @@ import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
-import { disputeRequest, notificationRequest, usageAlertRequest } from "./notify.ts";
+import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { ago } from "./floor.ts";
 
 // The note on the release a dispatch makes of a held task; the holder reads it
@@ -83,7 +83,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
-import { isDispute } from "./dispatch/rework.ts";
+import { disputedFinding, isDispute } from "./dispatch/rework.ts";
 import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
@@ -1031,6 +1031,7 @@ export class Ledger extends DurableObject<Env> {
         item_id TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY (item_id, head)
       );
       CREATE TABLE IF NOT EXISTS notification_origins (item_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT, at TEXT NOT NULL,
         actor TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
@@ -4684,6 +4685,18 @@ export class Ledger extends DurableObject<Env> {
     this.ctx.waitUntil(gate ? gate.hold(work) : work);
   }
 
+  // A notice that wakes a session (t521): a builder's dispute or a second
+  // rejected round, recorded as one event in the transaction that records the
+  // dispute or the rejection. The key's row in `notices` is what keeps one
+  // dispute or one round from recording it twice: the insert is ignored when
+  // the key is there, so no read comes before the write. atelier-pulse wakes a
+  // session from the event; delivery to the developer's devices is not here
+  // (PAVI, 2026-11-07: "drop ntfy").
+  private recordNotice(key: string, itemId: string, actor: string, kind: "item.dispute_notice" | "item.second_rejection_notice", data: Record<string, unknown>, at: string): void {
+    if (!this.sql.exec(`INSERT OR IGNORE INTO notices (key) VALUES (?) RETURNING key`, key).toArray().length) return;
+    this.log(itemId, actor, kind, data, at);
+  }
+
   addEvidence(e: Evidence, origin?: string, proved = false): void {
     const item = this.item(e.itemId);
     if (e.head !== item.head) {
@@ -4812,7 +4825,7 @@ export class Ledger extends DurableObject<Env> {
     const fastReceiptOf = item.state === "merged" && this.mergedFast(item.id);
     const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
     r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
-    this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?)`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0);
+    const reviewId = this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?) RETURNING id`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0).one().id as number;
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, role: this.reviewRoleOf(item), ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
@@ -4854,7 +4867,20 @@ export class Ledger extends DurableObject<Env> {
     }
     this.notify(r.itemId, origin);
     if (!r.approve) this.notifyRejection(r, origin);
+    if (!r.approve) this.noticeSecondRejection(item, r, reviewId, at);
     this.afterPlanChange(r.itemId);
+  }
+
+  // A task's second rejected round wakes a session through one notice and
+  // dispatches nothing (t521); the runner sends the first back to its builder.
+  // The notice is keyed by the round's head, so a second reviewer rejecting
+  // the same head records none.
+  private noticeSecondRejection(item: Item, r: Review, reviewId: number, at: string): void {
+    if (r.postMerge || r.tier || r.by === this.owner || item.state === "merged" || item.kind === "part" || item.kind === "plan") return;
+    const policy = this.project().policy;
+    const rounds = rejectedRounds(this.reviewsFor(item.id).filter((rv) => reviewAuthorized(rv, policy, this.owner)), this.owner);
+    if (rounds.length !== 2 || rounds[1].head !== r.head) return;
+    this.recordNotice(`second-rejection:${item.id}:${r.head}`, item.id, ORCHESTRATOR, "item.second_rejection_notice", { head: r.head, review: reviewId, by: r.by }, at);
   }
 
   // After the REVIEW_ROUND_CAP-th rejected round a task outside a plan is
@@ -4963,7 +4989,7 @@ export class Ledger extends DurableObject<Env> {
   // go on, and either unblocks it. The task keeps its owner, workspace and
   // dispatch record meanwhile; unblocking returns it to the state it was in.
   // An open task has no holder, so only the owner blocks or unblocks it.
-  block(id: string, actor: string, reason: unknown, proved = false, until?: unknown, direction: OwnerDirection | null = null, origin?: string): Item {
+  block(id: string, actor: string, reason: unknown, proved = false, until?: unknown, direction: OwnerDirection | null = null): Item {
     const text = blockReason(reason);
     const now = new Date();
     const day = blockUntil(until, now);
@@ -4975,21 +5001,14 @@ export class Ledger extends DurableObject<Env> {
     const record: Block = { reason: text, by: actor, at, from: item.state, ...(day ? { until: day } : {}), ...said };
     this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
     this.log(id, actor, "item.blocked", { reason: text, from: item.state, ...(day ? { until: day } : {}), ...(direction ? { confirmed: "direction", ...said } : {}) }, at, proved);
-    // The task's builder disputing a finding (t521) wakes a session: one
-    // message, sent from here, the task staying blocked and nothing dispatched.
-    if (isDispute(text) && actor === item.owner && actor !== this.owner) this.notifyDispute(id, actor, text, origin, at);
-    return this.item(id);
-  }
-
-  private notifyDispute(id: string, actor: string, reason: string, origin: string | undefined, at: string): void {
-    const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-    let sent = false;
-    try {
-      if (topic && origin) { this.deliver(disputeRequest(topic, origin, this.project().name, id, this.item(id).title, reason)); sent = true; }
-    } catch {
-      console.error("Atelier dispute notification could not be scheduled");
+    // The task's builder disputing a finding (t521) wakes a session through
+    // one notice, the task staying blocked and nothing dispatched. The notice
+    // is keyed by the block's own event, so one dispute records one.
+    if (isDispute(text) && actor === item.owner && actor !== this.owner) {
+      const block = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'item.blocked'`, id).one().seq as number;
+      this.recordNotice(`dispute:${id}:${block}`, id, actor, "item.dispute_notice", { head: item.head, finding: disputedFinding(text), reason: text, block }, at);
     }
-    this.log(id, actor, "item.dispute_notified", { reason, sent }, at);
+    return this.item(id);
   }
 
   //
