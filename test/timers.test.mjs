@@ -117,7 +117,7 @@ const OWNER = "atl_00112233445566778899aabbccddeeff";
 const root = mkdtempSync(join(tmpdir(), "atelier-timers-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
-test("the server starts the stage tick, the stuck episodes and the model snapshots with itself and stops them when it closes; the tick records a stuck stage once the clock passes its limit", async () => {
+test("the server starts the stage tick, the stuck episodes and the model snapshots with itself and stops them when it closes; the tick writes no stuck stage when the clock passes its limit", async () => {
   const start = Date.now();
   const clock = fakeClock(start);
   const server = await startServer({ env: "test", dataDir: join(root, "data"), host: "127.0.0.1", vars: { ATELIER_TOKEN: OWNER }, timers: { clock } });
@@ -137,24 +137,21 @@ test("the server starts the stage tick, the stuck episodes and the model snapsho
     await L.claim(task.body.id, "claude-code/opus-5.5");
     await L.setWorkspace(task.body.id, "demo", "0".repeat(40), "claude-code/opus-5.5");
     await L.recordPush(task.body.id, "claude-code/opus-5.5", "a".repeat(40), "a".repeat(40));
-    const stuck = async () => (await L.events(task.body.id, 1000)).filter((e) => e.kind === "stage.stuck");
+    const stuck = async () => (await L.events(task.body.id, 1000)).filter((e) => e.kind === "stage.stuck" || e.kind === "stage.cleared");
 
     // Before its limit (20 minutes for held, built work) the tick records nothing.
     await clock.advance(19 * MIN, { settle });
     assert.deepEqual(await stuck(), []);
-    // Past it, the next tick records the stage as stuck, once, with its age.
+    // Past it the tick still records nothing (t518).
     await clock.advance(10 * MIN, { settle });
-    const found = await stuck();
-    assert.equal(found.length, 1);
-    assert.equal(found[0].data.stage, "built");
-    assert.ok(found[0].data.overMs > 0);
-    // Keep ticking through all three schedules and prove the alert is not repeated.
+    assert.deepEqual(await stuck(), []);
+    // Keep ticking through all three schedules and prove nothing is written.
     await clock.advance(25 * HOUR, { settle });
     const ticks = server.timers.state.find((j) => j.name === "stage tick").runs;
     assert.ok(ticks >= 25 * 12 - 1, `the stage tick ran every five minutes (${ticks} runs)`);
     assert.ok(server.timers.state.find((j) => j.name === "stuck episodes").runs >= 25 * 6 - 1);
     assert.ok(server.timers.state.find((j) => j.name === "model snapshots").runs >= 4);
-    assert.deepEqual(await stuck(), found);
+    assert.deepEqual(await stuck(), []);
     // The run is recorded on the index, which status reads.
     const ran = await server.namespace.get(server.namespace.idFromName("__index")).tickRan();
     assert.ok(ran && Date.parse(ran.at) > start + 20 * MIN, JSON.stringify(ran));
@@ -225,8 +222,8 @@ test("a backup taken while the timers tick restores whole: every database passes
     const settle2 = async () => { await new Promise((ok) => setImmediate(ok)); while (restored.timers.state.some((j) => j.busy)) await new Promise((ok) => setTimeout(ok, 5)); };
     await clock2.advance(10 * MIN, { settle: settle2 });
     assert.ok(restored.timers.state.find((j) => j.name === "stage tick").runs >= 1, "the restored server ticks");
-    const stuck = (await L.events(undefined, 1000)).filter((e) => e.kind === "stage.stuck");
-    assert.equal(stuck.length, 5, "each held, built task is recorded stuck once, whether its tick was in the snapshot or ran again");
+    const stuck = (await L.events(undefined, 1000)).filter((e) => e.kind === "stage.stuck" || e.kind === "stage.cleared");
+    assert.deepEqual(stuck, [], "no held, built task is recorded stuck, whether its tick was in the snapshot or ran again");
   } finally { await restored.close(); }
 });
 

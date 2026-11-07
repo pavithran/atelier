@@ -13,6 +13,7 @@ import { bookmarkKey, formatNew, newSince, parseSince, readBookmark, writeBookma
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
 import { deployGateLines, packageScripts } from "../deploy-gate.mjs";
+import { nowText } from "../../src/now.ts";
 
 // Usage warnings come first, as the token-expiry warnings do; a server that
 // cannot answer leaves the text as it was.
@@ -134,6 +135,10 @@ export default async function statusCommand() {
   const strays = formatStrays(localStrays());
   const branches = formatAllDeveloperBranches(views);
   const decisions = views.filter((v) => v.developerDecisions.length).map((v) => `${v.name}\n${v.developerDecisions.join("\n")}`).join("\n\n");
+  // The Now view's groups and rows (t525), the same the /now page draws, ahead
+  // of the per-project listing; a server without the route leaves it out.
+  const now = await request("GET", "/now", undefined, OWNER).catch(() => null);
+  if (Array.isArray(now?.groups)) console.log(`${nowText(now)}\n`);
   console.log(withOverdueTick(withUsage(tokenExpiryWarningsText(formatStatus(views, { queue, offers, allRunners: args["all-runners"], server: server(), overdueApart: true }) + (decisions ? "\n\n" + decisions : "") + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")), await usageWarnings(OWNER)), views.flatMap((v) => overdueTick(v.stuck))));
   console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));

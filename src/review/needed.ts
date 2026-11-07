@@ -28,7 +28,7 @@ export type ReviewRecord = Review & { seq?: number };   // seq: the review event
 
 // What the ledger knows of a review request for this item. Open and claimed
 // requests are live; answered and withdrawn ones are not. A tier request
-// (src/review/tier.ts) runs beside the gate's and never holds the gate's back.
+// (removed in t518) runs beside the gate's and never holds the gate's back.
 export interface ReviewRequestView {
   head: string;
   state: "open" | "claimed" | "answered" | "withdrawn" | "lapsed" | "released" | "no_verdict";
@@ -197,7 +197,7 @@ export interface NeedInput {
   // blocking finding the owner refuted no longer blocks another review at its
   // head (t240).
   verdicts?: readonly LedgerEvent[];
-  // The need of a tier review (src/review/tier.ts), which an approval the
+  // The need of a tier review (removed in t518), which an approval the
   // gate counts, or the owner's override, does not end: the tier reviews
   // beside the gate, so only what stops a review at all ends it.
   tier?: boolean;

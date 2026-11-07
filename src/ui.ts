@@ -2,6 +2,8 @@ import { taskPage } from "./task-page.ts";
 import { renderBoard } from "./board-html.ts";
 import type { BoardSnapshot, Stage } from "./board.ts";
 import { OWNER_CALL_LABEL, STAGE_LABEL, legacyFields, stageCounts, type Attention, type LegacyFields, type OwnerTask } from "./attention.ts";
+import { nowBody, type NowView } from "./now.ts";
+import nowCss from "./now.css";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
 // reads fully without script; the Studio refreshes itself with a meta
@@ -103,13 +105,14 @@ const icon = (name: string) =>
 // the owner's first question.
 const NAV: [label: string, url: string][] = [
   ["Decisions", "/decisions"],
+  ["Now", "/now"],
   ["Projects", "/home"],
   ["Activity", "/studio"],
 ];
 // Which row-1 item each page's `active` makes current: Home and every page in
 // a project's area are Projects; the Studio, Flow and History are Activity's
 // Now, Flow and Merges.
-const NAV_OF: Record<string, string> = { Decisions: "Decisions", Home: "Projects", Projects: "Projects", Studio: "Activity", Flow: "Activity", History: "Activity", Activity: "Activity" };
+const NAV_OF: Record<string, string> = { Decisions: "Decisions", Now: "Now", Home: "Projects", Projects: "Projects", Studio: "Activity", Flow: "Activity", History: "Activity", Activity: "Activity" };
 
 const ACCOUNT: [string, string][] = [
   ["Models", "/models"],
@@ -180,7 +183,7 @@ export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesq
 // widened on hover, says when this copy was drawn. On a phone the two menus
 // stack under the brand and the three destinations, and open in the page's
 // flow (layout.css), so nothing scrolls sideways.
-export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live): string {
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live, own: { css?: string; device?: boolean } = {}): string {
   const lifted = liftProjectRow(body);
   const current = NAV_OF[active] ?? "";
   const cur = (on: boolean) => (on ? ' aria-current="page"' : "");
@@ -193,12 +196,14 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
     ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live<span class="live-when"> · this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</span></p>`
     : "";
   const script = live ? `\n<script nonce="${e(live.nonce)}" src="/live.js" defer></script>` : "";
-  return `<!doctype html><html lang="en" data-theme="night" data-scheme="night"><head><meta charset="utf-8">
+  // The owner's pages stay in Night; one that sets `device` follows the
+  // device's scheme as the public pages do (no data-scheme pins it).
+  return `<!doctype html><html lang="en" data-theme="night"${own.device ? "" : ' data-scheme="night"'}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="${own.device ? "dark light" : "dark"}">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="${FONTS}">${refreshSeconds ? `\n<meta http-equiv="refresh" content="${refreshSeconds}">` : ""}
-<title>${e(title)} · Atelier</title><style>${theme}\n${layout}</style></head><body>
+<title>${e(title)} · Atelier</title><style>${theme}\n${layout}${own.css ? `\n${own.css}` : ""}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="owner-bar">
   <div class="bar-row">
@@ -1389,7 +1394,7 @@ export interface Standing {
   project: { name: string; title: string; repo: string };
   generatedAt: string;
   session?: SessionNote;
-  live: { id: string; title: string; state: string; owner: string | null; since: string | null }[];
+  live: { id: string; title: string; state: string; owner: string | null; head?: string | null; reviewAskedHead?: string | null; since: string | null }[];
   // What waits on the owner, one entry per task, as attentionFor places it
   // (src/attention.ts): the call, the sentence saying what to do and the link
   // to where it is done, with the brief's verdict after it; `kind`, `kinds`
@@ -1470,7 +1475,7 @@ export function buildStanding(
     // Since when someone holds a task: the claim or handoff that made them the holder.
     const made = own(i.id).find((ev) => ev.kind === "item.claimed" || (ev.kind === "item.handoff" && ev.data.to === i.owner));
     if (!made) partial.push(`${i.id}: when it was taken is not shown, because ${why(i.id)}.`);
-    return { id: i.id, title: i.title, state: i.state, owner: i.owner, since: made?.at ?? null };
+    return { id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, reviewAskedHead: i.reviewAskedHead, since: made?.at ?? null };
   });
 
   // One line per task waiting on the owner, in the rule's order, with the
@@ -2848,4 +2853,20 @@ function renderMergedChecks(merged: MergedCheckView | undefined, m: MainPreview,
     return `<li>${status}<code>${e(c.claim)}</code>${whereChip(c.where)}<span class="meta">with main at <code>${short(c.mainHead ?? null)}</code>${c.by ? ` · ${e(c.by)}` : ""}${c.at ? ` · ${when(c.at)}` : ""}</span>${stale}</li>`;
   }).join("");
   return `<div class="merge-checks"><p class="meta">Checks on the merge with main, at this revision:</p><ul class="merge-check-rows">${rows}</ul></div>`;
+}
+
+// The Now page (t525): every live task across projects, and what landed today.
+// It follows the device's colour scheme, and the live script refreshes it.
+export function renderNow(view: NowView, ownerName: string | null = null, live?: Live): string {
+  return page("Now", nowBody(view), "Now", ownerName, 0, true, live, { css: nowCss, device: true });
+}
+
+// The confirmation behind a Revert link: nothing is changed by opening it.
+export function renderRevert(project: ProjectRecord, item: Item, ownerName: string | null = null): string {
+  const name = titleOf(project);
+  const body = item.state === "merged"
+    ? `<p class="lead">This makes a new task, in ${e(name)}, that reverts the merge of <code>${e(item.id)}</code> by its recorded merge commit. It goes through the normal checks and independent review before it lands.</p>
+  <form method="post" action="${href("ui", project.name, item.id, "revert")}"><button type="submit">Create the revert task</button> <a class="button quiet" href="${href("p", project.name, item.id)}">Cancel</a></form>`
+    : `<p class="lead" role="alert">${e(item.id)} is ${e(item.state)}, not merged, so there is nothing to revert.</p><p><a class="button" href="${href("p", project.name, item.id)}">Go to ${e(item.id)}</a></p>`;
+  return page(`Revert ${item.id}`, `<section class="page-width"><h1>Revert ${e(item.id)}: ${e(item.title)}</h1>${body}</section>`, "Now", ownerName);
 }

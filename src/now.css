@@ -1,0 +1,48 @@
+/* The Now page (t525). Colours are the theme's tokens, so the page follows the
+   device's light or dark scheme as the public pages do; nothing here sets a
+   colour of its own and nothing is a gradient. */
+.now { max-width: 1200px; margin: 0 auto; }
+.now-head { display: flex; flex-wrap: wrap; align-items: end; gap: 16px 40px; margin-bottom: 8px; }
+.now-head h1 { margin: 0; }
+.now-figures { display: flex; flex-wrap: wrap; gap: 12px; margin: 0; padding: 0; }
+.now-figure { min-width: 150px; padding: 10px 16px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; }
+.now-figure dt { font-size: 12px; color: var(--text-muted); }
+.now-figure dd { margin: 2px 0 0; font: 600 26px/1.2 var(--font-mono); color: var(--text-bright); overflow-wrap: anywhere; }
+.now-figure .meta { margin: 0; }
+.now-figure.on-target { border-color: var(--observed-line); }
+.now-figure.on-target dd { color: var(--observed); }
+.now-figure.over-target { border-color: var(--caution-line); }
+.now-figure.over-target dd { color: var(--caution); }
+.now-zone { margin: 0 0 8px; }
+.now-group { margin-top: 28px; }
+.now-group h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font-size: 18px; }
+.now-group h2 .count { font: 500 12px/1.5 var(--font-mono); color: var(--text-muted); background: var(--inset); border-radius: var(--radius-pill); padding: 1px 9px; }
+.now-needs-you h2 .count { color: var(--on-accent); background: var(--signal); }
+.now-running h2 .count { color: var(--observed); }
+.now-waiting h2 .count { color: var(--caution); }
+.now-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.now-row { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(0, 3fr); gap: 10px 20px; align-items: start; padding: 12px 16px; background: var(--surface-raised); border: 1px solid var(--line); border-left: 4px solid var(--line-bright); border-radius: 8px; }
+.now-needs-you .now-row { border-left-color: var(--signal); }
+.now-running .now-row { border-left-color: var(--observed); }
+.now-waiting .now-row { border-left-color: var(--caution); }
+.now-task { display: grid; gap: 2px; min-width: 0; }
+.now-title { color: var(--text-bright); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+.now-title:hover, .now-title:focus-visible { text-decoration: underline; }
+.now-id { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.now-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 16px; margin: 0; min-width: 0; }
+.now-cell { min-width: 0; }
+.now-cell dt { font-size: 12px; color: var(--text-muted); }
+.now-cell dd { margin: 0; overflow-wrap: anywhere; }
+.now-cell .tag { margin-right: 6px; }
+.now-revert { font-weight: 600; }
+@media (max-width: 760px) {
+  .now-row { grid-template-columns: minmax(0, 1fr); }
+  .now-cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .now-figures { width: 100%; }
+  .now-figure { flex: 1 1 140px; min-width: 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .now-row { transition: border-color .15s ease; }
+}
+.now-unread { color: var(--caution); }
+.now-cell .now-stuck { display: block; width: fit-content; max-width: 100%; margin: 4px 0 0; white-space: normal; }

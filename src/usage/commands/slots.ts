@@ -13,10 +13,15 @@ const spec: CommandSpec = {
       form: "slots status [--json]",
       about: "Shows configured capacity, active usage, draining excess and waiting work. Runs locally without server credentials.",
     },
+    {
+      group: "Local", line: 2, slot: 30,
+      form: "slots trial FILE [--apply]",
+      about: "Reads the Studio timing trial from a JSON file ({\"alone\": three minutes, \"pairs\": three {a, b} minutes}), prints the decision, and with --apply sets capacity to two only if every concurrent time is under 1.3 times the alone median. Otherwise capacity is unchanged.",
+    },
   ],
-  flags: { json: true },
+  flags: { json: true, apply: true },
   help: {
-    flags: { "--json": "prints status as JSON" },
+    flags: { "--json": "prints status as JSON", "--apply": "sets the capacity the trial qualifies for" },
     example: "atelier slots set 3",
   },
 };

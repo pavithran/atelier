@@ -3,11 +3,10 @@ import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { scheduled } from "./workers-removed.ts";
 
-// t223 through the Worker and the Ledgers: the */5 tick records stage.stuck
-// once per task, stage and head, stage.cleared when the task leaves the stage,
-// and tick.ran on the index. A project that cannot be read records nothing.
-// No stage.told: the tick tells nobody (G6, 2.0 task 8); the record is the
-// fact and the model reads it.
+// t223 through the Worker and the Ledgers: the */5 tick records tick.ran on
+// the index. It writes no stage.stuck or stage.cleared (t518: the gate caught
+// nothing in Nov 1-6), however long a held task sits at its stage. A project
+// that cannot be read records nothing.
 
 const TOKEN = "stage-tick-test-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
@@ -41,21 +40,19 @@ it("an unheld filed task never alerts", async () => {
   expect(await stageEvents("st-a")).toEqual([]);
 });
 
-it("release clears a held task's stuck alert, and reclaim can open it again", async () => {
+it("a held task past its stage limit gets no stage.stuck or stage.cleared, through release and reclaim", async () => {
   await project("st-b");
   const id = await task("st-b", "Waiting");
   await L("st-b").claim(id, AGENT);
   await L("st-b").setWorkspace(id, "st-b", "0".repeat(40), AGENT);
   await L("st-b").recordPush(id, AGENT, "a".repeat(40), "a".repeat(40));
   await tick(1);
+  await tick(30);
   await L("st-b").release(id, AGENT, "stop");
-  await tick(2);
-  await tick(3);
+  await tick(31);
   await L("st-b").claim(id, AGENT);
-  await tick(4);
-  expect(await stageEvents("st-b")).toEqual([
-    [id, "stage.stuck", "built"], [id, "stage.cleared", "built"], [id, "stage.stuck", "built"],
-  ]);
+  await tick(60);
+  expect(await stageEvents("st-b")).toEqual([]);
 });
 
 it("a task being built has no limit, and tasks of other projects are kept apart", async () => {
@@ -106,7 +103,7 @@ it("a project that cannot be read records nothing, and the run is still recorded
   expect(await stageEvents("st-f")).toEqual([]);
   expect((await I().tickRan())!.unread).toBeGreaterThanOrEqual(1);
   await tick(200.1);
-  expect((await stageEvents("st-f")).map((e) => e[1])).toEqual(["stage.stuck"]);
+  expect(await stageEvents("st-f")).toEqual([]);
 });
 
 it("the stuck episodes of t196 keep working beside the stage tick", async () => {

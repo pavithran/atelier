@@ -16,9 +16,8 @@ The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify. Atelier records the need and candidates for a separate tier
-review; the developer or orchestrator must request it.
+criteria review, handoffs and conflict contributors. Only that company's models
+qualify.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
@@ -215,11 +214,6 @@ A task moves through five hands:
    tests is shown and never counted.
 4. **A reviewer from another model family** than everyone who worked on the
    task reads the diff and approves or rejects with findings.
-   A project with a review tier (`atelier init --review-tier H/M,H/M`)
-   records when a separate tier review is needed, with its candidates.
-   Ask it explicitly with `atelier review-request tN --reviewer H/M
-   --tier-review`. It is never requested automatically. Its approval does
-   not replace an independent gate approval.
 5. **The developer** runs `atelier land` to land the checked and approved
    revision in the registered checkout. A task marked `--next-gate developer`
    waits for `atelier accept` first. Ship remains the developer’s control.
@@ -478,11 +472,6 @@ has every step):
    landing stops before the lease with the task submitted, and you run the
    same command again once the review approves (`atelier wait ID --for
    reviewed`). An approval is bound to the revision it read.
-   Where the project has a tier, a gate review by a qualifying tier model
-   serves both. When a separate tier review is needed, the server records
-   the need and candidates. Ask it with `atelier review-request ID
-   --reviewer H/M --tier-review`; it is never requested automatically.
-   A tier rejection blocks, and acceptance withdraws a tier request still open.
 2. **Under the project's landing lease and the registered checkout's lease**:
    accept, then `atelier merge ID --landing` in the registered checkout. It
    merges the accepted head onto main as it stands, folds the project's
@@ -593,9 +582,9 @@ A request for an admitted reviewer is refused `no_runner` while no live runner o
 
 A runner is offered the oldest review request it can serve, whatever older ones it cannot; a request whose reviewer no live runner offers for 15 minutes shows in `atelier stuck` as `review-unoffered`: reroute it with `atelier review-request ID --reviewer H/M` to a reviewer a live runner offers, or withdraw it with `atelier review-withdraw ID --reason TEXT` (t220).
 
-The stage tick records facts and acts on no judgment of its own (Atelier 2.0, G6). A queued dispatch no live runner offers is `stage.stuck` at once with the note "no live runner offers H/M", and keeps its model; one left unclaimed past 10 minutes is `stage.stuck` too. Nothing reroutes it: dispatch it again with the model you choose. The limits are named in `src/limits.ts`.
+The stage tick records facts, and acts in one case besides the developer's standing instructions: it queues the landing of a task whose checks passed and whose current head a reviewer of another company approved (t520, PAVI, 2026-11-06). A runner that lists the land job and holds the registered checkout then lands it with no session; see `docs/landing.md`, "Landing by itself". A queued dispatch no live runner offers keeps its model, and the tick writes no event for it (the tick writes no `stage.stuck` or `stage.cleared` since t518; older ledgers still hold them). Nothing reroutes it: dispatch it again with the model you choose. The limits are named in `src/limits.ts`.
 
-A review claim unanswered for 2 hours (`reviewAnswerHours`) shows in `atelier stuck`; the tick releases nothing. A checked task whose review request stays unclaimed 10 minutes is `stage.stuck` with the request, its reviewer and the time it was asked, and `atelier show ID` prints its age; withdraw it with `atelier review-withdraw` and ask another reviewer with `atelier review-request ID --reviewer H/M`.
+A review claim unanswered for 2 hours (`reviewAnswerHours`) shows in `atelier stuck`; the tick releases nothing. A checked task whose review request stays unclaimed 10 minutes is not recorded by the tick; `atelier show ID` prints the request, its reviewer and its age; withdraw it with `atelier review-withdraw` and ask another reviewer with `atelier review-request ID --reviewer H/M`.
 
 To serve a review by hand, claim it as the reviewer with `atelier
 review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
@@ -845,17 +834,9 @@ starts several of them at once and keeps the order.
   or a change of criteria, starts the count again, except where an
   approval is retained (next).
 - **Filling the reviews of a core change.** When the project's
-  `riskReviews` ask two or more independent reviews for a change, the gate
-  asks no separate tier review: two approvals from different families, none
-  a contributor's, clear it, and a tier model's approval counts as
-  independent when its family is not a contributor's. Name two reviewers of
-  different families on one `atelier review-request`; a tier model may be one
-  of them.
-  A change that needs none or one independent review keeps the tier as
-  before: a separate tier review's approval is never the independent one.
-  Finding, on 2026-10-25: t265 sat an hour with approvals from astra and
-  argon counted as one independent, because astra's approval filled the tier
-  slot. PAVI decided that two independent families suffice.
+  `riskReviews` ask two or more independent reviews for a change, two
+  approvals from different families, none a contributor's, clear it. Name two
+  reviewers of different families on one `atelier review-request`.
 - **Retained approvals.** An approval may stand across a merge of main, and
   the server alone decides, when the push arrives (the review-retention
   rule, t56; [Landing](landing.md) has the conditions): the merge must be
@@ -1351,7 +1332,7 @@ developer it read as a defect. The other half were real, and some were serious.
   not list can still be a defect the change introduces, and a finding in a
   file it did list can still be outside the bar. A follow-up does not clear
   any approval: every review the change needs for its risk (a protected path,
-  a coordinated change, a tier review) still has to approve the revision.
+  a coordinated change) still has to approve the revision.
 - When one reviewer rejects the same task round after round on narrower and
   narrower points, do not make another small change to meet each one. Stop
   and decide against the bar, as the developer's decision. Read the newest

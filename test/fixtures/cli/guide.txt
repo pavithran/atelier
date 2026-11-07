@@ -30,8 +30,7 @@ task with exactly one holder. Never edit the project checkout directly.
    of the selected company from every contributor counts; a contributor
    never reviews its own work.
 8. `atelier update` rebases your workspace onto whatever has merged since.
-9. Every 5 minutes the server records a task stuck at a stage past its limit.
-   It records the fact and acts on nothing: a stalled review, an unclaimed
+9. A stalled task is not recorded as an event and nothing acts on it: a stalled review, an unclaimed
    request or a lapsed claim waits for a command (`atelier review-request`,
    `atelier handoff`, `atelier release`). Every refusal ends with a
    `next:` line naming the command that resolves it.
@@ -99,8 +98,8 @@ after approval and passing checks, the developer runs `atelier accept ID --as H/
 then `atelier merge ID --as H/M`. An accepted task can use either merge or land.
 Builders and reviewers do not accept or merge their own work.
 `atelier land ID --queue` queues the landing for a runner that lists the land job and holds the registered checkout.
-`atelier land ID` no longer waits for a review: it asks for one, records the land request (`--quote TEXT` names who asked), and stops; run it again once the review approves (a land job runs it by itself only under the standing queue-landable instruction); `--no-wait` records the request and returns.
-In fast mode, the developer's standing instruction `atelier decide --standing queue-landable on` lets the stage tick queue a land job for a task that stays landable 5 minutes; without it the tick records the fact and queues nothing.
+`atelier land ID` no longer waits for a review: it asks for one, records the land request (`--quote TEXT` names who asked), and stops; run it again once the review approves (the lander runs it by itself once a reviewer of another company approves the head); `--no-wait` records the request and returns.
+The lander lands a task with no session: when its required checks passed and a reviewer of another company approved its current head, the stage tick queues a land job, and a runner that lists the land job and holds the registered checkout runs `atelier land ID` there. One landing runs at a time per project, under the landing lease, and each is made and checked on the tree main will become. The builder's passing checks at the same head are reused when main has moved no path the task touches since they ran, and the landing records that it reused them (`land.checks` with `reused`); otherwise the required checks run on the merged tree, and a failure merges nothing. If main moves before the push, the push is refused and the merge is made and checked again on the new main under the same rule. An approval for an older head, or one from a reviewer of the builder's own company, lands nothing. A landing that stops on a conflict sends the task back to its builder with the files (`atelier dispatch ID --job merge-main`) and is not tried again at that head. A task marked for the developer (`--next-gate developer`) waits for `atelier accept`. `atelier decide --standing queue-landable off` stops the queueing in fast mode.
 A claim makes the task's branch, `t/N`, in the project's repository on the Atelier server at once; a pre-receive hook there lets the task's credential write that branch alone.
 A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in `atelier stuck`, to ask again with `atelier review-request ID --reviewer H/M` or withdraw with `atelier review-withdraw ID --reason TEXT`. When a runner that offers the request's reviewer remembers a stop for the task, `atelier show ID` names it with `atelier forget-skip ID` to clear it; asking again clears every runner's stop.
 

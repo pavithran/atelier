@@ -16,8 +16,8 @@ The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
+criteria review, handoffs and conflict contributors. Only that company's models
+qualify.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
@@ -232,6 +232,44 @@ and the runner passes the job by while it is the one that failed; the
 lander's log has one line per attempt, naming the failing step, the attempt
 and the tail. `atelier land t9 --queue` queues it again (the record notes
 `requeued`), and a new head lets it run.
+
+## Landing by itself
+
+A task lands with no session once its required checks passed at its head and a
+reviewer of another company approved that head (t520). The stage tick queues
+the land job at once: no `atelier accept`, no fast mode, no standing
+instruction and no wait past a stage limit are needed. A runner that lists the
+land job and holds the registered checkout runs `atelier land` in it, one
+landing at a time per project under the landing lease, and the second of two
+approved tasks is merged and tested on a main that holds the first.
+
+The tick queues nothing when:
+
+- the approval is for an older head than the task's current one, or is from a
+  reviewer of the builder's own company, even in a single-family project where
+  the gate admits it (`crossCompanyApproval`, `src/rules.ts`);
+- the task is marked `--next-gate developer` and not accepted at its head;
+- a landing failed at this head and the developer has not queued it again, so a
+  conflict or a failed check is not retried in a loop;
+- the developer recorded `atelier decide --standing queue-landable off` (fast
+  mode), or no live runner offers the job.
+
+The landing tests the tree main will become. The builder's passing checks at
+the same head are reused instead of run again when every required check has a
+complete receipt for an ordinary run, and main has moved no path the task
+touches between the receipt's base and the main the merge was made on
+(`reusableChecks` and `reuseVerdict`, `src/landing-verdict.ts`;
+`reuseDecision`, `cli/landing.mjs`). The `land.checks` event then carries
+`reused: true`, the base and main it was read against, and one `reused: CHECK`
+line per check; otherwise the checks run on the merged tree, and a failure
+pushes nothing. A regeneration that changes the tree, or a receipt that cannot
+be read, reuses nothing. If main moves between the check and the push, the push
+is refused and the merge is made again on the new main, and checked under the
+same rule, twice at most.
+
+A landing that stops on a conflict is sent back to the task's builder by the
+runner (`atelier dispatch ID --job merge-main`, with the files in the note) and
+is not run again at that head.
 
 `atelier land t9 --queue --cancel` removes a queued landing. Run when nothing
 is queued, it says so, exits 0 and changes nothing. A landing of the task
@@ -489,3 +527,32 @@ To require a developer decision for a task, set
 `atelier edit ID --next-gate developer`. A landing refuses that task until the
 developer runs `atelier accept ID`. Other next-gate text remains descriptive.
 Plans still use their integration and acceptance workflow.
+
+A developer can record review and landing intent with the build dispatch:
+`atelier dispatch ID --agent H --model M --reviewer H/M --land`.
+The dispatch keeps the named reviewer. With `--land` and no `--reviewer`, it
+uses the project's `review-on-checked` mapping for the named builder's company;
+without a matching mapping it refuses. Submit asks the review under the current
+gate, reviewer admission and independence rules, then queues the ordinary land
+job. The lander needs a registered checkout and a runner offering `land`.
+A refusal leaves the task submitted and records `submission.review_wait`;
+resubmitting the same head retries, and the checked-stage tick retries too.
+
+`atelier status` and `status --brief` list a submitted task with no gate review
+at its current head under "Waiting on the orchestrator", with
+`atelier land ID --reviewer H/M --project NAME`. Status JSON includes the same
+command in `orchestratorWaits`; item snapshots carry `reviewAskedHead` (null
+when none). This field comes from the ledger's current gate review requests,
+including answered requests, excluding withdrawn, released and tier requests.
+An omitted field means an older server did not supply this information.
+
+`atelier-pulse` in ai-projects-ops (`bin/atelier-pulse`) implements the wake
+itself. It reads `item.submitted` and `review.requested` from `atelier events`,
+waking for a submitted head with no review asked and staying quiet when a
+review is asked for that head. This repository provides the dispatch-time
+review request and the status wait. The walters-coach regression test here
+covers the status half; pulse coverage belongs to ai-projects-ops.
+Before and after deployment, smoke-check a dispatch with `--reviewer --land`
+through submit, review approval and merge on a registered checkout. Also check
+that the installed pulse wakes once for an unasked head and stays quiet for an
+asked head. Local tests do not exercise the external pulse or a live runner.

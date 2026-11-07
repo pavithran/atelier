@@ -50,8 +50,7 @@
 // they are eligibility, set with atelier models set --roles. Assignment roles
 // say who the developer judges best at a job, and order. Pool `tier`
 // (frontier, execution, budget) is informational and read by no selector,
-// this one included. A project's reviewTier (atelier init --review-tier) is
-// project policy that does change selection. From strongest to weakest:
+// this one included. From strongest to weakest:
 //
 // 1. The rules. Every selector filters first: the developer's standing
 //    (paused, reserved, without the pool role), a refused or unavailable
@@ -63,16 +62,13 @@
 // 2. An explicit choice for this one job: a dispatch naming --model or --to,
 //    a reviewer the developer named, a plan part's prefer, the previous
 //    round's reviewer on a re-review.
-// 3. The project's reviewTier: for a protected change its models are asked
-//    before the rest of the pool. An assignment orders the tier's own
-//    models among themselves and never adds a model to the tier.
-// 4. Assignments: the most specific first. A role's own assignment before
+// 3. Assignments: the most specific first. A role's own assignment before
 //    the general review one it falls back to (security-review, then
 //    review), and within a role this project's before every project's. The
 //    first whose choices include an eligible candidate is applied; its
 //    eligible choices come first, in its order. One with no eligible choice
 //    is skipped, and the next is tried.
-// 5. The reader's own order (FALLBACK): measured outcomes, review precision,
+// 4. The reader's own order (FALLBACK): measured outcomes, review precision,
 //    reliability, speed, spread and model id, as before.
 //
 // Plans: a plan's routing is fixed at its approval. A plan approved before
@@ -103,7 +99,7 @@ export const POOL_ROLE: Record<AssignmentRole, ModelRole> = {
 // withdrawal restores.
 export const FALLBACK: Record<AssignmentRole, string> = {
   build: "dispatch suggestions rank eligible builders by recorded outcomes; plan routing ranks them by evidence, the project's record and reliability, spreading tied models across the plan's parts",
-  review: "the reviewer selector asks the previous round's reviewer, the project's review tier for a protected change, the plan's routing, then the pool by review precision, outcome record and model id",
+  review: "the reviewer selector asks the previous round's reviewer, the plan's routing, then the pool by review precision, outcome record and model id",
   "security-review": "the review assignment applies, and without one the review fallback",
   "claims-review": "the review assignment applies, and without one the review fallback",
   plan: "the planner is the first eligible pool model in routing order for research work",
