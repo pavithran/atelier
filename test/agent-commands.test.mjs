@@ -283,7 +283,7 @@ test("show prints the owner brief and preserves JSON output", async (t) => {
   assert.equal(shown.head, f.head);
   assert.deepEqual([shown.holds, shown.lastFailure], [[], null]);
   const rest = Object.fromEntries(Object.entries(shown).filter(([k]) => !TASK_KEYS.includes(k) || k in brief));
-  assert.deepEqual(rest, { ...brief, stage: { stage: "built", detail: { head: f.head, source: "push" } }, checkLimit: { ...checkLimits(null), checkSilence: [] }, reviews: [], unparsable: [], failedChecks: [] });
+  assert.deepEqual(rest, { ...brief, stage: { stage: "built", detail: { head: f.head, source: "push" } }, reviewState: { state: "none", head: f.head, blocking: [] }, checkLimit: { ...checkLimits(null), checkSilence: [] }, reviews: [], unparsable: [], failedChecks: [] });
 });
 
 
