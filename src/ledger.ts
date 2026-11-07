@@ -5922,13 +5922,26 @@ export class Ledger extends DurableObject<Env> {
   // failed: the head, who and the result, as a project event (ship.recorded)
   // that the events read and the newest of which show prints. The same run
   // recorded again (a retried request) is recorded once.
+  // A final failure (deploy on landing failed twice) also records one
+  // notice, deploy.failed_notice, in the same transaction as its ship
+  // record: the task merged at that head when there is one, the ship id,
+  // head, step and reason. atelier-pulse wakes the session from it; device
+  // delivery is a separate task (PAVI, 2026-11-07: "drop ntfy"). The
+  // deploy_notices table's primary key on the ship id is what keeps one ship
+  // to one notice, so a repeated or concurrent record adds none.
   recordDeploy(actor: string, body: Record<string, unknown>): DeployRecord {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ships", 403, "only the developer can: atelier ship");
     const record = deployInput(body, actor, new Date().toISOString());
-    const had = this.deploys(50).find((d) => d.ship === record.ship);
-    if (had) return had;
-    this.log(null, actor, "ship.recorded", { ...record }, record.at);
-    return record;
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS deploy_notices (ship TEXT PRIMARY KEY, at TEXT NOT NULL)`);
+    return this.ctx.storage.transactionSync(() => {
+      const had = this.deploys(50).find((d) => d.ship === record.ship);
+      if (!had) this.log(null, actor, "ship.recorded", { ...record }, record.at);
+      if (record.result === "failed" && record.final && this.sql.exec(`INSERT OR IGNORE INTO deploy_notices (ship, at) VALUES (?, ?)`, record.ship, record.at).rowsWritten > 0) {
+        const task = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.merged' AND item_id IS NOT NULL AND json_extract(data, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`, record.head).toArray()[0]?.item_id as string | undefined;
+        this.log(task ?? null, "atelier", "deploy.failed_notice", { task: task ?? null, ship: record.ship, head: record.head, step: record.step ?? null, reason: record.note ?? "the deploy failed twice" }, record.at);
+      }
+      return had ?? record;
+    });
   }
 
   lastDeploy(): DeployRecord | null {
