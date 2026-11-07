@@ -205,6 +205,10 @@ export const BARS_WINDOW_DAYS = 7;
 const DAY_MS = 86_400_000;
 export const TOKEN_BAR = 700_000, DEPLOY_MEDIAN_BAR = 60, DEPLOY_P90_BAR = 180, ESCAPE_BAR = 0.1, SESSION_RECORD_BAR = 3;
 
+// How the filed-to-deployed bars find a deploy; the report prints it in text
+// and JSON, and docs/flow.md says the same.
+export const DEPLOY_SOURCE = "item.created to the last deploy-step action.ran of a ship at or after item.merged, when that record passed and the ship got past deploy (a later step's action.ran, or ship.recorded shipped or failed at a later step)";
+
 export interface BarEvent { seq: number; at: string; itemId?: string | null; kind: string; data?: Record<string, unknown> | null }
 export type BarStatus = "pass" | "fail" | "unmeasured" | "no merges";
 export interface Bar {
@@ -235,14 +239,24 @@ function measure(name: string, input: readonly BarEvent[], now: number, tokens: 
   for (const e of events) if (e.itemId) (byItem.get(e.itemId) ?? byItem.set(e.itemId, []).get(e.itemId)!).push(e);
   const linked = new Set<string>();
   for (const e of events) if (e.kind === "item.fix_of" && typeof e.data?.itemId === "string") linked.add(e.data.itemId);
-  // A deploy is a ship whose deploy step passed. Its time is the first
-  // deploy-step action.ran carrying its id with passed true, whatever attempts
-  // failed before it and whatever later ship work (wrap) did.
-  const passedAt = new Map<string, number>();
+  // A deploy is a ship whose deploy step passed and that got past it. Ship
+  // runs a step's commands in turn, retrying each, stops at the first whose
+  // last attempt fails, and records every result in order once the step ends
+  // (cli/ship.mjs). So the step passed when its last deploy-step action.ran
+  // passed, and it ended when a later step of the same ship recorded an
+  // action.ran, or the ship was recorded shipped or failed at a later step;
+  // a ship that stopped part-way through recording its deploy results shows
+  // neither and is not counted. Its time is that last deploy record.
+  const lastDeploy = new Map<string, { seq: number; at: number; passed: boolean }>();
+  const pastAt = new Map<string, number>();
   for (const e of events) {
-    if (e.kind !== "action.ran" || e.data?.step !== "deploy" || e.data.passed !== true || typeof e.data.ship !== "string") continue;
-    if (!passedAt.has(e.data.ship)) passedAt.set(e.data.ship, Date.parse(e.at));
+    const ship = e.data?.ship;
+    if (typeof ship !== "string") continue;
+    if (e.kind === "action.ran" && e.data!.step === "deploy") lastDeploy.set(ship, { seq: e.seq, at: Date.parse(e.at), passed: e.data!.passed === true });
+    else if ((e.kind === "action.ran" && typeof e.data!.step === "string") || (e.kind === "ship.recorded" && (e.data!.result === "shipped" || (e.data!.result === "failed" && typeof e.data!.step === "string" && e.data!.step !== "deploy")))) pastAt.set(ship, e.seq);
   }
+  const passedAt = new Map<string, number>();
+  for (const [ship, d] of lastDeploy) if (d.passed && (pastAt.get(ship) ?? -Infinity) > d.seq) passedAt.set(ship, d.at);
   const deploys = [...passedAt.values()].sort((a, b) => a - b);
 
   const merges: Merge[] = [];
@@ -313,7 +327,7 @@ function barsOf(scope: string, m: Measures, haveTokens: boolean): BarScope {
     }
   }
 
-  const dSrc = "item.created to the first ship.recorded shipped, whose deploy-step action.ran events all passed, at or after item.merged";
+  const dSrc = DEPLOY_SOURCE;
   const times = m.merges.flatMap((x) => x.filedToDeployed === null ? [] : [x.filedToDeployed]);
   const waiting = m.merges.filter((x) => !x.deployed).length, uncut = m.merges.filter((x) => !x.timed).length;
   const dDetail = `${times.length} of ${n} merged task(s) timed; ${waiting} merged task(s) not deployed; ${uncut} without a filing record`;

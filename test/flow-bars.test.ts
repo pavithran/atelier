@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeBars, formatBars, type BarEvent } from "../src/flow.ts";
+import { computeBars, formatBars, DEPLOY_SOURCE, type BarEvent } from "../src/flow.ts";
 
 // The redesign's bars (t527, src/flow.ts): one report over the last 7 days,
 // per project and overall, each number naming its source.
@@ -58,16 +58,27 @@ test("a deploy counts only from a passed deploy step, not any action.ran (criter
   assert.equal(bar(after, "demo", "deployMedian").value, 95);
 });
 
-test("a ship's deploy time is its first passed deploy action (round 4)", () => {
+test("a ship deploys when its last deploy record passed and it got past deploy (rounds 4 and 5)", () => {
   const median = (events: BarEvent[]) => bar(computeBars([{ name: "demo", events: [...clean("t1"), ...events] }], NOW), "demo", "deployMedian").value;
-  assert.equal(median([ran(20, "deploy", false, "s1"), ran(15, "deploy", true, "s1"), shipped(14, "s1")]), 85, "false then true counts at the true attempt");
-  assert.equal(median([ran(20, "deploy", true, "s1"), shipped(14, "s1", "failed")]), 80, "passed deploy then failed wrap still counts");
-  assert.equal(median([ran(20, "deploy", true, "s1")]), 80, "no shipped record needed");
-  assert.equal(median([ran(20, "deploy", true, "s1"), ran(10, "deploy", true, "s1")]), 80, "the first passed attempt is the time");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(19, "deploy", false, "s1"), ev(14, null, "ship.recorded", { ship: "s1", result: "failed", step: "deploy" })]), null, "two commands, the first passed and the second failed");
+  assert.equal(median([ran(20, "deploy", false, "s1"), ran(15, "deploy", true, "s1"), ran(14, "verify-delivery", true, "s1")]), 85, "a failed attempt then a passed retry, then verify-delivery, counts at the retry");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(18, "wrap", false, "s1"), ev(17, null, "ship.recorded", { ship: "s1", result: "failed", step: "wrap" })]), 80, "deploy passed and wrap failed counts");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ev(17, null, "ship.recorded", { ship: "s1", result: "failed", step: "wrap" })]), 80, "a failure named at a later step shows the ship got past deploy");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(19, "deploy", true, "s1")]), null, "deploy records end on a pass and nothing after: recording may have stopped");
+  assert.equal(median([ran(30, "verify-delivery", true, "s1"), ran(20, "deploy", true, "s1")]), null, "a step before deploy does not show the ship got past it");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(10, "deploy", true, "s1"), shipped(9, "s1")]), 90, "the time is the last deploy record");
   assert.equal(median([ran(20, "deploy", false, "s1"), ran(15, "deploy", false, "s1"), shipped(14, "s1", "failed")]), null, "only failed attempts do not count");
-  assert.equal(median([shipped(14, "s1")]), null, "a shipped record without a passed deploy step does not count");
+  assert.equal(median([shipped(14, "s1")]), null, "a shipped record without a deploy record does not count");
   assert.equal(median([ran(20, "deploy", true), shipped(14, "s1")]), null, "a record with no ship id belongs to no ship");
   assert.equal(median([ran(20, "deploy", false, "s1"), ...deploy(5, "s3")]), 95, "a later passed deploy counts");
+});
+
+test("both output formats print the deploy rule (round 5)", () => {
+  const r = computeBars([{ name: "demo", events: [...clean("t1"), ...deploy(10, "s1")] }], NOW);
+  assert.equal(bar(r, "demo", "deployMedian").source, DEPLOY_SOURCE);
+  assert.ok(formatBars(r).some((l) => /deployed, median/.test(l) && l.includes(`[source: ${DEPLOY_SOURCE}]`)));
+  const json = JSON.parse(JSON.stringify(r)) as typeof r;
+  assert.equal(json.scopes[0].bars.find((b) => b.id === "deployP90")!.source, DEPLOY_SOURCE);
 });
 
 test("a deploy before the merge does not deploy it", () => {
