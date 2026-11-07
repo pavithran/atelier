@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { currentStep, failureKey, hash, redactedOutput } from "../src/post-merge.ts";
+import { currentStep, failureKey, hash, newRevertState, redactedOutput } from "../src/post-merge.ts";
 import { revertNotificationRequest } from "../src/notify.ts";
 import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
+import { pushMergeToProjectBranch } from "./landing.mjs";
 import { guardedPush } from "./private-guard.mjs";
 import { readGrant } from "./read-grant.mjs";
 
@@ -68,7 +69,52 @@ export async function publishPinned({ git, run, step, cwd, project }) {
   throw new Error("publication destination kept moving; retry to rescan");
 }
 
-export async function executePostMerge({ request, name, id, env = process.env, print = console.log, group = runGroup }) {
+// One run of a step in a fresh clone of a pinned commit, under the step's
+// deadline. `source` names another remote to clone from (the checkout holding a
+// revert that is not pushed yet); the default is the project's own, by grant.
+export async function runStep({ request, name, run, step, env, print, group, source, commit = run.after }) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-post-merge-"));
+  let passed = false, output = "", commandOutcome = "failed", publication;
+  const deadline = Date.now() + step.timeoutMs;
+  // The same process-group deadline covers clone, setup, scans and push.
+  // Git does not load system/global configuration, filters or hooks. Owner
+  // publication credentials may come from GIT_ASKPASS and its environment.
+  const git = async (argv, opts = {}) => {
+    const gitEnvironment = { ...env };
+    for (const key of Object.keys(gitEnvironment)) if (key.startsWith("GIT_") && key !== "GIT_ASKPASS") delete gitEnvironment[key];
+    Object.assign(gitEnvironment, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1" });
+    if (opts.token) Object.assign(gitEnvironment, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${opts.token}` });
+    const result = await group(["git", "-c", "core.hooksPath=/dev/null", ...argv], { cwd: opts.cwd, env: gitEnvironment, timeoutMs: Math.max(1, deadline - Date.now()), maxBytes: 16 * 1024 * 1024 });
+    if (result.status !== 0 || result.error) throw new Error("post-merge Git operation failed, timed out or exceeded its scan limit");
+    return result.stdout;
+  };
+  try {
+    const base = source ?? await readGrant(request, name);
+    await git(["-c", "core.hooksPath=/dev/null", "clone", "--no-checkout", "--no-local", base.remote, dir], { token: base.token });
+    await git(["-c", "core.hooksPath=/dev/null", "checkout", "--detach", commit], { cwd: dir });
+    if ((await git(["rev-parse", "HEAD"], { cwd: dir })).trim() !== commit) throw new Error("clone does not hold the pinned merge");
+    const command = async argv => {
+      const result = await group(argv, { cwd: dir, env: step.class === "check" ? checkEnv(env) : env, timeoutMs: Math.max(1, deadline - Date.now()), maxBytes: step.class === "check" ? undefined : 1024 * 1024 });
+      output += result.stdout + result.stderr;
+      if (result.status !== 0 || result.error) throw new Error("post-merge command failed or timed out");
+    };
+    if (step.class === "publish") publication = await publishPinned({ git, run, step, cwd: dir, project: name });
+    else {
+      // Lockfile installation is deterministic; lifecycle scripts are part
+      // of the owner's approved protected source. No install on the host.
+      if (existsSync(join(dir, "package.json"))) {
+        if (!existsSync(join(dir, "package-lock.json"))) throw new Error("post-merge npm setup requires package-lock.json");
+        await command(["npm", "ci", "--no-audit", "--no-fund"]);
+      }
+      await command(step.class === "deploy" ? ["npm", "run", "deploy"] : ["/bin/sh", "-c", step.command]);
+    }
+    passed = true; commandOutcome = "passed";
+  } catch (error) { output += error.message; if (error.privacy) print(error.message); }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+  return { passed, output, publication, commandOutcome };
+}
+
+export async function executePostMerge({ request, name, id, env = process.env, print = console.log, group = runGroup, recover = recoverFailedLanding }) {
   const path = `/projects/${encodeURIComponent(name)}/post-merge/${encodeURIComponent(id)}`;
   let { run } = await request("GET", path);
   if (!run || run.state === "complete") return run;
@@ -78,47 +124,11 @@ export async function executePostMerge({ request, name, id, env = process.env, p
     ({ run } = await request("POST", path, { run: run.id, action: "start" }));
     const state = currentStep(run), step = run.policy.steps.find(s => s.name === state.name), attempt = state.attempts.at(-1);
     print(`Post-merge ${run.id} @ ${run.after}: ${step.name}, attempt ${attempt.number}`);
-    const dir = mkdtempSync(join(tmpdir(), "atelier-post-merge-"));
-    let passed = false, output = "", commandOutcome = "failed", publication;
-    const deadline = Date.now() + step.timeoutMs;
-    // The same process-group deadline covers clone, setup, scans and push.
-    // Git does not load system/global configuration, filters or hooks. Owner
-    // publication credentials may come from GIT_ASKPASS and its environment.
-    const git = async (argv, opts = {}) => {
-      const gitEnvironment = { ...env };
-      for (const key of Object.keys(gitEnvironment)) if (key.startsWith("GIT_") && key !== "GIT_ASKPASS") delete gitEnvironment[key];
-      Object.assign(gitEnvironment, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1" });
-      if (opts.token) Object.assign(gitEnvironment, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${opts.token}` });
-      const result = await group(["git", "-c", "core.hooksPath=/dev/null", ...argv], { cwd: opts.cwd, env: gitEnvironment, timeoutMs: Math.max(1, deadline - Date.now()), maxBytes: 16 * 1024 * 1024 });
-      if (result.status !== 0 || result.error) throw new Error("post-merge Git operation failed, timed out or exceeded its scan limit");
-      return result.stdout;
-    };
-    try {
-      const base = await readGrant(request, name);
-      await git(["-c", "core.hooksPath=/dev/null", "clone", "--no-checkout", "--no-local", base.remote, dir], { token: base.token });
-      await git(["-c", "core.hooksPath=/dev/null", "checkout", "--detach", run.after], { cwd: dir });
-      if ((await git(["rev-parse", "HEAD"], { cwd: dir })).trim() !== run.after) throw new Error("clone does not hold the pinned merge");
-      const command = async argv => {
-        const result = await group(argv, { cwd: dir, env: step.class === "check" ? checkEnv(env) : env, timeoutMs: Math.max(1, deadline - Date.now()), maxBytes: step.class === "check" ? undefined : 1024 * 1024 });
-        output += result.stdout + result.stderr;
-        if (result.status !== 0 || result.error) throw new Error("post-merge command failed or timed out");
-      };
-      if (step.class === "publish") publication = await publishPinned({ git, run, step, cwd: dir, project: name });
-      else {
-        // Lockfile installation is deterministic; lifecycle scripts are part
-        // of the owner's approved protected source. No install on the host.
-        if (existsSync(join(dir, "package.json"))) {
-          if (!existsSync(join(dir, "package-lock.json"))) throw new Error("post-merge npm setup requires package-lock.json");
-          await command(["npm", "ci", "--no-audit", "--no-fund"]);
-        }
-        await command(step.class === "deploy" ? ["npm", "run", "deploy"] : ["/bin/sh", "-c", step.command]);
-      }
-      passed = true; commandOutcome = "passed";
-    } catch (error) { output += error.message; if (error.privacy) print(error.message); }
-    finally { rmSync(dir, { recursive: true, force: true }); }
+    const { passed, output, publication, commandOutcome } = await runStep({ request, name, run, step, env, print, group });
     // Keep the command outcome even if deployment observation or its response
     // is lost. A command report never resolves the reservation on its own.
     await request("POST", path, { run: run.id, action: "command", attempt: attempt.id, passed, publication });
+    let failedOutput = output;
     try {
       ({ run } = await request("POST", path, { run: run.id, action: "finish", attempt: attempt.id, passed, commandOutcome, output: redactedOutput(output, [...Object.values(env).filter(value => typeof value === "string" && value.length >= 8), ...(step.privacy?.patterns ?? [])]) }));
     } catch (error) {
@@ -126,10 +136,18 @@ export async function executePostMerge({ request, name, id, env = process.env, p
       // Re-submit failure only for a definite verification refusal; a lost
       // response is uncertain, never permission to replay an external effect.
       if (passed && step.class === "deploy" && error.message.includes("deployment_unverified")) {
-        ({ run } = await request("POST", path, { run: run.id, action: "finish", attempt: attempt.id, passed: false, commandOutcome, output: "deployment verification failed" }));
+        failedOutput = "deployment verification failed";
+        ({ run } = await request("POST", path, { run: run.id, action: "finish", attempt: attempt.id, passed: false, commandOutcome, output: failedOutput }));
       } else throw error;
     }
-    if (run.state === "failed") throw new Error(`post-merge ${step.name} failed; ${id} remains merged; later merges are blocked`);
+    if (run.state === "failed") {
+      // A failed check on the landed merge is put right here, with no session.
+      let outcome = null;
+      try { outcome = await recover?.({ request, name, id, env, print, group, run, step, output: redactedOutput(failedOutput, Object.values(env).filter(value => typeof value === "string" && value.length >= 8)) }); }
+      catch (error) { print(`automatic revert of ${id} stopped: ${error.message}`); }
+      if (outcome?.action === "reverted") throw new Error(`post-merge ${step.name} failed; ${id} was reverted (${outcome.revert}) and reopened`);
+      throw new Error(`post-merge ${step.name} failed; ${id} remains merged; later merges are blocked`);
+    }
   }
   print(`Post-merge run ${run.id} complete at ${run.after}.`);
   return run;
@@ -137,15 +155,19 @@ export async function executePostMerge({ request, name, id, env = process.env, p
 
 // The first-parent inverse of a landed merge, committed on the checked-out
 // default branch without a task workspace or a session. A conflict aborts the
-// revert and throws, leaving the tree clean.
+// revert and throws, leaving the tree clean. A revert already committed for
+// this merge is returned as it is, so a retry after a crash adds no second one.
 export function revertOnMain({ git, merge, ids, actor }) {
   if (!hash(merge)) throw new Error("revert needs the recorded merge commit");
+  const note = `This reverts merge commit ${merge}, relative to its first parent`;
+  const made = git(["log", "--format=%H", "-n", "1", "--fixed-strings", `--grep=${note}`, `${merge}..HEAD`]).trim();
+  if (made) return made;
   const result = git(["revert", "--no-commit", "-m", "1", merge], { allowFail: true });
   if (result.status !== 0) {
     git(["revert", "--abort"], { allowFail: true });
     throw new Error(`git revert of ${merge} stopped: ${result.stderr || result.stdout}`);
   }
-  git(["commit", "-m", `Revert ${ids.join(", ")}\n\nThis reverts merge commit ${merge}, relative to its first parent, because main or the release gate went red after it landed.\n\nAgent: ${actor}`]);
+  git(["commit", "-m", `Revert ${ids.join(", ")}\n\n${note}, because main or the release gate went red after it landed.\n\nAgent: ${actor}`]);
   return git(["rev-parse", "HEAD"]).trim();
 }
 
@@ -155,41 +177,120 @@ export function revertOnMain({ git, merge, ids, actor }) {
 // session: the revert is checked before it lands, the task reopens with the
 // failure and the owner is told once. A revert that fails its checks halts
 // all reverting and wakes a session (io.wake). A repeat of a failure already
-// handled does nothing. io.state records each stage after it is done
-// (src/post-merge.ts), so a crash leaves later stages unset and a retry
-// resumes without reverting twice.
+// handled, the same failure after the same merge, does nothing; the same
+// failure after another merge is handled again. io.state records each stage
+// after it is done (src/post-merge.ts) and io.save persists it, so a crash
+// leaves later stages unset and a retry resumes without reverting twice. A
+// stage that unfinished work remains in is resumed before anything is run,
+// green or red. The revert is looked up before it is made (revertOnMain) and
+// pushing a commit already pushed does nothing, so a crash between landing and
+// its marker repeats nothing. The notification is the one stage that cannot be
+// looked up: its marker is written before it is sent, so it is sent at most once.
 export async function guardLanding({ project, members, head, io }) {
+  const state = io.state, save = async () => { await io.save?.(state); };
+  const finish = async entry => {
+    if (!entry.reopened) {
+      for (const id of entry.members) await io.reopen(id, entry.output);
+      entry.reopened = true; await save();
+    }
+    if (!entry.notified) {
+      if (!entry.notifying) {
+        entry.notifying = true; await save();
+        await io.notify(revertNotificationRequest(io.topic, io.origin, project, { itemId: entry.members[0], kind: entry.kind, mergeCommit: entry.merge, revertCommit: entry.landed }));
+      }
+      entry.notified = true; await save();
+    }
+  };
+  for (const entry of Object.values(state.failures)) if (entry.landed && !entry.notified) await finish(entry);
   let kind = "suite", red = await io.suite();
   if (red.passed) { kind = "gate"; red = await io.gate(); }
   if (red.passed) return { action: "green" };
   if ((await (kind === "suite" ? io.suite() : io.gate())).passed) return { action: "flaky", kind };
-  const state = io.state, save = async () => { await io.save?.(state); };
   if (state.halted) {
     await io.wake(`automatic reverting is halted (${state.halted.reason}); ${members.join(", ")} turned ${kind === "gate" ? "the release gate" : "main"} red at ${head}`);
     return { action: "halted", kind };
   }
-  const key = failureKey(kind, red.output);
-  if (state.failures[key]?.notified) return { action: "repeat", kind };
-  const entry = state.failures[key] ??= { kind, members: [...members], merge: head };
+  const key = failureKey(kind, red.output, head);
+  // Main standing on a revert this made is not a landing to revert again.
+  if (state.failures[key]?.notified || Object.values(state.failures).some(e => e.landed === head)) return { action: "repeat", kind };
+  const entry = state.failures[key] ??= { kind, members: [...members], merge: head, output: redactedOutput(red.output) };
+  await save();
   if (!entry.landed) {
-    const sha = await io.revert(members, head);
+    const halt = async (reason, detail) => {
+      state.halted = { reason, at: new Date().toISOString() };
+      await save();
+      await io.wake(`the revert of ${members.join(", ")} (${head}) ${detail}; no more will be reverted`);
+      return { action: "halted", kind };
+    };
+    let sha;
+    try { sha = await io.revert(members, head); }
+    catch (error) { return halt("the revert could not be made", `could not be made: ${error.message}`); }
     const checked = await io.check(sha);
     if (!checked.passed) {
-      state.halted = { reason: `the revert ${sha} failed its checks`, at: new Date().toISOString() };
-      await save();
-      await io.wake(`the revert of ${members.join(", ")} (${head}) failed its checks and was not landed; no more will be reverted: ${checked.output}`);
-      return { action: "halted", kind };
+      await io.discard?.(sha);
+      return halt(`the revert ${sha} failed its checks`, `failed its checks and was not landed: ${checked.output}`);
     }
     await io.land(sha);
     entry.landed = sha; await save();
   }
-  if (!entry.reopened) {
-    for (const id of members) await io.reopen(id, red.output);
-    entry.reopened = true; await save();
-  }
-  if (!entry.notified) {
-    await io.notify(revertNotificationRequest(io.topic, io.origin, project, { itemId: members[0], kind, mergeCommit: head, revertCommit: entry.landed }));
-    entry.notified = true; await save();
-  }
+  await finish(entry);
   return { action: "reverted", kind, revert: entry.landed };
 }
+
+// The production effects of guardLanding for a check step that failed on the
+// landed merge. A project with no checkout on this Mac is left to the person:
+// nothing is reverted. Only check steps revert; a failed deploy or publication
+// has effects a revert does not undo. The server has no way to reopen a merged
+// task, so the task reopens as a fix of it (fixOf) whose brief carries the
+// failing output, and a halted revert wakes a session the same way, as a task.
+export async function recoverFailedLanding({ request, name, id, env, print, group, run, step, output }) {
+  if (step.class !== "check") return null;
+  const { cfg, landingGit, entryPath, server } = await import("./atelier.mjs");
+  const entry = cfg.projects?.[name], cwd = entryPath(entry);
+  if (!cwd) { print(`${name} has no checkout on this Mac; ${id} is not reverted automatically`); return null; }
+  const git = (args, opts = {}) => landingGit(args, { cwd, ...opts });
+  const stateFile = join(git(["rev-parse", "--absolute-git-dir"]), "atelier-auto-revert.json");
+  let state;
+  try { state = JSON.parse(readFileSync(stateFile, "utf8")); } catch { state = newRevertState(); }
+  const kind = step.gate ? "gate" : "suite";
+  let first = true;
+  const again = async () => {
+    if (first) { first = false; return { passed: false, output }; }
+    const result = await runStep({ request, name, run, step, env, print, group });
+    return { passed: result.passed, output: redactedOutput(result.output) };
+  };
+  const itemsPath = `/projects/${encodeURIComponent(name)}/items`;
+  const topic = env.ATELIER_NTFY_TOPIC ?? env.NTFY_TOPIC;
+  const wake = async reason => {
+    print(reason);
+    await request("POST", itemsPath, { title: "Automatic revert needs a session", brief: reason });
+  };
+  const io = {
+    state, topic, origin: (() => { try { return server(); } catch { return "https://atelier.invalid"; } })(),
+    suite: kind === "suite" ? again : async () => ({ passed: true, output: "" }),
+    gate: kind === "gate" ? again : async () => ({ passed: true, output: "" }),
+    save: async s => { writeFileSync(`${stateFile}.tmp`, JSON.stringify(s)); renameSync(`${stateFile}.tmp`, stateFile); },
+    revert: (ids, merge) => revertOnMain({ git, merge, ids, actor: "atelier/auto-revert" }),
+    check: async sha => {
+      const result = await runStep({ request, name, run, step, env, print, group, source: { remote: cwd }, commit: sha });
+      return { passed: result.passed, output: redactedOutput(result.output) };
+    },
+    discard: sha => { if (git(["rev-parse", "HEAD"]) === sha) git(["reset", "--hard", `${sha}^`]); },
+    land: async sha => {
+      const base = await readGrant(request, name);
+      const pushed = guardedPush({ project: name, cwd, tip: sha, base: [run.after], what: "The automatic revert" },
+        s => pushMergeToProjectBranch({ git: landingGit, cwd, remote: base.remote, token: base.token, commit: s, branch: entry.branch }));
+      if (pushed.status !== 0) throw new Error(`the revert ${sha} was not pushed: ${pushed.stderr || pushed.stdout}`);
+    },
+    reopen: (member, text) => request("POST", itemsPath, { title: `Fix ${member}: its landing turned ${kind === "gate" ? "the release gate" : "main"} red`, brief: `${member} landed as ${run.after} and was reverted automatically because it turned ${kind === "gate" ? "the release gate" : "main"} red. The failing output:\n\n${text}`, fixOf: member }),
+    notify: async request => {
+      if (!topic) { await wake(`${members(run)} was reverted but no ntfy topic is set (ATELIER_NTFY_TOPIC), so the owner was not notified`); return; }
+      const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+      await response.body?.cancel();
+      if (!response.ok) throw new Error(`the revert notification was refused: ${response.status}`);
+    },
+    wake,
+  };
+  return guardLanding({ project: name, members: run.members, head: run.after, io });
+}
+const members = run => run.members.join(", ");

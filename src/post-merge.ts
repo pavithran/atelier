@@ -13,6 +13,8 @@ export interface PrivacyPolicy {
 export interface PostMergeStep {
   name: string;
   command: string;
+  // A check step that is the project's release gate; its failure reverts as the suite's does.
+  gate?: boolean;
   class: "check" | "deploy" | "publish";
   when: "always" | { paths: string[] };
   protect: string[];
@@ -53,6 +55,7 @@ export function parsePostMerge(value: unknown, actor: string, at: string): PostM
     if (!s || !/^[a-zA-Z][\w-]{0,63}$/.test(s.name) || names.has(s.name)) bad("step names must be unique identifiers");
     names.add(s.name);
     if (typeof s.command !== "string" || !s.command.trim() || s.command.length > 4000 || s.command.includes("\0")) bad("each step needs a command");
+    if (s.gate !== undefined && (typeof s.gate !== "boolean" || s.class !== "check")) bad("gate is true only on a check step");
     if (!["check", "deploy", "publish"].includes(s.class)) bad("each step needs an explicit check, deploy or publish class");
     if (s.when !== "always" && (!s.when || !strings(s.when.paths) || !s.when.paths.length)) bad("each step needs always or nonempty paths");
     if (!strings(s.protect) || !s.protect.length) bad("each step must declare the scripts and configuration it trusts in protect");
@@ -177,15 +180,19 @@ export function recoverPostMerge(run: PostMergeRun, action: string, reason: unkn
 // state below is the only memory of what was done: each marker is written
 // after the work it marks, so a crash leaves it unset and a retry resumes.
 export type RedKind = "suite" | "gate";
-export interface RevertEntry { kind: RedKind; members: string[]; merge: string; landed?: string; reopened?: true; notified?: true }
+// `notifying` is written before the one notification is sent and `notified`
+// after: a crash between the two is read as sent, so it is never sent twice.
+export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; reopened?: true; notifying?: true; notified?: true }
 export interface RevertState { halted: { reason: string; at: string } | null; failures: Record<string, RevertEntry> }
 export const newRevertState = (): RevertState => ({ halted: null, failures: {} });
 
 // The same failure reads the same across runs: colour, timings and counters
 // vary, the failing test lines do not. Falls back to the head of the output.
-export function failureKey(kind: RedKind, output: unknown): string {
+// The landed merge is part of the key: the same test failing after a different
+// merge is a new failure.
+export function failureKey(kind: RedKind, output: unknown, merge = ""): string {
   const text = redactedText(output).replace(/\b\d+(?:\.\d+)?\s*(?:ms|s)\b/g, "#").replace(/\b(duration_ms|time|elapsed)\b[:=]?\s*[\d.]+/gi, "");
   const lines = text.split("\n").map(l => l.replace(/\d+(?:\.\d+)?/g, "#").trim()).filter(Boolean);
   const failing = lines.filter(l => /^(not ok|fail|✗|✖|error|assertionerror)/i.test(l));
-  return `${kind}:${(failing.length ? failing : lines.slice(0, 3)).join("|").slice(0, 400)}`;
+  return `${kind}@${merge}:${(failing.length ? failing : lines.slice(0, 3)).join("|").slice(0, 400)}`;
 }
