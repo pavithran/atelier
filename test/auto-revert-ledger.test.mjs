@@ -173,10 +173,10 @@ test("sendNoticeOnce: sending is saved before the request; a throw or a refusal 
   const marks = {};
   const save = async () => { saved.push(structuredClone(marks)); };
   const request = new Request("https://ntfy.sh/x", { method: "POST" });
-  await assert.rejects(sendNoticeOnce(marks, { request, save, unknown: async () => {}, send: async () => { assert.equal(marks.notice, "sending"); assert.equal(saved.at(-1).notice, "sending"); throw new Error("refused"); } }), /refused/);
+  await assert.rejects(sendNoticeOnce(marks, { request, save, unknown: async () => {}, deliver: async () => { assert.equal(marks.notice, "sending"); assert.equal(saved.at(-1).notice, "sending"); throw new Error("refused"); } }), /refused/);
   assert.deepEqual(marks, {});
-  assert.equal(await sendNoticeOnce(marks, { request, save, unknown: async () => {}, send: async () => {} }), "sent");
+  assert.equal(await sendNoticeOnce(marks, { request, save, unknown: async () => {}, deliver: async () => {} }), "sent");
   assert.deepEqual(marks, { notified: true });
-  assert.equal(await sendNoticeOnce(marks, { request, save, unknown: async () => {}, send: async () => assert.fail("sent twice") }), "done");
+  assert.equal(await sendNoticeOnce(marks, { request, save, unknown: async () => {}, deliver: async () => assert.fail("sent twice") }), "done");
   assert.equal(await sendNoticeOnce({}, { request: null, save, unknown: async () => {} }), "pending");
 });

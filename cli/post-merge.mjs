@@ -227,7 +227,7 @@ export async function guardLanding({ project, members, head, io }) {
     const first = entry.fixes?.[entry.members[0]]?.task;
     const request = io.topic ? revertNotificationRequest(io.topic, io.origin, project, { itemId: entry.members[0], kind: entry.kind, mergeCommit: entry.merge, revertCommit: entry.landed }) : null;
     let sent;
-    try { sent = await sendNoticeOnce(entry, { request, save: () => save(), send: io.notify, unknown: async () => { await io.unknown?.(entry, first); } }); }
+    try { sent = await sendNoticeOnce(entry, { request, save: () => save(), deliver: io.notify, unknown: async () => { await io.unknown?.(entry, first); } }); }
     catch (error) { failure ??= error; }
     if (sent === "pending") io.pending?.(entry);
     if (failure) throw failure;

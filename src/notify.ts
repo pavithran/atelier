@@ -92,7 +92,7 @@ export async function sendNotification(request: Request): Promise<void> {
 // request (no topic configured) nothing is sent and nothing is marked: the
 // notice stays pending and goes out once a topic exists.
 export interface NoticeMarks { notice?: "sending" | "unknown"; notified?: true }
-export async function sendNoticeOnce(marks: NoticeMarks, io: { request: Request | null; save: () => Promise<void>; unknown: () => Promise<void>; send?: (request: Request) => Promise<void> }): Promise<"sent" | "done" | "pending" | "unknown"> {
+export async function sendNoticeOnce(marks: NoticeMarks, io: { request: Request | null; save: () => Promise<void>; unknown: () => Promise<void>; deliver?: (request: Request) => Promise<void> }): Promise<"sent" | "done" | "pending" | "unknown"> {
   if (marks.notified) return "done";
   if (marks.notice === "unknown") return "unknown";
   if (marks.notice === "sending") {
@@ -104,7 +104,7 @@ export async function sendNoticeOnce(marks: NoticeMarks, io: { request: Request 
   if (!io.request) return "pending";
   marks.notice = "sending";
   await io.save();
-  try { await (io.send ?? sendNotification)(io.request); }
+  try { await (io.deliver ?? sendNotification)(io.request); }
   catch (error) { delete marks.notice; await io.save(); throw error; }
   delete marks.notice;
   marks.notified = true;
