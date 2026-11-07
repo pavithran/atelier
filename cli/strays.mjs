@@ -86,6 +86,11 @@ export function findStrays(cache, { run = (cmd, args) => spawnSync(cmd, args, { 
   if (ps.status !== 0 || !ps.stdout) return [];
   const candidates = parsePs(ps.stdout).filter((p) => p.elapsed >= minAge && TEST_COMMAND.test(p.command) && p.pid !== process.pid);
   if (!candidates.length) return [];
-  const lsof = run("lsof", ["-a", "-d", "cwd", "-Fn", "-p", candidates.map((p) => p.pid).join(",")]);
+  const lsofArgs = ["-a", "-d", "cwd", "-Fn", "-p", candidates.map((p) => p.pid).join(",")];
+  let lsof = run("lsof", lsofArgs);
+  // A PATH can omit /usr/sbin, where macOS installs lsof: LaunchDaemons run
+  // with one, and so did the clean-clone checks, where no stray was ever named
+  // until this retry. liveHere (cli/atelier.mjs) falls back the same way.
+  if (lsof.error?.code === "ENOENT") lsof = run("/usr/sbin/lsof", lsofArgs);
   return strayTests(candidates, parseLsofCwd(lsof.stdout ?? ""), cache, minAge);
 }

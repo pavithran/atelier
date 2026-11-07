@@ -4,6 +4,7 @@
   "description": "A Git platform for coding agents, run as one Node server with SQLite ledgers and plain Git repositories: one holder per task, observed evidence, a human inbox.",
   "scripts": {
     "test": "node test/run.mjs",
+    "test:static": "node test/static.mjs",
     "typecheck": "tsc -p . && tsc -p test",
     "design:capture": "node scripts/design/capture.ts"
   },

@@ -465,6 +465,16 @@ wrangler and no miniflare, and `test/no-cloudflare-imports.test.mjs` fails on
 an import of one. `npm run typecheck` runs `tsc -p . && tsc -p test`. The
 README's Quickstart gives how long the suite took on recent landings, on 1.x.
 
+`npm run test:static` runs, in seconds, the tests that scan this repository's
+own source and its checked-in fixtures: the lock table, refusal next, the help
+and usage fixtures, the merge-manifest declarations and the like, none of
+which starts a server, a Durable Object or a network call. `test/static.txt`
+lists each with the reason it belongs, `test/static.mjs` checks the list and
+runs it through `test/run.mjs`, and `test/static-suite.test.mjs` holds the
+list to its rules. It is a convenience for a builder between pushes, not a
+required check: the full suite stays the required one until the orchestrator
+measures whether the static list can replace it.
+
 ## Local visual review
 
 Run `node test/preview.mjs` for a local, read-only preview with illustrative
