@@ -99,10 +99,46 @@ test("Landed today holds the merges of the Eastern day, with deployed time, revi
     waitingOn: "nobody: it is deployed", since: "2026-11-07T06:30:00.000Z", sinceText: "2026-11-07 01:30 EST",
     next: "nothing: it is done", tokens: 400_000, tokensText: "400k", stuck: null, href: "/p/atelier/t11",
     deployedAt: "2026-11-07T07:10:00.000Z", deployedText: "2026-11-07 02:10 EST", reviewer: "codex/gpt-6-astra", findingsFixed: 2,
-    revertHref: "/p/atelier/t11/revert", reverted: false,
+    revertHref: "/p/atelier/t11/revert", reverted: false, revertTask: null,
   });
-  // Merged after the one deploy, and a revert already asked for: no deploy time, no link, and it says so.
-  assert.deepEqual([row("t12").deployedAt, row("t12").deployedText, row("t12").waitingOn, row("t12").reverted, row("t12").revertHref], [null, "not deployed yet", "the next ship", true, null]);
+  // Merged after the one deploy, and a revert asked for but not merged: no deploy time, no link, not reverted.
+  assert.deepEqual([row("t12").deployedAt, row("t12").deployedText, row("t12").waitingOn, row("t12").reverted, row("t12").revertHref], [null, "not deployed yet", "the next ship", false, null]);
+  assert.equal(row("t12").revertTask, "t99");
+});
+
+test("findings fixed counts the findings the ledger records as fixed, not refuted, confirmed or follow-up ones", () => {
+  assert.equal(row("t11").findingsFixed, 2);
+  const p = project();
+  p.events = p.events.filter((e) => e.kind !== "review.finding");
+  assert.equal(buildNow([p], NOW).groups[3].rows.find((r) => r.id === "t11")!.findingsFixed, 0);
+});
+
+test("a revert counts only once the revert task has merged; a request alone marks nothing", () => {
+  const p = project();
+  assert.equal(row("t12").reverted, false);
+  assert.equal(buildNow([p], NOW).header.soundMergesToday, 2);
+  p.events.push({ kind: "item.merged", itemId: "t99", at: min(10), actor: "owner", data: {} } as never);
+  const v = buildNow([p], NOW);
+  assert.equal(v.groups[3].rows.find((r) => r.id === "t12")!.reverted, true);
+  assert.equal(v.header.soundMergesToday, 1);
+  assert.ok(nowBody(v).includes("Reverted"));
+  assert.ok(!nowBody(buildNow([project()], NOW)).includes("Reverted"));
+});
+
+test("every landed row shows waiting on and next in the page and in the text", () => {
+  const v = view(), html = nowBody(v), text = nowText(v);
+  for (const r of v.groups[3].rows) {
+    assert.ok(html.includes(`<dt>Waiting on</dt><dd>${r.waitingOn}</dd>`) && html.includes(`<dt>Next by itself</dt><dd>${r.next}</dd>`), r.id);
+    assert.ok(text.includes(`waiting on ${r.waitingOn}`) && text.includes(`next: ${r.next}`), r.id);
+  }
+});
+
+test("every field of every row is in the page and the text", () => {
+  const v = view(), html = nowBody(v), text = nowText(v);
+  for (const r of v.groups.flatMap((g) => g.rows)) {
+    for (const s of [r.title, r.projectTitle, r.id, r.stage, r.waitingOn, r.sinceText, r.next, r.tokensText]) assert.ok(html.includes(s), `${r.id} page ${s}`);
+    for (const s of [r.title, r.project, r.id, r.stage, r.waitingOn, r.sinceText, r.next, r.tokensText]) assert.ok(text.includes(s), `${r.id} text ${s}`);
+  }
 });
 
 test("the Revert link is open for 24 hours from the merge and not a moment longer", () => {
@@ -122,15 +158,14 @@ test("a merge before today's Eastern day, or after now, is not listed as landed 
 
 test("the header: tokens per sound merge today, the 0.7M target, merges today and the live count, from the ledger", () => {
   const v = view();
-  // t11 and t12 merged today (t13 merged at 23:30 EST yesterday); t12 has a revert asked for, so one merge is sound.
-  assert.deepEqual(v.header, {
-    mergesToday: 2, soundMergesToday: 1, liveCount: 10,
-    tokensPerSoundMerge: 1_300_000, tokensPerSoundMergeText: "1.3M", target: 700_000, targetText: "0.7M", onTarget: false,
-  });
+  // t11 and t12 merged today (t13 merged at 23:30 EST yesterday); t12's revert task is not merged, so both are sound.
+  assert.deepEqual(v.header, { mergesToday: 2, soundMergesToday: 2, liveCount: 10, tokensPerSoundMerge: 650_000, tokensPerSoundMergeText: "0.65M", target: 700_000, targetText: "0.7M", onTarget: true });
+  // A merged revert task makes t12 unsound: the two merges' tokens fall on one sound merge.
+  const q = project();
+  q.events.push({ kind: "item.merged", itemId: "t99", at: min(10), actor: "owner", data: {} } as never);
+  assert.deepEqual([buildNow([q], NOW).header.soundMergesToday, buildNow([q], NOW).header.tokensPerSoundMerge], [1, 1_300_000]);
   assert.equal(TARGET_TOKENS_PER_MERGE, 700_000);
   const p = project();
-  p.events = p.events.filter((e) => e.kind !== "item.revert_requested");
-  assert.deepEqual(buildNow([p], NOW).header, { mergesToday: 2, soundMergesToday: 2, liveCount: 10, tokensPerSoundMerge: 650_000, tokensPerSoundMergeText: "0.65M", target: 700_000, targetText: "0.7M", onTarget: true });
   // No merge yet today: no figure, never a zero that reads as a win.
   p.events = [];
   const none = buildNow([p], NOW).header;
@@ -147,13 +182,13 @@ test("rows from several projects share the groups", () => {
 test("atelier status text prints the same groups and rows", () => {
   const text = nowText(view());
   const lines = text.split("\n");
-  assert.equal(lines[0], "Now: 10 live · 2 merges today · 1.3M tokens per sound merge (target 0.7M)");
+  assert.equal(lines[0], "Now: 10 live · 2 merges today · 0.65M tokens per sound merge (target 0.7M)");
   const at = (label: string) => lines.findIndex((l) => l.startsWith(label));
   assert.ok(at("Needs you (2)") < at("Running (2)") && at("Running (2)") < at("Stuck or waiting on a session (6)") && at("Stuck or waiting on a session (6)") < at("Landed today (2)"));
   assert.ok(text.includes("t8  Title of t8  [atelier]  landable"));
   assert.ok(text.includes("    waiting on you: Land · since 2026-11-07 09:45 EST · next: nothing: it waits for you to land it · tokens: none reported"));
   assert.ok(text.includes("    waiting on claude-code/sonnet-5.5, building · since 2026-11-07 07:00 EST · next: checks run when it submits · tokens: 200k"));
-  assert.ok(text.includes("    landed 2026-11-07 01:30 EST · deployed 2026-11-07 02:10 EST · reviewer codex/gpt-6-astra · 2 findings fixed · tokens: 400k · revert: /p/atelier/t11/revert"));
+  assert.ok(text.includes("    waiting on nobody: it is deployed · next: nothing: it is done · landed 2026-11-07 01:30 EST · deployed 2026-11-07 02:10 EST · reviewer codex/gpt-6-astra · 2 findings fixed · tokens: 400k · revert: /p/atelier/t11/revert"));
   // Every row of the view is a row of the text, once.
   for (const g of view().groups) for (const r of g.rows) assert.equal(lines.filter((l) => l.startsWith(`  ${r.id}  `)).length, 1, r.id);
   // An empty group says so.

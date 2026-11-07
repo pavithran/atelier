@@ -55,7 +55,11 @@ export const project = (): NowProject => ({
     { kind: "item.merged", itemId: "t12", at: "2026-11-07T14:00:00.000Z", actor: "owner", data: { mergeCommit: "2".repeat(40) } },
     // 04:30 UTC is 23:30 EST on the 6th: before today's Eastern day, though the 7th in UTC.
     { kind: "item.merged", itemId: "t13", at: "2026-11-07T04:30:00.000Z", actor: "owner", data: { mergeCommit: "3".repeat(40) } },
-    { kind: "review.rejected", itemId: "t11", at: h(12), actor: "codex/gpt-6-astra", data: { findings: [{ file: "a", line: 1, severity: "blocking", text: "x" }, { file: "b", line: 2, severity: "blocking", text: "y" }] } },
+    { kind: "review.rejected", itemId: "t11", at: h(12), actor: "codex/gpt-6-astra", data: { findings: [{ file: "a", line: 1, severity: "blocking", text: "x" }, { file: "b", line: 2, severity: "blocking", text: "y" }, { file: "c", line: 3, severity: "blocking", text: "z" }, { file: "d", line: 4, severity: "follow-up", text: "w" }] } },
+    { kind: "review.finding", itemId: "t11", at: h(11), actor: "owner", data: { index: 1, verdict: "fixed", review: 5 } },
+    { kind: "review.finding", itemId: "t11", at: h(11), actor: "owner", data: { index: 2, verdict: "fixed", review: 5 } },
+    { kind: "review.finding", itemId: "t11", at: h(11), actor: "owner", data: { index: 3, verdict: "refuted", review: 5 } },
+    { kind: "review.finding", itemId: "t11", at: h(11), actor: "owner", data: { index: 4, verdict: "confirmed", review: 5 } },
     { kind: "review.approved", itemId: "t11", at: h(10), actor: "codex/gpt-6-astra", data: {} },
     { kind: "review.approved", itemId: "t12", at: h(10), actor: "claude-code/opus-5.5", data: {} },
     { kind: "item.revert_requested", itemId: "t12", at: min(30), actor: "owner", data: { itemId: "t99" } },

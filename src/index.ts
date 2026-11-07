@@ -4473,10 +4473,20 @@ async function nowViewOf(env: Env, now: Date) {
     const L = ledgerOf(env, project);
     try {
       const { items, inbox } = await L.ownerRead(now.toISOString(), pool);
-      const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+      // Every event of the last 48 hours, page by page, so no merge of today falls outside a window.
       const since = now.getTime() - 48 * 3_600_000;
-      const recent = events.filter((e) => e.kind === "item.merged" && e.itemId && Date.parse(e.at) >= since).map((e) => e.itemId!);
-      const facts = await L.situationFacts([...new Set(recent)]);
+      const events: LedgerEvent[] = [];
+      for (let before: number | undefined; ;) {
+        const page = (await L.events(undefined, EVENTS_PAGE, before)) as unknown as LedgerEvent[];
+        events.push(...page);
+        if (page.length < EVENTS_PAGE || Date.parse(page[page.length - 1].at) < since) break;
+        before = page[page.length - 1].seq;
+      }
+      const recent = [...new Set(events.filter((e) => e.kind === "item.merged" && e.itemId && Date.parse(e.at) >= since).map((e) => e.itemId!))];
+      // The reviewer and the findings of a merged task may be older than the window: read its own record.
+      const seen = new Set(events.map((e) => e.seq));
+      for (const id of recent) for (const e of (await L.events(id, 2000)) as unknown as LedgerEvent[]) if (!seen.has(e.seq)) { seen.add(e.seq); events.push(e); }
+      const facts = await L.situationFacts(recent);
       return {
         name: project.name, title: titleOf(project), items: facts.items, stages: facts.stages,
         owner: attentionFor(project.name, items, inbox, offers, now).owner, reviewRequests: facts.reviewRequests,

@@ -70,6 +70,8 @@ export interface NowRow {
   findingsFixed?: number;
   revertHref?: string | null;
   reverted?: boolean;
+  // The revert task filed for it, merged or not.
+  revertTask?: string | null;
 }
 
 export interface NowHeader {
@@ -200,9 +202,12 @@ function liveRow(p: NowProject, item: Item, now: Date): NowRow {
 function landedRow(p: NowProject, item: Item, merged: string, now: Date): NowRow {
   const deploy = p.deploys.filter((d) => d.result === "shipped" && d.at >= merged).map((d) => d.at).sort()[0] ?? null;
   const reviews = p.events.filter((e) => e.itemId === item.id && e.kind === "review.approved" && !e.data.postMerge).sort((a, b) => a.at.localeCompare(b.at));
-  const findings = p.events.filter((e) => e.itemId === item.id && e.kind === "review.rejected" && !e.data.postMerge)
-    .reduce((n, e) => n + (Array.isArray(e.data.findings) ? e.data.findings.length : 0), 0);
-  const reverted = p.events.some((e) => e.itemId === item.id && e.kind === "item.revert_requested");
+  // Only findings the developer recorded as fixed (ledger addFinding), each review's finding once.
+  const findings = new Set(p.events.filter((e) => e.itemId === item.id && e.kind === "review.finding" && e.data.verdict === "fixed").map((e) => `${e.data.review}:${e.data.index}`)).size;
+  // A revert request only files a task; the merge is reverted once that task has merged.
+  const asked = p.events.filter((e) => e.itemId === item.id && e.kind === "item.revert_requested");
+  const revertTask = (asked.at(-1)?.data.itemId as string | undefined) ?? null;
+  const reverted = asked.some((e) => typeof e.data.itemId === "string" && mergedAt(p.events, e.data.itemId) !== null);
   const total = spent(p.progress[item.id]);
   const page = `/p/${encodeURIComponent(p.name)}/${encodeURIComponent(item.id)}`;
   return {
@@ -210,7 +215,7 @@ function landedRow(p: NowProject, item: Item, merged: string, now: Date): NowRow
     waitingOn: deploy ? "nobody: it is deployed" : "the next ship", since: merged, sinceText: easternStamp(merged),
     next: deploy ? "nothing: it is done" : "deploys with the next ship", tokens: total, tokensText: total === null ? "none reported" : tokens(total), stuck: null, href: page,
     deployedAt: deploy, deployedText: deploy ? easternStamp(deploy) : "not deployed yet", reviewer: reviews.at(-1)?.actor ?? null, findingsFixed: findings,
-    revertHref: !reverted && revertOpen(merged, now) ? `${page}/revert` : null, reverted,
+    revertHref: !reverted && !asked.length && revertOpen(merged, now) ? `${page}/revert` : null, reverted, revertTask,
   };
 }
 
@@ -261,7 +266,7 @@ export function nowText(view: NowView): string {
     for (const r of g.rows) {
       lines.push(`  ${r.id}  ${r.title}  [${r.project}]  ${r.stage}`);
       lines.push(r.group === "landed"
-        ? `    landed ${r.sinceText} · deployed ${r.deployedText} · reviewer ${r.reviewer ?? "none recorded"} · ${plural(r.findingsFixed ?? 0, "finding")} fixed · tokens: ${r.tokensText} · ${r.reverted ? "reverted" : r.revertHref ? `revert: ${r.revertHref}` : "revert window closed"}`
+        ? `    waiting on ${r.waitingOn} · next: ${r.next} · landed ${r.sinceText} · deployed ${r.deployedText} · reviewer ${r.reviewer ?? "none recorded"} · ${plural(r.findingsFixed ?? 0, "finding")} fixed · tokens: ${r.tokensText} · ${r.reverted ? "reverted" : r.revertTask ? `revert asked for in ${r.revertTask}` : r.revertHref ? `revert: ${r.revertHref}` : "revert window closed"}`
         : `    waiting on ${r.waitingOn} · since ${r.sinceText} · next: ${r.next} · tokens: ${r.tokensText}${r.stuck ? ` · stuck: ${r.stuck}` : ""}`);
     }
   }
@@ -276,8 +281,8 @@ const cell = (label: string, value: string, cls = "") => `<div class="now-cell${
 function rowHtml(r: NowRow): string {
   const task = `<div class="now-task"><a class="now-title" href="${esc(r.href)}">${esc(r.title)}</a><span class="now-id"><span class="now-project">${esc(r.projectTitle)}</span> <code>${esc(r.id)}</code></span></div>`;
   if (r.group === "landed") {
-    const revert = r.reverted ? `<span class="tag ask">Reverted</span>` : r.revertHref ? `<a class="now-revert" href="${esc(r.revertHref)}">Revert</a>` : `<span class="meta">Revert window closed</span>`;
-    return `<li class="now-row">${task}<dl class="now-cells">${cell("Landed", esc(r.sinceText))}${cell("Deployed", esc(r.deployedText ?? ""))}${cell("Reviewer", esc(r.reviewer ?? "none recorded"))}${cell("Findings fixed", String(r.findingsFixed ?? 0))}${cell("Tokens", esc(r.tokensText))}${cell("For 24 h", revert)}</dl></li>`;
+    const revert = r.reverted ? `<span class="tag ask">Reverted</span>` : r.revertTask ? `<span class="meta">Revert asked for in ${esc(r.revertTask)}</span>` : r.revertHref ? `<a class="now-revert" href="${esc(r.revertHref)}">Revert</a>` : `<span class="meta">Revert window closed</span>`;
+    return `<li class="now-row">${task}<dl class="now-cells">${cell("Waiting on", esc(r.waitingOn))}${cell("Next by itself", esc(r.next))}${cell("Landed", esc(r.sinceText))}${cell("Deployed", esc(r.deployedText ?? ""))}${cell("Reviewer", esc(r.reviewer ?? "none recorded"))}${cell("Findings fixed", String(r.findingsFixed ?? 0))}${cell("Tokens", esc(r.tokensText))}${cell("For 24 h", revert)}</dl></li>`;
   }
   const stuck = r.stuck ? `<span class="tag ask now-stuck">Stuck: ${esc(r.stuck)}</span>` : "";
   return `<li class="now-row">${task}<dl class="now-cells">${cell("Stage", `<span class="tag">${esc(r.stage)}</span>${stuck}`)}${cell("Waiting on", esc(r.waitingOn))}${cell("Since", esc(r.sinceText))}${cell("Next by itself", esc(r.next))}${cell("Tokens", esc(r.tokensText))}</dl></li>`;
