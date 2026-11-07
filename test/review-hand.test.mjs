@@ -10,6 +10,7 @@ import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { handLines } from "../cli/commands/review-claim.mjs";
 
 const HEAD = "a".repeat(40), BUILDER = "claude-code/opus-5.5", REVIEWER = "codex/gpt-6-astra";
+const PASSED = [{ test: "npm test", head: HEAD, result: "passed" }];
 const RUNNER = { runner: "home:studio", kind: "home" };
 async function world(t, reviewerWhere = "home") {
   const dir = mkdtempSync(join(tmpdir(), "atelier-review-hand-"));
@@ -29,7 +30,7 @@ async function world(t, reviewerWhere = "home") {
   t.after(async () => { await ns.close(); rmSync(dir, { recursive: true, force: true }); });
   const L = ns.get(ns.idFromName("project:demo")), I = ns.get(ns.idFromName("__index"));
   const pool = [cleanEntry({ id: "opus-5.5", harness: "claude-code", where: "home" }, "owner", new Date().toISOString()), cleanEntry({ id: "gpt-6-astra", harness: "codex", where: reviewerWhere }, "owner", new Date().toISOString())];
-  const record = { name: "demo", repo: "demo", branch: "main", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const record = { name: "demo", repo: "demo", branch: "main", policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner"); await I.registerProject(record);
   for (const m of pool) await I.putModel(m);
   const { id } = await L.newItem("Review me", ["src/**"], "owner", { accept: ["Works"] });
@@ -38,6 +39,7 @@ async function world(t, reviewerWhere = "home") {
   await L.recordPush(id, BUILDER, HEAD, HEAD);
   await L.submit(id, BUILDER);
   await L.addEvidence({ itemId: id, head: HEAD, by: "owner", at: new Date().toISOString(), claim: "paths", grade: "observed", passed: true, changedPaths: ["src/a.ts"] });
+  await L.addEvidence({ itemId: id, head: HEAD, by: "owner", at: new Date().toISOString(), claim: "npm test", grade: "observed", passed: true, changedPaths: ["src/a.ts"] });
   const asked = await L.requestReview(id, "owner", REVIEWER, pool, true, false, undefined, [], true);
   // These tests are about the hand request, not the proof an approval carries
   // (test/review-tests-proof.test.mjs), so an approval brings one passing result.
@@ -58,7 +60,7 @@ test("criterion 1: with no live review runner a direct claim binds the request a
   assert.equal(claim.criteria, await L.criteria(id));
   assert.ok(handLines(id, claim, REVIEWER).includes(`Record the verdict with: atelier review ${id} --head ${HEAD} --request ${asked.request} --criteria ${claim.criteria} --approve|--reject --note "…" --as ${REVIEWER}`));
   assert.equal((await L.reviewRequests(id))[0].claimedBy, REVIEWER);
-  assert.equal((await api("review", REVIEWER, { head: HEAD, request: claim.request, criteria: claim.criteria, approve: true, note: "Checked" })).status, 200);
+  assert.equal((await api("review", REVIEWER, { head: HEAD, request: claim.request, criteria: claim.criteria, approve: true, tests: PASSED, note: "Checked" })).status, 200);
 });
 
 test("criterion 2: a live-runner refusal names a working claim command", async (t) => {
@@ -85,7 +87,7 @@ test("criterion 2: a verdict missing its live request names a complete verdict c
   const res = await api("review-claim", REVIEWER, {}, "home:studio");
   assert.equal(res.status, 200, await res.clone().text());
   const claim = await res.json();
-  const verdict = { head: HEAD, criteria: claim.criteria, approve: true, note: "Checked" };
+  const verdict = { head: HEAD, criteria: claim.criteria, approve: true, tests: PASSED, note: "Checked" };
   const rejected = await api("review", REVIEWER, verdict);
   assert.equal(rejected.status, 409);
   assert.match((await rejected.json()).next, new RegExp(`atelier review ${id} --head ${HEAD} --request ${claim.request} --criteria ${claim.criteria}`));
@@ -139,7 +141,7 @@ test("a stale verdict names a working claim of the replacement request", async (
   const first = await (await api("review-claim")).json();
   await L.releaseReview(id, REVIEWER, "Retry", false, first.request);
   await L.requestReview(id, "owner", REVIEWER, pool, true, false, undefined, [], true);
-  const verdict = { head: HEAD, criteria: first.criteria, request: first.request, approve: true, note: "Checked" };
+  const verdict = { head: HEAD, criteria: first.criteria, request: first.request, approve: true, tests: PASSED, note: "Checked" };
   const refused = await api("review", REVIEWER, verdict);
   assert.equal(refused.status, 409);
   assert.match((await refused.json()).next, new RegExp(`atelier review-claim ${id} --as ${REVIEWER}`));
@@ -233,7 +235,7 @@ test("a stale verdict names the reviewer's already claimed replacement", async (
   await L.releaseReview(id, REVIEWER, "Retry", false, first.request);
   await L.requestReview(id, "owner", REVIEWER, pool, true, false, undefined, [], true);
   const second = await (await api("review-claim")).json();
-  const verdict = { head: HEAD, criteria: first.criteria, request: first.request, approve: true, note: "Checked" };
+  const verdict = { head: HEAD, criteria: first.criteria, request: first.request, approve: true, tests: PASSED, note: "Checked" };
   const res = await api("review", REVIEWER, verdict);
   const error = await res.json();
   assert.equal(error.error, "stale_request");
@@ -267,7 +269,7 @@ for (const admitted of [false, true]) for (const liveKind of ["home", "cloud"]) 
     if (admitted) await L.admitReviewer("gpt-6-astra", true, "Independent reviewer", "owner", pool);
     await offer({ runner: `${liveKind}:studio`, kind: liveKind });
 
-    const refused = await api("review", REVIEWER, { head: HEAD, criteria: first.criteria, request: first.request, approve: true });
+    const refused = await api("review", REVIEWER, { head: HEAD, criteria: first.criteria, request: first.request, approve: true, tests: PASSED });
     assert.equal(refused.status, 409);
     const error = await refused.json();
     assert.equal(error.error, "stale_request");
@@ -284,7 +286,7 @@ for (const admitted of [false, true]) for (const liveKind of ["home", "cloud"]) 
     assert.equal(claimed.status, 200, await claimed.clone().text());
     const claim = await claimed.json();
     assert.notEqual(claim.request, first.request);
-    const verdict = await api("review", REVIEWER, { head: claim.head, criteria: claim.criteria, request: claim.request, approve: true });
+    const verdict = await api("review", REVIEWER, { head: claim.head, criteria: claim.criteria, request: claim.request, approve: true, tests: [{ test: "npm test", head: claim.head, result: "passed" }] });
     assert.equal(verdict.status, 200, await verdict.clone().text());
   });
 }

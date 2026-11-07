@@ -30,7 +30,7 @@ const claim = async (w, id, reviewer) => {
   assert.equal(r.status, 200, JSON.stringify(body));
   return body;
 };
-const verdict = (w, id, reviewer, c, approve, extra = {}) => w.api("POST", `/projects/demo/items/${id}/review`, { head: c.head, criteria: c.criteria, request: c.request, approve, note: approve ? "Fine" : "Broken", ...(approve ? { tests: [{ test: "npm test", head: c.head, result: "passed" }] } : {}), ...extra }, undefined, reviewer);
+const verdict = (w, id, reviewer, c, approve, extra = {}) => w.api("POST", `/projects/demo/items/${id}/review`, { head: c.head, criteria: c.criteria, request: c.request, approve, note: approve ? "Fine" : "Broken", ...(approve ? { tests: [{ test: "true", head: c.head, result: "passed" }] } : {}), ...extra }, undefined, reviewer);
 
 test("two reviewers asked together at one head both stand open and are claimed side by side; one rejects, the other approves, and the rejection stands", async (t) => {
   const w = await landingWorld(t);
@@ -120,7 +120,7 @@ test("a second model's check of the blocking findings is recorded on the review:
   const c = await claim(w, id, OPUS);
   // What cli/runner.mjs posts after the check demoted finding 1: an approval with a follow-up.
   const verification = { by: GLM, answer: "FINDING 1: NOT CONFIRMED because the line is as the brief asks.", demoted: [{ index: 1, label: "unverified", text: "the line is wrong" }] };
-  const r = await w.cli(["review", id, "--as", OPUS, "--approve", "--head", head, "--criteria", c.criteria, "--request", String(c.request), "--note", "no blocking finding stood", "--tests", JSON.stringify([{ test: "npm test", head, result: "passed" }]),
+  const r = await w.cli(["review", id, "--as", OPUS, "--approve", "--head", head, "--criteria", c.criteria, "--request", String(c.request), "--note", "no blocking finding stood", "--tests", JSON.stringify([{ test: "true", head, result: "passed" }]),
     "--findings", JSON.stringify([{ file: "shared.txt", line: 1, severity: "follow-up", label: "unverified", text: "the line is wrong" }]), "--verification", JSON.stringify(verification)]);
   assert.equal(r.status, 0, r.output);
   const review = (await w.detail(id)).reviews.find((v) => v.by === OPUS && v.head === head);

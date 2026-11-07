@@ -218,7 +218,7 @@ it("rejects issuing the owner identity and invalid expiry", async () => {
 
 it("an agent claims, pushes, records checks, hands off and reviews as itself", async () => {
   const name = "token-workflow";
-  await project(name);
+  await project(name, ["npm test"]);
   const { token } = await issue([name]);
   // A claim makes the branch t/1 in the project's repository (task 5), so
   // main needs a commit; the push route reads the branch's tip on the server,
