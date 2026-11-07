@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { autoDeploy, autoDeployWaits, composeShip, fileDeployFailure, fileDeployStore, memoryDeployStore, pinnedDeployCheck } from "../cli/ship.mjs";
+import { autoDeploy, autoDeployWaits, composeShip, fileDeployStore, memoryDeployStore, pinnedDeployCheck } from "../cli/ship.mjs";
 import { deployOnLanding, executePostMerge, finishLanding } from "../cli/post-merge.mjs";
 import { STANDING, parseStanding } from "../src/standing.ts";
 
@@ -16,9 +16,9 @@ const sha = (c) => c.repeat(40);
 const [H1, H2, H3] = [sha("1"), sha("2"), sha("3")];
 
 // An engine run with fakes: `deploys` lists each head the fake deploy step
-// was asked for, `records` the ledger records, `notes` the notifications.
+// was asked for, `records` the ledger records.
 function rig({ outcomes = [], waits = {}, store = memoryDeployStore(), on = true } = {}) {
-  const r = { deploys: [], records: [], notes: [], lines: [], store };
+  const r = { deploys: [], records: [], lines: [], store };
   r.fakeDeploy = async (head) => {
     r.deploys.push(head);
     const outcome = outcomes.shift() ?? { passed: true };
@@ -31,7 +31,6 @@ function rig({ outcomes = [], waits = {}, store = memoryDeployStore(), on = true
     waitsFor: async (h) => waits[h] ?? [],
     deploy: r.fakeDeploy,
     record: async (rec) => { r.records.push(rec); },
-    notify: async (m) => { r.notes.push(m); },
   });
   return r;
 }
@@ -49,7 +48,6 @@ test("a landed head deploys by itself through the fake deploy step, and is marke
   assert.equal(r.store.read().deployed, H1);
   assert.equal(r.store.read().running, null, "the claim is released");
   assert.deepEqual(r.records, [], "a deploy that works leaves its record to the ship it ran");
-  assert.deepEqual(r.notes, []);
 });
 
 test("with the standing instruction off, nothing deploys", async () => {
@@ -133,7 +131,6 @@ test("a failed deploy is retried once, and a pass on the retry delivers with no 
   assert.equal(out.state, "deployed");
   assert.equal(out.heads[0].attempts, 2);
   assert.deepEqual(r.records, []);
-  assert.deepEqual(r.notes, []);
   assert.equal(r.store.read().deployed, H1);
 });
 
@@ -143,18 +140,13 @@ test("a second failure records the deploy as failed and sends exactly one notifi
   assert.equal(out.state, "failed");
   assert.deepEqual(r.deploys, [H1, H1], "tried, retried once, and no third try");
   assert.equal(r.records.length, 1);
-  assert.deepEqual({ ...r.records[0], note: undefined }, { ship: "auto-111111111111", head: H1, result: "failed", step: "deploy", ran: [], note: undefined });
+  assert.deepEqual({ ...r.records[0], note: undefined }, { ship: "auto-111111111111", head: H1, result: "failed", final: true, step: "deploy", ran: [], note: undefined });
   assert.match(r.records[0].note, /deploy on landing failed twice: verify-delivery: sign-in page/);
-  assert.equal(r.notes.length, 1);
-  assert.match(r.notes[0], /demo: deploying 11111111 on landing failed twice/);
-  assert.match(r.notes[0], /atelier ship/);
+  assert.equal(r.records[0].final, true, "the failed record is final, which the ledger announces once");
   assert.equal(r.store.read().deployed, null, "a failed deploy marks nothing delivered");
   assert.equal(r.store.read().running, null, "and releases the claim");
-  assert.deepEqual(r.store.read().notified, [H1]);
-  // The same head again does not announce itself a second time.
   const again = await r.run(H1);
   assert.equal(again.state, "deployed", "the third scripted outcome passes");
-  assert.equal(r.notes.length, 1);
 });
 
 test("a deploy step that throws counts as a failed try, and the failure is announced once", async () => {
@@ -163,19 +155,7 @@ test("a deploy step that throws counts as a failed try, and the failure is annou
   assert.equal(out.state, "failed");
   assert.deepEqual(r.deploys, [H1, H1]);
   assert.match(r.records[0].note, /the deploy could not run: ssh: connection refused/);
-  assert.equal(r.notes.length, 1);
-});
-
-test("a notification that cannot be sent leaves the head unannounced, so the next landing says so again", async () => {
-  const store = memoryDeployStore();
-  const sent = [];
-  const run = (notify) => autoDeploy({ name: "demo", head: H1, on: true, store, waitsFor: async () => [], deploy: async () => ({ passed: false, output: "x" }), record: async () => {}, notify });
-  await assert.rejects(run(async () => { throw new Error("channel down"); }), /channel down/);
-  assert.deepEqual(store.read().notified, []);
-  assert.equal(store.read().running, null, "an error gives the claim back");
-  await run(async (m) => { sent.push(m); });
-  assert.equal(sent.length, 1);
-  assert.deepEqual(store.read().notified, [H1]);
+  assert.equal(r.records.length, 1);
 });
 
 // ── criterion 5: two merges during a deploy make one more deploy ────────────
@@ -216,7 +196,7 @@ test("a head that landed during a failed deploy still gets its own deploy, and i
   const out = await first;
   assert.deepEqual(r.deploys, [H1, H1, H2]);
   assert.deepEqual(out.heads.map((h) => [h.head, h.state]), [[H1, "failed"], [H2, "deployed"]]);
-  assert.equal(r.notes.length, 1);
+  assert.deepEqual(r.records.map((x) => x.head), [H1]);
 });
 
 test("a deploy whose process died holds nothing: the next landing deploys", async () => {
@@ -332,7 +312,6 @@ test("a head that waits on PAVI is not deployed, is shown as waiting, and the ne
   assert.equal(out.state, "waiting");
   assert.deepEqual(r.deploys, [], "nothing deploys");
   assert.deepEqual(r.records, []);
-  assert.deepEqual(r.notes, [], "waiting is shown, not announced as a failure");
   assert.match(r.lines.join("\n"), /Deploy on landing: 11111111 is waiting on PAVI, not deployed: a database migration changed/);
   const held = r.store.read();
   assert.equal(held.waiting.head, H1);
@@ -397,7 +376,6 @@ test("a deploy superseded by a newer baseline is not marked delivered, not retri
   assert.deepEqual(out.heads.map((h) => [h.head, h.state]), [[H1, "superseded"], [H2, "deployed"]]);
   assert.equal(r.store.read().deployed, H2, "only the head that deployed is marked delivered");
   assert.deepEqual(r.records, []);
-  assert.deepEqual(r.notes, []);
 });
 
 test("a head the ship found waiting on PAVI is shown as waiting, never retried or announced", async () => {
@@ -408,29 +386,13 @@ test("a head the ship found waiting on PAVI is shown as waiting, never retried o
   assert.deepEqual(r.deploys, [H1]);
   assert.equal(r.store.read().waiting.head, H1);
   assert.equal(r.store.read().deployed, null);
-  assert.deepEqual(r.notes, []);
 });
 
-test("the failure notification is a task filed once in the project, which wakes a session", async () => {
-  const filed = [];
-  let items = [];
-  const request = async (method, path, body) => {
-    if (method === "GET") return { items };
-    filed.push({ path, body });
-    items = [...items, { id: `t${items.length + 1}`, title: body.title, state: "open" }];
-    return { id: items.at(-1).id };
-  };
-  const ask = () => fileDeployFailure({ request, name: "demo", head: H1, message: "failed twice" });
-  assert.deepEqual(await ask(), { filed: true, id: "t1" });
-  assert.equal(filed[0].path, "/projects/demo/items");
-  assert.deepEqual(filed[0].body, { title: "Deploy of 11111111 failed on landing", scope: [], brief: "failed twice" });
-  assert.deepEqual(await ask(), { filed: false }, "an open task is the notification already given");
-  items[0].state = "abandoned";
-  assert.equal((await ask()).filed, true, "once it is closed, a new failure is filed");
-  // Wired through the engine: a second failure files exactly one task.
-  const r = rig({ outcomes: [{ passed: false }, { passed: false }] });
-  items = []; filed.length = 0;
-  r.run = (head) => autoDeploy({ name: "demo", head, on: true, store: r.store, deploy: r.fakeDeploy, record: async (rec) => r.records.push(rec), notify: (m, h) => fileDeployFailure({ request, name: "demo", head: h, message: m }) });
+test("a first failure that the retry rescues records nothing; only the second failure records a final failed deploy", async () => {
+  const r = rig({ outcomes: [{ passed: false }, { passed: true }] });
   await r.run(H1);
-  assert.equal(filed.length, 1);
+  assert.deepEqual(r.records, []);
+  const f = rig({ outcomes: [{ passed: false }, { passed: false }] });
+  await f.run(H1);
+  assert.deepEqual(f.records.map((x) => [x.result, x.final]), [["failed", true]]);
 });

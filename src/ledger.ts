@@ -45,7 +45,7 @@ import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
-import { notificationRequest, usageAlertRequest } from "./notify.ts";
+import { notificationRequest, usageAlertRequest, deployFailedRequest } from "./notify.ts";
 import { ago } from "./floor.ts";
 
 // The note on the release a dispatch makes of a held task; the holder reads it
@@ -5946,12 +5946,16 @@ export class Ledger extends DurableObject<Env> {
   // failed: the head, who and the result, as a project event (ship.recorded)
   // that the events read and the newest of which show prints. The same run
   // recorded again (a retried request) is recorded once.
-  recordDeploy(actor: string, body: Record<string, unknown>): DeployRecord {
+  // A final failure of a new ship is announced once through the notification
+  // topic, when there is one; the repeat of a ship sends nothing.
+  recordDeploy(actor: string, body: Record<string, unknown>, origin?: string): DeployRecord {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ships", 403, "only the developer can: atelier ship");
     const record = deployInput(body, actor, new Date().toISOString());
     const had = this.deploys(50).find((d) => d.ship === record.ship);
     if (had) return had;
     this.log(null, actor, "ship.recorded", { ...record }, record.at);
+    const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+    if (record.result === "failed" && record.final && topic && origin) this.deliver(deployFailedRequest(topic, origin, this.project().name, record.head, record.note ?? ""));
     return record;
   }
 

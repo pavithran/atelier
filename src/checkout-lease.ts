@@ -29,6 +29,8 @@ export interface CheckoutFact { code: "checkout_moved"; was: string; now: string
 export interface DeployRecord {
   ship: string; head: string; by: string; result: "shipped" | "failed"; at: string;
   step?: string; ran?: string[]; note?: string;
+  // A failure no retry is left for: the one that is announced.
+  final?: true;
 }
 
 // The liveness limit: the landing lease's, so both leases lapse alike.
@@ -102,8 +104,10 @@ export function deployInput(body: Record<string, unknown>, by: string, at: strin
   if (body.step !== undefined && (typeof body.step !== "string" || body.step.length > 40)) throw new RuleError("bad_step", "step names the ship step it stopped at", 400);
   if (body.ran !== undefined && (!Array.isArray(body.ran) || body.ran.length > 20 || body.ran.some((s) => typeof s !== "string" || s.length > 60))) throw new RuleError("bad_record", "ran lists the steps that ran", 400);
   if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 1000)) throw new RuleError("bad_note", "note is at most 1,000 characters", 400);
+  if (body.final !== undefined && body.final !== true) throw new RuleError("bad_record", "final is true when set", 400);
   return {
     ship: body.ship, head: body.head, by, result: body.result, at,
+    ...(body.final === true ? { final: true as const } : {}),
     ...(body.step ? { step: body.step as string } : {}), ...(body.ran ? { ran: body.ran as string[] } : {}), ...(body.note ? { note: body.note as string } : {}),
   };
 }

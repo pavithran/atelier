@@ -6,7 +6,7 @@ import { WRAP_MARKERS } from "../../src/sessions.ts";
 import { landingJournalFile, oldLandingJournalFile } from "../landing.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { autoDeploy, composeShip, fileDeployStore, fileDeployFailure, pinnedDeployCheck, runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
+import { autoDeploy, composeShip, fileDeployStore, pinnedDeployCheck, runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
 import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
 import { holdCheckout, postOnExit, stayHeld } from "../checkout-hold.mjs";
 
@@ -126,11 +126,6 @@ async function deployOnLandingWorker() {
       return waits.length ? { passed: false, waits, output: r.output } : { passed: false, output: r.output };
     },
     record: (record) => request("POST", `${P(name)}/deploys`, record, OWNER),
-    // A task filed in the project wakes a session, once for the head.
-    notify: async (message, head) => {
-      const filed = await fileDeployFailure({ request: (method, path, body) => request(method, path, body, OWNER), name, head, message });
-      print(`NOTIFY ${message}${filed.filed ? ` Filed as ${filed.id}.` : " A task for it is already open."}`);
-    },
   });
   print(`Deploy on landing ended: ${result.state}`);
 }

@@ -157,3 +157,33 @@ it("local check results notify through the evidence route", async () => {
     } finally { send.mockRestore(); }
   });
 });
+
+const SHIP = { ship: "auto-aaaaaaaaaaaa", head: H1, result: "failed", step: "deploy", ran: [], note: "deploy on landing failed twice: boom" };
+function shipRecord(L: Ledger, name: string, body: Record<string, unknown>) {
+  const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
+  return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/deploys`, {
+    method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+  }), { ...env, LEDGER, ATELIER_TOKEN: "test-token" } as typeof env);
+}
+
+it("a final failed deploy record sends one notification, a repeat none, and a non-final failure none", async () => {
+  await fixture("notify-deploy-failed", async (state) => {
+    const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+    try {
+      const L = ledger(state);
+      setup(L, "notify-deploy-failed");
+      expect((await shipRecord(L, "notify-deploy-failed", { ...SHIP, ship: "auto-first0000000" })).status).toBe(201);
+      expect(send).toHaveBeenCalledTimes(0);
+      expect((await shipRecord(L, "notify-deploy-failed", { ...SHIP, final: true })).status).toBe(201);
+      expect(send).toHaveBeenCalledTimes(1);
+      const request = send.mock.calls[0][0] as Request;
+      expect(request.url).toBe(`https://ntfy.sh/${TOPIC}`);
+      expect(request.headers.get("Click")).toBe("https://atelier.test/p/notify-deploy-failed");
+      expect(await request.text()).toBe("deploy on landing failed twice: boom");
+      await shipRecord(L, "notify-deploy-failed", { ...SHIP, final: true });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect((await shipRecord(L, "notify-deploy-failed", { ...SHIP, ship: "auto-ok0000000000", result: "shipped", final: true })).status).toBe(201);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally { send.mockRestore(); }
+  });
+});

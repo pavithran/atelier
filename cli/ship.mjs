@@ -867,8 +867,7 @@ export function fileDeployStore(dir, options) {
 //               `head` (nothing ran; the newer head deploys instead), or
 //               { waits: [reasons] } when the ship found the head waits on PAVI.
 //   record      async (record): writes a deploy record to the ledger
-//   notify      async (message, head): wakes a session
-export async function autoDeploy({ name, head, on, store, waitsFor, deploy, record, notify, print = () => {} }) {
+export async function autoDeploy({ name, head, on, store, waitsFor, deploy, record, print = () => {} }) {
   if (!on) return { state: "off", heads: [] };
   const claim = await store.claim(head);
   if (!claim.run) {
@@ -909,11 +908,8 @@ export async function autoDeploy({ name, head, on, store, waitsFor, deploy, reco
       }
     }
     const note = String(last.output ?? "").trim().slice(-600) || "no output";
-    await record({ ship: `auto-${at.slice(0, 12)}`, head: at, result: "failed", step: "deploy", ran: [], note: `deploy on landing failed twice: ${note}`.slice(0, 1000) });
-    if (!store.read().notified.includes(at)) {
-      await notify(`${name}: deploying ${short(at)} on landing failed twice. Last output: ${note.slice(-300)}. Inspect it with atelier show --project ${name}, fix the cause, then run atelier ship.`, at);
-      await store.announced(at);
-    }
+    // final: the ledger announces a final failure once per ship id, the one notification that wakes a session.
+    await record({ ship: `auto-${at.slice(0, 12)}`, head: at, result: "failed", final: true, step: "deploy", ran: [], note: `deploy on landing failed twice: ${note}`.slice(0, 1000) });
     return { head: at, state: "failed", attempts: 2 };
   }
 }
@@ -931,15 +927,4 @@ export function pinnedDeployCheck({ pin, baselineHead, plan, git, cwd }) {
   if (head !== pin.head) return null; // ship's own refusal says the checkout is not at the baseline
   const waits = autoDeployWaits({ plan, git, cwd, head, since: pin.since });
   return waits.length ? { waits } : null;
-}
-
-// The notification of a deploy that failed twice, as a task filed in the
-// project: the one channel that reaches a session. A task with this title
-// that is still open is the notification already given, so none is filed twice.
-export async function fileDeployFailure({ request, name, head, message }) {
-  const title = `Deploy of ${short(head)} failed on landing`;
-  const { items } = await request("GET", `/projects/${encodeURIComponent(name)}`);
-  if ((Array.isArray(items) ? items : []).some((i) => i.title === title && i.state !== "merged" && i.state !== "abandoned")) return { filed: false };
-  const item = await request("POST", `/projects/${encodeURIComponent(name)}/items`, { title, scope: [], brief: message });
-  return { filed: true, id: item.id };
 }

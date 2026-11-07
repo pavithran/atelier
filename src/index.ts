@@ -2362,7 +2362,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "deploys" && parts.length === 3) {
     if (m === "GET") return json({ deploys: await L.deploys() });
     requireOwner(env, actor);
-    return json(await L.recordDeploy(actor, body), 201);
+    return json(await L.recordDeploy(actor, body, c.url.origin), 201);
   }
   if (parts[2] === "post-merge" && parts.length === 4) {
     const item = parts[3];
