@@ -13,6 +13,10 @@ const ev = (ago: number, itemId: string | null, kind: string, data: Record<strin
   ({ seq: ++seq, at: new Date(NOW - ago * MIN).toISOString(), itemId, kind, data });
 const ran = (ago: number, step: string, passed: boolean, ship?: string) => ev(ago, null, "action.ran", { step, passed, ...(ship ? { ship } : {}) });
 
+const shipped = (ago: number, ship: string, result = "shipped") => ev(ago, null, "ship.recorded", { ship, result });
+// A whole deploy: its deploy step passed and the ship was recorded shipped.
+const deploy = (ago: number, ship: string) => [ran(ago + 1, "deploy", true, ship), shipped(ago, ship)];
+
 // A task filed 100 min ago and merged 40 min ago, deployed 10 min ago.
 const clean = (id: string, filed = 100, merged = 40) => [ev(filed, id, "item.created", { title: `Add ${id}` }), ev(merged, id, "item.merged", {}), ev(merged, id, "item.accepted")];
 const bar = (r: ReturnType<typeof computeBars>, scope: string, id: string) => {
@@ -23,7 +27,7 @@ const bar = (r: ReturnType<typeof computeBars>, scope: string, id: string) => {
 };
 
 test("every bar prints with value, target, pass or fail and its source (criteria 1, 5)", () => {
-  const events = [...clean("t1"), ...clean("t2"), ran(10, "deploy", true)];
+  const events = [...clean("t1"), ...clean("t2"), ...deploy(10, "s1")];
   const r = computeBars([{ name: "demo", events }], NOW, { t1: 500_000, t2: 600_000 });
   assert.deepEqual(r.scopes.map((s) => s.scope), ["demo", "overall"]);
   const lines = formatBars(r);
@@ -44,27 +48,29 @@ test("every bar prints with value, target, pass or fail and its source (criteria
 });
 
 test("a deploy counts only from a passed deploy step, not any action.ran (criterion 2)", () => {
-  const events = [...clean("t1"), ran(20, "build", true), ran(15, "deploy", false), ran(12, "install", true)];
+  const events = [...clean("t1"), ran(20, "build", true), ran(15, "deploy", false, "sx"), shipped(14, "sx", "failed"), ran(12, "install", true)];
   const r = computeBars([{ name: "demo", events }], NOW);
   const b = bar(r, "demo", "deployMedian");
   assert.equal(b.value, null);
   assert.equal(b.status, "unmeasured");
   assert.match(b.detail, /1 merged task\(s\) not deployed/);
-  const after = computeBars([{ name: "demo", events: [...events, ran(5, "deploy", true)] }], NOW);
+  const after = computeBars([{ name: "demo", events: [...events, ...deploy(5, "s9")] }], NOW);
   assert.equal(bar(after, "demo", "deployMedian").value, 95);
 });
 
-test("a deploy whose last command failed is not a deploy, however many commands passed first", () => {
-  const events = [...clean("t1"), ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1")];
-  assert.equal(bar(computeBars([{ name: "demo", events }], NOW), "demo", "deployMedian").value, null);
-  const retried = [...clean("t1"), ran(20, "deploy", false, "s2"), ran(15, "deploy", true, "s2")];
-  assert.equal(bar(computeBars([{ name: "demo", events: retried }], NOW), "demo", "deployMedian").value, 85, "a retry that passed ends the step passed");
-  const both = [...events, ran(5, "deploy", true, "s3")];
-  assert.equal(bar(computeBars([{ name: "demo", events: both }], NOW), "demo", "deployMedian").value, 95, "a later whole deploy counts");
+test("a ship counts only when it was recorded shipped and every deploy record passed", () => {
+  const median = (events: BarEvent[]) => bar(computeBars([{ name: "demo", events: [...clean("t1"), ...events] }], NOW), "demo", "deployMedian").value;
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1"), shipped(14, "s1", "failed")]), null, "success then failure in one step");
+  assert.equal(median([ran(20, "deploy", true, "s1"), shipped(14, "s1")]), 86, "a whole deploy counts, at its shipped record");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1"), shipped(14, "s1")]), null, "any failed record, even with a shipped result");
+  assert.equal(median([ran(20, "deploy", true, "s1")]), null, "success recorded, failure record and ship record missing (interrupted)");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", true, "s1")]), null, "no final shipped record");
+  assert.equal(median([ran(20, "deploy", true), shipped(14, "s1")]), null, "a record with no ship id belongs to no ship");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1"), ...deploy(5, "s3")]), 95, "a later whole deploy counts");
 });
 
 test("a deploy before the merge does not deploy it", () => {
-  const r = computeBars([{ name: "demo", events: [...clean("t1"), ran(50, "deploy", true)] }], NOW);
+  const r = computeBars([{ name: "demo", events: [...clean("t1"), ...deploy(50, "s1")] }], NOW);
   assert.equal(bar(r, "demo", "deployMedian").value, null);
 });
 
@@ -75,6 +81,17 @@ test("a merge with a fix_of linked to it is not sound (criterion 3)", () => {
   assert.equal(bar(r, "demo", "tokens").status, "fail");
   assert.equal(bar(r, "demo", "escapes").value, 0.5, "one of two merges has a later repair link");
   assert.equal(bar(r, "demo", "escapes").status, "fail");
+});
+
+test("tokens missing for a merge make the bar unknown, never a pass (partial coverage)", () => {
+  const events = [...clean("t1"), ...clean("t2")];
+  const partial = bar(computeBars([{ name: "demo", events }], NOW, { t1: 1_000_000 }), "demo", "tokens");
+  assert.equal(partial.status, "unmeasured");
+  assert.equal(partial.value, null);
+  assert.equal(partial.display, "unknown: 1 of 2 merges measured");
+  const whole = bar(computeBars([{ name: "demo", events }], NOW, { t1: 1_000_000, t2: 200_000 }), "demo", "tokens");
+  assert.equal(whole.value, 600_000);
+  assert.equal(whole.status, "pass");
 });
 
 test("a merge that turned main red within 7 days is not sound (criterion 6)", () => {
@@ -142,8 +159,8 @@ test("live rows with no named wait, and session records per merge", () => {
 });
 
 test("overall pools the projects and per-project figures stay apart", () => {
-  const a = [...clean("t1"), ran(10, "deploy", true)];
-  const b = [...clean("t1", 400, 300), ran(10, "deploy", true)];
+  const a = [...clean("t1"), ...deploy(10, "s1")];
+  const b = [...clean("t1", 400, 300), ...deploy(10, "s1")];
   const r = computeBars([{ name: "a", events: a }, { name: "b", events: b }], NOW);
   assert.equal(bar(r, "a", "deployMedian").value, 90);
   assert.equal(bar(r, "b", "deployMedian").value, 390);

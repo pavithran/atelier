@@ -235,16 +235,19 @@ function measure(name: string, input: readonly BarEvent[], now: number, tokens: 
   for (const e of events) if (e.itemId) (byItem.get(e.itemId) ?? byItem.set(e.itemId, []).get(e.itemId)!).push(e);
   const linked = new Set<string>();
   for (const e of events) if (e.kind === "item.fix_of" && typeof e.data?.itemId === "string") linked.add(e.data.itemId);
-  // A deploy is a ship's deploy step that finished passed. A step with several
-  // commands records one event each, so a ship counts only when its last
-  // deploy event passed (a failed command ends the ship); events with no ship
-  // id stand alone.
-  const shipRuns = new Map<string, BarEvent>();
+  // A deploy is a ship that completed: its own ship.recorded says shipped and
+  // every deploy-step action.ran carrying its id passed. Results are recorded
+  // one request at a time, so a ship with a failed record, no deploy record,
+  // or no final shipped record (interrupted) is not a deploy. The deploy time
+  // is when the ship was recorded as shipped.
+  const shipped = new Map<string, number>();
+  for (const e of events) if (e.kind === "ship.recorded" && e.data?.result === "shipped" && typeof e.data.ship === "string") shipped.set(e.data.ship, Date.parse(e.at));
+  const shipRuns = new Map<string, boolean>();
   for (const e of events) {
-    if (e.kind !== "action.ran" || e.data?.step !== "deploy") continue;
-    shipRuns.set(typeof e.data?.ship === "string" ? e.data.ship : `seq:${e.seq}`, e);
+    if (e.kind !== "action.ran" || e.data?.step !== "deploy" || typeof e.data.ship !== "string") continue;
+    shipRuns.set(e.data.ship, (shipRuns.get(e.data.ship) ?? true) && e.data.passed === true);
   }
-  const deploys = [...shipRuns.values()].filter((e) => e.data?.passed === true).map((e) => Date.parse(e.at)).sort((a, b) => a - b);
+  const deploys = [...shipRuns].filter(([ship, ok]) => ok && shipped.has(ship)).map(([ship]) => shipped.get(ship)!).sort((a, b) => a - b);
 
   const merges: Merge[] = [];
   for (const [id, list] of byItem) {
@@ -303,16 +306,18 @@ function barsOf(scope: string, m: Measures, haveTokens: boolean): BarScope {
   if (!n) tokens = empty("tokens", "Weighted Claude tokens per sound merge", "under 0.7M", tSrc);
   else {
     const measured = m.merges.filter((x) => x.tokens !== null);
-    if (!haveTokens || !measured.length) tokens = make("tokens", "Weighted Claude tokens per sound merge", null, "unmeasured", "under 0.7M", "unmeasured", tSrc, !haveTokens ? "the ledger records no token use; pass --tokens FILE" : `${n} merge(s), none with tokens in the file`);
-    else if (!sound.length) tokens = make("tokens", "Weighted Claude tokens per sound merge", null, "unmeasured", "under 0.7M", "unmeasured", tSrc, `${n} merge(s), none sound`);
+    const label = "Weighted Claude tokens per sound merge";
+    if (!haveTokens || !measured.length) tokens = make("tokens", label, null, "unmeasured", "under 0.7M", "unmeasured", tSrc, !haveTokens ? "the ledger records no token use; pass --tokens FILE" : `${n} merge(s), none with tokens in the file`);
+    else if (measured.length < n) tokens = make("tokens", label, null, `unknown: ${measured.length} of ${n} merges measured`, "under 0.7M", "unmeasured", tSrc, "neither pass nor fail: spending of the unmeasured merges is unknown");
+    else if (!sound.length) tokens = make("tokens", label, null, "unmeasured", "under 0.7M", "unmeasured", tSrc, `${n} merge(s), none sound`);
     else {
       // All spending counts, sound or not, over the sound merges it bought.
       const v = measured.reduce((s, x) => s + x.tokens!, 0) / sound.length;
-      tokens = make("tokens", "Weighted Claude tokens per sound merge", v, `${(v / 1e6).toFixed(2)}M`, "under 0.7M", v < TOKEN_BAR ? "pass" : "fail", tSrc, `tokens of ${measured.length} of ${n} merge(s) over ${sound.length} sound merge(s); ${n - measured.length} merge(s) without tokens`);
+      tokens = make("tokens", label, v, `${(v / 1e6).toFixed(2)}M`, "under 0.7M", v < TOKEN_BAR ? "pass" : "fail", tSrc, `tokens of all ${n} merge(s) over ${sound.length} sound merge(s)`);
     }
   }
 
-  const dSrc = "item.created to the first passed action.ran deploy step at or after item.merged";
+  const dSrc = "item.created to the first ship.recorded shipped, whose deploy-step action.ran events all passed, at or after item.merged";
   const times = m.merges.flatMap((x) => x.filedToDeployed === null ? [] : [x.filedToDeployed]);
   const waiting = m.merges.filter((x) => !x.deployed).length, uncut = m.merges.filter((x) => !x.timed).length;
   const dDetail = `${times.length} of ${n} merged task(s) timed; ${waiting} merged task(s) not deployed; ${uncut} without a filing record`;
