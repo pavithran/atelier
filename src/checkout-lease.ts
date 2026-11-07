@@ -29,6 +29,8 @@ export interface CheckoutFact { code: "checkout_moved"; was: string; now: string
 export interface DeployRecord {
   ship: string; head: string; by: string; result: "shipped" | "failed"; at: string;
   step?: string; ran?: string[]; note?: string;
+  // A step after the deploy failed; the deploy itself shipped.
+  warning?: string;
 }
 
 // The liveness limit: the landing lease's, so both leases lapse alike.
@@ -102,8 +104,10 @@ export function deployInput(body: Record<string, unknown>, by: string, at: strin
   if (body.step !== undefined && (typeof body.step !== "string" || body.step.length > 40)) throw new RuleError("bad_step", "step names the ship step it stopped at", 400);
   if (body.ran !== undefined && (!Array.isArray(body.ran) || body.ran.length > 20 || body.ran.some((s) => typeof s !== "string" || s.length > 60))) throw new RuleError("bad_record", "ran lists the steps that ran", 400);
   if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 1000)) throw new RuleError("bad_note", "note is at most 1,000 characters", 400);
+  if (body.warning !== undefined && (typeof body.warning !== "string" || body.warning.length > 1000)) throw new RuleError("bad_note", "warning is at most 1,000 characters", 400);
   return {
     ship: body.ship, head: body.head, by, result: body.result, at,
+    ...(body.warning ? { warning: body.warning as string } : {}),
     ...(body.step ? { step: body.step as string } : {}), ...(body.ran ? { ran: body.ran as string[] } : {}), ...(body.note ? { note: body.note as string } : {}),
   };
 }
@@ -111,5 +115,5 @@ export function deployInput(body: Record<string, unknown>, by: string, at: strin
 // A deploy in one line, as show prints it.
 export function deployText(d: DeployRecord): string {
   const how = d.result === "shipped" ? "shipped" : `FAILED${d.step ? ` at ${d.step}` : ""}`;
-  return `${d.ship} at ${short(d.head)} by ${d.by}, ${how}, ${utc(d.at)}${d.ran?.length ? `; ran ${d.ran.join(", ")}` : ""}${d.note ? ` (${d.note})` : ""}`;
+  return `${d.ship} at ${short(d.head)} by ${d.by}, ${how}, ${utc(d.at)}${d.ran?.length ? `; ran ${d.ran.join(", ")}` : ""}${d.note ? ` (${d.note})` : ""}${d.warning ? ` Warning: ${d.warning}` : ""}`;
 }

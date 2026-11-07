@@ -640,7 +640,13 @@ export async function ship(ctx) {
         ran.push("verify-delivery (unconfirmed)");
         continue;
       }
-      await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: s.step, ran, note: [unconfirmed, how].filter(Boolean).join("\n").slice(0, 1000) });
+      // Wrap is bookkeeping: once a deploy has passed and delivery is not in
+      // doubt, its failure is a warning on a deploy that shipped, not a failed
+      // deploy. The ship still stops, so nothing is pushed unwrapped.
+      const delivered = s.step === "wrap" && !unconfirmed && ran.some((r) => r === "deploy" || r === "install");
+      const tail = (failed.output ?? "").trim().split("\n").slice(-5).join(" | ");
+      if (delivered) await ctx.deployed?.({ ship: id, head: commit, result: "shipped", ran, warning: `wrap failed: ${how}${tail ? `: ${tail}` : ""}`.slice(0, 1000) });
+      else await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: s.step, ran, note: [unconfirmed, how].filter(Boolean).join("\n").slice(0, 1000) });
       const usedText = Object.entries(used).map(([k, a]) => `${a} for ${k}`).join(", ");
       fail([
         `ship stopped at ${s.step}: ${how}.`,
