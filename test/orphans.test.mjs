@@ -384,6 +384,23 @@ test("findStrays reads ps, asks lsof only about the candidates, and names none w
   assert.deepEqual(findStrays(cache, { run: () => ({ status: 1, stdout: "" }) }), []);
 });
 
+// macOS installs lsof in /usr/sbin, and a PATH without it — LaunchDaemons run
+// with one, and so do the runners' check environments, where the whole suite
+// failed on the test below until the fallback came — leaves every stray
+// unnamed. findStrays asks again at the real path, as liveHere does
+// (cli/atelier.mjs).
+test("findStrays asks lsof again at /usr/sbin/lsof when the PATH omits it", () => {
+  const asked = [];
+  const run = (cmd, args) => {
+    asked.push([cmd, ...args]);
+    if (cmd === "ps") return { status: 0, stdout: "  41  1  02:00:00 node --test test/a.test.mjs\n" };
+    if (cmd === "lsof") return { status: null, error: { code: "ENOENT" }, stdout: "" };
+    return { status: 0, stdout: "p41\nfcwd\nn/c/work/demo/t9\n" };
+  };
+  assert.deepEqual(findStrays("/c", { run }).map((s) => [s.pid, s.workspace]), [[41, "demo/t9"]]);
+  assert.deepEqual(asked[2], ["/usr/sbin/lsof", "-a", "-d", "cwd", "-Fn", "-p", "41"]);
+});
+
 // The whole path on this machine: real ps and lsof, a cache whose real path
 // differs from the one given (macOS's /var is /private/var), and the section
 // atelier status prints. ATELIER_STRAY_AGE_S stands in for the hour.

@@ -1,14 +1,18 @@
-// Part 1 of 2 of the tests that were in merge-manifest.test.mjs, split so no file runs for more than about a minute (t771).
+// The merge pipeline over this repository's own declarations (t463): the
+// registry and record-file scans themselves, which read only this tree, are
+// in test/merge-manifest-declarations.test.mjs, where the static gate runs
+// them (t512); what stays here builds a fresh repository holding a copy of
+// the CLI, its declarations and this repository's manifest and
+// .gitattributes, and runs real merges. Part 1 of 2 of the tests that were
+// in merge-manifest.test.mjs, split so no file runs for more than about a
+// minute (t771).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MANIFEST_PATH, parseManifest, readRecords } from "../cli/merge-driver.mjs";
-import { CAPABILITY_DECLARATIONS } from "../src/capability-declarations.ts";
+import { parseManifest } from "../cli/merge-driver.mjs";
 import { mergeConfigProblems, mergeThrough, previewMerge } from "../cli/merge-pipeline.mjs";
-import { commandModuleName } from "../src/usage/command.ts";
-import { commandFiles } from "../cli/regenerate.mjs";
 import { root, SPECS, HANDLERS, git, fixture, sides, counting, addCommands, declaration, handler } from "./merge-manifest-shared.mjs";
 // t463 on this repository's own declarations: bin/merge-manifest.json names
 // node cli/regenerate.mjs as the generator of the command indexes and the
@@ -16,39 +20,6 @@ import { root, SPECS, HANDLERS, git, fixture, sides, counting, addCommands, decl
 // two tasks that each add a command merge without a conflict a person must
 // resolve. The fixture is a fresh repository holding a copy of the CLI, its
 // declarations and this repository's manifest and .gitattributes.
-const OUTPUTS = ["cli/commands/index.mjs", "src/usage/commands/index.ts", "test/fixtures/cli/guide.txt", "test/fixtures/cli/help.txt", "test/fixtures/cli/usage.json"];
-
-
-test("this repository declares node cli/regenerate.mjs with every output it writes, routed to the generated driver, and the command folders as registries", () => {
-  const manifest = parseManifest(readFileSync(join(root, MANIFEST_PATH), "utf8"));
-  const regenerate = manifest.generators.find((g) => g.command.join(" ") === "node cli/regenerate.mjs");
-  assert.ok(regenerate, "node cli/regenerate.mjs is declared");
-  assert.deepEqual([...regenerate.outputs].sort(), OUTPUTS);
-  assert.deepEqual(regenerate.inputs, ["cli/**", "src/**"]);
-  assert.deepEqual(manifest.generators.flatMap((g) => g.outputs).sort(), OUTPUTS, "no other generator claims an output");
-  const attrs = git(root, "check-attr", "merge", "--", ...OUTPUTS);
-  for (const path of OUTPUTS) assert.match(attrs, new RegExp(`^${path.replace(/\./g, "\\.")}: merge: atelier-generated$`, "m"));
-  const registries = Object.fromEntries(manifest.registries.map((r) => [r.dir, r]));
-  assert.deepEqual(Object.keys(registries).sort(), [HANDLERS, SPECS]);
-  // Every module names its own command as its key; the indexes are not entries.
-  for (const [dir, ext] of [[HANDLERS, ".mjs"], [SPECS, ".ts"]]) {
-    assert.deepEqual(registries[dir].exclude, [`index${ext}`]);
-    const names = commandFiles(root, dir, ext);
-    assert.ok(names.length > 60);
-    for (const name of names) assert.equal(registries[dir].pattern.exec(readFileSync(join(root, dir, `${name}${ext}`), "utf8"))?.[1], commandModuleName(`${name}${ext}`), `${dir}/${name}${ext}`);
-  }
-});
-
-
-test("this repository declares src/capability-declarations.ts as a framed record file keyed by capability name, routed to the records driver", () => {
-  const manifest = parseManifest(readFileSync(join(root, MANIFEST_PATH), "utf8"));
-  const record = manifest.records.find((r) => r.path === "src/capability-declarations.ts");
-  assert.equal(record?.framed, true);
-  assert.match(git(root, "check-attr", "merge", "--", record.path), /: merge: atelier-records$/);
-  const read = readRecords(readFileSync(join(root, record.path), "utf8"), record.pattern, true);
-  assert.deepEqual(read.problems, []);
-  assert.deepEqual([...read.records.keys()], CAPABILITY_DECLARATIONS.map((c) => c.name));
-});
 
 
 test("a registry's exclude is a list of file names in its folder", () => {

@@ -1,0 +1,81 @@
+# The tests npm run test:static runs (t512). Each entry names one test file
+# and, after it, why it is here. A test belongs when its subject is this
+# repository's own files: it reads source, docs, shipped scripts and data,
+# generated indexes or checked-in fixtures from disk and asserts on their
+# content or their consistency with each other or with what the code renders,
+# so a change to one without its counterpart fails here in seconds. A test
+# whose subject is runtime behaviour, using fixtures, throwaway repositories
+# or a source slice only as data or as code to run, stays in the full suite,
+# and so does any test that starts a server, a Durable Object or a network
+# call, however fast: test/static.mjs refuses to run a list holding one, and
+# test/static-suite.test.mjs reads every entry's imports and calls to keep
+# that refusal honest.
+#
+# PAVI, 2026-11-06: t503, t504 and t505 landed with typecheck alone and broke
+# main, every failure in a test of this kind, each under a second, so this
+# gate runs that class before a landing. It changes no required check: the
+# full suite stays the required one until the orchestrator measures whether
+# this list can replace it.
+#
+# Run at an older revision: a listed file that revision does not hold (added
+# later, as t504 added test/criteria-policy.test.mjs) is left out of the copy
+# of this list there, and so is test/static-suite.test.mjs, whose pins are
+# bound to this tree.
+
+# The lock table.
+src/board.test.mjs pins the task board's responsive and focus rules in src/layout.css; its other tests render boards in memory
+test/claim-branch-ledger-locks.test.mjs scans src/ledger.ts for every method that writes an owner, token, claim generation, head or lease, and fails on one missing from the lock table in src/runtime/ledger-locks.mjs
+
+# Refusal next.
+test/refusal-next.test.mjs scans every new RuleError( in src/ for the next command it names, and pins the exempt, strict and count lists
+
+# Help and usage fixtures.
+test/cli-text.test.mjs pins test/fixtures/cli/help.txt, guide.txt and usage.json against the help module and the CLI's own printing
+test/command-modules.test.mjs checks every command's declaration and handler modules against each other, the generated indexes and the fixtures node cli/regenerate.mjs writes
+test/criteria-policy.test.mjs pins the criteria-review flags in test/fixtures/cli/help.txt and usage.json against init's declaration and the help module
+test/owner-path.test.mjs pins guide.txt and the role-guide and status snapshots
+
+# Merge-manifest declarations.
+test/merge-manifest-declarations.test.mjs checks bin/merge-manifest.json declares the generator, its outputs, the command registries and the record file, with the .gitattributes routing
+
+# Source scans: what the code must keep doing.
+test/single-family-scan.test.ts scans src/ for every path that assigns work and fails on one that skips the single-family eligibility check
+test/retired-governance-scan.test.ts scans src/ and cli/ for reads of the retired ControlPlane policy fields
+test/gateway.test.ts scans the gateway and usage sources, the README and docs/models-and-usage.md, for the removed log pull and gateway token; its other tests run the gateway reader in memory with a fake fetch
+test/no-cloudflare-imports.test.mjs scans every source file and lockfile for an import of a removed Cloudflare tool
+test/standing-sites.test.mjs scans src/ledger.ts and src/dispatch/rules.ts for dispatch and review-request sites that bypass the standing checks
+test/pool-standing.test.mjs scans src/ for model-choosing paths that skip the one model-standing check
+test/limits.test.mjs scans the tick's modules for a timing constant declared outside src/limits.ts, and pins the limits module's own table
+test/model-snapshots.test.ts scans the routing modules for an import of the snapshots module; its other tests compute snapshots in memory
+test/workers-logs.test.mjs scans every console call in src/ for a token or key, and the handbook for how a session reads the logs
+test/runner-text-guard.test.mjs scans the runner's modules for free text reaching a request body outside the facts builder
+test/runner-routes-helpers.test.mjs scans the import closure of every command the runner spawns for a server reach outside the declared transport
+test/scratch-paths.test.mjs scans the test sources for a scratch folder made inside the checkout
+test/scratch-exclude.test.mjs pins the call sites where the runner and land exclude .scratch/
+test/theme.test.ts pins the palettes, contrast and theme classes of src/*.css across every src/*.ts page
+test/layout.test.ts pins the Decisions page's phone rules in src/layout.css
+test/how.test.ts checks the how page's statements, diagrams and docs against the code they name
+test/main-suite.test.mjs scans the landing, claiming and shipping sources for a main-suite dependency, and pins the suite's LaunchAgent template
+
+# Docs and shipped lists pinned to the code.
+test/orchestrator-guide.test.ts checks every atelier command in the handbook resolves to a declared command and flag, and the reference doc stands
+test/role-prompt.test.mjs checks the role guides against docs/orchestrating.md and the CLI's own printing
+test/brief-rules.test.mjs pins the rule blocks in test/fixtures/briefs against the briefs' constants, the wrapper in bin/orchestrate/README.md and docs/orchestrating.md
+test/model-cards.test.ts validates the shipped model-card seed in docs/model-cards; its other tests run the cards ledger in memory
+test/fixtures/design/contrast.test.ts pins docs/design/contrast.md to the theme and layout palettes it measures
+test/fixtures/design/docs.test.ts holds the design critique, plan and mockups in docs/design to one another
+test/fixtures/design/screens.test.ts checks every page state in the design brief has its manifest entry and screenshots
+test/ship-environments.test.mjs pins the staging and production ship orders in docs/atelier/ship-staging.json and ship.json
+test/ship-suite-studio.test.mjs pins the ship.md example to the production order in docs/atelier/ship.json; its other tests run the Studio suite over stubbed ssh and fixture repositories
+test/ship-refresh-runners.test.mjs pins the production order's delivery verification before scripts/ship-refresh-runners.mjs runs
+test/ship-scripts.test.mjs pins Atelier's own ship file in docs/atelier/ship.json; its other tests run the privacy scan over throwaway repositories
+test/privacy-scan-allow.test.mjs pins the shipped allowance list in docs/atelier/privacy-allow.json; its other tests run the privacy scan over throwaway repositories
+test/git-command.test.mjs pins the backup daemon's plist template in scripts/studio; its other tests run the git command rules over throwaway repositories
+test/review-oneshot.test.mjs pins the one-shot review's details in docs/orchestrating.md; its other tests run the one-shot review with stubbed commands and a fake task IO
+
+# Shipped scripts pinned to what running them showed.
+test/setup-server.test.mjs pins the Studio setup scripts against the fixtures of the 2026-10-28 run, dry runs only
+test/setup-backup-hardening.test.mjs pins the backup and restore scripts' fixed executables and guards in scripts/studio
+
+# The gate's own test.
+test/static-suite.test.mjs holds this list to its rules: every entry is a discovered test file with a reason, and none starts a server, a Durable Object or a network call
