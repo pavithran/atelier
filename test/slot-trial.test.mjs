@@ -115,3 +115,31 @@ test("atelier slots trial FILE --apply leaves capacity alone and says why when t
     assert.match(r.stdout + r.stderr, /stays one/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("applySlotTrial without a setter previews: not applied, no success line, capacity unchanged", async () => {
+  const { applySlotTrial } = await import("../src/runners/slot-trial.ts");
+  const r = await applySlotTrial({ alone: [11, 10, 12], pairs: pairs([13, 14], [12.5, 13.9], [14.2, 13]) });
+  assert.equal(r.applied, false);
+  assert.equal(r.decision.slots, 2);
+  assert.match(r.report, /would set test slot capacity to 2/);
+  assert.doesNotMatch(r.report, /Test slot capacity set to/);
+});
+
+test("atelier slots trial FILE without --apply prints only what it would do and leaves capacity alone", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { writeFileSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "slot-trial-"));
+  try {
+    const file = join(dir, "trial.json");
+    writeFileSync(file, JSON.stringify({ alone: [11, 10, 12], pairs: pairs([13, 14], [12.5, 13.9], [14.2, 13]) }));
+    const env = { ...process.env, ATELIER_TEST_SLOT_POOL: join(dir, "pool.db") };
+    const run = (...a) => spawnSync(process.execPath, ["cli/atelier.mjs", "slots", ...a], { encoding: "utf8", env });
+    const capacity = () => JSON.parse(run("status", "--json").stdout).capacity;
+    assert.equal(capacity(), 1);
+    const r = run("trial", file);
+    const out = r.stdout + r.stderr;
+    assert.match(out, /would set test slot capacity to 2/);
+    assert.doesNotMatch(out, /Test slot capacity set to/);
+    assert.equal(capacity(), 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

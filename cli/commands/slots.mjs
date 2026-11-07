@@ -17,8 +17,8 @@ export default async function slotsCommand() {
     if (sub === "trial" && args._.length === 3) {
       const trial = JSON.parse(readFileSync(value, "utf8"));
       // Without --apply the decision is reported and the capacity left alone.
-      const { report } = await applySlotTrial(trial, args.apply ? setSlotCapacity : async () => {});
-      return console.log(args.apply ? report : `${report}\n(not applied; add --apply to set the capacity)`);
+      const { report } = await applySlotTrial(trial, args.apply ? setSlotCapacity : undefined);
+      return console.log(report);
     }
     die("usage: atelier slots set N | atelier slots status [--json] | atelier slots trial FILE [--apply]");
   } catch (error) { die(error.message); }

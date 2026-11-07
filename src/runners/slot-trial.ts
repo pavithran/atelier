@@ -49,11 +49,13 @@ export function slotTrialReport(trial: SlotTrial, d: SlotTrialDecision): string 
 
 // Sets the capacity through setCapacity only when the trial qualifies, and
 // only after the decision is made; a trial that fails changes nothing and the
-// report says why.
-export async function applySlotTrial(trial: SlotTrial, setCapacity: (n: number) => Promise<unknown>): Promise<{ decision: SlotTrialDecision; applied: boolean; report: string }> {
+// report says why. With no setter it only previews: nothing is set and the
+// report says what would be.
+export async function applySlotTrial(trial: SlotTrial, setCapacity?: (n: number) => Promise<unknown>): Promise<{ decision: SlotTrialDecision; applied: boolean; report: string }> {
   const decision = slotTrialDecision(trial);
   const report = slotTrialReport(trial, decision);
   if (decision.slots !== 2) return { decision, applied: false, report };
+  if (!setCapacity) return { decision, applied: false, report: `${report}\nwould set test slot capacity to ${decision.slots} (not applied; add --apply)` };
   await setCapacity(decision.slots);
   return { decision, applied: true, report: `${report}\nTest slot capacity set to ${decision.slots}` };
 }
