@@ -11,7 +11,7 @@ import { OWNER_CALL_LABEL, type OwnerCall, type OwnerTask } from "./attention.ts
 import type { LandingRecord, LedgerEvent } from "./ledger";
 import { dayInZone } from "./time.ts";
 import { eventStage, stageOverrun, type Item, type TaskStage } from "./rules.ts";
-import type { ProgressRecord } from "./situation.ts";
+import type { ProgressRecord, TokenParts } from "./situation.ts";
 import { tokens } from "./usage/report.ts";
 import { STALL_MS } from "./situation.ts";
 import type { DeployRecord } from "./checkout-lease.ts";
@@ -62,6 +62,8 @@ export interface NowRow {
   tokensText: string;
   // Landed rows: the weighted tokens of the task's runs, null when a run has no parts.
   weightedTokens?: number | null;
+  // Runs of this task whose record has no token parts.
+  unknownRuns?: number;
   stuck: string | null;
   href: string;
   // Landed today only.
@@ -111,8 +113,6 @@ function span(ms: number): string {
   return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
 }
 
-// The parts of a run's tokens, when its record has them.
-export interface TokenParts { input: number; cacheWrite: number; cacheRead: number; output: number }
 // The bars' rule (t527): input x1, cache write x1.25, cache read x0.1, output x5.
 export const weighted = (p: TokenParts): number => p.input + 1.25 * p.cacheWrite + 0.1 * p.cacheRead + 5 * p.output;
 const partsOf = (run: object): TokenParts | null => {
@@ -127,12 +127,13 @@ function spent(p: ProgressRecord | undefined): number | null {
   const known = (p?.runs ?? []).map((r) => r.tokens).filter((n): n is number => n !== null);
   return known.length ? known.reduce((a, b) => a + b, 0) : null;
 }
-// The weighted tokens of all a task's runs; null unless every run has parts (a task with no run is unknown too).
-function spentWeighted(p: ProgressRecord | undefined): number | null {
+// The weighted tokens of all a task's runs, and how many runs had no parts. A task with no run counts as one unknown run.
+function spentWeighted(p: ProgressRecord | undefined): { total: number | null; unknown: number } {
   const runs = p?.runs ?? [];
-  if (!runs.length) return null;
+  if (!runs.length) return { total: null, unknown: 1 };
   const all = runs.map(partsOf);
-  return all.every((x) => x !== null) ? all.reduce((n, x) => n + weighted(x!), 0) : null;
+  const unknown = all.filter((x) => x === null).length;
+  return { total: unknown ? null : all.reduce((n, x) => n + weighted(x!), 0), unknown };
 }
 
 const fmtM = (n: number) => `${Number((n / 1e6).toFixed(2))}M`;
@@ -236,7 +237,7 @@ function landedRow(p: NowProject, item: Item, merged: string, now: Date): NowRow
   return {
     id: item.id, project: p.name, projectTitle: p.title, title: item.title.replace(/\s+/g, " ").trim(), group: "landed", stage: "landed",
     waitingOn: deploy ? "nobody: it is deployed" : "the next ship", since: merged, sinceText: easternStamp(merged),
-    next: deploy ? "nothing: it is done" : "deploys with the next ship", tokens: total, tokensText: total === null ? "none reported" : tokens(total), weightedTokens: spentWeighted(p.progress[item.id]), stuck: null, href: page,
+    next: deploy ? "nothing: it is done" : "deploys with the next ship", tokens: total, tokensText: total === null ? "none reported" : tokens(total), ...(({ total, unknown }) => ({ weightedTokens: total, unknownRuns: unknown }))(spentWeighted(p.progress[item.id])), stuck: null, href: page,
     deployedAt: deploy, deployedText: deploy ? easternStamp(deploy) : "not deployed yet", reviewer: reviews.at(-1)?.actor ?? null, findingsFixed: findings,
     revertHref: !reverted && !asked.length && revertOpen(merged, now) ? `${page}/revert` : null, reverted, revertTask,
   };
@@ -265,13 +266,14 @@ export function buildNow(projects: NowProject[], now: Date): NowView {
   const sound = landed.filter((r) => !r.reverted).length;
   const measured = landed.filter((r) => r.weightedTokens != null);
   const complete = measured.length === landed.length;
+  const unknownRuns = landed.reduce((n, r) => n + (r.unknownRuns ?? 0), 0);
   const spentToday = measured.reduce((n, r) => n + r.weightedTokens!, 0);
   const per = sound && complete ? Math.round(spentToday / sound) : null;
   return {
     at: now.toISOString(),
     header: {
       mergesToday: landed.length, soundMergesToday: sound, liveCount: live.length, tokensPerSoundMerge: per,
-      tokensPerSoundMergeText: per !== null ? fmtM(per) : !complete ? `unknown: ${measured.length} of ${landed.length} measured` : landed.length ? "no sound merge yet" : "no merges yet",
+      tokensPerSoundMergeText: per !== null ? fmtM(per) : !complete ? `unknown: ${unknownRuns} ${unknownRuns === 1 ? "run" : "runs"} without token parts` : landed.length ? "no sound merge yet" : "no merges yet",
       target: TARGET_TOKENS_PER_MERGE, targetText: fmtM(TARGET_TOKENS_PER_MERGE), onTarget: per !== null && per <= TARGET_TOKENS_PER_MERGE,
     },
     groups,

@@ -56,7 +56,7 @@ export function summaryOf(name, input = {}) {
 
 // A fresh reading of one run's log.
 export function newStream() {
-  return { offset: 0, partial: "", started: 0, completed: 0, pending: new Map(), last: null, tokens: 0, costUsd: null, result: null };
+  return { offset: 0, partial: "", started: 0, completed: 0, pending: new Map(), last: null, tokens: 0, parts: null, costUsd: null, result: null };
 }
 
 // Folds the text of stream-json lines into the reading; a line cut at the
@@ -72,7 +72,12 @@ export function foldStream(state, text, at) {
     const content = Array.isArray(event?.message?.content) ? event.message.content : [];
     if (event.type === "assistant") {
       const usage = event.message?.usage;
-      if (usage) state.tokens += ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].reduce((n, k) => n + (Number.isFinite(usage[k]) ? usage[k] : 0), 0);
+      if (usage) {
+        // The four counts are kept apart (the server weighs them) and summed into the total.
+        state.parts ??= { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+        for (const k of Object.keys(state.parts)) if (Number.isFinite(usage[k])) state.parts[k] += usage[k];
+        state.tokens = Object.values(state.parts).reduce((n, v) => n + v, 0);
+      }
       for (const c of content) {
         if (c?.type !== "tool_use" || typeof c.id !== "string") continue;
         state.started++;
@@ -170,7 +175,7 @@ export function progressTracker({ now = Date.now, ps, git } = {}) {
         current, last: s.last,
         childAlive: below === null ? null : below.some((p) => p.depth >= 2),
         ...branchFacts(run.workspace, run.base, git),
-        logBytes: s.offset, tokens: s.tokens || null, costUsd: s.costUsd,
+        logBytes: s.offset, tokens: s.tokens || null, ...(s.parts && s.tokens ? { parts: { ...s.parts } } : {}), costUsd: s.costUsd,
         ...(s.result ? { result: s.result } : {}),
       }];
     },

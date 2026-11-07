@@ -2,6 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildNow, readEvents, weighted, nowText, nowBody, easternStamp, revertOpen, TARGET_TOKENS_PER_MERGE, type NowProject } from "../src/now.ts";
 import { NOW, h, min, item, progress, project } from "./fixtures/now.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { newStream, progressTracker } from "../cli/progress.mjs";
+import { nextProgress, parseProgress } from "../src/situation.ts";
 
 // The Now view (t525): every live task once, in one of four groups, with who
 // it waits on and since when; the numbers are the ledger's. The fixture is
@@ -97,7 +102,7 @@ test("Landed today holds the merges of the Eastern day, with deployed time, revi
   assert.deepEqual(row("t11"), {
     id: "t11", project: "atelier", projectTitle: "Atelier", title: "Title of t11", group: "landed", stage: "landed",
     waitingOn: "nobody: it is deployed", since: "2026-11-07T06:30:00.000Z", sinceText: "2026-11-07 01:30 EST",
-    next: "nothing: it is done", tokens: 400_000, tokensText: "400k", weightedTokens: 300_000, stuck: null, href: "/p/atelier/t11",
+    next: "nothing: it is done", tokens: 400_000, tokensText: "400k", weightedTokens: 300_000, unknownRuns: 0, stuck: null, href: "/p/atelier/t11",
     deployedAt: "2026-11-07T07:10:00.000Z", deployedText: "2026-11-07 02:10 EST", reviewer: "codex/gpt-6-astra", findingsFixed: 2,
     revertHref: "/p/atelier/t11/revert", reverted: false, revertTask: null,
   });
@@ -211,16 +216,41 @@ test("weights: input x1, cache write x1.25, cache read x0.1, output x5", () => {
   assert.equal(weighted({ input: 1000, cacheWrite: 1000, cacheRead: 1000, output: 1000 }), 1000 + 1250 + 100 + 5000);
 });
 
-test("a merge whose run has no parts makes the header unknown, saying how many were measured", () => {
+test("end to end: a stream-json log through the runner's report, parseProgress and nextProgress weighs in the header", () => {
+  const dir = mkdtempSync(join(tmpdir(), "now-e2e-"));
+  const log = join(dir, "run.jsonl");
+  const usage = (u: object) => JSON.stringify({ type: "assistant", message: { content: [], usage: u } }) + "\n";
+  writeFileSync(log, usage({ input_tokens: 100, cache_creation_input_tokens: 2000, cache_read_input_tokens: 10000, output_tokens: 50 }) + usage({ input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 20000, output_tokens: 150 }));
+  const tracker = progressTracker({ now: () => Date.parse(h(2)) });
+  tracker.begin({ project: "atelier", task: "t11", actor: "claude-code/sonnet-5.5", base: null, workspace: null, log, harness: "claude-code" });
+  const [report] = tracker.report();
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(report.tokens, 100 + 2000 + 10000 + 50 + 10 + 20000 + 150, "the total stays as it was");
+  const parsed = parseProgress(JSON.parse(JSON.stringify(report)))!;
+  const record = nextProgress(null, parsed, "mac-mini", NOW.toISOString());
+  const expected = 110 + 1.25 * 2000 + 0.1 * 30000 + 5 * 200;
+  const p = project();
+  (p.progress as never as Record<string, unknown>).t11 = record;
+  (p.progress as never as Record<string, unknown>).t12 = record;
+  const hd = buildNow([p], NOW).header;
+  assert.deepEqual([hd.tokensPerSoundMerge, hd.tokensPerSoundMergeText], [Math.round(expected), `${Number((expected / 1e6).toFixed(2))}M`]);
+  // A run reported with a total only (an older record, another harness) is unknown, never guessed.
+  const bare = nextProgress(null, parseProgress({ ...JSON.parse(JSON.stringify(report)), parts: undefined })!, "mac-mini", NOW.toISOString());
+  assert.equal(bare.runs[0].parts, undefined);
+  (p.progress as never as Record<string, unknown>).t12 = bare;
+  assert.equal(buildNow([p], NOW).header.tokensPerSoundMergeText, "unknown: 1 run without token parts");
+});
+
+test("a merge whose run has no parts makes the header unknown, saying how many runs were unknown", () => {
   const p = project();
   (p.progress as never as Record<string, { runs: object[] }>).t12.runs = [{ actor: "claude-code/sonnet-5.5", startedAt: h(20), costUsd: null, tokens: 900_000 }];
   const hd = buildNow([p], NOW).header;
-  assert.deepEqual([hd.tokensPerSoundMerge, hd.tokensPerSoundMergeText, hd.onTarget], [null, "unknown: 1 of 2 measured", false]);
-  assert.match(nowText(buildNow([p], NOW)).split("\n")[0], /tokens per sound merge: unknown: 1 of 2 measured/);
+  assert.deepEqual([hd.tokensPerSoundMerge, hd.tokensPerSoundMergeText, hd.onTarget], [null, "unknown: 1 run without token parts", false]);
+  assert.match(nowText(buildNow([p], NOW)).split("\n")[0], /tokens per sound merge: unknown: 1 run without token parts/);
   // A task with no run at all is unknown too.
   const q = project();
   delete (q.progress as Record<string, unknown>).t11;
-  assert.equal(buildNow([q], NOW).header.tokensPerSoundMergeText, "unknown: 1 of 2 measured");
+  assert.equal(buildNow([q], NOW).header.tokensPerSoundMergeText, "unknown: 1 run without token parts");
 });
 
 test("a fix later refuted counts 0; the newest verdict by seq decides, whatever the order read", () => {
