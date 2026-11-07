@@ -44,7 +44,7 @@ export const GRANT_LOCKS = {
   integratePart: "project", integrationFailed: "project", stopPlan: "project", approvePlan: "project",
   planRefresh: "project", planResolve: "project", reroutePlan: "project", retryPlan: "project",
   refreshed: "project", refreshFailed: "project", poolChanged: "project", setMode: "project",
-  stageTick: "project", recordDecision: "project",
+  stageTick: "project", recordDecision: "project", newItem: "project", importTasks: "project", fileFix: "project",
   retickDeployed: "project", initProject: "project", alarm: "project",
   // An import (task 10) loads every table, items included, and its finish
   // runs the migrations, which may fill a head column; its abort empties
