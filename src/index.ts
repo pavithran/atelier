@@ -2950,8 +2950,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The tests an approval of this head must show passing, so the runner
       // runs and reports them (t523). A post-merge audit is asked for none.
       const affected = (await L.project()).policy.affectedTests;
-      const need = claim.item.state === "merged" ? null : requiredTests(affected, claim.need?.changedPaths, hasTestGlob(affected) && claim.item.workspace ? await filesAtHead(env, claim.item.workspace, claim.head) : null);
-      const required = need ? { names: need.names, why: need.why, full: need.full, run: affected?.run ?? null, check: affected?.check ?? null } : undefined;
+      const need = claim.item.state === "merged" ? null : requiredTests(affected, claim.need?.changedPaths, hasTestGlob(affected) && claim.item.workspace ? await filesAtHead(env, claim.item.workspace, claim.head) : null, (await L.project()).policy.checks);
+      const required = need ? { names: need.names, why: need.why, full: need.full, run: affected?.run ?? null, check: need.check ?? affected?.check ?? null } : undefined;
       claim = { ...claim, ...(required ? { required } : {}) };
       // The review job clones the task read-only, so the claim also carries a
       // read grant, which reads both its branch (or, once landed, the branch

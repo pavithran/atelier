@@ -164,9 +164,9 @@ export type TestVerdict =
 
 // Whether an approval's test runs prove the change. The level of proof comes
 // from the project's declaration, not from the request. A rejection needs none.
-export function testEvidenceVerdict(i: { approve: boolean; head: string; runs: readonly TestRun[]; affected: Pick<AffectedTests, "check" | "map"> | undefined; changed: readonly string[] | null | undefined; files?: readonly string[] | null }): TestVerdict {
+export function testEvidenceVerdict(i: { approve: boolean; head: string; runs: readonly TestRun[]; affected: Pick<AffectedTests, "check" | "map"> | undefined; changed: readonly string[] | null | undefined; files?: readonly string[] | null; checks?: readonly string[] }): TestVerdict {
   if (!i.approve) return { ok: true, tests: [] };
-  const need = requiredTests(i.affected, i.changed, i.files);
+  const need = requiredTests(i.affected, i.changed, i.files, i.checks);
   const here = i.runs.filter((r) => r.head === i.head);
   const short = i.head.slice(0, 8);
   const refuse = (code: Extract<TestVerdict, { ok: false }>["code"], message: string, tests: string[] = [], wait = false): TestVerdict => ({ ok: false, code, message, wait, tests });
@@ -175,9 +175,7 @@ export function testEvidenceVerdict(i: { approve: boolean; head: string; runs: r
   const passed = new Set(here.filter((r) => r.result === "passed").map((r) => r.test));
   const unrun = new Set(here.filter((r) => r.result === "could-not-run").map((r) => r.test));
   if (!need.names) {
-    if (unrun.size) return refuse("tests_not_run", `${[...unrun].join(", ")} could not run at ${short}; the task waits for a review that ran them`, [...unrun], true);
-    if (!passed.size) return refuse("tests_missing", `no passing test result for ${short}; ${need.why}`);
-    return { ok: true, tests: [...passed].sort() };
+    return refuse("tests_missing", `no test can be required for ${short}; ${need.why}`);
   }
   const met: string[] = [], absent: string[] = [], notRun: string[] = [];
   for (const t of need.names) (passed.has(t) ? met : unrun.has(t) ? notRun : absent).push(t);

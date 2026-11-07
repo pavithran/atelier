@@ -155,17 +155,29 @@ export type Cover =
 // files that could not be read need the full suite, named by the
 // declaration's check. A project with no declaration names no test, so any
 // passing result is the least an approval carries (names is null).
-export interface RequiredTests { names: string[] | null; why: string; full: boolean }
+export interface RequiredTests { names: string[] | null; why: string; full: boolean; check?: string }
 
-export function requiredTests(affected: Pick<AffectedTests, "check" | "map"> | undefined, changed: readonly string[] | null | undefined, files: readonly string[] | null | undefined): RequiredTests {
-  if (!affected) return { names: null, why: "the project declares no affected tests, so at least one passing test result is needed", full: false };
-  const full = (why: string): RequiredTests => ({ names: [affected.check], why, full: true });
+// The most test names an approval can list (cleanTestRuns); a selection past it
+// is met by a passing full-suite run instead.
+export const REQUIRED_NAMES_MAX = 200;
+
+// `checks` is the project's own check commands, the full suite of a project
+// that declares no affected tests. With neither a declaration nor a check no
+// test can be required, and names is null.
+export function requiredTests(affected: Pick<AffectedTests, "check" | "map"> | undefined, changed: readonly string[] | null | undefined, files: readonly string[] | null | undefined, checks: readonly string[] = []): RequiredTests {
+  if (!affected) {
+    if (!checks.length) return { names: null, why: "the project declares no affected tests and no check, so no run can show the change tested", full: true };
+    return { names: [...checks], why: "the project declares no affected-tests map, so a passing run of its full test check is needed", full: true, check: checks.join(" && ") };
+  }
+  const full = (why: string): RequiredTests => ({ names: [affected.check], why, full: true, check: affected.check });
+  const over = (n: number) => `the declared map selects ${n} tests, over the ${REQUIRED_NAMES_MAX} an approval can list`;
   const cover = coveringTests(affected, changed);
   if (cover.kind === "full") return full(cover.why);
-  if (!cover.globs.length) return { names: cover.exact, why: cover.why, full: false };
+  if (!cover.globs.length) return cover.exact.length > REQUIRED_NAMES_MAX ? full(over(cover.exact.length)) : { names: cover.exact, why: cover.why, full: false };
   if (!files) return full("the head's files could not be read to expand the declared test globs");
   const picked = selectByMap(affected.map!, changed, files);
-  return picked.kind === "full" ? full(picked.why) : { names: picked.tests, why: picked.why, full: false };
+  if (picked.kind === "full") return full(picked.why);
+  return picked.tests.length > REQUIRED_NAMES_MAX ? full(over(picked.tests.length)) : { names: picked.tests, why: picked.why, full: false };
 }
 
 export function coveringTests(a: Pick<AffectedTests, "check" | "map">, changed: readonly string[] | null | undefined): Cover {

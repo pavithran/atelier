@@ -31,7 +31,7 @@ const EMAIL = "t@example.test";
 // them, as a reviewer's run would.
 export async function passingTests(project, head, changed) {
   const { requiredTests } = await import("../src/affected-tests.ts");
-  const names = requiredTests(project.policy.affectedTests, changed, null).names ?? ["npm test"];
+  const names = requiredTests(project.policy.affectedTests, changed, null, project.policy.checks).names ?? ["npm test"];
   return names.map((test) => ({ test, head, result: "passed" }));
 }
 

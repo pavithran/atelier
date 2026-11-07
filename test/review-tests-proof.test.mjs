@@ -68,14 +68,28 @@ test("an approval is accepted only with a passing run of each covering test at i
   assert.equal(verdict([], { approve: false }).ok, true);
 });
 
-test("a project that declares no affected tests names none, so any passing result at the head is the least an approval carries", () => {
-  const bare = (runs) => testEvidenceVerdict({ approve: true, head: H, runs, affected: undefined, changed: ["src/a/x.js"] });
+test("a project with no affected-tests map needs a passing run of its full test check at the head; an unrelated passing test never suffices", () => {
+  const bare = (runs, checks = ["npm test"]) => testEvidenceVerdict({ approve: true, head: H, runs, affected: undefined, changed: ["src/a/x.js"], checks });
   assert.equal(bare([]).code, "tests_missing");
-  assert.equal(bare([run("t", "passed", OLD)]).code, "tests_missing");
-  assert.equal(bare([run("t", "failed")]).code, "tests_failed");
-  assert.deepEqual([bare([run("t", "could-not-run")]).code, bare([run("t", "could-not-run")]).wait], ["tests_not_run", true]);
-  assert.deepEqual(bare([run("t")]), { ok: true, tests: ["t"] });
+  assert.equal(bare([run("npm test", "passed", OLD)]).code, "tests_missing");
+  assert.equal(bare([run("npm test", "failed")]).code, "tests_failed");
+  assert.deepEqual([bare([run("npm test", "could-not-run")]).code, bare([run("npm test", "could-not-run")]).wait], ["tests_not_run", true]);
+  assert.equal(bare([run("t")]).code, "tests_uncovered", "a single unrelated passing test is refused");
+  assert.deepEqual(bare([run("npm test")]), { ok: true, tests: ["npm test"] });
+  assert.equal(bare([run("t")], []).ok, false, "with no check declared nothing can be shown");
   assert.equal(testEvidenceVerdict({ approve: false, head: H, runs: [], affected: undefined, changed: null }).ok, true, "a rejection needs none");
+});
+
+test("a map that selects more than 200 tests is met by a passing full-suite run, not by names", () => {
+  const files = Array.from({ length: 201 }, (_, i) => `test/g/t${i}.test.mjs`);
+  const big = (runs) => verdict(runs, { changed: ["src/g/y.js"], files });
+  assert.equal(big([run("test/g/t0.test.mjs")]).ok, false);
+  assert.equal(big(files.map((f) => run(f))).ok, false, "a list of 201 names cannot be recorded, so it is not the proof");
+  assert.deepEqual(big([run("npm test")]), { ok: true, tests: ["npm test"] });
+  assert.equal(big([run("npm test", "failed")]).code, "tests_failed");
+  const exact = Array.from({ length: 201 }, (_, i) => `test/e${i}.test.mjs`);
+  const wide = testEvidenceVerdict({ approve: true, head: H, runs: [run("npm test")], affected: { check: "npm test", run: "x {tests}", map: [{ paths: ["src/**"], tests: exact }] }, changed: ["src/a.js"] });
+  assert.equal(wide.ok, true);
 });
 
 test("test runs are read strictly: a list of {test, head, result}, with a result among passed, failed and could-not-run", () => {
@@ -162,19 +176,34 @@ test("t503's real change with its reviewer's real approval note is refused", asy
   assert.equal((await r.approvals()).length, 1, "the same note with the covering test passed is recorded");
 });
 
-test("a project that declares no affected tests still needs a passing test result at the head, through the review route", async (t) => {
-  const r = await routeWorld(t, null, { "src/x.js": "export const x = 1;\n" });
+test("a project with no affected-tests map needs a passing run of its full test check at the head, through the review route", async (t) => {
+  const r = await routeWorld(t, { checks: ["true"], protected: ["**"] }, { "src/x.js": "export const x = 1;\n" });
   const refused = await r.post({});
   assert.equal(refused.status, 409, refused.text);
   assert.match(refused.text, /tests_missing/);
-  assert.match((await r.post({ tests: [r.at("test/x.test.mjs", "passed", "c".repeat(40))] })).text, /tests_missing/, "a result for another head");
-  assert.match((await r.post({ tests: [r.at("test/x.test.mjs", "failed")] })).text, /tests_failed/);
+  assert.match((await r.post({ tests: [r.at("true", "passed", "c".repeat(40))] })).text, /tests_missing/, "a result for another head");
+  assert.match((await r.post({ tests: [r.at("test/x.test.mjs")] })).text, /tests_uncovered/, "an unrelated passing test");
+  assert.match((await r.post({ tests: [r.at("true", "failed")] })).text, /tests_failed/);
   assert.deepEqual(await r.approvals(), [], "no refusal recorded an approval");
-  const waiting = await r.post({ tests: [r.at("test/x.test.mjs", "could-not-run")] });
+  const waiting = await r.post({ tests: [r.at("true", "could-not-run")] });
   assert.equal(waiting.status, 200, waiting.text);
   assert.deepEqual(await r.approvals(), [], "tests that could not run record no approval");
   assert.equal(eventsOf(await r.w.detail(r.id), "review.tests_unrun").length, 1);
-  const ok = await r.post({ tests: [r.at("test/x.test.mjs")] });
+  const ok = await r.post({ tests: [r.at("true")] });
+  assert.equal(ok.status, 200, ok.text);
+  assert.equal((await r.approvals()).length, 1);
+});
+
+test("a glob that selects more than 200 tests is met by a passing full-suite run, through the review route", async (t) => {
+  const map = [{ paths: ["src/g/**"], tests: ["test/g/*.test.mjs"] }];
+  const files = { "src/g/y.js": "export const y = 1;\n" };
+  for (let i = 0; i < 201; i++) files[`test/g/t${i}.test.mjs`] = `// ${i}\n`;
+  const r = await routeWorld(t, { checks: ["true"], protected: ["**"], affectedTests: { check: "true", run: "true {tests}", map } }, files);
+  const names = Object.keys(files).filter((f) => f.startsWith("test/g/"));
+  assert.equal((await r.post({ tests: [r.at("test/g/t0.test.mjs")] })).status, 409);
+  assert.equal((await r.post({ tests: names.map((n) => r.at(n)) })).status, 400, "201 names are over the cap");
+  assert.deepEqual(await r.approvals(), []);
+  const ok = await r.post({ tests: [r.at("true")] });
   assert.equal(ok.status, 200, ok.text);
   assert.equal((await r.approvals()).length, 1);
 });

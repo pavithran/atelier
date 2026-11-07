@@ -4828,7 +4828,7 @@ export class Ledger extends DurableObject<Env> {
     r = kept;
     if (r.tests !== undefined) r = { ...r, tests: cleanTestRuns(r.tests) };
     if (r.approve && item.state !== "merged" && !sameActor(r.by, this.owner)) {
-      const proof = testEvidenceVerdict({ approve: true, head: r.head, runs: r.tests ?? [], affected: policy.affectedTests, changed: evidenceAt(policy, this.evidenceFor(item.id), item.head).changedPaths, files: headFiles });
+      const proof = testEvidenceVerdict({ approve: true, head: r.head, runs: r.tests ?? [], affected: policy.affectedTests, changed: evidenceAt(policy, this.evidenceFor(item.id), item.head).changedPaths, files: headFiles, checks: policy.checks });
       if (!proof.ok && proof.wait) {
         // Tests that could not run are recorded as a fact and the task waits:
         // no approval, no rejection, and the claim stands until it lapses.
