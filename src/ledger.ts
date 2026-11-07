@@ -3044,14 +3044,17 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, ORCHESTRATOR, "item.undispatched", { reason: "the acceptance criteria wait for their review" }, at);
     }
     const accepted = before.state === "accepted";
+    // A build submitted before the change has not had the revised criteria:
+    // it goes back to its builder, as an accepted one does.
+    const returned = before.state === "submitted" && !before.kind && this.criteriaParallel();
     const overridden = !!before.reviewOverride;
     // A standing permission for an override goes with the criteria it was given under.
-    if (accepted || overridden || before.overrideConfirmation) {
-      this.update(id, { ...(accepted ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}), ...(before.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
+    if (accepted || returned || overridden || before.overrideConfirmation) {
+      this.update(id, { ...(accepted || returned ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}), ...(before.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
     }
     this.log(id, actor, "item.criteria_changed", {
       from, to, head: before.head, withdrawn: { reviews, requests: live.length },
-      ...(accepted ? { acceptanceWithdrawn: true } : {}), ...(overridden ? { overrideWithdrawn: true } : {}),
+      ...(accepted ? { acceptanceWithdrawn: true } : {}), ...(returned ? { returnedToBuilder: true, note: `the acceptance criteria were revised after ${id} was submitted; ${before.owner ?? "the builder"} must read the revised criteria and submit again` } : {}), ...(overridden ? { overrideWithdrawn: true } : {}),
     }, at);
     const asked = this.reaskForCriteria(id, live.filter((r) => r.tier !== 1), at);
     this.afterPlanChange(id);
@@ -3890,6 +3893,26 @@ export class Ledger extends DurableObject<Env> {
     const delivered = this.lastEvent(id, ["item.criteria_delivered"]);
     if (delivered && delivered.seq > changed.seq && delivered.data.revised) return;
     throw new RuleError("criteria_undelivered", `${id}'s acceptance criteria changed while it was built (revision ${this.criteriaRevision(id)}); the builder must read the revised criteria before submitting`, 409, `fetch the brief again, apply the revised criteria, then finish ${id}`);
+  }
+
+  // The criteria revision the build ran under: the one its latest brief
+  // carried since the claim, or the current one when no brief was fetched
+  // after a change.
+  private builtUnderRevision(id: string): number {
+    const claimed = this.lastEvent(id, ["item.claimed"]);
+    const delivered = this.lastEvent(id, ["item.criteria_delivered"]);
+    if (delivered && (!claimed || delivered.seq > claimed.seq) && typeof delivered.data.rev === "number") return delivered.data.rev;
+    return this.criteriaRevision(id);
+  }
+
+  // A code review of a submitted build is refused while the criteria have
+  // moved past the revision the build ran under.
+  private assertBuiltOnCurrentCriteria(id: string): void {
+    const item = this.item(id);
+    if (!this.criteriaParallel() || item.kind || item.state !== "submitted") return;
+    const submitted = this.lastEvent(id, ["item.submitted"])?.data.criteriaRev;
+    if (typeof submitted !== "number" || submitted === this.criteriaRevision(id)) return;
+    throw new RuleError("criteria_undelivered", `${id} was built on criteria revision ${submitted}, and the criteria are now at revision ${this.criteriaRevision(id)}; the builder has not had the revision`, 409, `wait for the builder to fetch the revised criteria and submit again, then ask for review of ${id}`);
   }
 
   private assertParallelCriteriaReviewed(id: string): void {
@@ -5001,7 +5024,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
-    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
+    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}), ...(this.criteriaParallel() && !item.kind ? { criteriaRev: this.builtUnderRevision(id) } : {}) }, at, proved);
     // A request the head's move withdrew is carried to this head, where the
     // gate still needs it reviewed (reaskReview).
     this.reaskReview(id, at);
@@ -9390,6 +9413,7 @@ export class Ledger extends DurableObject<Env> {
   private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = [], standingDecision?: string): ReviewAsked {
     const item = this.reviewItem(id);
     if (!wanted && item.state !== "merged") this.assertParallelCriteriaReviewed(id);
+    if (item.state !== "merged") this.assertBuiltOnCurrentCriteria(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
     // A named reviewer is judged even when a request already stands, so a

@@ -190,3 +190,49 @@ it("criterion 3: work built on criteria revised during the build is not submitte
   await L.jobBrief(id, CODEX);   // the builder reads the revision
   expect((await L.submit(id, CODEX)).state).toBe("submitted");
 });
+
+it("criterion 3: criteria revised after the submit send the task back to its builder, and review waits for the resubmit", async () => {
+  const L = await setup("filing-after-submit");
+  const { id } = await file(L, "Revise after submit", ["Fast"]);
+  const first = (await L.criteriaReviewWaiting()).find(i => i.id === id)!.dispatch!;
+  const reviewer = `${first.agent}/${first.model}`;
+  await L.claim(id, CODEX, RUNNER);
+  await L.jobBrief(id, CODEX);   // the builder starts on the first criteria
+  const head = "a".repeat(40);
+  await L.setWorkspace(id, `filing-after-submit--${id}`, "0".repeat(40), CODEX);
+  await L.recordPush(id, CODEX, head, head);
+  expect((await L.submit(id, CODEX)).state).toBe("submitted");   // its criteria review is still pending
+  await L.editItem(id, "owner", { accept: ["Answers within 200 ms"] });
+  expect((await L.item(id)).state).toBe("claimed");
+  expect((await L.item(id)).owner).toBe(CODEX);
+  const changed = (await L.events(id)).filter(e => e.kind === "item.criteria_changed").at(-1)!;
+  expect(changed.data.returnedToBuilder).toBe(true);
+  expect(String(changed.data.note)).toContain("revised");
+  await L.requestCriteriaReview(id, "owner", reviewer, POOL);
+  await approve(L, id, reviewer);
+  // Submitted again without the revision: refused until the brief is fetched.
+  expect((await L.submit(id, CODEX).then(() => null, (e: unknown) => parseRuleError(e)))?.code).toBe("criteria_undelivered");
+  await L.jobBrief(id, CODEX);
+  expect((await L.submit(id, CODEX)).state).toBe("submitted");
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: CODEX, at: new Date().toISOString(), changedPaths: ["src/x.ts"] });
+  const asked = await L.requestReview(id, "owner", reviewer, POOL, true);
+  expect(asked).toBeTruthy();
+});
+
+it("criterion 3: a review of a submit built on older criteria is refused as undelivered", async () => {
+  const L = await setup("filing-stale-submit");
+  const { id } = await file(L, "Stale submit", ["Fast"]);
+  await L.claim(id, CODEX, RUNNER);
+  await L.jobBrief(id, CODEX);
+  const head = "b".repeat(40);
+  await L.setWorkspace(id, `filing-stale-submit--${id}`, "0".repeat(40), CODEX);
+  await L.recordPush(id, CODEX, head, head);
+  await L.submit(id, CODEX);
+  // Move the binding past the submitted one without the return the edit makes.
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`INSERT INTO criteria_revisions (item, rev, criteria, by, at) VALUES (?, 2, 'x', 'owner', ?)`, id, AT);
+  });
+  const refused = await L.requestReview(id, "owner", OPUS, POOL, true).then(() => null, (e: unknown) => parseRuleError(e));
+  expect(refused?.code).toBe("criteria_undelivered");
+  expect(refused?.detail).toContain("has not had the revision");
+});
