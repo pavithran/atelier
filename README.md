@@ -97,8 +97,8 @@ The cross-company rule above is the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
+criteria review, handoffs and conflict contributors. Only that company's models
+qualify.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
 
@@ -545,11 +545,7 @@ for a correctness, security or data-loss defect that the change introduces,
 or fails to fix while claiming to, a behaviour change without a test that
 covers it, docs or help that now contradict the code, a breaking change to a
 command, route or API field without a migration, or a visible regression on a
-user-facing page; anything else is a follow-up. `atelier init --review-tier
-H/M,H/M` names a top tier of reviewers. A qualifying tier model's gate
-review serves both. When a separate tier review is needed, Atelier records
-the need and candidates. Request it with
-`atelier review-request ID --reviewer H/M --tier-review`.
+user-facing page; anything else is a follow-up.
 
 The developer records a verdict on each finding with `atelier finding ID --head
 SHA --index N --verdict confirmed|refuted|fixed`. A later review of the task
