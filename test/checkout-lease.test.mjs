@@ -138,7 +138,7 @@ async function shipper(t, real, { failDeploys = 0 } = {}) {
     if (path === "/api/projects/demo/deploys" && req.method === "POST" && state.deployFails < failDeploys) { state.deployFails++; return send(503, { error: "unavailable", detail: "the stand-in fails this record" }); }
     if (path === "/api/projects/demo/checkout-lease" || path === "/api/projects/demo/deploys") return forward(req, res, `${real.server.url}${req.url}`, raw);
     if (path === "/api/version") return send(200, { capabilities: SERVER_CAPABILITIES });
-    if (path === "/live") return send(200, {});
+    if (path === "/live") return send(200, { commit: g(checkout, "rev-parse", "HEAD") });
     if (path === "/api/projects/demo/baseline-head") return send(200, { head: g(checkout, "rev-parse", "HEAD") });
     if (path === "/api/projects/demo/actions" && req.method === "GET") return send(200, { approvals: state.approvals.map((a) => ({ ...a, status: a.consumed ? "consumed" : "active" })), runs: [] });
     if (path === "/api/projects/demo/actions/consume") {

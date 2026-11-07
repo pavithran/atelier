@@ -300,14 +300,14 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // with the request number alone; the runner renews with leaseCall.
   { name: "review-claim-renew", method: "POST", path: `${ITEM}/review-renew`, credential: "agent", body: ["request"], via: "cli", command: "review-claim", jobs: REVIEW },
   { name: "review-release", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["note", "request"], via: "cli", command: "review-release", jobs: REVIEW },
-  { name: "review-unparsable", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["head", "note", "reply"], via: "cli", command: "review-unparsable", jobs: REVIEW },
+  { name: "review-unparsable", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["head", "note", "reply", "attempt"], via: "cli", command: "review-unparsable", jobs: REVIEW },
   // The review lease (t351): a claim with a request number is renewed, and
   // released or kept as unparsable, by the runner itself (leaseCall in
   // cli/runner.mjs), under the reviewer's agent token, so shutdown can give
   // each its own deadline.
   { name: "review-renew", method: "POST", path: `${ITEM}/review-renew`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
   { name: "review-release-lease", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
-  { name: "review-unparsable-lease", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["request", "note", "head", "reply"], via: "runner", jobs: REVIEW },
+  { name: "review-unparsable-lease", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["request", "note", "head", "reply", "attempt"], via: "runner", jobs: REVIEW },
   // The criteria review job (t438), under the reviewer's own agent token:
   // the claim, the verdict (atelier criteria-verdict) and the failure.
   { name: "criteria-review-claim", method: "POST", path: `${ITEM}/criteria-review-claim`, credential: "agent", body: [], via: "cli", command: "criteria-review-claim", jobs: CRITERIA },

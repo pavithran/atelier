@@ -12,7 +12,7 @@
 // there passes them in, so this module holds the rules and stays testable.
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
 import { directionText, matchesAny } from "../src/rules.ts";
@@ -88,6 +88,7 @@ function buildSteps(order, runsFor, hint, push, problems) {
       const field = `verify-${delivered}`;
       const runs = runsFor(field);
       if (!runs.length) problems.push(`the ship order verifies the ${delivered} and has nothing to run for it: ${hint[field]}`);
+      else if (runs.every(accessCheck)) problems.push(`the ship order verifies the ${delivered} with redirect checks alone, and none names the shipped commit: add a request to a version route that answers its commit, or a run that checks it`);
       steps.push({ step, verifies: delivered, runs });
     } else if (step === "push") {
       if (push) steps.push({ step, runs: [], push });
@@ -101,7 +102,7 @@ function buildSteps(order, runsFor, hint, push, problems) {
 }
 
 // Atelier's own ship file. Its schema is in docs/ship.md.
-const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "install", "verify-install", "deploy", "verify-deploy", "push", ...ADDED]);
+const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "install", "verify-install", "deploy", "verify-deploy", "push", "auto_deploy", ...ADDED]);
 const RUN_KEYS = new Set(["run", "request", "status", "redirect", "expect", "header", "timeout_seconds", "approval", "description", "if_changed", "retries", "terminal"]);
 const DELIVERY_FIELDS = { install: ["installable", "hybrid"], "verify-install": ["installable", "hybrid"], deploy: ["web", "hybrid"], "verify-deploy": ["web", "hybrid"] };
 
@@ -129,8 +130,22 @@ function atelierShip(doc, problems, notes, file) {
     if (isObject(doc.push) && named(doc.push.remote) && named(doc.push.branch) && Object.keys(doc.push).every((k) => k === "remote" || k === "branch")) push = { remote: doc.push.remote, branch: doc.push.branch };
     else { problems.push(`${file} "push" must be {"remote": NAME, "branch": NAME}, false for no push step, or left out to push to the branch's tracked upstream`); push = null; }
   }
+  const autoDeploy = parseAutoDeploy(doc.auto_deploy, problems, file);
   const hint = Object.fromEntries(["install", "deploy", "verify-install", "verify-deploy", ...ADDED].map((f) => [f, `give "${f}" in ${file}`]));
-  return { source: file, class: doc.class, ...buildSteps(withAdded(order ?? [], doc), (field) => parseRuns(doc[field], field, problems, file), hint, push, problems), problems, notes };
+  return { source: file, class: doc.class, ...buildSteps(withAdded(order ?? [], doc), (field) => parseRuns(doc[field], field, problems, file), hint, push, problems), problems, notes, autoDeploy };
+}
+
+// "auto_deploy": false keeps a landed head from deploying by itself (it waits
+// on PAVI); {"waits_on": [{"paths": [GLOB…], "because": TEXT}]} adds paths
+// whose change since the last deploy does the same, beside the ones
+// WAITS_ON_PAVI names for every project. Left out, the defaults alone apply.
+function parseAutoDeploy(v, problems, file) {
+  if (v === undefined) return { enabled: true, waitsOn: [] };
+  if (v === false) return { enabled: false, waitsOn: [] };
+  const ok = isObject(v) && Object.keys(v).every((k) => k === "waits_on") && Array.isArray(v.waits_on)
+    && v.waits_on.every((w) => isObject(w) && Object.keys(w).every((k) => k === "paths" || k === "because") && Array.isArray(w.paths) && w.paths.length && w.paths.every((g) => typeof g === "string" && g) && typeof w.because === "string" && w.because.trim());
+  if (!ok) { problems.push(`${file} "auto_deploy" must be false, or {"waits_on": [{"paths": [GLOB, …], "because": TEXT}, …]}`); return { enabled: false, waitsOn: [] }; }
+  return { enabled: true, waitsOn: v.waits_on.map((w) => ({ paths: [...w.paths], because: w.because.trim() })) };
 }
 
 // The class's order with the added steps the file names: typecheck before the
@@ -186,6 +201,7 @@ function parseRuns(value, field, problems, file) {
     }
     if (r.redirect !== undefined && (r.request === undefined || !["follow", "manual", "forbid"].includes(r.redirect))) { problems.push(`${where} "redirect" must be follow, manual or forbid, on a "request"`); return null; }
     if (r.expect !== undefined && (typeof r.expect !== "string" || !r.expect || r.request === undefined)) { problems.push(`${where} "expect" must be the text the answer must hold, on a "request"`); return null; }
+    if (r.expect !== undefined && !/\{(?:commit|short)\}/.test(r.expect)) { problems.push(`${where} "expect" must hold {commit} or {short}, the revision being shipped: text that names neither would pass for any build`); return null; }
     if (r.header !== undefined && (typeof r.header !== "string" || !r.header || r.request === undefined || r.expect === undefined)) { problems.push(`${where} "header" must name the response header "expect" is looked for in, on a "request" with an "expect"`); return null; }
     if (r.run !== undefined && r.request === undefined) {
       if (!Array.isArray(r.run) || !r.run.length || r.run.some((w) => typeof w !== "string" || !w)) { problems.push(`${where} "run" must be the command and its arguments, as a list of strings`); return null; }
@@ -200,7 +216,7 @@ function parseRuns(value, field, problems, file) {
       if (r.redirect === "forbid" && status >= 300 && status < 400) { problems.push(`${where} "redirect": "forbid" fails every 3xx answer, so it cannot expect status ${status}`); return null; }
       const asked = r.redirect === "manual" ? ", without following redirects" : r.redirect === "forbid" ? ", redirects forbidden" : "";
       const held = r.expect !== undefined ? `, holding ${JSON.stringify(r.expect)}${r.header ? ` in the ${r.header} header` : " in its body"}` : "";
-      return { label: `GET ${r.request}, expecting ${status}${asked}${held}`, request: r.request, status, redirect: r.redirect ?? "follow", expect: r.expect, header: r.header, timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind, ...extra };
+      return { label: `GET ${r.request}, expecting ${status}${asked}${held}`, request: r.request, status, redirect: r.redirect, expect: r.expect, header: r.header, timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind, ...extra };
     }
     problems.push(`${where} needs "run" or "request", not both`);
     return null;
@@ -405,16 +421,41 @@ async function readBody(res) {
   return text + decoder.decode();
 }
 
-// A GET of the URL that must answer with the expected status, hold the
-// expected text (in its body, or in the header the run names) and, when
-// redirects are forbidden, not redirect at all: a sign-in page or an old
-// build answering 200 must not pass for the shipped commit (t501).
+// A request that only checks a redirect is where it should be, such as an
+// Access sign-in in front of a private route: it names no build.
+const accessCheck = (run) => !run.argv && run.redirect === "manual" && run.status >= 300 && run.status < 400;
+
+// A full commit hash, as a version route names its build.
+const COMMIT = /^[a-f0-9]{40,64}$/;
+
+// What a version answer's body says of the commit it serves, against the
+// commit shipped: a verdict and the words for it. The body must be a JSON
+// object whose "commit" is a whole hash equal to the shipped one.
+function commitProof(text, commit) {
+  let doc;
+  try { doc = JSON.parse(text); } catch { return { passed: false, why: "but its body is not JSON, so it does not name a commit" }; }
+  const named = doc !== null && typeof doc === "object" && !Array.isArray(doc) ? doc.commit : undefined;
+  if (typeof named !== "string") return { passed: false, why: 'but its body does not name a commit (no "commit" field holding a string)' };
+  if (!COMMIT.test(named)) return { passed: false, why: `but it names a malformed commit, ${JSON.stringify(named.slice(0, 80))}` };
+  if (named !== commit) return { passed: false, why: `but it names ${named}, not the shipped commit ${commit}` };
+  return { passed: true, why: `and names the shipped commit ${commit}` };
+}
+
+// A GET of the URL that must answer with the expected status and prove the
+// shipped commit is live. Given a commit (a delivery check), redirects are
+// forbidden unless the run says otherwise, and the answer must either hold
+// the text the run expects, in its body or in the header it names, or, with
+// no expected text, be a JSON body whose "commit" is the shipped one: a
+// sign-in page, an old build or any other 200 must not pass (t501, t519).
+// Without a commit, or for a redirect checked by hand, it checks the status alone.
 export async function runRequest(run, commit) {
   const started = Date.now();
   const done = (passed, output) => ({ status: null, signal: null, durationMs: Date.now() - started, passed, output });
   try {
-    const res = await get(run.request, { redirect: (run.redirect ?? "follow") === "follow" ? "follow" : "manual", signal: AbortSignal.timeout(run.timeoutMs) });
-    if (run.redirect === "forbid" && res.status >= 300 && res.status < 400) {
+    const proving = typeof commit === "string" && commit !== "" && !accessCheck(run);
+    const redirect = run.redirect ?? (proving ? "forbid" : "follow");
+    const res = await get(run.request, { redirect: redirect === "follow" ? "follow" : "manual", signal: AbortSignal.timeout(run.timeoutMs) });
+    if (redirect === "forbid" && res.status >= 300 && res.status < 400) {
       await res.body?.cancel();
       let to = res.headers.get("location");
       if (to) { try { to = new URL(to, run.request).href; } catch { /* the server's own words */ } }
@@ -423,6 +464,11 @@ export async function runRequest(run, commit) {
     const moved = res.url && res.url !== run.request ? ` at ${res.url}` : "";
     const want = expectedText(run, commit);
     const where = run.header ? `the ${run.header} header` : "the body";
+    if (proving && want === null) {
+      if (res.status !== run.status) { await res.body?.cancel(); return done(false, `${run.request} answered ${res.status}${moved}; expected ${run.status}`); }
+      const proof = commitProof(await readBody(res), commit);
+      return done(proof.passed, `${run.request} answered ${res.status}${moved} ${proof.why}; expected ${run.status} with the shipped commit named`);
+    }
     const holding = want === null ? null : run.header ? res.headers.get(run.header) : await readBody(res);
     if (want === null || run.header) await res.body?.cancel();
     const passed = res.status === run.status && (want === null || holding?.includes(want) === true);
@@ -525,6 +571,16 @@ export async function ship(ctx) {
     try { target = resolvePush(pushStep.push, { git, cwd, branch }); }
     catch (error) { if (ctx.push) refusals.push(error.message); }
   } else if (ctx.push && !plan.problems.length) refusals.push(`--push was given and ${SHIP_FILE} has no push step ("push": false); ship without --push`);
+  // A head that deploys on landing would wait on PAVI: said in the plan, so
+  // the developer sees why nothing deployed by itself.
+  if (!plan.problems.length && plan.steps.some((s) => s.step === "deploy") && ctx.read) {
+    try {
+      const { deploys } = await ctx.read(`${P}/deploys`);
+      const since = Array.isArray(deploys) ? deploys.find((d) => d.result === "shipped")?.head : undefined;
+      const waits = autoDeployWaits({ plan, git, cwd, head, since });
+      if (waits.length) plan.notes.push(`not deployed on landing, waiting on PAVI: ${waits.join("; ")}`);
+    } catch { /* advisory: an old server or a failed read says nothing */ }
+  }
   const { approvals } = commit ? await request("GET", `${P}/actions`) : { approvals: [] };
   // A dry run lists what would refuse beside the steps; a ship stops on it.
   print(formatPlan({ name, plan, branch, head, commit: commit ?? head, approvals, push: ctx.push, target, refusals: ctx.dryRun ? refusals : [] }));
@@ -532,6 +588,11 @@ export async function ship(ctx) {
   if (ctx.dryRun) {
     if (missing.length) print(`Missing approvals; ${name}'s developer gives them at this revision with:\n${missing.map((c) => `  ${c}`).join("\n")}`);
     print("Dry run: nothing was run, approved or recorded.");
+    // A refusal the plan printed is one a real ship would end on, so the dry
+    // run ends the same way (a missing approval is not one: the dry run is
+    // how the developer learns the command that gives it).
+    const refused = [...plan.problems, ...refusals];
+    if (refused.length) fail(`dry run found ${refused.length} ${refused.length === 1 ? "refusal" : "refusals"}, listed above; ship would refuse to run until ${refused.length === 1 ? "it is" : "they are"} resolved`);
     return;
   }
   const stops = [...plan.problems, ...refusals];
@@ -543,7 +604,6 @@ export async function ship(ctx) {
   const id = `s-${Date.now().toString(36)}`;
   const ran = [];
   let unconfirmed = null;
-  let unproven = false;
   const record = (step, r, extra) => request("POST", `${P}/actions/runs`, {
     step, kind: r.kind ?? null, approval: r.approval ?? null, command: r.command ?? null, commit,
     exitStatus: r.status ?? null, signal: r.signal ?? null, durationMs: r.durationMs ?? 0, passed: r.passed,
@@ -634,7 +694,7 @@ export async function ship(ctx) {
       if (s.step === "verify-delivery" && s.verifies === "deploy") {
         const rechecks = s.runs.filter(r => !r.skip).map(r => r.argv
           ? `ATELIER_SHIP_HEAD=${quote(head)} ${r.argv.map(quote).join(" ")}`
-          : `curl --silent --show-error --max-time ${r.timeoutMs / 1000} --output /dev/null --write-out '%{http_code}\\n'${(r.redirect ?? "follow") === "follow" ? " --location" : ""} ${quote(r.request)} # expected ${r.status}${r.expect !== undefined ? ` holding ${JSON.stringify(expectedText(r, head))} in ${r.header ? `the ${r.header} header` : "the body"}` : ""}`);
+          : `curl --silent --show-error --max-time ${r.timeoutMs / 1000} --output /dev/null --write-out '%{http_code}\\n'${r.redirect === "follow" ? " --location" : ""} ${quote(r.request)} # expected ${r.status}${r.expect !== undefined ? ` holding ${JSON.stringify(expectedText(r, head))} in ${r.header ? `the ${r.header} header` : "the body"}` : accessCheck(r) ? "" : ` naming ${head} as the "commit" of its JSON body`}`);
         unconfirmed = `Delivery is unconfirmed at ${short(commit)}: ${how}. Deploy passed. Recheck from ${quote(cwd)}:\n${rechecks.map(c => `  ${c}`).join("\n")}`;
         print(unconfirmed);
         ran.push("verify-delivery (unconfirmed)");
@@ -654,18 +714,10 @@ export async function ship(ctx) {
       await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: "verify-delivery", ran, note: unconfirmed.slice(0, 1000) });
       fail(`${unconfirmed}\nWrap passed. Not run: ${rest(i + 1).join(", ") || "nothing"}. Each step that ran is recorded on the ledger.`);
     }
-    // A verify step that passed, whose runs are requests that name no
-    // expected text, proved a server answered, not that the new build is
-    // live: an old build or a sign-in page would pass the same check (t501).
-    // The report says so, and the ship's record keeps it.
-    if (s.step === "verify-delivery" && s.runs.some((r) => !r.skip) && !s.runs.filter((r) => !r.skip).some((r) => r.argv || r.expect)) {
-      unproven = true;
-      print(`${s.step}: delivered, version not proven: no request named what its answer must hold, so an old build or a sign-in page would pass`);
-    }
     ran.push(s.runs.length && s.runs.every((r) => r.skip) ? `${s.step} (skipped)` : s.step);
   }
-  await ctx.deployed?.({ ship: id, head: commit, result: "shipped", ran, ...(unproven ? { note: "delivered, version not proven" } : {}) });
-  print(`Shipped ${name} at ${short(commit)}: ${ran.join(", ")} ran, each recorded on the ledger.${unproven ? " Delivered, version not proven." : ""}`);
+  await ctx.deployed?.({ ship: id, head: commit, result: "shipped", ran });
+  print(`Shipped ${name} at ${short(commit)}: ${ran.join(", ")} ran, each recorded on the ledger.`);
   if (pushStep && !ctx.push) {
     print(target
       ? `Not pushed (no --push). To push this revision, run atelier ship --push, or push by hand: git -C ${quote(cwd)} ${pushLabel(target, branch)}`
@@ -698,4 +750,181 @@ export function resolvePush(target, { git, cwd, branch }) {
     throw new Error(`${branch} has no tracked upstream on a remote to push to; set one with git branch --set-upstream-to=REMOTE/BRANCH ${branch}, or name "push" in ${SHIP_FILE}`);
   }
   return { remote, branch: merge.slice("refs/heads/".length) };
+}
+
+// ── deploy on landing (t519) ────────────────────────────────────────────────
+// A landed head whose landing checks passed deploys by itself, when the
+// project's standing instruction deploy-on-landing (src/standing.ts) is on.
+// cli/post-merge.mjs starts it after a merge; autoDeploy below is the whole
+// of what it decides, with every effect passed in, so tests drive it with a
+// fake deploy step. A deploy is `deploy(head)`: the same ship a session would
+// run, approved by the standing instruction instead of by hand.
+
+// What PAVI must do before a deploy, whatever the project's ship file says:
+// a change under these paths since the last deploy is a remote migration, or
+// a change to the Cloudflare resources and secrets a Worker is bound to.
+export const WAITS_ON_PAVI = [
+  { paths: ["migrations/**", "**/migrations/**"], because: "a database migration changed, and PAVI runs the remote migration" },
+  { paths: ["wrangler.toml", "wrangler.json", "wrangler.jsonc", "**/wrangler.toml", "**/wrangler.json", "**/wrangler.jsonc"], because: "the Cloudflare configuration changed, and PAVI makes the resource or secret change it needs" },
+];
+
+// Why a landed head must wait on PAVI instead of deploying by itself; empty
+// when nothing stops it. `since` is the commit last delivered: without it
+// there is nothing to say what changed, so the head waits.
+export function autoDeployWaits({ plan, git, cwd, head, since }) {
+  if (plan.problems.length) return [`the ship file has problems: ${plan.problems.join("; ")}`];
+  if (plan.autoDeploy?.enabled === false) return [`${plan.source ?? SHIP_FILE} sets "auto_deploy": false`];
+  const reasons = neededKinds(plan.steps).filter((k) => k !== "deploy").map((k) => `the ship order needs a ${k} approval, which only PAVI gives`);
+  if (!since) reasons.push("no earlier deploy is recorded to compare with, so whether a migration, secret or resource change is waiting cannot be told");
+  else {
+    const diff = git(["diff", "--name-only", "--no-renames", "-z", since, head], { cwd, allowFail: true });
+    if (diff.status !== 0) reasons.push(`the changes since ${short(since)} could not be read, so whether a migration, secret or resource change is waiting cannot be told`);
+    else {
+      const changed = diff.stdout.split("\0").filter(Boolean);
+      for (const { paths, because } of [...WAITS_ON_PAVI, ...(plan.autoDeploy?.waitsOn ?? [])]) {
+        const hit = changed.filter((p) => matchesAny(p, paths));
+        if (hit.length) reasons.push(`${because} (${hit.slice(0, 3).join(", ")}${hit.length > 3 ? ", …" : ""} changed since ${short(since)})`);
+      }
+    }
+  }
+  return reasons;
+}
+
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+const FRESH = { running: null, pending: null, deployed: null, waiting: null, notified: [] };
+
+// What the deploys of one checkout share: which head is deploying, the newest
+// head that landed meanwhile, the head last delivered, the head waiting on
+// PAVI and the heads already announced. `io` supplies load(), save(state) and
+// withLock(fn); a run whose process is gone (alive(pid) false) holds nothing.
+// "deployed" is written only after the deploy and its delivery check passed.
+export function deployStore(io, { alive = pidAlive, pid = process.pid, now = () => new Date().toISOString() } = {}) {
+  const edit = (fn) => io.withLock(() => { const state = { ...FRESH, ...io.load() }; const out = fn(state); io.save(state); return out; });
+  return {
+    read: () => ({ ...FRESH, ...io.load() }),
+    // The caller runs the deploy when it is told so; otherwise `head` is
+    // queued as the one to run next, replacing any older one queued.
+    claim: (head) => edit((s) => {
+      if (s.running && alive(s.running.pid)) { s.pending = head; return { run: false, running: s.running.head }; }
+      s.running = { head, pid, at: now() }; s.pending = null;
+      return { run: true };
+    }),
+    // The run for `done` is over: the newest head queued meanwhile, now the
+    // running one, or null with the claim released.
+    next: (done) => edit((s) => {
+      const queued = s.pending && s.pending !== done ? s.pending : null;
+      s.pending = null;
+      s.running = queued ? { head: queued, pid, at: now() } : null;
+      return queued;
+    }),
+    // The claim given up after an error, with nothing marked delivered.
+    release: () => edit((s) => { s.running = null; }),
+    delivered: (head) => edit((s) => { s.deployed = head; s.waiting = null; }),
+    waiting: (head, reasons) => edit((s) => { s.waiting = { head, reasons, at: now() }; }),
+    announced: (head) => edit((s) => { if (!s.notified.includes(head)) s.notified = [...s.notified, head].slice(-50); }),
+  };
+}
+
+// The same store in memory, for a process that needs no other to see it.
+export function memoryDeployStore(options) {
+  let state = null;
+  return deployStore({ load: () => state ?? {}, save: (s) => { state = structuredClone(s); }, withLock: (fn) => fn() }, options);
+}
+
+// The same store in `dir`, shared by every process on this machine: a state
+// file replaced whole, and a lock taken by creating a folder. A lock older
+// than 30 seconds belongs to a process that died inside it.
+export function fileDeployStore(dir, options) {
+  const file = join(dir, "state.json"), lock = join(dir, "lock");
+  mkdirSync(dir, { recursive: true });
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const withLock = (fn) => {
+    for (let waited = 0; ; waited += 20) {
+      try { mkdirSync(lock); break; } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        let age = 0;
+        try { age = Date.now() - readFileSync(join(lock, "at"), "utf8"); } catch { /* the holder is between mkdir and its stamp */ }
+        if (age > 30_000 || waited > 10_000) rmSync(lock, { recursive: true, force: true });
+        else sleep(20);
+      }
+    }
+    try { writeFileSync(join(lock, "at"), String(Date.now())); return fn(); } finally { rmSync(lock, { recursive: true, force: true }); }
+  };
+  const load = () => { try { return JSON.parse(readFileSync(file, "utf8")); } catch (error) { if (error.code === "ENOENT") return {}; throw error; } };
+  const save = (state) => { writeFileSync(`${file}.${process.pid}`, JSON.stringify(state)); renameSync(`${file}.${process.pid}`, file); };
+  return deployStore({ load, save, withLock }, options);
+}
+
+// Deploys the landed head, and then the newest head that landed while it ran,
+// one deploy at a time. Each head gets its deploy tried, then once more if it
+// failed; a second failure records the deploy as failed and final, and the
+// ledger records one deploy.failed_notice for it, which wakes a session. Returns what happened to each head it dealt with.
+//   on          the standing instruction deploy-on-landing is on
+//   store       a deployStore
+//   waitsFor    optional, async (head) => reasons it must wait on PAVI, [] when none
+//   deploy      async (head) => { passed, output }: ship, approved, with its delivery check.
+//               It may answer { superseded: true } when the baseline had moved past
+//               `head` (nothing ran; the newer head deploys instead), or
+//               { waits: [reasons] } when the ship found the head waits on PAVI.
+//   record      async (record): writes a deploy record to the ledger
+export async function autoDeploy({ name, head, on, store, waitsFor, deploy, record, print = () => {} }) {
+  if (!on) return { state: "off", heads: [] };
+  const claim = await store.claim(head);
+  if (!claim.run) {
+    print(`Deploy on landing: ${short(claim.running)} is deploying; ${short(head)} deploys after it, with any newer head replacing it.`);
+    return { state: "queued", heads: [] };
+  }
+  const heads = [];
+  try {
+    for (let current = head; current; current = await store.next(current)) heads.push(await deployHead(current));
+  } catch (error) { await store.release(); throw error; }
+  return { state: heads.at(-1).state, heads };
+
+  async function deployHead(at) {
+    if (store.read().deployed === at) return { head: at, state: "current" };
+    const reasons = waitsFor ? await waitsFor(at) : [];
+    if (reasons.length) {
+      await store.waiting(at, reasons);
+      print(`Deploy on landing: ${short(at)} is waiting on PAVI, not deployed: ${reasons.join("; ")}`);
+      return { head: at, state: "waiting", reasons };
+    }
+    let last;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      print(`Deploy on landing: deploying ${short(at)}${attempt > 1 ? " (retry, the first try failed)" : ""}`);
+      try { last = await deploy(at); } catch (error) { last = { passed: false, output: `the deploy could not run: ${error.message}` }; }
+      if (last.superseded) {
+        print(`Deploy on landing: ${short(at)} is no longer the baseline's head, so it was not deployed; the newer head deploys instead.`);
+        return { head: at, state: "superseded" };
+      }
+      if (last.waits?.length) {
+        await store.waiting(at, last.waits);
+        print(`Deploy on landing: ${short(at)} is waiting on PAVI, not deployed: ${last.waits.join("; ")}`);
+        return { head: at, state: "waiting", reasons: last.waits };
+      }
+      if (last.passed) {
+        await store.delivered(at);
+        print(`Deploy on landing: ${short(at)} is live.`);
+        return { head: at, state: "deployed", attempts: attempt };
+      }
+    }
+    const note = String(last.output ?? "").trim().slice(-600) || "no output";
+    // final: the ledger records one deploy.failed_notice per ship id, the one notice that wakes a session.
+    await record({ ship: `auto-${at.slice(0, 12)}`, head: at, result: "failed", final: true, step: "deploy", ran: [], note: `deploy on landing failed twice: ${note}`.slice(0, 1000) });
+    return { head: at, state: "failed", attempts: 2 };
+  }
+}
+
+// What a deploy's own ship checks once it holds the checkout, so the check, the
+// approval and the deploy all concern one head (t519). `pin` is the head the
+// worker was asked to deploy and the commit last delivered. Answers
+// { superseded } when the baseline is no longer that head, { waits } when
+// the head needs PAVI first, or null when the ship may go on to approve and
+// run it. The migration check reads the checkout, which is at the baseline's
+// head here, since the caller holds the checkout lease.
+export function pinnedDeployCheck({ pin, baselineHead, plan, git, cwd }) {
+  if (baselineHead !== pin.head) return { superseded: `the baseline's head is ${short(baselineHead)}, not ${short(pin.head)}` };
+  const head = git(["rev-parse", "HEAD"], { cwd });
+  if (head !== pin.head) return null; // ship's own refusal says the checkout is not at the baseline
+  const waits = autoDeployWaits({ plan, git, cwd, head, since: pin.since });
+  return waits.length ? { waits } : null;
 }

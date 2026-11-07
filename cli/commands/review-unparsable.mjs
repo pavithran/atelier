@@ -15,6 +15,6 @@ export default async function reviewUnparsableCommand() {
   let reply;
   try { reply = readFileSync(args["reply-file"], "utf8"); }
   catch (error) { die(`could not read the reply file: ${error.message}`); }
-  const r = await call("POST", `${I(name, id)}/review-unparsable`, { head: args.head, note: args.note ?? "", reply: reply.slice(-VERDICT_LIMITS.reply) }, as);
+  const r = await call("POST", `${I(name, id)}/review-unparsable`, { head: args.head, note: args.note ?? "", reply: reply.slice(-VERDICT_LIMITS.reply), ...(args.attempt !== undefined ? { attempt: Number(args.attempt) } : {}) }, as);
   console.log(`Kept the unparsable review reply on ${id}${r.released === false ? "" : ", and released its review request"}.`);
 }

@@ -256,24 +256,24 @@ last four adds its step to the class's order; leaving it out leaves the step out
 - `{"run": ["word", …]}`: a command and its arguments, run with no shell in
   the checkout, or
 - `{"request": URL, "status": 200}`: a GET of an http or https URL that must
-  end with that status. Redirects are followed, so `https://atelier.zone`,
+  end with that status. A request that checks delivery of a commit (a
+  verify-delivery run) refuses redirects by default, so `https://atelier.zone`,
   which sends a visitor who is not signed in on to `/home` and its sign-in,
-  answers 200 there. Add `"redirect": "manual"` to check the first response
-  without following redirects. For example, `{"request": "https://private.example",
-  "status": 302, "redirect": "manual"}` expects an Access sign-in redirect;
-  a public HTTP 200 fails that check. `"redirect": "forbid"` fails any 3xx
-  answer, naming where it pointed, so a sign-in page that answers 200 only
-  after a redirect never passes. The default is `"redirect": "follow"`.
-  A status check confirms the response code, not which service issued it:
-  an old build or a sign-in page answers 200 as readily as the new one. To
-  prove the shipped commit is live, name what the answer must hold:
-  `"expect": TEXT` passes only when the body contains TEXT, with `{commit}`
-  standing for the full revision being shipped and `{short}` for its first
-  eight characters, as in `{"request": "https://app.example/version",
+  fails it with the place it pointed at. Without `"expect"` it passes only
+  when the answer has the expected status and its body is a JSON object whose
+  `"commit"` is a whole hash equal to the shipped revision; a missing,
+  malformed or different commit, a body that is not JSON, and a redirect all
+  fail. Add `"redirect": "manual"` to check the first response without
+  following redirects, as for an Access sign-in redirect: for example
+  `{"request": "https://private.example", "status": 302, "redirect":
+  "manual"}`; a public HTTP 200 fails that check. `"redirect": "follow"`
+  follows redirects, and is the default only for a request that names no
+  commit to prove. To name what the answer must hold yourself, add
+  `"expect": TEXT`, which passes only when the body contains TEXT, with
+  `{commit}` standing for the full revision being shipped and `{short}` for its
+  first eight characters, as in `{"request": "https://app.example/version",
   "status": 200, "expect": "{commit}"}`; `"header": NAME` looks for the text
-  in that response header instead of the body. A verify step that passes
-  with no expected text, and with no command of its own, is reported and
-  recorded as delivered with its version not proven.
+  in that response header instead of the body.
 
 and may add `"retries"` (0 to 3: the run is tried again that many times if it
 fails, under the approval already taken, and every try is recorded),
@@ -384,10 +384,9 @@ It then prints the steps and runs them:
   text named beside it; command checks reuse
   their declared command with `ATELIER_SHIP_HEAD` set to the captured source
   commit. Install verification and a failed deploy still stop immediately. No successful ship record is written before wrap completes.
-  A verify-delivery that passes without an expected text, and with no command
-  of its own, does not stop the ship: its output and its record say
-  `delivered, version not proven`, because the request proved a server
-  answered, not that the new build is live.
+  A verify-delivery request with no `"expect"` passes only when the answer's
+  JSON `commit` is the shipped revision, so a generic 200, a sign-in page and
+  an old build all fail it and are recorded as an unconfirmed delivery.
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
   and reports how the checkout stands against the server's branch; a failing
@@ -436,6 +435,7 @@ Each is an event in the project's ledger, with no task id:
 | `action.consumed` | id, kind, commit |
 | `action.ran` | step, kind, approval used, command, commit, exit status, signal, duration, passed, output tail, ship id, note, and, when the approval it used had them, quote and acting |
 | `ship.recorded` | ship id, head, by, result (shipped or failed), the step it stopped at, the steps that ran, note |
+| `deploy.failed_notice` | task merged at the head (or none), ship id, head, step, reason; one per ship, written with the final failed record of a deploy on landing that failed twice, and the event that wakes a session |
 
 There is one `action.ran` for every command, request or step that ran,
 passing or failing, and none for a step that did not run. The ship id is the
