@@ -15,7 +15,6 @@ import { reviewBrief } from "../src/review/brief.ts";
 import { independenceRefusal } from "../src/review/independence.ts";
 import { reviewNeeded, type NeedInput, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
-import { gateServesTier, pickTierReviewer } from "../src/review/tier.ts";
 import { makeDispatch, retainDispatch } from "../src/dispatch/rules.ts";
 import { namedActor, pickPlanner } from "../src/plans/state.ts";
 
@@ -187,23 +186,15 @@ test("single-family mode with overrides forbidden: a different model of the comp
   assert.equal(briefFor(d, []).recommendation.reason, "This revision touches a protected path and needs an approval from a different anthropic model from every contributor (single-family mode). Your own approval is not that review. This project forbids overrides of that review.");
 });
 
-test("assertSingleFamily and pickTierReviewer: under the mode no other company's model builds or is asked for the tier", () => {
+test("assertSingleFamily: under the mode no other company's model builds", () => {
   assert.throws(() => assertSingleFamily(GPT, anthropic), /^RuleError: codex\/gpt-6-astra is not one of anthropic's models|codex\/gpt-6-astra is not one of anthropic's models/);
   assertSingleFamily(SONNET, anthropic);
   assertSingleFamily(GPT, crossFamily);
   assertSingleFamily(GPT, returned);
   assertSingleFamily(OWNER, anthropic);
-  const SOL = "codex/gpt-6.1-sol", FABLE = "claude-code/fable-5.1";
-  const all = () => true;
-  assert.equal(pickTierReviewer([SOL, FABLE], [OPUS], [SONNET], all, null, "anthropic"), FABLE);
-  assert.equal(pickTierReviewer([SOL, FABLE], [OPUS], [SONNET], all), SOL);
-  assert.equal(pickTierReviewer([SOL, "codex/claude-opus-5-5"], [OPUS], [SONNET], all, null, "anthropic"), null);
 });
 
-test("gateServesTier and integration blockers follow the mode", () => {
-  assert.equal(gateServesTier([SONNET], SONNET, [OPUS]), false);
-  assert.equal(gateServesTier([SONNET], SONNET, [OPUS], "anthropic"), true);
-  assert.equal(gateServesTier([OPUS], OPUS, [OPUS], "anthropic"), false);
+test("integration blockers follow the mode", () => {
   const p: Part = { id: "t21", key: "rules", dependsOn: [], state: "submitted", head: H2, owner: OPUS, pushActors: [OPUS], integration: null };
   const under = (policy: ProjectPolicy, reviews: Review[]) => integrationBlockers(p, [p], reviews, policy, OWNER);
   assert.deepEqual(under(anthropic, []), ["part rules (t21) has no approval from a different anthropic model from every contributor (single-family mode) at bbbbbbbb"]);

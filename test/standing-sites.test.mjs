@@ -59,9 +59,9 @@ test("every review request and every dispatch written is built by the standing c
     ...sites(/this\.planDispatch\(/),
     ...PASS_THROUGH.flatMap((name) => sites(new RegExp(`this\\.${name}\\(`))),
   ];
-  // The review requests, the owner's dispatch, the plan job and its retries,
+  // The review requests (four since t518 removed the tier request), the owner's dispatch, the plan job and its retries,
   // the parts and the integrator's jobs: none may be missed by the scan.
-  assert.ok(writers.filter((s) => /INSERT INTO review_requests/.test(ledger[s.line - 1])).length >= 5);
+  assert.ok(writers.filter((s) => /INSERT INTO review_requests/.test(ledger[s.line - 1])).length >= 4);
   assert.ok(writers.length >= 17, `found ${writers.length} sites`);
   const unchecked = writers
     .filter((s) => !PASS_THROUGH.includes(s.method.name))

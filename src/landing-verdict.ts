@@ -2,7 +2,7 @@
 // at the head a request named, newer than the request itself and not
 // withdrawn by a change of the task's acceptance criteria, the first
 // rejection decides, whatever came after it, and otherwise the newest
-// verdict is the answer. A tier review's approval (src/review/tier.ts) is a
+// verdict is the answer. A tier review's approval (removed in t518) is a
 // second opinion that never satisfies the gate, so it is reported apart and
 // never counts; its rejection is a rejection like any other. The landing
 // (cli/land.mjs) and the brief read this judgment.

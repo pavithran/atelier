@@ -1803,7 +1803,7 @@ export const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.local
 // the newest rejection's note to it; this is the record a session reads to
 // learn why a review rejected the task (t173). One flattened line per field,
 // so no note or finding can pose as a line of Atelier's own. A separate tier
-// review (src/review/tier.ts), beside the gate's, is labelled, and so is a
+// review (removed in t518), beside the gate's, is labelled, and so is a
 // gate review by a tier model, which gives the tier review too. After the
 // reviews come the replies no verdict could be read from (t407), newest
 // first, each with the reason it was refused and the reply itself, whole and
