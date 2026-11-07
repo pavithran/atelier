@@ -13,6 +13,8 @@ export type RunnerKind = "cloud" | "home";
 export const RUNNER_KINDS: RunnerKind[] = ["cloud", "home"];
 
 export interface Dispatch {
+  reviewer?: string;
+  land?: true;
   to: RunnerKind | "any";
   agent: string | null;   // an agent harness family, e.g. "claude-code", "codex", "opencode"; null for any
   model: string | null;   // a model id as the runner names it; null for the runner's choice
@@ -137,7 +139,10 @@ export function parseRunner(header: string | null): { runner: string; kind: Runn
   return { runner: header.toLowerCase(), kind: kind.toLowerCase() as RunnerKind };
 }
 
-export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown; job?: unknown; head?: unknown; overlapOk?: unknown }, by: string, at: string): Dispatch {
+export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unknown; note?: unknown; job?: unknown; head?: unknown; overlapOk?: unknown; reviewer?: unknown; land?: unknown }, by: string, at: string): Dispatch {
+  if (input.reviewer !== undefined && (typeof input.reviewer !== "string" || !validActor(input.reviewer) || !input.reviewer.includes("/"))) throw new RuleError("bad_dispatch", "reviewer must name harness/model", 400);
+  if (input.land !== undefined && typeof input.land !== "boolean") throw new RuleError("bad_dispatch", "land must be true or false", 400);
+  if (input.land === true && !input.reviewer) throw new RuleError("bad_dispatch", "a landing intent needs a named reviewer or the project's review-on-checked mapping", 400);
   const to = String(input.to ?? "any");
   if (to !== "any" && !RUNNER_KINDS.includes(to as RunnerKind)) {
     throw new RuleError("bad_dispatch", `send to cloud, home or any, not "${to}"`, 400);
@@ -177,7 +182,7 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   if (input.overlapOk !== undefined && input.overlapOk !== null && typeof input.overlapOk !== "boolean") {
     throw new RuleError("bad_dispatch", "overlapOk must be true or false", 400);
   }
-  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
+  return { to: to as Dispatch["to"], agent, model, by, at, note, ...(input.reviewer ? { reviewer: input.reviewer as string } : {}), ...(input.land === true ? { land: true as const } : {}), ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
 }
 
 // The dispatch an overlap override may keep (t517): only one still waiting in

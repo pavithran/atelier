@@ -1394,7 +1394,7 @@ export interface Standing {
   project: { name: string; title: string; repo: string };
   generatedAt: string;
   session?: SessionNote;
-  live: { id: string; title: string; state: string; owner: string | null; since: string | null }[];
+  live: { id: string; title: string; state: string; owner: string | null; head?: string | null; reviewAskedHead?: string | null; since: string | null }[];
   // What waits on the owner, one entry per task, as attentionFor places it
   // (src/attention.ts): the call, the sentence saying what to do and the link
   // to where it is done, with the brief's verdict after it; `kind`, `kinds`
@@ -1475,7 +1475,7 @@ export function buildStanding(
     // Since when someone holds a task: the claim or handoff that made them the holder.
     const made = own(i.id).find((ev) => ev.kind === "item.claimed" || (ev.kind === "item.handoff" && ev.data.to === i.owner));
     if (!made) partial.push(`${i.id}: when it was taken is not shown, because ${why(i.id)}.`);
-    return { id: i.id, title: i.title, state: i.state, owner: i.owner, since: made?.at ?? null };
+    return { id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, reviewAskedHead: i.reviewAskedHead, since: made?.at ?? null };
   });
 
   // One line per task waiting on the owner, in the rule's order, with the
