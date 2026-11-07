@@ -521,8 +521,14 @@ export async function runLand(io) {
     releasing = next.catch(() => {});
     return next;
   };
+  // The request for the lease while it is in flight (t547): a release waits
+  // for it to settle, bounded by the request's own timeout, so a lease the
+  // server grants after a signal came is found and given back, not stranded
+  // by the exit.
+  let acquiring = Promise.resolve();
   const releaseNow = async (why) => {
     beating = false;
+    await acquiring;
     if (everQueued && !leased) { everQueued = false; await leaveQueue(); }
     if (!leased) return;
     leased = false;
@@ -645,8 +651,11 @@ export async function runLand(io) {
       await haltIfStopping();
       const ask = Date.now();
       try {
-        const { item, expired } = await request("POST", leasePath, { item: id });
-        leased = true;
+        const asking = request("POST", leasePath, { item: id });
+        // Registered before the await below, so it runs first and a release
+        // waiting on `acquiring` sees `leased` already set.
+        acquiring = asking.then(() => { leased = true; }, () => {});
+        const { item, expired } = await asking;
         // A signal that came while the take was in flight found no lease to
         // release; give this one back before the process ends.
         if (stopping) { everQueued = false; await release("a signal came while the lease was being taken"); await haltIfStopping(); }

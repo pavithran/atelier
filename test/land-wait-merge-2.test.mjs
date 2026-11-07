@@ -114,6 +114,38 @@ test("a signal ends a queued landing even when the lease is freed while the sign
 });
 
 
+// t547, the round after astra's rejection: a signal that comes while the
+// request for the lease is in flight finds no lease to release. The server
+// then grants it; the landing must give it back before it exits.
+test("a signal while the lease is being asked for leaves no lease granted and stranded (t547)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  let hold = true;
+  f.box.holdOn = (url, body) => hold && url.endsWith("/landing-lease") && body.item === "t1" && !body.queued && !body.cancel && !body.renew && !body.confirm && !body.leave;
+  const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "land", "t1", "--wait", "--project", "proj"], {
+    cwd: f.checkout,
+    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30" },
+  });
+  t.after(() => child.kill("SIGKILL"));
+  let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
+  const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
+  await until(() => f.box.holding, CEILING_MS, "the take in flight");
+  child.kill("SIGTERM");
+  await new Promise((ok) => setTimeout(ok, 300));
+  hold = false;
+  const ended = await done;
+  assert.equal(ended.status, 143, output);
+  // The held ask is answered on the fixture's next beat; wait it out.
+  await until(() => f.box.holding === null, CEILING_MS, "the held ask answered");
+  await new Promise((ok) => setTimeout(ok, 200));
+  assert.equal(grantedTo(f).length, 1, "the held ask was never granted, so the test proves nothing");
+  // If the server granted the lease, the landing gave it back.
+  assert.equal(f.box.lease, null, "a granted lease was left standing");
+  const lastTake = grantedTo(f).length;
+  assert.equal(f.box.leaseLog.filter((x) => x.item === "t1" && x.kind === "release").length, lastTake);
+});
+
+
 test("a head pushed while the landing waits for the lease is not accepted or merged (t550)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
