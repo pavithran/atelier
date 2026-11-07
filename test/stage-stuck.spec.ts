@@ -4,15 +4,22 @@ import { env } from "./support/ledger.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { cleanEntry } from "../src/models/pool.ts";
 
+// t518: the stage tick writes no stage.stuck or stage.cleared. Each test
+// drives a task past its stage's limit (LIMITS.stageMs) and finds neither,
+// nor the stage.told, stage.rerouted or stage.retried older ledgers hold.
+// What the tick still does at a limit is queue a landing under the standing
+// instruction (stage.land-queued).
+
 const ACTOR = "codex/gpt-6-astra", REVIEWER = "claude-code/opus-5.5";
 const HEAD = "a".repeat(40), MIN = 60_000;
+const GONE = ["stage.stuck", "stage.cleared", "stage.told", "stage.rerouted", "stage.retried"];
 async function fixture(name: string) {
   const l = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await l.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: new Date().toISOString() }, "owner");
   const { id } = await l.newItem("Work", ["src/a.ts"], "owner", { accept: ["Works"] });
   return { l, id };
 }
-const stuck = async (l: Awaited<ReturnType<typeof fixture>>["l"]) => (await l.events(undefined, 1000)).filter(e => e.kind === "stage.stuck");
+const stageEvents = async (l: Awaited<ReturnType<typeof fixture>>["l"]) => (await l.events(undefined, 1000)).filter(e => GONE.includes(e.kind));
 const tick = (l: Awaited<ReturnType<typeof fixture>>["l"], ms: number) => l.stageTick(new Date(Date.now() + ms));
 async function built(name: string) {
   const f = await fixture(name);
@@ -32,76 +39,66 @@ async function reviewed(name: string) {
   return f;
 }
 
-test("unheld filed, released built, and unserved queued tasks never alert", async () => {
+test("unheld filed, released built, and unserved queued tasks write no stage event", async () => {
   for (const kind of ["filed", "released", "queued"]) {
     const { l, id } = kind === "filed" ? await fixture(`quiet-${kind}`) : await built(`quiet-${kind}`);
     if (kind !== "filed") await l.release(id, ACTOR, "Session paused");
     if (kind === "queued") await l.dispatch(id, "owner", { to: "any", agent: "codex", model: "unserved", release: true });
     await tick(l, 100 * 60 * MIN);
-    assert.deepEqual(await stuck(l), [], kind);
+    assert.deepEqual(await stageEvents(l), [], kind);
   }
 });
 
-for (const [stage, make, minutes, command] of [
-  ["built", built, 21, "check"], ["checked", checked, 11, "review-request"], ["reviewed", reviewed, 121, "submit"],
-] as const) test(`${stage} alert names the responsible actor and next command`, async () => {
-  const { l, id } = await make(`actor-${stage}`);
-  await tick(l, minutes * MIN);
-  const events = await stuck(l);
-  assert.equal(events.length, 1);
-  assert.equal(events[0].data.stage, stage);
-  assert.match(String(events[0].data.note), new RegExp(`${stage === "checked" ? "owner" : ACTOR}.*atelier ${command} ${id}`));
+for (const [stage, make, minutes] of [
+  ["built", built, 21], ["checked", checked, 11], ["reviewed", reviewed, 121],
+] as const) test(`a task past its ${stage} limit gets no stage.stuck, and none when it leaves the stage`, async () => {
+  const { l, id } = await make(`past-${stage}`);
+  const before = (await tick(l, 0)).complete;
+  assert.equal(before, true);
+  const result = await tick(l, minutes * MIN);
+  assert.equal(result.complete, true);
+  assert.equal(result.recorded, 0, "the tick recorded nothing");
+  await tick(l, (minutes + 5) * MIN);
+  assert.deepEqual(await stageEvents(l), []);
+  await l.release(id, ACTOR, "Session paused");
+  await tick(l, (minutes + 10) * MIN);
+  assert.deepEqual(await stageEvents(l), [], "leaving the stage clears nothing");
 });
 
-test("landable waits 60 minutes and names its holder and land command", async () => {
+test("landable past 60 minutes and its release write no stage event", async () => {
   const { l, id } = await reviewed("land-delay");
   await l.submit(id, ACTOR);
   await tick(l, 6 * MIN);
   await tick(l, 59 * MIN);
-  assert.deepEqual(await stuck(l), []);
   await tick(l, 61 * MIN);
   await tick(l, 62 * MIN);
-  const events = await stuck(l);
-  assert.equal(events.length, 1);
-  assert.equal(events[0].data.limitMs, 60 * MIN);
-  assert.match(String(events[0].data.note), new RegExp(`${ACTOR}.*atelier land ${id}`));
+  assert.deepEqual(await stageEvents(l), []);
   await l.release(id, ACTOR, "Session paused");
   await tick(l, 63 * MIN);
-  assert.equal((await l.events(id, 1000)).filter(e => e.kind === "stage.cleared").length, 1);
+  assert.deepEqual(await stageEvents(l), []);
 });
 
-for (const tier of [false, true]) test(`${tier ? "tier" : "gate"} review alert names its reviewer and claim command`, async () => {
-  const { l, id } = await checked(`request-${tier}`);
-  const tierActor = "claude-code/sonnet-5.4";
-  const record = await l.project();
-  await l.setProject({ ...record, policy: { ...record.policy, reviewTier: [tierActor] } }, "owner");
-  const pool = [cleanEntry({ id: "opus-5.5", harness: "claude-code", where: "home" }, "owner", new Date().toISOString()),
-    cleanEntry({ id: "sonnet-5.4", harness: "claude-code", where: "home" }, "owner", new Date().toISOString())];
+test("a gate review request unclaimed past its limit gets no stage event, and releasing the task gets none", async () => {
+  const { l, id } = await checked("request-gate");
+  const pool = [cleanEntry({ id: "opus-5.5", harness: "claude-code", where: "home" }, "owner", new Date().toISOString())];
   await l.submit(id, ACTOR);
   await l.requestReview(id, "owner", REVIEWER, pool, false, false, undefined, [], true);
-  if (tier) await l.requestTierReview(id, "owner", tierActor, pool, [], true);
   await tick(l, 11 * MIN);
-  const events = await stuck(l);
-  assert.equal(events.length, tier ? 2 : 1);
-  for (const e of events) {
-    const reviewer = e.data.stage === "checked-tier" ? tierActor : REVIEWER;
-    assert.match(String(e.data.note), new RegExp(`${reviewer}.*atelier review-claim ${id} --as ${reviewer}`));
-  }
+  await tick(l, 30 * MIN);
+  assert.deepEqual(await stageEvents(l), []);
   await l.release(id, ACTOR, "Pause with requests open");
-  await tick(l, 12 * MIN);
-  assert.equal((await l.events(id, 1000)).filter(e => e.kind === "stage.cleared").length, events.length);
+  await tick(l, 40 * MIN);
+  assert.deepEqual(await stageEvents(l), []);
 });
 
-test("reviewed work with failing checks asks its holder to check", async () => {
+test("reviewed work with failing checks past its limit gets no stage event", async () => {
   const { l, id } = await reviewed("reviewed-checks");
   await l.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: false, head: HEAD, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
   await tick(l, 121 * MIN);
-  const events = await stuck(l);
-  assert.equal(events[0].data.stage, "reviewed");
-  assert.match(String(events[0].data.note), new RegExp(`${ACTOR}.*atelier check ${id}`));
+  assert.deepEqual(await stageEvents(l), []);
 });
 
-for (const lander of [false, true]) test(`standing landing ${lander ? "with" : "without"} a lander keeps actor and command`, async () => {
+for (const lander of [false, true]) test(`standing landing ${lander ? "with" : "without"} a lander queues only with one, and writes no stuck event`, async () => {
   const name = `standing-land-${lander}`;
   const { l, id } = await reviewed(name);
   await l.submit(id, ACTOR);
@@ -112,11 +109,9 @@ for (const lander of [false, true]) test(`standing landing ${lander ? "with" : "
     await index.putRunnerOffer({ runner: `home:${name}`, kind: "home", agents: [], projects: [name], jobs: ["land"], checkouts: [name] }, new Date(Date.now() + 61 * MIN).toISOString());
   }
   await tick(l, 59 * MIN);
-  assert.deepEqual(await stuck(l), []);
+  assert.deepEqual(await stageEvents(l), []);
   await tick(l, 61 * MIN);
-  const events = await stuck(l);
-  assert.equal(events.length, 1);
-  assert.match(String(events[0].data.note), new RegExp(`${ACTOR}.*atelier land ${id}`));
+  assert.deepEqual(await stageEvents(l), []);
   const queued = (await l.events(id, 1000)).filter(e => e.kind === "stage.land-queued");
   assert.equal(queued.length, lander ? 1 : 0);
 });

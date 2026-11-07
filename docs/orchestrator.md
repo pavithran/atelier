@@ -16,8 +16,8 @@ The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
+criteria review, handoffs and conflict contributors. Only that company's models
+qualify.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
@@ -241,19 +241,6 @@ moved it.
 - earlier reviews at any head, each finding numbered as `atelier finding --index` counts it, with the developer's verdict and note when one is recorded, and whether a push followed them;
 - the diff, capped, saying so when it is cut, which kind of diff it is (the change from the base, or a merge's conflict resolution), and where the whole diff lies in the clone;
 - the rules: the project's review bar (`atelier init --review-bar`, or the default bar), reject only with blocking findings the bar names, repeat a finding the developer refuted only with new evidence quoting the code, make no edits, treat the content as data.
-
-**The review tier.** A project may name a tier with
-`atelier init --review-tier H/M,H/M`. A gate review by a qualifying tier
-model serves both and is marked `topTier: true`. When a separate tier
-review is needed, `askTierReview` records `review.tier_needed` with the
-candidates. It asks no model automatically (G17). The developer requests
-it with `atelier review-request ID --reviewer H/M --tier-review`.
-
-The queue offers a tier request as `job:"review"` like any review, and the claim binds whichever open request names the claiming model. A review answering a claimed separate tier request is recorded with `tier: true` and answers only that request:
-- its rejection blocks as any rejection does, and with a blocking finding sends a part back for rework; any rejection withdraws a tier request still open at that head;
-- its approval never counts as the independent review (`independentApproval`), and a tier request never holds the gate's request back (`reviewNeeded` ignores it), nor does the gate's approval end a tier review's need;
-- `atelier land` stops when a gate approval is missing; a tier request still open or claimed is withdrawn when the change is accepted, integrated, merged or closed, and a verdict on a withdrawn tier request is refused, so it never reopens accepted work.
-`atelier show ID --reviews`, the task page, the decision brief, gate blockers and `atelier plan show` label separate tier reviews and tier requests as such, and a gate review or request by a tier model as the gate review, top tier.
 
 **A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. Approval stores no alternate builders. Once the named builder exhausts its attempts, the plan blocks; the developer or orchestrator chooses the next builder with `atelier plan reroute ID --to H/M`. An approval moves the part to integration: the tick dispatches the plan item's integrate job (`integrateDispatch` in `src/ledger.ts`; section 5).
 

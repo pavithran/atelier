@@ -20,7 +20,7 @@ const VALIDATION = [
     "bad_outcome", "bad_post_merge", "bad_prepare", "bad_private", "bad_projects", "bad_prose_standard", "bad_standing",
     "bad_quote", "bad_reason", "bad_receipt", "bad_record", "bad_regenerate", "bad_release",
     "bad_replaces", "bad_report", "bad_request", "bad_request_id", "bad_reset", "bad_resolve", "bad_resolver",
-    "bad_review_bar", "bad_review_tier", "bad_revision", "bad_risk_reviews", "bad_role", "bad_run",
+    "bad_review_bar", "bad_revision", "bad_risk_reviews", "bad_role", "bad_run",
     "bad_runner", "bad_runner_token", "bad_scope", "bad_served", "bad_session", "bad_single_family",
     "bad_status", "bad_step", "bad_stopped", "bad_summary", "bad_time", "bad_title", "bad_to", "bad_triage", "bad_usage",
     "bad_verdict", "block_reason", "block_until", "confirm_server", "defect_found_in", "defect_note",
@@ -162,11 +162,12 @@ test("the counts: strict codes, codes with a next, exempt codes", () => {
   // Server-index validation and conflicts add two guided refusals (t7), and
   // t504's criteriaReview check one more (bad_policy); t505's repair link adds
   // a second not_merged site, a code already counted with a next.
-  // t523 adds five guided refusals: four review-proof codes and bad_tests.
   assert.equal(STRICT.length, 78);
-  assert.equal(withNext, 234);
-  assert.equal(exempt.size, 125);
-  assert.equal(sites.size, 359);
+  // t518 removed the tier review's refusals (bad_review_tier, not_tier, tier_refused).
+  // t523 adds five guided refusals: four review-proof codes and bad_tests.
+  assert.equal(withNext, 233);
+  assert.equal(exempt.size, 124);
+  assert.equal(sites.size, 357);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });

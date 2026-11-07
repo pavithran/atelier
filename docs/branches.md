@@ -55,7 +55,7 @@ What refuses and what is recorded:
 - A key-shaped line the owner has not cleared refuses the push, on every branch.
 - A private path refuses the push, on every branch.
 - An ordinary push that adds more than 1000 commits (`TASK_COMMITS`, as `scanCommit`) is refused, naming the cap. The initial owner push scans history in batches.
-- An unscanned file (a blob over 8 MiB, `SCAN_BYTES`; a non-media binary; a submodule) on `t/N` or `plan/N` is recorded on the item with its reason and does not refuse. On the initial owner push, it is recorded on the project and does not refuse. On ordinary pushes to the project's branch or `dev/*`, which have no item to record on, it refuses the push, naming the files, unless the owner cleared it on the grant's task.
+- Media (an image, video, audio or font, by its signature or its extension: PNG, JPEG, GIF, WebP, MP4 and the like) is scanned as raw bytes for key patterns, never flagged as unscanned, and not read at all above `SCAN_BYTES` (t518). An unscanned file (a text blob over 8 MiB, `SCAN_BYTES`; a binary that is not media; a submodule) on `t/N` or `plan/N` is recorded on the item with its reason and does not refuse. On the initial owner push, it is recorded on the project and does not refuse. On ordinary pushes to the project's branch or `dev/*`, which have no item to record on, it refuses the push, naming the files, unless the owner cleared it on the grant's task.
 
 The server sweeps leftover policy and report directories from `data/ENV/hook-scans` when it starts. The private paths are set with the Ledger's `setPrivatePaths`.
 
@@ -121,7 +121,7 @@ A project kept off Atelier brings its own task and decision files with `atelier 
 
 What a move adds meets the checks a push would: the server runs the hook's secret scan and private-file guard over it (`src/git/scan-run.mjs`, in batches of at most 400 commits across the full graph, including merge parents, so each stays under the 1,000-commit cap) before any ref moves.
 
-Binary and oversized files in the old baseline are carried and recorded as unscanned on the project's `project.host_moved` event, with file, commit and reason named in the answer. Other scan failures and private files still refuse the move.
+Binary (other than media) and oversized text files in the old baseline are carried and recorded as unscanned on the project's `project.host_moved` event, with file, commit and reason named in the answer. Other scan failures and private files still refuse the move.
 
 The CLI waits up to one hour for this route, so a move can finish past the normal 60-second request limit; `ATELIER_SERVER_TIMEOUT_MS` still overrides it. A move longer than about 100 seconds must use the server’s tailnet address (`ATELIER_SERVER`), since Cloudflare’s proxy cuts a silent origin connection around 100 seconds. A key-shaped line refuses the move, naming file and line; the developer clears it with `--clear-secret REASON --quote WORDS`, and the next move lets that line (same file, same fingerprint) through. `move-host` belongs to the migration alone: after `--end-bake`, or once a landing has moved the branch here with no way back kept, it is refused (`bake_over`) and only a landing moves the branch.
 

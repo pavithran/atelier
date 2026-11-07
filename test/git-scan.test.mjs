@@ -209,6 +209,34 @@ test("a file the scan cannot read is recorded on a task's push, and refuses the 
   git("update-ref", "refs/heads/main", merge);
 });
 
+// t518: binary media raised unscanned flags (0 real secrets in 10; 6 refused
+// pushes, 3 manual clearances in Nov 1-6). A PNG, JPEG, MP4 or WebP, of any
+// size, is neither refused nor flagged; a text file with a key still is.
+const ascii = (text) => [...text].map((c) => c.charCodeAt(0));
+const media = {
+  "shot.png": Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0xff, 0xfe, 1, 2]),
+  "photo.jpg": Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, ...ascii("JFIF"), 0, 1, 0xff, 0xfe]),
+  "clip.mp4": Buffer.from([0, 0, 0, 0x18, ...ascii("ftypisom"), 0, 0, 2, 0, ...ascii("isomiso2"), 0xff, 0xfe, 0]),
+  "pic.webp": Buffer.from([...ascii("RIFF"), 4, 0, 0, 0, ...ascii("WEBP"), 0xff, 0xfe, 0]),
+  "long.mp4": Buffer.concat([Buffer.from([0, 0, 0, 0x18, ...ascii("ftypisom"), 0, 0, 2, 0]), Buffer.alloc(8 * 1024 * 1024 + 1, 0xfe)]),
+};
+
+test("a PNG, JPEG, MP4 or WebP is neither refused nor flagged as unscanned, whatever its size, and a key in a text file beside them still refuses", async (t) => {
+  for (const file of Object.keys(media)) {
+    const ok = await push(OWNER, `${commit(file, main(), { [file]: media[file] })}:refs/heads/dev/${file.replace(".", "-")}`);
+    assert.equal(ok.status, 0, `${file}: ${ok.stderr}`);
+  }
+  const all = commit("media", main(), media);
+  const onTask = await push(t5, `+${all}:refs/heads/t/5`);
+  assert.equal(onTask.status, 0, onTask.stderr);
+  const item = await L().recordPush("t5", AGENT, all, all, false, meta, [], true);
+  assert.deepEqual(item.secret ?? [], []);
+  // A key-shaped line in a text file is refused in the same push.
+  const keyed = commit("media and a key", main(), { ...media, "config.env": `OPENAI_API_KEY=${KEY}\n` });
+  refused(await push(OWNER, `${keyed}:refs/heads/dev/keyed`), /secret scan found a key-shaped line: config\.env:1/);
+  assert.equal(await tip("refs/heads/dev/keyed"), "");
+});
+
 test("two pushes to one task keep a report each, and recordPush takes the one for the head it records", async () => {
   const a = commit("a", main(), { "a.bin": "\0a\0" });
   const b = commit("b", main(), { "b.bin": "\0b\0" });
