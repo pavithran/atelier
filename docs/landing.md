@@ -508,12 +508,12 @@ when none). This field comes from the ledger's current gate review requests,
 including answered requests, excluding withdrawn, released and tier requests.
 An omitted field means an older server did not supply this information.
 
-The pulse consumer can use `wakesForSubmission` from
-`cli/submission-review.mjs` with an `item.submitted` event and the current item
-snapshot. It wakes for the current submitted head unless a review is known at
-that head, and ignores submissions for older heads. The installed
-`atelier-pulse` script belongs to ai-projects-ops; its consumer must import or
-mirror this predicate rather than treating every submit as quiet news.
+`atelier-pulse` in ai-projects-ops (`bin/atelier-pulse`) implements the wake
+itself. It reads `item.submitted` and `review.requested` from `atelier events`,
+waking for a submitted head with no review asked and staying quiet when a
+review is asked for that head. This repository provides the dispatch-time
+review request and the status wait. The walters-coach regression test here
+covers the status half; pulse coverage belongs to ai-projects-ops.
 Before and after deployment, smoke-check a dispatch with `--reviewer --land`
 through submit, review approval and merge on a registered checkout. Also check
 that the installed pulse wakes once for an unasked head and stays quiet for an

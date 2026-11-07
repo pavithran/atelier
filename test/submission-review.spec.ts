@@ -2,8 +2,6 @@ import { env, runInDurableObject } from "./support/workers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
-// @ts-expect-error plain JavaScript pulse adapter
-import { wakesForSubmission } from "../cli/submission-review.mjs";
 import { makeDispatch } from "../src/dispatch/rules.ts";
 // @ts-expect-error plain JavaScript formatter
 import { formatStatus, statusJson } from "../cli/status.mjs";
@@ -43,8 +41,6 @@ test("walters-coach: a checked submit without a review is an orchestrator wait i
   await L.submit(id, builder);
   const items = await L.items();
   assert.equal(items[0].reviewAskedHead, null);
-  const event = (await L.events(id)).find(e => e.kind === "item.submitted")!;
-  assert.equal(wakesForSubmission(event, items), true);
   const text = formatStatus([{ name, items, inbox: await L.inbox(new Date().toISOString()) }]);
   assert.match(text, /Waiting on the orchestrator/);
   assert.match(text, new RegExp(`atelier land ${id} --reviewer H/M`));
@@ -53,17 +49,6 @@ test("walters-coach: a checked submit without a review is an orchestrator wait i
 test("dispatch refuses malformed reviewers and a land request with no reviewer", () => {
   assert.throws(() => makeDispatch({ reviewer: "bad", land: true }, "owner", "now"), /reviewer/);
   assert.throws(() => makeDispatch({ land: true }, "owner", "now"), /reviewer/);
-});
-
-test("pulse wakes for an unasked submitted head, stays quiet for an asked head, and ignores old heads", async () => {
-  const { L, id } = await setup("submission-pulse", false);
-  await L.submit(id, builder);
-  const event = (await L.events(id)).find(e => e.kind === "item.submitted")!;
-  assert.equal(wakesForSubmission(event, await L.items()), true);
-  assert.equal(wakesForSubmission(event, [{ ...(await L.item(id)), reviewAskedHead: undefined }]), true);
-  await L.requestReview(id, "owner", reviewer, pool);
-  assert.equal(wakesForSubmission(event, await L.items()), false);
-  assert.equal(wakesForSubmission({ ...event, data: { head: base } }, await L.items()), false);
 });
 
 test("a crash before landing is queued leaves no review or land completion and a submit retry recovers", async () => {
