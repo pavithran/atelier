@@ -62,6 +62,12 @@ export function disputedFinding(reason: unknown): number | null {
   return m ? Number(m[1]) : null;
 }
 
+// Whether a dispatch's note is the one reworkNote writes, which marks the
+// runner's automatic redispatch of a rejected task to its builder.
+export function isReworkNote(note: unknown): boolean {
+  return typeof note === "string" && /^Rejected at [0-9a-f]{8}: /.test(note);
+}
+
 // The note a rejected task's dispatch carries to its builder, cut to fit.
 export function reworkNote(id: string, head: string, findings: readonly { file?: string; line?: number; severity: string; text: string }[], summary: string, max = 1800): string {
   const lines = findings.filter((f) => f.severity === "blocking").map((f, i) => `${i + 1}. ${f.file ?? "?"}${f.line ? `:${f.line}` : ""} ${f.text}`);

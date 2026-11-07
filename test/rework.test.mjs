@@ -39,7 +39,7 @@ function fixture({ round = 1, replies = [REJECT], item, claim: claimExtra } = {}
       calls.push({ argv, token: options?.token });
       return argv[0] === "review-claim" ? JSON.stringify(claim(round, { item, claim: claimExtra })) : "{}";
     },
-    // One notification per wake: the session is told what happened and why.
+    // A wake hook a deployment might still pass: the runner never calls it (t521).
     async wake(message) { wakes.push(message); },
     async clone() {}, async checkout() {}, async diff() { return "diff --git a/src/a.ts b/src/a.ts\n+x\n"; },
     async brief(workspace, text) { calls.push({ brief: text }); return { file: "/b" }; },
@@ -52,7 +52,8 @@ function fixture({ round = 1, replies = [REJECT], item, claim: claimExtra } = {}
     async harness() { calls.push({ harness: true }); return { code: 0, timedOut: false, stderr: "", output: "" }; },
     async removeBrief() {}, removeDiff() {}, async dataHome(w) { return { dir: `${w}-data` }; }, async removeDataHome() {},
   };
-  return { io, calls, logs, wakes };
+  const needed = () => logs.filter((l) => l.startsWith("session needed: "));
+  return { io, calls, logs, wakes, needed };
 }
 const sent = (calls, name) => calls.filter((c) => c.argv?.[0] === name);
 
@@ -137,27 +138,43 @@ test("an unreadable reply is asked of the reviewer once; a second unreadable rep
   assert.equal(state.phase, "failed");
   assert.equal(unreadable.calls.filter((c) => c.harness).length, 2, "the reviewer was asked twice, not more");
   assert.equal(state.unretryable, true);
-  assert.equal(unreadable.wakes.length, 1);
-  assert.match(unreadable.wakes[0], /could not be read twice/);
+  // The second reply is kept with --attempt 2, which makes the server record the notice; the runner sends nothing.
+  const kept = sent(unreadable.calls, "review-unparsable");
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].argv[kept[0].argv.indexOf("--attempt") + 1], "2");
+  assert.equal(unreadable.wakes.length, 0, "no request leaves the runner for a wake");
+  assert.match(unreadable.needed()[0], /could not be read twice/);
   assert.equal(sent(unreadable.calls, "dispatch").length, 0);
 
   // A first unreadable reply followed by a readable rejection wakes nobody: it is the first rejection.
   const recovered = fixture({ replies: ["Looks fine to me.", REJECT] });
   const next = await runReview(assignment, config, "home:studio", recovered.io);
   assert.equal(next.verdict, "reject");
-  assert.equal(recovered.wakes.length, 0);
+  assert.equal(recovered.needed().length, 0);
+  assert.equal(sent(recovered.calls, "review-unparsable").length, 0);
   assert.equal(sent(recovered.calls, "dispatch").length, 1);
 });
 
 // Criterion 4: a builder's dispute block is notified by the ledger itself
 // (test/dispute-wake.spec.ts); the runner reads no task for it.
-test("a runner with no way to dispatch leaves the rejection to a session, once", async () => {
-  const { io, wakes, calls } = fixture({ round: 1 });
+test("a runner with no way to dispatch says a session is needed in its log, and sends nothing", async () => {
+  const { io, wakes, calls, needed } = fixture({ round: 1 });
   delete io.dispatchBuilder;
   await runReview(assignment, config, "home:studio", io);
   assert.equal(sent(calls, "dispatch").length, 0);
-  assert.equal(wakes.length, 1);
-  assert.match(wakes[0], /no way to dispatch/);
+  assert.equal(wakes.length, 0);
+  assert.equal(needed().length, 1);
+  assert.match(needed()[0], /no way to dispatch/);
+});
+
+// A refused redispatch: the server records the notice (test/dispute-wake.spec.ts);
+// the runner logs the refusal and sends nothing for a wake.
+test("a refused redispatch is logged and no request leaves the runner for a wake", async () => {
+  const { io, wakes, needed } = fixture({ round: 1 });
+  io.dispatchBuilder = async () => { throw new Error("atelier dispatch exited 1: refused"); };
+  await runReview(assignment, config, "home:studio", io);
+  assert.equal(wakes.length, 0);
+  assert.match(needed()[0], /could not be sent back.*refused/);
 });
 
 // The production hooks (t521): the io the runner builds must carry the two
@@ -165,27 +182,16 @@ test("a runner with no way to dispatch leaves the rejection to a session, once",
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRunner, ntfyWake, dispatchAsDeveloper } from "../cli/runner.mjs";
+import { runRunner, dispatchAsDeveloper } from "../cli/runner.mjs";
 
-test("the runner's own io carries the builder dispatch, the notification and the dispute read", async () => {
+test("the runner's own io carries the builder dispatch and no wake of its own", async () => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-rework-io-"));
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify({ agents: [{ agent: "opencode", models: ["glm"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] }] }));
   let io;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, { oneShot: async (job) => { io = job.io; }, api: { server: () => "https://atelier.test" }, credential: "runner-token" });
-  for (const hook of ["dispatchBuilder", "wake"]) assert.equal(typeof io?.[hook], "function", `io.${hook} is connected`);
-});
-
-test("ntfyWake sends one message to the topic, and refuses without one", async () => {
-  const runs = [];
-  const run = (code) => async (argv) => { runs.push(argv); return { code, output: "", stderr: "channel down" }; };
-  await ntfyWake(run(0), "atelier/t21: the second rejection", { env: { NTFY_TOPIC: "my topic" } });
-  assert.equal(runs.length, 1);
-  assert.equal(runs[0].at(-1), "https://ntfy.sh/my%20topic");
-  assert.ok(runs[0].includes("atelier/t21: the second rejection"));
-  await assert.rejects(() => ntfyWake(run(0), "x", { env: {} }), /NTFY_TOPIC/);
-  assert.equal(runs.length, 1, "nothing is run without a topic");
-  await assert.rejects(() => ntfyWake(run(22), "x", { env: { NTFY_TOPIC: "t" } }), /channel down/);
+  assert.equal(typeof io?.dispatchBuilder, "function", "io.dispatchBuilder is connected");
+  assert.equal(io?.wake, undefined, "the runner has no wake that sends a request");
 });
 
 test("dispatchAsDeveloper runs atelier dispatch without the runner's name or token, and fails on a refusal", async () => {

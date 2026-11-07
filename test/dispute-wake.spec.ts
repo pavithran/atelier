@@ -3,10 +3,13 @@ import { expect, it, vi } from "./support/vitest.ts";
 import { Ledger } from "../src/ledger.ts";
 import worker from "../src/index.ts";
 import { NO_CRITERIA } from "../src/criteria.ts";
+import { reworkNote } from "../src/dispatch/rework.ts";
 
-// t521: a builder's dispute of a finding and a task's second rejected round
-// each record one notice in the ledger, in the transaction that records the
-// dispute or the rejection, and atelier-pulse wakes a session from it. Nothing
+// t521: a builder's dispute of a finding, a task's second rejected round, a
+// reviewer's second unreadable reply and a refused redispatch of a rejected
+// task each record one notice in the ledger, in the call that records the
+// dispute, the rejection, the reply or the refusal, and atelier-pulse wakes a
+// session from it. Nothing
 // is sent to ntfy (PAVI, 2026-11-07: "drop ntfy"); delivery to the developer's
 // devices is a separate task. The dispute is driven through the Worker's block
 // route and the rejection through the ledger's review record; no item response
@@ -25,9 +28,11 @@ const asOwner = (method: string, path: string, body: unknown) => worker.fetch(ne
 async function prepare(name: string) {
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record(name));
   for (const [harness, id] of [["claude-code", "opus-5.5"], ["claude-code", "sonnet-5.5"], ["codex", "gpt-6-astra"]]) expect((await asOwner("PUT", `/models/${id}`, { harness, where: "cloud" })).status).toBe(200);
-  const minted = await asOwner("POST", "/tokens", { actor: A, projects: [name] });
-  expect(minted.status).toBe(201);
-  tokens.set(name, ((await minted.json()) as { token: string }).token);
+  for (const who of [A, R1]) {
+    const minted = await asOwner("POST", "/tokens", { actor: who, projects: [name] });
+    expect(minted.status).toBe(201);
+    tokens.set(`${name} ${who}`, ((await minted.json()) as { token: string }).token);
+  }
 }
 const record = (name: string) => ({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() });
 function setup(L: Ledger, name: string) {
@@ -41,7 +46,7 @@ function setup(L: Ledger, name: string) {
 function call(L: Ledger, name: string, actor: string, method: string, path: string, body?: Record<string, unknown>) {
   const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: (id: DurableObjectId) => (id.toString() === env.LEDGER.idFromName(`project:${name}`).toString() ? L : env.LEDGER.get(id)) } as unknown as typeof env.LEDGER;
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1${path}`, {
-    method, headers: actor === "owner" ? OWNER : { authorization: `Bearer ${tokens.get(name)}`, "x-atelier-actor": actor, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}),
+    method, headers: actor === "owner" ? OWNER : { authorization: `Bearer ${tokens.get(`${name} ${actor}`)}`, "x-atelier-actor": actor, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}),
   }), { ...env, LEDGER, ATELIER_TOKEN: "test-token", NTFY_TOPIC: "dispute-test-secret" } as typeof env);
 }
 const block = (L: Ledger, name: string, actor: string, reason: string, extra: Record<string, unknown> = {}) => call(L, name, actor, "POST", "/block", { reason, ...extra });
@@ -137,5 +142,58 @@ it("a second rejected round records one notice, and a repeat adds none", async (
       reject(R1, H3);
       expect(notices(L, "item.second_rejection_notice")).toHaveLength(1);
     } finally { send.mockRestore(); }
+  });
+});
+
+// Criterion 5: the second unreadable reply at a head records one notice, in
+// the review-unparsable call that keeps it; the first records none, and a
+// repeat at the same head adds none.
+it("the second unreadable reply at a head records one notice, and the first none", async () => {
+  await prepare("unparsable-notice");
+  await fixture("unparsable-notice", async (state) => {
+    const L = new Ledger(state, env);
+    setup(L, "unparsable-notice");
+    L.submit("t1", A);
+    const keep = (extra: Record<string, unknown> = {}) => call(L, "unparsable-notice", R1, "POST", "/review-unparsable", { head: H1, note: "No VERDICT line", reply: "looks fine", ...extra });
+    // The runner's job keeps the second reply it was given, saying so.
+    expect((await keep({ attempt: 2 })).status).toBe(200);
+    const recorded = notices(L, "item.review_unparsable_notice");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].data).toMatchObject({ head: H1, by: R1, note: "No VERDICT line" });
+    expect((await keep({ attempt: 2 })).status).toBe(200);
+    expect(notices(L, "item.review_unparsable_notice")).toHaveLength(1);
+    // Kept by hand at a new head: the first reply records none, the second one.
+    L.recordPush("t1", A, H2, H2);
+    const byHand = () => call(L, "unparsable-notice", R1, "POST", "/review-unparsable", { head: H2, note: "No VERDICT line", reply: "still fine" });
+    expect((await byHand()).status).toBe(200);
+    expect(notices(L, "item.review_unparsable_notice")).toHaveLength(1);
+    expect((await byHand()).status).toBe(200);
+    expect(notices(L, "item.review_unparsable_notice").map((e) => e.data.head)).toEqual([H1, H2]);
+  });
+});
+
+// A refused automatic redispatch records one notice with the refusal's
+// reason; a repeat adds none, and a refused dispatch of the developer's own
+// (no rework note) records none.
+it("a refused redispatch of a rejected task records one notice, and a repeat adds none", async () => {
+  await prepare("redispatch-refused");
+  await fixture("redispatch-refused", async (state) => {
+    const L = new Ledger(state, env);
+    setup(L, "redispatch-refused");
+    L.submit("t1", A);
+    // A task the developer has blocked meanwhile is refused the dispatch, its builder still holding it.
+    L.block("t1", "owner", "waiting on the schema", false, undefined, { quote: "hold it", acting: "claude-code/opus-5.5" });
+    const note = reworkNote("t1", H1, [{ file: "src/a.ts", line: 1, severity: "blocking", text: "wrong" }], "One bug.");
+    const redispatch = (body: Record<string, unknown>) => call(L, "redispatch-refused", "owner", "POST", "/dispatch", { to: "home", agent: "codex", model: "gpt-6-astra", ...body });
+    const own = await redispatch({ note: "try again" });
+    expect(own.status).toBeGreaterThanOrEqual(400);
+    expect(notices(L, "item.redispatch_refused_notice")).toHaveLength(0);
+    const refused = await redispatch({ note });
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    const recorded = notices(L, "item.redispatch_refused_notice");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].data).toMatchObject({ head: H1, reason: expect.stringContaining("only an open task can be sent to a runner") });
+    expect((await redispatch({ note })).status).toBeGreaterThanOrEqual(400);
+    expect(notices(L, "item.redispatch_refused_notice")).toHaveLength(1);
   });
 });

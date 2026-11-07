@@ -158,6 +158,7 @@ export function leaseCall(argv, options = {}, api, credential) {
     if (argv[0] === "review-unparsable") {
       body.head = value("--head");
       body.reply = readFileSync(value("--reply-file"), "utf8");
+      if (argv.includes("--attempt")) body.attempt = Number(value("--attempt"));
     }
     const transport = runnerTransport({ server: server(), credential: options.token ?? credential });
     const params = { project: value("--project"), item: argv[1] };
@@ -2897,7 +2898,9 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       // workspace, removed once the call ends whatever it answered.
       const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
       try {
-        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, ...generation()]);
+        // This is the second reply (the reviewer was asked again above), so
+        // the server records the notice that wakes a session (t521).
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, "--attempt", "2", ...generation()]);
         io.log(`review released: ${parsed.error}`);
       } catch (error) {
         io.log(`could not keep the unparsable reply on the task: ${error.message}`);
@@ -2906,8 +2909,8 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
         await io.removeBrief(kept);
       }
       // The second unreadable reply is not retried by the pipeline (t521):
-      // a session is woken once and decides.
-      if (unparsableRoute(2) === "wake") await wakeSession(io, `${project}/${item.id}: the reviewer ${actor}'s reply could not be read twice at ${claimed.head.slice(0, 8)} (${parsed.error}); the pipeline cannot retry it`);
+      // the server's notice wakes a session.
+      if (unparsableRoute(2) === "wake") wakeSession(io, `${project}/${item.id}: the reviewer ${actor}'s reply could not be read twice at ${claimed.head.slice(0, 8)} (${parsed.error}); the pipeline cannot retry it`);
       return { phase: "failed", reason: parsed.error, taskFailure: true, unretryable: true };
     }
     // A rejection is settled before it is posted (t717): findings the
@@ -2976,13 +2979,12 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
   }
 }
 
-// One notification wakes a session (t521). The runner has no channel of its
-// own: the hook `io.wake` is the one place a deployment connects one, and
-// without it the line is in the runner's log.
-export async function wakeSession(io, message) {
+// A session is woken by a notice the server records in a call the runner
+// already makes (t521): the second unreadable reply, a refused redispatch,
+// a second rejection. The runner sends nothing for a wake; the line is in
+// its log.
+export function wakeSession(io, message) {
   io.log(`session needed: ${message}`);
-  try { await io.wake?.(message); }
-  catch (error) { io.log(`could not wake a session: ${error.message}`); }
 }
 
 // A rejection goes back to its builder (t521, src/dispatch/rework.ts). The
@@ -2996,14 +2998,14 @@ export async function sendBack(io, runnerIO, { project, claimed, posted }) {
   // A second rejection's notice is the ledger's, recorded with the verdict,
   // so the runner sends none of its own.
   if (route.action === "wake" && route.second) { io.log(`${project}/${id}: ${route.reason}; the ledger records the notice that wakes a session`); return route; }
-  if (route.action === "wake") { await wakeSession(io, `${project}/${id}: ${route.reason}`); return route; }
+  if (route.action === "wake") { wakeSession(io, `${project}/${id}: ${route.reason}`); return route; }
   const note = reworkNote(id, claimed.head, posted.findings ?? [], posted.summary ?? "");
   // The dispatch is the hook `io.dispatchBuilder`: the runner declares no
   // dispatch call of its own (RUNNER_CALLS in src/tokens.ts), so a deployment
   // that connects one names it here. Without it the rejection is left for a
   // session, said so.
   if (!runnerIO.dispatchBuilder) {
-    await wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: this runner has no way to dispatch`);
+    wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: this runner has no way to dispatch`);
     return route;
   }
   try {
@@ -3011,24 +3013,9 @@ export async function sendBack(io, runnerIO, { project, claimed, posted }) {
     io.log(`rejected ${id} sent back to ${route.agent}/${route.model} with the findings`);
   } catch (error) {
     // A builder that cannot be dispatched leaves the rejection for a session.
-    await wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: ${error.message}`);
+    wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: ${error.message}`);
   }
   return route;
-}
-
-// The three hooks a production runner connects (t521). Each is a function of
-// its own so a test reads it without a server.
-//
-// The notification is an ntfy message on the topic the server's stuck notices
-// use (NTFY_TOPIC); a runner without one says so, and the line stays in its log.
-export async function ntfyWake(run, message, { env = process.env, signal } = {}) {
-  const topic = env.NTFY_TOPIC?.trim();
-  if (!topic) throw new Error("NTFY_TOPIC is not set on this runner, so no notification can be sent");
-  const body = Array.from(String(message).replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ")).slice(0, 500).join("");
-  const r = await run(["curl", "--silent", "--show-error", "--fail", "--max-time", "10", "--proto", "=https", "--request", "POST",
-    "--header", "Title: Atelier: a session is needed", "--header", "Tags: warning", "--header", "Priority: default",
-    "--header", "Content-Type: text/plain; charset=utf-8", "--data-raw", body, `https://ntfy.sh/${encodeURIComponent(topic)}`], { capture: true, captureError: true, signal, timeoutMs: 15_000 });
-  if (r.code !== 0) throw new Error(`the notification channel refused it (curl exited ${r.code}): ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 200)}`);
 }
 
 // The owner's dispatch of a rejected task to its builder: `atelier dispatch`
@@ -4755,10 +4742,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   const io = {
     progress,
-    // A rejection's two hooks (t521): the builder's dispatch, the
-    // notification that wakes a session, and the read of a builder's dispute.
+    // A rejection's hook (t521): the builder's dispatch as the developer.
     dispatchBuilder: (request) => dispatchAsDeveloper(executeChild, { ...request, signal: controller.signal }),
-    wake: (message) => ntfyWake(executeChild, message, { signal: controller.signal }),
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),

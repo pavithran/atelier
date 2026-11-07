@@ -4692,7 +4692,7 @@ export class Ledger extends DurableObject<Env> {
   // the key is there, so no read comes before the write. atelier-pulse wakes a
   // session from the event; delivery to the developer's devices is not here
   // (PAVI, 2026-11-07: "drop ntfy").
-  private recordNotice(key: string, itemId: string, actor: string, kind: "item.dispute_notice" | "item.second_rejection_notice", data: Record<string, unknown>, at: string): void {
+  private recordNotice(key: string, itemId: string, actor: string, kind: "item.dispute_notice" | "item.second_rejection_notice" | "item.review_unparsable_notice" | "item.redispatch_refused_notice", data: Record<string, unknown>, at: string): void {
     if (!this.sql.exec(`INSERT OR IGNORE INTO notices (key) VALUES (?) RETURNING key`, key).toArray().length) return;
     this.log(itemId, actor, kind, data, at);
   }
@@ -4869,6 +4869,14 @@ export class Ledger extends DurableObject<Env> {
     if (!r.approve) this.notifyRejection(r, origin);
     if (!r.approve) this.noticeSecondRejection(item, r, reviewId, at);
     this.afterPlanChange(r.itemId);
+  }
+
+  // The automatic redispatch of a rejected task to its builder (t521) was
+  // refused, so a session decides who reworks it: one notice for the head,
+  // with the refusal's reason. The refusal itself writes nothing.
+  redispatchRefused(id: string, actor: string, reason: string): void {
+    const item = this.item(id);
+    this.recordNotice(`redispatch-refused:${id}:${item.head ?? "none"}`, id, actor, "item.redispatch_refused_notice", { head: item.head, reason: reason.slice(0, NOTE_MAX) }, new Date().toISOString());
   }
 
   // A task's second rejected round wakes a session through one notice and
@@ -9815,7 +9823,7 @@ export class Ledger extends DurableObject<Env> {
   // four replies this way on t372). A claim no longer held, because it lapsed
   // or was withdrawn while the harness ran, releases nothing, and the reply is
   // kept anyway. Returns whether a request was released.
-  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false, request?: number): { released: boolean } {
+  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false, request?: number, attempt?: unknown): { released: boolean } {
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
@@ -9831,6 +9839,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at, ...(request === undefined ? {} : { request }) } satisfies UnparsableReply));
     this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
+    // The second unreadable reply at a head is a failure the pipeline cannot
+    // retry, so it wakes a session through one notice (t521, criterion 5).
+    // The runner asks the reviewer twice in one job and keeps only the
+    // second reply, saying so with attempt 2; a reply kept by hand counts
+    // the replies already kept at the head.
+    const second = attempt === 2 || this.sql.exec(`SELECT COUNT(*) AS n FROM unparsable WHERE item_id = ? AND json_extract(json, '$.head') = ?`, itemId, head).one().n as number >= 2;
+    if (second) this.recordNotice(`unparsable:${itemId}:${head}`, itemId, actor, "item.review_unparsable_notice", { head, by: actor, note }, at);
     // Keeping an unusable reply is harmless; releasing a successor is not.
     this.expireReviewClaims();
     if (request === undefined) return { released: false };
