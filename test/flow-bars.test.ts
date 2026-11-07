@@ -14,8 +14,8 @@ const ev = (ago: number, itemId: string | null, kind: string, data: Record<strin
 const ran = (ago: number, step: string, passed: boolean, ship?: string) => ev(ago, null, "action.ran", { step, passed, ...(ship ? { ship } : {}) });
 
 const shipped = (ago: number, ship: string, result = "shipped") => ev(ago, null, "ship.recorded", { ship, result });
-// A whole deploy: its deploy step passed and the ship was recorded shipped.
-const deploy = (ago: number, ship: string) => [ran(ago + 1, "deploy", true, ship), shipped(ago, ship)];
+// A deploy: its deploy step passed, then the ship was recorded shipped.
+const deploy = (ago: number, ship: string) => [ran(ago, "deploy", true, ship), shipped(ago - 1, ship)];
 
 // A task filed 100 min ago and merged 40 min ago, deployed 10 min ago.
 const clean = (id: string, filed = 100, merged = 40) => [ev(filed, id, "item.created", { title: `Add ${id}` }), ev(merged, id, "item.merged", {}), ev(merged, id, "item.accepted")];
@@ -58,15 +58,16 @@ test("a deploy counts only from a passed deploy step, not any action.ran (criter
   assert.equal(bar(after, "demo", "deployMedian").value, 95);
 });
 
-test("a ship counts only when it was recorded shipped and every deploy record passed", () => {
+test("a ship's deploy time is its first passed deploy action (round 4)", () => {
   const median = (events: BarEvent[]) => bar(computeBars([{ name: "demo", events: [...clean("t1"), ...events] }], NOW), "demo", "deployMedian").value;
-  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1"), shipped(14, "s1", "failed")]), null, "success then failure in one step");
-  assert.equal(median([ran(20, "deploy", true, "s1"), shipped(14, "s1")]), 86, "a whole deploy counts, at its shipped record");
-  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1"), shipped(14, "s1")]), null, "any failed record, even with a shipped result");
-  assert.equal(median([ran(20, "deploy", true, "s1")]), null, "success recorded, failure record and ship record missing (interrupted)");
-  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", true, "s1")]), null, "no final shipped record");
+  assert.equal(median([ran(20, "deploy", false, "s1"), ran(15, "deploy", true, "s1"), shipped(14, "s1")]), 85, "false then true counts at the true attempt");
+  assert.equal(median([ran(20, "deploy", true, "s1"), shipped(14, "s1", "failed")]), 80, "passed deploy then failed wrap still counts");
+  assert.equal(median([ran(20, "deploy", true, "s1")]), 80, "no shipped record needed");
+  assert.equal(median([ran(20, "deploy", true, "s1"), ran(10, "deploy", true, "s1")]), 80, "the first passed attempt is the time");
+  assert.equal(median([ran(20, "deploy", false, "s1"), ran(15, "deploy", false, "s1"), shipped(14, "s1", "failed")]), null, "only failed attempts do not count");
+  assert.equal(median([shipped(14, "s1")]), null, "a shipped record without a passed deploy step does not count");
   assert.equal(median([ran(20, "deploy", true), shipped(14, "s1")]), null, "a record with no ship id belongs to no ship");
-  assert.equal(median([ran(20, "deploy", true, "s1"), ran(15, "deploy", false, "s1"), ...deploy(5, "s3")]), 95, "a later whole deploy counts");
+  assert.equal(median([ran(20, "deploy", false, "s1"), ...deploy(5, "s3")]), 95, "a later passed deploy counts");
 });
 
 test("a deploy before the merge does not deploy it", () => {

@@ -235,19 +235,15 @@ function measure(name: string, input: readonly BarEvent[], now: number, tokens: 
   for (const e of events) if (e.itemId) (byItem.get(e.itemId) ?? byItem.set(e.itemId, []).get(e.itemId)!).push(e);
   const linked = new Set<string>();
   for (const e of events) if (e.kind === "item.fix_of" && typeof e.data?.itemId === "string") linked.add(e.data.itemId);
-  // A deploy is a ship that completed: its own ship.recorded says shipped and
-  // every deploy-step action.ran carrying its id passed. Results are recorded
-  // one request at a time, so a ship with a failed record, no deploy record,
-  // or no final shipped record (interrupted) is not a deploy. The deploy time
-  // is when the ship was recorded as shipped.
-  const shipped = new Map<string, number>();
-  for (const e of events) if (e.kind === "ship.recorded" && e.data?.result === "shipped" && typeof e.data.ship === "string") shipped.set(e.data.ship, Date.parse(e.at));
-  const shipRuns = new Map<string, boolean>();
+  // A deploy is a ship whose deploy step passed. Its time is the first
+  // deploy-step action.ran carrying its id with passed true, whatever attempts
+  // failed before it and whatever later ship work (wrap) did.
+  const passedAt = new Map<string, number>();
   for (const e of events) {
-    if (e.kind !== "action.ran" || e.data?.step !== "deploy" || typeof e.data.ship !== "string") continue;
-    shipRuns.set(e.data.ship, (shipRuns.get(e.data.ship) ?? true) && e.data.passed === true);
+    if (e.kind !== "action.ran" || e.data?.step !== "deploy" || e.data.passed !== true || typeof e.data.ship !== "string") continue;
+    if (!passedAt.has(e.data.ship)) passedAt.set(e.data.ship, Date.parse(e.at));
   }
-  const deploys = [...shipRuns].filter(([ship, ok]) => ok && shipped.has(ship)).map(([ship]) => shipped.get(ship)!).sort((a, b) => a - b);
+  const deploys = [...passedAt.values()].sort((a, b) => a - b);
 
   const merges: Merge[] = [];
   for (const [id, list] of byItem) {

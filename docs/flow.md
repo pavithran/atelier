@@ -101,7 +101,7 @@ merges to count prints "no merges in the last 7 days" and is not scored.
 | Bar | Target | Source |
 | --- | --- | --- |
 | weighted tokens per sound merge | under 0.7M | soundness from `item.merged`, `item.fix_of` and post-merge `evidence.*`; tokens from `--tokens FILE`, a JSON object of item id (or `project/id`) to weighted tokens, because the ledger records none (unmeasured without it) |
-| filed to deployed, median / p90 | 60 min / 3 h | `item.created` to the first `action.ran` with step `deploy` and `passed: true` at or after `item.merged`; merged tasks not yet deployed are named, not counted |
+| filed to deployed, median / p90 | 60 min / 3 h | `item.created` to the time of the first `action.ran` with step `deploy` and `passed: true` for a ship id at or after `item.merged`, whatever attempts failed before it and whatever later ship work did; a ship with no passed deploy step is not counted; merged tasks not yet deployed are named, not counted |
 | merges that turned main red | 0 | an `evidence.*` event on the merge (`merged`, `passed: false`) after `item.merged` and within 7 days of it |
 | shadow-review escapes | at most 1 in 10 | merges in the window with an `item.fix_of` recorded after `item.merged` |
 | live rows with no named wait | 0 | each unfinished item whose latest state event does not name a wait (dispatch, claim, handoff, submit, approval, accept, block, criteria review, landing) |
