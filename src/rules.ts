@@ -457,15 +457,13 @@ export interface Review {
   recordedBy?: string;
   proved?: boolean;
   claimed?: boolean;
-  // Set when the review answered a tier review request (ProjectPolicy.reviewTier):
-  // a second opinion from the project's top review tier beside the gate's
-  // review. Its rejection blocks as any rejection does; its approval is never
-  // the independent review the gate counts (independentApproval).
+  // Set on a review that answered a tier review request, which the server no
+  // longer asks (t518); older ledgers hold them. Its rejection blocks as any
+  // rejection does; its approval is never the independent review the gate
+  // counts (independentApproval).
   tier?: boolean;
-  // Set when the review answered the gate's request asked of a tier model of
-  // another family than every contributor: the gate's review, which gives
-  // the tier review too (gateServesTier in src/review/tier.ts). It counts for
-  // the gate as any review does.
+  // Set on a gate review asked of a tier model, as older ledgers recorded it
+  // (t518). It counts for the gate as any review does.
   topTier?: boolean;
   postMerge?: boolean; // an audit of the recorded landing, preserving its state
   // Set on a post-merge review of a task landed in fast mode whose reviewer
@@ -753,23 +751,10 @@ export interface ProjectPolicy {
   // --triage`, src/review/triage.ts); `atelier land --triage` names another
   // for one landing. Absent, no triage runs unless a landing names one.
   triage?: string;
-  // The project's top review tier, as harness/model actors (`atelier init
-  // --review-tier`): every protected change that gets its gate review is
-  // also reviewed by one of these. The gate's review goes to a tier model of
-  // another family than every contributor first, and then serves both; a
-  // gate reviewer outside the tier gets a separate tier request beside it,
-  // for a tier model that did not build the change, whatever its family.
-  // Absent or empty, no tier review is asked for.
-  reviewTier?: string[];
   // The frontier models, as harness/model actors in the owner's order, that
   // may resolve a refresh's mechanical conflicts (`atelier init --resolver`,
   // src/refresh/resolver.ts). Absent or empty, such a conflict waits.
   resolvers?: string[];
-  // The review tier, when written since its names are converted where typed
-  // (t622): it holds exact pool ids, read as they are. Unlisted, it was
-  // written before and may hold an alias, read once through the aliases
-  // (storedActor in src/models/identity.ts).
-  exactNames?: "reviewTier"[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // retired ControlPlane list of harness families, stored and shown, read by no decision
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
@@ -2177,9 +2162,9 @@ function approvalsCounted(item: Item, policy: ProjectPolicy, counting: Review[],
   // One approval per model (modelKey): an alias, a profile or another harness
   // of one model is the same reviewer, not a second.
   const seen = new Set<string>();
-  // A change that needs two or more reviews asks no separate tier review: an
-  // approval a tier request drew counts as any other when its model is
-  // independent (t277). With fewer, the tier keeps its own slot.
+  // An approval an older ledger recorded for a tier request counts as any other
+  // when the change needs two or more reviews and its model is independent
+  // (t277). With fewer, it is never the independent one.
   const asIndependent = (r: Review): Review => (need.count >= 2 && r.tier ? { ...r, tier: false } : r);
   return counting.map(asIndependent).filter((r) => independentApproval(r, need.as!, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
 }

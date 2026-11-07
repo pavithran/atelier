@@ -2,8 +2,8 @@
 // Ledger under the Node runtime, called as the routes call it): a rejected
 // post-merge review leaves a goal note and files no task; a blocking
 // pre-review verdict fences the landing, and a verdict whose binding drifted
-// fences nothing; no tier review, criteria review or plan review is asked by
-// itself; a dispatch that names a harness alone is refused.
+// fences nothing; no criteria review or plan review is asked by itself, and no
+// tier review exists (t518); a dispatch that names a harness alone is refused.
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -117,25 +117,15 @@ test("a real blocking pre-review verdict fences the landing; a verdict whose bin
   } finally { await ns.close(); }
 });
 
-test("no tier review is inserted by itself: the need is a fact with its candidates, and the model asks it with --tier-review", async () => {
+test("no tier review exists: an old policy's reviewTier inserts no tier request and records no tier_needed", async () => {
   const { ns, L, submitted, offers } = await world("tier", { protected: ["src/**"], reviewTier: [ARGON], exactNames: ["reviewTier"] });
   try {
     const id = await submitted(head(1));
-    // The gate's reviewer, named by the model, is outside the tier.
     const gate = await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, await offers());
     assert.equal(gate.requested, true);
-    const tierRows = async () => (await L.reviewRequests(id)).filter((r) => r.tier);
-    assert.deepEqual(await tierRows(), [], "no tier request was inserted");
-    const needed = await kinds(L, id, "review.tier_needed");
-    assert.equal(needed.length, 1);
-    assert.deepEqual(needed[0].data.candidates.map((c) => [c.actor, c.refusal]), [[ARGON, null]]);
-    assert.deepEqual((await L.detail(id)).tierReview.candidates.map((c) => c.actor), [ARGON]);
-    await assert.rejects(L.requestTierReview(id, "owner", null, POOL, await offers()), (e) => { assert.match(e.message, /reviewer_needed/); assert.match(e.message, /antigravity\/gemini-4-argon/); return true; });
-    await assert.rejects(L.requestTierReview(id, "owner", OPUS, POOL, await offers()), /not_tier/);
-    const asked = await L.requestTierReview(id, "owner", ARGON, POOL, await offers());
-    assert.equal(asked.reviewer, ARGON);
-    assert.equal((await tierRows()).length, 1);
-    assert.equal((await L.detail(id)).tierReview, null, "asked: no longer needed");
+    assert.deepEqual((await L.reviewRequests(id)).filter((r) => r.tier), [], "no tier request was inserted");
+    assert.deepEqual(await kinds(L, id, "review.tier_needed"), []);
+    assert.equal((await L.detail(id)).tierReview, undefined);
   } finally { await ns.close(); }
 });
 

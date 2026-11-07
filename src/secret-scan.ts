@@ -152,11 +152,14 @@ export function scanLine(text: string): boolean {
 //   added lines against the base side when the base side is text of a
 //   readable size, and otherwise (no base side, a binary, a submodule, an
 //   oversized base, a base of another type) its whole text as added.
-// - A head side that is an ordinary image or font (MEDIA_SIGNATURES) is
-//   scanned as raw bytes, all of it as added, and blocks only if a key
-//   pattern is in it (t554).
-// - A head side that is not text (any other binary content, a submodule, which is a
-//   commit in another repository, a blob over SCAN_BYTES) is recorded unscanned with the reason and the
+// - A head side that is ordinary media (an image, video, audio or font, by
+//   its signature or its extension: isMedia) is scanned as raw bytes, all
+//   of it as added, and blocks only if a key pattern is in it (t554). A
+//   media file over SCAN_BYTES is not read and not flagged (t518: 10 flags on
+//   binary media in Nov 1-6 held no secret; 6 pushes were refused).
+// - A head side that is not text and not media (any other binary content, a
+//   submodule, which is a commit in another repository, a text blob over
+//   SCAN_BYTES) is recorded unscanned with the reason and the
 //   object's hash, so the owner clears it by content, like a hit.
 // - A deleted path has no head side and needs no scan. A path whose head
 //   object is the base object (a mode-only change) adds no content.
@@ -174,10 +177,10 @@ const decoder = new TextDecoder();
 // that a key pasted into it is still found (t554).
 type Side = { lines: string[]; media?: true } | { reason: string };
 
-// The complete signatures of the ordinary binaries a task commits: PNG, JPEG, GIF, WebP
-// and WOFF/WOFF2 fonts. A file that starts with one is scanned for key
-// patterns as raw bytes instead of blocking as unreadable; any other binary
-// still blocks, as does a file that merely claims the name of an image.
+// The complete signatures of the ordinary binaries a task commits: PNG, JPEG, GIF, WebP,
+// MP4/MOV (an "ftyp" box), WebM and WOFF/WOFF2 fonts. A media file is scanned
+// for key patterns as raw bytes instead of blocking as unreadable; any other
+// binary still blocks.
 const MEDIA_SIGNATURES: number[][] = [
   [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
   [0xff, 0xd8, 0xff],
@@ -185,11 +188,19 @@ const MEDIA_SIGNATURES: number[][] = [
   [0x47, 0x49, 0x46, 0x38, 0x39, 0x61],       // GIF89a
   [0x77, 0x4f, 0x46, 0x46],
   [0x77, 0x4f, 0x46, 0x32],
+  [0x1a, 0x45, 0xdf, 0xa3],                   // WebM / Matroska
 ];
-function isMedia(b: Uint8Array): boolean {
+// A name that says media. The scan needs it beside the signature because an
+// editor's export or a truncated capture is still a picture or a clip, and a
+// push of one is not refused for it (t518).
+const MEDIA_EXTENSION = /\.(png|jpe?g|gif|webp|ico|mp4|m4v|mov|webm|mp3|m4a|wav|ogg|woff2?|ttf|otf)$/i;
+function isMedia(b: Uint8Array, path: string): boolean {
   if (MEDIA_SIGNATURES.some((sig) => sig.every((v, i) => b[i] === v))) return true;
   // WebP: "RIFF", a size, then "WEBP".
-  return [0x52, 0x49, 0x46, 0x46].every((v, i) => b[i] === v) && [0x57, 0x45, 0x42, 0x50].every((v, i) => b[8 + i] === v);
+  if ([0x52, 0x49, 0x46, 0x46].every((v, i) => b[i] === v) && [0x57, 0x45, 0x42, 0x50].every((v, i) => b[8 + i] === v)) return true;
+  // MP4 and MOV: a box size, then "ftyp".
+  if ([0x66, 0x74, 0x79, 0x70].every((v, i) => b[4 + i] === v)) return true;
+  return MEDIA_EXTENSION.test(path);
 }
 
 async function readSide(r: Reader, leaf: Leaf): Promise<Side> {
@@ -198,9 +209,11 @@ async function readSide(r: Reader, leaf: Leaf): Promise<Side> {
   // The reader is strict (scanTrees), so a missing blob threw already; the
   // guard keeps the type honest without reading a hole as empty.
   if (!bytes) throw new Error(`secret scan: blob ${leaf.hash.slice(0, 8)} is missing from the repositories`);
-  if (bytes.length > SCAN_BYTES) return { reason: `${bytes.length} bytes, over the ${SCAN_BYTES} the scan reads` };
+  // Media is decided by its signature or its name before its size: a large
+  // clip is not read and not flagged.
+  if (bytes.length > SCAN_BYTES) return isBinary(bytes) && isMedia(bytes, leaf.path) ? { lines: [], media: true } : { reason: `${bytes.length} bytes, over the ${SCAN_BYTES} the scan reads` };
   if (isBinary(bytes)) {
-    if (isMedia(bytes)) return { lines: splitLines(new TextDecoder("latin1").decode(bytes)), media: true };
+    if (isMedia(bytes, leaf.path)) return { lines: splitLines(new TextDecoder("latin1").decode(bytes)), media: true };
     return { reason: "binary content" };
   }
   return { lines: splitLines(decoder.decode(bytes)) };

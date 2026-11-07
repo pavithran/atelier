@@ -1,8 +1,7 @@
 // The limits the stage tick, the server's timers and the stuck notices run
 // by (Atelier 2.0, G6: "one limits module names the remaining constants").
-// Each is an age the tick turns into a fact (a stage.stuck event and its
-// note, which `show`, `events` and the queue read), never a trigger for the
-// server to act on a judgment of its own: past a limit nothing is rerouted,
+// Each is an age the tick reads (the tick records no stage.stuck since t518),
+// never a trigger for the server to act on a judgment of its own: past a limit nothing is rerouted,
 // re-pointed, released or filed. The only automatic actions are the
 // standing instructions the developer records (src/standing.ts).
 //

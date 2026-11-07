@@ -58,7 +58,10 @@ const rows: Row[] = [
   { name: "binary→text holding a key", base: { "a.ts": { bytes: BINARY } }, head: { "a.ts": { bytes: KEYED } }, expect: { hit: { file: "a.ts", line: 2 } }, ready: false },
   { name: "submodule→text holding a key", base: { "a.ts": { submodule: true } }, head: { "a.ts": { bytes: KEYED } }, expect: { hit: { file: "a.ts", line: 2 } }, ready: false },
   { name: "text→binary", base: { "a.ts": { bytes: CLEAN } }, head: { "a.ts": { bytes: BINARY } }, expect: { unscanned: { file: "a.ts", reason: /binary content/ } }, ready: false },
-  { name: "absent→binary", base: {}, head: { "logo.png": { bytes: BINARY } }, expect: { unscanned: { file: "logo.png", reason: /binary content/ } }, ready: false },
+  { name: "absent→binary", base: {}, head: { "blob.bin": { bytes: BINARY } }, expect: { unscanned: { file: "blob.bin", reason: /binary content/ } }, ready: false },
+  // t518: media is never flagged as unscanned, even when its bytes are not a known signature.
+  { name: "absent→media by name", base: {}, head: { "logo.png": { bytes: BINARY } }, expect: { clean: true }, ready: true },
+  { name: "text→media by name", base: { "a.ts": { bytes: CLEAN } }, head: { "a.mp4": { bytes: BINARY } }, expect: { clean: true }, ready: true },
   { name: "text→submodule", base: { "lib": { bytes: CLEAN } }, head: { "lib": { submodule: true } }, expect: { unscanned: { file: "lib", reason: /submodule/ } }, ready: false },
   { name: "symlink added, its target scanned as text", base: {}, head: { "link": { bytes: text(`../${FAKE_KEY}`), mode: "120000" } }, expect: { hit: { file: "link", line: 1 } }, ready: false },
   { name: "symlink→text holding a key", base: { "a.ts": { bytes: text("target"), mode: "120000" } }, head: { "a.ts": { bytes: KEYED } }, expect: { hit: { file: "a.ts", line: 2 } }, ready: false },
