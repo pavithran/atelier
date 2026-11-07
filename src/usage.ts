@@ -197,6 +197,39 @@ task with exactly one holder. Never edit the project checkout directly.
 
 ${BUILD_EVIDENCE}
 
+## Path-scoped landing checks
+
+A project can register a heavier check in \`checks\` and restrict it with
+\`checkPaths\`. For example, miqra can require its full visual suite for
+application and visual-test changes. The developer sends this JSON to
+\`PUT /api/projects/miqra\`, using the developer token and acting model:
+
+\`\`\`json
+{
+  "checks": ["npm ci", "npm run check", "npm run build", "VISUAL_ALL=1 npm run verify:visual"],
+  "checkPaths": [
+    {
+      "command": "VISUAL_ALL=1 npm run verify:visual",
+      "paths": ["src/**", "tests/**", "scripts/**", "static/**", "package.json", "package-lock.json", "*config*"]
+    }
+  ]
+}
+\`\`\`
+
+These arrays replace the registered checks and path declarations; keep any
+other project checks and include every path that can affect the suite.
+Checks without a path declaration apply to every change. Unknown changed
+paths require the check. The runner's normal required-check run executes
+the full command when the change touches a declared path and records it
+as not applicable otherwise. Do not put this command in affectedTests,
+which selects only part of a suite.
+
+Landing refuses the merge until the applicable check passed on a runner at
+the exact head, including when acceptance predates a policy change or a
+failed retry. A report quoting a pass line, an old head's pass and a merged
+tree's pass do not satisfy it. Run \`atelier check ID\` on a runner, then
+retry \`atelier land ID\`.
+
 ${OWNER_LANDING}
 \`atelier land ID --queue\` queues the landing for a runner that lists the land job and holds the registered checkout.
 \`atelier land ID\` no longer waits for a review: it asks for one, records the land request (\`--quote TEXT\` names who asked), and stops; run it again once the review approves (a land job runs it by itself only under the standing queue-landable instruction); \`--no-wait\` records the request and returns.
