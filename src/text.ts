@@ -48,8 +48,6 @@ export function notePreview(note: string | null | undefined): string {
 // The project's review bar, which every review brief states: a paragraph,
 // longer than a note on a dispatch, short beside the brief it sits in.
 export const REVIEW_BAR_MAX = 1000;
-// The most models a project's review tier lists (`atelier init --review-tier`).
-export const REVIEW_TIER_MAX = 10;
 // The most diff a review brief carries inline (BRIEF_LIMITS.diff in
 // src/review/brief.ts). A larger diff is never carried: it is kept in R2 by
 // reference and the brief names where the whole diff is (t284), so a brief's

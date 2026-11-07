@@ -181,10 +181,6 @@ export default async function initCommand() {
     // The model that triages a landing's diff against the task's criteria
     // before its review (t475), harness/model; omitted keeps it, "" clears it.
     ...(args.triage !== undefined ? { triage: args.triage } : {}),
-    // The top review tier, harness/model actors separated by commas, each
-    // reviewing every protected change beside the gate's review; omitted
-    // keeps it, "" clears it.
-    ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
     // The frontier models that may resolve a refresh's mechanical conflicts
     // (t462), harness/model actors separated by commas; omitted keeps
     // them, "" clears them.
@@ -253,8 +249,6 @@ export default async function initCommand() {
   console.log(`Triage:     ${pol.triage ? `${pol.triage}, which triages each landing's diff against the task's acceptance criteria before the review is asked for (atelier land --triage H/M names another, --no-triage REASON skips it)` : "none, unless a landing names a model with atelier land --triage H/M"}`);
   // A server older than the triage setting ignores it and answers without one.
   if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");
-  console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
-  if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
   console.log(`Resolvers:  ${pol.resolvers?.length ? `${pol.resolvers.join(", ")}, the first eligible of which resolves a refresh's mechanical conflicts` : "none; a refresh's mechanical conflict waits for one (atelier init --resolver H/M)"}`);
   if (typeof args.resolver === "string" && args.resolver.trim() && !pol.resolvers?.length) console.log("Warning: the server did not record the resolvers; deploy the server, then run atelier init --resolver again.");
   if (pol.riskReviews) console.log(`Risk reviews: ${pol.riskReviews.reviews["docs-or-tests"]} for docs or tests, ${pol.riskReviews.reviews.other} for other changes, ${pol.riskReviews.reviews.core} for core (${pol.riskReviews.core.join(", ") || "no extra core globs"}), each independent review counted by the change's paths`);

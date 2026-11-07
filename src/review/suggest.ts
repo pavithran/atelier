@@ -23,7 +23,6 @@ export interface ReviewerSuggestionInput extends Omit<SuggestionInput, "sources"
   // and decides no roles itself (gpt-6-astra's twenty-second review of
   // t622). `assignments` (the build roles') is not read here.
   assigned?: readonly Assignment[];
-  tier?: readonly string[];          // the project's review tier, asked next for a protected change
   counted?: readonly string[];       // models whose approval of this head already counts; none is asked again (t143)
   destination?: (entry: SuggestionInput["pool"][number]) => "home" | "cloud";  // where the ledger sends the review
 }
@@ -36,7 +35,7 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
   const ordered = ranked({ pool: input.pool, summary }).filter(({ entry }) => !strict || frontier(entry));
   const precision = precisionOfSummary(summary);
   const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
-    allowPaid: false, owner: input.owner, avoid, counted: input.counted, precision, previous: input.previous ?? null, tier: input.tier,
+    allowPaid: false, owner: input.owner, avoid, counted: input.counted, precision, previous: input.previous ?? null,
     offers: input.offers, destination: input.destination, sameFamilyOk: input.sameFamilyOk,
     assigned: input.assigned ?? [],
     // Preserve outcome order between equal precision terms.
