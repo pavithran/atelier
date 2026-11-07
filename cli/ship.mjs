@@ -338,6 +338,14 @@ export function shipSecrets(env, given = []) {
 // so does wrap.
 // No step gets CLOUDFLARE_ENV: a value left in the owner's shell would send
 // Wrangler to another Worker than the one the ship order names (t344).
+// The argv after `atelier` for ship's wrap step. Ship already proved the head
+// (landing checks, its own typecheck, deploy and verify steps), so wrap only
+// commits and records: re-running the project's checks in the developer's
+// checkout failed s-mw5imenq after its deploy had passed.
+export function shipWrapArgs(summary, name) {
+  return ["wrap", summary, "--no-check", "--project", name];
+}
+
 export function stepEnv(env, head, internal = false) {
   const filtered = Object.fromEntries(Object.entries(env).filter(([k]) => k !== "CLOUDFLARE_ENV" && (internal || !k.startsWith("ATELIER_"))));
   return head ? { ...filtered, ATELIER_SHIP_HEAD: head } : filtered;
