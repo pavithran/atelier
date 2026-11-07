@@ -1,0 +1,75 @@
+atelier atelier/t528 "Measure whether a second Studio test slot keeps landings fast"
+accepted head dc25c9d486e61e933f7145153c9f444bf45ea518
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm run typecheck — claude-code/sonnet-5.5 2026-11-07T12:56:15.734Z
+OBSERVED pass npm run test:static — claude-code/sonnet-5.5 2026-11-07T12:56:26.975Z
+OBSERVED pass npm test — claude-code/sonnet-5.5 2026-11-07T13:08:23.318Z
+REVIEW approve by codex/gpt-6-astra at dc25c9d486e61e933f7145153c9f444bf45ea518, recorded by codex/gpt-6-astra
+CHECKED TREE 5aa4eedd6d216da78d0e9842cc0dcc055b8934c9: the merge produced exactly the tree these checks passed on (npm run typecheck, npm run test:static, npm test), so a deploy gate may accept them instead of running them again
+2026-11-07T01:04:08.531Z claude-code/opus-5.5 item.created
+2026-11-07T01:04:08.531Z claude-code/opus-5.5 criteria.revised
+2026-11-07T01:04:17.985Z pavi criteria_review.requested
+2026-11-07T01:08:16.543Z codex/gpt-6-astra criteria_review.claimed
+2026-11-07T01:08:32.014Z codex/gpt-6-astra criteria_review.rejected
+2026-11-07T01:11:49.680Z pavi item.edited
+2026-11-07T01:11:49.680Z claude-code/opus-5.5 criteria.revised
+2026-11-07T01:11:49.680Z pavi item.criteria_changed
+2026-11-07T01:11:50.333Z pavi criteria_review.requested
+2026-11-07T01:12:06.850Z pavi criteria_review.finding
+2026-11-07T01:13:46.602Z codex/gpt-6-astra criteria_review.claimed
+2026-11-07T01:13:57.563Z codex/gpt-6-astra criteria_review.approved
+2026-11-07T01:43:41.903Z pavi item.dispatched
+2026-11-07T04:09:31.094Z claude-code/sonnet-5.5 item.claimed
+2026-11-07T04:09:31.133Z claude-code/sonnet-5.5 workspace.created
+2026-11-07T04:15:59.330Z claude-code/sonnet-5.5 push.observed
+2026-11-07T04:16:14.482Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T04:16:24.309Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T04:27:25.069Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T04:27:25.905Z claude-code/sonnet-5.5 item.submitted
+2026-11-07T04:28:17.602Z pavi land.start
+2026-11-07T04:28:18.845Z pavi review.requested
+2026-11-07T04:28:19.139Z pavi land.review
+2026-11-07T04:28:19.209Z pavi land.requested
+2026-11-07T04:28:25.627Z codex/gpt-6-astra review.claimed
+2026-11-07T04:30:14.342Z codex/gpt-6-astra review.rejected
+2026-11-07T04:30:21.247Z pavi item.released
+2026-11-07T04:30:21.247Z pavi item.dispatched
+2026-11-07T06:14:04.930Z atelier/orchestrator refresh.queued
+2026-11-07T08:54:43.892Z claude-code/sonnet-5.5 item.claimed
+2026-11-07T08:55:00.000Z atelier stage.stuck
+2026-11-07T09:08:25.392Z claude-code/sonnet-5.5 push.observed
+2026-11-07T09:10:00.000Z atelier stage.cleared
+2026-11-07T09:19:29.568Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T09:19:39.045Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T09:30:00.000Z atelier stage.stuck
+2026-11-07T09:31:28.856Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T09:31:29.776Z claude-code/sonnet-5.5 item.submitted
+2026-11-07T09:31:49.465Z pavi land.start
+2026-11-07T09:31:50.630Z pavi review.requested
+2026-11-07T09:31:50.917Z pavi land.review
+2026-11-07T09:32:02.349Z codex/gpt-6-astra review.claimed
+2026-11-07T09:33:07.073Z codex/gpt-6-astra review.rejected
+2026-11-07T09:34:26.610Z pavi review.finding
+2026-11-07T09:34:27.058Z pavi item.released
+2026-11-07T09:34:27.058Z pavi item.dispatched
+2026-11-07T09:35:00.000Z atelier stage.cleared
+2026-11-07T09:46:46.847Z atelier/orchestrator refresh.queued
+2026-11-07T12:54:53.774Z claude-code/sonnet-5.5 item.claimed
+2026-11-07T12:55:00.000Z atelier stage.stuck
+2026-11-07T12:56:11.425Z claude-code/sonnet-5.5 push.observed
+2026-11-07T12:56:15.794Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T12:56:27.002Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T13:00:00.000Z atelier stage.cleared
+2026-11-07T13:08:23.352Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T13:08:24.280Z claude-code/sonnet-5.5 item.submitted
+2026-11-07T13:09:13.233Z pavi land.start
+2026-11-07T13:09:14.469Z pavi review.requested
+2026-11-07T13:09:14.724Z pavi land.review
+2026-11-07T13:09:27.556Z codex/gpt-6-astra review.claimed
+2026-11-07T13:10:05.851Z codex/gpt-6-astra review.approved
+2026-11-07T13:10:08.432Z pavi item.accepted
+2026-11-07T13:10:09.153Z pavi land.start
+2026-11-07T13:10:09.221Z pavi landing.leased
+2026-11-07T13:10:09.307Z pavi land.lease
+2026-11-07T13:10:10.237Z pavi checkout.leased
