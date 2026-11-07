@@ -1,7 +1,7 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
 import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
 import { I, OWNER, RequestError, actor, args, call, die, flat, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
-import { stageText } from "../status.mjs";
+import { itemJson, stageText } from "../status.mjs";
 import { checkLimits, limitText } from "../../src/check-limit.ts";
 import { stageOf } from "../../src/rules.ts";
 import { queueReasons } from "../status.mjs";
@@ -81,8 +81,8 @@ export default async function showCommand() {
   // The goal's notes, numbered as atelier file-fix takes them, and the review
   // requests nobody has claimed, with when each was asked (G6): facts the
   // model acts on by command, since the server files and re-points nothing.
-  const notes = d.notes ?? [], unclaimed = d.openRequests ?? [], tier = d.tierReview ?? null, lapsed = d.lapsedRequests ?? [];
-  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(tier ? { tierReview: tier } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
+  const notes = d.notes ?? [], unclaimed = d.openRequests ?? [], lapsed = d.lapsedRequests ?? [];
+  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   blocks.push(...repairLines(d.repairs));
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
@@ -100,7 +100,6 @@ export default async function showCommand() {
   if (d.lastRun) blocks.push(`Last run: ${lastRunText(d.lastRun)}`);
   if (progress) blocks.push(`Progress: ${progressText(progress, lastCheck)}${progress.stall ? `\n  STALL: ${progress.stall}` : ""}`);
   if (deploy) blocks.push(`Last deploy: ${deployText(deploy)}`);
-  if (tier) blocks.push(tierLine(id, tier));
   // A claim that ended with no verdict is a fact (G6, G11): its lease lapsed,
   // its runner released it, or its reply held no readable verdict. Nothing
   // asks again by itself.
@@ -138,7 +137,7 @@ export function taskJson(d, queued = null, why = []) {
   const waits = (d.blockers ?? []).filter((b) => b.state !== "merged").map((b) => ({ kind: "blocked-by", blocker: b.id, state: b.state }));
   return {
     ...(d.repairs ? { repairs: d.repairs } : {}),
-    id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
+    ...itemJson(i),
     scope: i.scope, dispatch: i.dispatch ?? null, runner: i.runner ?? null, holds: [...held, ...waits], lastFailure: lastFailureOf(d),
     ...(d.blockers?.length ? { blockedBy: d.blockers.map((b) => ({ id: b.id, state: b.state })) } : {}),
     // G4 2a: why a dispatched task is not taken, each reason with its kind
@@ -235,19 +234,13 @@ export function noteLine(n) {
   return `  ${n.n}. ${n.blocking ? "[blocking] " : ""}${where}${flat(n.text)} (${flat(n.by)} at ${String(n.head).slice(0, 8)})${n.filed ? `; filed as ${n.filed}` : ""}`;
 }
 
-// A separate tier review the change needs and nobody has asked (G17): its
-// candidates, each refused one with why, and the command that asks it.
-export function tierLine(id, t) {
-  const eligible = t.candidates.filter((c) => !c.refusal).map((c) => flat(c.actor));
-  const refused = t.candidates.filter((c) => c.refusal).map((c) => `${flat(c.actor)} (${flat(c.refusal)})`);
-  return `Tier review needed at ${String(t.head).slice(0, 8)} beside ${flat(t.gate)}'s gate review; candidates: ${eligible.join(", ") || "none"}${refused.length ? `; refused: ${refused.join(", ")}` : ""}. Ask it with atelier review-request ${id} --reviewer H/M --tier-review`;
-}
-
 // One review request whose claim ended with no verdict, and how to ask again.
 export function endedLine(id, r) {
   const when = String(r.at ?? "").slice(0, 16).replace("T", " ");
   const what = r.state === "lapsed" ? `claim by ${flat(r.claimedBy)} lapsed at ${when} UTC`
     : r.state === "no_verdict" ? `${flat(r.claimedBy)} replied with no readable verdict at ${when} UTC (the reply is kept: atelier show ${id} --reviews)`
       : `released by ${flat(r.claimedBy)}'s runner at ${when} UTC${r.note ? `: ${flat(String(r.note).slice(0, 200))}` : ""}`;
-  return `Review request ${r.request}${r.tier ? " (the tier's)" : ""}: ${what}; ask again with atelier review-request ${id} --reviewer ${flat(r.claimedBy)}${r.tier ? " --tier-review" : ""}, or name another`;
+  // A tier review (removed in t518) is read from older ledgers and is not asked again.
+  if (r.tier) return `Review request ${r.request} (a tier review, no longer asked): ${what}`;
+  return `Review request ${r.request}: ${what}; ask again with atelier review-request ${id} --reviewer ${flat(r.claimedBy)}, or name another`;
 }

@@ -139,14 +139,7 @@ const PATHS = [
   ['src/ledger.ts', 'reroutePlan', 'this.assertStanding(', 'a named planner or builder (atelier plan reroute)'],
   ['src/ledger.ts', 'rerouteReviewer', 'this.assertStanding(', "a named reviewer of a plan's part"],
   ['src/ledger.ts', 'reviewTick', 'actorStanding(', "a plan's reviews and their open requests"],
-  // Tier reviews judge each tier name by tierEligible, which calls the
-  // standing check (t622), and their dispatch by the standing check. Since
-  // G17 the need is judged in tierNeed and the request made by the model's
-  // command, requestTierReview.
-  ['src/ledger.ts', 'tierNeed', 'tierEligible(', 'tier reviews'],
-  ['src/ledger.ts', 'requestTierReview', 'this.standingDispatch(', 'tier reviews'],
   ['src/ledger.ts', 'reviewerCandidates', 'actorStanding(', 'the candidates an unnamed review or pre-review lists (G17)'],
-  ['src/review/tier.ts', 'tierEligible', 'actorStanding(', 'tier reviews, through the standing check'],
   ['src/ledger.ts', 'reaskReview', 'actorStanding(', 'a request carried when the head moves'],
   ['src/ledger.ts', 'reaskForCriteria', 'actorStanding(', 'a request carried when the criteria change'],
   ['src/ledger.ts', 'claim', 'actorStanding(', 'a task claimed by an actor'],

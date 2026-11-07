@@ -87,3 +87,16 @@ test("every form has a description for the web reference, written without dash p
     }
   }
 });
+
+// t518: the stuck-stage events, the separate tier review and its flags are
+// gone, so no help, guide or command usage names them.
+test("atelier help, atelier guide and every command's usage no longer mention --review-tier, --tier-review or stage.stuck", async () => {
+  const { ROLE_PROMPTS } = await import("../src/usage.ts");
+  const texts = { help: helpText(), guide: guideText(), ...Object.fromEntries(Object.entries(COMMAND_USAGE).map(([c, t]) => [`usage ${c}`, t])), ...Object.fromEntries(Object.entries(ROLE_PROMPTS).map(([r, t]) => [`guide --role ${r}`, t])) };
+  for (const [what, text] of Object.entries(texts)) assert.doesNotMatch(text, /--review-tier|--tier-review|stage\.stuck|stage\.cleared/, what);
+  for (const args of [["help"], ["guide"], ["init", "--help"], ["review-request", "--help"]]) {
+    const r = run(args);
+    assert.equal(r.status, 0, args.join(" "));
+    assert.doesNotMatch(r.stdout, /--review-tier|--tier-review|stage\.stuck/, args.join(" "));
+  }
+});
