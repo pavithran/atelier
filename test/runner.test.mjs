@@ -381,6 +381,35 @@ test("a harness that changes nothing on the task's pushed head, ahead of its bas
 });
 
 
+// t548: a task sent back after a rejection at its pushed head. The server's
+// job brief says "rework" when a review rejected that head.
+test("a build sent back after a rejection spawns the harness, and an unchanged rejected head is a failed round", async () => {
+  const item = { ...assignment.item, state: "open", owner: null, head: "before", base: "base", dispatch: { note: "Rejected at before: missing evidence" } };
+  const rejected = fixture({ head: "before" });
+  rejected.io.jobBrief = async () => ({ job: "rework", text: "Rejected at before", hash: "h" });
+  const state = await runTask({ ...assignment, item }, config, "home:studio", rejected.io);
+  assert.ok(rejected.calls.some((c) => c.harness), "the harness is spawned");
+  assert.equal(state.phase, "failed");
+  assert.ok(!rejected.calls.some((c) => c.argv?.[0] === "finish"), "nothing is submitted");
+  assert.ok(!rejected.logs.some((l) => l.startsWith("already complete:")));
+  assert.ok(rejected.logs.includes("nothing to submit: the head before was rejected by the latest review and this round added no commit, and the harness changed nothing"), rejected.logs.join("\n"));
+  assert.equal(failureCount(0, state), 1);
+  // No review yet, or an approval: the server's job is "build"; t453 as today.
+  for (const job of ["build", undefined]) {
+    const open = fixture({ head: "before" });
+    open.io.jobBrief = async () => ({ job, text: "", hash: "h" });
+    const done = await runTask({ ...assignment, item }, config, "home:studio", open.io);
+    assert.equal(done.phase, "submitted", String(job));
+    assert.ok(open.calls.some((c) => c.argv?.[0] === "finish"));
+    assert.equal(failureCount(0, done), 0);
+  }
+  // A rejection followed by a new commit is submitted.
+  const moved = fixture({ head: "after" });
+  moved.io.jobBrief = async () => ({ job: "rework", text: "x", hash: "h" });
+  assert.equal((await runTask({ ...assignment, item }, config, "home:studio", moved.io)).phase, "submitted");
+});
+
+
 test("a resumed run finishes the dead run's commit and is not reported as stalled", async () => {
   const { io, calls, logs } = fixture();
   const state = await runTask({ ...assignment, item: heldItem({ head: "recorded", base: "base" }) }, config, "home:studio", io);

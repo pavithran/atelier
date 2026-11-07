@@ -922,6 +922,13 @@ workspace as it is. A work-in-progress
 commit whose push fails stays in the workspace under the claim, as any other
 commit does.
 
+A task sent back after a rejection is not already complete at the head the
+review rejected (t548). A build whose harness exits 0 and leaves that head
+unchanged is a failed round, never "already complete": the run is not
+submitted, its log names the rejected head and says no commit was added, and
+it counts as a task failure. An unchanged pushed head that no review rejected
+(not yet reviewed, or approved) is submitted as before (t453).
+
 Committed work remains local. The server's `validationBlockedAt` and
 `unblockedAt` decide whether a validation block remains unanswered (G5).
 The local `.git/atelier-validation-blocked` marker only keeps the actor,
