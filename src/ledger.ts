@@ -2,7 +2,7 @@ import { cleanTestRuns, testEvidenceVerdict } from "./review/verify.ts";
 import { receiveRunnerLog, type RunnerLog } from "./runner-log.ts";
 import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
-import { decideLandQueue, findStageOverrun, landerLive, type LandQueued, type LandQueueVerdict } from "./stage-tick.ts";
+import { decideLandQueue, landerLive, type LandQueued, type LandQueueVerdict } from "./stage-tick.ts";
 import { LIMITS } from "./limits.ts";
 import { REPORT_DEFAULTS } from "./stuck/report.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
@@ -35,7 +35,7 @@ import {
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, postMergeNotes, fixTaskFromNote, reviewNotes, openNotes, noteKey, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
-  standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
+  standingFastReady, stageOf, crossCompanyApproval, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
   riskNeed,
 } from "./rules";
@@ -516,6 +516,10 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "r
   // step's own output, the files a merge stopped on, the check that failed,
   // and how many times main moved between the checks and the push (G2).
   fast: "boolean", tail: "tail", files: "strings", failedCheck: "string", rounds: "count",
+  // The checks step reused the builder's passing checks instead of running
+  // them on the merged tree (t520); the evidence they were read from is in
+  // statuses, and base is the merge base they were measured from.
+  reused: "boolean",
   // The attempt a step belongs to (the landing record's), which the Ledger
   // checks for a failure of a step under the lease.
   attempt: "attempt",
@@ -2265,8 +2269,9 @@ export class Ledger extends DurableObject<Env> {
   // Each live task's stage against its limit. The tick writes no stage.stuck
   // or stage.cleared (t518: neither led to an action in Nov 1-6); older
   // records holding them still read. It asks the standing review at checked,
-  // and the standing queue-landable instruction may queue a landing; without
-  // readable runner offers it queues nothing. A task whose facts cannot be
+  // and queues the landing of a task whose checks passed and whose head a
+  // reviewer of another company approved (t520); without readable runner
+  // offers it queues nothing. A task whose facts cannot be
   // read makes the read incomplete, and an incomplete read queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     this.dispatchApprovedCriteria();
@@ -2282,7 +2287,7 @@ export class Ledger extends DurableObject<Env> {
       let tasks = 0;
       const rows = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE kind = 'stage.land-queued' ORDER BY seq`).toArray();
       const recorded = rows.map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
-      const queueLandable = this.standing().get("queue-landable") === "on";
+      const queueOff = this.standing().get("queue-landable") === "off";
       try {
         const policy = this.project().policy, project = this.project().name;
         const items = this.items(), landing = this.projectLanding();
@@ -2302,25 +2307,21 @@ export class Ledger extends DurableObject<Env> {
             if (stageOf(item, { policy, evidence, reviews, owner: this.owner }).stage === "checked") {
               this.askCheckedReview(item, offers ?? undefined);
             }
-            const clock = {
-              agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
-              reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
-            };
-            // A landable task past its limit: under the standing
-            // queue-landable instruction its landing is queued for a lander (t253).
-            if (stage === "landable" && detail.head && findStageOverrun(item, stage, detail.head, now, clock)) {
-              if (queueLandable && offers) {
-                const live = liveOffers(offersFor(offers, project), now);
-                const names = [project, ...(this.project().formerly ?? [])];
-                const main = this.mainHead(), head = detail.head;
-                const verdict = decideLandQueue({
-                  item: item.id, accepted: item.state === "accepted" && item.acceptedHead === head, fast: this.mode().mode === "fast",
-                  lease: landing, main, now,
-                  lander: landerLive(live, names),
-                  queued: recorded.filter((e) => e.kind === "stage.land-queued" && e.item === item.id && e.data.head === head).map((e) => ({ at: String(e.data.at), main: (e.data.main as string | null) ?? null, reason: e.data.reason as LandQueued["reason"] })),
-                });
-                if (verdict.queue) landings.push({ id: item.id, head, main, verdict });
-              }
+            // A landable task a reviewer of another company approved at its
+            // head has its landing queued for a lander (t253, t520), with no
+            // accept, fast mode or standing instruction.
+            if (stage === "landable" && detail.head && offers && crossCompanyApproval(item, policy, reviews, this.owner)) {
+              const live = liveOffers(offersFor(offers, project), now);
+              const names = [project, ...(this.project().formerly ?? [])];
+              const main = this.mainHead(), head = detail.head;
+              const verdict = decideLandQueue({
+                item: item.id, off: queueOff, lease: landing, main, now,
+                heldForDeveloper: item.nextGate === "developer" && !(item.state === "accepted" && item.acceptedHead === head),
+                failed: (() => { const f = this.landingStopped(item); return f?.failedStep ? { failedStep: f.failedStep, attempt: f.attempt } : null; })(),
+                lander: landerLive(live, names),
+                queued: recorded.filter((e) => e.kind === "stage.land-queued" && e.item === item.id && e.data.head === head).map((e) => ({ at: String(e.data.at), main: (e.data.main as string | null) ?? null, reason: e.data.reason as LandQueued["reason"] })),
+              });
+              if (verdict.queue) landings.push({ id: item.id, head, main, verdict });
             }
           } catch { complete = false; }
         }
@@ -2337,6 +2338,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The developer names the routing; the server chooses no reviewer.
   private askCheckedReview(item: Item, offers: readonly SeenOffer[] | undefined): void {
+    if (item.dispatch?.reviewer) { this.askSubmissionReview(item.id); return; }
     const value = this.standing().get("review-on-checked");
     if (!value || value === "off" || !item.owner || !item.head) return;
     const reviewer = value.split(",").map((p) => p.split("=")).find(([company]) => company === actorFamily(item.owner!))?.[1];
@@ -2349,8 +2351,8 @@ export class Ledger extends DurableObject<Env> {
     } catch { /* a refused request writes nothing; the next tick can retry */ }
   }
 
-  // The tick's land job for a landable task (t253), under the standing
-  // queue-landable instruction: the same land_jobs row `atelier land --queue`
+  // The tick's land job for a landable, cross-company approved task (t253,
+  // t520): the same land_jobs row `atelier land --queue`
   // writes, made again with a fresh time when the job is queued anew (the
   // owner's actor and quote stay on the row), and the stage.land-queued event
   // the next tick reads back.
@@ -3102,7 +3104,7 @@ export class Ledger extends DurableObject<Env> {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("no_item", `no item ${id}`, 404, "run atelier ls --project P, or atelier ls --all");
     const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`, id).toArray();
-    return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
+    return this.withReviewAsked([{ ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) }])[0];
   }
 
   // The scopeGap of a live item's detail, as items() sets it on each item.
@@ -3161,6 +3163,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   items(): Item[] {
+    const asked = new Map(this.sql.exec(`SELECT DISTINCT r.item, r.head FROM review_requests r JOIN items i ON i.id = r.item AND i.head = r.head WHERE r.tier IS NULL AND r.superseded IS NULL AND r.state IN ('open', 'claimed', 'answered')`).toArray().map(r => [r.item as string, r.head as string]));
     const actors = this.itemActors();
     // A blocking finding on a file a live item's scope lacks (t270) rides on
     // the item as scopeGap, so a list of items (status) can say so. Only the
@@ -3176,7 +3179,7 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -3641,6 +3644,27 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE items SET token_id = NULL WHERE id = ?`, id);
   }
 
+  private submissionDispatchInput(input: Record<string, unknown>): Record<string, unknown> {
+    if (input.land !== true || input.reviewer !== undefined) return input;
+    const mapping = this.standing().get("review-on-checked");
+    const reviewer = mapping?.split(",").map(p => p.split("=")).find(([family]) => family === actorFamily(`${input.agent}/${input.model}`))?.[1];
+    return reviewer ? { ...input, reviewer } : input;
+  }
+
+  private askSubmissionReview(id: string): void {
+    const item = this.item(id), d = item.dispatch;
+    if (item.state !== "submitted" || !d?.reviewer) return;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.requestReview(id, this.owner, d.reviewer!, this.poolStanding(), false);
+        if (d.land) this.requestLand(id, this.owner);
+      });
+    } catch (error) {
+      if (!(error instanceof RuleError)) throw error;
+      this.log(id, "atelier", "submission.review_wait", { head: item.head, reason: error.message, next: `atelier land ${id} --reviewer ${d.reviewer}` }, new Date().toISOString());
+    }
+  }
+
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
   // A task held by an agent (claimed, submitted or accepted) can
@@ -3673,6 +3697,7 @@ export class Ledger extends DurableObject<Env> {
     // again with an override starts a fresh build, so an earlier merge-main
     // job and head are not carried over (t517).
     const waiting = waitingDispatch(item);
+    input = this.submissionDispatchInput(input);
     const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waiting);
     // Every dispatch names its agent and its model (G17): one that leaves
     // either to the runner is a pick the server does not make, by the API,
@@ -3803,7 +3828,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) {
-      const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
+      const d = this.standingDispatch(this.submissionDispatchInput(input), "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
       this.assertMergeMainWorkspace(item, d);
       assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner, this.holds(item));
       this.assertCriteriaReviewed(item, d, "dispatched");
@@ -4143,6 +4168,14 @@ export class Ledger extends DurableObject<Env> {
     return coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
   }
 
+  // Read only these tasks' current-head gate requests.
+  private withReviewAsked(items: Item[]): Item[] {
+    const ids = items.filter(i => i.head).map(i => i.id);
+    if (!ids.length) return items;
+    const asked = new Map(this.sql.exec(`SELECT DISTINCT r.item, r.head FROM review_requests r JOIN items i ON i.id = r.item AND i.head = r.head WHERE r.item IN (SELECT value FROM json_each(?)) AND r.tier IS NULL AND r.superseded IS NULL AND r.state IN ('open', 'claimed', 'answered')`, JSON.stringify(ids)).toArray().map(r => [r.item as string, r.head as string]));
+    return items.map(item => ({ ...item, reviewAskedHead: asked.get(item.id) ?? null }));
+  }
+
   // Items as item() reads them, from their rows, with each one's push actors
   // read from the event log in one query for all of them (the ids go as one
   // JSON list, so any number fits in one bound value).
@@ -4156,7 +4189,7 @@ export class Ledger extends DurableObject<Env> {
       history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
       histories.set(id, history);
     }
-    return rows.map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
+    return this.withReviewAsked(rows.map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) })));
   }
 
   // The jobs a runner's dead run left behind: the claims it holds whose
@@ -4892,13 +4925,17 @@ export class Ledger extends DurableObject<Env> {
     // A rerun of the submit that already stands: the caller names the head it
     // submits, and it is the one submitted and still the task's head. A newer
     // head, or none named, is a submit like any other.
-    if (head !== undefined && head === item.head && item.state === "submitted" && this.lastEvent(id, ["item.submitted"])?.data.head === head) return { ...item, already: true };
+    if (head !== undefined && head === item.head && item.state === "submitted" && this.lastEvent(id, ["item.submitted"])?.data.head === head) {
+      this.askSubmissionReview(id);
+      return { ...item, already: true };
+    }
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
     this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
     // A request the head's move withdrew is carried to this head, where the
     // gate still needs it reviewed (reaskReview).
     this.reaskReview(id, at);
+    this.askSubmissionReview(id);
     this.notify(id, origin);
     this.afterPlanChange(id);
     return this.item(id);
@@ -7620,7 +7657,7 @@ export class Ledger extends DurableObject<Env> {
     const rows = this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const gated = rows.filter((r) => r.state === "submitted" || r.state === "accepted");
     const full = new Map((gated.length ? this.withPushActors(gated) : []).map((i) => [i.id, i]));
-    return rows.map((r) => full.get(r.id as string) ?? toItem(r));
+    return this.withReviewAsked(rows.map((r) => full.get(r.id as string) ?? toItem(r)));
   }
 
   // What an owner page's bar and cards read of a project in one call: its
@@ -11995,6 +12032,7 @@ function toItem(r: Row): Item {
     workspace: (r.fork as string | null) ?? null,
     base: (r.base as string | null) ?? null,
     head: (r.head as string | null) ?? null,
+    reviewAskedHead: null,
     acceptedHead: (r.accepted_head as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,

@@ -33,6 +33,8 @@ export interface Item {
   base: string | null;      // the commit the task's branch started from
   head: string | null;      // last head Atelier verified on the task's branch
   acceptedHead: string | null;
+  // Current head with a live or answered gate review; null means none.
+  reviewAskedHead?: string | null;
   pushActors?: string[];     // holders and recorded push contributors
   createdAt: string;
   updatedAt: string;
@@ -2146,6 +2148,21 @@ export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evide
   const view = evidenceAt(policy, evidence, item.head);
   const kind = view.changedPaths === null ? null : changeClass(view.changedPaths, policy);
   return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, view.changedPaths, owner, options);
+}
+
+// The approval that lets Atelier land a task with no session (t520): a
+// review standing at the item's head and criteria that the gate admits as
+// independent, from a model of a company none of the task's contributors
+// belongs to. A project in single-family mode admits same-company reviewers
+// of other models for protected changes; that approval never lands a task by
+// itself. A change that needs no review still needs this approval. Null when
+// there is none.
+export function crossCompanyApproval(item: Item, policy: ProjectPolicy, reviews: Review[], owner = DEFAULT_OWNER): Review | null {
+  const contributors = contributorsOf(item);
+  const companies = new Set(contributors.map(actorFamily));
+  const single = singleFamily(policy);
+  return countingReviews(reviews, bindingOf(item), policy, owner)
+    .find((r) => independentApproval(r, "protected", contributors, owner, single) && !companies.has(actorFamily(r.by))) ?? null;
 }
 
 // Code needs at least one cross-company approval; a project may require more.
