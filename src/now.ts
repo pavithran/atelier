@@ -17,9 +17,8 @@ import { STALL_MS } from "./situation.ts";
 import type { DeployRecord } from "./checkout-lease.ts";
 
 export const EASTERN = "America/New_York";
-// The target in the header: weighted tokens per sound merge. The rule that
-// weighs a run's tokens is t527's (the bars); until it lands a run counts as
-// the tokens its runner reported (runTokens below).
+// The target in the header: weighted tokens per sound merge. A run's tokens
+// are weighed by the bars' rule (t527), from the parts its record keeps.
 export const TARGET_TOKENS_PER_MERGE = 700_000;
 // A merge's Revert link is offered this long after the merge.
 export const REVERT_WINDOW_MS = 24 * 3_600_000;
@@ -44,7 +43,7 @@ export interface NowProject {
   reviewRequests: { item: string; state: string; claimedBy: string | null; claimedAt: string | null }[];
   landings: Record<string, LandingRecord>;
   progress: Record<string, ProgressRecord>;
-  events: Pick<LedgerEvent, "kind" | "itemId" | "at" | "actor" | "data">[];
+  events: Pick<LedgerEvent, "seq" | "kind" | "itemId" | "at" | "actor" | "data">[];
   deploys: Pick<DeployRecord, "ship" | "head" | "by" | "result" | "at">[];
 }
 
@@ -61,6 +60,8 @@ export interface NowRow {
   next: string;
   tokens: number | null;
   tokensText: string;
+  // Landed rows: the weighted tokens of the task's runs, null when a run has no parts.
+  weightedTokens?: number | null;
   stuck: string | null;
   href: string;
   // Landed today only.
@@ -110,13 +111,28 @@ function span(ms: number): string {
   return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
 }
 
-// The tokens of a run as the header counts them. t527 replaces this with the
-// bars' weights; today it is the figure the runner reported.
-const runTokens = (run: { tokens: number | null }): number | null => run.tokens;
+// The parts of a run's tokens, when its record has them.
+export interface TokenParts { input: number; cacheWrite: number; cacheRead: number; output: number }
+// The bars' rule (t527): input x1, cache write x1.25, cache read x0.1, output x5.
+export const weighted = (p: TokenParts): number => p.input + 1.25 * p.cacheWrite + 0.1 * p.cacheRead + 5 * p.output;
+const partsOf = (run: object): TokenParts | null => {
+  const p = (run as { parts?: Partial<Record<keyof TokenParts, unknown>> }).parts;
+  if (!p || typeof p !== "object") return null;
+  const k = ["input", "cacheWrite", "cacheRead", "output"] as const;
+  return k.every((x) => typeof p[x] === "number" && Number.isFinite(p[x] as number) && (p[x] as number) >= 0) ? p as TokenParts : null;
+};
 
+// The tokens a task's runs reported (shown on its row).
 function spent(p: ProgressRecord | undefined): number | null {
-  const known = (p?.runs ?? []).map(runTokens).filter((n): n is number => n !== null);
+  const known = (p?.runs ?? []).map((r) => r.tokens).filter((n): n is number => n !== null);
   return known.length ? known.reduce((a, b) => a + b, 0) : null;
+}
+// The weighted tokens of all a task's runs; null unless every run has parts (a task with no run is unknown too).
+function spentWeighted(p: ProgressRecord | undefined): number | null {
+  const runs = p?.runs ?? [];
+  if (!runs.length) return null;
+  const all = runs.map(partsOf);
+  return all.every((x) => x !== null) ? all.reduce((n, x) => n + weighted(x!), 0) : null;
 }
 
 const fmtM = (n: number) => `${Number((n / 1e6).toFixed(2))}M`;
@@ -203,7 +219,14 @@ function landedRow(p: NowProject, item: Item, merged: string, now: Date): NowRow
   const deploy = p.deploys.filter((d) => d.result === "shipped" && d.at >= merged).map((d) => d.at).sort()[0] ?? null;
   const reviews = p.events.filter((e) => e.itemId === item.id && e.kind === "review.approved" && !e.data.postMerge).sort((a, b) => a.at.localeCompare(b.at));
   // Only findings the developer recorded as fixed (ledger addFinding), each review's finding once.
-  const findings = new Set(p.events.filter((e) => e.itemId === item.id && e.kind === "review.finding" && e.data.verdict === "fixed").map((e) => `${e.data.review}:${e.data.index}`)).size;
+  // A finding's verdict is its newest by seq (as src/review/needed.ts does), so a fix later refuted does not count.
+  const newest = new Map<string, { verdict: unknown; seq: number }>();
+  for (const e of p.events) {
+    if (e.itemId !== item.id || e.kind !== "review.finding") continue;
+    const key = `${e.data.review}:${e.data.index}`, seq = (e as { seq?: number }).seq ?? 0, held = newest.get(key);
+    if (!held || held.seq <= seq) newest.set(key, { verdict: e.data.verdict, seq });
+  }
+  const findings = [...newest.values()].filter((v) => v.verdict === "fixed").length;
   // A revert request only files a task; the merge is reverted once that task has merged.
   const asked = p.events.filter((e) => e.itemId === item.id && e.kind === "item.revert_requested");
   const revertTask = (asked.at(-1)?.data.itemId as string | undefined) ?? null;
@@ -213,7 +236,7 @@ function landedRow(p: NowProject, item: Item, merged: string, now: Date): NowRow
   return {
     id: item.id, project: p.name, projectTitle: p.title, title: item.title.replace(/\s+/g, " ").trim(), group: "landed", stage: "landed",
     waitingOn: deploy ? "nobody: it is deployed" : "the next ship", since: merged, sinceText: easternStamp(merged),
-    next: deploy ? "nothing: it is done" : "deploys with the next ship", tokens: total, tokensText: total === null ? "none reported" : tokens(total), stuck: null, href: page,
+    next: deploy ? "nothing: it is done" : "deploys with the next ship", tokens: total, tokensText: total === null ? "none reported" : tokens(total), weightedTokens: spentWeighted(p.progress[item.id]), stuck: null, href: page,
     deployedAt: deploy, deployedText: deploy ? easternStamp(deploy) : "not deployed yet", reviewer: reviews.at(-1)?.actor ?? null, findingsFixed: findings,
     revertHref: !reverted && !asked.length && revertOpen(merged, now) ? `${page}/revert` : null, reverted, revertTask,
   };
@@ -240,17 +263,32 @@ export function buildNow(projects: NowProject[], now: Date): NowView {
   landed.sort((a, b) => b.since.localeCompare(a.since) || a.id.localeCompare(b.id, "en", { numeric: true }));
   const groups = NOW_GROUPS.map((g) => ({ ...g, rows: g.key === "landed" ? landed : live.filter((r) => r.group === g.key).sort(bySince) }));
   const sound = landed.filter((r) => !r.reverted).length;
-  const spentToday = landed.reduce((n, r) => n + (r.tokens ?? 0), 0);
-  const per = sound ? Math.round(spentToday / sound) : null;
+  const measured = landed.filter((r) => r.weightedTokens != null);
+  const complete = measured.length === landed.length;
+  const spentToday = measured.reduce((n, r) => n + r.weightedTokens!, 0);
+  const per = sound && complete ? Math.round(spentToday / sound) : null;
   return {
     at: now.toISOString(),
     header: {
       mergesToday: landed.length, soundMergesToday: sound, liveCount: live.length, tokensPerSoundMerge: per,
-      tokensPerSoundMergeText: per !== null ? fmtM(per) : landed.length ? "no sound merge yet" : "no merges yet",
+      tokensPerSoundMergeText: per !== null ? fmtM(per) : !complete ? `unknown: ${measured.length} of ${landed.length} measured` : landed.length ? "no sound merge yet" : "no merges yet",
       target: TARGET_TOKENS_PER_MERGE, targetText: fmtM(TARGET_TOKENS_PER_MERGE), onTarget: per !== null && per <= TARGET_TOKENS_PER_MERGE,
     },
     groups,
   };
+}
+
+// Every event a reader returns, newest first, page by page until a short page:
+// no cap on the count. `stop` ends the walk early once a page reaches back far
+// enough (the project window); a task's own record is read to its start.
+export async function readEvents<E extends { seq: number }>(page: (before: number | undefined) => Promise<E[]>, size: number, stop?: (last: E) => boolean): Promise<E[]> {
+  const all: E[] = [];
+  for (let before: number | undefined; ;) {
+    const got = await page(before);
+    all.push(...got);
+    if (got.length < size || stop?.(got[got.length - 1])) return all;
+    before = got[got.length - 1].seq;
+  }
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -282,7 +320,7 @@ function rowHtml(r: NowRow): string {
   const task = `<div class="now-task"><a class="now-title" href="${esc(r.href)}">${esc(r.title)}</a><span class="now-id"><span class="now-project">${esc(r.projectTitle)}</span> <code>${esc(r.id)}</code></span></div>`;
   if (r.group === "landed") {
     const revert = r.reverted ? `<span class="tag ask">Reverted</span>` : r.revertTask ? `<span class="meta">Revert asked for in ${esc(r.revertTask)}</span>` : r.revertHref ? `<a class="now-revert" href="${esc(r.revertHref)}">Revert</a>` : `<span class="meta">Revert window closed</span>`;
-    return `<li class="now-row">${task}<dl class="now-cells">${cell("Waiting on", esc(r.waitingOn))}${cell("Next by itself", esc(r.next))}${cell("Landed", esc(r.sinceText))}${cell("Deployed", esc(r.deployedText ?? ""))}${cell("Reviewer", esc(r.reviewer ?? "none recorded"))}${cell("Findings fixed", String(r.findingsFixed ?? 0))}${cell("Tokens", esc(r.tokensText))}${cell("For 24 h", revert)}</dl></li>`;
+    return `<li class="now-row">${task}<dl class="now-cells">${cell("Stage", `<span class="tag">${esc(r.stage)}</span>`)}${cell("Waiting on", esc(r.waitingOn))}${cell("Next by itself", esc(r.next))}${cell("Landed", esc(r.sinceText))}${cell("Deployed", esc(r.deployedText ?? ""))}${cell("Reviewer", esc(r.reviewer ?? "none recorded"))}${cell("Findings fixed", String(r.findingsFixed ?? 0))}${cell("Tokens", esc(r.tokensText))}${cell("For 24 h", revert)}</dl></li>`;
   }
   const stuck = r.stuck ? `<span class="tag ask now-stuck">Stuck: ${esc(r.stuck)}</span>` : "";
   return `<li class="now-row">${task}<dl class="now-cells">${cell("Stage", `<span class="tag">${esc(r.stage)}</span>${stuck}`)}${cell("Waiting on", esc(r.waitingOn))}${cell("Since", esc(r.sinceText))}${cell("Next by itself", esc(r.next))}${cell("Tokens", esc(r.tokensText))}</dl></li>`;

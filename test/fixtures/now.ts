@@ -15,6 +15,10 @@ const runs = (...tokens: (number | null)[]) => tokens.map((t, i) => ({ actor: "c
 export const progress = (id: string, over: Record<string, unknown>, ...tok: (number | null)[]) =>
   ({ task: id, actor: "claude-code/sonnet-5.5", runner: "mac-mini", harness: "claude-code", telemetry: true, startedAt: h(3), endedAt: null, at: min(1), commands: { started: 3, completed: 3 }, current: null, last: null, childAlive: true, commits: 1, changedFiles: 1, logBytes: 10, tokens: null, costUsd: null, receivedAt: min(1), changedAt: min(2), runs: runs(...tok), ...over });
 
+// Parts of a run's tokens, weighed input x1, cache write x1.25, cache read x0.1, output x5.
+export const withParts = (p: Record<string, unknown>, parts: { input: number; cacheWrite: number; cacheRead: number; output: number }) =>
+  ({ ...p, runs: (p.runs as object[]).map((r) => ({ ...r, parts })) });
+
 export const project = (): NowProject => ({
   name: "atelier", title: "Atelier",
   items: [
@@ -48,9 +52,12 @@ export const project = (): NowProject => ({
   landings: {},
   progress: {
     t4: progress("t4", {}, 120_000, 80_000), t5: progress("t5", { endedAt: min(55), childAlive: false }, 50_000),
-    t11: progress("t11", { endedAt: h(9) }, 400_000), t12: progress("t12", { endedAt: h(9) }, 900_000), t13: progress("t13", { endedAt: h(30) }, 5_000_000),
+    // t11 weighs 300,000 (50,000 + 50,000 + 50,000 + 150,000); t12 weighs 800,000.
+    t11: withParts(progress("t11", { endedAt: h(9) }, 400_000), { input: 50_000, cacheWrite: 40_000, cacheRead: 500_000, output: 30_000 }),
+    t12: withParts(progress("t12", { endedAt: h(9) }, 900_000), { input: 100_000, cacheWrite: 80_000, cacheRead: 1_000_000, output: 100_000 }),
+    t13: progress("t13", { endedAt: h(30) }, 5_000_000),
   } as never,
-  events: [
+  events: ([
     { kind: "item.merged", itemId: "t11", at: "2026-11-07T06:30:00.000Z", actor: "owner", data: { mergeCommit: "1".repeat(40) } },
     { kind: "item.merged", itemId: "t12", at: "2026-11-07T14:00:00.000Z", actor: "owner", data: { mergeCommit: "2".repeat(40) } },
     // 04:30 UTC is 23:30 EST on the 6th: before today's Eastern day, though the 7th in UTC.
@@ -63,7 +70,7 @@ export const project = (): NowProject => ({
     { kind: "review.approved", itemId: "t11", at: h(10), actor: "codex/gpt-6-astra", data: {} },
     { kind: "review.approved", itemId: "t12", at: h(10), actor: "claude-code/opus-5.5", data: {} },
     { kind: "item.revert_requested", itemId: "t12", at: min(30), actor: "owner", data: { itemId: "t99" } },
-  ],
+  ] as Omit<NowProject["events"][number], "seq">[]).map((e, i) => ({ ...e, seq: i + 1 })),
   deploys: [{ ship: "s1", head: "x", by: "owner", result: "shipped", at: "2026-11-07T07:10:00.000Z" }],
 });
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildNow, nowText, nowBody, easternStamp, revertOpen, TARGET_TOKENS_PER_MERGE, type NowProject } from "../src/now.ts";
+import { buildNow, readEvents, weighted, nowText, nowBody, easternStamp, revertOpen, TARGET_TOKENS_PER_MERGE, type NowProject } from "../src/now.ts";
 import { NOW, h, min, item, progress, project } from "./fixtures/now.ts";
 
 // The Now view (t525): every live task once, in one of four groups, with who
@@ -97,7 +97,7 @@ test("Landed today holds the merges of the Eastern day, with deployed time, revi
   assert.deepEqual(row("t11"), {
     id: "t11", project: "atelier", projectTitle: "Atelier", title: "Title of t11", group: "landed", stage: "landed",
     waitingOn: "nobody: it is deployed", since: "2026-11-07T06:30:00.000Z", sinceText: "2026-11-07 01:30 EST",
-    next: "nothing: it is done", tokens: 400_000, tokensText: "400k", stuck: null, href: "/p/atelier/t11",
+    next: "nothing: it is done", tokens: 400_000, tokensText: "400k", weightedTokens: 300_000, stuck: null, href: "/p/atelier/t11",
     deployedAt: "2026-11-07T07:10:00.000Z", deployedText: "2026-11-07 02:10 EST", reviewer: "codex/gpt-6-astra", findingsFixed: 2,
     revertHref: "/p/atelier/t11/revert", reverted: false, revertTask: null,
   });
@@ -159,11 +159,11 @@ test("a merge before today's Eastern day, or after now, is not listed as landed 
 test("the header: tokens per sound merge today, the 0.7M target, merges today and the live count, from the ledger", () => {
   const v = view();
   // t11 and t12 merged today (t13 merged at 23:30 EST yesterday); t12's revert task is not merged, so both are sound.
-  assert.deepEqual(v.header, { mergesToday: 2, soundMergesToday: 2, liveCount: 10, tokensPerSoundMerge: 650_000, tokensPerSoundMergeText: "0.65M", target: 700_000, targetText: "0.7M", onTarget: true });
-  // A merged revert task makes t12 unsound: the two merges' tokens fall on one sound merge.
+  assert.deepEqual(v.header, { mergesToday: 2, soundMergesToday: 2, liveCount: 10, tokensPerSoundMerge: 550_000, tokensPerSoundMergeText: "0.55M", target: 700_000, targetText: "0.7M", onTarget: true });
+  // Weighted: t11 300,000 and t12 800,000. A merged revert task makes t12 unsound: both merges' tokens fall on one sound merge.
   const q = project();
   q.events.push({ kind: "item.merged", itemId: "t99", at: min(10), actor: "owner", data: {} } as never);
-  assert.deepEqual([buildNow([q], NOW).header.soundMergesToday, buildNow([q], NOW).header.tokensPerSoundMerge], [1, 1_300_000]);
+  assert.deepEqual([buildNow([q], NOW).header.soundMergesToday, buildNow([q], NOW).header.tokensPerSoundMerge], [1, 1_100_000]);
   assert.equal(TARGET_TOKENS_PER_MERGE, 700_000);
   const p = project();
   // No merge yet today: no figure, never a zero that reads as a win.
@@ -182,7 +182,7 @@ test("rows from several projects share the groups", () => {
 test("atelier status text prints the same groups and rows", () => {
   const text = nowText(view());
   const lines = text.split("\n");
-  assert.equal(lines[0], "Now: 10 live · 2 merges today · 0.65M tokens per sound merge (target 0.7M)");
+  assert.equal(lines[0], "Now: 10 live · 2 merges today · 0.55M tokens per sound merge (target 0.7M)");
   const at = (label: string) => lines.findIndex((l) => l.startsWith(label));
   assert.ok(at("Needs you (2)") < at("Running (2)") && at("Running (2)") < at("Stuck or waiting on a session (6)") && at("Stuck or waiting on a session (6)") < at("Landed today (2)"));
   assert.ok(text.includes("t8  Title of t8  [atelier]  landable"));
@@ -205,4 +205,67 @@ test("the page draws each row's fields, escapes task text, and names no task twi
   assert.ok(html.includes('href="/p/atelier/t11/revert"') && html.includes(">Revert<"));
   assert.ok(!html.includes('href="/p/atelier/t12/revert"'));
   assert.equal(html.split('href="/p/atelier/t4"').length - 1, 1);
+});
+
+test("weights: input x1, cache write x1.25, cache read x0.1, output x5", () => {
+  assert.equal(weighted({ input: 1000, cacheWrite: 1000, cacheRead: 1000, output: 1000 }), 1000 + 1250 + 100 + 5000);
+});
+
+test("a merge whose run has no parts makes the header unknown, saying how many were measured", () => {
+  const p = project();
+  (p.progress as never as Record<string, { runs: object[] }>).t12.runs = [{ actor: "claude-code/sonnet-5.5", startedAt: h(20), costUsd: null, tokens: 900_000 }];
+  const hd = buildNow([p], NOW).header;
+  assert.deepEqual([hd.tokensPerSoundMerge, hd.tokensPerSoundMergeText, hd.onTarget], [null, "unknown: 1 of 2 measured", false]);
+  assert.match(nowText(buildNow([p], NOW)).split("\n")[0], /tokens per sound merge: unknown: 1 of 2 measured/);
+  // A task with no run at all is unknown too.
+  const q = project();
+  delete (q.progress as Record<string, unknown>).t11;
+  assert.equal(buildNow([q], NOW).header.tokensPerSoundMergeText, "unknown: 1 of 2 measured");
+});
+
+test("a fix later refuted counts 0; the newest verdict by seq decides, whatever the order read", () => {
+  const p = project();
+  const last = Math.max(...p.events.map((e) => e.seq));
+  p.events.push({ seq: last + 1, kind: "review.finding", itemId: "t11", at: h(8), actor: "owner", data: { index: 1, verdict: "refuted", review: 5 } } as never);
+  assert.equal(buildNow([p], NOW).groups[3].rows.find((r) => r.id === "t11")!.findingsFixed, 1);
+  // Refuted, then fixed again: counts, even when the newer event is listed first.
+  p.events.unshift({ seq: last + 2, kind: "review.finding", itemId: "t11", at: h(7), actor: "owner", data: { index: 1, verdict: "fixed", review: 5 } } as never);
+  assert.equal(buildNow([p], NOW).groups[3].rows.find((r) => r.id === "t11")!.findingsFixed, 2);
+});
+
+test("a task's history is read to its start, however many events and however old", async () => {
+  const total = 2600, size = 500;
+  const all = Array.from({ length: total }, (_, i) => ({ seq: i + 1, at: i === 0 ? "2026-11-01T00:00:00.000Z" : h(1), kind: i === 0 ? "review.approved" : "note" }));
+  const calls: (number | undefined)[] = [];
+  const got = await readEvents(async (before) => { calls.push(before); return all.filter((e) => before === undefined || e.seq < before).reverse().slice(0, size); }, size);
+  assert.equal(got.length, total);
+  assert.ok(got.some((e) => e.kind === "review.approved" && e.at < h(48)), "the oldest approval is read");
+  assert.equal(calls.length, 6);
+  // A project window stops once a page reaches back past it.
+  const win = await readEvents(async (before) => all.filter((e) => before === undefined || e.seq < before).reverse().slice(0, size), size, (last) => last.at < h(48));
+  assert.equal(win.length, total);
+});
+
+test("each row element holds all its fields: landed and live, one row at a time", () => {
+  const v = view(), html = nowBody(v);
+  const rows = html.split('<li class="now-row">').slice(1).map((x) => x.split("</li>")[0]);
+  const all = v.groups.flatMap((g) => g.rows);
+  assert.equal(rows.length, all.length);
+  const cellOf = (row: string, label: string) => new RegExp(`<dt>${label}</dt><dd>(.*?)</dd></div>`).exec(row)?.[1];
+  for (const r of all) {
+    const row = rows.find((x) => x.includes(`<code>${r.id}</code>`))!;
+    assert.ok(row, r.id);
+    assert.ok(row.includes(`>${r.title}</a>`) && row.includes(r.projectTitle), `${r.id} title and project`);
+    assert.ok(cellOf(row, "Stage")?.includes(`>${r.stage}</span>`), `${r.id} stage`);
+    assert.equal(cellOf(row, "Waiting on"), r.waitingOn, `${r.id} waiting on`);
+    assert.equal(cellOf(row, "Next by itself"), r.next, `${r.id} next`);
+    assert.equal(cellOf(row, "Tokens"), r.tokensText, `${r.id} tokens`);
+    if (r.group === "landed") {
+      assert.equal(cellOf(row, "Landed"), r.sinceText, `${r.id} landed`);
+      assert.equal(cellOf(row, "Deployed"), r.deployedText, `${r.id} deployed`);
+      assert.equal(cellOf(row, "Reviewer"), r.reviewer ?? "none recorded", `${r.id} reviewer`);
+      assert.equal(cellOf(row, "Findings fixed"), String(r.findingsFixed), `${r.id} findings`);
+      assert.ok(cellOf(row, "For 24 h"), `${r.id} revert`);
+    } else assert.equal(cellOf(row, "Since"), r.sinceText, `${r.id} since`);
+  }
 });
