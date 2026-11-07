@@ -1,7 +1,7 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
 import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
 import { I, OWNER, RequestError, actor, args, call, die, flat, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
-import { stageText } from "../status.mjs";
+import { itemJson, stageText } from "../status.mjs";
 import { checkLimits, limitText } from "../../src/check-limit.ts";
 import { stageOf } from "../../src/rules.ts";
 import { queueReasons } from "../status.mjs";
@@ -137,7 +137,7 @@ export function taskJson(d, queued = null, why = []) {
   const waits = (d.blockers ?? []).filter((b) => b.state !== "merged").map((b) => ({ kind: "blocked-by", blocker: b.id, state: b.state }));
   return {
     ...(d.repairs ? { repairs: d.repairs } : {}),
-    id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head, createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
+    ...itemJson(i),
     scope: i.scope, dispatch: i.dispatch ?? null, runner: i.runner ?? null, holds: [...held, ...waits], lastFailure: lastFailureOf(d),
     ...(d.blockers?.length ? { blockedBy: d.blockers.map((b) => ({ id: b.id, state: b.state })) } : {}),
     // G4 2a: why a dispatched task is not taken, each reason with its kind
