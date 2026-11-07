@@ -84,6 +84,36 @@ test("a signal ends a queued landing, leaving the queue and taking no lease", as
 });
 
 
+// t547: the signal's handler waits on the ledger (recording the failure) while
+// the wait loop polls on. A holder that finishes in that gap used to be
+// followed by a take for the landing that had been told to stop.
+test("a signal ends a queued landing even when the lease is freed while the signal is handled (t547)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
+  let hold = true;
+  f.box.holdOn = (url, body) => hold && url.endsWith("/items/t1/land") && body.failed === true;
+  const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "land", "t1", "--wait", "--project", "proj"], {
+    cwd: f.checkout,
+    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30" },
+  });
+  t.after(() => child.kill("SIGKILL"));
+  let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
+  const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
+  await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), CEILING_MS, "the queued ask");
+  child.kill("SIGTERM");
+  await until(() => f.box.holding, CEILING_MS, "the signal's handler waiting on the ledger");
+  f.box.lease = null;
+  await new Promise((ok) => setTimeout(ok, 300));
+  hold = false;
+  const ended = await done;
+  assert.equal(ended.status, 143, output);
+  assert.deepEqual(grantedTo(f), [], "a lease was granted");
+  assert.equal(f.box.lease, null);
+  assert.deepEqual(f.box.waiting.filter((w) => w.item === "t1"), []);
+});
+
+
 test("a head pushed while the landing waits for the lease is not accepted or merged (t550)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);

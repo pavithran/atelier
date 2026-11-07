@@ -567,6 +567,12 @@ export async function runLand(io) {
   // and the lease then lapses on its own, as an unreleased lease does. The
   // first signal's status stands unless the exit is forced.
   let stopping = null, signals = 0, stepFailure = null;
+  // Once a signal is being handled the wait for the lease asks for nothing
+  // more: a poll that ran beside the release could re-join the queue after
+  // the leave, or take a lease the holder freed meanwhile, after the release
+  // had found nothing to give back. It waits for the signal's ending, which
+  // exits the process.
+  const haltIfStopping = async () => { if (stopping) { await stopping; await new Promise(() => {}); } };
   const statusOf = (signal) => signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
   const lapses = `The landing lease of ${name} lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes, unless atelier land ${id} --release-lease frees it first.`;
   const onSignal = (signal) => {
@@ -604,6 +610,7 @@ export async function runLand(io) {
   const queue = async () => {
     everQueued = true;
     for (;;) {
+      await haltIfStopping();
       const { lease: held, waiting = [] } = await request("POST", leasePath, { item: id, queued: true });
       const current = await blocking(held);
       const ahead = aheadOf(waiting);
@@ -622,6 +629,7 @@ export async function runLand(io) {
       }
       if (Date.now() - queuedSince >= WAIT_TIMEOUT_MS) await timedOut(current, ahead[0] ?? null);
       await new Promise((ok) => setTimeout(ok, POLL_MS));
+      await haltIfStopping();
     }
   };
   // Takes the lease, queueing for it while another landing's merge holds
@@ -634,10 +642,14 @@ export async function runLand(io) {
     let queued = false;
     for (;;) {
       if (queued) await queue();
+      await haltIfStopping();
       const ask = Date.now();
       try {
         const { item, expired } = await request("POST", leasePath, { item: id });
         leased = true;
+        // A signal that came while the take was in flight found no lease to
+        // release; give this one back before the process ends.
+        if (stopping) { everQueued = false; await release("a signal came while the lease was being taken"); await haltIfStopping(); }
         everQueued = false;
         leasedAt = Date.now();
         if (expired) print(`Took over the landing lease of ${name} from ${expired.holder}, which had been landing ${expired.item} since ${since(expired)} and stopped renewing it ${Math.round((Date.now() - Date.parse(expired.renewedAt ?? expired.at)) / 60000)} minutes ago; that landing is treated as ended.`);
