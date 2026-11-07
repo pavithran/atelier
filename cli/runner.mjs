@@ -32,6 +32,7 @@ import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
+import { isDispute, reworkNote, routeRejection, unparsableRoute } from "../src/dispatch/rework.ts";
 import { diffPromptMax, largeDiffNote, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/large-diff.ts";
 import { BUILD_RULES } from "../src/brief-rules.ts";
 import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
@@ -2178,6 +2179,9 @@ export async function runTask(assignment, config, name, io) {
     }
     if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
     await checkValidationReport(result);
+    // A builder that disputes a finding blocks its task with the dispute as
+    // the reason (t521): one session is woken and the task waits.
+    if (result?.code === 0 && io.readItem) await wakeOnDispute(io, { project, id: item.id, actor });
     // A timeout is read like any other failure: the head it left is looked at
     // below, so a harness that moved it and then timed out says so (t363).
     if (!result?.timedOut && io.stopped()) throw new Error("interrupted");
@@ -2904,7 +2908,10 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       } finally {
         await io.removeBrief(kept);
       }
-      return { phase: "failed", reason: parsed.error, taskFailure: true };
+      // The second unreadable reply is not retried by the pipeline (t521):
+      // a session is woken once and decides.
+      if (unparsableRoute(2) === "wake") await wakeSession(io, `${project}/${item.id}: the reviewer ${actor}'s reply could not be read twice at ${claimed.head.slice(0, 8)} (${parsed.error}); the pipeline cannot retry it`);
+      return { phase: "failed", reason: parsed.error, taskFailure: true, unretryable: true };
     }
     // A rejection is settled before it is posted (t717): findings the
     // developer already answered are dropped, blocking ones on code the
@@ -2944,6 +2951,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${posted.verdict}`);
+    if (posted.verdict === "reject" && !claimed.landed && !claimed.tier) await sendBack(io, runnerIO, { project, claimed, posted });
     return { phase: "reviewed", verdict: posted.verdict };
   } catch (error) {
     io.log(`failed: ${error.message}`);
@@ -2969,6 +2977,55 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
   }
+}
+
+// One notification wakes a session (t521). The runner has no channel of its
+// own: the hook `io.wake` is the one place a deployment connects one, and
+// without it the line is in the runner's log.
+export async function wakeSession(io, message) {
+  io.log(`session needed: ${message}`);
+  try { await io.wake?.(message); }
+  catch (error) { io.log(`could not wake a session: ${error.message}`); }
+}
+
+// A rejection goes back to its builder (t521, src/dispatch/rework.ts). The
+// dispatch is the developer's, so it goes on the runner's own credential
+// (`runnerIO`), never the reviewer's token; the findings travel in the note
+// and in the job brief the server builds for the rework.
+export async function sendBack(io, runnerIO, { project, claimed, posted }) {
+  const id = claimed.item.id;
+  const route = routeRejection({ round: claimed.need?.round ?? 1, builder: claimed.item.owner ?? null, kind: claimed.item.kind ?? null, owner: claimed.owner });
+  if (route.action === "none") return route;
+  if (route.action === "wake") { await wakeSession(io, `${project}/${id}: ${route.reason}`); return route; }
+  const note = reworkNote(id, claimed.head, posted.findings ?? [], posted.summary ?? "");
+  // The dispatch is the hook `io.dispatchBuilder`: the runner declares no
+  // dispatch call of its own (RUNNER_CALLS in src/tokens.ts), so a deployment
+  // that connects one names it here. Without it the rejection is left for a
+  // session, said so.
+  if (!runnerIO.dispatchBuilder) {
+    await wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: this runner has no way to dispatch`);
+    return route;
+  }
+  try {
+    await runnerIO.dispatchBuilder({ project, id, agent: route.agent, model: route.model, note });
+    io.log(`rejected ${id} sent back to ${route.agent}/${route.model} with the findings`);
+  } catch (error) {
+    // A builder that cannot be dispatched leaves the rejection for a session.
+    await wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: ${error.message}`);
+  }
+  return route;
+}
+
+// A builder's dispute of a finding (t521) is a block of its own task with the
+// reason `disputes finding N: why`. The task waits as any blocked task does;
+// this wakes a session once for it.
+export async function wakeOnDispute(io, { project, id, actor }) {
+  let item;
+  try { item = await io.readItem?.({ project, id, actor }); }
+  catch { return false; }
+  if (item?.state !== "blocked" || !isDispute(item.blocked?.reason)) return false;
+  await wakeSession(io, `${project}/${id}: the builder ${item.owner ?? actor} ${item.blocked.reason}; the task waits for a session`);
+  return true;
 }
 
 // The merge commit a post-merge review reads (t591), fetched into the review
