@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, renameSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentStep, failureKey, hash, newRevertState, redactedOutput } from "../src/post-merge.ts";
-import { revertNotificationRequest } from "../src/notify.ts";
+import { revertNotificationRequest, sendNotification } from "../src/notify.ts";
 import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
@@ -285,9 +285,7 @@ export async function recoverFailedLanding({ request, name, id, env, print, grou
     reopen: (member, text) => request("POST", itemsPath, { title: `Fix ${member}: its landing turned ${kind === "gate" ? "the release gate" : "main"} red`, brief: `${member} landed as ${run.after} and was reverted automatically because it turned ${kind === "gate" ? "the release gate" : "main"} red. The failing output:\n\n${text}`, fixOf: member }),
     notify: async request => {
       if (!topic) { await wake(`${members(run)} was reverted but no ntfy topic is set (ATELIER_NTFY_TOPIC), so the owner was not notified`); return; }
-      const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
-      await response.body?.cancel();
-      if (!response.ok) throw new Error(`the revert notification was refused: ${response.status}`);
+      await sendNotification(request);
     },
     wake,
   };

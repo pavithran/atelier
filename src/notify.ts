@@ -67,3 +67,10 @@ export function revertNotificationRequest(topic: string, origin: string, project
   return ntfyRequest(topic, `${project}: ${revert.itemId} reverted`, click, "rewind",
     `${revert.itemId} turned ${what} red after it landed (${revert.mergeCommit.slice(0, 12)}). Reverted in ${revert.revertCommit.slice(0, 12)}; the task is reopened with the failure.`);
 }
+
+// Sends one ntfy message; a refusal or a failed request throws.
+export async function sendNotification(request: Request): Promise<void> {
+  const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+  await response.body?.cancel();
+  if (!response.ok) throw new Error(`the notification was refused: ${response.status}`);
+}
