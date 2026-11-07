@@ -172,3 +172,77 @@ test("a runner with no way to dispatch leaves the rejection to a session, once",
   assert.equal(wakes.length, 1);
   assert.match(wakes[0], /no way to dispatch/);
 });
+
+// The production hooks (t521): the io the runner builds must carry the three
+// hooks, not only the test fixtures.
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runRunner, ntfyWake, readRunnerItem, dispatchAsDeveloper } from "../cli/runner.mjs";
+
+test("the runner's own io carries the builder dispatch, the notification and the dispute read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-rework-io-"));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ agents: [{ agent: "opencode", models: ["glm"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] }] }));
+  let io;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, { oneShot: async (job) => { io = job.io; }, api: { server: () => "https://atelier.test" }, credential: "runner-token" });
+  for (const hook of ["dispatchBuilder", "wake", "readItem"]) assert.equal(typeof io?.[hook], "function", `io.${hook} is connected`);
+});
+
+test("ntfyWake sends one message to the topic, and refuses without one", async () => {
+  const sent = [];
+  await ntfyWake("atelier/t21: the second rejection", { env: { NTFY_TOPIC: "my topic" }, fetch: async (url, init) => { sent.push({ url, init }); return { ok: true, body: null }; } });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, "https://ntfy.sh/my%20topic");
+  assert.equal(sent[0].init.body, "atelier/t21: the second rejection");
+  await assert.rejects(() => ntfyWake("x", { env: {}, fetch: async () => { throw new Error("must not be called"); } }), /NTFY_TOPIC/);
+  await assert.rejects(() => ntfyWake("x", { env: { NTFY_TOPIC: "t" }, fetch: async () => ({ ok: false, status: 500, body: null }) }), /500/);
+});
+
+test("readRunnerItem reads the item on the runner's credential and returns the task", async () => {
+  const seen = [];
+  const item = await readRunnerItem({ server: "https://atelier.test/", credential: "rt", runner: "home:studio", project: "atelier", id: "t21", actor: BUILDER,
+    fetch: async (url, init) => { seen.push({ url, init }); return { ok: true, json: async () => ({ item: { id: "t21", state: "blocked", blocked: { reason: "disputes finding 1: why" } } }) }; } });
+  assert.equal(seen[0].url, "https://atelier.test/api/projects/atelier/items/t21");
+  assert.equal(seen[0].init.headers.authorization, "Bearer rt");
+  assert.equal(item.blocked.reason, "disputes finding 1: why");
+  await assert.rejects(() => readRunnerItem({ server: "https://atelier.test", credential: "rt", project: "atelier", id: "t21", actor: BUILDER, fetch: async () => ({ ok: false, status: 403 }) }), /403/);
+});
+
+test("dispatchAsDeveloper runs atelier dispatch without the runner's name or token, and fails on a refusal", async () => {
+  const runs = [];
+  const run = (code) => async (argv, options) => { runs.push({ argv, options }); return { code, output: "", stderr: "no developer token" }; };
+  await dispatchAsDeveloper(run(0), { project: "atelier", id: "t21", agent: "claude-code", model: "sonnet-5.5", note: "n", env: { ATELIER_RUNNER_NAME: "x", ATELIER_RUNNER_TOKEN: "y", KEEP: "1" } });
+  const { argv, options } = runs[0];
+  assert.deepEqual(argv.slice(2), ["dispatch", "t21", "--project", "atelier", "--agent", "claude-code", "--model", "sonnet-5.5", "--note", "n"]);
+  assert.deepEqual(options.env, { KEEP: "1" });
+  await assert.rejects(() => dispatchAsDeveloper(run(1), { project: "atelier", id: "t21", agent: "a", model: "m", note: "n", env: {} }), /no developer token/);
+});
+
+// Criterion 4, through runTask: the builder's run ends with its block of the
+// task recorded, and the runner's read of the task wakes one session.
+import { runTask } from "../cli/runner.mjs";
+
+test("runTask reads the task after the builder's run and wakes one session for a dispute", async () => {
+  const entry = { agent: "opencode", models: ["glm"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
+  const run = async (item) => {
+    const wakes = [], reads = [];
+    const io = {
+      log: () => {}, stopped: () => false, env: { PATH: "/usr/bin" }, ownerTokens: () => [],
+      workspacePath: (project, id) => `/cache/work/${project}/${id}`,
+      async cli() {}, async reset() {}, async head() { return "before"; }, async headMessage() { return ""; }, async isAncestor() { return true; },
+      async brief() { return { file: "/b" }; }, async harness() { return { code: 0, output: "" }; }, async removeBrief() {},
+      async identityRefusals() { return []; }, async dataHome() { return { dir: "/d" }; }, async removeDataHome() {},
+      async commitWork() { return null; },
+      async readItem(request) { reads.push(request); return item; },
+      async wake(message) { wakes.push(message); },
+    };
+    await runTask({ project: "atelier", item: { id: "t21", title: "T", scope: ["a"] }, agent: entry.agent, model: entry.models[0], actor: "opencode/glm" }, { agents: [entry] }, "home:studio", io).catch(() => {});
+    return { wakes, reads };
+  };
+  const disputed = await run({ id: "t21", state: "blocked", owner: "opencode/glm", blocked: { reason: disputeReason(1, "The retry is in needed.ts:90.") } });
+  assert.equal(disputed.reads.length, 1);
+  assert.equal(disputed.wakes.length, 1);
+  assert.match(disputed.wakes[0], /disputes finding 1/);
+  assert.equal((await run({ id: "t21", state: "claimed", owner: "opencode/glm" })).wakes.length, 0);
+});

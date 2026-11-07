@@ -3016,6 +3016,45 @@ export async function sendBack(io, runnerIO, { project, claimed, posted }) {
   return route;
 }
 
+// The three hooks a production runner connects (t521). Each is a function of
+// its own so a test reads it without a server.
+//
+// The notification is an ntfy message on the topic the server's stuck notices
+// use (NTFY_TOPIC); a runner without one says so, and the line stays in its log.
+export async function ntfyWake(message, { env = process.env, fetch = globalThis.fetch } = {}) {
+  const topic = env.NTFY_TOPIC?.trim();
+  if (!topic) throw new Error("NTFY_TOPIC is not set on this runner, so no notification can be sent");
+  const body = Array.from(String(message).replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ")).slice(0, 500).join("");
+  const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+    method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000), body,
+    headers: { Title: "Atelier: a session is needed", Tags: "warning", Priority: "default", "Content-Type": "text/plain; charset=utf-8" },
+  });
+  await res.body?.cancel();
+  if (!res.ok) throw new Error(`the notification channel answered ${res.status}`);
+}
+
+// The task as the server holds it, read on the runner's credential through the
+// declared `item` call, for a builder's dispute (its block reason).
+export async function readRunnerItem({ server, credential, runner, project, id, actor, signal, fetch = globalThis.fetch }) {
+  const res = await fetch(`${String(server).replace(/\/$/, "")}/api${callPath(declaredCall("item"), { project, item: id })}`, {
+    headers: { authorization: `Bearer ${credential}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}) },
+    redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`item ${id}: ${res.status}`);
+  const data = await res.json();
+  return data.item ?? data;
+}
+
+// The owner's dispatch of a rejected task to its builder: `atelier dispatch`
+// as the developer, as a land job runs, with the runner's own name and token
+// left out of its environment. A machine that holds no developer token fails
+// here and sendBack wakes a session instead.
+export async function dispatchAsDeveloper(run, { project, id, agent, model, note, env = process.env, signal }) {
+  const child = { ...env }; delete child.ATELIER_RUNNER_NAME; delete child.ATELIER_RUNNER_TOKEN;
+  const r = await run([process.execPath, cli, "dispatch", id, "--project", project, "--agent", agent, "--model", model, "--note", note], { env: child, capture: true, captureError: true, signal, timeoutMs: 60_000 });
+  if (r.code !== 0) throw new Error(`atelier dispatch exited ${r.code}: ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 300)}`);
+}
+
 // A builder's dispute of a finding (t521) is a block of its own task with the
 // reason `disputes finding N: why`. The task waits as any blocked task does;
 // this wakes a session once for it.
@@ -4742,6 +4781,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   const io = {
     progress,
+    // A rejection's three hooks (t521): the builder's dispatch, the
+    // notification that wakes a session, and the read of a builder's dispute.
+    dispatchBuilder: (request) => dispatchAsDeveloper(executeChild, { ...request, signal: controller.signal }),
+    wake: (message) => ntfyWake(message),
+    readItem: async ({ project, id, actor }) => readRunnerItem({ server: (api ?? await import("./atelier.mjs")).server(), credential, runner: offer.runner, project, id, actor, signal: controller.signal }),
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
