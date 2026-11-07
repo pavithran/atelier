@@ -430,27 +430,27 @@ it("the single-family route records the company with who and when, records the r
   expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
 });
 
-it("the review tier route takes models separated by commas or a list, keeps the tier on re-init, clears it on an empty one, and refuses one not harness/model", async () => {
+it("the init route no longer takes a review tier: an older CLI's reviewTier is answered and recorded nowhere (t518)", async () => {
   await project("routes-review-tier");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-tier", {
     method: "PUT",
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" },
     body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
   }), artifactsEnv);
-  const tierOf = async (fields: Record<string, unknown>) =>
-    (((await (await put(fields)).json()) as { project: { policy: { reviewTier?: string[] } } }).project.policy.reviewTier);
-  expect(await tierOf({})).toBeUndefined();
-  const tier = ["claude-code/opus-5.5", "codex/gpt-6.1-sol", "antigravity/gemini-3.1-pro"];
-  expect(await tierOf({ reviewTier: " claude-code/opus-5.5, codex/gpt-6.1-sol,,antigravity/gemini-3.1-pro,codex/gpt-6.1-sol" })).toEqual(tier);
-  expect(await tierOf({ title: "Kept" })).toEqual(tier);
-  expect(await tierOf({ reviewTier: "" })).toBeUndefined();
-  expect(await tierOf({ reviewTier: ["codex/gpt-6.1-sol"] })).toEqual(["codex/gpt-6.1-sol"]);
-  expect(await tierOf({ reviewTier: [] })).toBeUndefined();
-  for (const bad of ["opus-5.5", 7, [3], "a/b c"]) {
-    const res = await put({ reviewTier: bad });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toBe("bad_review_tier");
+  for (const reviewTier of [" claude-code/opus-5.5, codex/gpt-6.1-sol", ["codex/gpt-6.1-sol"], "", [], "not a model"]) {
+    const res = await put({ reviewTier });
+    expect(res.status, JSON.stringify(reviewTier)).toBe(200);
+    expect(((await res.json()) as { project: { policy: Record<string, unknown> } }).project.policy).not.toHaveProperty("reviewTier");
   }
+});
+
+it("the review-request route refuses an older CLI's tier request rather than asking it as a gate review (t518)", async () => {
+  await project("routes-tier-gone");
+  const made = await call("POST", "/projects/routes-tier-gone/items", "owner", { title: "Old CLI asks a tier review", scope: ["src/**"] });
+  const id = ((await made.json()) as { id?: string; item?: { id: string } }).item?.id ?? "t1";
+  const res = await call("POST", `/projects/routes-tier-gone/items/${id}/review-request`, "owner", { tier: true, reviewer: "codex/gpt-6-astra" });
+  expect(res.status).toBe(410);
+  expect(((await res.json()) as { error: string }).error).toBe("tier_review_removed");
 });
 
 it("a first init with no title creates the project without one", async () => {

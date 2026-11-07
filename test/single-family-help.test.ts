@@ -3,17 +3,14 @@ import assert from "node:assert/strict";
 import { ORCHESTRATOR, RULES } from "../src/how-data.ts";
 import { COMMANDS, commandUsage, guideText, ROLE_PROMPTS } from "../src/usage.ts";
 
-test("init's main description explains single-family gate and optional tier review", () => {
+test("init's main description explains the cross-company gate and single-family mode, and no longer a review tier", () => {
   // Check the paragraph itself: correct flag help must not hide a contradictory
   // main description, which is also printed in the web command reference.
   const about = COMMANDS.init.forms![0].about;
-  const tier = about.slice(about.indexOf("`--review-tier`"));
-  assert.match(tier, /By default.*another company than every contributor/);
-  assert.match(tier, /single-family mode.*different model of the selected company from every contributor/);
-  assert.match(tier, /records the need and candidates/);
-  assert.match(tier, /requests it with `atelier review-request ID --reviewer H\/M --tier-review`/);
-  assert.match(tier, /must not have contributed.*single-family mode.*selected company/);
-  assert.match(tier, /No separate tier review is requested automatically/);
+  assert.match(about, /By default the gate reviewer must be of another company than every contributor/);
+  assert.match(about, /--single-family COMPANY.*A review counts when the reviewer is a different model of it from every contributor/s);
+  assert.doesNotMatch(about, /review-tier|tier-review|tier review/);
+  assert.doesNotMatch(commandUsage("init"), /review-tier|tier-review/);
   assert.ok(commandUsage("init").includes(about));
 });
 

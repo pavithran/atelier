@@ -5,13 +5,15 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Models", line: 2, slot: 10,
-      form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T | --note-file PATH] [--job merge-main [--head H]] [--overlap-ok] [--release]",
+      form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T | --note-file PATH] [--job merge-main [--head H]] [--overlap-ok] [--release] [--reviewer H/M] [--land]",
       about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it; a submitted or accepted task is released and queued in the same step, keeping its workspace, commits, reviews and acceptance history. An accepted task must be submitted and accepted again; a merge holding its landing lease must finish or be cancelled first. While the task's scope overlaps, within one of the project's core files (`init --core`), the scope of a claimed item or of the item a live landing lease names, the queue holds it and offers it to no runner until each claimed blocker submits or is released and the landing ends; `atelier status` and `atelier queue` name every item it waits on, and `--overlap-ok` lets this dispatch through at once. `--job merge-main` sends a task whose landing conflicted with main back to its builder: the runner fetches and merges the baseline's current main head at claim time into its workspace (`--head` records dispatch context, not the merge target) and leaves the conflicts for the builder to resolve and commit; then `atelier land ID` again. A task a builder holds live (claimed) is refused, naming the holder and when they claimed it, unless `--release` is given; `--release` ends that claim, says whose, and tells the holder at its next push or finish that the task was taken back. Without both `--agent` and `--model` the server names no builder: it prints every candidate with its reliability line, and each a gate filter refuses with why, and refuses. Developer only.",
     },
   ],
-  flags: { to: false, agent: false, model: false, note: false, "note-file": false, job: false, head: false, "overlap-ok": true, release: true },
+  flags: { reviewer: false, land: true, to: false, agent: false, model: false, note: false, "note-file": false, job: false, head: false, "overlap-ok": true, release: true },
   help: {
     flags: {
+      "--reviewer H/M": "records the developer’s reviewer; submit asks that review using the current gate and independence checks",
+      "--land": "records intent to queue landing on submit; requires --reviewer or the project’s review-on-checked mapping for the named builder",
       "--to home|cloud|any": "the kind of runner; any unless given",
       "--agent A": 'the agent the runner must run, with --model; without both, the dispatch is refused with the candidates and their reliability lines, except when --overlap-ok updates an existing dispatch',
       "--model M": 'the model the runner must use, with --agent',

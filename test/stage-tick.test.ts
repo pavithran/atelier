@@ -2,11 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Item, TaskStage } from "../src/rules.ts";
 import { STAGE_LIMITS_MS, stageEnteredAt, stageOverrun } from "../src/rules.ts";
-import { findStageOverrun, openStages, reconcileStages, tickLine, type StageFinding } from "../src/stage-tick.ts";
+import { findStageOverrun, tickLine } from "../src/stage-tick.ts";
 
-// t223: the stage limits as pure functions, and the stuck/cleared
-// transitions a tick decides from them (G6: nothing is "told"; the record
-// and its note are the fact).
+// t223: the stage limits as pure functions. t518: the tick writes no
+// stage.stuck or stage.cleared, so the functions that decided them are gone.
 
 const MIN = 60_000, HOUR = 60 * MIN;
 const T0 = "2026-10-23T00:00:00.000Z";
@@ -51,48 +50,9 @@ test("reads each stage's entry time from the record that put the task there", ()
   assert.equal(stageEnteredAt("building", i, "a", clock), null);
 });
 
-const found = (over: Partial<StageFinding> = {}): StageFinding => ({ item: "t1", stage: "built", head: "a", enteredAt: T0, limitMs: 20 * MIN, overMs: MIN, ...over });
-const kinds = (moves: { kind: string }[]) => moves.map((m) => m.kind);
-// Replays a tick's moves as the events a Ledger would hold.
-const events = (moves: { item: string; kind: string; data: Record<string, unknown> }[]) => moves;
-
-test("finding an overrun records one stuck with its note, and a repeat adds nothing", () => {
-  const first = reconcileStages([found({ note: "no live runner offers codex/gpt-6" })], new Map(), true);
-  assert.deepEqual(kinds(first), ["stage.stuck"]);
-  assert.equal(first[0].data.note, "no live runner offers codex/gpt-6");
-  assert.deepEqual(Object.fromEntries(Object.keys({ stage: "built", head: "a", limitMs: 20 * MIN }).map((k) => [k, (first[0].data)?.[k]])), { stage: "built", head: "a", limitMs: 20 * MIN });
-  const open = openStages(events(first));
-  assert.deepEqual(reconcileStages([found({ overMs: 5 * MIN })], open, true), []);
-  assert.deepEqual(reconcileStages([found()], openStages(events([...first, ...reconcileStages([found()], open, true)])), true), []);
-});
-
-test("is stuck once per stage and per head", () => {
-  const open = openStages(events(reconcileStages([found()], new Map(), true)));
-  const moves = reconcileStages([found({ head: "b" })], open, true);
-  assert.deepEqual(kinds(moves), ["stage.stuck", "stage.cleared"]);
-  assert.deepEqual(Object.fromEntries(Object.keys({ stage: "built", head: "a" }).map((k) => [k, (moves.at(-1))?.[k]])), { stage: "built", head: "a" });
-  assert.deepEqual(kinds(reconcileStages([found(), found({ stage: "checked" })], new Map(), true)), ["stage.stuck", "stage.stuck"]);
-});
-
-test("a task that leaves the stage clears it, and coming back is a new stuck", () => {
-  let all = reconcileStages([found()], new Map(), true);
-  const cleared = reconcileStages([], openStages(events(all)), true);
-  assert.deepEqual(kinds(cleared), ["stage.cleared"]);
-  all = [...all, ...cleared];
-  assert.deepEqual(reconcileStages([], openStages(events(all)), true), []);
-  assert.deepEqual(kinds(reconcileStages([found()], openStages(events(all)), true)), ["stage.stuck"]);
-});
-
-test("an incomplete read records nothing and clears nothing", () => {
-  const open = openStages(events(reconcileStages([found()], new Map(), true)));
-  assert.deepEqual(reconcileStages([found({ item: "t2" })], new Map(), false), []);
-  assert.deepEqual(reconcileStages([], open, false), []);
-});
-
-test("a stuck record from before G6 that was told still clears, and writes no further told", () => {
-  const old = [{ item: "t1", kind: "stage.stuck", data: { stage: "built", head: "a" } }, { item: "t1", kind: "stage.told", data: { stage: "built", head: "a", note: "the tick cannot act on this stage" } }];
-  assert.deepEqual(reconcileStages([found()], openStages(old), true), []);
-  assert.deepEqual(kinds(reconcileStages([], openStages(old), true)), ["stage.cleared"]);
+test("the functions that decided stage.stuck and stage.cleared are gone", async () => {
+  const tick = await import("../src/stage-tick.ts") as Record<string, unknown>;
+  for (const gone of ["reconcileStages", "openStages", "recordedKeys", "olderThan", "stageKeyOf", "STAGE_EVENT_KINDS", "REVIEW_TIER_STAGE"]) assert.equal(tick[gone], undefined, gone);
 });
 
 test("finds an overrun from the item and its clock", () => {
@@ -177,29 +137,14 @@ test("an overdue tick is ahead of usage and token-expiry warnings, in status and
   assert.equal(withOverdueTick("text", []), "text");
 });
 
-import { olderThan, recordedKeys } from "../src/stage-tick.ts";
-
 // G6: the tick reroutes no dispatch and re-points no review request, so
 // decideReroute, decideReviewReroute and costTier are gone; what they decided
-// is a stage.stuck note now (test/tick-facts.test.mjs).
+// is a fact `show` reads now (test/tick-facts.test.mjs).
 test("the reroute and re-point deciders are gone from the tick", async () => {
   const tick = await import("../src/stage-tick.ts") as Record<string, unknown>;
   for (const gone of ["decideReroute", "decideReviewReroute", "costTier", "LAND_REQUEUES_FOR_MAIN", "forkStalled", "replacementFork", "PREPARING"]) assert.equal(tick[gone], undefined, gone);
   const rules = await import("../src/rules.ts") as Record<string, unknown>;
   for (const gone of ["tickCanAct", "STAGE_TICK_MS", "STAGE_TICK_STALE_MS", "FORK_STUCK_MS", "FORK_REPLACE_MS", "FORK_REQUEST_MS", "FORK_REPLACEMENTS", "forkPreparationView"]) assert.equal(rules[gone], undefined, gone);
-});
-
-test("records which keys an event kind was written for", () => {
-  const keys = recordedKeys([{ item: "t1", kind: "stage.rerouted", data: { stage: "queued", head: "" } }, { item: "t2", kind: "stage.told", data: { stage: "queued" } }], "stage.rerouted");
-  assert.deepEqual([...keys], [JSON.stringify(["t1", "queued", ""])]);
-});
-
-// t225: a claim or request is late only when its start is known and more than the limit ago.
-test("olderThan is false for an unknown or unreadable time and for exactly the limit", () => {
-  assert.equal(olderThan(null, at(HOUR), HOUR), false);
-  assert.equal(olderThan("not a time", at(HOUR), HOUR), false);
-  assert.equal(olderThan(T0, at(HOUR), HOUR), false);
-  assert.equal(olderThan(T0, at(HOUR + 1), HOUR), true);
 });
 
 import { decideLandQueue, landerLive, type LandQueueInput } from "../src/stage-tick.ts";

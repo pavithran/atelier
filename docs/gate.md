@@ -16,8 +16,8 @@ The cross-company rules below describe the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
 company's models: a reviewer must be a different model from every contributor,
 never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
+criteria review, handoffs and conflict contributors. Only that company's models
+qualify.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
@@ -276,17 +276,13 @@ ATELIER_ACTING=claude-code/opus-5.5 atelier init --cross-family
 returns to the default, and that switch too is recorded with who made it
 and when. `--reset` drops the mode with the rest of the policy.
 
-## Tier review and risk reviews
+## Risk reviews
 
-A project with a review tier (`atelier init --review-tier`) has a separate
-tier review needed when the gate's reviewer is outside the tier. Atelier
-records the need and candidates; it asks none automatically. Request it with
-`atelier review-request ID --reviewer H/M --tier-review`. That holds for a change that needs none or one independent review:
-the tier approval never stands in for the independent one. When the project's
-`riskReviews` ask two or more independent reviews for a change, the gate asks
-no separate tier review. Two approvals from different families, none a
-contributor's, clear it, and a tier model's approval counts as independent
-when its family is not a contributor's (t277).
+When the project's `riskReviews` ask two or more independent reviews for a
+change, two approvals from different families, none a contributor's, clear
+it. An approval from the builder's own company never counts, and the owner's
+approval never stands in for the independent one. The separate tier review was
+removed (t518); older ledgers that hold one still read.
 
 ## The review bar
 

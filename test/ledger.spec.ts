@@ -323,8 +323,8 @@ it("decision 2026-10-09: availableReviewer names the reviewer the pool offers, a
   expect(await L.availableReviewer("t1", [], liveOffersFor([]))).toBeNull();
 });
 
-it("decision 2026-10-09: availableReviewer asks the review tier first for a protected change", async () => {
-  const L = await setup("available-reviewer-tier", { ...policy, protected: ["security.ts"], reviewTier: ["codex/gpt-6-astra"] });
+it("decision 2026-10-09: availableReviewer ignores a reviewTier an old policy holds (t518), and asks the pool in its own order", async () => {
+  const L = await setup("available-reviewer-tier", { ...policy, protected: ["security.ts"], reviewTier: ["codex/gpt-6-astra"] } as typeof policy);
   await L.newItem("Touch a protected path", ["security.ts"], "owner");
   await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
   await L.setWorkspace("t1", "available-reviewer-tier--t1", H0, A);
@@ -335,10 +335,9 @@ it("decision 2026-10-09: availableReviewer asks the review tier first for a prot
   const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
     id, harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: T, ...change,
   });
-  // The tier model is asked first, ahead of the pool's own id order, so one
-  // review serves the gate and the tier.
+  // The old tier model gets no place ahead of the pool's own id order.
   expect(await L.availableReviewer("t1", [entry("glm-5.3", { harness: "opencode" }), entry("gpt-6-astra")], liveOffersFor([entry("glm-5.3", { harness: "opencode" }), entry("gpt-6-astra")])))
-    .toBe("codex/gpt-6-astra");
+    .toBe("opencode/glm-5.3");
 });
 
 // t395: the inbox's assess entry names the reviewer `atelier land ID
@@ -1048,14 +1047,12 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(prose, { ...base, proseStandard: null }, "later").policy).not.toHaveProperty("proseStandard");
   expect(mergeProject(prose, { ...base, reset: true }, "later").policy).not.toHaveProperty("proseStandard");
   expect(full.policy).not.toHaveProperty("proseStandard");
-  // The review tier is unset by default, set, kept by an init that does not
-  // name it, cleared by an empty list, and dropped by reset.
+  // The review tier is gone (t518): a recorded policy that still holds one
+  // reads, and the next init drops it.
   expect(full.policy).not.toHaveProperty("reviewTier");
-  const tiered = mergeProject(full, { ...base, reviewTier: ["claude-code/opus-5.5", "codex/gpt-6.1-sol"] }, "later");
-  expect(tiered.policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
-  expect(mergeProject(tiered, { ...base, title: "V" }, "later").policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
-  expect(mergeProject(tiered, { ...base, reviewTier: [] }, "later").policy).not.toHaveProperty("reviewTier");
-  expect(mergeProject(tiered, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewTier");
+  const old = { ...full, policy: { ...full.policy, reviewTier: ["claude-code/opus-5.5", "codex/gpt-6.1-sol"], exactNames: ["reviewTier"] } } as typeof full;
+  expect(mergeProject(old, { ...base, title: "V" }, "later").policy).not.toHaveProperty("reviewTier");
+  expect(mergeProject(old, { ...base, title: "V" }, "later").policy).not.toHaveProperty("exactNames");
   // t394: the model policy is unset by default; a switch is stamped with the
   // init's time and who made it, kept by an init that does not name it, and
   // a return to cross-family review is recorded the same way, not dropped.
@@ -1545,9 +1542,6 @@ it("a task sent back for rework gets the rejecting review's findings in its job 
 
 const GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
 const REVIEW_POOL: ModelEntry[] = [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
-// The tier's model joins the pool, for the tier review the developer asks by command (G17: the server asks none).
-const TIER_POOL: ModelEntry[] = [...REVIEW_POOL, { id: "glm-5.3", harness: "zcode", where: "home", provider: "subscription", aliases: [], family: "zai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
-const askTier = (L: Awaited<ReturnType<typeof setup>>, id = "t1") => L.requestTierReview(id, "owner", GLM, TIER_POOL, undefined, true);
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const ONE = ["Nested lists parse"];
 const TWO = ["Nested lists parse", "Errors name the line"];
@@ -1585,7 +1579,7 @@ it("a claim records the binding of the task's stored, ordered criteria: equal fo
 });
 
 it("the detail names the runner that holds each open review claim, and none once the claim is withdrawn (t558)", async () => {
-  const L = await setup("review-claim-runner", { ...policy, reviewTier: [GLM] });
+  const L = await setup("review-claim-runner");
   await submittedWith(L, ONE);
   await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   const claim = await L.claimReview("t1", GPT, RUNNER) as unknown as ReviewClaim;
@@ -1596,17 +1590,14 @@ it("the detail names the runner that holds each open review claim, and none once
 });
 
 it("changing criteria withdraws every standing review and live request, keeps their history and the head and checks, and changing back revives none", async () => {
-  const L = await setup("criteria-withdraw", { ...policy, reviewTier: [GLM] });
+  const L = await setup("criteria-withdraw");
   await submittedWith(L, ONE);
   const one = criteriaHash(ONE), two = criteriaHash(TWO);
-  // An approval by another family, the owner asks GPT by name, the tier asks
-  // GLM beside it; GLM claims the tier review and rejects; GPT claims the gate's.
+  // An approval by another family, the owner asks GPT by name; GLM rejects
+  // with no request; GPT claims the gate's.
   await L.addReview(bound(review("t1", B, H1, true, "fine"), one), undefined, true);
   await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
-  expect(await askTier(L)).toMatchObject({ requested: true, reviewer: GLM });
-  const tier = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
-  expect(tier).toMatchObject({ tier: true, criteria: one });
-  await L.addReview(bound(review("t1", GLM, H1, false, "unsafe"), one, tier.request), undefined, true);
+  await L.addReview(bound(review("t1", GLM, H1, false, "unsafe"), one), undefined, true);
   const gateClaim = await L.claimReview("t1", GPT, RUNNER) as unknown as ReviewClaim;
   expect(gateClaim.criteria).toBe(one);
   expect(await live(L)).toEqual([expect.objectContaining({ state: "claimed", claimedBy: GPT })]);
@@ -1778,40 +1769,11 @@ it("changing criteria takes back an acceptance and an override, the task claimed
   expect(fresh.criteriaChange).toMatchObject({ acceptance: false });
 });
 
-// t326 review finding: a tier request withdrawn by a change of criteria, or
-// one made before requests recorded their criteria, must not count as the
-// tier already asked, or the tier review is never asked again.
-const liveTier = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => (await L.reviewRequests(id)).filter((r) => r.tier && (r.state === "open" || r.state === "claimed"));
-
-it("criteria changed A to B and back to A at one head: a withdrawn tier request does not stand in for a new one, which the developer asks by command each time", async () => {
-  const L = await setup("criteria-tier-aba", { ...policy, reviewTier: [GLM] });
-  await submittedWith(L, ONE);
-  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
-  // The server asks no tier review (G17): the developer asks it by command.
-  expect((await liveTier(L)).length).toBe(0);
-  await askTier(L);
-  expect((await liveTier(L)).length).toBe(1);
-  await L.editItem("t1", "owner", { accept: TWO });
-  // The change withdrew the tier request, and the server asks none in its place (G17).
-  expect((await liveTier(L)).length).toBe(0);
-  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
-  await askTier(L);
-  await L.editItem("t1", "owner", { accept: ONE });
-  expect((await liveTier(L)).length).toBe(0);
-  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
-  await askTier(L);
-  const tier = await liveTier(L);
-  expect(tier).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
-  expect((await L.reviewRequests("t1")).filter((r) => r.tier).map((r) => r.state)).toEqual(["withdrawn", "withdrawn", "open"]);
-  const claim = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
-  expect(claim).toMatchObject({ tier: true, criteria: criteriaHash(ONE) });
-});
-
 it("requests and reviews made before reviews were bound stop counting as already asked once the criteria change", async () => {
   const stub = env.LEDGER.get(env.LEDGER.idFromName("project:criteria-tier-legacy"));
   await runInDurableObject(stub, async (_instance, state) => {
     const L = new Ledger(state, env);
-    L.initProject({ name: "criteria-tier-legacy", repo: "criteria-tier-legacy", reset: false, checks: ["npm test"], protected: ["security.ts"], reviewTier: [GLM] }, "owner");
+    L.initProject({ name: "criteria-tier-legacy", repo: "criteria-tier-legacy", reset: false, checks: ["npm test"], protected: ["security.ts"] }, "owner");
     L.newItem("Legacy", [], "owner", { accept: [...ONE] });
     L.claim("t1", A);
     L.setWorkspace("t1", "fork-t1", H0, A);
@@ -1819,9 +1781,9 @@ it("requests and reviews made before reviews were bound stop counting as already
     L.addEvidence(observed("t1", H1, ["security.ts"]));
     L.submit("t1", A);
     L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
-    L.requestTierReview("t1", "owner", GLM, TIER_POOL, undefined, true);
-    // As a ledger before t326 left them: requests with no criteria, and a
-    // tier review with no binding at the head.
+    // As a ledger before t326 and t518 left them: a tier request (no longer
+    // asked), requests with no criteria, and a tier review with no binding at the head.
+    state.storage.sql.exec(`INSERT INTO review_requests (item, head, dispatch, state, tier) VALUES (?, ?, ?, 'open', 1)`, "t1", H1, JSON.stringify({ to: "home", agent: "zcode", model: "glm-5.3", job: "review" }));
     state.storage.sql.exec(`UPDATE review_requests SET criteria = NULL`);
     state.storage.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, "t1", JSON.stringify({ ...unbound(review("t1", "antigravity/gemini-3.1-pro", H1, true)), tier: true, recordedBy: "owner", proved: false, claimed: true }));
     const after = new Ledger(state, env);
@@ -1832,12 +1794,11 @@ it("requests and reviews made before reviews were bound stop counting as already
     const legacy = after.reviewsFor("t1")[0];
     expect(legacy).toMatchObject({ withdrawn: { reason: "the acceptance criteria changed" } });
     expect("criteria" in legacy).toBe(false);
-    // Nothing is asked again by the server (G6, G17); the legacy tier review no longer counts as given, so the developer can ask both again.
+    // Nothing is asked again by the server (G6, G17), and the legacy tier request is not asked again by anyone.
     expect(after.reviewRequests("t1").filter((r) => r.state === "open" || r.state === "claimed")).toEqual([]);
     after.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
-    expect(after.requestTierReview("t1", "owner", GLM, TIER_POOL, undefined, true)).toMatchObject({ needed: true, requested: true });
     const live = after.reviewRequests("t1").filter((r) => r.state === "open" || r.state === "claimed");
-    expect(live.map((r) => !!r.tier).sort()).toEqual([false, true]);
+    expect(live.map((r) => !!r.tier)).toEqual([false]);
   });
 });
 
