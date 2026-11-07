@@ -39,9 +39,11 @@ async function world(t, reviewerWhere = "home") {
   await L.submit(id, BUILDER);
   await L.addEvidence({ itemId: id, head: HEAD, by: "owner", at: new Date().toISOString(), claim: "paths", grade: "observed", passed: true, changedPaths: ["src/a.ts"] });
   const asked = await L.requestReview(id, "owner", REVIEWER, pool, true, false, undefined, [], true);
-  const api = async (verb, actor = REVIEWER, body = {}, runner) => worker.fetch(new Request(`http://localhost/api/projects/demo/items/${id}/${verb}`, {
+  // These tests are about the hand request, not the proof an approval carries
+  // (test/review-tests-proof.test.mjs), so an approval brings one passing result.
+  const api = async (verb, actor = REVIEWER, sent = {}, runner) => { const body = verb === "review" && sent.approve && !("tests" in sent) ? { ...sent, tests: [{ test: "npm test", head: sent.head ?? HEAD, result: "passed" }] } : sent; return worker.fetch(new Request(`http://localhost/api/projects/demo/items/${id}/${verb}`, {
     method: "POST", headers: { authorization: `Bearer ${env.ATELIER_TOKEN}`, "content-type": "application/json", "x-atelier-actor": actor, "x-atelier-acting": BUILDER, ...(runner ? { "x-atelier-runner": runner } : {}) }, body: JSON.stringify(body),
-  }), env);
+  }), env); };
   const offer = (change = {}, age = 0) => I.putRunnerOffer({ ...RUNNER, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["review"], ...change }, new Date(Date.now() - age).toISOString());
   return { L, I, id, asked, pool, api, offer };
 }

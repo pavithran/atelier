@@ -69,7 +69,7 @@ async function submitted(L: L, head = H1) {
   await L.submit("t1", OPUS);
 }
 
-const review = (by: string, head = H1): Review => ({ itemId: "t1", by, head, criteria: NO_CRITERIA, approve: true, note: "Looks right.", at: new Date().toISOString() });
+const review = (by: string, head = H1): Review => ({ itemId: "t1", by, head, criteria: NO_CRITERIA, approve: true, note: "Looks right.", at: new Date().toISOString(), tests: [{ test: "npm test", head, result: "passed" }] });
 
 // Since G18 a write by the "owner" actor on the developer token names the acting model (the session, OPUS here).
 const call = (name: string, path: string, actor: string, body: unknown, REPOS: Repos) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/${path}`, {
@@ -80,7 +80,7 @@ it("an approval the owner token recorded in a model's name is not the independen
   const name = "provenance-owner-token";
   const L = await setup(name);
   await submitted(L);
-  const res = await call(name, "review", GPT, { approve: true, note: "Looks right.", head: H1, criteria: NO_CRITERIA }, artifacts(() => H1, { [H1]: { parents: [H0], message: "Build it" } }));
+  const res = await call(name, "review", GPT, { approve: true, note: "Looks right.", head: H1, criteria: NO_CRITERIA, tests: [{ test: "npm test", head: H1, result: "passed" }] }, artifacts(() => H1, { [H1]: { parents: [H0], message: "Build it" } }));
   expect(res.status, await res.clone().text()).toBe(200);
   const d = await L.detail("t1") as unknown as Detail;
   expect(d.reviews.at(-1)).toMatchObject({ by: GPT, recordedBy: "owner", proved: false, claimed: false });

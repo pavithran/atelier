@@ -6,6 +6,7 @@ import { join } from "node:path";
 import "../src/runtime/loader.mjs";
 import { Namespace } from "../src/runtime/namespace.mjs";
 import { criteriaOf } from "../src/criteria.ts";
+import "./support/default-proof.ts";
 const { Ledger } = await import("../src/ledger.ts");
 const OPUS = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra", SONNET = "claude-code/sonnet-5";
 const C = "c".repeat(40), M = "d".repeat(40), P = "a".repeat(40);

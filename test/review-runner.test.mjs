@@ -154,6 +154,48 @@ test("runReview posts a rejection with its findings, and releases the request wh
 // t325: the claim's part carries acceptance criteria, so the reply must prove
 // each with a CRITERION line; an approval without the proofs is not a verdict,
 // and the request is released with the reason for another reviewer to take.
+// t523: the server refuses an approval without a result for each covering test
+// at the head, so the runner's review job posts the results its own run of
+// them produced, or says they could not run.
+test("runReview posts an approval with the results of its own run of the covering tests (t523)", async () => {
+  const required = { names: ["test/a.test.mjs", "test/b.test.mjs"], why: "the declared map selects them", full: false, run: "node --test {tests}", check: "npm test" };
+  const run = (status) => ({ status, command: "x", files: [] });
+  const approve = async (evidence, over = {}) => {
+    const { io, calls } = fixture({ claim: { ...claimed, required, ...over } });
+    io.runnerEvidence = async (args) => { calls.push({ evidenceArgs: args }); return evidence; };
+    const state = await runReview(assignment, config, "home:studio", io);
+    const argv = calls.find((c) => c.argv?.[0] === "review")?.argv;
+    return { state, calls, tests: argv && argv.includes("--tests") ? JSON.parse(argv[argv.indexOf("--tests") + 1]) : undefined, argv };
+  };
+  const result = (test, r, head = H1) => ({ test, head, result: r });
+
+  const passed = await approve({ head: H1, tests: { status: "pass", files: ["test/c.test.mjs"] }, typecheck: run("pass"), covering: run("pass") });
+  assert.equal(passed.state.phase, "reviewed");
+  assert.deepEqual(passed.tests, [result("test/a.test.mjs", "passed"), result("test/b.test.mjs", "passed"), result("test/c.test.mjs", "passed")]);
+  assert.deepEqual(passed.calls.find((c) => c.evidenceArgs).evidenceArgs.required, required, "the run is told which tests cover the change");
+
+  const failed = await approve({ head: H1, tests: { status: "none" }, typecheck: run("pass"), covering: run("fail") });
+  assert.deepEqual(failed.tests, [result("test/a.test.mjs", "failed"), result("test/b.test.mjs", "failed")]);
+
+  const unrun = await approve({ head: H1, tests: { status: "none" }, typecheck: run("pass"), covering: run("not-run") });
+  assert.deepEqual(unrun.tests, [result("test/a.test.mjs", "could-not-run"), result("test/b.test.mjs", "could-not-run")]);
+
+  const lost = await approve(null);
+  assert.deepEqual(lost.tests, [result("test/a.test.mjs", "could-not-run"), result("test/b.test.mjs", "could-not-run")], "no run at all is said, not left out");
+  const other = await approve({ head: H0, tests: { status: "pass", files: [] }, typecheck: run("pass"), covering: run("pass") });
+  assert.deepEqual(other.tests, [result("test/a.test.mjs", "could-not-run"), result("test/b.test.mjs", "could-not-run")], "a run of another head proves nothing");
+
+  const full = await approve({ head: H1, tests: { status: "none" }, typecheck: run("pass"), covering: run("pass") }, { required: { ...required, names: ["npm test"], full: true } });
+  assert.deepEqual(full.tests, [result("npm test", "passed")]);
+
+  // A project that declares nothing: the changed tests the run found are the results.
+  const bare = await approve({ head: H1, tests: { status: "pass", files: ["test/c.test.mjs"] }, typecheck: run("pass") }, { required: { names: null, why: "none declared", full: false, run: null, check: null } });
+  assert.deepEqual(bare.tests, [result("test/c.test.mjs", "passed")]);
+
+  // A rejection and a claim with no requirement post no results.
+  assert.equal((await approve({ head: H1, tests: { status: "pass", files: [] }, typecheck: run("pass") }, { required: undefined })).tests, undefined);
+});
+
 test("runReview releases the request when an approval proves no acceptance criterion, and posts one that does", async () => {
   const bare = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Read the diff; it looks right.\nBLOCKING: 0" });
   const state = await runReview(assignment, config, "home:studio", bare.io);

@@ -146,6 +146,28 @@ export type Cover =
   | { kind: "affected"; exact: string[]; globs: string[]; why: string }
   | { kind: "full"; check: string; why: string };
 
+// The tests an approval must show passing at its head. `changed` is the
+// change's measured paths from the Ledger's evidence, never the reviewer's
+// word; `files` the head's tracked files, which the review route reads from
+// the repository. A declared glob stands for every file it matches at the head
+// (selectByMap, the selection `atelier check` runs), so each needs its own
+// result. A path the map does not cover, a declared test the head lacks, or
+// files that could not be read need the full suite, named by the
+// declaration's check. A project with no declaration names no test, so any
+// passing result is the least an approval carries (names is null).
+export interface RequiredTests { names: string[] | null; why: string; full: boolean }
+
+export function requiredTests(affected: Pick<AffectedTests, "check" | "map"> | undefined, changed: readonly string[] | null | undefined, files: readonly string[] | null | undefined): RequiredTests {
+  if (!affected) return { names: null, why: "the project declares no affected tests, so at least one passing test result is needed", full: false };
+  const full = (why: string): RequiredTests => ({ names: [affected.check], why, full: true });
+  const cover = coveringTests(affected, changed);
+  if (cover.kind === "full") return full(cover.why);
+  if (!cover.globs.length) return { names: cover.exact, why: cover.why, full: false };
+  if (!files) return full("the head's files could not be read to expand the declared test globs");
+  const picked = selectByMap(affected.map!, changed, files);
+  return picked.kind === "full" ? full(picked.why) : { names: picked.tests, why: picked.why, full: false };
+}
+
 export function coveringTests(a: Pick<AffectedTests, "check" | "map">, changed: readonly string[] | null | undefined): Cover {
   const full = (why: string): Cover => ({ kind: "full", check: a.check, why });
   if (!Array.isArray(changed)) return full(UNMEASURED);

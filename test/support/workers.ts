@@ -13,6 +13,9 @@ import { after } from "node:test";
 // @ts-expect-error the server is plain JavaScript without declarations
 import { startServer } from "../../src/runtime/server.mjs";
 import worker from "../../src/index.ts";
+import { installDefaultProof } from "./proof.ts";
+
+installDefaultProof();
 
 const root = mkdtempSync(join(tmpdir(), "atelier-spec-"));
 const server = await startServer({

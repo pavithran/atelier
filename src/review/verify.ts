@@ -14,7 +14,7 @@
 // the caller asks again rather than treating silence as a refutation.
 
 import { actorFamily, companyRefusal, contributed, matchesAny, RuleError, type Finding } from "../rules.ts";
-import { coveringTests, type AffectedTests } from "../affected-tests.ts";
+import { requiredTests, type AffectedTests } from "../affected-tests.ts";
 import type { PoolFamily } from "../models/pool.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { VERIFY_BASE_LINE, VERIFY_HEADING } from "./verdict.ts";
@@ -162,35 +162,30 @@ export type TestVerdict =
   | { ok: true; tests: string[] }
   | { ok: false; code: "tests_missing" | "tests_failed" | "tests_not_run" | "tests_uncovered"; message: string; wait: boolean; tests: string[] };
 
-// Whether an approval's test runs prove the change. `changed` is the change's
-// measured paths from the Ledger's evidence, never the reviewer's word; the
-// level of proof comes from the project's declaration, not from the request.
-// A rejection needs none, and a project with no declaration names no test the
-// server could ask for.
-export function testEvidenceVerdict(i: { approve: boolean; head: string; runs: readonly TestRun[]; affected: Pick<AffectedTests, "check" | "map"> | undefined; changed: readonly string[] | null | undefined }): TestVerdict {
-  if (!i.approve || !i.affected) return { ok: true, tests: [] };
-  const cover = coveringTests(i.affected, i.changed);
+// Whether an approval's test runs prove the change. The level of proof comes
+// from the project's declaration, not from the request. A rejection needs none.
+export function testEvidenceVerdict(i: { approve: boolean; head: string; runs: readonly TestRun[]; affected: Pick<AffectedTests, "check" | "map"> | undefined; changed: readonly string[] | null | undefined; files?: readonly string[] | null }): TestVerdict {
+  if (!i.approve) return { ok: true, tests: [] };
+  const need = requiredTests(i.affected, i.changed, i.files);
   const here = i.runs.filter((r) => r.head === i.head);
+  const short = i.head.slice(0, 8);
   const refuse = (code: Extract<TestVerdict, { ok: false }>["code"], message: string, tests: string[] = [], wait = false): TestVerdict => ({ ok: false, code, message, wait, tests });
   const failed = here.filter((r) => r.result === "failed").map((r) => r.test);
-  if (failed.length) return refuse("tests_failed", `${failed.join(", ")} failed at ${i.head.slice(0, 8)}; an approval needs the covering tests passing`, failed);
+  if (failed.length) return refuse("tests_failed", `${failed.join(", ")} failed at ${short}; an approval needs the covering tests passing`, failed);
   const passed = new Set(here.filter((r) => r.result === "passed").map((r) => r.test));
   const unrun = new Set(here.filter((r) => r.result === "could-not-run").map((r) => r.test));
-  const wanted = cover.kind === "full" ? [cover.check] : cover.exact;
-  const globs = cover.kind === "full" ? [] : cover.globs;
-  const met: string[] = [], absent: string[] = [], notRun: string[] = [];
-  for (const t of wanted) (passed.has(t) ? met : unrun.has(t) ? notRun : absent).push(t);
-  for (const g of globs) {
-    const hit = [...passed].filter((p) => matchesAny(p, [g]));
-    if (hit.length) met.push(...hit);
-    else if ([...unrun].some((p) => matchesAny(p, [g]))) notRun.push(g);
-    else absent.push(g);
+  if (!need.names) {
+    if (unrun.size) return refuse("tests_not_run", `${[...unrun].join(", ")} could not run at ${short}; the task waits for a review that ran them`, [...unrun], true);
+    if (!passed.size) return refuse("tests_missing", `no passing test result for ${short}; ${need.why}`);
+    return { ok: true, tests: [...passed].sort() };
   }
-  if (notRun.length) return refuse("tests_not_run", `${notRun.join(", ")} could not run at ${i.head.slice(0, 8)}; the task waits for a review that ran them (${cover.why})`, notRun, true);
+  const met: string[] = [], absent: string[] = [], notRun: string[] = [];
+  for (const t of need.names) (passed.has(t) ? met : unrun.has(t) ? notRun : absent).push(t);
+  if (notRun.length) return refuse("tests_not_run", `${notRun.join(", ")} could not run at ${short}; the task waits for a review that ran them (${need.why})`, notRun, true);
   if (absent.length) {
     const others = [...passed].filter((p) => !met.includes(p));
     return refuse(here.length && others.length ? "tests_uncovered" : "tests_missing",
-      `${here.length && others.length ? `the passing run of ${others.join(", ")} does not cover the changed paths; ` : `no test result for ${i.head.slice(0, 8)}; `}${absent.join(", ")} must pass (${cover.why})`, absent);
+      `${here.length && others.length ? `the passing run of ${others.join(", ")} does not cover the changed paths; ` : `no test result for ${short}; `}${absent.join(", ")} must pass (${need.why})`, absent);
   }
   return { ok: true, tests: [...new Set(met)].sort() };
 }

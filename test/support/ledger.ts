@@ -6,6 +6,9 @@ import { join } from "node:path";
 // @ts-expect-error the namespace is plain JavaScript without declarations
 import { Namespace } from "../../src/runtime/namespace.mjs";
 import { Ledger } from "../../src/ledger.ts";
+import { installDefaultProof } from "./proof.ts";
+
+installDefaultProof();
 
 const root = mkdtempSync(join(tmpdir(), "atelier-ledger-spec-"));
 export const env = {} as Env;

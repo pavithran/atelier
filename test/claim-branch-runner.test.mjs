@@ -111,6 +111,9 @@ test("a review runner clones t/N alone with a read grant, fetches the project's 
   const runnerToken = (await api("POST", "/tokens", { runner: "home:review", projects: ["demo"] })).body.token;
   mkdirSync(join(config, "tokens"), { recursive: true });
   writeFileSync(join(config, "tokens", "reviewer"), (await api("POST", "/tokens", { actor: REVIEWER, projects: ["demo"] })).body.token, { mode: 0o600 });
+  // The project declares that no test covers the stub's change, so the approval the runner posts rests on no result (t523).
+  const [check] = (await L().project()).policy.checks;
+  assert.equal((await api("PUT", "/projects/demo", { affectedTests: { check, run: `${check} {tests}`, map: [{ paths: ["**"], tests: [] }] } })).status, 200);
   // The stub reviewer: records what its clone holds, then approves.
   const seen = join(root, "seen.txt");
   const stub = join(root, "stub-reviewer.mjs");

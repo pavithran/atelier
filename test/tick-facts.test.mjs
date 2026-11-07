@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-proof.ts";
 
 const OWNER = "atl_00112233445566778899aabbccddeeff";
 const ACTING = "claude-code/opus-5.5";
@@ -142,7 +143,7 @@ test("criterion 3: a review's finding is a goal note, which show numbers; file-f
   // A real review through the Ledger's own path: the reviewer the model asked
   // claims the request and gives its verdict with a finding.
   const claim = await L().claimReview(id, "codex/gpt-6-astra", { runner: "home:hand", kind: "home" }, true);
-  await L().addReview({ itemId: id, by: "codex/gpt-6-astra", head: claim.head, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine.", at: new Date().toISOString(), findings: [{ file: "src/p.ts", line: 3, severity: "follow-up", text: "null deref" }] }, undefined, true, "api");
+  await L().addReview({ itemId: id, by: "codex/gpt-6-astra", head: claim.head, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine.", at: new Date().toISOString(), findings: [{ file: "src/p.ts", line: 3, severity: "follow-up", text: "null deref" }], tests: [{ test: "npm test", head: claim.head, result: "passed" }] }, undefined, true, "api");
   assert.equal((await L().items()).length, before, "no task filed by the server");
   const shown = await cli(["show", id, "--project", "demo"]);
   assert.match(shown.stdout, /Notes \(atelier file-fix t\d+ --from-note N files one\):\n  1\. src\/p\.ts:3: null deref \(codex\/gpt-6-astra at [0-9a-f]{8}\)/, said(shown));

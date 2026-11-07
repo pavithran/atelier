@@ -196,6 +196,12 @@ export interface ReviewClaim {
   // section (t490).
   evidence: ReviewEvidence;
   tier: boolean;          // the claimed request is a tier review (removed in t518)
+  // The tests an approval of this head must show passing (requiredTests in
+  // src/review/verify.ts), which the claim route sets from the project's
+  // declaration and the measured paths; `run` is the declared command that
+  // runs selected tests and `check` the full-suite check. Absent on a
+  // post-merge audit, which carries no such proof.
+  required?: { names: string[] | null; why: string; full: boolean; run: string | null; check: string | null };
   // The review's diff, kept in R2 by reference when the change is too large
   // for a brief to carry (t284): the claim route stores it and names it here,
   // and the brief says where the whole diff is instead of holding it. Null
@@ -4716,7 +4722,7 @@ export class Ledger extends DurableObject<Env> {
   // form on the task page, which only the signed-in owner reaches; "api" is
   // the owner token, as the orchestrator and the CLI use it. The reliability
   // record (src/models/reliability.ts) counts the two apart.
-  addReview(r: Review & { mainNow?: string | null }, origin?: string, proved = false, via?: "page" | "api", offers?: readonly SeenOffer[]): void {
+  addReview(r: Review & { mainNow?: string | null; headFiles?: string[] | null }, origin?: string, proved = false, via?: "page" | "api", offers?: readonly SeenOffer[]): void {
     this.keepOffers(this.ownOffers(offers));
     // A verdict under a pre-review's number is pre-review evidence (t524),
     // recorded apart: it never reaches the reviews the gate reads.
@@ -4816,9 +4822,13 @@ export class Ledger extends DurableObject<Env> {
     // passed at this head (t523). The covering tests come from the project's
     // declaration and the change's measured paths, never from the request.
     // The owner's own verdict and a post-merge audit are not asked for it.
+    // The head's files come from the route's own read of the repository and
+    // are not kept with the review.
+    const { headFiles, ...kept } = r;
+    r = kept;
     if (r.tests !== undefined) r = { ...r, tests: cleanTestRuns(r.tests) };
     if (r.approve && item.state !== "merged" && !sameActor(r.by, this.owner)) {
-      const proof = testEvidenceVerdict({ approve: true, head: r.head, runs: r.tests ?? [], affected: policy.affectedTests, changed: evidenceAt(policy, this.evidenceFor(item.id), item.head).changedPaths });
+      const proof = testEvidenceVerdict({ approve: true, head: r.head, runs: r.tests ?? [], affected: policy.affectedTests, changed: evidenceAt(policy, this.evidenceFor(item.id), item.head).changedPaths, files: headFiles });
       if (!proof.ok && proof.wait) {
         // Tests that could not run are recorded as a fact and the task waits:
         // no approval, no rejection, and the claim stands until it lapses.
