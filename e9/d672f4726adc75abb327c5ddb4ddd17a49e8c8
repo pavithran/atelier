@@ -1,0 +1,77 @@
+atelier atelier/t513 "Ask a submitted task's review without the orchestrator"
+accepted head db29bca669a6151a0f321be0c4bbc9d8180898a9
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-07T09:20:59.410Z
+OBSERVED pass npm run test:static — codex/gpt-6.1-sol 2026-11-07T09:21:10.415Z
+OBSERVED pass npm test — codex/gpt-6.1-sol 2026-11-07T09:32:55.694Z
+REVIEW approve by claude-code/sonnet-5.5 at db29bca669a6151a0f321be0c4bbc9d8180898a9, recorded by claude-code/sonnet-5.5
+CHECKED TREE ed2df1bf862e9018260f97bb64d23c0d5bf1ead6: the merge produced exactly the tree these checks passed on (npm run typecheck, npm run test:static, npm test), so a deploy gate may accept them instead of running them again
+2026-11-06T23:45:08.068Z pavi item.created
+2026-11-06T23:45:08.068Z claude-code/opus-5.5 criteria.revised
+2026-11-06T23:48:52.191Z pavi item.dispatched
+2026-11-07T00:01:04.059Z codex/gpt-6.1-sol item.claimed
+2026-11-07T00:01:04.085Z codex/gpt-6.1-sol workspace.created
+2026-11-07T00:08:02.591Z codex/gpt-6.1-sol push.observed
+2026-11-07T00:08:13.339Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T00:15:45.503Z atelier/orchestrator refresh.queued
+2026-11-07T00:20:35.156Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T00:30:00.000Z atelier stage.stuck
+2026-11-07T00:32:49.939Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T00:36:37.905Z codex/gpt-6.1-sol push.observed
+2026-11-07T00:40:00.000Z atelier stage.cleared
+2026-11-07T00:44:40.134Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T00:55:27.487Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T01:00:00.000Z atelier stage.stuck
+2026-11-07T01:08:57.396Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T01:08:59.179Z codex/gpt-6.1-sol item.blocked
+2026-11-07T01:10:00.000Z atelier stage.cleared
+2026-11-07T01:31:32.570Z pavi item.unblocked
+2026-11-07T01:31:33.201Z pavi item.released
+2026-11-07T01:31:33.201Z pavi item.dispatched
+2026-11-07T01:44:42.259Z atelier/orchestrator refresh.queued
+2026-11-07T04:22:14.577Z codex/gpt-6.1-sol item.claimed
+2026-11-07T04:24:37.603Z codex/gpt-6.1-sol push.observed
+2026-11-07T04:28:35.034Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T04:28:44.641Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T04:39:35.663Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T04:39:36.501Z codex/gpt-6.1-sol item.submitted
+2026-11-07T04:39:56.692Z pavi land.start
+2026-11-07T04:39:58.006Z pavi review.requested
+2026-11-07T04:39:58.006Z pavi review.tier_needed
+2026-11-07T04:39:58.302Z pavi land.review
+2026-11-07T04:39:58.372Z pavi land.requested
+2026-11-07T04:40:06.159Z claude-code/sonnet-5.5 review.claimed
+2026-11-07T04:40:06.200Z claude-code/sonnet-5.5 review.diff
+2026-11-07T04:40:29.799Z pavi review.requested
+2026-11-07T04:40:49.896Z codex/gpt-6-astra review.claimed
+2026-11-07T04:40:49.935Z codex/gpt-6-astra review.diff
+2026-11-07T04:44:12.572Z claude-code/sonnet-5.5 review.rejected
+2026-11-07T04:44:12.572Z atelier/orchestrator goal.notes
+2026-11-07T04:45:27.897Z codex/gpt-6-astra review.rejected
+2026-11-07T04:46:11.044Z pavi review.finding
+2026-11-07T04:46:11.531Z pavi review.finding
+2026-11-07T04:46:11.985Z pavi item.released
+2026-11-07T04:46:11.985Z pavi item.dispatched
+2026-11-07T06:14:04.930Z atelier/orchestrator refresh.queued
+2026-11-07T09:19:59.736Z codex/gpt-6.1-sol item.claimed
+2026-11-07T09:20:00.000Z atelier stage.stuck
+2026-11-07T09:20:55.419Z codex/gpt-6.1-sol push.observed
+2026-11-07T09:20:59.433Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T09:21:10.443Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T09:25:00.000Z atelier stage.cleared
+2026-11-07T09:32:55.712Z codex/gpt-6.1-sol evidence.observed
+2026-11-07T09:32:56.805Z codex/gpt-6.1-sol item.submitted
+2026-11-07T09:33:27.156Z pavi land.start
+2026-11-07T09:33:28.306Z pavi review.requested
+2026-11-07T09:33:28.306Z pavi review.tier_needed
+2026-11-07T09:33:28.573Z pavi land.review
+2026-11-07T09:33:37.531Z claude-code/sonnet-5.5 review.claimed
+2026-11-07T09:33:37.572Z claude-code/sonnet-5.5 review.diff
+2026-11-07T09:34:13.515Z claude-code/sonnet-5.5 review.approved
+2026-11-07T09:34:13.515Z atelier/orchestrator goal.notes
+2026-11-07T09:34:16.989Z pavi item.accepted
+2026-11-07T09:34:17.756Z pavi land.start
+2026-11-07T09:34:17.827Z pavi landing.leased
+2026-11-07T09:34:17.918Z pavi land.lease
+2026-11-07T09:34:18.864Z pavi checkout.leased
