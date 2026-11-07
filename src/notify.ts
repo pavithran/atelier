@@ -68,6 +68,13 @@ export function revertNotificationRequest(topic: string, origin: string, project
     `${revert.itemId} turned ${what} red after it landed (${revert.mergeCommit.slice(0, 12)}). Reverted in ${revert.revertCommit.slice(0, 12)}; the task is reopened with the failure.`);
 }
 
+// An automatic revert that could not land (src/post-merge.ts): nothing more is
+// reverted until a session looks at it, so this one is not left to be missed.
+export function revertFailedNotificationRequest(topic: string, origin: string, project: string, failed: { itemId: string; mergeCommit: string; reason: string }): Request {
+  const click = new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(failed.itemId)}`, new URL(origin).origin).href;
+  return ntfyRequest(topic, `${project}: revert of ${failed.itemId} failed`, click, "rotating_light", `${failed.reason} (merge ${failed.mergeCommit.slice(0, 12)})`);
+}
+
 // Sends one ntfy message; a refusal or a failed request throws.
 export async function sendNotification(request: Request): Promise<void> {
   const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });

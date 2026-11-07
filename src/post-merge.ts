@@ -180,10 +180,11 @@ export function recoverPostMerge(run: PostMergeRun, action: string, reason: unkn
 // state below is the only memory of what was done: each marker is written
 // after the work it marks, so a crash leaves it unset and a retry resumes.
 export type RedKind = "suite" | "gate";
-// `notifying` is written before the one notification is sent and `notified`
-// after: a crash between the two is read as sent, so it is never sent twice.
-export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; reopened?: true; notifying?: true; notified?: true }
-export interface RevertState { halted: { reason: string; at: string } | null; failures: Record<string, RevertEntry> }
+// `reopened` is set once every member has a fix task filed and dispatched
+// (fixes holds each one's progress); `notified` once the ntfy send returned ok.
+export interface RevertFix { task?: string; dispatched?: true }
+export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; fixes?: Record<string, RevertFix>; reopened?: true; notified?: true }
+export interface RevertState { halted: { reason: string; at: string; woken?: string[] } | null; failures: Record<string, RevertEntry> }
 export const newRevertState = (): RevertState => ({ halted: null, failures: {} });
 
 // The same failure reads the same across runs: colour, timings and counters
