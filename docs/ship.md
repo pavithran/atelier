@@ -387,10 +387,14 @@ It then prints the steps and runs them:
   A verify-delivery request with no `"expect"` passes only when the answer's
   JSON `commit` is the shipped revision, so a generic 200, a sign-in page and
   an old build all fail it and are recorded as an unconfirmed delivery.
-- **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
-  the registered checks, commits what the steps changed, records the session
-  and reports how the checkout stands against the server's branch; a failing
-  check stops the ship there.
+- **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. Ship
+  passes `--no-check`, so wrap does not re-run the registered checks: landing
+  checks on a runner and the ship's own steps already proved the head. Wrap
+  commits what the steps changed, records the session and reports how the
+  checkout stands against the server's branch. A developer's own `atelier wrap`
+  still runs the checks and refuses on a failure. A wrap failure after the
+  deploy and verify steps passed is a warning; the deploy stays recorded as
+  passed.
 - **typecheck** runs Atelier's `npm run typecheck` before the deploy, so a
   failing type-check stops the ship before an approval is spent.
 - **deploy** runs only when the server's code changed since the commit the
