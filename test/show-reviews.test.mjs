@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { formatBrief, formatCriteriaReviews, formatReviews } from "../cli/atelier.mjs";
-import { approvalsByHead } from "../cli/commands/show.mjs";
+import { approvalsByHead, reviewStateOf, reviewStateText } from "../cli/commands/show.mjs";
 
 // `atelier show` cannot show a review's findings in full: the brief cuts the
 // newest rejection's note to one line and its --json carried no reviews at
@@ -48,7 +48,8 @@ const LIMIT = { ...checkLimits({ checks: [] }), checkSilence: [] };
 // this fixture's item records only its id and head.
 const TASK = { id: "t1", head: HEAD_B, dispatch: null, runner: null, holds: [], lastFailure: null, unclaimed: [], dispatchState: null,
   approvals: approvalsByHead({ item: { id: "t1", head: HEAD_B }, reviews: REVIEWS }), standingGo: { landing: null, overrideConfirmation: null, fastMode: null } };
-const briefText = (origin) => `${formatBrief("proj", "t1", BRIEF, origin)}\n\nStage: built at 22222222\n\nCheck limit: ${limitText({ checks: [] })}`;
+const REJECTED_STATE = { state: "rejected", head: HEAD_B, by: "zcode/glm-5.3", at: "2026-10-07T14:03:00.000Z", note: LONG_NOTE, blocking: [REVIEWS[1].findings[0]] };
+const briefText = (origin) => `${formatBrief("proj", "t1", BRIEF, origin)}\n\n${reviewStateText(REJECTED_STATE)}\n\nStage: built at 22222222\n\nCheck limit: ${limitText({ checks: [] })}`;
 // t407: replies no verdict could be read from, kept on the task with the
 // reviewer and the head. One carries a forged Atelier line, which must not
 // survive flattening.
@@ -112,7 +113,7 @@ test("show --json carries the reviews with their findings, newest first", async 
   for (const argv of [["show", "t1", "--json", "--project", "proj"], ["show", "t1", "--reviews", "--json", "--project", "proj"]]) {
     const r = await f.run(argv);
     assert.equal(r.status, 0, r.output);
-    assert.deepEqual(JSON.parse(r.output), { ...TASK, ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [] });
+    assert.deepEqual(JSON.parse(r.output), { ...TASK, ...BRIEF, stage: STAGE, reviewState: REJECTED_STATE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [] });
   }
 });
 
@@ -143,7 +144,7 @@ test("show --reviews prints each unparsable reply with the reviewer and the head
   assert.equal(full.status, 0, full.output);
   assert.ok(full.output.includes(lines[kept]), "the kept reply is printed with the reviews");
   const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
-  assert.deepEqual(JSON.parse(asJson.output), { ...TASK, ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]], failedChecks: [] });
+  assert.deepEqual(JSON.parse(asJson.output), { ...TASK, ...BRIEF, stage: STAGE, reviewState: REJECTED_STATE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]], failedChecks: [] });
 });
 
 // t438: the reviews of the acceptance criteria themselves, apart from the
@@ -222,7 +223,7 @@ test("show --reviews prints the criteria reviews after the reviews when the serv
   const plain = await f.run(["show", "t1", "--project", "proj"]);
   assert.ok(!plain.output.includes("Criteria reviews:"), "the brief alone prints none");
   const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
-  assert.deepEqual(JSON.parse(asJson.output), { ...TASK, ...BRIEF, stage: STAGE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [], criteriaReview: CRITERIA_VIEW });
+  assert.deepEqual(JSON.parse(asJson.output), { ...TASK, ...BRIEF, stage: STAGE, reviewState: REJECTED_STATE, checkLimit: LIMIT, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [], criteriaReview: CRITERIA_VIEW });
 });
 
 // A fake server answering the two routes show reads: the brief and the item's
@@ -260,4 +261,24 @@ test("formatReviews names the runner holding each open review claim, with or wit
   assert.match(withReviews.at(-1), /held by runner home:studio/);
   assert.equal(formatReviews([], "owner", [], [{ ...claims[0], runner: null }]).split("\n")[2].includes("(none recorded)"), true);
   assert.equal(formatReviews([], "owner"), "No reviews are recorded.");
+});
+
+// t531: plain show leads with the review state at the head, and --json has it.
+test("reviewStateOf reads a rejected, an approved, a claimed, a requested and an unreviewed head", () => {
+  const item = { id: "t1", head: HEAD_B };
+  const blocking = { file: "a.ts", line: 3, severity: "blocking", text: "wrong" };
+  const rejected = reviewStateOf({ item, reviews: [{ by: "a/b", head: HEAD_B, approve: false, note: "no", at: "2026-11-07T03:34:00.000Z", findings: [blocking, { severity: "follow-up", text: "x" }] }] });
+  assert.deepEqual(rejected, { state: "rejected", head: HEAD_B, by: "a/b", at: "2026-11-07T03:34:00.000Z", note: "no", blocking: [blocking] });
+  assert.equal(reviewStateText(rejected), `Review: rejected at 22222222, by a/b, 2026-11-07 03:34 UTC\n  Note: no\n  blocking a.ts:3 wrong`);
+  // A rejection at an older head, or withdrawn, is not the head's state.
+  assert.equal(reviewStateOf({ item, reviews: [{ by: "a/b", head: HEAD_A, approve: false, at: "2026-11-07T03:34:00.000Z" }, { by: "a/b", head: HEAD_B, approve: false, withdrawn: true, at: "2026-11-07T03:34:00.000Z" }] }).state, "none");
+  // A reviewer's newer approval replaces their own earlier rejection.
+  const approved = reviewStateOf({ item, reviews: [{ by: "a/b", head: HEAD_B, approve: false, at: "2026-11-07T03:00:00.000Z" }, { by: "a/b", head: HEAD_B, approve: true, at: "2026-11-07T04:00:00.000Z" }] });
+  assert.deepEqual([approved.state, approved.at], ["approved", "2026-11-07T04:00:00.000Z"]);
+  assert.equal(reviewStateText(approved), "Review: approved at 22222222, by a/b, 2026-11-07 04:00 UTC");
+  const claim = { request: 4, head: HEAD_B, reviewer: "c/d", runner: null, claimedAt: "2026-11-07T05:00:00.000Z" };
+  assert.deepEqual(reviewStateOf({ item, reviews: [], reviewClaims: [claim], openRequests: [] }), { state: "claimed", head: HEAD_B, by: "c/d", at: claim.claimedAt, request: 4, blocking: [] });
+  const open = { request: 5, head: HEAD_B, reviewer: "e/f", openedAt: "2026-11-07T06:00:00.000Z" };
+  assert.deepEqual(reviewStateOf({ item, openRequests: [open] }), { state: "requested", head: HEAD_B, by: "e/f", at: open.openedAt, request: 5, blocking: [] });
+  assert.equal(reviewStateText(reviewStateOf({ item })), "Review: none at 22222222");
 });
