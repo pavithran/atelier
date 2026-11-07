@@ -32,6 +32,7 @@ import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
+import { reworkNote, routeRejection, unparsableRoute } from "../src/dispatch/rework.ts";
 import { diffPromptMax, largeDiffNote, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/large-diff.ts";
 import { BUILD_RULES } from "../src/brief-rules.ts";
 import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
@@ -157,6 +158,7 @@ export function leaseCall(argv, options = {}, api, credential) {
     if (argv[0] === "review-unparsable") {
       body.head = value("--head");
       body.reply = readFileSync(value("--reply-file"), "utf8");
+      if (argv.includes("--attempt")) body.attempt = Number(value("--attempt"));
     }
     const transport = runnerTransport({ server: server(), credential: options.token ?? credential });
     const params = { project: value("--project"), item: argv[1] };
@@ -2896,7 +2898,9 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       // workspace, removed once the call ends whatever it answered.
       const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
       try {
-        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, ...generation()]);
+        // This is the second reply (the reviewer was asked again above), so
+        // the server records the notice that wakes a session (t521).
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, "--attempt", "2", ...generation()]);
         io.log(`review released: ${parsed.error}`);
       } catch (error) {
         io.log(`could not keep the unparsable reply on the task: ${error.message}`);
@@ -2904,7 +2908,10 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       } finally {
         await io.removeBrief(kept);
       }
-      return { phase: "failed", reason: parsed.error, taskFailure: true };
+      // The second unreadable reply is not retried by the pipeline (t521):
+      // the server's notice wakes a session.
+      if (unparsableRoute(2) === "wake") wakeSession(io, `${project}/${item.id}: the reviewer ${actor}'s reply could not be read twice at ${claimed.head.slice(0, 8)} (${parsed.error}); the pipeline cannot retry it`);
+      return { phase: "failed", reason: parsed.error, taskFailure: true, unretryable: true };
     }
     // A rejection is settled before it is posted (t717): findings the
     // developer already answered are dropped, blocking ones on code the
@@ -2944,6 +2951,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${posted.verdict}`);
+    if (posted.verdict === "reject" && !claimed.landed && !claimed.tier) await sendBack(io, runnerIO, { project, claimed, posted });
     return { phase: "reviewed", verdict: posted.verdict };
   } catch (error) {
     io.log(`failed: ${error.message}`);
@@ -2969,6 +2977,55 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
   }
+}
+
+// A session is woken by a notice the server records in a call the runner
+// already makes (t521): the second unreadable reply, a refused redispatch,
+// a second rejection. The runner sends nothing for a wake; the line is in
+// its log.
+export function wakeSession(io, message) {
+  io.log(`session needed: ${message}`);
+}
+
+// A rejection goes back to its builder (t521, src/dispatch/rework.ts). The
+// dispatch is the developer's, so it goes on the runner's own credential
+// (`runnerIO`), never the reviewer's token; the findings travel in the note
+// and in the job brief the server builds for the rework.
+export async function sendBack(io, runnerIO, { project, claimed, posted }) {
+  const id = claimed.item.id;
+  const route = routeRejection({ round: claimed.need?.round ?? 1, builder: claimed.item.owner ?? null, kind: claimed.item.kind ?? null, owner: claimed.owner });
+  if (route.action === "none") return route;
+  // A second rejection's notice is the ledger's, recorded with the verdict,
+  // so the runner sends none of its own.
+  if (route.action === "wake" && route.second) { io.log(`${project}/${id}: ${route.reason}; the ledger records the notice that wakes a session`); return route; }
+  if (route.action === "wake") { wakeSession(io, `${project}/${id}: ${route.reason}`); return route; }
+  const note = reworkNote(id, claimed.head, posted.findings ?? [], posted.summary ?? "");
+  // The dispatch is the hook `io.dispatchBuilder`: the runner declares no
+  // dispatch call of its own (RUNNER_CALLS in src/tokens.ts), so a deployment
+  // that connects one names it here. Without it the rejection is left for a
+  // session, said so.
+  if (!runnerIO.dispatchBuilder) {
+    wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: this runner has no way to dispatch`);
+    return route;
+  }
+  try {
+    await runnerIO.dispatchBuilder({ project, id, agent: route.agent, model: route.model, note });
+    io.log(`rejected ${id} sent back to ${route.agent}/${route.model} with the findings`);
+  } catch (error) {
+    // A builder that cannot be dispatched leaves the rejection for a session.
+    wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: ${error.message}`);
+  }
+  return route;
+}
+
+// The owner's dispatch of a rejected task to its builder: `atelier dispatch`
+// as the developer, as a land job runs, with the runner's own name and token
+// left out of its environment. A machine that holds no developer token fails
+// here and sendBack wakes a session instead.
+export async function dispatchAsDeveloper(run, { project, id, agent, model, note: reviewersWords, env = process.env, signal }) {
+  const child = { ...env }; delete child.ATELIER_RUNNER_NAME; delete child.ATELIER_RUNNER_TOKEN;
+  const r = await run([process.execPath, cli, "dispatch", id, "--project", project, "--agent", agent, "--model", model, "--note", reviewersWords], { env: child, capture: true, captureError: true, signal, timeoutMs: 60_000 });
+  if (r.code !== 0) throw new Error(`atelier dispatch exited ${r.code}: ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 300)}`);
 }
 
 // The merge commit a post-merge review reads (t591), fetched into the review
@@ -4685,6 +4742,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   const io = {
     progress,
+    // A rejection's hook (t521): the builder's dispatch as the developer.
+    dispatchBuilder: (request) => dispatchAsDeveloper(executeChild, { ...request, signal: controller.signal }),
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),

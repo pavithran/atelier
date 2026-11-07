@@ -54,6 +54,7 @@ import { parseReadiness } from "./runners/readiness";
 import { diskOf, lastRunOf, situationOf } from "./situation.ts";
 import { automaticNote, isFacts, isFactsOutcome } from "./run-facts.ts";
 import { parseOutcomeNote } from "./dispatch/prereview.ts";
+import { isReworkNote } from "./dispatch/rework.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -2749,65 +2750,80 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.detail(id));
     }
     case "dispatch": {
-      assertNotTerminal(await L.item(id));
-      // --overlap-ok alone on a waiting dispatch releases its hold and keeps
-      // everything else. An explicit snapshot is checked atomically even if
-      // a runner has since claimed it; an already-owned task is redispatched.
-      if (body.retain === true) {
-        requireOwner(env, actor);
-        const waiting = await L.item(id);
-        if (body.retainAt !== undefined || (waiting.state === "open" && !waiting.owner && waiting.dispatch)) {
-          // A builder given in the dispatch's place is checked against the
-          // pool's current standing, as a dispatch's own is below.
-          if (body.agent || body.model) await L.poolChanged(await index(env).models());
-          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }, await namedBuilderReasons(env, ref.key, body, actor)));
+      const dispatchRoute = async (): Promise<Response> => {
+        assertNotTerminal(await L.item(id));
+        // --overlap-ok alone on a waiting dispatch releases its hold and keeps
+        // everything else. An explicit snapshot is checked atomically even if
+        // a runner has since claimed it; an already-owned task is redispatched.
+        if (body.retain === true) {
+          requireOwner(env, actor);
+          const waiting = await L.item(id);
+          if (body.retainAt !== undefined || (waiting.state === "open" && !waiting.owner && waiting.dispatch)) {
+            // A builder given in the dispatch's place is checked against the
+            // pool's current standing, as a dispatch's own is below.
+            if (body.agent || body.model) await L.poolChanged(await index(env).models());
+            return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }, await namedBuilderReasons(env, ref.key, body, actor)));
+          }
+        }
+        // A live claim is not ended by a dispatch unless --release says so; refused
+        // first, before a builder is suggested for a task nobody may take (t391).
+        await L.refuseLiveHolder(id, body);
+        // atelier dispatch with no --agent names no builder (G17): the server
+        // picks none. It prints the candidates, each with its reliability line
+        // and any gate filter that refuses it, and refuses; the model names one.
+        // An overlap override of an existing dispatch keeps its builder, so it
+        // asks for nothing.
+        // Every new dispatch names both its agent and its model, whatever the
+        // client sent: a harness alone, a model alone or neither leaves the
+        // runner to choose, which is a pick the server does not make. An
+        // overlap override of a waiting dispatch that names both keeps it.
+        const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
+        const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
+        const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
+        if (!named && !keptNamed) {
+          requireOwner(env, actor);
+          const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
+          const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
+          const first = candidates.find((c) => !c.refusal);
+          const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
+          throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
+        }
+        // A merge-main dispatch names the main head its job merges. The owner
+        // names none after a landing conflicted, so the head is main's as the
+        // baseline holds it now (read as plan refresh reads it, t243): a newer
+        // head than the one the landing saw meets the same conflict, and an
+        // unreadable baseline is refused rather than guessed at.
+        if (body.job === "merge-main" && !body.head) {
+          const main = await mainHeadOf(env, L);
+          if (!main) throw new RuleError("bad_head", "main's head could not be read from the baseline to name the merge-main job's head; try again, or name it: atelier dispatch ID --job merge-main --head FULL_HASH", 503);
+          body.head = main;
+        }
+        // A held task is released as it is queued, so its holder's write token
+        // is revoked first, as for a release.
+        const oldToken = await L.tokenId(id);
+        if (body.agent && body.model) await L.poolChanged(await index(env).models());
+        const before = await L.checkDispatch(id, actor, body);
+        if (before.owner) await revoke(env, oldToken);
+        // What chose the builder is kept on the dispatch: the suggestion's
+        // reasons, or, for a builder the developer named, each build
+        // assignment bearing on the task skipped for it (gpt-6-astra's seventh
+        // review of t622, finding 2).
+        const why = await namedBuilderReasons(env, ref.key, body, actor);
+        return json(await L.dispatch(id, actor, body, oldToken, why));
+      };
+      // A runner's automatic redispatch of a rejected task to its builder
+      // (t521, its note is reworkNote's) that is refused records one notice,
+      // so a session decides who reworks it; the refusal still answers.
+      if (isReworkNote(body.note)) {
+        try { return await dispatchRoute(); }
+        catch (error) {
+          // A refusal crosses the ledger's RPC as its encoded message, or is thrown here as a RuleError.
+          const refusal = error instanceof RuleError ? error.detail : parseRuleError(error)?.detail;
+          if (refusal) await L.redispatchRefused(id, actor, refusal);
+          throw error;
         }
       }
-      // A live claim is not ended by a dispatch unless --release says so; refused
-      // first, before a builder is suggested for a task nobody may take (t391).
-      await L.refuseLiveHolder(id, body);
-      // atelier dispatch with no --agent names no builder (G17): the server
-      // picks none. It prints the candidates, each with its reliability line
-      // and any gate filter that refuses it, and refuses; the model names one.
-      // An overlap override of an existing dispatch keeps its builder, so it
-      // asks for nothing.
-      // Every new dispatch names both its agent and its model, whatever the
-      // client sent: a harness alone, a model alone or neither leaves the
-      // runner to choose, which is a pick the server does not make. An
-      // overlap override of a waiting dispatch that names both keeps it.
-      const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
-      const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
-      const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
-      if (!named && !keptNamed) {
-        requireOwner(env, actor);
-        const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
-        const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
-        const first = candidates.find((c) => !c.refusal);
-        const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
-        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
-      }
-      // A merge-main dispatch names the main head its job merges. The owner
-      // names none after a landing conflicted, so the head is main's as the
-      // baseline holds it now (read as plan refresh reads it, t243): a newer
-      // head than the one the landing saw meets the same conflict, and an
-      // unreadable baseline is refused rather than guessed at.
-      if (body.job === "merge-main" && !body.head) {
-        const main = await mainHeadOf(env, L);
-        if (!main) throw new RuleError("bad_head", "main's head could not be read from the baseline to name the merge-main job's head; try again, or name it: atelier dispatch ID --job merge-main --head FULL_HASH", 503);
-        body.head = main;
-      }
-      // A held task is released as it is queued, so its holder's write token
-      // is revoked first, as for a release.
-      const oldToken = await L.tokenId(id);
-      if (body.agent && body.model) await L.poolChanged(await index(env).models());
-      const before = await L.checkDispatch(id, actor, body);
-      if (before.owner) await revoke(env, oldToken);
-      // What chose the builder is kept on the dispatch: the suggestion's
-      // reasons, or, for a builder the developer named, each build
-      // assignment bearing on the task skipped for it (gpt-6-astra's seventh
-      // review of t622, finding 2).
-      const why = await namedBuilderReasons(env, ref.key, body, actor);
-      return json(await L.dispatch(id, actor, body, oldToken, why));
+      return await dispatchRoute();
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
@@ -2981,7 +2997,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-unparsable": {
       const head = String(body.head ?? "");
       if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "--head must be the full revision the review read", 400);
-      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token, body.request) });
+      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token, body.request, body.attempt) });
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or

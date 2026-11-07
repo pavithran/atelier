@@ -84,6 +84,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
+import { disputedFinding, isDispute } from "./dispatch/rework.ts";
 import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
@@ -92,7 +93,7 @@ import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
 import { dropTasks, rememberedTask, type ProviderPause } from "./runners/memory.ts";
 import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
-import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { missingReviews, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { candidatesText, ranked, summarize, type Candidate, type ReviewerRecords, type SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
@@ -1031,6 +1032,7 @@ export class Ledger extends DurableObject<Env> {
         item_id TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY (item_id, head)
       );
       CREATE TABLE IF NOT EXISTS notification_origins (item_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT, at TEXT NOT NULL,
         actor TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
@@ -4652,21 +4654,6 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  // A rejection tells the owner when it is recorded. notify() speaks once per
-  // head of a submission, so a rejection at a head already notified would be
-  // silent there; this sends its own message through the same delivery.
-  private notifyRejection(r: Review, origin?: string): void {
-    try {
-      if (origin) this.setNotificationOrigin(r.itemId, origin);
-      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, r.itemId).toArray()[0];
-      if (!topic || !saved) return;
-      this.deliver(rejectionRequest(notificationRequest(topic, saved.origin as string, this.project().name, this.detail(r.itemId)), r));
-    } catch {
-      console.error("Atelier notification could not be scheduled");
-    }
-  }
-
   // Delivery runs in the background: a failure is logged without the
   // response body or the topic, and nothing is retried. It holds the
   // restart gate, so a restart after a deploy waits for it.
@@ -4682,6 +4669,18 @@ export class Ledger extends DurableObject<Env> {
     })();
     const gate = GATES.get(this);
     this.ctx.waitUntil(gate ? gate.hold(work) : work);
+  }
+
+  // A notice that wakes a session (t521): a builder's dispute or a second
+  // rejected round, recorded as one event in the transaction that records the
+  // dispute or the rejection. The key's row in `notices` is what keeps one
+  // dispute or one round from recording it twice: the insert is ignored when
+  // the key is there, so no read comes before the write. atelier-pulse wakes a
+  // session from the event; delivery to the developer's devices is not here
+  // (PAVI, 2026-11-07: "drop ntfy").
+  private recordNotice(key: string, itemId: string, actor: string, kind: "item.dispute_notice" | "item.second_rejection_notice" | "item.review_unparsable_notice" | "item.redispatch_refused_notice", data: Record<string, unknown>, at: string): void {
+    if (!this.sql.exec(`INSERT OR IGNORE INTO notices (key) VALUES (?) RETURNING key`, key).toArray().length) return;
+    this.log(itemId, actor, kind, data, at);
   }
 
   addEvidence(e: Evidence, origin?: string, proved = false): void {
@@ -4812,7 +4811,7 @@ export class Ledger extends DurableObject<Env> {
     const fastReceiptOf = item.state === "merged" && this.mergedFast(item.id);
     const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
     r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
-    this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?)`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0);
+    const reviewId = this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?) RETURNING id`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0).one().id as number;
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, role: this.reviewRoleOf(item), ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
@@ -4853,8 +4852,28 @@ export class Ledger extends DurableObject<Env> {
       if (!fastReceiptOf && (r.findings ?? []).some((f) => f.severity === "blocking")) this.log(item.id, ORCHESTRATOR, "item.defect", { head: item.acceptedHead, mergeCommit: r.head, note: r.note, request: r.request }, at);
     }
     this.notify(r.itemId, origin);
-    if (!r.approve) this.notifyRejection(r, origin);
+    if (!r.approve) this.noticeSecondRejection(item, r, reviewId, at);
     this.afterPlanChange(r.itemId);
+  }
+
+  // The automatic redispatch of a rejected task to its builder (t521) was
+  // refused, so a session decides who reworks it: one notice for the head,
+  // with the refusal's reason. The refusal itself writes nothing.
+  redispatchRefused(id: string, actor: string, reason: string): void {
+    const item = this.item(id);
+    this.recordNotice(`redispatch-refused:${id}:${item.head ?? "none"}`, id, actor, "item.redispatch_refused_notice", { head: item.head, reason: reason.slice(0, NOTE_MAX) }, new Date().toISOString());
+  }
+
+  // A task's second rejected round wakes a session through one notice and
+  // dispatches nothing (t521); the runner sends the first back to its builder.
+  // The notice is keyed by the round's head, so a second reviewer rejecting
+  // the same head records none.
+  private noticeSecondRejection(item: Item, r: Review, reviewId: number, at: string): void {
+    if (r.postMerge || r.tier || r.by === this.owner || item.state === "merged" || item.kind === "part" || item.kind === "plan") return;
+    const policy = this.project().policy;
+    const rounds = rejectedRounds(this.reviewsFor(item.id).filter((rv) => reviewAuthorized(rv, policy, this.owner)), this.owner);
+    if (rounds.length !== 2 || rounds[1].head !== r.head) return;
+    this.recordNotice(`second-rejection:${item.id}:${r.head}`, item.id, ORCHESTRATOR, "item.second_rejection_notice", { head: r.head, review: reviewId, by: r.by }, at);
   }
 
   // After the REVIEW_ROUND_CAP-th rejected round a task outside a plan is
@@ -4975,6 +4994,13 @@ export class Ledger extends DurableObject<Env> {
     const record: Block = { reason: text, by: actor, at, from: item.state, ...(day ? { until: day } : {}), ...said };
     this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
     this.log(id, actor, "item.blocked", { reason: text, from: item.state, ...(day ? { until: day } : {}), ...(direction ? { confirmed: "direction", ...said } : {}) }, at, proved);
+    // The task's builder disputing a finding (t521) wakes a session through
+    // one notice, the task staying blocked and nothing dispatched. The notice
+    // is keyed by the block's own event, so one dispute records one.
+    if (isDispute(text) && actor === item.owner && actor !== this.owner) {
+      const block = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'item.blocked'`, id).one().seq as number;
+      this.recordNotice(`dispute:${id}:${block}`, id, actor, "item.dispute_notice", { head: item.head, finding: disputedFinding(text), reason: text, block }, at);
+    }
     return this.item(id);
   }
 
@@ -9796,7 +9822,7 @@ export class Ledger extends DurableObject<Env> {
   // four replies this way on t372). A claim no longer held, because it lapsed
   // or was withdrawn while the harness ran, releases nothing, and the reply is
   // kept anyway. Returns whether a request was released.
-  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false, request?: number): { released: boolean } {
+  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false, request?: number, attempt?: unknown): { released: boolean } {
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
@@ -9812,6 +9838,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at, ...(request === undefined ? {} : { request }) } satisfies UnparsableReply));
     this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
+    // The second unreadable reply at a head is a failure the pipeline cannot
+    // retry, so it wakes a session through one notice (t521, criterion 5).
+    // The runner asks the reviewer twice in one job and keeps only the
+    // second reply, saying so with attempt 2; a reply kept by hand counts
+    // the replies already kept at the head.
+    const second = attempt === 2 || this.sql.exec(`SELECT COUNT(*) AS n FROM unparsable WHERE item_id = ? AND json_extract(json, '$.head') = ?`, itemId, head).one().n as number >= 2;
+    if (second) this.recordNotice(`unparsable:${itemId}:${head}`, itemId, actor, "item.review_unparsable_notice", { head, by: actor, note }, at);
     // Keeping an unusable reply is harmless; releasing a successor is not.
     this.expireReviewClaims();
     if (request === undefined) return { released: false };
