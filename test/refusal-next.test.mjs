@@ -163,9 +163,9 @@ test("the counts: strict codes, codes with a next, exempt codes", () => {
   // a second not_merged site, a code already counted with a next. t522 adds private_project and criteria_undelivered.
   assert.equal(STRICT.length, 78);
   // t518 removed the tier review's refusals (bad_review_tier, not_tier, tier_refused).
-  assert.equal(withNext, 228);
+  assert.equal(withNext, 230);
   assert.equal(exempt.size, 124);
-  assert.equal(sites.size, 352);
+  assert.equal(sites.size, 354);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });
