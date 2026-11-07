@@ -690,3 +690,13 @@ test("task runner logs cross sessions, refuse unrelated writers and readers, and
     assert.doesNotMatch(await response.text(), /missing module/);
   }
 });
+
+test("the four usage counts are kept apart beside the total, and the server bounds them", () => {
+  const s = newStream();
+  foldStream(s, line({ type: "assistant", message: { content: [], usage: { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 } } }), "2026-10-28T12:00:00.000Z");
+  assert.deepEqual([s.tokens, s.parts], [10, { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 4 }]);
+  const base = { task: "t1", actor: BUILDER, startedAt: "2026-10-28T12:00:00.000Z" };
+  const got = parseProgress({ ...base, parts: { input_tokens: 1, cache_creation_input_tokens: -5, cache_read_input_tokens: 1e12, output_tokens: "x" } });
+  assert.deepEqual(got.parts, { input: 1, cacheWrite: 0, cacheRead: 0, output: 0 });
+  assert.equal(parseProgress(base).parts, undefined);
+});
