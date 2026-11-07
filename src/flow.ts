@@ -192,3 +192,165 @@ export function formatScorecard(report: FlowReport): string[] {
     ...PHASES.map((p) => `  ${labels[p]}: ${percent(report.phaseShares[p])} (${report.totals[p].unknownTasks} unknown, ${report.totals[p].openTasks} open)`),
   ];
 }
+
+// The redesign's bars (t527): one report over the last seven days, per
+// project and overall. Each number is computed from the project's event
+// export (`atelier events`, items' `itemId` and `data`) and says which events
+// it came from; weighted tokens are not in the ledger, so they come from a
+// file the developer gives (`--tokens`) or are reported as unmeasured. A
+// figure with nothing to count is `null` with a status that says so, never a
+// zero from a division by nothing.
+
+export const BARS_WINDOW_DAYS = 7;
+const DAY_MS = 86_400_000;
+export const TOKEN_BAR = 700_000, DEPLOY_MEDIAN_BAR = 60, DEPLOY_P90_BAR = 180, ESCAPE_BAR = 0.1, SESSION_RECORD_BAR = 3;
+
+export interface BarEvent { seq: number; at: string; itemId?: string | null; kind: string; data?: Record<string, unknown> | null }
+export type BarStatus = "pass" | "fail" | "unmeasured" | "no merges";
+export interface Bar {
+  id: string;
+  label: string;
+  value: number | null;
+  display: string;
+  target: string;
+  status: BarStatus;
+  source: string;
+  detail: string;
+}
+export interface BarScope { scope: string; merges: number; sound: number; bars: Bar[] }
+export interface BarsReport { windowDays: number; since: string; observedAt: string; scopes: BarScope[] }
+
+interface Merge { key: string; sound: boolean; red: boolean; escaped: boolean; tokens: number | null; filedToDeployed: number | null; deployed: boolean; timed: boolean }
+interface Measures { merges: Merge[]; unnamed: string[]; unlinked: string[]; sessionRecords: number }
+
+const NAMED_WAITS = new Set(["item.dispatched", "item.claimed", "item.handoff", "item.submitted", "review.approved", "item.accepted", "item.blocked", "item.blocked_by", "criteria_review.requested", "landing.begun", "landing.queued"]);
+const UNNAMED_STATES = new Set(["item.created", "item.released", "item.undispatched", "item.unblocked", "review.rejected", "criteria_review.approved", "criteria_review.rejected", "criteria_review.withdrawn"]);
+const ENDED = new Set(["item.merged", "item.abandoned", "item.merge_recorded", "item.landed_fast"]);
+const SESSION_RECORDS = new Set(["session.wrapped", "decision.recorded", "assignment.recorded"]);
+
+function measure(name: string, input: readonly BarEvent[], now: number, tokens: Record<string, number>): Measures {
+  const from = now - BARS_WINDOW_DAYS * DAY_MS;
+  const events = [...input].sort((a, b) => a.seq - b.seq);
+  const byItem = new Map<string, BarEvent[]>();
+  for (const e of events) if (e.itemId) (byItem.get(e.itemId) ?? byItem.set(e.itemId, []).get(e.itemId)!).push(e);
+  const linked = new Set<string>();
+  for (const e of events) if (e.kind === "item.fix_of" && typeof e.data?.itemId === "string") linked.add(e.data.itemId);
+  // A deploy is a deploy step that passed; any other action.ran is not one.
+  const deploys = events.filter((e) => e.kind === "action.ran" && e.data?.step === "deploy" && e.data?.passed === true).map((e) => Date.parse(e.at)).sort((a, b) => a - b);
+
+  const merges: Merge[] = [];
+  for (const [id, list] of byItem) {
+    const merged = list.find((e) => e.kind === "item.merged");
+    if (!merged) continue;
+    const at = Date.parse(merged.at);
+    if (!(at >= from && at <= now)) continue;
+    const created = list[0].kind === "item.created" ? Date.parse(list[0].at) : null;
+    const red = list.some((e) => e.seq > merged.seq && e.kind.startsWith("evidence.") && e.data?.merged === true && e.data?.passed === false && Date.parse(e.at) <= at + BARS_WINDOW_DAYS * DAY_MS);
+    const escaped = events.some((e) => e.kind === "item.fix_of" && e.data?.itemId === id && e.seq > merged.seq);
+    const deployedAt = deploys.find((d) => d >= at) ?? null;
+    merges.push({
+      key: id, red, escaped, sound: !linked.has(id) && !red,
+      tokens: tokens[`${name}/${id}`] ?? tokens[id] ?? null,
+      deployed: deployedAt !== null, timed: created !== null,
+      filedToDeployed: created !== null && deployedAt !== null ? Math.max(0, deployedAt - created) / 60_000 : null,
+    });
+  }
+
+  const unnamed: string[] = [];
+  for (const [id, list] of byItem) {
+    if (list.some((e) => ENDED.has(e.kind)) || list[0].kind !== "item.created") continue;
+    const last = [...list].reverse().find((e) => NAMED_WAITS.has(e.kind) || UNNAMED_STATES.has(e.kind));
+    if (last && !NAMED_WAITS.has(last.kind)) unnamed.push(id);
+  }
+  const unlinked: string[] = [];
+  for (const [id, list] of byItem) {
+    const made = list[0];
+    if (made.kind !== "item.created" || !(Date.parse(made.at) >= from)) continue;
+    if (!/^(fix|repair)\b/i.test(String(made.data?.title ?? ""))) continue;
+    if (list.some((e) => e.kind === "item.fix_of" || e.kind === "item.reverts" || e.kind === "item.defect_of")) continue;
+    unlinked.push(id);
+  }
+  const sessionRecords = events.filter((e) => SESSION_RECORDS.has(e.kind) && Date.parse(e.at) >= from && Date.parse(e.at) <= now).length;
+  return { merges, unnamed, unlinked, sessionRecords };
+}
+
+const midpoint = (values: readonly number[]) => {
+  const s = [...values].sort((a, b) => a - b);
+  return s.length ? (s[Math.floor(s.length / 2)] + s[Math.floor((s.length - 1) / 2)]) / 2 : null;
+};
+const nearestRank = (values: readonly number[], p: number) => {
+  const s = [...values].sort((a, b) => a - b);
+  return s.length ? s[Math.max(0, Math.ceil(p * s.length) - 1)] : null;
+};
+
+function barsOf(scope: string, m: Measures, haveTokens: boolean): BarScope {
+  const n = m.merges.length, none = `no merges in the last ${BARS_WINDOW_DAYS} days`;
+  const sound = m.merges.filter((x) => x.sound);
+  const make = (id: string, label: string, value: number | null, display: string, target: string, status: BarStatus, source: string, detail = ""): Bar =>
+    ({ id, label, value, display, target, status, source, detail });
+  const empty = (id: string, label: string, target: string, source: string) => make(id, label, null, "no merges", target, "no merges", source, none);
+
+  let tokens: Bar;
+  const tSrc = "item.merged, item.fix_of and evidence events (soundness); weighted tokens from the --tokens file";
+  if (!n) tokens = empty("tokens", "Weighted Claude tokens per sound merge", "under 0.7M", tSrc);
+  else {
+    const withTokens = sound.filter((x) => x.tokens !== null);
+    if (!haveTokens || !withTokens.length) tokens = make("tokens", "Weighted Claude tokens per sound merge", null, "unmeasured", "under 0.7M", "unmeasured", tSrc, !haveTokens ? "the ledger records no token use; pass --tokens FILE" : `${sound.length} sound merge(s), none with tokens in the file`);
+    else {
+      const v = withTokens.reduce((s, x) => s + x.tokens!, 0) / withTokens.length;
+      tokens = make("tokens", "Weighted Claude tokens per sound merge", v, `${(v / 1e6).toFixed(2)}M`, "under 0.7M", v < TOKEN_BAR ? "pass" : "fail", tSrc, `${withTokens.length} of ${sound.length} sound merge(s) have tokens; ${n - sound.length} merge(s) not sound`);
+    }
+  }
+
+  const dSrc = "item.created to the first passed action.ran deploy step at or after item.merged";
+  const times = m.merges.flatMap((x) => x.filedToDeployed === null ? [] : [x.filedToDeployed]);
+  const waiting = m.merges.filter((x) => !x.deployed).length, uncut = m.merges.filter((x) => !x.timed).length;
+  const dDetail = `${times.length} of ${n} merged task(s) timed; ${waiting} merged task(s) not deployed; ${uncut} without a filing record`;
+  const deployBar = (id: string, label: string, v: number | null, target: string, limit: number) =>
+    !n ? empty(id, label, target, dSrc)
+      : v === null ? make(id, label, null, "unmeasured", target, "unmeasured", dSrc, dDetail)
+        : make(id, label, v, `${v.toFixed(0)} min`, target, v <= limit ? "pass" : "fail", dSrc, dDetail);
+  const redCount = m.merges.filter((x) => x.red).length;
+  const escaped = m.merges.filter((x) => x.escaped).length;
+  const sessionPer = n ? m.sessionRecords / n : null;
+  const bars = [
+    tokens,
+    deployBar("deployMedian", "Filed to deployed, median", midpoint(times), "at most 60 min", DEPLOY_MEDIAN_BAR),
+    deployBar("deployP90", "Filed to deployed, p90", nearestRank(times, 0.9), "at most 3 h", DEPLOY_P90_BAR),
+    make("redMerges", "Merges that turned main red", redCount, String(redCount), "0", redCount === 0 ? "pass" : "fail", "evidence events with merged and passed false, after item.merged and within 7 days of it", `${n} merge(s) in the window`),
+    !n ? empty("escapes", "Shadow-review escapes", "at most 1 in 10", "item.fix_of recorded after item.merged")
+      : make("escapes", "Shadow-review escapes", escaped / n, `${escaped} in ${n}`, "at most 1 in 10", escaped / n <= ESCAPE_BAR ? "pass" : "fail", "item.fix_of recorded after item.merged, over merges in the window", "counts merged tasks with a later repair link"),
+    make("unnamedWaits", "Live rows with no named wait", m.unnamed.length, String(m.unnamed.length), "0", m.unnamed.length === 0 ? "pass" : "fail", "each unfinished item's latest state event (a wait is named by a dispatch, claim, submit, approval, accept, block or landing)", m.unnamed.join(", ")),
+    make("unlinkedRepairs", "Repairs without a fix_of link", m.unlinked.length, String(m.unlinked.length), "0", m.unlinked.length === 0 ? "pass" : "fail", "item.created titles starting Fix or Repair, with no item.fix_of, item.reverts or item.defect_of", m.unlinked.join(", ")),
+    !n ? empty("sessionRecords", "Session-written records per merge", "under 3", "session.wrapped, decision.recorded and assignment.recorded over merges")
+      : make("sessionRecords", "Session-written records per merge", sessionPer, sessionPer!.toFixed(2), "under 3", sessionPer! < SESSION_RECORD_BAR ? "pass" : "fail", "session.wrapped, decision.recorded and assignment.recorded in the window, over merges", `${m.sessionRecords} record(s), ${n} merge(s)`),
+  ];
+  return { scope, merges: n, sound: sound.length, bars };
+}
+
+// `tokens` maps an item id (or "project/id") to its weighted token use.
+export function computeBars(projects: readonly { name: string; events: readonly BarEvent[] }[], now: number, tokens?: Record<string, number>): BarsReport {
+  const per = projects.map((p) => ({ name: p.name, m: measure(p.name, p.events, now, tokens ?? {}) }));
+  const overall: Measures = {
+    merges: per.flatMap((p) => p.m.merges.map((x) => ({ ...x, key: `${p.name}/${x.key}` }))),
+    unnamed: per.flatMap((p) => p.m.unnamed.map((id) => `${p.name}/${id}`)),
+    unlinked: per.flatMap((p) => p.m.unlinked.map((id) => `${p.name}/${id}`)),
+    sessionRecords: per.reduce((s, p) => s + p.m.sessionRecords, 0),
+  };
+  return {
+    windowDays: BARS_WINDOW_DAYS, since: new Date(now - BARS_WINDOW_DAYS * DAY_MS).toISOString(), observedAt: new Date(now).toISOString(),
+    scopes: [...per.map((p) => barsOf(p.name, p.m, tokens !== undefined)), barsOf("overall", overall, tokens !== undefined)],
+  };
+}
+
+export function formatBars(report: BarsReport): string[] {
+  const out = [`Redesign bars for the last ${report.windowDays} days (since ${report.since}, observed ${report.observedAt})`];
+  for (const s of report.scopes) {
+    out.push("", `${s.scope}: ${s.merges} merge(s), ${s.sound} sound`);
+    for (const b of s.bars) {
+      const tag = b.status === "pass" ? "PASS" : b.status === "fail" ? "FAIL" : "N/A ";
+      out.push(`${tag} ${b.label}: ${b.display} (target ${b.target}) [source: ${b.source}]${b.detail ? ` ${b.detail}` : ""}`);
+    }
+  }
+  return out;
+}
