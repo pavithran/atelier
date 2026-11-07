@@ -857,8 +857,8 @@ export function fileDeployStore(dir, options) {
 
 // Deploys the landed head, and then the newest head that landed while it ran,
 // one deploy at a time. Each head gets its deploy tried, then once more if it
-// failed; a second failure records the deploy as failed and sends one
-// notification. Returns what happened to each head it dealt with.
+// failed; a second failure records the deploy as failed and final, and the
+// ledger records one deploy.failed_notice for it, which wakes a session. Returns what happened to each head it dealt with.
 //   on          the standing instruction deploy-on-landing is on
 //   store       a deployStore
 //   waitsFor    optional, async (head) => reasons it must wait on PAVI, [] when none
@@ -908,7 +908,7 @@ export async function autoDeploy({ name, head, on, store, waitsFor, deploy, reco
       }
     }
     const note = String(last.output ?? "").trim().slice(-600) || "no output";
-    // final: the ledger announces a final failure once per ship id, the one notification that wakes a session.
+    // final: the ledger records one deploy.failed_notice per ship id, the one notice that wakes a session.
     await record({ ship: `auto-${at.slice(0, 12)}`, head: at, result: "failed", final: true, step: "deploy", ran: [], note: `deploy on landing failed twice: ${note}`.slice(0, 1000) });
     return { head: at, state: "failed", attempts: 2 };
   }

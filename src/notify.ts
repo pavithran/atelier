@@ -32,12 +32,6 @@ export function usageAlertRequest(topic: string, origin: string, title: string, 
   return ntfyRequest(topic, title, new URL("/usage", new URL(origin).origin).href, "warning", body);
 }
 
-// A deploy that failed twice (a final failed ship record), opening the project page.
-export function deployFailedRequest(topic: string, origin: string, project: string, head: string, note: string): Request {
-  const click = new URL(`/p/${encodeURIComponent(project)}`, new URL(origin).origin).href;
-  return ntfyRequest(topic, `${project}: deploy of ${head.slice(0, 8)} failed`, click, "warning", note || "The deploy failed twice.");
-}
-
 // Stuck episodes still open an hour after they were first seen (src/stuck/notices.ts),
 // as messages opening the Status page. A message body holds at most BODY_LIMIT
 // characters, so a long batch is split into several messages, each carrying

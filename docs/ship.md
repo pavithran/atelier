@@ -435,6 +435,7 @@ Each is an event in the project's ledger, with no task id:
 | `action.consumed` | id, kind, commit |
 | `action.ran` | step, kind, approval used, command, commit, exit status, signal, duration, passed, output tail, ship id, note, and, when the approval it used had them, quote and acting |
 | `ship.recorded` | ship id, head, by, result (shipped or failed), the step it stopped at, the steps that ran, note |
+| `deploy.failed_notice` | task merged at the head (or none), ship id, head, step, reason; one per ship, written with the final failed record of a deploy on landing that failed twice, and the event that wakes a session |
 
 There is one `action.ran` for every command, request or step that ran,
 passing or failing, and none for a step that did not run. The ship id is the
