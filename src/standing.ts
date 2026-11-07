@@ -11,11 +11,13 @@
 // are the two that act in either mode: a landing's own command reads the
 // first when the merge ends (cli/post-merge.mjs), where no mode is consulted.
 //
-// Without an instruction, nothing here happens by itself: a landable task is
-// recorded as a fact and landed by `atelier land`, a review request the head
-// moved past is withdrawn and asked again by `atelier review-request`, a fast
-// landing's post-merge review stays owed until it is asked, and a stuck
-// episode is noticed after LIMITS.noticeAfterMs.
+// Without an instruction, most of these do not happen by themselves: a review
+// request the head moved past is withdrawn and asked again by `atelier
+// review-request`, a fast landing's post-merge review stays owed until it is
+// asked, and a stuck episode is noticed after LIMITS.noticeAfterMs. The
+// landing is the exception (t520): the stage tick queues the land job of a
+// task whose checks passed and whose head a reviewer of another company
+// approved, with no instruction. queue-landable off stops it.
 
 import { TEXT_CONTROLS } from "./text.ts";
 import { POOL_FAMILIES } from "./models/pool.ts";
@@ -42,7 +44,7 @@ export const STANDING: Record<string, StandingKey> = {
   },
   "queue-landable": {
     value: "on or off",
-    says: (v) => v === "on" ? "the stage tick queues the land job of a task found landable past its limit, for a live lander runner" : "the stage tick queues no landing",
+    says: (v) => v === "on" ? "the stage tick queues the land job of a landable task a reviewer of another company approved, for a live lander runner (which it does with no instruction since t520)" : "the stage tick queues no landing",
     parse: onOff,
   },
   "reask-on-resubmit": {

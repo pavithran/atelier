@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathCollisions } from "../../src/rules.ts";
 import { acceptancePolicy, evidenceAt, mergeContext, mergePolicyDecision } from "../../src/rules.ts";
-import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, pushMergeToProjectBranch, tailOf, touchedExecutables, treeEntries } from "../landing.mjs";
+import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, pushMergeToProjectBranch, reuseDecision, tailOf, touchedExecutables, treeEntries } from "../landing.mjs";
 import { runRegenerateIn } from "../land.mjs";
 import { releaseSequence } from "../load.mjs";
 import { prepareChecks } from "../../src/check-preparation.ts";
@@ -419,6 +419,7 @@ export default async function mergeCommand() {
       await stayHeld(checkoutLease); // G9: the checks fold a regeneration into the checkout
       const undo=()=>{git(['reset','--quiet','--hard',journal.state.start],{cwd});journal.clear();};
       const checked=await checkMergedTree({name,id,cwd,policy:d.policy,identity,commit:journal.state.mergeCommit,secrets:[apiToken(),base.token,ws.token],begin,
+        reuse:()=>reuseDecision({cwd,policy:d.policy,evidence:d.evidence,head:item.acceptedHead,mergeCommit:journal.state.mergeCommit}),
         stop:async(message,data)=>{undo();await fail(message,data);},record});
       journal.save({mergeCommit:checked,checked});
     }
@@ -590,7 +591,7 @@ class GuardStop extends Error {}
 // second run is never what lands. Each is recorded as a landing step, a
 // failure with the last lines of the failing check's own output. Answers the
 // merge commit the checks passed on.
-async function checkMergedTree({ name, id, cwd, policy, identity, commit, secrets, begin, stop, record }) {
+async function checkMergedTree({ name, id, cwd, policy, identity, commit, secrets, begin, stop, record, reuse }) {
   const cmds = Array.isArray(policy?.checks) ? policy.checks : [];
   const regenerate = typeof policy?.regenerate === "string" && policy.regenerate ? policy.regenerate : null;
   begin("checks");
@@ -624,6 +625,19 @@ async function checkMergedTree({ name, id, cwd, policy, identity, commit, secret
     }
     if (!cmds.length) return checked;
     const t0 = Date.now();
+    // The builder's passing checks at this head stand for the merge when main
+    // moved no path the task touches since they ran (t520); a regeneration
+    // that changed the tree leaves nothing to reuse. The landing records that
+    // it reused them, and says why when it did not.
+    if (reuse && checked === commit) {
+      const v = await reuse();
+      if (v.reuse) {
+        console.log(`Reused the builder's passing checks instead of running them on the merged tree: ${v.why}.`);
+        await record("checks", Date.now() - t0, { mergeCommit: checked, reused: true, base: v.found.base, mainHead: v.main, statuses: v.found.commands.map((c) => `reused: ${c}`.slice(0, 200)) });
+        return checked;
+      }
+      console.log(`Running the checks on the merged tree: ${v.why}.`);
+    }
     // What passes must describe what is pushed: before each check and after
     // the last, the clone's HEAD is the merge commit and its tracked tree
     // and index are as that commit holds them (untracked build output may
