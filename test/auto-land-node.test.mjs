@@ -221,7 +221,8 @@ test("a landing that fails on a conflict is sent back to its builder, and the sa
   assert.deepEqual(d.landing.files, ["shared.txt"]);
   assert.ok(logs.some((l) => l.includes("was sent back to its builder")), logs.join("\n"));
   assert.equal(d.item.dispatch?.job, "merge-main", "the task is dispatched to its builder");
-  assert.match(d.item.dispatch?.note ?? "", /shared\.txt/);
+  // A runner note is facts only (automaticNote), so the files ride in the landing record asserted above.
+  assert.match(d.item.dispatch?.note ?? "", /step merge/);
   assert.equal(d.item.head, head);
   // Another tick and another lander pass: the failed head is queued and run no more.
   const again = await autoLand(t, w);
