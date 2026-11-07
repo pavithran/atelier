@@ -1,0 +1,53 @@
+atelier atelier/t512 "A seconds-long landing check runs the tests that scan the source"
+accepted head ab0e06872abae36f6784b7c71bea6e00106905e7
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+OBSERVED pass npm run typecheck — opencode/glm-5.3 2026-11-07T01:11:00.480Z
+OBSERVED pass npm test — opencode/glm-5.3 2026-11-07T01:27:47.577Z
+REVIEW approve by claude-code/sonnet-5.5 at ab0e06872abae36f6784b7c71bea6e00106905e7, recorded by claude-code/sonnet-5.5
+CHECKED TREE 7fa39a0cf4afc17921eba0ee6ad52b1b773afd42: the merge produced exactly the tree these checks passed on (npm run typecheck, npm test), so a deploy gate may accept them instead of running them again
+2026-11-06T21:12:40.110Z pavi item.created
+2026-11-06T21:12:40.110Z claude-code/opus-5.5 criteria.revised
+2026-11-06T21:12:44.841Z pavi item.dispatched
+2026-11-06T21:12:45.908Z opencode/glm-5.3 item.claimed
+2026-11-06T21:12:45.945Z opencode/glm-5.3 workspace.created
+2026-11-06T21:57:49.783Z opencode/glm-5.3 item.released
+2026-11-06T21:57:57.039Z opencode/glm-5.3 item.claimed
+2026-11-06T22:32:06.619Z opencode/glm-5.3 push.observed
+2026-11-06T22:32:06.894Z opencode/glm-5.3 item.released
+2026-11-06T22:32:33.680Z opencode/glm-5.3 item.claimed
+2026-11-06T22:55:00.000Z atelier stage.stuck
+2026-11-06T23:17:03.728Z opencode/glm-5.3 push.observed
+2026-11-06T23:17:07.595Z opencode/glm-5.3 evidence.observed
+2026-11-06T23:20:00.000Z atelier stage.cleared
+2026-11-06T23:27:44.092Z opencode/glm-5.3 evidence.observed
+2026-11-06T23:38:17.689Z opencode/glm-5.3 evidence.observed
+2026-11-06T23:40:00.000Z atelier stage.stuck
+2026-11-07T00:15:45.503Z atelier/orchestrator refresh.queued
+2026-11-07T00:17:16.031Z pavi item.released
+2026-11-07T00:17:16.031Z pavi item.dispatched
+2026-11-07T00:18:36.647Z opencode/glm-5.3 item.gave_up
+2026-11-07T00:19:06.894Z opencode/glm-5.3 item.claimed
+2026-11-07T00:47:19.376Z opencode/glm-5.3 push.observed
+2026-11-07T00:50:00.000Z atelier stage.cleared
+2026-11-07T01:10:00.000Z atelier stage.stuck
+2026-11-07T01:11:00.501Z opencode/glm-5.3 evidence.observed
+2026-11-07T01:27:47.610Z opencode/glm-5.3 evidence.observed
+2026-11-07T01:27:48.366Z opencode/glm-5.3 item.submitted
+2026-11-07T01:28:08.034Z pavi land.start
+2026-11-07T01:28:09.498Z pavi review.requested
+2026-11-07T01:28:09.498Z pavi review.tier_needed
+2026-11-07T01:28:09.836Z pavi land.review
+2026-11-07T01:28:09.910Z pavi land.requested
+2026-11-07T01:28:16.601Z claude-code/sonnet-5.5 review.claimed
+2026-11-07T01:28:41.256Z pavi review.requested
+2026-11-07T01:29:04.834Z codex/gpt-6-astra review.claimed
+2026-11-07T01:29:56.772Z claude-code/sonnet-5.5 review.approved
+2026-11-07T01:29:56.772Z atelier/orchestrator goal.notes
+2026-11-07T01:30:00.000Z atelier stage.cleared
+2026-11-07T01:30:01.722Z atelier/orchestrator review.withdrawn
+2026-11-07T01:30:01.722Z pavi item.accepted
+2026-11-07T01:30:02.622Z pavi land.start
+2026-11-07T01:30:02.711Z pavi landing.leased
+2026-11-07T01:30:02.804Z pavi land.lease
+2026-11-07T01:30:03.781Z pavi checkout.leased
