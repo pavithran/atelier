@@ -162,7 +162,7 @@ const SHIP = { ship: "auto-aaaaaaaaaaaa", head: H1, result: "failed", step: "dep
 function shipRecord(L: Ledger, name: string, body: Record<string, unknown>) {
   const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/deploys`, {
-    method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": "owner", "x-atelier-acting": "claude-code/opus-5.5", "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, LEDGER, ATELIER_TOKEN: "test-token" } as typeof env);
 }
 
@@ -172,7 +172,8 @@ it("a final failed deploy record sends one notification, a repeat none, and a no
     try {
       const L = ledger(state);
       setup(L, "notify-deploy-failed");
-      expect((await shipRecord(L, "notify-deploy-failed", { ...SHIP, ship: "auto-first0000000" })).status).toBe(201);
+      const first = await shipRecord(L, "notify-deploy-failed", { ...SHIP, ship: "auto-first0000000" });
+      expect(first.status).toBe(201);
       expect(send).toHaveBeenCalledTimes(0);
       expect((await shipRecord(L, "notify-deploy-failed", { ...SHIP, final: true })).status).toBe(201);
       expect(send).toHaveBeenCalledTimes(1);
