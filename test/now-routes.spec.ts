@@ -144,10 +144,11 @@ it("opening the Revert link changes nothing; its form makes one revert task that
   expect(made.headers.get("location")).toBe("https://atelier.test/p/now-revert/t4");
   expect(await L.events("t4")).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "item.reverts", data: { itemId: "t1", mergeCommit: H2 } })]));
   expect(((await L.events("t1")) as unknown as LedgerEvent[]).map((e) => e.kind)).toContain("item.revert_requested");
-  // The merge now has a revert asked for: the Now page says so and offers no second link.
+  // The revert is asked for, not yet merged: the Now page says so, offers no second link and does not call it reverted.
   const now = await (await get("/now", { cookie })).text();
   expect(now).not.toContain('href="/p/now-revert/t1/revert"');
-  expect(now).toContain("Reverted");
+  expect(now).toContain("Revert asked for in t4");
+  expect(now).not.toContain(">Reverted<");
 });
 
 it("a task that is not merged has nothing to revert: the page says so and the form is refused", async () => {
