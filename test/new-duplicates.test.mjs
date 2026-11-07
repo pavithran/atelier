@@ -21,7 +21,7 @@ const ITEMS = [
   item("t15", "Fix the renderer", ["src/parser/**"], "claimed"),
 ];
 
-function fixture(t, items = ITEMS) {
+function fixture(t, items = ITEMS, created = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-dup-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const config = join(dir, "config");
@@ -32,6 +32,7 @@ function fixture(t, items = ITEMS) {
   writeFileSync(preload, `
 import { appendFileSync } from "node:fs";
 const ITEMS = ${JSON.stringify(items)};
+const CREATED = ${JSON.stringify(created)};
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
   // The capability check before the command (t458) reads the version, as the real server answers it; it is not one of the requests the tests count.
@@ -41,7 +42,7 @@ globalThis.fetch = async (url, options = {}) => {
   let data = {}, status = 200;
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
   else if (path === "/api/projects/demo" && method === "GET") data = { project: { name: "demo", title: "Demo", repo: "demo", policy: { checks: [], protected: [], eligible: [], refuseOverlap: false } }, items: ITEMS, events: [] };
-  else if (path === "/api/projects/demo/items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope };
+  else if (path === "/api/projects/demo/items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope, ...CREATED };
   else { status = 404; data = { error: "no_project", detail: "project not initialised; run atelier init" }; }
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 };
@@ -172,4 +173,13 @@ test("a title over 80 characters with --brief reports bad_title without a stack 
     assert.equal(r.stderr, "atelier: bad_title: a title is at most 80 characters and this one is 81; put the rest in the brief\n");
   }
   assert.deepEqual(f.requests(), []);
+});
+
+test("atelier new says where a task filed with criteria was dispatched, or which builder it waits for", (t) => {
+  const sent = fixture(t, ITEMS, { dispatch: { to: "home", agent: "codex", model: "gpt-6.1-sol" } }).run(["new", "Add search", "--project", "demo", "--scope", "src/search/**", "--accept", "Finds the term"]);
+  assert.equal(sent.status, 0, sent.stderr);
+  assert.match(sent.stdout, /t9 is dispatched to codex\/gpt-6\.1-sol; its criteria review runs beside the build\./);
+  const waits = fixture(t, ITEMS, { buildWait: { for: "codex/gpt-6.1-sol", reason: "codex/gpt-6.1-sol is at work on another task", since: "2026-11-07T12:00:00.000Z" } }).run(["new", "Add search", "--project", "demo", "--scope", "src/search/**", "--accept", "Finds the term"]);
+  assert.equal(waits.status, 0, waits.stderr);
+  assert.match(waits.stdout, /t9 waits for codex\/gpt-6\.1-sol: codex\/gpt-6\.1-sol is at work on another task\./);
 });

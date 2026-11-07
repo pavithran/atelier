@@ -25,6 +25,12 @@ async function approve(L: L, id: string) {
   await L.addCriteriaReview({ itemId: id, by: REVIEWER, rev: c.rev, criteria: c.criteria, request: c.request, approve: true, summary: "Clear", findings: [] }, true);
 }
 const made = (L: L) => L.newItem("A task", ["src/core.ts"], "owner", { accept: ["Returns the expected result"] });
+// Criteria added after filing (an edit dispatches nothing by itself): the next tick or instruction does.
+const lateCriteria = async (L: L) => {
+  const { id } = await L.newItem("A task", ["src/core.ts"], "owner", {});
+  await L.editItem(id, "owner", { accept: ["Returns the expected result"] });
+  return id;
+};
 const dispatches = async (L: L, id: string) => (await L.events(id)).filter(e => e.kind === "item.dispatched");
 
 it("dispatch-on-criteria accepts an actor or off and names the form on refusal", () => {
@@ -34,17 +40,16 @@ it("dispatch-on-criteria accepts an actor or off and names the form on refusal",
   expect(JSON.parse(readFileSync("test/fixtures/cli/usage.json", "utf8")).decide).toBe(commandUsage("decide") + "\n");
 });
 
-it("approval dispatches home once, naming the standing decision, including after criteria revision", async () => {
+it("filing dispatches home once, naming the standing decision, and approval or revision dispatches nothing more", async () => {
   const { L, decision } = await setup("approved");
-  const { id } = await made(L);
   expect((await L.standing()).get("dispatch-on-criteria")).toBe("codex/gpt-6.1-sol");
   const facts = await L.situationFacts();
   expect(situationOf({ facts, now: new Date(), names: [], tokens: [], offers: [], commit: null, disk: null }).standingInstructions[0].acts).toBe(true);
-  expect((await L.item(id)).dispatch).toBeNull();
-  await approve(L, id);
+  const { id } = await made(L);
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
   expect((await dispatches(L, id))[0].data.reason).toContain(decision!.id);
   expect((await dispatches(L, id))[0].data.reason).toContain("dispatch-on-criteria");
+  await approve(L, id);
   await L.editItem(id, "owner", { accept: ["Returns the revised expected result"] });
   await approve(L, id);
   await L.waiting();
@@ -55,6 +60,7 @@ it("recording the instruction dispatches criteria already approved", async () =>
   const { L } = await setup("record-after-approval", null);
   const { id } = await made(L);
   await approve(L, id);
+  expect((await L.item(id)).dispatch).toBeNull();
   await L.recordDecision({ standing: { key: "dispatch-on-criteria", value: "codex/gpt-6.1-sol" }, quote: "Dispatch approved tasks" }, "owner");
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
   expect(await dispatches(L, id)).toHaveLength(1);
@@ -62,39 +68,28 @@ it("recording the instruction dispatches criteria already approved", async () =>
 
 it("reads leave a due task undispatched until the next stage tick", async () => {
   const { L } = await setup("read-only");
-  const { id } = await made(L);
-  await L.block(id, "owner", "Open question");
-  await approve(L, id);
-  await L.unblock(id, "owner");
+  const id = await lateCriteria(L);
   for (const read of [() => L.board(), () => L.inbox(new Date().toISOString()), () => L.detail(id), () => L.situationFacts(), () => L.waiting()]) {
     await read();
     expect((await L.item(id)).dispatch).toBeNull();
     expect(await dispatches(L, id)).toHaveLength(0);
   }
-  expect(await dispatches(L, id)).toHaveLength(0);
   await L.stageTick(new Date());
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
   await L.stageTick(new Date());
   expect(await dispatches(L, id)).toHaveLength(1);
 });
 
-it("withdrawal cancels a pending dispatch and unapproved revisions stay waiting", async () => {
+it("withdrawal stops dispatch at filing, and recording again dispatches the waiting task once", async () => {
   const { L, decision } = await setup("withdrawn");
-  const a = await made(L);
-  await L.block(a.id, "owner", "Open question");
-  await approve(L, a.id);
   await L.withdrawDecision(decision!.id, "owner", "Wait for my dispatch");
-  await L.unblock(a.id, "owner");
+  const a = await made(L);
   expect((await L.item(a.id)).dispatch).toBeNull();
-  await L.recordDecision({ standing: { key: "dispatch-on-criteria", value: "codex/gpt-6.1-sol" }, quote: "Dispatch approved tasks" }, "owner");
-  const b = await made(L);
-  await L.block(b.id, "owner", "Open question");
-  await approve(L, b.id);
-  await L.editItem(b.id, "owner", { accept: ["A revised result"] });
-  await L.unblock(b.id, "owner");
-  expect((await L.item(b.id)).dispatch).toBeNull();
-  await approve(L, b.id);
-  expect((await L.item(b.id)).dispatch).toMatchObject(BUILD);
+  await L.recordDecision({ standing: { key: "dispatch-on-criteria", value: "codex/gpt-6.1-sol" }, quote: "Dispatch tasks" }, "owner");
+  expect((await L.item(a.id)).dispatch).toMatchObject(BUILD);
+  await L.editItem(a.id, "owner", { accept: ["A revised result"] });
+  await L.stageTick(new Date());
+  expect(await dispatches(L, a.id)).toHaveLength(1);
 });
 
 it("the standing instruction cannot bypass owner authority or builder eligibility", async () => {
@@ -125,11 +120,11 @@ it("off and absent instructions leave approval undispatched; existing dispatches
   expect(await dispatches(L, id)).toHaveLength(1);
 });
 
-it("open questions hold approval until the developer unblocks the task", async () => {
+it("open questions hold dispatch until the developer unblocks the task", async () => {
   const { L } = await setup("questions");
-  const { id } = await made(L);
+  const id = await lateCriteria(L);
   await L.block(id, "owner", "Open question: which result should be returned?");
-  await approve(L, id);
+  await L.stageTick(new Date());
   expect((await L.item(id)).dispatch).toBeNull();
   await L.unblock(id, "owner");
   await L.stageTick(new Date());
@@ -143,9 +138,8 @@ it("a live core-file hold delays dispatch until the holder releases it", async (
   await L.claim(holder.id, "codex/gpt-6.1-sol", RUNNER);
   await L.recordRunnerPolls([{ runner: RUNNER.runner, at: new Date().toISOString() }]);
   const { id } = await made(L);
-  await approve(L, id);
   expect((await L.item(id)).dispatch).toBeNull();
-  await L.release(holder.id, "codex/gpt-6.1-sol", "Done with core files");
+  await L.abandon(holder.id, "owner", "Done with core files");
   await L.stageTick(new Date());
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
   await L.waiting();
@@ -154,13 +148,10 @@ it("a live core-file hold delays dispatch until the holder releases it", async (
 
 it("a crash while recording dispatch rolls back its completion record and retries", async () => {
   const { L } = await setup("crash");
-  const { id } = await made(L);
-  await L.block(id, "owner", "Open question");
-  await approve(L, id);
+  const id = await lateCriteria(L);
   await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
     state.storage.sql.exec(`CREATE TRIGGER stop_dispatch BEFORE INSERT ON events WHEN NEW.kind = 'item.dispatched' BEGIN SELECT RAISE(ABORT, 'simulated crash'); END`);
   });
-  await L.unblock(id, "owner");
   await expect(L.stageTick(new Date())).rejects.toThrow(/simulated crash/);
   expect((await L.item(id)).dispatch).toBeNull();
   expect(await dispatches(L, id)).toHaveLength(0);
