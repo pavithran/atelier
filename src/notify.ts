@@ -65,7 +65,7 @@ export function revertNotificationRequest(topic: string, origin: string, project
   const click = new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(revert.itemId)}`, new URL(origin).origin).href;
   const what = revert.kind === "gate" ? "the release gate" : "the post-merge suite";
   return ntfyRequest(topic, `${project}: ${revert.itemId} reverted`, click, "rewind",
-    `${revert.itemId} turned ${what} red after it landed (${revert.mergeCommit.slice(0, 12)}). Reverted in ${revert.revertCommit.slice(0, 12)}; the task is reopened with the failure.`);
+    `${revert.itemId} turned ${what} red after it landed (${revert.mergeCommit.slice(0, 12)}). Reverted in ${revert.revertCommit.slice(0, 12)}; a fix task carries the failure.`);
 }
 
 // An automatic revert that could not land (src/post-merge.ts): nothing more is
@@ -80,4 +80,34 @@ export async function sendNotification(request: Request): Promise<void> {
   const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
   await response.body?.cancel();
   if (!response.ok) throw new Error(`the notification was refused: ${response.status}`);
+}
+
+// One notice sent at most once, for a message that must reach the owner
+// without arriving twice. `marks` is the state that outlives the process
+// (save writes it). "sending" is saved before the request, so a crash after
+// the send and before its outcome is saved leaves it set; a later call finds
+// that and sends nothing, calls `unknown` to record that the message may or
+// may not have arrived, and keeps the mark "unknown". A request that throws or
+// is refused clears the mark, so the caller's retry sends again. With no
+// request (no topic configured) nothing is sent and nothing is marked: the
+// notice stays pending and goes out once a topic exists.
+export interface NoticeMarks { notice?: "sending" | "unknown"; notified?: true }
+export async function sendNoticeOnce(marks: NoticeMarks, io: { request: Request | null; save: () => Promise<void>; unknown: () => Promise<void>; send?: (request: Request) => Promise<void> }): Promise<"sent" | "done" | "pending" | "unknown"> {
+  if (marks.notified) return "done";
+  if (marks.notice === "unknown") return "unknown";
+  if (marks.notice === "sending") {
+    await io.unknown();
+    marks.notice = "unknown";
+    await io.save();
+    return "unknown";
+  }
+  if (!io.request) return "pending";
+  marks.notice = "sending";
+  await io.save();
+  try { await (io.send ?? sendNotification)(io.request); }
+  catch (error) { delete marks.notice; await io.save(); throw error; }
+  delete marks.notice;
+  marks.notified = true;
+  await io.save();
+  return "sent";
 }

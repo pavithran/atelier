@@ -180,10 +180,14 @@ export function recoverPostMerge(run: PostMergeRun, action: string, reason: unkn
 // state below is the only memory of what was done: each marker is written
 // after the work it marks, so a crash leaves it unset and a retry resumes.
 export type RedKind = "suite" | "gate";
-// `reopened` is set once every member has a fix task filed and dispatched
-// (fixes holds each one's progress); `notified` once the ntfy send returned ok.
+// `reopened` is set once every member has a fix task filed and handed on
+// (fixes holds each one's progress; `dispatched` is set when it was dispatched,
+// its criteria review asked, or it was blocked for want of a reviewer);
+// `notified` once the ntfy send returned ok. `notice` is "sending" from before
+// the request until its outcome is saved, and "unknown" once a restart found it
+// still "sending" (src/notify.ts, sendNoticeOnce).
 export interface RevertFix { task?: string; dispatched?: true }
-export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; fixes?: Record<string, RevertFix>; reopened?: true; notified?: true }
+export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; fixes?: Record<string, RevertFix>; reopened?: true; notified?: true; notice?: "sending" | "unknown" }
 export interface RevertState { halted: { reason: string; at: string; woken?: string[] } | null; failures: Record<string, RevertEntry> }
 export const newRevertState = (): RevertState => ({ halted: null, failures: {} });
 
@@ -196,4 +200,15 @@ export function failureKey(kind: RedKind, output: unknown, merge = ""): string {
   const lines = text.split("\n").map(l => l.replace(/\d+(?:\.\d+)?/g, "#").trim()).filter(Boolean);
   const failing = lines.filter(l => /^(not ok|fail|✗|✖|error|assertionerror)/i.test(l));
   return `${kind}@${merge}:${(failing.length ? failing : lines.slice(0, 3)).join("|").slice(0, 400)}`;
+}
+
+// The first failing test a run's output names, as node's TAP and spec reporters
+// print it, for the fix task's criterion; a run that names none gives "the
+// failing check".
+export function failingTestOf(output: unknown): string {
+  for (const line of redactedText(output).split("\n")) {
+    const name = /^\s*(?:not ok \d+ - |✖ |✗ |FAIL )(.+?)\s*(?:\(\d[\d.]*m?s\))?\s*$/i.exec(line)?.[1]?.trim();
+    if (name) return name.slice(0, 200);
+  }
+  return "the failing check";
 }

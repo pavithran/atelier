@@ -101,17 +101,17 @@ test("a red release gate with a green suite is reverted the same way (criterion 
   assert.deepEqual(green.calls, []);
 });
 
-test("a crash before reopen leaves reopened and notified unset, and a retry finishes without a second revert", async () => {
+test("a fix task that cannot be filed leaves reopened unset but does not hold back the notice; a retry files it and sends nothing more", async () => {
   const h = harness({ file: async () => { throw new Error("server down"); } });
   await assert.rejects(h.run(), /server down/);
   const entry = Object.values(h.state.failures)[0];
   assert.equal(entry.landed, revertSha);
   assert.equal(entry.reopened, undefined);
-  assert.equal(entry.notified, undefined);
-  assert.equal(h.calls.some((c) => c[0] === "notify"), false);
+  assert.equal(entry.notified, true);
+  assert.equal(h.calls.filter((c) => c[0] === "notify").length, 1);
   const retry = harness({ state: h.state });
   assert.equal((await retry.run()).action, "repeat");
-  assert.deepEqual(names(retry.calls), ["reopen", "dispatch", "notify"]);
+  assert.deepEqual(names(retry.calls), ["reopen", "dispatch"]);
 });
 
 test("a crash before landing leaves nothing recorded", async () => {
@@ -179,13 +179,13 @@ test("main standing on the revert this made is not reverted again", async () => 
   assert.deepEqual(again.calls, []);
 });
 
-test("a green run resumes the reopen and notification a crash left undone", async () => {
+test("a green run resumes the reopen a crash left undone", async () => {
   const d = disk();
   const crashed = harness({ state: d.load(), save: d.save, file: async () => { throw new Error("server down"); } });
   await assert.rejects(crashed.run(), /server down/);
   const green = harness({ state: d.load(), save: d.save, suite: async () => ({ passed: true, output: "" }) });
   assert.equal((await green.run()).action, "green");
-  assert.deepEqual(names(green.calls), ["reopen", "dispatch", "notify"]);
+  assert.deepEqual(names(green.calls), ["reopen", "dispatch"]);
   const done = harness({ state: d.load(), save: d.save, suite: async () => ({ passed: true, output: "" }) });
   await done.run();
   assert.deepEqual(done.calls, []);
@@ -213,7 +213,7 @@ test("a fix task already filed is not filed again when its dispatch is retried",
   await assert.rejects(crashed.run(), /dispatch refused/);
   const retry = harness({ state: d.load(), save: d.save });
   await retry.run();
-  assert.deepEqual(names(retry.calls), ["dispatch", "notify"]);
+  assert.deepEqual(names(retry.calls), ["dispatch"]);
   assert.deepEqual(retry.calls[0], ["dispatch", "t99", "t7"]);
 });
 
