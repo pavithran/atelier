@@ -6,7 +6,7 @@ import { WRAP_MARKERS } from "../../src/sessions.ts";
 import { landingJournalFile, oldLandingJournalFile } from "../landing.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { autoDeploy, composeShip, fileDeployStore, pinnedDeployCheck, runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
+import { autoDeploy, composeShip, fileDeployStore, pinnedDeployCheck, runCommand, ship as runShip, shipSecrets, shipWrapArgs } from "../ship.mjs";
 import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
 import { holdCheckout, postOnExit, stayHeld } from "../checkout-hold.mjs";
 
@@ -77,7 +77,7 @@ export default async function shipCommand() {
       print: (line) => console.log(line),
       // The wrap step is atelier wrap itself, run in the checkout as the owner
       // would, with the environment ship gives it (stepEnv in cli/ship.mjs).
-      wrap: (summary, env) => runCommand([process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), "wrap", summary, "--project", name], { cwd, env }),
+      wrap: (summary, env) => runCommand([process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), ...shipWrapArgs(summary, name)], { cwd, env }),
       env: process.env,
       secrets: shipSecrets(process.env, [apiToken(), ...workspaceTokens(cwd)]),
       redact,
