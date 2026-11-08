@@ -273,7 +273,8 @@ export type Role = (typeof ROLES)[number];
 // travels with the brief, so an unbounded one would crowd the actual brief and
 // its reply format out of the agent's context window; the runner refuses one
 // over this instead of silently degrading the run.
-export const ROLE_PROMPT_MAX = 4000;
+// Raised from 4000 to 4400 for the builder's process v3 rules (t541).
+export const ROLE_PROMPT_MAX = 4400;
 
 export const ROLE_PROMPTS: Record<Role, string> = {
   build: `## Building
@@ -288,6 +289,11 @@ Write tests for new behaviour.
 Run the tests your change touches inside a test slot and the typecheck.
 The runner runs the full required checks once after your commit, before review;
 a failure returns the failing check's name and output for one repair turn.
+Prove each criterion from the production entry point. Test each named failure
+path at the real boundary. Show each test red on main first, then green; report
+both outputs. Put a new mechanism in its own files; core files only call it.
+Before submitting, walk each criterion: name its proof and run it, and say
+plainly which proof you could not run.
 Before finishing, go through the acceptance criteria one by one and name the
 evidence for each in your final reply. Leave no report file in the repository.
 For visual changes, take screenshots of this workspace's
@@ -395,6 +401,21 @@ The flow
    passing is the bar. Where a real platform limit or runtime cannot be
    reproduced locally, name it in the task and require the project's remote
    smoke check before and after deploy. Verify the deployed revision.
+
+Process v3 (PAVI, 7 November 2026: "Yes, all seven")
+
+1. Before tasks that share a mechanism, write a design note: what it records
+   and where, the production entry point, what happens on a crash, a retry, a
+   repeat and a timeout, and one harness scenario. The developer decides the
+   note; a model of another company reads it once.
+2. A task has at most five criteria and one mechanism.
+3. Write criteria that ask the builder to prove each criterion from the
+   production entry point, to test each named failure path at the real
+   boundary, and to show the test red on main first, then green.
+4. A new mechanism goes in its own files; core files only call it.
+5. Never run a build inside the orchestrating session; dispatch a builder.
+6. Before a criteria review, match each requirement of the brief to the
+   criterion that tests it.
 
 Reporting to PAVI
 
