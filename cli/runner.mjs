@@ -2126,9 +2126,10 @@ export async function runTask(assignment, config, name, io) {
       // against the commit this build starts from (`before`; for a task not
       // yet pushed, the commit its workspace was made at).
       const fetched = await briefContext();
-      // The server's job is "rework" when a review rejected the task's head
-      // (t548): a build that adds no commit on that head did not do the round.
-      if (item.kind !== "part" && fetched?.job === "rework" && item.head) rejectedHead = item.head;
+      // The server's latestVerdict is "reject" when the latest review at the
+      // task's head rejected it (t548); a later approval at that head clears
+      // it. A build that adds no commit on a rejected head did not do the round.
+      if (item.kind !== "part" && fetched?.latestVerdict === "reject" && item.head) rejectedHead = item.head;
       const context = item.kind === "part" ? fetched : await withHistory({ git: (a, o = {}) => io.git(a, { cwd: workspace, ...o }), log: io.log }, fetched, before);
       const serverBrief = item.kind === "part" ? context : null;
       const reworked = item.kind === "part" ? null : context;
@@ -2235,13 +2236,16 @@ export async function runTask(assignment, config, name, io) {
     if (afterFailure) io.log(`the harness added nothing to the earlier failed run's commit ${String(head).slice(0, 8)}; the checks run and it is submitted`);
     else if (already?.complete) io.log(`already complete: ${already.why}; the harness changed nothing, so the checks run and that head is submitted without a new commit`);
     else if (already) io.log(`nothing to submit: ${already.why}, and the harness changed nothing`);
+    // An unchanged rejected head is a failed round on every path to finish():
+    // a failure marker's earlier start must not stand in for the head.
+    const rejectedUnchanged = unchanged && result.code === 0 && rejectedHead && head === rejectedHead;
     taskFailure = true;
     // Only a run that ran no harness has no exit code to report as success;
     // a harness killed by a signal has code null and is a failure (t363).
     // A rerun after a failed harness that fails again without a new commit
     // began at the marker's starting head, not at the commit it reruns from.
     exitOutcome = harnessOutcome({
-      ran: !!result, marker: failedRun, head, before: from, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
+      ran: !!result, marker: rejectedUnchanged ? null : failedRun, head, before: from, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
       code: result ? result.code : 0, timedOut: result?.timedOut,
       pushedComplete: !!(already?.complete || failedOnPushed?.complete),
       mergesBlock: merges.some((m) => m.state === "conflicts" || m.state === "skipped"),

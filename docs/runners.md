@@ -923,7 +923,9 @@ commit whose push fails stays in the workspace under the claim, as any other
 commit does.
 
 A task sent back after a rejection is not already complete at the head the
-review rejected (t548). A build whose harness exits 0 and leaves that head
+latest review rejected (t548). The server's job brief carries that verdict as
+`latestVerdict`, so a rejection a later approval superseded does not count.
+An unchanged head after a rejection is a failed round. This holds on every path, including a rerun with a failure marker. A build whose harness exits 0 and leaves that head
 unchanged is a failed round, never "already complete": the run is not
 submitted, its log names the rejected head and says no commit was added, and
 it counts as a task failure. An unchanged pushed head that no review rejected

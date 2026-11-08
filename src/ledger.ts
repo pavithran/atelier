@@ -7889,7 +7889,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; latestVerdict?: "approve" | "reject" | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -7922,7 +7922,10 @@ export class Ledger extends DurableObject<Env> {
       // runner does not read changes nothing for it.
       // The project's check limit (G7), which the runner's brief gives the
       // builder as its suite's budget, counted from the held test slot.
-      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
+      // The latest review's verdict at this head, which job does not say: a
+      // rejection a later approval superseded still makes job "rework" (t548).
+      const latest = this.reviewsFor(id).filter((r) => r.head === item.head).at(-1) ?? null;
+      return { job: sections.length ? "rework" : "build", latestVerdict: latest ? (latest.approve ? "approve" : "reject") : null, text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
     }
     assertOwner(item, actor);
     const project = this.project();
