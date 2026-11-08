@@ -105,7 +105,7 @@ test("a deadline block can only be stopped: plan show drops retry and reroute", 
 test("a plan's brief says what is decided and what it waits on, in the shape any item's brief has", () => {
   assert.deepEqual(planBrief(proposed), {
     decided: "Approve plan t1's split of: Ship the feature", summary: null,
-    nonGoals: [], stopWhen: [], nextGate: null, accept: [], partAccept: null, criteria: NO_CRITERIA, criteriaReview: null,
+    nonGoals: [], stopWhen: [], nextGate: null, design: null, accept: [], partAccept: null, criteria: NO_CRITERIA, criteriaReview: null,
     evidence: ["Phase: proposed.", `Proposal 2: 2 parts, ${HASH.slice(0, 12)}, by claude-code/opus-5.5.`],
     recommendation: { verdict: "decide", reason: "Read the split with atelier plan show t1, then approve it by its hash or send it back with a note." },
   });
@@ -260,7 +260,7 @@ test("a queued part the project's core files hold says which live item outside t
   const held = { id: "t9", owner: "codex/gpt-6-astra", state: "claimed" as const, title: "Other work", core: "src/ledger.ts" };
   const queued = part("t4", "c", { dispatch: { to: "home", agent: "zcode", model: "glm-5.3", by: "atelier/orchestrator", at: AT, note: "" }, held });
   const lines = planText({ ...building, parts: [queued] }, "demo").split("\n");
-  assert.ok(lines.includes("      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): both scopes reach core file src/ledger.ts; offered once t9 submits or is released"), lines.join("\n"));
+  assert.ok(lines.includes("      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned"), lines.join("\n"));
   assert.ok(!planText(building, "demo").includes("held in the queue"));
 });
 
@@ -273,9 +273,9 @@ test("a held part names every blocker outside the plan and when each stops holdi
   const reach = "both scopes reach core file src/ledger.ts";
   const a = blocker("t9", "claimed", "codex/gpt-6-astra"), b = blocker("t10", "claimed", "zcode/glm-5.3");
   const l1 = blocker("t11", "submitted", "claude-code/opus-5.5");
-  assert.equal(line([l1]), `      held in the queue: waits on t11 (submitted by claude-code/opus-5.5): ${reach}; offered once the landing of t11 ends`);
-  assert.equal(line([a, b]), `      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): ${reach}; t10 (claimed by zcode/glm-5.3): ${reach}; offered once t9 submits or is released and t10 submits or is released`);
-  assert.equal(line([a, l1]), `      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): ${reach}; t11 (submitted by claude-code/opus-5.5): ${reach}; offered once t9 submits or is released and the landing of t11 ends`);
+  assert.equal(line([l1]), `      held in the queue: waits on t11 (submitted by claude-code/opus-5.5): ${reach}; offered once t11 merges or is abandoned`);
+  assert.equal(line([a, b]), `      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): ${reach}; t10 (claimed by zcode/glm-5.3): ${reach}; offered once t9 merges or is abandoned and t10 merges or is abandoned`);
+  assert.equal(line([a, l1]), `      held in the queue: waits on t9 (claimed by codex/gpt-6-astra): ${reach}; t11 (submitted by claude-code/opus-5.5): ${reach}; offered once t9 merges or is abandoned and t11 merges or is abandoned`);
 });
 
 test("plan show lists the goal's open notes in one short block, and nothing without any", () => {

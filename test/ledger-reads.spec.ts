@@ -51,7 +51,7 @@ it("a runner's poll reads the claimed rows, and answers what the full read answe
   await inside(L, async (instance: any) => { instance.recordRunnerPolls([{ runner: "home:reads-a", at: new Date().toISOString() }, { runner: "home:reads-b", at: new Date().toISOString() }]); });
 
   const held = await rowsRead(L, (ledger) => ledger.heldJobs("HOME:reads-a"));
-  const full = await rowsRead(L, (ledger) => ledger.items().filter((i: any) => i.state === "claimed" && i.dispatch && (i.runner ?? "").toLowerCase() === "home:reads-a"));
+  const full = await rowsRead(L, (ledger) => ledger.items().filter((i: any) => i.state === "claimed" && i.dispatch && (i.runner ?? "").toLowerCase() === "home:reads-a").map(({ everClaimed, ...rest }: any) => rest));
   expect(held.value.map((i: any) => i.id)).toEqual([mine]);
   expect(held.value).toEqual(full.value);
   expect(held.value[0].pushActors).toEqual([A]);
@@ -96,7 +96,7 @@ it("the owner's read answers what the full items() read answers, and skips the h
     const rows = (table: string) => ledger.sql.exec(`SELECT json FROM ${table}`).toArray().map((r: any) => JSON.parse(r.json));
     return { items: ledger.items(), entries: inboxFor(p.name, ledger.items(), p.policy, rows("evidence"), rows("reviews"), new Date(now), ledger.owner) };
   });
-  const pushless = (items: any[]) => items.map(({ pushActors, ...rest }) => rest);
+  const pushless = (items: any[]) => items.map(({ pushActors, everClaimed, ...rest }) => rest);
   expect(pushless(owner.value.items)).toEqual(pushless(reference.value.items));
   // The gated tasks keep their push history, which the gate reads.
   expect(owner.value.items.find((i: any) => i.id === sub).pushActors).toEqual([A]);

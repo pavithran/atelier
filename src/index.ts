@@ -16,14 +16,14 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
-import { parseAffectedTests } from "./affected-tests.ts";
+import { parseAffectedTests, requiredTests } from "./affected-tests.ts";
 import { checkRemote, agentLine, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, redactKeys, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -54,6 +54,7 @@ import { parseReadiness } from "./runners/readiness";
 import { diskOf, lastRunOf, situationOf } from "./situation.ts";
 import { automaticNote, isFacts, isFactsOutcome } from "./run-facts.ts";
 import { parseOutcomeNote } from "./dispatch/prereview.ts";
+import { isReworkNote } from "./dispatch/rework.ts";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -71,6 +72,7 @@ import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { errorLine, RETRY_AFTER, retryableByRuntime } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
+import { buildNow, readEvents, type NowProject } from "./now.ts";
 
 export { Ledger };
 import { renderHow } from "./how.ts";
@@ -953,6 +955,35 @@ export async function changedSinceBase(env: Env, workspace: string, head: string
   }
 }
 
+// The files tracked at `head` in a workspace, which a declared test glob is
+// expanded against when an approval's test results are judged (t523). Null
+// when the commit or a tree cannot be read, or the tree is past the cap: the
+// approval then needs the full suite rather than a guess at the glob.
+const HEAD_FILES_MAX = 50_000;
+const hasTestGlob = (a: { map?: { tests: string[] }[] } | undefined) => !!a?.map?.some((e) => e.tests.some((t) => /[*?[]/.test(t)));
+export async function filesAtHead(env: Env, workspace: string, head: string): Promise<string[] | null> {
+  try {
+    using r = await env.REPOS.get(workspace);
+    const [tip] = await r.log({ ref: head, limit: 1 });
+    if (!tip || tip.hash !== head) return null;
+    const out: string[] = [];
+    const walk = async (tree: string, prefix: string): Promise<boolean> => {
+      const entries = await r.readTree(tree);
+      if (!entries) return false;
+      for (const e of entries) {
+        if (e.type === "tree") { if (!await walk(e.hash, `${prefix}${e.name}/`)) return false; }
+        else out.push(`${prefix}${e.name}`);
+        if (out.length > HEAD_FILES_MAX) return false;
+      }
+      return true;
+    };
+    return await walk(tip.treeHash, "") ? out : null;
+  } catch (err) {
+    console.error(errorLine(`files of ${workspace} at ${head}`, err));
+    return null;
+  }
+}
+
 // Enrich only a refused claim, so readable legacy branches offer concrete
 // scopes without recording a footprint or granting permission to edit them.
 export async function claimWithOverlapAdvice<T>(
@@ -1701,6 +1732,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
+  // The Now view (t525): every live task across the projects and what landed
+  // today. The developer reads it; an agent or runner token has no route to it
+  // (agentRoute, runnerRoute), and the check here refuses any other actor.
+  if (parts[0] === "now" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await nowViewOf(env, new Date()));
+  }
   // Usage, limits and balances. A runner reports one tool at a time under
   // its authenticated runner name, or with the developer token and the
   // runner named in X-Atelier-Runner. The developer reads every report, the
@@ -1842,9 +1880,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       catch { unreadable.push(p.name); return []; }
     }));
     const read = Date.now();
-    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // A runner's own held jobs lead, then the waiting work by dispatch age,
+    // a fix round (a task claimed before) ahead of never-built work (t539):
     // the claim a dead run left behind is settled before new work starts.
+    const fixRound = (item: object) => Number((item as { everClaimed?: boolean }).everClaimed === true);
     const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      fixRound(b.item) - fixRound(a.item) ||
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
@@ -2337,6 +2378,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     return json(await L.recordDeploy(actor, body), 201);
   }
+  // The notice of an automatic revert (t524): one revert.notice event per
+  // reverted merge, however often it is posted.
+  if (parts[2] === "revert-notices" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    return json(await L.recordRevertNotice(actor, body), 201);
+  }
   if (parts[2] === "post-merge" && parts.length === 4) {
     const item = parts[3];
     if (m === "GET") return json({ run: await L.postMergeRun(item) });
@@ -2741,65 +2788,80 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.detail(id));
     }
     case "dispatch": {
-      assertNotTerminal(await L.item(id));
-      // --overlap-ok alone on a waiting dispatch releases its hold and keeps
-      // everything else. An explicit snapshot is checked atomically even if
-      // a runner has since claimed it; an already-owned task is redispatched.
-      if (body.retain === true) {
-        requireOwner(env, actor);
-        const waiting = await L.item(id);
-        if (body.retainAt !== undefined || (waiting.state === "open" && !waiting.owner && waiting.dispatch)) {
-          // A builder given in the dispatch's place is checked against the
-          // pool's current standing, as a dispatch's own is below.
-          if (body.agent || body.model) await L.poolChanged(await index(env).models());
-          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }, await namedBuilderReasons(env, ref.key, body, actor)));
+      const dispatchRoute = async (): Promise<Response> => {
+        assertNotTerminal(await L.item(id));
+        // --overlap-ok alone on a waiting dispatch releases its hold and keeps
+        // everything else. An explicit snapshot is checked atomically even if
+        // a runner has since claimed it; an already-owned task is redispatched.
+        if (body.retain === true) {
+          requireOwner(env, actor);
+          const waiting = await L.item(id);
+          if (body.retainAt !== undefined || (waiting.state === "open" && !waiting.owner && waiting.dispatch)) {
+            // A builder given in the dispatch's place is checked against the
+            // pool's current standing, as a dispatch's own is below.
+            if (body.agent || body.model) await L.poolChanged(await index(env).models());
+            return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }, await namedBuilderReasons(env, ref.key, body, actor)));
+          }
+        }
+        // A live claim is not ended by a dispatch unless --release says so; refused
+        // first, before a builder is suggested for a task nobody may take (t391).
+        await L.refuseLiveHolder(id, body);
+        // atelier dispatch with no --agent names no builder (G17): the server
+        // picks none. It prints the candidates, each with its reliability line
+        // and any gate filter that refuses it, and refuses; the model names one.
+        // An overlap override of an existing dispatch keeps its builder, so it
+        // asks for nothing.
+        // Every new dispatch names both its agent and its model, whatever the
+        // client sent: a harness alone, a model alone or neither leaves the
+        // runner to choose, which is a pick the server does not make. An
+        // overlap override of a waiting dispatch that names both keeps it.
+        const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
+        const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
+        const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
+        if (!named && !keptNamed) {
+          requireOwner(env, actor);
+          const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
+          const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
+          const first = candidates.find((c) => !c.refusal);
+          const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
+          throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
+        }
+        // A merge-main dispatch names the main head its job merges. The owner
+        // names none after a landing conflicted, so the head is main's as the
+        // baseline holds it now (read as plan refresh reads it, t243): a newer
+        // head than the one the landing saw meets the same conflict, and an
+        // unreadable baseline is refused rather than guessed at.
+        if (body.job === "merge-main" && !body.head) {
+          const main = await mainHeadOf(env, L);
+          if (!main) throw new RuleError("bad_head", "main's head could not be read from the baseline to name the merge-main job's head; try again, or name it: atelier dispatch ID --job merge-main --head FULL_HASH", 503);
+          body.head = main;
+        }
+        // A held task is released as it is queued, so its holder's write token
+        // is revoked first, as for a release.
+        const oldToken = await L.tokenId(id);
+        if (body.agent && body.model) await L.poolChanged(await index(env).models());
+        const before = await L.checkDispatch(id, actor, body);
+        if (before.owner) await revoke(env, oldToken);
+        // What chose the builder is kept on the dispatch: the suggestion's
+        // reasons, or, for a builder the developer named, each build
+        // assignment bearing on the task skipped for it (gpt-6-astra's seventh
+        // review of t622, finding 2).
+        const why = await namedBuilderReasons(env, ref.key, body, actor);
+        return json(await L.dispatch(id, actor, body, oldToken, why));
+      };
+      // A runner's automatic redispatch of a rejected task to its builder
+      // (t521, its note is reworkNote's) that is refused records one notice,
+      // so a session decides who reworks it; the refusal still answers.
+      if (isReworkNote(body.note)) {
+        try { return await dispatchRoute(); }
+        catch (error) {
+          // A refusal crosses the ledger's RPC as its encoded message, or is thrown here as a RuleError.
+          const refusal = error instanceof RuleError ? error.detail : parseRuleError(error)?.detail;
+          if (refusal) await L.redispatchRefused(id, actor, refusal);
+          throw error;
         }
       }
-      // A live claim is not ended by a dispatch unless --release says so; refused
-      // first, before a builder is suggested for a task nobody may take (t391).
-      await L.refuseLiveHolder(id, body);
-      // atelier dispatch with no --agent names no builder (G17): the server
-      // picks none. It prints the candidates, each with its reliability line
-      // and any gate filter that refuses it, and refuses; the model names one.
-      // An overlap override of an existing dispatch keeps its builder, so it
-      // asks for nothing.
-      // Every new dispatch names both its agent and its model, whatever the
-      // client sent: a harness alone, a model alone or neither leaves the
-      // runner to choose, which is a pick the server does not make. An
-      // overlap override of a waiting dispatch that names both keeps it.
-      const kept = body.overlapOk === true ? waitingDispatch(await L.item(id)) : null;
-      const named = typeof body.agent === "string" && body.agent.trim() !== "" && typeof body.model === "string" && body.model.trim() !== "";
-      const keptNamed = !!kept && !!kept.agent && !!kept.model && body.agent === undefined && body.model === undefined;
-      if (!named && !keptNamed) {
-        requireOwner(env, actor);
-        const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
-        const candidates = builderCandidates({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
-        const first = candidates.find((c) => !c.refusal);
-        const partial = body.agent || body.model ? ` (it names ${body.agent ? `the agent ${body.agent}` : `the model ${body.model}`} alone, which leaves the runner to choose the rest)` : "";
-        throw new RuleError("builder_needed", candidatesText(`${id}'s dispatch names no builder${partial}`, candidates), 409, first ? `name one: atelier dispatch ${id} --agent ${first.actor.split("/")[0]} --model ${first.actor.slice(first.actor.indexOf("/") + 1)}, or another of the eligible` : `add a model with atelier models add, then atelier dispatch ${id} --agent H --model M`);
-      }
-      // A merge-main dispatch names the main head its job merges. The owner
-      // names none after a landing conflicted, so the head is main's as the
-      // baseline holds it now (read as plan refresh reads it, t243): a newer
-      // head than the one the landing saw meets the same conflict, and an
-      // unreadable baseline is refused rather than guessed at.
-      if (body.job === "merge-main" && !body.head) {
-        const main = await mainHeadOf(env, L);
-        if (!main) throw new RuleError("bad_head", "main's head could not be read from the baseline to name the merge-main job's head; try again, or name it: atelier dispatch ID --job merge-main --head FULL_HASH", 503);
-        body.head = main;
-      }
-      // A held task is released as it is queued, so its holder's write token
-      // is revoked first, as for a release.
-      const oldToken = await L.tokenId(id);
-      if (body.agent && body.model) await L.poolChanged(await index(env).models());
-      const before = await L.checkDispatch(id, actor, body);
-      if (before.owner) await revoke(env, oldToken);
-      // What chose the builder is kept on the dispatch: the suggestion's
-      // reasons, or, for a builder the developer named, each build
-      // assignment bearing on the task skipped for it (gpt-6-astra's seventh
-      // review of t622, finding 2).
-      const why = await namedBuilderReasons(env, ref.key, body, actor);
-      return json(await L.dispatch(id, actor, body, oldToken, why));
+      return await dispatchRoute();
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
@@ -2856,14 +2918,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         assertRevision(item, String(body.head ?? ""));
         if (item.workspace && await headOf(env, item.workspace) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
       }
+      // The head's files are read here, from the repository, only when the
+      // declared map has a glob to expand; never from the request.
+      const needsFiles = !!body.approve && item.state !== "merged" && !!item.workspace && hasTestGlob((await L.project()).policy.affectedTests);
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
+        ...(needsFiles ? { headFiles: await filesAtHead(env, item.workspace!, String(item.head)) } : {}),
         // The criteria binding is the reviewer's own, as given; never the item's.
         ...(body.criteria !== undefined ? { criteria: String(body.criteria) } : {}),
         ...(body.request !== undefined ? { request: Number(body.request) } : {}),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
         ...(body.verification !== undefined ? { verification: cleanVerification(body.verification) } : {}),
+        ...(body.tests !== undefined ? { tests: body.tests as never } : {}),
         // A pre-review verdict is judged against main's head as the baseline
         // holds it now, which only the Worker can read (t524).
         ...(isPrereviewRequest(Number(body.request)) ? { mainNow: await mainHeadOf(env, L) } : {}),
@@ -2889,6 +2956,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runner, and the brief carries it instead of the diff's text. The
       // reviewer reads the whole diff in the clone as ever (.scratch/, t244).
       const diffRef = await storedReviewDiff(env, L, claim, ref.key, actor, !!c.token);
+      // The tests an approval of this head must show passing, so the runner
+      // runs and reports them (t523). A post-merge audit is asked for none.
+      const affected = (await L.project()).policy.affectedTests;
+      const need = claim.item.state === "merged" ? null : requiredTests(affected, claim.need?.changedPaths, hasTestGlob(affected) && claim.item.workspace ? await filesAtHead(env, claim.item.workspace, claim.head) : null, (await L.project()).policy.checks);
+      const required = need ? { names: need.names, why: need.why, full: need.full, run: affected?.run ?? null, check: need.check ?? affected?.check ?? null } : undefined;
+      claim = { ...claim, ...(required ? { required } : {}) };
       // The review job clones the task read-only, so the claim also carries a
       // read grant, which reads both its branch (or, once landed, the branch
       // it landed on) and the branch it merges into (the plan's integration
@@ -2973,7 +3046,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-unparsable": {
       const head = String(body.head ?? "");
       if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "--head must be the full revision the review read", 400);
-      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token, body.request) });
+      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token, body.request, body.attempt) });
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or
@@ -4198,6 +4271,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.newItem(String(form.get("title") ?? ""), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner, brief.trim() ? { brief } : {});
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
     }
+    // The Revert link on the Now page: a task to revert the merged one, which
+    // records the merge commit as the CLI's revert does (Ledger.newItem).
+    if (verb === "revert") {
+      const made = await L.newItem("", [], owner, { revertOf: id });
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(made.id)}`, c.url).toString(), 303);
+    }
     // The Settings tab's permission for atelier mode fast, given as the task
     // page's override permission is: from the developer's own sign-in, with
     // the factor no agent holds (Astra's audit of 2026-10-13, finding 3).
@@ -4299,6 +4378,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "home" && parts.length === 1) return await homePage(c);
   if (parts[0] === "history") return await historyPage(c);
   if (parts[0] === "studio") return await studioPage(c);
+  if (parts[0] === "now" && parts.length === 1) return html(renderNow(await nowViewOf(env, new Date()), ownerName(env), live), 200, live.nonce);
   if (parts[0] === "flow") return await flowPage(c, live);
   if (parts[0] === "decisions") return await decisionsPage(c, live);
   if (parts[0] === "p" && parts.length >= 2) return await projectArea(c, parts, live, nonce);
@@ -4443,6 +4523,39 @@ async function floorViewsOf(env: Env, views: ProjectView[]): Promise<FloorView[]
     try { return { ...v, events: (await ledgerOf(env, v.project).events(undefined, 400)) as unknown as LedgerEvent[] }; }
     catch { v.unavailable = true; return null; }
   }))).filter((v): v is FloorView => v !== null);
+}
+
+// What the Now view reads of every project (t525): the tasks, the stage each
+// newest event recorded and since when, the owner's calls, the open review
+// requests, the landings, the runners' progress, the events and the deploys.
+// A project whose ledger cannot be read is named in `unread`, never counted as
+// empty.
+async function nowViewOf(env: Env, now: Date) {
+  const projects = await index(env).projects();
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  const unread: string[] = [];
+  const read = await Promise.all(projects.map(async (project): Promise<NowProject | null> => {
+    const L = ledgerOf(env, project);
+    try {
+      const { items, inbox } = await L.ownerRead(now.toISOString(), pool);
+      // Every event of the last 48 hours, page by page, so no merge of today falls outside a window.
+      const since = now.getTime() - 48 * 3_600_000;
+      const events = await readEvents((before) => L.events(undefined, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE, (last) => Date.parse(last.at) < since);
+      const recent = [...new Set(events.filter((e) => e.kind === "item.merged" && e.itemId && Date.parse(e.at) >= since).map((e) => e.itemId!))];
+      // The reviewer and the findings of a merged task may be older than the window: read its own record, page by page to its start.
+      const seen = new Set(events.map((e) => e.seq));
+      for (const id of recent) {
+        for (const e of await readEvents((before) => L.events(id, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE)) if (!seen.has(e.seq)) { seen.add(e.seq); events.push(e); }
+      }
+      const facts = await L.situationFacts(recent);
+      return {
+        name: project.name, title: titleOf(project), items: facts.items, stages: facts.stages,
+        owner: attentionFor(project.name, items, inbox, offers, now).owner, reviewRequests: facts.reviewRequests,
+        landings: facts.landings, progress: facts.progress ?? {}, events, deploys: await L.deploys(50),
+      };
+    } catch { unread.push(project.name); return null; }
+  }));
+  return { ...buildNow(read.filter((p): p is NowProject => p !== null), now), unread };
 }
 
 async function studioPage(c: Ctx): Promise<Response> {
@@ -4593,6 +4706,11 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
       }
     }
   }
+  // A merged task's Revert link (the Now page's, t525): the confirmation the
+  // form on it posts to /ui/NAME/tN/revert.
+  if (parts.length === 4 && parts[3] === "revert" && /^t[1-9]\d*$/.test(parts[2])) {
+    return html(renderRevert(await L.project(), await L.item(parts[2]), ownerName(env)));
+  }
   const res = await browse(env, c.url, ref, parts.slice(2));
   if (res) return res;
   if (parts.length === 3) return html(await taskPage(env, L, parts[2], undefined, live), 200, nonce);
@@ -4633,7 +4751,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects", "now"]);
 
 // A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
 // task 8; design section 4.4): what queue() did for a push event from
@@ -4915,7 +5033,7 @@ export default {
         // either way, so a guessed name learns nothing — a 404 for the rest
         // would say which names, anonymised or private, are real.
         const projectArea = parts[0] === "p" && parts.length >= 2;
-        const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
+        const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui", "now"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
         // Behind Access, a page the owner opens without a session starts one
         // and is served as signed in (t534). A form post is not a sign-in:

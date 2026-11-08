@@ -82,8 +82,10 @@ export default async function showCommand() {
   // requests nobody has claimed, with when each was asked (G6): facts the
   // model acts on by command, since the server files and re-points nothing.
   const notes = d.notes ?? [], unclaimed = d.openRequests ?? [], lapsed = d.lapsedRequests ?? [];
-  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
+  const reviewState = d.item ? reviewStateOf(d) : null;
+  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(d.item ? { reviewState } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
+  if (reviewState) blocks.push(reviewStateText(reviewState));
   blocks.push(...repairLines(d.repairs));
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   // The tasks it waits on (G3), each with its state: it is not offered,
@@ -110,6 +112,43 @@ export default async function showCommand() {
   if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [], d?.reviewClaims ?? []));
   if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));
   console.log(blocks.join("\n\n"));
+}
+
+// The review state at the task's current head (t531), read from the reviews,
+// claims and open requests the detail already holds: a standing rejection
+// (each reviewer's newest verdict at the head counts) outranks an approval,
+// then a claim, then an open request; none otherwise.
+export function reviewStateOf(d) {
+  const head = d.item?.head ?? null;
+  const at = (x) => Date.parse(x.at ?? x.claimedAt ?? x.openedAt ?? "") || 0;
+  const latest = new Map();
+  for (const r of [...(d.reviews ?? [])].filter((x) => !x.withdrawn && x.head === head).sort((a, b) => at(a) - at(b))) latest.set(r.by, r);
+  const standing = [...latest.values()].sort((a, b) => at(b) - at(a));
+  const verdict = standing.find((r) => !r.approve) ?? standing[0];
+  if (verdict) {
+    return {
+      state: verdict.approve ? "approved" : "rejected", head, by: verdict.by, at: verdict.at,
+      ...(verdict.note ? { note: verdict.note } : {}),
+      blocking: (verdict.findings ?? []).filter((f) => f.severity === "blocking"),
+    };
+  }
+  const claim = (d.reviewClaims ?? []).filter((c) => c.head === head).sort((a, b) => at(b) - at(a))[0];
+  if (claim) return { state: "claimed", head, by: claim.reviewer, at: claim.claimedAt, request: claim.request, blocking: [] };
+  const open = (d.openRequests ?? []).filter((r) => r.head === head).sort((a, b) => at(b) - at(a))[0];
+  if (open) return { state: "requested", head, by: open.reviewer, at: open.openedAt, request: open.request, blocking: [] };
+  return { state: "none", head, blocking: [] };
+}
+
+export function reviewStateText(s) {
+  const when = s.at ? `, ${String(s.at).slice(0, 16).replace("T", " ")} UTC` : "";
+  const h = s.head ? ` at ${String(s.head).slice(0, 8)}` : "";
+  if (s.state === "none") return `Review: none${h}`;
+  const verb = { approved: "by", rejected: "by", claimed: "by", requested: "of" }[s.state];
+  return [
+    `Review: ${s.state}${h}, ${verb} ${flat(s.by)}${when}`,
+    ...(s.note ? [`  Note: ${flat(s.note)}`] : []),
+    ...s.blocking.map((f) => `  blocking ${f.file ? `${flat(f.file)}${f.line === null || f.line === undefined ? "" : `:${f.line}`} ` : ""}${flat(f.text)}`),
+  ].join("\n");
 }
 
 // The task's events that name an acting model (G18), oldest first: who the

@@ -62,6 +62,7 @@ const EXEMPT = {
 // they raise. Any other such site fails the scan.
 const COMPUTED = {
   "src/index.ts": { code: ["override_unconfirmed", "fast_mode_unconfirmed"], "rule.code": ["fast_mode_unconfirmed", "override_unconfirmed"], AREAS_REMOVED: ["areas_removed"] },
+  "src/ledger.ts": { "proof.code": ["tests_missing", "tests_failed", "tests_not_run", "tests_uncovered"] },
   "src/rules.ts": { AREAS_REMOVED: ["areas_removed"] },
 };
 
@@ -164,9 +165,10 @@ test("the counts: strict codes, codes with a next, exempt codes", () => {
   // private_project.
   assert.equal(STRICT.length, 78);
   // t518 removed the tier review's refusals (bad_review_tier, not_tier, tier_refused).
-  assert.equal(withNext, 229);
+  // t523 adds five guided refusals: four review-proof codes and bad_tests.
+  assert.equal(withNext, 234);
   assert.equal(exempt.size, 124);
-  assert.equal(sites.size, 353);
+  assert.equal(sites.size, 358);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });

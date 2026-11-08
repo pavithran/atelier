@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { promisify } from "node:util";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-proof.ts";
 import { criteriaOf } from "../src/criteria.ts";
 
 const run = promisify(execFile);

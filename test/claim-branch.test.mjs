@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-proof.ts";
 import { insecureServer } from "../cli/atelier.mjs";
 import { gitOrigin } from "../src/runtime/server.mjs";
 import { stageProseStandard } from "../cli/prose-stage.mjs";

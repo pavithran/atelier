@@ -68,7 +68,11 @@ test("the Worker reads the same declarations without reaching any CLI module", (
     const file = queue.shift();
     if (seen.has(file)) continue;
     seen.add(file);
-    for (const [, spec] of readFileSync(join(root, file), "utf8").matchAll(/^(?:import|export)[^"';]*?from\s+["'](\.[^"']+)["']/gm)) queue.push(join(dirname(file), spec));
+    for (const [, spec] of readFileSync(join(root, file), "utf8").matchAll(/^(?:import|export)[^"';]*?from\s+["'](\.[^"']+)["']/gm)) {
+      const target = join(dirname(file), spec);
+      // The Worker also resolves extensionless TypeScript imports.
+      queue.push(existsSync(join(root, target)) ? target : `${target}.ts`);
+    }
   }
   assert.ok(declared.every((n) => seen.has(`${SPECS}/${n}.ts`)), "src/usage.ts does not reach every command module");
   assert.deepEqual([...seen].filter((f) => !f.startsWith("src/")), [], "src/usage.ts reaches modules outside src/");

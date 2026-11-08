@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { contextOf, reviewBrief } from "../src/review/brief.ts";
-import { rejectionRequest, reviewNeeded, type ReviewRequired } from "../src/review/needed.ts";
+import { reviewNeeded, type ReviewRequired } from "../src/review/needed.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { Evidence, Item, ProjectPolicy } from "../src/rules.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -94,15 +94,6 @@ test("a brief without context is the brief it was before the field", () => {
   assert.ok(!bare.includes("Context from the orchestrator"));
 });
 
-test("a rejection's message names the reviewer, the head and the note, on the ordinary notification", () => {
-  const base = new Request("https://ntfy.sh/topic", { method: "POST", headers: { Title: "t", Click: "https://x.test/p/a/t21" }, body: "Accept t21" });
-  const r = rejectionRequest(base, { by: "codex/gpt-6-astra", head: H2, note: "two\nlines  of note" });
-  assert.equal(r.method, "POST");
-  assert.equal(r.url, base.url);
-  assert.equal(r.headers.get("Click"), "https://x.test/p/a/t21");
-  return r.text().then((body) => assert.equal(body, `codex/gpt-6-astra rejected bbbbbbbb: two lines of note`));
-});
-
 test("ledger context replacements survive a restart and reach both review claims", async (t) => {
   const { ledger, db, task, request, restore } = setup(t);
   assert.throws(() => ledger.setContext(task.id, GLM, "unauthorized"), /not_project_owner/);
@@ -137,12 +128,13 @@ test("unset and cleared ledger context produce no brief section", async (t) => {
   }
 });
 
-for (const merged of [false, true]) test(`recording a ${merged ? "post-merge" : "submitted"} rejection delivers immediately`, async (t) => {
+for (const merged of [false, true]) test(`recording a ${merged ? "post-merge" : "submitted"} rejection sends nothing to ntfy`, async (t) => {
   const { ledger, db, task, request, pending } = setup(t);
   const sent: Request[] = [];
   t.mock.method(globalThis, "fetch", async (req: Request) => { sent.push(req); return new Response(null); });
   ledger.setNotificationOrigin(task.id, "https://atelier.test");
-  // A previous notice at the same head must not silence a rejection.
+  // t521, per PAVI ("drop ntfy"): a rejection posts no message of its own;
+  // a session is woken by ledger notices instead.
   db.prepare("INSERT INTO notifications (item_id, head) VALUES (?, ?)").run(task.id, H2);
   if (merged) {
     db.prepare("UPDATE items SET state = 'merged', accepted_head = ? WHERE id = ?").run(H2, task.id);
@@ -153,8 +145,6 @@ for (const merged of [false, true]) test(`recording a ${merged ? "post-merge" : 
   request(reviewer);
   const claim = await ledger.claimReview(task.id, reviewer, { runner: "reviewer", kind: "home" });
   ledger.addReview({ itemId: task.id, by: reviewer, head: H2, criteria: claim.criteria, request: claim.request, approve: false, note: "Fix the notice", at: T });
-  assert.equal(sent.length, 1, "delivery starts in addReview, before any poll or alarm");
-  assert.equal(sent[0].url, "https://ntfy.sh/test-topic");
-  assert.equal(await sent[0].text(), "codex/gpt-6-astra rejected bbbbbbbb: Fix the notice");
+  assert.equal(sent.length, 0, "a rejection makes no outbound request");
   await Promise.all(pending);
 });

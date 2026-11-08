@@ -1,4 +1,6 @@
+import { cleanTestRuns, testEvidenceVerdict } from "./review/verify.ts";
 import { receiveRunnerLog, type RunnerLog } from "./runner-log.ts";
+import { assertLandingChecks } from "./landing-checks.ts";
 import { INDEX_KEYS, INDEX_TABLES, indexDump, validateIndex, canonical, safeIndex, type IndexDump, type IndexRow, type IndexTable } from "./index-transfer.ts";
 import { landingOf } from "./diff.ts";
 import { decideLandQueue, landerLive, type LandQueued, type LandQueueVerdict } from "./stage-tick.ts";
@@ -8,7 +10,7 @@ import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
 import { dayInZone } from "./time.ts";
-import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
+import { fitRevertBrief, parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
@@ -27,7 +29,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingLive, overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX, ACCEPT_COUNT, BRIEF_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, itemFields, shortTitle, titleLine, TITLE_MAX, ACCEPT_COUNT, BRIEF_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead, countingReviews, independentApproval,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -52,6 +54,7 @@ import { ago } from "./floor.ts";
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { holdsCore } from "./dispatch/core-hold";
 import { allSkipped } from "./landing-verdict";
 import { automaticNote, cleanRunFacts, runFactsText, withoutRunText, type RunFacts } from "./run-facts.ts";
 import { nextProgress, parseProgress, type Blocker, type ProgressRecord, type SituationFacts } from "./situation.ts";
@@ -83,6 +86,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
+import { disputedFinding, isDispute } from "./dispatch/rework.ts";
 import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
 import { assertPrivateModel, privateRefusal } from "./dispatch/private.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
@@ -92,7 +96,7 @@ import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
 import { dropTasks, rememberedTask, type ProviderPause } from "./runners/memory.ts";
 import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
-import { missingReviews, rejectionRequest, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { missingReviews, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import { candidatesText, ranked, summarize, type Candidate, type ReviewerRecords, type SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
@@ -196,6 +200,12 @@ export interface ReviewClaim {
   // section (t490).
   evidence: ReviewEvidence;
   tier: boolean;          // the claimed request is a tier review (removed in t518)
+  // The tests an approval of this head must show passing (requiredTests in
+  // src/review/verify.ts), which the claim route sets from the project's
+  // declaration and the measured paths; `run` is the declared command that
+  // runs selected tests and `check` the full-suite check. Absent on a
+  // post-merge audit, which carries no such proof.
+  required?: { names: string[] | null; why: string; full: boolean; run: string | null; check: string | null };
   // The review's diff, kept in R2 by reference when the change is too large
   // for a brief to carry (t284): the claim route stores it and names it here,
   // and the brief says where the whole diff is instead of holding it. Null
@@ -1031,6 +1041,7 @@ export class Ledger extends DurableObject<Env> {
         item_id TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY (item_id, head)
       );
       CREATE TABLE IF NOT EXISTS notification_origins (item_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT, at TEXT NOT NULL,
         actor TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
@@ -1128,6 +1139,7 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("non_goals")) this.sql.exec(`ALTER TABLE items ADD COLUMN non_goals TEXT`);
     if (!columns.includes("stop_when")) this.sql.exec(`ALTER TABLE items ADD COLUMN stop_when TEXT`);
     if (!columns.includes("next_gate")) this.sql.exec(`ALTER TABLE items ADD COLUMN next_gate TEXT`);
+    if (!columns.includes("design")) this.sql.exec(`ALTER TABLE items ADD COLUMN design TEXT`);
     if (!columns.includes("blocked")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked TEXT`);
     // Plans (docs/orchestrator.md, section 1): an item's kind (null for an
     // ordinary task, plan or part), a part's plan item, its key in the
@@ -2278,6 +2290,14 @@ export class Ledger extends DurableObject<Env> {
   // read makes the read incomplete, and an incomplete read queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     this.dispatchApprovedCriteria();
+    // The pool a revert's fix task needs for its criteria review, read only
+    // while a recovery is unfinished; null when the index could not be read.
+    let pool: ModelEntry[] | null = null;
+    if (this.sql.exec(`SELECT 1 FROM meta WHERE key LIKE 'revert-recovery:%' AND json_extract(value, '$.state') != 'complete' LIMIT 1`).toArray().length) {
+      try { pool = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).models() as unknown as ModelEntry[]; }
+      catch { /* the review is asked on a later tick */ }
+    }
+    this.resumeRevertRecoveries(pool);
     let offers: SeenOffer[] | null = null;
     try {
       offers = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
@@ -2925,7 +2945,7 @@ export class Ledger extends DurableObject<Env> {
       if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409, "edit the plan's scope instead");
       set.scope = JSON.stringify(scope);
     }
-    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context", 400, "give at least one field to change");
+    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate, --design or --context", 400, "give at least one field to change");
     if (context !== undefined) assertLength(context, NOTE_MAX, "the task's context");
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
@@ -3181,11 +3201,12 @@ export class Ledger extends DurableObject<Env> {
       if (!r.findings?.length) continue;
       rejections.set(row.item_id as string, [...(rejections.get(row.item_id as string) ?? []), r]);
     }
+    const claimed = new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string));
     return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray()
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -4018,12 +4039,91 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
+  // Recoveries of automatic reverts (t524) still waiting on their fix task.
+  // A notice sent after the fix task could not be filed leaves its record at
+  // "filing", holding the task to file: the tick files it (fixOf the reverted
+  // task, the failing output in its brief), stores its id in the record and
+  // moves it to "recovering" in one transaction, so the record's fix id keeps
+  // a later tick from filing a second. A filing refused again leaves the
+  // record at "filing" for the next tick. A recovery is "recovering" until the
+  // fix task is dispatched to the reverted task's builder, or was handed on
+  // some other way (dispatched, blocked, closed). The tick asks the fix's
+  // criteria review where one is wanted (from `pool`, the stage tick's read
+  // of the index), dispatches it once its criteria are approved, with no
+  // executor run and no standing decision, and marks the recovery complete
+  // only after that. It lives in its own record, so the
+  // landing job's removal when a failed post-merge run is reported does not
+  // touch it.
+  private resumeRevertRecoveries(pool: readonly ModelEntry[] | null): void {
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'revert-recovery:%'`).toArray()) {
+      let recovery = JSON.parse(row.value as string) as RevertRecovery;
+      if (recovery.state === "complete") continue;
+      try {
+        const save = (next: RevertRecovery) => this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, row.key, JSON.stringify(next));
+        if (recovery.state === "filing" || recovery.fix === null) {
+          const filing = recovery.filing ?? revertFiling(recovery.item, "");
+          recovery = this.ctx.storage.transactionSync(() => {
+            const made = this.newItem(filing.title, [], this.owner, { fixOf: recovery.item, brief: filing.brief, accept: filing.accept });
+            const next: RevertRecovery = { ...recovery, fix: made.id, state: "recovering", at: new Date().toISOString() };
+            save(next);
+            return next;
+          });
+        }
+        const done = () => save({ ...recovery, state: "complete", at: new Date().toISOString() });
+        const fix = this.item(recovery.fix!);
+        const dispatchedBefore = !!this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.dispatched' LIMIT 1`, fix.id).toArray().length;
+        if (fix.state !== "open" || fix.owner || fix.dispatch || dispatchedBefore) { done(); continue; }
+        const status = this.criteriaReviewStatus(fix.id);
+        if (this.criteriaGate() && !status.approved) {
+          if (status.need === "review" && pool) {
+            // The server picks no reviewer (G17); as the executor does, the
+            // tick names the first eligible candidate the refusal lists.
+            try { this.requestCriteriaReview(fix.id, this.owner, null, pool); }
+            catch (error) {
+              const first = error instanceof RuleError && error.code === "reviewer_needed" ? /^name one: atelier criteria-review \S+ --reviewer (\S+?),/.exec(error.next ?? "")?.[1] : null;
+              if (!first) throw error;
+              this.requestCriteriaReview(fix.id, this.owner, first, pool);
+            }
+          }
+          continue;
+        }
+        const [agent, ...model] = String(this.item(recovery.item).owner ?? "").split("/");
+        if (!agent || !model.length) continue;
+        this.ctx.storage.transactionSync(() => {
+          this.dispatch(fix.id, this.owner, { to: "home", agent, model: model.join("/") }, undefined, `Fix of ${recovery.item}, reverted automatically; its criteria are approved.`);
+          done();
+        });
+      } catch (error) {
+        // A refused filing, a policy or model refusal, or no reviewer that
+        // qualifies (which atelier status lists as a deadlock) keeps the
+        // recovery waiting for the next tick.
+        if (!(error instanceof RuleError)) throw error;
+      }
+    }
+  }
+
+  // The items that could hold a core file: every one claimed at least once
+  // and not merged, abandoned or integrated (holdsCore), and the item a
+  // landing lease names. In id order, as items() lists them.
+  private coreHolders(leased: string): Item[] {
+    const rows = this.sql.exec(`SELECT * FROM items WHERE id = ? OR (state NOT IN ('merged', 'abandoned', 'integrated') AND (state = 'claimed' OR id IN (SELECT item_id FROM events WHERE kind = 'item.claimed'))) ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, leased).toArray();
+    return this.withEverClaimed(rows.map(toItem));
+  }
+
+  private withEverClaimed(items: Item[]): Item[] {
+    const claimed = new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string));
+    return items.map((i) => ({ ...i, everClaimed: claimed.has(i.id) }));
+  }
+
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
-    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
+    // A task claimed before (a fix round) comes ahead of one never built,
+    // oldest dispatch first within each group (t539).
+    const built = rows.length ? new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string)) : new Set<string>();
+    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id) })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
-    const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
-    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)) : [...open, ...live];
+    const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
+    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
     const previous: Record<string, { since: string; expires?: number }> = saved ? JSON.parse(saved.value as string) : {};
@@ -4039,7 +4139,7 @@ export class Ledger extends DurableObject<Env> {
       if (!blockers.length) return { ...i, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
       const old = previous[i.id];
       const since = old && (old.expires === undefined || old.expires > now) ? old.since : new Date(now).toISOString();
-      const expires = blockers.every((b) => b.state !== "claimed") && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
+      const expires = blockers.every((b) => !live.some((l) => l.id === b.id && holdsCore(l))) && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
       current[i.id] = { since, ...(expires === undefined ? {} : { expires }) };
       const elapsedMs = Math.max(0, now - Date.parse(since));
       const held: CoreHold = { ...blockers[0], blockers, since, elapsedMs, warning: elapsedMs >= CORE_HOLD_WARNING_MS, chains: blockerChains(i.id, graph), ...(claimRefusal ? { claimRefusal } : {}), ...gone };
@@ -4702,21 +4802,6 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  // A rejection tells the owner when it is recorded. notify() speaks once per
-  // head of a submission, so a rejection at a head already notified would be
-  // silent there; this sends its own message through the same delivery.
-  private notifyRejection(r: Review, origin?: string): void {
-    try {
-      if (origin) this.setNotificationOrigin(r.itemId, origin);
-      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, r.itemId).toArray()[0];
-      if (!topic || !saved) return;
-      this.deliver(rejectionRequest(notificationRequest(topic, saved.origin as string, this.project().name, this.detail(r.itemId)), r));
-    } catch {
-      console.error("Atelier notification could not be scheduled");
-    }
-  }
-
   // Delivery runs in the background: a failure is logged without the
   // response body or the topic, and nothing is retried. It holds the
   // restart gate, so a restart after a deploy waits for it.
@@ -4732,6 +4817,18 @@ export class Ledger extends DurableObject<Env> {
     })();
     const gate = GATES.get(this);
     this.ctx.waitUntil(gate ? gate.hold(work) : work);
+  }
+
+  // A notice that wakes a session (t521): a builder's dispute or a second
+  // rejected round, recorded as one event in the transaction that records the
+  // dispute or the rejection. The key's row in `notices` is what keeps one
+  // dispute or one round from recording it twice: the insert is ignored when
+  // the key is there, so no read comes before the write. atelier-pulse wakes a
+  // session from the event; delivery to the developer's devices is not here
+  // (PAVI, 2026-11-07: "drop ntfy").
+  private recordNotice(key: string, itemId: string, actor: string, kind: "item.dispute_notice" | "item.second_rejection_notice" | "item.review_unparsable_notice" | "item.redispatch_refused_notice", data: Record<string, unknown>, at: string): void {
+    if (!this.sql.exec(`INSERT OR IGNORE INTO notices (key) VALUES (?) RETURNING key`, key).toArray().length) return;
+    this.log(itemId, actor, kind, data, at);
   }
 
   addEvidence(e: Evidence, origin?: string, proved = false): void {
@@ -4766,7 +4863,7 @@ export class Ledger extends DurableObject<Env> {
   // form on the task page, which only the signed-in owner reaches; "api" is
   // the owner token, as the orchestrator and the CLI use it. The reliability
   // record (src/models/reliability.ts) counts the two apart.
-  addReview(r: Review & { mainNow?: string | null }, origin?: string, proved = false, via?: "page" | "api", offers?: readonly SeenOffer[]): void {
+  addReview(r: Review & { mainNow?: string | null; headFiles?: string[] | null }, origin?: string, proved = false, via?: "page" | "api", offers?: readonly SeenOffer[]): void {
     this.keepOffers(this.ownOffers(offers));
     // A verdict under a pre-review's number is pre-review evidence (t524),
     // recorded apart: it never reaches the reviews the gate reads.
@@ -4862,7 +4959,26 @@ export class Ledger extends DurableObject<Env> {
     const fastReceiptOf = item.state === "merged" && this.mergedFast(item.id);
     const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
     r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
-    this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?)`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0);
+    // An approval carries proof that the tests covering the change ran and
+    // passed at this head (t523). The covering tests come from the project's
+    // declaration and the change's measured paths, never from the request.
+    // The owner's own verdict and a post-merge audit are not asked for it.
+    // The head's files come from the route's own read of the repository and
+    // are not kept with the review.
+    const { headFiles, ...kept } = r;
+    r = kept;
+    if (r.tests !== undefined) r = { ...r, tests: cleanTestRuns(r.tests) };
+    if (r.approve && item.state !== "merged" && !sameActor(r.by, this.owner)) {
+      const proof = testEvidenceVerdict({ approve: true, head: r.head, runs: r.tests ?? [], affected: policy.affectedTests, changed: evidenceAt(policy, this.evidenceFor(item.id), item.head).changedPaths, files: headFiles, checks: policy.checks });
+      if (!proof.ok && proof.wait) {
+        // Tests that could not run are recorded as a fact and the task waits:
+        // no approval, no rejection, and the claim stands until it lapses.
+        this.log(r.itemId, r.by, "review.tests_unrun", { head: r.head, tests: proof.tests, ...(r.request !== undefined ? { request: r.request } : {}), note: r.note }, at, proved);
+        return;
+      }
+      if (!proof.ok) throw new RuleError(proof.code, proof.message, 409, `run the tests that cover the change at ${r.head.slice(0, 8)}, then atelier review ${r.itemId} --approve --tests JSON; if they cannot run, the task waits`);
+    }
+    const reviewId =this.sql.exec(`INSERT INTO reviews (item_id, json, head, approve) VALUES (?, ?, ?, ?) RETURNING id`, r.itemId, JSON.stringify(r), r.head ?? null, r.approve ? 1 : 0).one().id as number;
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, role: this.reviewRoleOf(item), ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
@@ -4903,8 +5019,28 @@ export class Ledger extends DurableObject<Env> {
       if (!fastReceiptOf && (r.findings ?? []).some((f) => f.severity === "blocking")) this.log(item.id, ORCHESTRATOR, "item.defect", { head: item.acceptedHead, mergeCommit: r.head, note: r.note, request: r.request }, at);
     }
     this.notify(r.itemId, origin);
-    if (!r.approve) this.notifyRejection(r, origin);
+    if (!r.approve) this.noticeSecondRejection(item, r, reviewId, at);
     this.afterPlanChange(r.itemId);
+  }
+
+  // The automatic redispatch of a rejected task to its builder (t521) was
+  // refused, so a session decides who reworks it: one notice for the head,
+  // with the refusal's reason. The refusal itself writes nothing.
+  redispatchRefused(id: string, actor: string, reason: string): void {
+    const item = this.item(id);
+    this.recordNotice(`redispatch-refused:${id}:${item.head ?? "none"}`, id, actor, "item.redispatch_refused_notice", { head: item.head, reason: reason.slice(0, NOTE_MAX) }, new Date().toISOString());
+  }
+
+  // A task's second rejected round wakes a session through one notice and
+  // dispatches nothing (t521); the runner sends the first back to its builder.
+  // The notice is keyed by the round's head, so a second reviewer rejecting
+  // the same head records none.
+  private noticeSecondRejection(item: Item, r: Review, reviewId: number, at: string): void {
+    if (r.postMerge || r.tier || r.by === this.owner || item.state === "merged" || item.kind === "part" || item.kind === "plan") return;
+    const policy = this.project().policy;
+    const rounds = rejectedRounds(this.reviewsFor(item.id).filter((rv) => reviewAuthorized(rv, policy, this.owner)), this.owner);
+    if (rounds.length !== 2 || rounds[1].head !== r.head) return;
+    this.recordNotice(`second-rejection:${item.id}:${r.head}`, item.id, ORCHESTRATOR, "item.second_rejection_notice", { head: r.head, review: reviewId, by: r.by }, at);
   }
 
   // After the REVIEW_ROUND_CAP-th rejected round a task outside a plan is
@@ -5025,6 +5161,13 @@ export class Ledger extends DurableObject<Env> {
     const record: Block = { reason: text, by: actor, at, from: item.state, ...(day ? { until: day } : {}), ...said };
     this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
     this.log(id, actor, "item.blocked", { reason: text, from: item.state, ...(day ? { until: day } : {}), ...(direction ? { confirmed: "direction", ...said } : {}) }, at, proved);
+    // The task's builder disputing a finding (t521) wakes a session through
+    // one notice, the task staying blocked and nothing dispatched. The notice
+    // is keyed by the block's own event, so one dispute records one.
+    if (isDispute(text) && actor === item.owner && actor !== this.owner) {
+      const block = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'item.blocked'`, id).one().seq as number;
+      this.recordNotice(`dispute:${id}:${block}`, id, actor, "item.dispute_notice", { head: item.head, finding: disputedFinding(text), reason: text, block }, at);
+    }
     return this.item(id);
   }
 
@@ -5500,6 +5643,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409, `run atelier show ${id}, review it again, then atelier merge ${id}`);
     }
+    assertLandingChecks(id, this.project().policy, this.evidenceFor(id), head);
     // A task accepted before a blocker was added keeps its acceptance, but
     // no merge of it begins until every blocker is merged (G3).
     this.assertBlockersMerged(item, "merged");
@@ -5971,13 +6115,66 @@ export class Ledger extends DurableObject<Env> {
   // failed: the head, who and the result, as a project event (ship.recorded)
   // that the events read and the newest of which show prints. The same run
   // recorded again (a retried request) is recorded once.
+  // A final failure (deploy on landing failed twice) also records one
+  // notice, deploy.failed_notice, in the same transaction as its ship
+  // record: the task merged at that head when there is one, the ship id,
+  // head, step and reason. atelier-pulse wakes the session from it; device
+  // delivery is a separate task (PAVI, 2026-11-07: "drop ntfy"). The
+  // deploy_notices table's primary key on the ship id is what keeps one ship
+  // to one notice, so a repeated or concurrent record adds none.
   recordDeploy(actor: string, body: Record<string, unknown>): DeployRecord {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ships", 403, "only the developer can: atelier ship");
     const record = deployInput(body, actor, new Date().toISOString());
-    const had = this.deploys(50).find((d) => d.ship === record.ship);
-    if (had) return had;
-    this.log(null, actor, "ship.recorded", { ...record }, record.at);
-    return record;
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS deploy_notices (ship TEXT PRIMARY KEY, at TEXT NOT NULL)`);
+    return this.ctx.storage.transactionSync(() => {
+      const had = this.deploys(50).find((d) => d.ship === record.ship);
+      if (!had) this.log(null, actor, "ship.recorded", { ...record }, record.at);
+      if (record.result === "failed" && record.final && this.sql.exec(`INSERT OR IGNORE INTO deploy_notices (ship, at) VALUES (?, ?)`, record.ship, record.at).rowsWritten > 0) {
+        const task = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.merged' AND item_id IS NOT NULL AND json_extract(data, '$.mergeCommit') = ? ORDER BY seq DESC LIMIT 1`, record.head).toArray()[0]?.item_id as string | undefined;
+        this.log(task ?? null, "atelier", "deploy.failed_notice", { task: task ?? null, ship: record.ship, head: record.head, step: record.step ?? null, reason: record.note ?? "the deploy failed twice" }, record.at);
+      }
+      return had ?? record;
+    });
+  }
+
+  // The one notice of an automatic revert (t524): a revert.notice event on the
+  // reverted task, naming the merge, the revert, the fix task and the failure.
+  // PAVI dropped ntfy for it ("drop ntfy"); delivery to devices is a separate
+  // task, and sessions read the event from the ledger. The revert_notices
+  // table's key on the merge makes the store refuse a second notice for the
+  // same reverted merge, so a resume or a repeat records nothing more.
+  // In the same transaction the notice writes the merge's recovery record:
+  // "recovering" with the fix task it names, or, when the filing failed and it
+  // names none, "filing" with the task to file (body.filing), which the stage
+  // tick files. The record's fix id is the guard against a second fix task: a
+  // record that has one keeps it, a "filing" record takes the first fix a
+  // notice names, and the answer gives the record's fix id so the executor
+  // adopts the tick's fix rather than filing its own.
+  recordRevertNotice(actor: string, body: Record<string, unknown>): { recorded: boolean; merge: string; fix: string | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records an automatic revert", 403, "the post-merge executor records it with the developer token");
+    const item = String(body.item ?? ""), merge = String(body.merge ?? ""), revert = String(body.revert ?? "");
+    const fix = body.fix === undefined || body.fix === null ? null : String(body.fix);
+    const kind = body.kind === "gate" ? "gate" : body.kind === "suite" ? "suite" : null;
+    if (!kind) throw new RuleError("bad_request", "kind is suite or gate", 400);
+    if (!/^[a-f0-9]{40,64}$/.test(merge) || !/^[a-f0-9]{40,64}$/.test(revert)) throw new RuleError("bad_request", "merge and revert are full commit hashes", 400);
+    if (fix !== null) this.item(fix);
+    this.item(item);
+    const failure = Array.from(String(body.failure ?? "")).slice(0, 1000).join("");
+    const filing = revertFilingOf(body.filing, item) ?? revertFiling(item, failure);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS revert_notices (merge TEXT PRIMARY KEY, at TEXT NOT NULL)`);
+    const at = new Date().toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      const key = `revert-recovery:${merge}`;
+      const saved = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).toArray()[0];
+      let recovery = saved ? JSON.parse(saved.value as string) as RevertRecovery : null;
+      if (!recovery || (recovery.fix === null && fix !== null)) {
+        recovery = fix !== null ? { item, merge, fix, state: "recovering", at } : { item, merge, fix: null, state: "filing", filing, at };
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, key, JSON.stringify(recovery));
+      }
+      if (this.sql.exec(`INSERT OR IGNORE INTO revert_notices (merge, at) VALUES (?, ?)`, merge, at).rowsWritten === 0) return { recorded: false, merge, fix: recovery.fix };
+      this.log(item, actor, "revert.notice", { item, merge, revert, fix, kind, failure }, at);
+      return { recorded: true, merge, fix: recovery.fix };
+    });
   }
 
   lastDeploy(): DeployRecord | null {
@@ -7899,7 +8096,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; latestVerdict?: "approve" | "reject" | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -7932,7 +8129,10 @@ export class Ledger extends DurableObject<Env> {
       // runner does not read changes nothing for it.
       // The project's check limit (G7), which the runner's brief gives the
       // builder as its suite's budget, counted from the held test slot.
-      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
+      // The latest review's verdict at this head, which job does not say: a
+      // rejection a later approval superseded still makes job "rework" (t548).
+      const latest = this.reviewsFor(id).filter((r) => r.head === item.head).at(-1) ?? null;
+      return { job: sections.length ? "rework" : "build", latestVerdict: latest ? (latest.approve ? "approve" : "reject") : null, text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
     }
     assertOwner(item, actor);
     const project = this.project();
@@ -9832,7 +10032,7 @@ export class Ledger extends DurableObject<Env> {
   // four replies this way on t372). A claim no longer held, because it lapsed
   // or was withdrawn while the harness ran, releases nothing, and the reply is
   // kept anyway. Returns whether a request was released.
-  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false, request?: number): { released: boolean } {
+  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false, request?: number, attempt?: unknown): { released: boolean } {
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
@@ -9848,6 +10048,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at, ...(request === undefined ? {} : { request }) } satisfies UnparsableReply));
     this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
+    // The second unreadable reply at a head is a failure the pipeline cannot
+    // retry, so it wakes a session through one notice (t521, criterion 5).
+    // The runner asks the reviewer twice in one job and keeps only the
+    // second reply, saying so with attempt 2; a reply kept by hand counts
+    // the replies already kept at the head.
+    const second = attempt === 2 || this.sql.exec(`SELECT COUNT(*) AS n FROM unparsable WHERE item_id = ? AND json_extract(json, '$.head') = ?`, itemId, head).one().n as number >= 2;
+    if (second) this.recordNotice(`unparsable:${itemId}:${head}`, itemId, actor, "item.review_unparsable_notice", { head, by: actor, note }, at);
     // Keeping an unusable reply is harmless; releasing a successor is not.
     this.expireReviewClaims();
     if (request === undefined) return { released: false };
@@ -11092,6 +11299,8 @@ export class Ledger extends DurableObject<Env> {
       // merge is recorded before the journal is cleared and the run executes,
       // and a landing killed between them resumes from here. A failed run
       // was reported by the landing that ran it, so it is not offered again.
+      // (A revert's pending recovery is kept apart, as revert-recovery, and is
+      // not dropped here: the stage tick finishes it.)
       const run = item.state === "merged" ? this.postMergeRun(item.id) : null;
       if (item.state === "abandoned" || (item.state === "merged" && (!run || run.state === "complete" || run.state === "failed"))) { this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id); continue; }
       // A blocked task is never landed, and a landing that failed at the
@@ -12048,7 +12257,8 @@ function briefFingerprint(text: string): string {
 // the holding task and the core file both scopes reach, and when the task is
 // offered again.
 function heldClaimText(id: string, held: CoreHold): string {
-  return `${id} is held: the core files hold it: it ${holdText(held)}. The claim it waits on is live, its runner polling, so ${id} is not offered while it holds; the queue offers it again once the hold clears`;
+  const stage = (held.blockers ?? [held]).every((b) => b.state === "claimed") ? "The claim it waits on is live, its runner polling" : "The task it waits on is neither merged nor abandoned";
+  return `${id} is held: the core files hold it: it ${holdText(held)}. ${stage}, so ${id} is not offered while it holds; the queue offers it again once the hold clears`;
 }
 
 function claimRole(item: Item): ModelRole | null {
@@ -12081,6 +12291,7 @@ function toItem(r: Row): Item {
     nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
     stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
     nextGate: (r.next_gate as string | null) ?? null,
+    design: (r.design as string | null) ?? null,
     brief: (r.brief as string | null) ?? null,
     accept: r.accept ? (JSON.parse(r.accept as string) as string[]) : [],
     // Only a blocked item carries the record; unblocking and abandoning clear it.
@@ -12111,7 +12322,39 @@ function fieldColumns(fields: ItemFields): Record<string, string | null> {
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
+  if (fields.design !== undefined) set.design = fields.design;
   if (fields.accept !== undefined) set.accept = fields.accept.length ? JSON.stringify(fields.accept) : null;
   if (fields.brief !== undefined) set.brief = fields.brief;
   return set;
+}
+
+// The recovery record of an automatic revert (t524), meta revert-recovery:MERGE.
+// "filing" holds the fix task still to file; "recovering" and "complete" name it.
+interface RevertFiling { title: string; brief: string; accept: string[] }
+interface RevertRecovery { item: string; merge?: string; fix: string | null; state: "filing" | "recovering" | "complete"; filing?: RevertFiling; at: string }
+
+// The fix task the executor would have filed, as its notice sends it; null
+// when it sent none or one the item fields refuse.
+// A brief past the limit keeps its output's last part, marked cut (fitRevertBrief).
+function revertFilingOf(input: unknown, item: string): RevertFiling | null {
+  if (!input || typeof input !== "object") return null;
+  const raw = input as Record<string, unknown>;
+  if (typeof raw.title !== "string" || !raw.title.trim()) return null;
+  const brief = typeof raw.brief === "string" ? fitRevertBrief(raw.brief, `the post-merge.finish event on ${item}, listed by atelier events --kind post-merge.finish`) : raw.brief;
+  try {
+    const fields = itemFields({ brief, accept: raw.accept });
+    return { title: shortTitle(raw.title), brief: fields.brief ?? "", accept: fields.accept ?? [] };
+  } catch (error) {
+    if (error instanceof RuleError) return null;
+    throw error;
+  }
+}
+
+// The fix task filed from the notice alone, for a notice that carried none.
+function revertFiling(item: string, failure: string): RevertFiling {
+  return {
+    title: `Fix ${item}: its landing was reverted automatically`,
+    brief: `${item} was reverted automatically because its landing turned main or the release gate red. ${failure}`.trim(),
+    accept: [`The check that failed after ${item} landed passes on the reverted task's change; test`],
+  };
 }

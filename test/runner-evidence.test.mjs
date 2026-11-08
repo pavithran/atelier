@@ -109,6 +109,22 @@ test("a diff with no test change records that no tests changed, and still runs t
   assert.deepEqual(npm.map((c) => c.command), [["npm", "run", "typecheck"]]);
 });
 
+test("the tests the server names as covering the change run once, by the declared command or the full suite's check (t523)", async () => {
+  const { dir, head } = repo({ "test/a.test.mjs": "x", "test/b.test.mjs": "x", "src/a.ts": "x" });
+  const { run, npm } = runner((command) => command[0] === "sh" && command[2].startsWith("node --test") ? { code: 1, output: "not ok" } : {});
+  const picked = { names: ["test/a.test.mjs", "test/b.test.mjs"], why: "w", full: false, run: "node --test {tests}", check: "npm test" };
+  const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["src/a.ts"], required: picked, run, prepare, id: "t8" });
+  assert.equal(evidence.covering.status, "fail");
+  assert.deepEqual(npm.map((c) => c.command), [["sh", "-c", "node --test test/a.test.mjs test/b.test.mjs"], ["npm", "run", "typecheck"]]);
+  const whole = runner(() => ({}));
+  const full = await collectRunnerEvidence({ source: dir, head, changedPaths: ["src/a.ts"], required: { ...picked, names: ["npm test"], full: true }, run: whole.run, prepare, id: "t9" });
+  assert.equal(full.covering.status, "pass");
+  assert.deepEqual(whole.npm[0].command, ["sh", "-c", "npm test"]);
+  const none = runner(() => ({}));
+  const docs = await collectRunnerEvidence({ source: dir, head, changedPaths: ["src/a.ts"], required: { ...picked, names: [] }, run: none.run, prepare, id: "t10" });
+  assert.equal(docs.covering, undefined, "a change that needs no test runs none");
+});
+
 const H0 = "0".repeat(40), H1 = "a".repeat(40);
 const need = {
   needed: true, reason: "every part is reviewed", head: H1, kind: "review", basis: "part", changeClass: "coordinated",

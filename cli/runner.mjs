@@ -21,7 +21,7 @@ import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./cre
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { REVIEW_RENEW_MS, VALIDATION_BLOCKED as BLOCKED_NOTE, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
-import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
+import { TEST_RUNS_MAX, parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
 import { stopped as reviewStopped, stopText } from "../src/review/stopped.ts";
@@ -29,9 +29,11 @@ import { historySection } from "../src/review/history.ts";
 import { submission } from "../src/brief.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { affectedCommand } from "../src/affected-tests.ts";
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
+import { reworkNote, routeRejection, unparsableRoute } from "../src/dispatch/rework.ts";
 import { diffPromptMax, largeDiffNote, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/large-diff.ts";
 import { BUILD_RULES } from "../src/brief-rules.ts";
 import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
@@ -157,6 +159,7 @@ export function leaseCall(argv, options = {}, api, credential) {
     if (argv[0] === "review-unparsable") {
       body.head = value("--head");
       body.reply = readFileSync(value("--reply-file"), "utf8");
+      if (argv.includes("--attempt")) body.attempt = Number(value("--attempt"));
     }
     const transport = runnerTransport({ server: server(), credential: options.token ?? credential });
     const params = { project: value("--project"), item: argv[1] };
@@ -941,7 +944,7 @@ export function summarizeTestOutput(text) {
 // The tests and the typecheck go by the project's check limit (G7), `limits`
 // (checkLimits in src/check-limit.ts, from the server's policy), counted from
 // the held slot: a run stopped at it is 'not-run', said as what stopped it.
-export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, limits = checkLimits(null), prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
+export async function collectRunnerEvidence({ source, head, from, changedPaths, required, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, limits = checkLimits(null), prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
   const dir = `${source}-evidence-${id}`;
   const notRun = (reason) => ({ status: "not-run", reason });
   const lost = (reason) => ({ head, tests: notRun(reason), typecheck: notRun(reason) });
@@ -992,14 +995,59 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
       ...(runs.every((r) => r.passed !== undefined) ? { passed: runs.reduce((n, r) => n + r.passed, 0), failed: runs.reduce((n, r) => n + r.failed, 0) } : {}),
       failing: runs.flatMap((r) => r.failing ?? []).slice(0, RUNNER_EVIDENCE_NAMES),
     } : { status: "none" };
+    // The tests the server says must pass for an approval (t523): the full
+    // suite by its check, or the declared selection by the declared command.
+    // They run as one command, so one result stands for each of them.
+    let covering;
+    if (required?.names?.length) {
+      const command = required.full ? required.check : required.run ? affectedCommand(required.run, required.names) : null;
+      covering = command ? await exec(command, slot(["sh", "-c", command])) : notRun("the project declares no command that runs the covering tests");
+    }
     const typecheck = await exec("npm run typecheck", slot(["npm", "run", "typecheck"]));
-    return { head, tests, typecheck };
+    return { head, tests, typecheck, ...(covering ? { covering } : {}) };
   } catch (error) {
     if (signal?.aborted) throw error;
     return lost(`the runner failed: ${error.message}`);
   } finally {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* a folder left behind costs only disk */ }
   }
+}
+
+// The results an approval carries (t523), read from the runner's own run:
+// each test file it ran in the clean clone, and each test the server named as
+// covering the change, with what happened at the head. A pass is "passed",
+// a fail "failed", and anything else, including no run, a run of another head
+// and a run that never started, "could-not-run", which the server records as a
+// fact and waits on. Nothing is reported passed that did not pass.
+// Each test is sent once, with its worst result at the head: a test that
+// failed in either run is failed, whatever the other run said.
+export function testRunsFor(evidence, head, required) {
+  const result = (status) => status === "pass" ? "passed" : status === "fail" ? "failed" : "could-not-run";
+  const rank = { passed: 0, "could-not-run": 1, failed: 2 };
+  const runs = new Map();
+  const add = (names, status) => {
+    const r = result(status);
+    for (const test of names) if (!runs.has(test) || rank[r] > rank[runs.get(test)]) runs.set(test, r);
+  };
+  const same = evidence && evidence.head === head;
+  const names = required?.names ?? [];
+  if (names.length) add(names, same ? evidence.covering?.status ?? "not-run" : "not-run");
+  if (same && evidence.tests?.status && evidence.tests.status !== "none") {
+    const status = evidence.tests.status;
+    const files = evidence.tests.files ?? [];
+    // The full-suite fallback stays one result, so a changed-test run that did
+    // not pass is carried by the full suite's names, not listed beside them.
+    if (required?.full) { if (names.length && status !== "pass") add(names, status); }
+    else {
+      add(files.filter((file) => names.includes(file)), status);
+      const extra = files.filter((file) => !names.includes(file));
+      if (names.length + extra.length <= TEST_RUNS_MAX) add(extra, status);
+      else if (names.length < TEST_RUNS_MAX) add([`${extra.length} changed tests outside the covering tests`], status);
+      // No room for even one entry: the required names carry the worse of the two results.
+      else if (status !== "pass") add(names, status);
+    }
+  }
+  return [...runs].map(([test, r]) => ({ test, head, result: r })).sort((a, b) => (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
 }
 
 // A review job clones the part's branch read-only with a read grant,
@@ -1827,7 +1875,7 @@ export async function runTask(assignment, config, name, io) {
   };
   // The leftovers of a build's harness (leftoverFiles); `leftovers` is what
   // remains after the one follow-up turn, for the failure and the run report.
-  let leftovers = [];
+  let leftovers = [], rejectedHead = null;
   const readLeftovers = () => workspaceLeftovers(io.git, workspace);
   const removeEmptyUntracked = async (files) => {
     for (const file of files) {
@@ -2124,6 +2172,10 @@ export async function runTask(assignment, config, name, io) {
       // against the commit this build starts from (`before`; for a task not
       // yet pushed, the commit its workspace was made at).
       const fetched = await briefContext();
+      // The server's latestVerdict is "reject" when the latest review at the
+      // task's head rejected it (t548); a later approval at that head clears
+      // it. A build that adds no commit on a rejected head did not do the round.
+      if (item.kind !== "part" && fetched?.latestVerdict === "reject" && item.head) rejectedHead = item.head;
       const context = item.kind === "part" ? fetched : await withHistory({ git: (a, o = {}) => io.git(a, { cwd: workspace, ...o }), log: io.log }, fetched, before);
       const serverBrief = item.kind === "part" ? context : null;
       const reworked = item.kind === "part" ? null : context;
@@ -2212,7 +2264,9 @@ export async function runTask(assignment, config, name, io) {
     const from = startedAt();
     const completeness = () => continuing
       ? { complete: false, why: `the workspace head ${String(head).slice(0, 8)} is unverified work in progress` }
-      : alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h));
+      : rejectedHead && head === rejectedHead
+        ? { complete: false, why: `the head ${String(head).slice(0, 8)} was rejected by the latest review and this round added no commit` }
+        : alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h));
     const unchanged = !resumed && result && !result.timedOut && head === from;
     already = unchanged && result.code === 0 ? await completeness() : null;
     // A harness that fails on a head already pushed ahead of the base (t363)
@@ -2224,17 +2278,20 @@ export async function runTask(assignment, config, name, io) {
     // A rerun after a failed one whose harness now exits 0 and adds nothing
     // finishes the failed run's commit: the checks decide, as for a head
     // already pushed.
-    const afterFailure = unchanged && result.code === 0 && failedRun && !already?.complete && !merges.some((m) => m.state === "conflicts" || m.state === "skipped") ? failedRun.from ?? head : null;
+    const afterFailure = unchanged && result.code === 0 && failedRun && !already?.complete && !(rejectedHead && head === rejectedHead) && !merges.some((m) => m.state === "conflicts" || m.state === "skipped") ? failedRun.from ?? head : null;
     if (afterFailure) io.log(`the harness added nothing to the earlier failed run's commit ${String(head).slice(0, 8)}; the checks run and it is submitted`);
     else if (already?.complete) io.log(`already complete: ${already.why}; the harness changed nothing, so the checks run and that head is submitted without a new commit`);
     else if (already) io.log(`nothing to submit: ${already.why}, and the harness changed nothing`);
+    // An unchanged rejected head is a failed round on every path to finish():
+    // a failure marker's earlier start must not stand in for the head.
+    const rejectedUnchanged = unchanged && result.code === 0 && rejectedHead && head === rejectedHead;
     taskFailure = true;
     // Only a run that ran no harness has no exit code to report as success;
     // a harness killed by a signal has code null and is a failure (t363).
     // A rerun after a failed harness that fails again without a new commit
     // began at the marker's starting head, not at the commit it reruns from.
     exitOutcome = harnessOutcome({
-      ran: !!result, marker: failedRun, head, before: from, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
+      ran: !!result, marker: rejectedUnchanged ? null : failedRun, head, before: from, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
       code: result ? result.code : 0, timedOut: result?.timedOut,
       pushedComplete: !!(already?.complete || failedOnPushed?.complete),
       mergesBlock: merges.some((m) => m.state === "conflicts" || m.state === "skipped"),
@@ -2750,7 +2807,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // nothing else to prove a criterion with.
     let runnerEvidence;
     if (io.runnerEvidence) {
-      try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from, project, actor }); }
+      try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from, project, actor, required: claimed.required }); }
       catch (error) {
         if (io.stopped()) throw new Error("interrupted");
         io.log(`clean-clone run failed: ${error.message}`);
@@ -2832,8 +2889,9 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       // A refusal for the input's size is the harness's limit, not the
       // model's verdict (t230): reported once with the limit and the size, and
       // skipped, so it is neither tried again as it is nor counted against
-      // the model.
-      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      // the model. It is read from the harness's stderr alone, here only
+      // after a non-zero exit or a signal that was not the time limit (t554).
+      const tooLarge = inputSizeRefusal(result.stderr);
       if (tooLarge) {
         const diffText = ownDiff === null ? shown : `${shown}${ownDiff}`;
         const why = sizeRefusalReason(actor, tooLarge, text.length + diffText.length);
@@ -2896,7 +2954,9 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       // workspace, removed once the call ends whatever it answered.
       const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
       try {
-        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, ...generation()]);
+        // This is the second reply (the reviewer was asked again above), so
+        // the server records the notice that wakes a session (t521).
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, "--attempt", "2", ...generation()]);
         io.log(`review released: ${parsed.error}`);
       } catch (error) {
         io.log(`could not keep the unparsable reply on the task: ${error.message}`);
@@ -2904,7 +2964,10 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       } finally {
         await io.removeBrief(kept);
       }
-      return { phase: "failed", reason: parsed.error, taskFailure: true };
+      // The second unreadable reply is not retried by the pipeline (t521):
+      // the server's notice wakes a session.
+      if (unparsableRoute(2) === "wake") wakeSession(io, `${project}/${item.id}: the reviewer ${actor}'s reply could not be read twice at ${claimed.head.slice(0, 8)} (${parsed.error}); the pipeline cannot retry it`);
+      return { phase: "failed", reason: parsed.error, taskFailure: true, unretryable: true };
     }
     // A rejection is settled before it is posted (t717): findings the
     // developer already answered are dropped, blocking ones on code the
@@ -2941,9 +3004,13 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
     if (posted.findings.length) argv.push("--findings", JSON.stringify(posted.findings));
     if (verification) argv.push("--verification", JSON.stringify(verification));
+    // An approval carries the results of the run of the tests that cover the
+    // change (t523); the server refuses it without them.
+    if (posted.verdict === "approve" && claimed.required) argv.push("--tests", JSON.stringify(testRunsFor(runnerEvidence, claimed.head, claimed.required)));
     if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${posted.verdict}`);
+    if (posted.verdict === "reject" && !claimed.landed && !claimed.tier) await sendBack(io, runnerIO, { project, claimed, posted });
     return { phase: "reviewed", verdict: posted.verdict };
   } catch (error) {
     io.log(`failed: ${error.message}`);
@@ -2969,6 +3036,55 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
   }
+}
+
+// A session is woken by a notice the server records in a call the runner
+// already makes (t521): the second unreadable reply, a refused redispatch,
+// a second rejection. The runner sends nothing for a wake; the line is in
+// its log.
+export function wakeSession(io, message) {
+  io.log(`session needed: ${message}`);
+}
+
+// A rejection goes back to its builder (t521, src/dispatch/rework.ts). The
+// dispatch is the developer's, so it goes on the runner's own credential
+// (`runnerIO`), never the reviewer's token; the findings travel in the note
+// and in the job brief the server builds for the rework.
+export async function sendBack(io, runnerIO, { project, claimed, posted }) {
+  const id = claimed.item.id;
+  const route = routeRejection({ round: claimed.need?.round ?? 1, builder: claimed.item.owner ?? null, kind: claimed.item.kind ?? null, owner: claimed.owner });
+  if (route.action === "none") return route;
+  // A second rejection's notice is the ledger's, recorded with the verdict,
+  // so the runner sends none of its own.
+  if (route.action === "wake" && route.second) { io.log(`${project}/${id}: ${route.reason}; the ledger records the notice that wakes a session`); return route; }
+  if (route.action === "wake") { wakeSession(io, `${project}/${id}: ${route.reason}`); return route; }
+  const note = reworkNote(id, claimed.head, posted.findings ?? [], posted.summary ?? "");
+  // The dispatch is the hook `io.dispatchBuilder`: the runner declares no
+  // dispatch call of its own (RUNNER_CALLS in src/tokens.ts), so a deployment
+  // that connects one names it here. Without it the rejection is left for a
+  // session, said so.
+  if (!runnerIO.dispatchBuilder) {
+    wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: this runner has no way to dispatch`);
+    return route;
+  }
+  try {
+    await runnerIO.dispatchBuilder({ project, id, agent: route.agent, model: route.model, note });
+    io.log(`rejected ${id} sent back to ${route.agent}/${route.model} with the findings`);
+  } catch (error) {
+    // A builder that cannot be dispatched leaves the rejection for a session.
+    wakeSession(io, `${project}/${id}: the rejection could not be sent back to ${route.agent}/${route.model}: ${error.message}`);
+  }
+  return route;
+}
+
+// The owner's dispatch of a rejected task to its builder: `atelier dispatch`
+// as the developer, as a land job runs, with the runner's own name and token
+// left out of its environment. A machine that holds no developer token fails
+// here and sendBack wakes a session instead.
+export async function dispatchAsDeveloper(run, { project, id, agent, model, note: reviewersWords, env = process.env, signal }) {
+  const child = { ...env }; delete child.ATELIER_RUNNER_NAME; delete child.ATELIER_RUNNER_TOKEN;
+  const r = await run([process.execPath, cli, "dispatch", id, "--project", project, "--agent", agent, "--model", model, "--note", reviewersWords], { env: child, capture: true, captureError: true, signal, timeoutMs: 60_000 });
+  if (r.code !== 0) throw new Error(`atelier dispatch exited ${r.code}: ${[r.output, r.stderr].filter(Boolean).join(" ").replace(/\s+/g, " ").slice(0, 300)}`);
 }
 
 // The merge commit a post-merge review reads (t591), fetched into the review
@@ -3102,7 +3218,7 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
     if (result.code !== 0) {
       // A refusal for the input's size is recorded as one, with the limit and
       // the size (t323), and skipped as a review's is: not the model's failure.
-      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      const tooLarge = inputSizeRefusal(result.stderr);
       if (tooLarge) {
         const why = sizeRefusalReason(actor, tooLarge, claimed.brief.length);
         await fail(why);
@@ -3296,7 +3412,7 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     }
     if (result.code !== 0) {
       // A refusal for the input's size is recorded as one (t323), as a review's is.
-      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      const tooLarge = inputSizeRefusal(result.stderr);
       if (tooLarge) {
         const why = sizeRefusalReason(actor, tooLarge, text.length + diff.length);
         await end({ outcome: "runner", detail: why });
@@ -4685,6 +4801,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   const io = {
     progress,
+    // A rejection's hook (t521): the builder's dispatch as the developer.
+    dispatchBuilder: (request) => dispatchAsDeveloper(executeChild, { ...request, signal: controller.signal }),
     removeFile: (file) => rmSync(file, { force: true }),
     isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),

@@ -134,3 +134,63 @@ const quote = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll(
 export function affectedCommand(run: string, tests: readonly string[]): string {
   return run.replaceAll(TESTS_TOKEN, tests.map(quote).join(" "));
 }
+
+// What covers a change, for a review's proof that the tests ran (t523). The
+// server holds the project's declaration and the change's measured paths but
+// not the head's file list, so this reads the declared map alone: a literal
+// test is named exactly, a glob entry is met by any test it matches. A list
+// command is not run by the server, and a path the map lacks or an unmeasured
+// change has no named cover, so the cover is the full suite, which the
+// declaration's check name stands for.
+export type Cover =
+  | { kind: "affected"; exact: string[]; globs: string[]; why: string }
+  | { kind: "full"; check: string; why: string };
+
+// The tests an approval must show passing at its head. `changed` is the
+// change's measured paths from the Ledger's evidence, never the reviewer's
+// word; `files` the head's tracked files, which the review route reads from
+// the repository. A declared glob stands for every file it matches at the head
+// (selectByMap, the selection `atelier check` runs), so each needs its own
+// result. A path the map does not cover, a declared test the head lacks, or
+// files that could not be read need the full suite, named by the
+// declaration's check. A project with no declaration names no test, so any
+// passing result is the least an approval carries (names is null).
+export interface RequiredTests { names: string[] | null; why: string; full: boolean; check?: string }
+
+// The most test names an approval can list (cleanTestRuns); a selection past it
+// is met by a passing full-suite run instead.
+export const REQUIRED_NAMES_MAX = 200;
+
+// `checks` is the project's own check commands, the full suite of a project
+// that declares no affected tests. With neither a declaration nor a check no
+// test can be required, and names is null.
+export function requiredTests(affected: Pick<AffectedTests, "check" | "map"> | undefined, changed: readonly string[] | null | undefined, files: readonly string[] | null | undefined, checks: readonly string[] = []): RequiredTests {
+  if (!affected) {
+    if (!checks.length) return { names: null, why: "the project declares no affected tests and no check, so no run can show the change tested", full: true };
+    return { names: [...checks], why: "the project declares no affected-tests map, so a passing run of its full test check is needed", full: true, check: checks.join(" && ") };
+  }
+  const full = (why: string): RequiredTests => ({ names: [affected.check], why, full: true, check: affected.check });
+  const over = (n: number) => `the declared map selects ${n} tests, over the ${REQUIRED_NAMES_MAX} an approval can list`;
+  const cover = coveringTests(affected, changed);
+  if (cover.kind === "full") return full(cover.why);
+  if (!cover.globs.length) return cover.exact.length > REQUIRED_NAMES_MAX ? full(over(cover.exact.length)) : { names: cover.exact, why: cover.why, full: false };
+  if (!files) return full("the head's files could not be read to expand the declared test globs");
+  const picked = selectByMap(affected.map!, changed, files);
+  if (picked.kind === "full") return full(picked.why);
+  return picked.tests.length > REQUIRED_NAMES_MAX ? full(over(picked.tests.length)) : { names: picked.tests, why: picked.why, full: false };
+}
+
+export function coveringTests(a: Pick<AffectedTests, "check" | "map">, changed: readonly string[] | null | undefined): Cover {
+  const full = (why: string): Cover => ({ kind: "full", check: a.check, why });
+  if (!Array.isArray(changed)) return full(UNMEASURED);
+  if (!a.map) return full("the declaration is a list command, which the server does not run");
+  const exact = new Set<string>(), globs = new Set<string>();
+  for (const path of changed) {
+    const entries = a.map.filter((e) => matchesAny(path, e.paths));
+    if (!entries.length) return full(`${path} is in no entry of the declared map`);
+    for (const e of entries) for (const t of e.tests) (/[*?[]/.test(t) ? globs : exact).add(t);
+  }
+  const named = [...exact, ...globs].sort();
+  const n = changed.length;
+  return { kind: "affected", exact: [...exact].sort(), globs: [...globs].sort(), why: `the declared map selects ${named.length ? named.join(", ") : "no test"} for ${n} changed path${n === 1 ? "" : "s"}` };
+}

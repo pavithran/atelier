@@ -300,20 +300,20 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // with the request number alone; the runner renews with leaseCall.
   { name: "review-claim-renew", method: "POST", path: `${ITEM}/review-renew`, credential: "agent", body: ["request"], via: "cli", command: "review-claim", jobs: REVIEW },
   { name: "review-release", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["note", "request"], via: "cli", command: "review-release", jobs: REVIEW },
-  { name: "review-unparsable", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["head", "note", "reply"], via: "cli", command: "review-unparsable", jobs: REVIEW },
+  { name: "review-unparsable", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["head", "note", "reply", "attempt"], via: "cli", command: "review-unparsable", jobs: REVIEW },
   // The review lease (t351): a claim with a request number is renewed, and
   // released or kept as unparsable, by the runner itself (leaseCall in
   // cli/runner.mjs), under the reviewer's agent token, so shutdown can give
   // each its own deadline.
   { name: "review-renew", method: "POST", path: `${ITEM}/review-renew`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
   { name: "review-release-lease", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
-  { name: "review-unparsable-lease", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["request", "note", "head", "reply"], via: "runner", jobs: REVIEW },
+  { name: "review-unparsable-lease", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["request", "note", "head", "reply", "attempt"], via: "runner", jobs: REVIEW },
   // The criteria review job (t438), under the reviewer's own agent token:
   // the claim, the verdict (atelier criteria-verdict) and the failure.
   { name: "criteria-review-claim", method: "POST", path: `${ITEM}/criteria-review-claim`, credential: "agent", body: [], via: "cli", command: "criteria-review-claim", jobs: CRITERIA },
   { name: "criteria-review", method: "POST", path: `${ITEM}/criteria-review`, credential: "agent", body: ["approve", "rev", "criteria", "request", "note", "findings", "checks"], via: "cli", command: "criteria-verdict", jobs: CRITERIA },
   { name: "criteria-review-failed", method: "POST", path: `${ITEM}/criteria-review-failed`, credential: "agent", body: ["request", "note"], via: "cli", command: "criteria-review-failed", jobs: CRITERIA },
-  { name: "review", method: "POST", path: `${ITEM}/review`, credential: "agent", body: ["head", "criteria", "request", "approve", "note", "findings", "verification"], via: "cli", command: "review", jobs: REVIEW },
+  { name: "review", method: "POST", path: `${ITEM}/review`, credential: "agent", body: ["head", "criteria", "request", "approve", "note", "findings", "verification", "tests"], via: "cli", command: "review", jobs: REVIEW },
   // The integrate and refresh jobs' own helpers, under the integrator's token.
   { name: "integrated", method: "POST", path: `${ITEM}/integrated`, credential: "agent", body: ["part", "mergeCommit"], via: "cli", command: "integrated", jobs: ["integrate"] },
   { name: "integration-failed", method: "POST", path: `${ITEM}/integration-failed`, credential: "agent", body: ["part", "reason", "kind"], via: "cli", command: "integration-failed", jobs: ["integrate"] },

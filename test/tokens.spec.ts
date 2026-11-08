@@ -100,7 +100,7 @@ for (const transfer of ["handoff", "release"]) {
     await L(name).newItem("Separate history", [], "owner");
     await L(name).claim("t2", "qwen/qwen3");
     const items = await L(name).items();
-    expect(items[0]).toEqual(await L(name).item("t1"));
+    expect({ ...items[0], everClaimed: undefined }).toEqual({ ...(await L(name).item("t1")), everClaimed: undefined });
     expect(items[1].pushActors).toEqual(["qwen/qwen3"]);
     // Recorded with the reviewer's own token, so the gate counts it (t215).
     await L(name).addReview({ ...review, by: "opencode/glm-5.3" }, undefined, true);
@@ -218,7 +218,7 @@ it("rejects issuing the owner identity and invalid expiry", async () => {
 
 it("an agent claims, pushes, records checks, hands off and reviews as itself", async () => {
   const name = "token-workflow";
-  await project(name);
+  await project(name, ["npm test"]);
   const { token } = await issue([name]);
   // A claim makes the branch t/1 in the project's repository (task 5), so
   // main needs a commit; the push route reads the branch's tip on the server,
@@ -242,7 +242,7 @@ it("an agent claims, pushes, records checks, hands off and reviews as itself", a
     expect((await L(name).item("t1")).owner).toBe(ACTOR);
   }
   expect((await post("handoff", { to: "claude-code/opus-5.5" })).status).toBe(200);
-  expect((await post("review", { head, criteria: NO_CRITERIA, approve: true, note: "Reviewed" })).status).toBe(200);
+  expect((await post("review", { head, criteria: NO_CRITERIA, approve: true, note: "Reviewed", tests: [{ test: "npm test", head, result: "passed" }] })).status).toBe(200);
   const events = await L(name).events("t1") as unknown as { actor: string; proved?: true; kind: string }[];
   for (const kind of ["item.claimed", "workspace.created", "push.observed", "evidence.observed", "item.submitted", "item.handoff", "review.approved"]) {
     expect(events.find((e) => e.kind === kind)).toMatchObject({ actor: ACTOR, proved: true });

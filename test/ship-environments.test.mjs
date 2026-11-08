@@ -73,8 +73,11 @@ test("ship --push refuses an order with no push step", async (t) => {
   const run = async (push) => {
     const lines = [];
     const git = (args) => args[0] === "branch" ? "main" : args[0] === "rev-parse" ? head : "";
-    await ship({ name: "p", cwd: dir, branch: "main", git, request: async () => ({ approvals: [] }), print: (l) => lines.push(l), fail: (m) => { throw new Error(m); },
-      inProgress: () => [], baselineHead: head, paired: () => head, dryRun: true, push });
+    // The dry run that prints a refusal ends through fail() (t519).
+    let ended = null;
+    await ship({ name: "p", cwd: dir, branch: "main", git, request: async () => ({ approvals: [] }), print: (l) => lines.push(l), fail: (m) => { ended = m; throw new Error(m); },
+      inProgress: () => [], baselineHead: head, paired: () => head, dryRun: true, push }).catch((error) => { if (error.message !== ended) throw error; });
+    assert.equal(ended !== null, /Refused/.test(lines.join("\n")), "the dry run ends non-zero exactly when it printed a refusal");
     return lines.join("\n");
   };
   assert.match(await run(true), /Refused: --push was given and docs\/atelier\/ship\.json has no push step/);

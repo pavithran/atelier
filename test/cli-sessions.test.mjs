@@ -223,6 +223,20 @@ test("SIGINT, SIGTERM and SIGHUP to wrap end the running check's process group",
 });
 
 
+test("the wrap step of a ship commits and records although the project's check fails in the checkout", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const { shipWrapArgs } = await import("../cli/ship.mjs");
+  const f = fixture(t);
+  // The fixture's registered check is "exit 7". Plain wrap refuses on it (the s-mw5imenq cause);
+  // ship's own wrap command does not re-run the checks.
+  const result = f.run(...shipWrapArgs("Ship abc: commit, deploy", "demo"));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /Reported: exit 7/);
+  assert.notEqual(f.git("rev-parse", "HEAD"), f.head);
+  const writes = f.requests().filter((r) => r.method === "POST" && r.path.endsWith("/sessions"));
+  assert.equal(writes.length, 1);
+});
+
 test("wrap --allow-failing commits past a failing check and records the override in the note", (t) => {
   if (!canInspectSlots(t)) return;
   const f = fixture(t);

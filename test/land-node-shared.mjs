@@ -16,11 +16,24 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { startServer } from "../src/runtime/server.mjs";
 import { criteriaOf } from "../src/criteria.ts";
+import { installDefaultProof } from "./support/proof.ts";
+
+installDefaultProof();
 
 export const OWNER = "atl_00112233445566778899aabbccddeeff";
 export const BUILDER = "codex/gpt-6";
 export const REVIEWER = "claude-code/opus-5.5";
 const EMAIL = "t@example.test";
+
+// The passing test results an approval of `head` carries (t523): one for each
+// test the project's declaration requires of these changed paths, or a single
+// result when it declares none. Fixtures that approve through the Ledger give
+// them, as a reviewer's run would.
+export async function passingTests(project, head, changed) {
+  const { requiredTests } = await import("../src/affected-tests.ts");
+  const names = requiredTests(project.policy.affectedTests, changed, null, project.policy.checks).names ?? ["npm test"];
+  return names.map((test) => ({ test, head, result: "passed" }));
+}
 
 export async function landingWorld(t) {
   const root = mkdtempSync(join(tmpdir(), "atelier-land-node-"));
@@ -116,7 +129,7 @@ export async function landingWorld(t) {
     const claimed = await cli(["claim", id, "--as", BUILDER], { token: agentToken, cwd: root });
     assert.equal(claimed.status, 0, claimed.output);
     const work = join(cache, "work", "demo", id);
-    for (const [path, text] of Object.entries(files)) writeFileSync(join(work, path), text);
+    for (const [path, text] of Object.entries(files)) { mkdirSync(dirname(join(work, path)), { recursive: true }); writeFileSync(join(work, path), text); }
     git(work, "add", ".");
     git(work, "commit", "-q", "-m", title);
     const head = git(work, "rev-parse", "HEAD");
@@ -126,7 +139,7 @@ export async function landingWorld(t) {
     const now = new Date().toISOString();
     for (const claim of (await L().project()).policy.checks) await L().addEvidence({ itemId: id, claim, grade: "observed", head, passed: true, by: BUILDER, at: now, changedPaths: Object.keys(files) });
     if (submit) await L().submit(id, BUILDER);
-    if (approve) await L().addReview({ itemId: id, by: REVIEWER, head, approve: true, criteria: criteriaOf(await L().item(id)), note: "Fine", at: new Date().toISOString() }, undefined, true);
+    if (approve) await L().addReview({ itemId: id, by: REVIEWER, head, approve: true, criteria: criteriaOf(await L().item(id)), note: "Fine", at: new Date().toISOString(), tests: await passingTests(await L().project(), head, Object.keys(files)) }, undefined, true);
     return { id, head, branch: `refs/heads/t/${id.slice(1)}`, work };
   };
   const detail = async (id) => (await api("GET", `/projects/demo/items/${id}`)).json;

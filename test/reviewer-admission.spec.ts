@@ -46,7 +46,7 @@ async function setup(name: string, builder = BUILDER) {
 }
 type L = ReturnType<typeof ledger>;
 async function review(L: L, by = REVIEWER): Promise<Review> {
-  return { itemId: "t1", by, head: HEAD, criteria: criteriaOf(await L.item("t1")), approve: true, note: "Reviewed full diff", at: new Date().toISOString() };
+  return { itemId: "t1", by, head: HEAD, criteria: criteriaOf(await L.item("t1")), approve: true, note: "Reviewed full diff", at: new Date().toISOString(), tests: [{ test: "npm test", head: HEAD, result: "passed" }] };
 }
 async function detail(L: L) { return await L.detail("t1") as unknown as { gate: Gate; reviews: Review[] }; }
 async function refusal(p: Promise<unknown>, code: string) {
