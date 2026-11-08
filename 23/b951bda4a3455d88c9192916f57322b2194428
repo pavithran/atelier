@@ -1,0 +1,60 @@
+atelier atelier/t553 "atelier report's help states its length limit"
+accepted head 6b6d8ab1dca72a8686badfe5f0c240fd6cee18b2
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm run typecheck — codex/gpt-6.1-sol 2026-11-08T02:44:32.128Z
+OBSERVED pass npm run test:static — codex/gpt-6.1-sol 2026-11-08T02:44:41.660Z
+OBSERVED pass npm test — codex/gpt-6.1-sol 2026-11-08T02:59:58.053Z
+REVIEW approve by claude-code/sonnet-5.5 at 6b6d8ab1dca72a8686badfe5f0c240fd6cee18b2, recorded by claude-code/sonnet-5.5
+2026-11-08T00:44:54.818Z pavi item.created
+2026-11-08T00:44:54.818Z claude-code/opus-5.5 criteria.revised
+2026-11-08T00:44:57.153Z pavi criteria_review.requested
+2026-11-08T00:45:53.623Z codex/gpt-6-astra criteria_review.claimed
+2026-11-08T00:46:02.712Z codex/gpt-6-astra criteria_review.rejected
+2026-11-08T01:08:23.755Z pavi item.edited
+2026-11-08T01:08:23.755Z claude-code/opus-5.5 criteria.revised
+2026-11-08T01:08:23.755Z pavi item.criteria_changed
+2026-11-08T01:08:55.769Z pavi criteria_review.finding
+2026-11-08T01:08:56.382Z pavi criteria_review.requested
+2026-11-08T01:09:22.262Z codex/gpt-6-astra criteria_review.claimed
+2026-11-08T01:09:29.198Z codex/gpt-6-astra criteria_review.approved
+2026-11-08T02:00:24.670Z pavi item.dispatched
+2026-11-08T02:00:51.851Z opencode/glm-5.3 item.claimed
+2026-11-08T02:00:51.901Z opencode/glm-5.3 workspace.created
+2026-11-08T02:00:56.600Z opencode/glm-5.3 item.released
+2026-11-08T02:01:23.685Z opencode/glm-5.3 item.claimed
+2026-11-08T02:01:25.830Z opencode/glm-5.3 item.released
+2026-11-08T02:01:57.073Z opencode/glm-5.3 item.claimed
+2026-11-08T02:01:59.245Z opencode/glm-5.3 item.released
+2026-11-08T02:01:59.320Z opencode/glm-5.3 item.gave_up
+2026-11-08T02:02:26.306Z opencode/glm-5.3 item.claimed
+2026-11-08T02:02:28.691Z opencode/glm-5.3 item.released
+2026-11-08T02:02:28.766Z opencode/glm-5.3 item.gave_up
+2026-11-08T02:11:37.325Z pavi item.dispatched
+2026-11-08T02:12:02.930Z codex/gpt-6.1-sol item.claimed
+2026-11-08T02:13:47.423Z codex/gpt-6.1-sol push.observed
+2026-11-08T02:13:51.658Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:14:03.301Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:14:14.631Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:27:34.804Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:41:07.632Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:44:28.238Z codex/gpt-6.1-sol push.observed
+2026-11-08T02:44:32.153Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:44:41.683Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:45:41.238Z atelier/orchestrator refresh.queued
+2026-11-08T02:59:58.081Z codex/gpt-6.1-sol evidence.observed
+2026-11-08T02:59:59.118Z codex/gpt-6.1-sol item.submitted
+2026-11-08T02:59:59.134Z pavi review.requested
+2026-11-08T02:59:59.152Z pavi land.requested
+2026-11-08T03:00:24.703Z claude-code/sonnet-5.5 review.claimed
+2026-11-08T03:00:59.917Z claude-code/sonnet-5.5 review.approved
+2026-11-08T03:00:59.917Z atelier/orchestrator goal.notes
+2026-11-08T03:21:33.529Z atelier/orchestrator refresh.queued
+2026-11-08T03:21:36.869Z pavi land.start
+2026-11-08T03:21:38.359Z pavi land.review
+2026-11-08T03:21:38.624Z pavi landing.leased
+2026-11-08T03:21:38.725Z pavi land.lease
+2026-11-08T03:21:39.598Z pavi item.accepted
+2026-11-08T03:21:39.711Z pavi land.accept
+2026-11-08T03:21:40.381Z pavi checkout.leased
