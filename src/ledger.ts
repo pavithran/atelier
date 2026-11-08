@@ -53,6 +53,7 @@ import { ago } from "./floor.ts";
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { holdsCore } from "./dispatch/core-hold";
 import { allSkipped } from "./landing-verdict";
 import { automaticNote, cleanRunFacts, runFactsText, withoutRunText, type RunFacts } from "./run-facts.ts";
 import { nextProgress, parseProgress, type Blocker, type ProgressRecord, type SituationFacts } from "./situation.ts";
@@ -3177,11 +3178,12 @@ export class Ledger extends DurableObject<Env> {
       if (!r.findings?.length) continue;
       rejections.set(row.item_id as string, [...(rejections.get(row.item_id as string) ?? []), r]);
     }
+    const claimed = new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string));
     return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray()
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -3970,12 +3972,25 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
+  // The items that could hold a core file: every one claimed at least once
+  // and not merged, abandoned or integrated (holdsCore), and the item a
+  // landing lease names. In id order, as items() lists them.
+  private coreHolders(leased: string): Item[] {
+    const rows = this.sql.exec(`SELECT * FROM items WHERE id = ? OR (state NOT IN ('merged', 'abandoned', 'integrated') AND (state = 'claimed' OR id IN (SELECT item_id FROM events WHERE kind = 'item.claimed'))) ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, leased).toArray();
+    return this.withEverClaimed(rows.map(toItem));
+  }
+
+  private withEverClaimed(items: Item[]): Item[] {
+    const claimed = new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string));
+    return items.map((i) => ({ ...i, everClaimed: claimed.has(i.id) }));
+  }
+
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
-    const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
-    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)) : [...open, ...live];
+    const live = open.length && policy.coreFiles?.length ? this.coreHolders(lease?.item ?? "") : [];
+    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
     const previous: Record<string, { since: string; expires?: number }> = saved ? JSON.parse(saved.value as string) : {};
@@ -3991,7 +4006,7 @@ export class Ledger extends DurableObject<Env> {
       if (!blockers.length) return { ...i, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
       const old = previous[i.id];
       const since = old && (old.expires === undefined || old.expires > now) ? old.since : new Date(now).toISOString();
-      const expires = blockers.every((b) => b.state !== "claimed") && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
+      const expires = blockers.every((b) => !live.some((l) => l.id === b.id && holdsCore(l))) && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
       current[i.id] = { since, ...(expires === undefined ? {} : { expires }) };
       const elapsedMs = Math.max(0, now - Date.parse(since));
       const held: CoreHold = { ...blockers[0], blockers, since, elapsedMs, warning: elapsedMs >= CORE_HOLD_WARNING_MS, chains: blockerChains(i.id, graph), ...(claimRefusal ? { claimRefusal } : {}), ...gone };
@@ -12045,7 +12060,8 @@ function briefFingerprint(text: string): string {
 // the holding task and the core file both scopes reach, and when the task is
 // offered again.
 function heldClaimText(id: string, held: CoreHold): string {
-  return `${id} is held: the core files hold it: it ${holdText(held)}. The claim it waits on is live, its runner polling, so ${id} is not offered while it holds; the queue offers it again once the hold clears`;
+  const stage = (held.blockers ?? [held]).every((b) => b.state === "claimed") ? "The claim it waits on is live, its runner polling" : "The task it waits on is neither merged nor abandoned";
+  return `${id} is held: the core files hold it: it ${holdText(held)}. ${stage}, so ${id} is not offered while it holds; the queue offers it again once the hold clears`;
 }
 
 function claimRole(item: Item): ModelRole | null {

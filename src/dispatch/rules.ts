@@ -7,6 +7,7 @@ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 
 import { assertSingleFamily, DEFAULT_OWNER, harnessRefusal, overlappingLive, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
 import type { RunnerMemory } from "../runners/memory.ts";
+import { holdsCore, holdEnds } from "./core-hold.ts";
 import { assertLength, DISPATCH_NOTE_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -334,8 +335,9 @@ export function endedRun(o: Pick<Item, "id" | "state" | "runner" | "owner" | "he
     .sort((a, b) => a.at.localeCompare(b.at)).at(-1) ?? null;
 }
 
-// Claimed builders and the holder of a live landing lease serialize core
-// edits. Submission alone holds nothing. Plan jobs, same-plan work and the
+// A task that was claimed holds its core files until it merges or is
+// abandoned (holdsCore in src/dispatch/core-hold.ts), and the holder of a live
+// landing lease serializes them too. Plan jobs, same-plan work and the
 // owner's overlap override keep their existing exemptions. A claim its
 // runner orphaned holds nothing (coreOrphans names it instead), nor does one
 // whose last run ended without a result (endedRun), though the holder of a
@@ -348,10 +350,10 @@ function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly st
   return items.flatMap((o) => {
     if (o.id === item.id || samePlan(item, o)) return [];
     const landing = lease?.item === o.id && !landingLeaseLapsed(lease, now) && o.state !== "merged" && o.state !== "abandoned";
-    if (o.state !== "claimed" && !landing) return [];
-    if (o.kind === "plan" && o.state === "claimed") return [];
+    if (!holdsCore(o) && !landing) return [];
+    if (o.kind === "plan" && !landing) return [];
     const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
-    const doing = landing ? "landing" : o.runner ? `running on ${o.runner}` : null;
+    const doing = landing ? "landing" : o.state === "claimed" && o.runner ? `running on ${o.runner}` : null;
     return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core, ...(doing ? { doing } : {}), item: o, landing }] : [];
   });
 }
@@ -433,12 +435,11 @@ export function orphanText(orphaned: readonly OrphanedClaim[], project?: string)
   return orphaned.map((o) => `${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) is orphaned, not a blocker: its runner ${o.runner} last polled at ${o.lastPoll.slice(0, 16).replace("T", " ")} UTC, so its claim on core file ${o.core} holds nothing; recover it with ${orphanRecovery(o, project)}`).join("; ");
 }
 
-// When the hold lifts: once every blocker stops holding. A claimed item stops
-// when it submits or is released, and one a runner holds also when its run
-// ends without a result (endedRun); the item named by the landing lease stops
-// when that landing ends (it merges, is cancelled, or its lease expires).
+// When the hold lifts: once every blocker stops holding, which is when it
+// merges or is abandoned. (A claim its runner orphaned or whose run ended
+// without a result holds nothing sooner, as coreOverlaps' callers filter.)
 export function holdRelease(h: CoreHold): string {
-  const ends = (h.blockers ?? [h]).map((b) => b.state === "claimed" ? `${b.id} ${b.doing ? "submits, is released or its run ends without a result" : "submits or is released"}` : `the landing of ${b.id} ends`);
+  const ends = (h.blockers ?? [h]).map((b) => holdEnds(b.id));
   return `offered once ${ends.length > 1 ? `${ends.slice(0, -1).join(", ")} and ${ends[ends.length - 1]}` : ends[0]}`;
 }
 

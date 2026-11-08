@@ -349,7 +349,7 @@ test("unclaimed says each reason in words, with the command that releases it, in
   const offers: SeenOffer[] = [{ runner: "home:studio", kind: "home", jobs: [], agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], at: T }];
   const reasons = unclaimed(d, { held, overlap: { id: "t1", owner: "codex/gpt-6", title: "Work", state: "claimed" }, runs: [{ project: "demo", item: "t9", role: "build", outcome: "refused", runner: "home:studio", at: T }, { project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T }], project: "demo", offers: [{ ...offers[0], agents: [{ agent: "opencode", models: ["qwen3-coder-next"] }] }], now: new Date(T) });
   assert.deepEqual(reasons.map((r) => r.kind), ["held", "overlap", "skipped", "unoffered"]);
-  assert.equal(reasons[0].line, "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/index.ts; offered once t1 submits or is released, or at once with atelier dispatch t9 --overlap-ok.");
+  assert.equal(reasons[0].line, "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/index.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t9 --overlap-ok.");
   assert.match(reasons[1].line, /^Overlap refused: t1 \(claimed by codex\/gpt-6\) holds a scope that overlaps this one.*atelier init --refuse-overlap=false\.$/);
   assert.equal(reasons[2].line, "Skipped by home:studio after 2 failed runs under this dispatch (the last refused); that runner passes it by until it is dispatched again, it has a new head or the runner restarts: fix the cause, then atelier dispatch t9 --to home --agent opencode --model glm-5.3-flash.");
   assert.match(reasons[3].line, /^No live runner can take it:/);
@@ -357,7 +357,7 @@ test("unclaimed says each reason in words, with the command that releases it, in
   // With nothing holding it and a live runner offering it, nothing is said.
   assert.deepEqual(unclaimed(dispatched({ scope: ["docs/**"] }), { offers, project: "demo", now: new Date(T) }), []);
   // A held part takes no owner override, and a task under SKIP_AFTER is not yet skipped.
-  assert.match(unclaimed(dispatched({ scope: ["src/index.ts"], kind: "part", plan: "t2" }), { held, project: "demo" })[0].line, /offered once t1 submits or is released\.$/);
+  assert.match(unclaimed(dispatched({ scope: ["src/index.ts"], kind: "part", plan: "t2" }), { held, project: "demo" })[0].line, /offered once t1 merges or is abandoned\.$/);
   assert.deepEqual(unclaimed(d, { runs: [{ project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T }], project: "demo" }), []);
 });
 
