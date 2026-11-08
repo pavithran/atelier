@@ -34,7 +34,7 @@ const onOff = (v: string) => (v === "on" || v === "off" ? v : null);
 export const STANDING: Record<string, StandingKey> = {
   "dispatch-on-criteria": {
     value: "harness/model or off",
-    says: (v) => v === "off" ? "criteria approval dispatches no task by itself" : `criteria approval dispatches an undispatched task home to ${v}, once its holds are cleared, in either mode`,
+    says: (v) => v === "off" ? "criteria approval dispatches no task by itself" : `a task filed with criteria has its criteria review asked at once, and the approval dispatches it home to ${v} with land intent, once its holds are cleared, in either mode`,
     parse: (v) => v === "off" || (validActor(v) && v.includes("/")) ? v : null,
   },
   models: {

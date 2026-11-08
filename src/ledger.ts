@@ -88,6 +88,7 @@ import { listDecisions, recordDecision, standingDecisions, withdrawDecision, typ
 import { standingOf } from "./standing.ts";
 import { disputedFinding, isDispute } from "./dispatch/rework.ts";
 import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
+import { assertPrivateModel, privateRefusal } from "./dispatch/private.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
@@ -1883,7 +1884,10 @@ export class Ledger extends DurableObject<Env> {
     const d = overrideDispatch(input, previous, by, at);
     // A model named without a harness is checked as the bare model (t649).
     const actor = dispatchActor(d);
-    if (actor) this.assertStanding(actor, role, pool);
+    if (actor) {
+      assertPrivateModel(this.project().name, actor);
+      this.assertStanding(actor, role, pool);
+    }
     return d;
   }
 
@@ -2884,7 +2888,10 @@ export class Ledger extends DurableObject<Env> {
     if (Object.keys(set).length) this.update(id, set, now);
     this.log(id, actor, "item.created", { title: text.title, ...(text.brief ? { brief: text.brief } : {}), scope, ...framing }, now);
     // Criteria filed with the task are its first revision, by whoever filed it (t438).
-    if (fields.accept?.length) this.recordCriteriaRevision(id, actor, now);
+    if (fields.accept?.length) {
+      this.recordCriteriaRevision(id, actor, now);
+      this.askCriteriaReviewAtFiling(id, now);
+    }
     return { ...this.item(id), ...(text.derived ? { derived: true as const } : {}) };
   }
 
@@ -3534,6 +3541,7 @@ export class Ledger extends DurableObject<Env> {
       // Both sides of the overlap are measured (G13): the claiming task by the
       // files it changed too, where it has any, as a released task may.
       assertClaimAllowed(this.withChangedFiles([item])[0], this.withChangedFiles(this.items()), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+      assertPrivateModel(this.project().name, actor);
       // A build or plan job dispatched before the owner paused, reserved or
       // kept this model from the job is not claimable: a dispatch naming it
       // is withdrawn, and the claim refused with the reason.
@@ -3969,6 +3977,42 @@ export class Ledger extends DurableObject<Env> {
 
   private dispatchingOnCriteria = false;
 
+  // The reviewer a dispatch on approval names for its land intent: the one
+  // the review-on-checked mapping gives the builder's company, else the first
+  // model of another company than the builder that the review gate would let
+  // review the builder's work (reviewerCandidates, with the builder as its
+  // contributor). With none, the dispatch is refused, so no task is built
+  // whose submit asks no review; under single-family mode only a mapping can
+  // name one.
+  private landReviewer(id: string, builder: string): string {
+    const mapped = this.submissionDispatchInput({ agent: builder.split("/")[0], model: builder.split("/")[1], land: true }).reviewer;
+    if (typeof mapped === "string") return mapped;
+    const project = this.project().name, single = singleFamily(this.project().policy);
+    const chosen = this.reviewerCandidates({ ...this.item(id), owner: builder }, this.poolStanding(), undefined, undefined, "review", true, () => "home")
+      .find(c => !c.refusal && actorFamily(c.actor) !== actorFamily(builder) && !privateRefusal(project, c.actor));
+    if (chosen) return chosen.actor;
+    throw new RuleError("no_land_reviewer", `no reviewer of another company than ${builder} may review ${id}${single ? `, as the project runs on ${single} models alone` : ""}, and no review-on-checked mapping names one`, 409, `record a review-on-checked mapping for ${actorFamily(builder)}, or dispatch ${id} by hand`);
+  }
+
+  // A task filed with criteria in a project whose standing decision
+  // dispatches on criteria (t522): its criteria review is asked at once, of
+  // the first eligible model that is not the builder, so the approval can
+  // dispatch it with no session between. It is asked whatever
+  // requireCriteriaReview or fast mode say, since the approval is what
+  // dispatches the task. When none is eligible the task waits for the
+  // developer's own request.
+  private askCriteriaReviewAtFiling(id: string, at: string): void {
+    const builder = this.standing().get("dispatch-on-criteria");
+    if (!builder || builder === "off") return;
+    const policy = this.project().policy, pool = this.poolStanding();
+    const fit = criteriaReviewerCandidates({ authors: authorsOf(this.criteriaRevisions(id)), pool, policy, owner: this.owner, allowPaid: false })
+      .filter(c => !c.refusal && !privateRefusal(this.project().name, c.actor));
+    const chosen = fit.find(c => !sameActor(c.actor, builder)) ?? fit[0];
+    if (!chosen) return;
+    try { this.askCriteriaReview(this.item(id), ORCHESTRATOR, chosen.actor, pool, false, at); }
+    catch (error) { if (!(error instanceof RuleError)) throw error; }
+  }
+
   private dispatchApprovedCriteria(): void {
     if (this.dispatchingOnCriteria) return;
     this.dispatchingOnCriteria = true;
@@ -3979,9 +4023,26 @@ export class Ledger extends DurableObject<Env> {
         approved: id => this.criteriaReviewStatus(id).approved,
         dispatchedBefore: id => !!this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.dispatched' LIMIT 1`, id).toArray().length,
         held: item => !!coreHold({ ...item, dispatch: { to: "home", agent: null, model: null, note: "", by: this.owner, at: new Date().toISOString() } }, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()),
+        // With land intent (t522): the submit asks the review and the
+        // landing, so no session is needed between approval and landing.
         dispatch: (id, agent, model, reason) => this.ctx.storage.transactionSync(() => {
-          this.dispatch(id, this.owner, { to: "home", agent, model }, undefined, reason);
+          this.dispatch(id, this.owner, { to: "home", agent, model, land: true, reviewer: this.landReviewer(id, `${agent}/${model}`) }, undefined, reason);
         }),
+        // A private project's task named to another company's model, or one
+        // no reviewer can be named for, waits on the developer, blocked with
+        // the reason, so atelier status says why it was not dispatched.
+        refused: (item, error) => {
+          if (error.code !== "private_project" && error.code !== "no_land_reviewer") return;
+          const at = new Date().toISOString();
+          const reason = error.code === "private_project"
+            ? `${error.detail}; the standing dispatch-on-criteria decision names that model, so ${item.id} was not dispatched. Dispatch it to an Anthropic, OpenAI or Google model, or record another builder`
+            : `${item.id} was not dispatched on its criteria approval: ${error.detail}. Record a review-on-checked mapping for the builder's company, or dispatch it by hand`;
+          const record: Block = { reason: reason.length > REASON_MAX ? `${reason.slice(0, REASON_MAX - 1)}…` : reason, by: ORCHESTRATOR, at, from: item.state };
+          this.ctx.storage.transactionSync(() => {
+            this.update(item.id, { state: "blocked", blocked: JSON.stringify(record) }, at);
+            this.log(item.id, ORCHESTRATOR, "item.blocked", { reason: record.reason, from: item.state }, at);
+          });
+        },
       });
     } finally {
       this.dispatchingOnCriteria = false;
