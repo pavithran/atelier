@@ -23,7 +23,7 @@ import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectProcess, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectProcess, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderAccessRefusal, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, redactKeys, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -4839,11 +4839,11 @@ export default {
       const accessConfigured = accessConfig(env as unknown as Record<string, string | undefined>);
       const guarded = parts[0] !== "api" && pathname !== "/logout";
       if (accessConfigured.state === "broken" && guarded) {
-        return html(renderError(`This server's Cloudflare Access settings are incomplete or unusable, so the developer's pages are refused until they are fixed: ${accessConfigured.problem}`, ""), 503);
+        return html(renderAccessRefusal(`This server's Cloudflare Access settings are incomplete or unusable, so the developer's pages are refused until they are fixed: ${accessConfigured.problem}`), 503);
       }
       const access = accessConfigured.state === "on" ? accessConfigured.settings : null;
       if (access && guarded && !(await accessVouches(req, access))) {
-        return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
+        return html(renderAccessRefusal("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry."), 401);
       }
       if (pathname === "/login") {
         // Behind Access the assertion just verified is the owner's sign-in,
