@@ -1019,24 +1019,35 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
 // a fail "failed", and anything else, including no run, a run of another head
 // and a run that never started, "could-not-run", which the server records as a
 // fact and waits on. Nothing is reported passed that did not pass.
+// Each test is sent once, with its worst result at the head: a test that
+// failed in either run is failed, whatever the other run said.
 export function testRunsFor(evidence, head, required) {
   const result = (status) => status === "pass" ? "passed" : status === "fail" ? "failed" : "could-not-run";
+  const rank = { passed: 0, "could-not-run": 1, failed: 2 };
   const runs = new Map();
-  const add = (names, status) => { for (const test of names) runs.set(`${test}\0${result(status)}`, { test, head, result: result(status) }); };
+  const add = (names, status) => {
+    const r = result(status);
+    for (const test of names) if (!runs.has(test) || rank[r] > rank[runs.get(test)]) runs.set(test, r);
+  };
   const same = evidence && evidence.head === head;
   const names = required?.names ?? [];
-  let covering = same ? evidence.covering?.status ?? "not-run" : "not-run";
-  // The full-suite fallback is one result; per-file results beside it could pass the server's cap.
-  if (!required?.full && same && evidence.tests?.status && evidence.tests.status !== "none") {
+  if (names.length) add(names, same ? evidence.covering?.status ?? "not-run" : "not-run");
+  if (same && evidence.tests?.status && evidence.tests.status !== "none") {
     const status = evidence.tests.status;
-    const extra = (evidence.tests.files ?? []).filter((file) => !names.includes(file));
-    if (names.length + extra.length <= TEST_RUNS_MAX) add(extra, status);
-    else if (names.length < TEST_RUNS_MAX) add([`${extra.length} changed tests outside the covering tests`], status);
-    // No room for even one entry: the required names carry the worse of the two results.
-    else if (status !== "pass" && covering === "pass") covering = status;
+    const files = evidence.tests.files ?? [];
+    // The full-suite fallback stays one result, so a changed-test run that did
+    // not pass is carried by the full suite's names, not listed beside them.
+    if (required?.full) { if (names.length && status !== "pass") add(names, status); }
+    else {
+      add(files.filter((file) => names.includes(file)), status);
+      const extra = files.filter((file) => !names.includes(file));
+      if (names.length + extra.length <= TEST_RUNS_MAX) add(extra, status);
+      else if (names.length < TEST_RUNS_MAX) add([`${extra.length} changed tests outside the covering tests`], status);
+      // No room for even one entry: the required names carry the worse of the two results.
+      else if (status !== "pass") add(names, status);
+    }
   }
-  if (names.length) add(names, covering);
-  return [...runs.values()].sort((a, b) => (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
+  return [...runs].map(([test, r]) => ({ test, head, result: r })).sort((a, b) => (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
 }
 
 // A review job clones the part's branch read-only with a read grant,

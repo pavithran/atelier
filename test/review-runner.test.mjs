@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testRunsFor, runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
-import { cleanTestRuns } from "../src/review/verify.ts";
+import { cleanTestRuns, testEvidenceVerdict } from "../src/review/verify.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { REVIEW_RENEW_MS, cleanVerification } from "../src/rules.ts";
 // What a run report's facts point to: the run's text, kept in a log on the runner's own machine (round 10).
@@ -235,6 +235,38 @@ test("testRunsFor keeps every required name and stays within the evidence cap in
   const full = sentFor(200, extra(1), "fail");
   assert.equal(full.length, 200);
   assert.ok(full.every((s) => s.result === "failed"));
+});
+
+test("testRunsFor never lets a pass hide a failed result for the same test at that head, and the server refuses it (t523)", () => {
+  const ns = (n, p = "r") => Array.from({ length: n }, (_, i) => `test/${p}${String(i).padStart(3, "0")}.test.mjs`);
+  const map = (names) => ({ check: "npm test", map: [{ paths: ["src/**"], tests: names }] });
+  const rows = [
+    // [label, required, changed-test files, changed-test status, covering status, expected per-name results, server accepts]
+    ["overlap fail+pass", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "fail", "pass", { "test/a.test.mjs": "failed" }, false],
+    ["overlap pass+fail", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "pass", "fail", { "test/a.test.mjs": "failed" }, false],
+    ["overlap pass+pass", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "pass", "pass", { "test/a.test.mjs": "passed" }, true],
+    ["overlap not-run+pass", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "not-run", "pass", { "test/a.test.mjs": "could-not-run" }, false],
+    ["partial overlap", { names: ["test/a.test.mjs", "test/b.test.mjs"], full: false }, ["test/a.test.mjs", "test/c.test.mjs"], "fail", "pass", { "test/a.test.mjs": "failed", "test/b.test.mjs": "passed", "test/c.test.mjs": "failed" }, false],
+    ["disjoint fail", { names: ["test/a.test.mjs"], full: false }, ["test/c.test.mjs"], "fail", "pass", { "test/a.test.mjs": "passed", "test/c.test.mjs": "failed" }, false],
+    ["disjoint pass", { names: ["test/a.test.mjs"], full: false }, ["test/c.test.mjs"], "pass", "pass", { "test/a.test.mjs": "passed", "test/c.test.mjs": "passed" }, true],
+    ["200 covering + 1 outside, fail", { names: ns(200), full: false }, ["test/x.test.mjs"], "fail", "pass", Object.fromEntries(ns(200).map((n) => [n, "failed"])), false],
+    ["200 covering + 1 outside, pass", { names: ns(200), full: false }, ["test/x.test.mjs"], "pass", "pass", Object.fromEntries(ns(200).map((n) => [n, "passed"])), true],
+    ["200 covering, one overlapping + 1 outside, fail", { names: ns(200), full: false }, [ns(200)[7], "test/x.test.mjs"], "fail", "pass", Object.fromEntries(ns(200).map((n) => [n, "failed"])), false],
+    ["full suite, changed test failed", { names: ["npm test"], full: true }, ["test/a.test.mjs"], "fail", "pass", { "npm test": "failed" }, false],
+    ["full suite, all passed", { names: ["npm test"], full: true }, ns(201, "f"), "pass", "pass", { "npm test": "passed" }, true],
+  ];
+  for (const [label, required, files, status, covering, expected, accepts] of rows) {
+    const sent = testRunsFor({ head: H1, tests: { status, files }, covering: { status: covering } }, H1, required);
+    assert.ok(sent.length <= 200, `${label}: ${sent.length} entries`);
+    assert.equal(cleanTestRuns(sent).length, sent.length, label);
+    const got = {};
+    for (const s of sent) { assert.ok(!(s.test in got), `${label}: ${s.test} sent twice`); got[s.test] = s.result; }
+    for (const [name, result] of Object.entries(expected)) assert.equal(got[name], result, `${label}: ${name}`);
+    const verdict = required.full
+      ? testEvidenceVerdict({ approve: true, head: H1, runs: sent, affected: undefined, changed: ["src/a.ts"], checks: ["npm test"] })
+      : testEvidenceVerdict({ approve: true, head: H1, runs: sent, affected: map(required.names), changed: ["src/a.ts"] });
+    assert.equal(verdict.ok, accepts, `${label}: ${JSON.stringify(verdict)}`);
+  }
 });
 
 test("runReview releases the request when an approval proves no acceptance criterion, and posts one that does", async () => {
