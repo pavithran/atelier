@@ -21,7 +21,7 @@ import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./cre
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { REVIEW_RENEW_MS, VALIDATION_BLOCKED as BLOCKED_NOTE, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
-import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
+import { TEST_RUNS_MAX, parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
 import { stopped as reviewStopped, stopText } from "../src/review/stopped.ts";
@@ -29,6 +29,7 @@ import { historySection } from "../src/review/history.ts";
 import { submission } from "../src/brief.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { affectedCommand } from "../src/affected-tests.ts";
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
@@ -943,7 +944,7 @@ export function summarizeTestOutput(text) {
 // The tests and the typecheck go by the project's check limit (G7), `limits`
 // (checkLimits in src/check-limit.ts, from the server's policy), counted from
 // the held slot: a run stopped at it is 'not-run', said as what stopped it.
-export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, limits = checkLimits(null), prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
+export async function collectRunnerEvidence({ source, head, from, changedPaths, required, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, limits = checkLimits(null), prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
   const dir = `${source}-evidence-${id}`;
   const notRun = (reason) => ({ status: "not-run", reason });
   const lost = (reason) => ({ head, tests: notRun(reason), typecheck: notRun(reason) });
@@ -994,14 +995,59 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
       ...(runs.every((r) => r.passed !== undefined) ? { passed: runs.reduce((n, r) => n + r.passed, 0), failed: runs.reduce((n, r) => n + r.failed, 0) } : {}),
       failing: runs.flatMap((r) => r.failing ?? []).slice(0, RUNNER_EVIDENCE_NAMES),
     } : { status: "none" };
+    // The tests the server says must pass for an approval (t523): the full
+    // suite by its check, or the declared selection by the declared command.
+    // They run as one command, so one result stands for each of them.
+    let covering;
+    if (required?.names?.length) {
+      const command = required.full ? required.check : required.run ? affectedCommand(required.run, required.names) : null;
+      covering = command ? await exec(command, slot(["sh", "-c", command])) : notRun("the project declares no command that runs the covering tests");
+    }
     const typecheck = await exec("npm run typecheck", slot(["npm", "run", "typecheck"]));
-    return { head, tests, typecheck };
+    return { head, tests, typecheck, ...(covering ? { covering } : {}) };
   } catch (error) {
     if (signal?.aborted) throw error;
     return lost(`the runner failed: ${error.message}`);
   } finally {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* a folder left behind costs only disk */ }
   }
+}
+
+// The results an approval carries (t523), read from the runner's own run:
+// each test file it ran in the clean clone, and each test the server named as
+// covering the change, with what happened at the head. A pass is "passed",
+// a fail "failed", and anything else, including no run, a run of another head
+// and a run that never started, "could-not-run", which the server records as a
+// fact and waits on. Nothing is reported passed that did not pass.
+// Each test is sent once, with its worst result at the head: a test that
+// failed in either run is failed, whatever the other run said.
+export function testRunsFor(evidence, head, required) {
+  const result = (status) => status === "pass" ? "passed" : status === "fail" ? "failed" : "could-not-run";
+  const rank = { passed: 0, "could-not-run": 1, failed: 2 };
+  const runs = new Map();
+  const add = (names, status) => {
+    const r = result(status);
+    for (const test of names) if (!runs.has(test) || rank[r] > rank[runs.get(test)]) runs.set(test, r);
+  };
+  const same = evidence && evidence.head === head;
+  const names = required?.names ?? [];
+  if (names.length) add(names, same ? evidence.covering?.status ?? "not-run" : "not-run");
+  if (same && evidence.tests?.status && evidence.tests.status !== "none") {
+    const status = evidence.tests.status;
+    const files = evidence.tests.files ?? [];
+    // The full-suite fallback stays one result, so a changed-test run that did
+    // not pass is carried by the full suite's names, not listed beside them.
+    if (required?.full) { if (names.length && status !== "pass") add(names, status); }
+    else {
+      add(files.filter((file) => names.includes(file)), status);
+      const extra = files.filter((file) => !names.includes(file));
+      if (names.length + extra.length <= TEST_RUNS_MAX) add(extra, status);
+      else if (names.length < TEST_RUNS_MAX) add([`${extra.length} changed tests outside the covering tests`], status);
+      // No room for even one entry: the required names carry the worse of the two results.
+      else if (status !== "pass") add(names, status);
+    }
+  }
+  return [...runs].map(([test, r]) => ({ test, head, result: r })).sort((a, b) => (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
 }
 
 // A review job clones the part's branch read-only with a read grant,
@@ -2761,7 +2807,7 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     // nothing else to prove a criterion with.
     let runnerEvidence;
     if (io.runnerEvidence) {
-      try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from, project, actor }); }
+      try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from, project, actor, required: claimed.required }); }
       catch (error) {
         if (io.stopped()) throw new Error("interrupted");
         io.log(`clean-clone run failed: ${error.message}`);
@@ -2958,6 +3004,9 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
     if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
     if (posted.findings.length) argv.push("--findings", JSON.stringify(posted.findings));
     if (verification) argv.push("--verification", JSON.stringify(verification));
+    // An approval carries the results of the run of the tests that cover the
+    // change (t523); the server refuses it without them.
+    if (posted.verdict === "approve" && claimed.required) argv.push("--tests", JSON.stringify(testRunsFor(runnerEvidence, claimed.head, claimed.required)));
     if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${posted.verdict}`);
