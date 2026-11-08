@@ -144,6 +144,15 @@ test("a default export is skipped, whoever references it", () => {
   assert.deepEqual(names(dir), []);
 });
 
+test("a function exported as default through an alias is skipped", () => {
+  const dir = repo({
+    "src/d.ts": "function orphan() {}; export { orphan as default };\n",
+    "src/e.ts": "function orphanSpaced() {}\nexport { orphanSpaced   as   default };\n",
+    "test/a.test.mjs": "import a from '../src/d.ts'; import b from '../src/e.ts';\na(); b(); orphan(); orphanSpaced();\n",
+  });
+  assert.deepEqual(names(dir), []);
+});
+
 test("a name inside a string, template literal or comment is not a production reference", () => {
   const dir = repo({
     "src/a.ts": "export function orphan() { return \"orphan\"; }\n",

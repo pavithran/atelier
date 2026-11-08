@@ -109,8 +109,8 @@ export function exportedFunctions(text) {
   for (const m of code.matchAll(new RegExp(`${START}export\\s+(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*(?::[^=\\n]+)?=\\s*${FN_VALUE}`, "g"))) add(m[1], 1);
   for (const list of code.matchAll(/(?:^|[\n;}])\s*export\s*\{([^}]*)\}\s*(?!from\b)/g)) {
     for (const part of list[1].split(",")) {
-      const m = /^\s*([A-Za-z_$][\w$]*)(?:\s+as\s+[A-Za-z_$][\w$]*)?\s*$/.exec(part);
-      if (!m) continue;
+      const m = /^\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(part);
+      if (!m || m[2] === "default" || (m[1] === "default" && !m[2])) continue;
       const local = m[1];
       if (declaresFunction(code, local)) add(local, 2);
     }
