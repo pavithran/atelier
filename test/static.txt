@@ -79,3 +79,4 @@ test/setup-backup-hardening.test.mjs pins the backup and restore scripts' fixed 
 
 # The gate's own test.
 test/static-suite.test.mjs holds this list to its rules: every entry is a discovered test file with a reason, and none starts a server, a Durable Object or a network call
+test/test-only-exports.test.mjs fails on a function exported from src/ or cli/ that only test files reference, unless test/test-only-exports.txt lists it with a reason; reads source files from disk, fixture repositories in a temporary folder

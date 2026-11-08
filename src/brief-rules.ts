@@ -27,6 +27,9 @@ export const BUILD_RULES = [
   "- If a test outside the task's scope fails on main, do not change it; report the failing test and its output in the summary and stop.",
   "- A fix comes with a test that fails without it.",
   BUILD_EVIDENCE,
+  // t534: 18 of 65 blocking findings in t512-t528's rejections were logic no
+  // production code called.
+  "- Test through the production caller: a function only tests call fails the static check (npm run test:static), so wire each new function into the code that runs it.",
   "- A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.",
 ].join("\n");
 
