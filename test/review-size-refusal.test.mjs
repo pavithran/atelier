@@ -142,25 +142,38 @@ const JOBS = {
 
 const isSizeRefusal = (job, run) => run.state.skipped === true && /for its size/.test(JOBS[job].note(run.calls));
 
+// Each wording with the limit and size the note records; null is "not stated"
+// (the note then says the limit was not stated, or the size sent instead).
 const WORDINGS = [
-  "Error: Input exceeds the maximum length of 1048576 characters (got 7052528).",
-  "error: prompt too long: 1,200,000 > 1,048,576",
-  "input is over the 1048576-character limit (got 1300000)",
-  "prompt is too long: 250000 tokens > 200000 maximum",
-  "request too large",
+  { text: "Error: Input exceeds the maximum length of 1048576 characters (got 7052528).", limit: 1048576, actual: 7052528 },
+  { text: "error: prompt too long: 1,200,000 > 1,048,576", limit: 1048576, actual: 1200000 },
+  { text: "input is over the 1048576-character limit (got 1300000)", limit: 1048576, actual: 1300000 },
+  { text: "prompt is too long: 250000 tokens > 200000 maximum", limit: 200000, actual: 250000 },
+  { text: "Input exceeds the maximum length of 1,048,576 characters", limit: 1048576, actual: null },
+  { text: "Error: Input exceeds the maximum length of 1048576 characters.", limit: 1048576, actual: null },
+  { text: "request too large", limit: null, actual: null },
 ];
+
+// The limit and size a note states, as numbers, or null when it did not state them.
+function recorded(note) {
+  const m = /\((limit (\d+)|a limit it did not state); (actual (\d+)|about \d+ characters sent)\)/.exec(note);
+  assert.ok(m, `no limit and size in: ${note}`);
+  return { limit: m[2] ? Number(m[2]) : null, actual: m[4] ? Number(m[4]) : null };
+}
 
 for (const job of Object.keys(JOBS)) {
   for (const wording of WORDINGS) {
-    test(`${job}: a size refusal on stderr with a non-zero exit is recorded as one (${wording.slice(0, 30)})`, async (t) => {
-      const run = await JOBS[job].run(t, { code: 1, timedOut: false, stderr: wording, output: "" });
+    test(`${job}: a size refusal on stderr with a non-zero exit is recorded as one, with its limit and size (${wording.text.slice(0, 30)})`, async (t) => {
+      const run = await JOBS[job].run(t, { code: 1, timedOut: false, stderr: wording.text, output: "" });
       assert.ok(isSizeRefusal(job, run), JSON.stringify(run.state) + JobNote(job, run));
+      assert.deepEqual(recorded(JOBS[job].note(run.calls)), { limit: wording.limit, actual: wording.actual });
     });
   }
 
   test(`${job}: a size refusal on stderr after a signal (no exit code) is recorded as one`, async (t) => {
-    const run = await JOBS[job].run(t, { code: null, timedOut: false, stderr: WORDINGS[1], output: "" });
+    const run = await JOBS[job].run(t, { code: null, timedOut: false, stderr: WORDINGS[1].text, output: "" });
     assert.ok(isSizeRefusal(job, run), JSON.stringify(run.state));
+    assert.deepEqual(recorded(JOBS[job].note(run.calls)), { limit: 1048576, actual: 1200000 });
   });
 
   // Criterion 2: a harness that exits 0 is never a size refusal, whatever it says.
@@ -183,7 +196,7 @@ for (const job of Object.keys(JOBS)) {
   // Criterion 3: stdout is never read for a size refusal.
   test(`${job}: size wording on stdout after a non-zero exit, with nothing on stderr, is not a size refusal`, async (t) => {
     for (const code of [1, null]) {
-      const run = await JOBS[job].run(t, { code, timedOut: false, stderr: "", output: WORDINGS[1] });
+      const run = await JOBS[job].run(t, { code, timedOut: false, stderr: "", output: WORDINGS[1].text });
       assert.ok(!isSizeRefusal(job, run), JSON.stringify(run.state));
       assert.ok(!run.state.inputTooLarge, JSON.stringify(run.state));
       assert.equal(run.state.taskFailure, true, "a plain harness failure on the task");
@@ -193,7 +206,7 @@ for (const job of Object.keys(JOBS)) {
   // Criterion 6: a harness stopped for its time limit is never a size refusal.
   test(`${job}: a harness stopped for its time limit is not a size refusal, whatever its stderr says`, async (t) => {
     for (const code of [1, null, 137]) {
-      const run = await JOBS[job].run(t, { code, timedOut: true, stderr: WORDINGS[0], output: WORDINGS[1] });
+      const run = await JOBS[job].run(t, { code, timedOut: true, stderr: WORDINGS[0].text, output: WORDINGS[1].text });
       assert.ok(!isSizeRefusal(job, run), JSON.stringify(run.state));
       assert.equal(run.state.reason, "harness timed out");
     }
