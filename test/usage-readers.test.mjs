@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { runUsage } from "../cli/usage.mjs";
 
 // Each test enters through runUsage. The files are fixtures this file writes,
@@ -377,6 +378,36 @@ test("--claude-capture accepts a dash for the 5-hour fields and the file yields 
   assert.deepEqual(names(body), ["weekly"]);
   assert.doesNotMatch(body.notes.join(" "), /usage unknown/);
   assert.equal(calls.report.length, 0);
+});
+
+// The production entry point: node cli/atelier.mjs as a child, so the flag
+// table in src/usage/commands/runner.ts is what accepts or refuses the flag.
+const atelierCli = fileURLToPath(new URL("../cli/atelier.mjs", import.meta.url));
+const capture = (dir, text) => run(process.execPath, [atelierCli, "runner", "--usage", "--claude-capture", text], { env: { ...process.env, ATELIER_CONFIG_DIR: dir } })
+  .then((r) => ({ code: 0, ...r }), (e) => ({ code: e.code, stdout: e.stdout, stderr: e.stderr }));
+
+test("atelier runner --usage --claude-capture writes claude-usage.txt through the real CLI", async (t) => {
+  const dir = tempDir(t);
+  const result = await capture(dir, "- 47 - 2026-11-10T13:59:59Z");
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(readdirSync(dir), ["claude-usage.txt"]);
+  assert.match(readFileSync(join(dir, "claude-usage.txt"), "utf8"), /47/);
+});
+
+test("atelier runner --usage --claude-capture with a bad capture exits 1 naming it and keeps the old file", async (t) => {
+  const dir = tempDir(t);
+  writeFileSync(join(dir, "claude-usage.txt"), "OLD\n");
+  const result = await capture(dir, "x 47 - 2026-11-10T13:59:59Z");
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /claude-capture/);
+  assert.doesNotMatch(result.stderr, /does not take/);
+  assert.equal(readFileSync(join(dir, "claude-usage.txt"), "utf8"), "OLD\n");
+  assert.deepEqual(readdirSync(dir), ["claude-usage.txt"]);
+});
+
+test("atelier runner --help lists --claude-capture", async () => {
+  const { stdout } = await run(process.execPath, [atelierCli, "runner", "--help"]);
+  assert.match(stdout, /--claude-capture 'TEXT' +with --usage/);
 });
 
 // ── criterion 6: the documentation ─────────────────────────────────────────

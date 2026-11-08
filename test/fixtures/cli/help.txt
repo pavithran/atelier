@@ -29,7 +29,7 @@ Models     models [--json] · models add ID --harness H --where home|cloud [--pr
 Projects   projects rename OLD NEW [--release-name] · projects remove NAME [--force] · projects move-host NAME --from REMOTE [--token-env VAR] [--way-back] [--clear-secret REASON --quote WORDS] · projects move-host NAME --push-back | --renew-way-back --token-env VAR | --end-bake · migrate ID --from REMOTE [--ref BRANCH] [--token-env VAR] [--project P] (carry an open task from its Artifacts fork) · import-tasks FILE... [--project P] (file a project's own task and decision files) · init --name NAME --rename-local
 Local      gc [--project NAME] [--dry-run | --apply] · clean [--project NAME] [--dry-run] · runner --name home:NAME [--once] [--config PATH] [--integrate] [--replace] · runner setup [--config PATH] [--claude-token-file PATH] [--dry-run]   (write a runner config for this machine)
            runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] (what each home model's harness serves) · slots set N · slots status [--json] · slots trial FILE [--apply]
-           runner --usage [--name home:NAME] [--dry-run] [--config PATH] [--claude-status-file PATH]   (each tool's windows, served models, costs and balances)
+           runner --usage [--name home:NAME] [--dry-run] [--config PATH] [--claude-status-file PATH] [--claude-capture 'TEXT']   (each tool's windows, served models, costs and balances)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
 Docs       guide [--role build|review|plan|orchestrate] [--full] [--project P]   (paste into a project's AGENTS.md)
 
