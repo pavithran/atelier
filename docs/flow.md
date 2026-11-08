@@ -74,8 +74,9 @@ count as merged.
 JSON retains the existing task phases, totals and rates, adding
 `medianMinutesToMerge`, `medianReviewRounds`, and `phaseShares` (fractions from
 zero to one). Each task also has `minutesToMerge`, null until a merge is recorded.
-The only production caller is `cli/commands/flow.mjs`; it uses the same report
-for text and JSON. No generated page consumes this report.
+Production callers are `cli/commands/flow.mjs`, which uses the same report for
+text and JSON, and the Process tab (`GET /p/NAME/process`, `src/process.ts`),
+which draws it as a flowchart: see [process.md](process.md).
 
 ## Attempts and rates
 
