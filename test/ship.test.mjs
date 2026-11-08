@@ -1097,3 +1097,34 @@ for (const status of [401, 403, 409, 500]) test(`ship refuses a step-start error
   assert.ok(!f.state.runs.some(r => r.step === "deploy"));
   assert.doesNotMatch(r.stdout + r.stderr, /Shipped demo|Warning:.*step starts/);
 });
+
+for (const wrapStatus of [1, 0]) test(`a deploy and delivery check that pass with wrap exiting ${wrapStatus} ${wrapStatus ? "is recorded as shipped with a wrap warning" : "is shipped with no warning"}`, async (t) => {
+  const node = process.execPath;
+  const cwd = files({ "docs/atelier/ship.json": { ...WEB_SHIP, deploy: { run: [node, "-e", "void 0"] }, "verify-deploy": { run: [node, "-e", "void 0"] }, push: false } });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const head = "a".repeat(40), deploys = [], lines = [];
+  const approval = { id: "a1", kind: "deploy", commit: head, at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString() };
+  const run = runShip({
+    name: "demo", cwd, branch: "main", baselineHead: head, paired: () => head,
+    git: args => args[0] === "branch" ? "main" : args[0] === "rev-parse" ? head : "",
+    inProgress: () => [], env: {}, secrets: [], redact: text => text,
+    stage: () => {}, print: line => lines.push(line), fail: message => { throw new Error(message); },
+    request: async (method, path) => path.endsWith("/actions") ? { approvals: [approval] } : path.endsWith("/consume") ? { id: "a1" } : {},
+    deployed: async record => deploys.push(record),
+    wrap: async () => ({ status: wrapStatus, output: wrapStatus ? "wrap refuses: boom\n" : "" }),
+  });
+  if (wrapStatus) await assert.rejects(run, /ship stopped at wrap/); else await run;
+  assert.equal(deploys.length, 1);
+  assert.equal(deploys[0].result, "shipped");
+  assert.equal(deploys[0].step, undefined);
+  if (wrapStatus) assert.match(deploys[0].warning, /^wrap failed: atelier wrap .* exited 1: wrap refuses: boom$/);
+  else assert.equal(deploys[0].warning, undefined);
+});
+
+test("a deploy record's wrap warning is shown beside shipped, never as FAILED", async () => {
+  const { deployInput, deployText } = await import("../src/checkout-lease.ts");
+  const d = deployInput({ ship: "s-mw5imenq", head: "a".repeat(40), result: "shipped", warning: "wrap failed: exited 1" }, "owner", "2026-11-06T21:58:00Z");
+  assert.match(deployText(d), /shipped, .*Warning: wrap failed: exited 1/);
+  assert.doesNotMatch(deployText(d), /FAILED/);
+  assert.throws(() => deployInput({ ship: "s-mw5imenq", head: "a".repeat(40), result: "shipped", warning: "x".repeat(1001) }, "owner", "t"), /warning is at most/);
+});

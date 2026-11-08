@@ -354,6 +354,14 @@ export function shipSecrets(env, given = []) {
 // so does wrap.
 // No step gets CLOUDFLARE_ENV: a value left in the owner's shell would send
 // Wrangler to another Worker than the one the ship order names (t344).
+// The argv after `atelier` for ship's wrap step. Ship already proved the head
+// (landing checks, its own typecheck, deploy and verify steps), so wrap only
+// commits and records: re-running the project's checks in the developer's
+// checkout failed s-mw5imenq after its deploy had passed.
+export function shipWrapArgs(summary, name) {
+  return ["wrap", summary, "--no-check", "--project", name];
+}
+
 export function stepEnv(env, head, internal = false) {
   const filtered = Object.fromEntries(Object.entries(env).filter(([k]) => k !== "CLOUDFLARE_ENV" && (internal || !k.startsWith("ATELIER_"))));
   return head ? { ...filtered, ATELIER_SHIP_HEAD: head } : filtered;
@@ -700,7 +708,13 @@ export async function ship(ctx) {
         ran.push("verify-delivery (unconfirmed)");
         continue;
       }
-      await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: s.step, ran, note: [unconfirmed, how].filter(Boolean).join("\n").slice(0, 1000) });
+      // Wrap is bookkeeping: once a deploy has passed and delivery is not in
+      // doubt, its failure is a warning on a deploy that shipped, not a failed
+      // deploy. The ship still stops, so nothing is pushed unwrapped.
+      const delivered = s.step === "wrap" && !unconfirmed && ran.some((r) => r === "deploy" || r === "install");
+      const tail = (failed.output ?? "").trim().split("\n").slice(-5).join(" | ");
+      if (delivered) await ctx.deployed?.({ ship: id, head: commit, result: "shipped", ran, warning: `wrap failed: ${how}${tail ? `: ${tail}` : ""}`.slice(0, 1000) });
+      else await ctx.deployed?.({ ship: id, head: commit, result: "failed", step: s.step, ran, note: [unconfirmed, how].filter(Boolean).join("\n").slice(0, 1000) });
       const usedText = Object.entries(used).map(([k, a]) => `${a} for ${k}`).join(", ");
       fail([
         `ship stopped at ${s.step}: ${how}.`,
