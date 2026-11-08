@@ -4059,7 +4059,10 @@ export class Ledger extends DurableObject<Env> {
 
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
-    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
+    // A task claimed before (a fix round) comes ahead of one never built,
+    // oldest dispatch first within each group (t539).
+    const built = rows.length ? new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string)) : new Set<string>();
+    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id) })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
