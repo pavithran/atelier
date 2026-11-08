@@ -226,10 +226,10 @@ yet, or one past 5,000 changed files, is judged by its scope glob instead. Name 
 glob (for Atelier: `cli/runner.mjs`, `src/ledger.ts`,
 `src/dispatch/rules.ts`, the files where a dozen tasks built at once left
 half the landings on merge conflicts). A dispatch that overlaps,
-within a core file, a claimed item or the item a live landing
-lease names waits in the queue, naming its blocker, until each claimed blocker submits or is
-released and each landing ends; a submitted or accepted item that is not
-landing holds nothing. `atelier status` names every item it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
+within a core file, an item that was claimed and has not merged or been
+abandoned (claimed, submitted, accepted, open again, or blocked) waits in the
+queue, naming the blocker and its stage ("waits on t521 (submitted by codex/gpt-6-astra)"), until
+each blocker merges or is abandoned; an open item never claimed holds nothing. `atelier status` names every item it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
 overlap is known to be harmless. Dispatching again a held task that overlaps
 is refused, so no claim ends for a dispatch that cannot run. Parts of one plan never hold each other,
 since the plan orders overlapping parts already. Landings run beside one

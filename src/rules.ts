@@ -64,6 +64,9 @@ export interface Item {
   nonGoals?: string[];
   stopWhen?: string[];
   nextGate?: string | null;
+  // The short name of the design note the task builds on; tasks naming one
+  // design wait for each other (coreOverlaps in src/dispatch/rules.ts).
+  design?: string | null;
   // What the change must do to be done, numbered in the review brief as a
   // plan part's acceptance criteria are; a change that fails one blocks.
   accept?: string[];
@@ -182,6 +185,9 @@ export interface ItemFields {
   nonGoals?: string[];
   stopWhen?: string[];
   nextGate?: string | null;
+  // The short name of the design note the task builds on; tasks naming one
+  // design wait for each other (coreOverlaps in src/dispatch/rules.ts).
+  design?: string | null;
   accept?: string[];
   brief?: string | null;
   title?: string;
@@ -1563,6 +1569,7 @@ export function secretClearReason(value: unknown): string {
 // strings with something in each, at most FIELD_LIST_MAX of them; the gate is
 // one line or null. A field that is not sent is left out, so the Ledger
 // keeps the item's value for it.
+const DESIGN_MAX = 80;
 export function itemFields(input: Record<string, unknown>): ItemFields {
   const list = (v: unknown, field: string): string[] => {
     if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !line(s))) throw new RuleError("bad_field", `${field} must be a list of strings with something in each`, 400);
@@ -1608,6 +1615,12 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     const gate = line(input.nextGate);
     if (gate.length > FIELD_MAX) throw new RuleError("bad_field", `nextGate is at most ${FIELD_MAX} characters; this one is ${gate.length}`, 400);
     out.nextGate = gate || null;
+  }
+  if (input.design !== undefined) {
+    if (input.design !== null && typeof input.design !== "string") throw new RuleError("bad_field", "design must be text or null", 400);
+    const design = line(input.design);
+    if (design.length > DESIGN_MAX) throw new RuleError("bad_field", `design is a short name of at most ${DESIGN_MAX} characters; this one is ${design.length}`, 400);
+    out.design = design || null;
   }
   return out;
 }

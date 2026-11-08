@@ -100,7 +100,7 @@ for (const transfer of ["handoff", "release"]) {
     await L(name).newItem("Separate history", [], "owner");
     await L(name).claim("t2", "qwen/qwen3");
     const items = await L(name).items();
-    expect(items[0]).toEqual(await L(name).item("t1"));
+    expect({ ...items[0], everClaimed: undefined }).toEqual({ ...(await L(name).item("t1")), everClaimed: undefined });
     expect(items[1].pushActors).toEqual(["qwen/qwen3"]);
     // Recorded with the reviewer's own token, so the gate counts it (t215).
     await L(name).addReview({ ...review, by: "opencode/glm-5.3" }, undefined, true);

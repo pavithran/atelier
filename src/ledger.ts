@@ -54,6 +54,7 @@ import { ago } from "./floor.ts";
 // at its next push or finish (t391).
 const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, endedRun, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, RUNNER_GONE_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, skipHolds, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { holdsCore } from "./dispatch/core-hold";
 import { allSkipped } from "./landing-verdict";
 import { automaticNote, cleanRunFacts, runFactsText, withoutRunText, type RunFacts } from "./run-facts.ts";
 import { nextProgress, parseProgress, type Blocker, type ProgressRecord, type SituationFacts } from "./situation.ts";
@@ -1137,6 +1138,7 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("non_goals")) this.sql.exec(`ALTER TABLE items ADD COLUMN non_goals TEXT`);
     if (!columns.includes("stop_when")) this.sql.exec(`ALTER TABLE items ADD COLUMN stop_when TEXT`);
     if (!columns.includes("next_gate")) this.sql.exec(`ALTER TABLE items ADD COLUMN next_gate TEXT`);
+    if (!columns.includes("design")) this.sql.exec(`ALTER TABLE items ADD COLUMN design TEXT`);
     if (!columns.includes("blocked")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked TEXT`);
     // Plans (docs/orchestrator.md, section 1): an item's kind (null for an
     // ordinary task, plan or part), a part's plan item, its key in the
@@ -2928,7 +2930,7 @@ export class Ledger extends DurableObject<Env> {
       if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409, "edit the plan's scope instead");
       set.scope = JSON.stringify(scope);
     }
-    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context", 400, "give at least one field to change");
+    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate, --design or --context", 400, "give at least one field to change");
     if (context !== undefined) assertLength(context, NOTE_MAX, "the task's context");
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
@@ -3184,11 +3186,12 @@ export class Ledger extends DurableObject<Env> {
       if (!r.findings?.length) continue;
       rejections.set(row.item_id as string, [...(rejections.get(row.item_id as string) ?? []), r]);
     }
+    const claimed = new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string));
     return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray()
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -3977,12 +3980,25 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
+  // The items that could hold a core file: every one claimed at least once
+  // and not merged, abandoned or integrated (holdsCore), and the item a
+  // landing lease names. In id order, as items() lists them.
+  private coreHolders(leased: string): Item[] {
+    const rows = this.sql.exec(`SELECT * FROM items WHERE id = ? OR (state NOT IN ('merged', 'abandoned', 'integrated') AND (state = 'claimed' OR id IN (SELECT item_id FROM events WHERE kind = 'item.claimed'))) ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, leased).toArray();
+    return this.withEverClaimed(rows.map(toItem));
+  }
+
+  private withEverClaimed(items: Item[]): Item[] {
+    const claimed = new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string));
+    return items.map((i) => ({ ...i, everClaimed: claimed.has(i.id) }));
+  }
+
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
-    const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
-    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)) : [...open, ...live];
+    const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
+    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
     const previous: Record<string, { since: string; expires?: number }> = saved ? JSON.parse(saved.value as string) : {};
@@ -3998,7 +4014,7 @@ export class Ledger extends DurableObject<Env> {
       if (!blockers.length) return { ...i, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
       const old = previous[i.id];
       const since = old && (old.expires === undefined || old.expires > now) ? old.since : new Date(now).toISOString();
-      const expires = blockers.every((b) => b.state !== "claimed") && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
+      const expires = blockers.every((b) => !live.some((l) => l.id === b.id && holdsCore(l))) && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
       current[i.id] = { since, ...(expires === undefined ? {} : { expires }) };
       const elapsedMs = Math.max(0, now - Date.parse(since));
       const held: CoreHold = { ...blockers[0], blockers, since, elapsedMs, warning: elapsedMs >= CORE_HOLD_WARNING_MS, chains: blockerChains(i.id, graph), ...(claimRefusal ? { claimRefusal } : {}), ...gone };
@@ -7915,7 +7931,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; latestVerdict?: "approve" | "reject" | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -7948,7 +7964,10 @@ export class Ledger extends DurableObject<Env> {
       // runner does not read changes nothing for it.
       // The project's check limit (G7), which the runner's brief gives the
       // builder as its suite's budget, counted from the held test slot.
-      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
+      // The latest review's verdict at this head, which job does not say: a
+      // rejection a later approval superseded still makes job "rework" (t548).
+      const latest = this.reviewsFor(id).filter((r) => r.head === item.head).at(-1) ?? null;
+      return { job: sections.length ? "rework" : "build", latestVerdict: latest ? (latest.approve ? "approve" : "reject") : null, text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
     }
     assertOwner(item, actor);
     const project = this.project();
@@ -12071,7 +12090,8 @@ function briefFingerprint(text: string): string {
 // the holding task and the core file both scopes reach, and when the task is
 // offered again.
 function heldClaimText(id: string, held: CoreHold): string {
-  return `${id} is held: the core files hold it: it ${holdText(held)}. The claim it waits on is live, its runner polling, so ${id} is not offered while it holds; the queue offers it again once the hold clears`;
+  const stage = (held.blockers ?? [held]).every((b) => b.state === "claimed") ? "The claim it waits on is live, its runner polling" : "The task it waits on is neither merged nor abandoned";
+  return `${id} is held: the core files hold it: it ${holdText(held)}. ${stage}, so ${id} is not offered while it holds; the queue offers it again once the hold clears`;
 }
 
 function claimRole(item: Item): ModelRole | null {
@@ -12104,6 +12124,7 @@ function toItem(r: Row): Item {
     nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
     stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
     nextGate: (r.next_gate as string | null) ?? null,
+    design: (r.design as string | null) ?? null,
     brief: (r.brief as string | null) ?? null,
     accept: r.accept ? (JSON.parse(r.accept as string) as string[]) : [],
     // Only a blocked item carries the record; unblocking and abandoning clear it.
@@ -12134,6 +12155,7 @@ function fieldColumns(fields: ItemFields): Record<string, string | null> {
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
+  if (fields.design !== undefined) set.design = fields.design;
   if (fields.accept !== undefined) set.accept = fields.accept.length ? JSON.stringify(fields.accept) : null;
   if (fields.brief !== undefined) set.brief = fields.brief;
   return set;
