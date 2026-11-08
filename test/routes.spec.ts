@@ -685,7 +685,7 @@ it("the item's own agent cannot name the paths its check changed: the Worker mea
   const own = await agent("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: true, note: "mine" });
   expect(own.status).toBe(403);
   expect(await own.json()).toMatchObject({ error: "self_review" });
-  expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: true, note: "read the instructions" })).status).toBe(200);
+  expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: NO_CRITERIA, approve: true, note: "read the instructions", tests: [{ test: "npm test", head: H1, result: "passed" }] })).status).toBe(200);
   const accepted = await owner("POST", "/items/t1/accept", { head: H1 });
   expect(accepted.status, await accepted.clone().text()).toBe(200);
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1 });
@@ -1589,7 +1589,7 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   const fresh = await L.claimReview("t1", GPT, { runner: "home:studio", kind: "home" }) as unknown as { criteria: string; request: number };
   const two = (await (await owner("GET", "/items/t1")).json() as Detail).criteria;
   expect(fresh.criteria).toBe(two);
-  expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: fresh.criteria, request: fresh.request, approve: true, note: "read them" })).status).toBe(200);
+  expect((await reviewer("POST", "/items/t1/review", { head: H1, criteria: fresh.criteria, request: fresh.request, approve: true, note: "read them", tests: [{ test: "npm test", head: H1, result: "passed" }] })).status).toBe(200);
   expect((await (await owner("GET", "/items/t1")).json() as Detail).gate.ready).toBe(true);
   // The brief route gives the criteria and their binding, as atelier show prints them.
   expect(await (await owner("GET", "/items/t1/brief")).json()).toMatchObject({ accept: TWO, partAccept: null, criteria: two });

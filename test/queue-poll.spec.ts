@@ -93,15 +93,17 @@ it("queued reads the waiting tasks, their push actors and their core-file holds 
   const items = await L.items();
   const expected = items
     .filter((i) => i.state === "open" && !i.owner && i.dispatch)
-    .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
-    .map(({ everClaimed, ...i }: (typeof items)[number] & { everClaimed?: boolean }) => {
+    // A task claimed before (the pushed one) leads, then dispatch age (t539).
+    .sort((a, b) => Number(b.id === pushed.id) - Number(a.id === pushed.id) || a.dispatch!.at.localeCompare(b.dispatch!.at))
+    .map((row: (typeof items)[number]) => {
+      const i = { ...row, everClaimed: row.id === pushed.id };
       const h = coreHold(i, items, coreFiles);
       return h ? { ...i, held: { ...h, blockers: [h], chains: [{ path: [i.id, h.id], deadlock: false }], since: expect.any(String), elapsedMs: expect.any(Number), warning: false } } : i;
     });
   const { waiting, reviews } = await L.queued();
   expect(waiting).toEqual(expected);
   expect(reviews).toEqual([]);
-  expect(waiting.map((i) => i.id)).toEqual([held.id, free.id, pushed.id]);
+  expect(waiting.map((i) => i.id)).toEqual([pushed.id, held.id, free.id]);
   expect(waiting.find((i) => i.id === held.id)?.held).toMatchObject({ id: live.id, core: "src/ledger.ts" });
   expect(waiting.find((i) => i.id === pushed.id)?.pushActors).toContain("opencode/glm-5.3");
 });
