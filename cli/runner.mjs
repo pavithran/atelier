@@ -1024,7 +1024,8 @@ export function testRunsFor(evidence, head, required) {
   const runs = new Map();
   const add = (names, status) => { for (const test of names) runs.set(`${test}\0${result(status)}`, { test, head, result: result(status) }); };
   const same = evidence && evidence.head === head;
-  if (same && evidence.tests?.status && evidence.tests.status !== "none") add(evidence.tests.files ?? [], evidence.tests.status);
+  // The full-suite fallback is one result; per-file results beside it could pass the server's cap.
+  if (!required?.full && same && evidence.tests?.status && evidence.tests.status !== "none") add(evidence.tests.files ?? [], evidence.tests.status);
   if (required?.names?.length) add(required.names, same ? evidence.covering?.status ?? "not-run" : "not-run");
   return [...runs.values()].sort((a, b) => (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
 }

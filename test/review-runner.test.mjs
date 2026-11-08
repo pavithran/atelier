@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
+import { cleanTestRuns } from "../src/review/verify.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { REVIEW_RENEW_MS, cleanVerification } from "../src/rules.ts";
 // What a run report's facts point to: the run's text, kept in a log on the runner's own machine (round 10).
@@ -194,6 +195,19 @@ test("runReview posts an approval with the results of its own run of the coverin
 
   // A rejection and a claim with no requirement post no results.
   assert.equal((await approve({ head: H1, tests: { status: "pass", files: [] }, typecheck: run("pass") }, { required: undefined })).tests, undefined);
+});
+
+test("runReview with the full-suite fallback posts only the full-suite result, however many test files changed (t523)", async () => {
+  const files = Array.from({ length: 201 }, (_, i) => `test/f${String(i).padStart(3, "0")}.test.mjs`);
+  const required = { names: ["npm test"], why: "the map selects over 200 tests", full: true, run: "node --test {tests}", check: "npm test" };
+  const { io, calls } = fixture({ claim: { ...claimed, required } });
+  io.runnerEvidence = async () => ({ head: H1, tests: { status: "pass", files }, typecheck: { status: "pass", command: "x", files: [] }, covering: { status: "pass", command: "npm test", files: [] } });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "reviewed");
+  const argv = calls.find((c) => c.argv?.[0] === "review").argv;
+  const sent = JSON.parse(argv[argv.indexOf("--tests") + 1]);
+  assert.deepEqual(sent, [{ test: "npm test", head: H1, result: "passed" }]);
+  assert.equal(cleanTestRuns(sent).length, 1);
 });
 
 test("runReview releases the request when an approval proves no acceptance criterion, and posts one that does", async () => {
