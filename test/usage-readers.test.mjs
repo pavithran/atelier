@@ -202,7 +202,8 @@ async function stubServer(t, status) {
   const server = createServer((req, res) => {
     requests.push({ method: req.method, url: req.url, auth: req.headers.authorization });
     req.resume();
-    res.writeHead(status, { "content-type": "application/json" });
+    const code = typeof status === "function" ? status(req) : status;
+    res.writeHead(code, { "content-type": "application/json" });
     res.end("{}");
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -217,11 +218,10 @@ const run = promisify(execFile);
 const STORED = "atl_stored0123456789abcdef0123456789ab";
 const FROM_ENV = "atl_env000000000000000000000000000000";
 
-async function cli(t, { server, saved, stored, env = {}, flags = [] }) {
-  const root = tempDir(t);
+async function cli(t, { server, saved, stored, env = {}, flags = [], root = tempDir(t) }) {
   const config = join(root, "config");
-  mkdirSync(config);
-  mkdirSync(join(root, "home"));
+  mkdirSync(config, { recursive: true });
+  mkdirSync(join(root, "home"), { recursive: true });
   if (saved) writeFileSync(join(config, "config.json"), JSON.stringify({ server }));
   if (stored) writeFileSync(join(config, "secrets.json"), JSON.stringify({ API_TOKEN: STORED }), { mode: 0o600 });
   const full = { PATH: process.env.PATH, HOME: join(root, "home"), ATELIER_CONFIG_DIR: config, ATELIER_SECRET_STORE: "file", ATELIER_ACTING: "claude-code/sonnet-5.5", NO_COLOR: "1", ...env };
@@ -258,20 +258,81 @@ test("a dry run does not ask for a proposal", async (t) => {
   assert.deepEqual(stub.requests.filter((r) => r.method !== "GET"), [], "reads only");
 });
 
-test("an unreachable server or a non-2xx answer fails naming the server, writes no file, and a rerun sends everything again", async (t) => {
-  const down = await stubServer(t, 200);
-  const closed = down.url.replace(/:\d+$/, ":1");
-  const refusing = await stubServer(t, 500);
-  for (const [url, why] of [[closed, "unreachable"], [refusing.url, "500"]]) {
-    const first = await cli(t, { server: url, saved: true, stored: true });
-    assert.equal(first.code, 1, why);
-    assert.ok(first.stderr.includes(url), `${why}: ${first.stderr}`);
-  }
-  // The server answers every request 500: reports fail first, and the rerun posts them again.
-  const sent = refusing.requests.length;
-  const again = await cli(t, { server: refusing.url, saved: true, stored: true });
+// Every file under a directory with its content, to show a run changed nothing.
+function snapshot(dir) {
+  const out = {};
+  const walk = (d) => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const path = join(d, entry.name);
+      if (entry.isDirectory()) walk(path); else out[path] = readFileSync(path, "utf8");
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+const isReport = (req) => req.url.startsWith("/api/usage/") && req.method !== "GET";
+const isProposal = (req) => req.url === "/api/model-slate/propose";
+
+test("a refused proposal fails naming the server, changes no local file, and a rerun sends everything again", async (t) => {
+  const stub = await stubServer(t, (req) => (isProposal(req) ? 500 : 200));
+  const root = tempDir(t);
+  const first = await cli(t, { server: stub.url, saved: true, stored: true, root });
+  const before = snapshot(root);
+  const reports = stub.requests.filter(isReport).length;
+  assert.equal(first.code, 1);
+  assert.ok(first.stderr.includes(stub.url), first.stderr);
+  assert.ok(reports > 0, "the reports were accepted");
+  assert.equal(proposals(stub).length, 1, "the proposal was sent");
+  stub.requests.length = 0;
+  const again = await cli(t, { server: stub.url, saved: true, stored: true, root });
   assert.equal(again.code, 1);
-  assert.equal(refusing.requests.length, sent * 2);
+  assert.equal(stub.requests.filter(isReport).length, reports, "every report again");
+  assert.equal(proposals(stub).length, 1, "the proposal again");
+  assert.deepEqual(snapshot(root), before, "no local file written or changed");
+  const healthy = await stubServer(t, 200);
+  const ok = await cli(t, { server: healthy.url, saved: true, stored: true, root });
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(healthy.requests.filter(isReport).length, reports);
+  assert.equal(proposals(healthy).length, 1);
+});
+
+test("an unreachable proposal server fails naming the server, changes no local file, and a rerun sends everything again", async (t) => {
+  // The server answers every report, then goes away before the proposal.
+  const requests = [];
+  const sockets = new Set();
+  let reportsLeft = Infinity;
+  const server = createServer((req, res) => {
+    requests.push({ method: req.method, url: req.url });
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}", () => {
+      if (isReport(req) && --reportsLeft === 0) { server.close(); for (const s of sockets) s.destroy(); }
+    });
+  });
+  server.on("connection", (s) => sockets.add(s));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => { server.close(); for (const s of sockets) s.destroy(); });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const root = tempDir(t);
+  const healthy = await cli(t, { server: url, saved: true, stored: true, root });
+  assert.equal(healthy.code, 0, healthy.stderr);
+  const reports = requests.filter(isReport).length;
+  assert.ok(reports > 0);
+  const before = snapshot(root);
+  requests.length = 0;
+  reportsLeft = reports;
+  const first = await cli(t, { server: url, saved: true, stored: true, root });
+  assert.equal(first.code, 1, first.stderr);
+  assert.ok(first.stderr.includes(url), first.stderr);
+  assert.equal(requests.filter(isReport).length, reports, "every report was sent");
+  assert.equal(requests.filter(isProposal).length, 0, "the proposal found no server");
+  assert.deepEqual(snapshot(root), before, "no local file written or changed");
+  const again = await stubServer(t, 200);
+  const ok = await cli(t, { server: again.url, saved: true, stored: true, root });
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(again.requests.filter(isReport).length, reports);
+  assert.equal(proposals(again).length, 1);
 });
 
 // ── criteria 6 and 7: the capture ──────────────────────────────────────────
