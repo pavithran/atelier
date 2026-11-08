@@ -198,13 +198,31 @@ test("runReview puts the collected evidence in the brief, and a collector that t
 });
 
 
-test("mixed changed tests run in their own pools, and a Vitest failure is recorded", async () => {
+test("mixed changed tests run as one npm test command, and its failure is recorded", async () => {
   const { dir, head } = repo({ "test/a.test.mjs": "x", "test/b.spec.ts": "x", "src/c.spec.mjs": "x" });
-  const { run, npm } = runner((command) => command[0].includes("vitest") ? { code: 1, output: "worker assertion failed" } : {});
+  const { run, npm } = runner((command) => command[1] === "test" ? { code: 1, output: "worker assertion failed" } : {});
   const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.test.mjs", "test/b.spec.ts", "src/c.spec.mjs"], run, prepare });
-  assert.deepEqual(npm.map((c) => c.command), [["npm", "test", "--", "test/a.test.mjs"], ["node_modules/.bin/vitest", "run", "test/b.spec.ts", "src/c.spec.mjs"], ["npm", "run", "typecheck"]]);
+  assert.deepEqual(npm.map((c) => c.command), [["npm", "test", "--", "test/a.test.mjs", "test/b.spec.ts", "src/c.spec.mjs"], ["npm", "run", "typecheck"]]);
+  assert.ok(npm.every((c) => !c.command[0].includes("vitest")), "raw Vitest never runs");
   assert.equal(evidence.tests.status, "fail");
+  assert.deepEqual(evidence.tests.files, ["test/a.test.mjs", "test/b.spec.ts", "src/c.spec.mjs"]);
   assert.match(section(brief({ ...evidence, head: H1 })), /worker assertion failed/);
+});
+
+// The project's own test script loads a hook that resolves a module raw Vitest
+// cannot (cloudflare:workers, as test/run.mjs arranges); a spec file that
+// imports it must pass through that script.
+test("a changed spec that needs the project's test runner passes in a real clean clone", async () => {
+  const { dir, head } = repo({
+    "package.json": JSON.stringify({ scripts: { test: "node --import ./hook.mjs --test", typecheck: "node -e 0" } }),
+    "hook.mjs": 'import { register } from "node:module"; register("./loader.mjs", import.meta.url);',
+    "loader.mjs": 'export async function resolve(s, c, next) { return s === "cloudflare:workers" ? { url: "data:text/javascript,export default 1", shortCircuit: true } : next(s, c); }',
+    "test/a.spec.mjs": 'import "cloudflare:workers";\nimport { test } from "node:test";\ntest("ok", () => {});\n',
+  });
+  const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.spec.mjs"], prepare, id: "t571" });
+  assert.equal(evidence.tests.status, "pass", evidence.tests.output);
+  assert.equal(evidence.tests.command, "npm test -- test/a.spec.mjs");
+  assert.equal(evidence.typecheck.status, "pass");
 });
 
 test("evidence uses the review base even when main changed an existing test", async () => {
@@ -284,8 +302,9 @@ test("the whole output is read for counts and failing names, and unreadable outp
 
 test("a failing test is named in the brief with the counts, and the reviewer is told not to run it again", async () => {
   const { dir, head } = repo({ "test/a.test.mjs": "x", "test/b.spec.ts": "x" });
-  const { run } = runner((command) => command[0].includes("vitest") ? { code: 1, output: VITEST_FAIL } : command[1] === "test" ? { code: 1, output: NODE_FAIL } : {});
+  const { run } = runner((command) => command[1] === "test" ? { code: 1, output: NODE_FAIL + VITEST_FAIL } : {});
   const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.test.mjs", "test/b.spec.ts"], run, prepare });
+  assert.equal(evidence.tests.status, "fail");
   assert.equal(evidence.tests.passed, 4);
   assert.equal(evidence.tests.failed, 2);
   const text = brief({ ...evidence, head: H1 });

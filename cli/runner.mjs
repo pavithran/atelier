@@ -979,13 +979,10 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
       changedPaths = names.output.split("\0").filter(Boolean);
     }
     const files = changedPaths.filter((file) => /\.(test|spec)\.(mjs|ts)$/.test(file) && existsSync(join(dir, file)));
-    const nodeFiles = files.filter((file) => /\.test\.(mjs|ts)$/.test(file));
-    const vitestFiles = files.filter((file) => /\.spec\.(mjs|ts)$/.test(file));
+    // Every test and spec file goes through the project's own test command, as
+    // the project's runner loads hooks that raw Vitest does not.
     const runs = [];
-    for (const argv of [
-      ...(nodeFiles.length ? [["npm", "test", "--", ...nodeFiles]] : []),
-      ...(vitestFiles.length ? [["node_modules/.bin/vitest", "run", ...vitestFiles]] : []),
-    ]) runs.push(await exec(argv.join(" "), slot(argv)));
+    if (files.length) { const argv = ["npm", "test", "--", ...files]; runs.push(await exec(argv.join(" "), slot(argv))); }
     const tests = runs.length ? {
       status: runs.some((r) => r.status === "not-run") ? "not-run" : runs.some((r) => r.status === "fail") ? "fail" : "pass",
       command: runs.map((r) => r.command).join("; "), files,
