@@ -1908,27 +1908,6 @@ export async function runTask(assignment, config, name, io) {
       : merged && `Built ${item.id} with main at ${merged.mainHead} merged`;
     const submit = () => io.cli(["finish", item.id, "--project", project, "--as", actor,
       ...(summary ? ["--summary", summary] : [])], workspace);
-    // Criteria revised while the build ran (t522): the builder reads the new
-    // brief and takes one turn to meet them before the work is submitted.
-    if (item.kind !== "part" && item.dispatch?.job !== "merge-main" && io.jobBrief && !io.stopped()) {
-      const latest = await briefContext();
-      if (latest?.text.includes("## Revised acceptance criteria")) {
-        const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
-        const turn = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project, latest.checkLimits ?? null)}\n${latest.text}\n\nThe acceptance criteria were revised while you worked. Change the work to meet the revised criteria above, run targeted tests and the typecheck, and commit.\n`, latest.proseStandard ?? null);
-        let dataHome;
-        try {
-          const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
-          dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-          const result = await io.harness(commandFor(entry, { model, briefFile: turn.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
-          if (result.timedOut || result.code !== 0) throw new Error(result.timedOut ? "criteria revision turn timed out; claim preserved" : `criteria revision turn exited ${result.code}; claim preserved`);
-          if (io.stopped()) throw new Error("interrupted");
-          state = { ...state, head: await io.head(workspace) };
-        } finally {
-          if (dataHome) await io.removeDataHome(dataHome);
-          await io.removeBrief(turn);
-        }
-      }
-    }
     try { await submit(); }
     catch (error) {
       // Finish owns the clean-clone checks. Only a failed check (exit 2)

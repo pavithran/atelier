@@ -1,6 +1,5 @@
 // The models key is a session plan in either mode. dispatch-on-criteria
-// also acts in either mode, on the developer's instruction: it names the
-// project's builders, and a task filed with criteria goes to the first free one. The other standing
+// also acts in either mode, on the developer's instruction. The other standing
 // instructions (Atelier 2.0, G6) are the only automatic actions left
 // to the server and the tick. Each is a standing decision the developer
 // records with `atelier decide --standing KEY VALUE --quote "…"`, with their
@@ -28,26 +27,13 @@ export interface StandingKey {
   parse: (value: string) => string | null;   // the value as stored, or null when it is not one
 }
 
-// The builders a dispatch-on-criteria value lists, in the order of preference,
-// each a harness/model; none for off, for a malformed entry or a repeat.
-export function buildersOf(value: string): string[] {
-  if (value === "off") return [];
-  const list = value.split(",").map((b) => b.trim());
-  const seen = new Set<string>();
-  for (const b of list) {
-    if (!validActor(b) || !b.includes("/") || b.endsWith("/") || b.split("/").length !== 2 || seen.has(b.toLowerCase())) return [];
-    seen.add(b.toLowerCase());
-  }
-  return list;
-}
-
 const onOff = (v: string) => (v === "on" || v === "off" ? v : null);
 
 export const STANDING: Record<string, StandingKey> = {
   "dispatch-on-criteria": {
-    value: "harness/model[,harness/model...] or off",
-    says: (v) => v === "off" ? "a task filed with criteria is dispatched by no standing instruction" : `a task filed with criteria is dispatched at once to the first free builder of ${v.split(",").join(", ")} (the criteria review runs beside the build), in either mode`,
-    parse: (v) => v === "off" ? v : buildersOf(v).join(",") || null,
+    value: "harness/model or off",
+    says: (v) => v === "off" ? "criteria approval dispatches no task by itself" : `a task filed with criteria has its criteria review asked at once, and the approval dispatches it home to ${v} with land intent, once its holds are cleared, in either mode`,
+    parse: (v) => v === "off" || (validActor(v) && v.includes("/")) ? v : null,
   },
   models: {
     value: "non-empty text describing the models, roles and effort levels",

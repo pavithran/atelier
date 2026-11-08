@@ -83,9 +83,8 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
-import { dispatchOnCriteria, type BuildWait } from "./dispatch/on-criteria.ts";
+import { dispatchOnCriteria } from "./dispatch/on-criteria.ts";
 import { assertPrivateModel, privateRefusal } from "./dispatch/private.ts";
-import { buildersOf } from "./standing.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
@@ -259,9 +258,6 @@ export interface CriteriaReviewView {
   // (t457, postDeployChecks): criteria the builder cannot verify in its
   // workspace, each the project owner's or the orchestrator's to check.
   checks: PostDeployCheck[];
-  // Set while the task has criteria, is not dispatched and waits for a
-  // builder of the project's list (dispatch-on-criteria, t522).
-  buildWait?: BuildWait;
 }
 
 // What a change of a task's acceptance criteria took back (Ledger.editItem):
@@ -2874,9 +2870,9 @@ export class Ledger extends DurableObject<Env> {
     // Criteria filed with the task are its first revision, by whoever filed it (t438).
     if (fields.accept?.length) {
       this.recordCriteriaRevision(id, actor, now);
-      this.fileForBuild(id);
+      this.askCriteriaReviewAtFiling(id, now);
     }
-    return { ...this.item(id), ...(text.derived ? { derived: true as const } : {}), ...this.buildWaitOf(id) };
+    return { ...this.item(id), ...(text.derived ? { derived: true as const } : {}) };
   }
 
   // The project owner changes a task's framing after it was created. A
@@ -3045,17 +3041,14 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, ORCHESTRATOR, "item.undispatched", { reason: "the acceptance criteria wait for their review" }, at);
     }
     const accepted = before.state === "accepted";
-    // A build submitted before the change has not had the revised criteria:
-    // it goes back to its builder, as an accepted one does.
-    const returned = before.state === "submitted" && !before.kind && this.criteriaParallel();
     const overridden = !!before.reviewOverride;
     // A standing permission for an override goes with the criteria it was given under.
-    if (accepted || returned || overridden || before.overrideConfirmation) {
-      this.update(id, { ...(accepted || returned ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}), ...(before.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
+    if (accepted || overridden || before.overrideConfirmation) {
+      this.update(id, { ...(accepted ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}), ...(before.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
     }
     this.log(id, actor, "item.criteria_changed", {
       from, to, head: before.head, withdrawn: { reviews, requests: live.length },
-      ...(accepted ? { acceptanceWithdrawn: true } : {}), ...(returned ? { returnedToBuilder: true, note: `the acceptance criteria were revised after ${id} was submitted; ${before.owner ?? "the builder"} must read the revised criteria and submit again` } : {}), ...(overridden ? { overrideWithdrawn: true } : {}),
+      ...(accepted ? { acceptanceWithdrawn: true } : {}), ...(overridden ? { overrideWithdrawn: true } : {}),
     }, at);
     const asked = this.reaskForCriteria(id, live.filter((r) => r.tier !== 1), at);
     this.afterPlanChange(id);
@@ -3741,7 +3734,6 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "item.released", { from: item.owner, by: actor, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
-    this.markBuildWait(id, null);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}), ...(overlapHeld ? { heldBy: overlapHeld.id } : {}) }, d.at);
     return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}), ...(held && item.state === "claimed" && item.owner ? { releasedClaim: { from: item.owner } } : {}), ...(overlapHeld ? { overlapHeld } : {}) };
   }
@@ -3863,57 +3855,12 @@ export class Ledger extends DurableObject<Env> {
   // yet claimed.
   private criteriaGate(): boolean {
     const policy = this.project().policy;
-    return !!policy.requireCriteriaReview && !this.criteriaParallel() && this.mode().mode !== "fast";
-  }
-
-  // The review runs beside the build when the project says so, and in every
-  // project that lists builders in its dispatch-on-criteria instruction: a
-  // task is dispatched when it is filed, so the review cannot hold the build
-  // (t522). It still gates the change's review and landing.
-  private criteriaParallel(): boolean {
-    return this.project().policy.criteriaReview === "parallel" || this.dispatchBuilders().length > 0;
-  }
-
-  private dispatchBuilders(): string[] {
-    return buildersOf(this.standing().get("dispatch-on-criteria") ?? "off");
+    return !!policy.requireCriteriaReview && policy.criteriaReview !== "parallel" && this.mode().mode !== "fast";
   }
 
   private parallelCriteriaPending(id: string): boolean {
     const policy = this.project().policy;
-    return this.item(id).kind !== "plan" && !!policy.requireCriteriaReview && this.criteriaParallel() && this.mode().mode !== "fast" && !this.criteriaReviewStatus(id).approved;
-  }
-
-  // Work built on criteria that changed while it was under way is not
-  // submitted until the builder has fetched the brief that carries the
-  // revision. The revision reaches the builder only once a review approves it.
-  private assertCriteriaDelivered(id: string): void {
-    if (!this.criteriaParallel() || this.item(id).kind) return;
-    const changed = this.lastEvent(id, ["item.criteria_changed"]);
-    const claimed = this.lastEvent(id, ["item.claimed"]);
-    if (!changed || !claimed || changed.seq < claimed.seq) return;
-    const delivered = this.lastEvent(id, ["item.criteria_delivered"]);
-    if (delivered && delivered.seq > changed.seq && delivered.data.revised) return;
-    throw new RuleError("criteria_undelivered", `${id}'s acceptance criteria changed while it was built (revision ${this.criteriaRevision(id)}); the builder must read the revised criteria before submitting`, 409, `fetch the brief again, apply the revised criteria, then finish ${id}`);
-  }
-
-  // The criteria revision the build ran under: the one its latest brief
-  // carried since the claim, or the current one when no brief was fetched
-  // after a change.
-  private builtUnderRevision(id: string): number {
-    const claimed = this.lastEvent(id, ["item.claimed"]);
-    const delivered = this.lastEvent(id, ["item.criteria_delivered"]);
-    if (delivered && (!claimed || delivered.seq > claimed.seq) && typeof delivered.data.rev === "number") return delivered.data.rev;
-    return this.criteriaRevision(id);
-  }
-
-  // A code review of a submitted build is refused while the criteria have
-  // moved past the revision the build ran under.
-  private assertBuiltOnCurrentCriteria(id: string): void {
-    const item = this.item(id);
-    if (!this.criteriaParallel() || item.kind || item.state !== "submitted") return;
-    const submitted = this.lastEvent(id, ["item.submitted"])?.data.criteriaRev;
-    if (typeof submitted !== "number" || submitted === this.criteriaRevision(id)) return;
-    throw new RuleError("criteria_undelivered", `${id} was built on criteria revision ${submitted}, and the criteria are now at revision ${this.criteriaRevision(id)}; the builder has not had the revision`, 409, `wait for the builder to fetch the revised criteria and submit again, then ask for review of ${id}`);
+    return this.item(id).kind !== "plan" && !!policy.requireCriteriaReview && policy.criteriaReview === "parallel" && this.mode().mode !== "fast" && !this.criteriaReviewStatus(id).approved;
   }
 
   private assertParallelCriteriaReviewed(id: string): void {
@@ -4009,49 +3956,32 @@ export class Ledger extends DurableObject<Env> {
 
   private dispatchingOnCriteria = false;
 
-  // A task filed with criteria under dispatch-on-criteria (t522): its criteria
-  // review is asked now, of the first model that may give it (preferring one
-  // that is not a listed builder), and the task is dispatched to a free
-  // builder without waiting for the review. A refusal leaves the task as it
-  // was, for the next tick or the developer's own command.
-  private fileForBuild(id: string): void {
-    const builders = this.dispatchBuilders();
-    if (!builders.length) return;
-    const policy = this.project().policy;
-    if (policy.requireCriteriaReview && this.mode().mode !== "fast") {
-      const pool = this.poolStanding();
-      const listed = new Set(builders.map(b => b.toLowerCase()));
-      const fit = criteriaReviewerCandidates({ authors: authorsOf(this.criteriaRevisions(id)), pool: withStanding(pool, pool), policy, owner: this.owner, allowPaid: false })
-        .filter(c => !c.refusal && !privateRefusal(this.project().name, c.actor));
-      const chosen = fit.find(c => !listed.has(c.actor.toLowerCase())) ?? fit[0];
-      if (chosen) {
-        try { this.askCriteriaReview(this.item(id), ORCHESTRATOR, chosen.actor, pool, false, new Date().toISOString()); }
-        catch (error) { if (!(error instanceof RuleError)) throw error; }
-      }
-    }
-    this.dispatchApprovedCriteria();
+  // The reviewer a dispatch on approval names for its land intent: the one
+  // the review-on-checked mapping gives the builder's company (fast mode),
+  // else the model that approved the criteria, when it is of another company
+  // than the builder. None leaves the dispatch without land intent.
+  private landReviewer(id: string, builder: string): string | null {
+    const mapped = this.submissionDispatchInput({ agent: builder.split("/")[0], model: builder.split("/")[1], land: true }).reviewer;
+    if (typeof mapped === "string") return mapped;
+    const approver = this.criteriaReviewsFor(id).filter(r => r.state === "approved").at(-1)?.reviewer;
+    return approver && actorFamily(approver) !== actorFamily(builder) && !privateRefusal(this.project().name, approver) ? approver : null;
   }
 
-  // The mark that a task waits for a builder: kept in the meta table with the
-  // time it first waited for that builder, written when it changes and
-  // cleared in the transaction that dispatches the task.
-  private markBuildWait(id: string, wait: BuildWait | null): void {
-    const key = `build-wait:${id}`;
-    const held = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).toArray()[0];
-    if (!wait) {
-      if (held) this.sql.exec(`DELETE FROM meta WHERE key = ?`, key);
-      return;
-    }
-    const old = held ? JSON.parse(held.value as string) as BuildWait : null;
-    if (old && old.for === wait.for && old.reason === wait.reason) return;
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, key, JSON.stringify({ ...wait, since: old && old.for === wait.for ? old.since : wait.since }));
-  }
-
-  private buildWaitOf(id: string): { buildWait?: BuildWait } {
-    const item = this.item(id);
-    if (item.state !== "open" || item.owner || item.dispatch) return {};
-    const held = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `build-wait:${id}`).toArray()[0];
-    return held ? { buildWait: JSON.parse(held.value as string) as BuildWait } : {};
+  // A task filed with criteria in a project whose standing decision
+  // dispatches on criteria (t522): its criteria review is asked at once, of
+  // the first eligible model that is not the builder, so the approval can
+  // dispatch it with no session between. When none is eligible the task
+  // waits for the developer's own request.
+  private askCriteriaReviewAtFiling(id: string, at: string): void {
+    const builder = this.standing().get("dispatch-on-criteria");
+    if (!builder || builder === "off" || !this.project().policy.requireCriteriaReview || this.mode().mode === "fast") return;
+    const policy = this.project().policy, pool = this.poolStanding();
+    const fit = criteriaReviewerCandidates({ authors: authorsOf(this.criteriaRevisions(id)), pool, policy, owner: this.owner, allowPaid: false })
+      .filter(c => !c.refusal && !privateRefusal(this.project().name, c.actor));
+    const chosen = fit.find(c => !sameActor(c.actor, builder)) ?? fit[0];
+    if (!chosen) return;
+    try { this.askCriteriaReview(this.item(id), ORCHESTRATOR, chosen.actor, pool, false, at); }
+    catch (error) { if (!(error instanceof RuleError)) throw error; }
   }
 
   private dispatchApprovedCriteria(): void {
@@ -4061,15 +3991,27 @@ export class Ledger extends DurableObject<Env> {
       dispatchOnCriteria({
         decisions: standingDecisions(this.decisionStore),
         items: () => this.items(),
-        hasCriteria: item => !!item.accept?.length,
-        busy: () => this.items().flatMap(i => i.state === "claimed" && i.owner ? [i.owner] : i.state === "open" && !i.owner && i.dispatch?.agent && i.dispatch.model ? [`${i.dispatch.agent}/${i.dispatch.model}`] : []),
-        wait: (id, wait) => this.markBuildWait(id, wait),
+        approved: id => this.criteriaReviewStatus(id).approved,
         dispatchedBefore: id => !!this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.dispatched' LIMIT 1`, id).toArray().length,
         held: item => !!coreHold({ ...item, dispatch: { to: "home", agent: null, model: null, note: "", by: this.owner, at: new Date().toISOString() } }, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()),
+        // With land intent (t522): the submit asks the review and the
+        // landing, so no session is needed between approval and landing.
         dispatch: (id, agent, model, reason) => this.ctx.storage.transactionSync(() => {
-          this.dispatch(id, this.owner, { to: "home", agent, model }, undefined, reason);
-          this.markBuildWait(id, null);
+          const reviewer = this.landReviewer(id, `${agent}/${model}`);
+          this.dispatch(id, this.owner, { to: "home", agent, model, ...(reviewer ? { land: true, reviewer } : {}) }, undefined, reason);
         }),
+        // A private project's task waits on the developer, blocked with the
+        // reason, so atelier status says why it was not dispatched.
+        refused: (item, error) => {
+          if (error.code !== "private_project") return;
+          const at = new Date().toISOString();
+          const reason = `${error.detail}; the standing dispatch-on-criteria decision names that model, so ${item.id} was not dispatched. Dispatch it to an Anthropic, OpenAI or Google model, or record another builder`;
+          const record: Block = { reason: reason.length > REASON_MAX ? `${reason.slice(0, REASON_MAX - 1)}…` : reason, by: ORCHESTRATOR, at, from: item.state };
+          this.ctx.storage.transactionSync(() => {
+            this.update(item.id, { state: "blocked", blocked: JSON.stringify(record) }, at);
+            this.log(item.id, ORCHESTRATOR, "item.blocked", { reason: record.reason, from: item.state }, at);
+          });
+        },
       });
     } finally {
       this.dispatchingOnCriteria = false;
@@ -5015,7 +4957,6 @@ export class Ledger extends DurableObject<Env> {
     if (!item.head || item.head === item.base) throw new RuleError("nothing_pushed", "push work before submitting", 409, "run atelier push, then atelier submit");
     // Cleaned first: a summary over its limit is refused before anything is written.
     const text = cleanSummary(summary);
-    this.assertCriteriaDelivered(id);
     // A rerun of the submit that already stands: the caller names the head it
     // submits, and it is the one submitted and still the task's head. A newer
     // head, or none named, is a submit like any other.
@@ -5025,7 +4966,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const at = new Date().toISOString();
     this.update(id, { state: "submitted" }, at);
-    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}), ...(this.criteriaParallel() && !item.kind ? { criteriaRev: this.builtUnderRevision(id) } : {}) }, at, proved);
+    this.log(id, actor, "item.submitted", { head: item.head, ...(text ? { summary: text } : {}) }, at, proved);
     // A request the head's move withdrew is carried to this head, where the
     // gate still needs it reviewed (reaskReview).
     this.reaskReview(id, at);
@@ -7985,9 +7926,6 @@ export class Ledger extends DurableObject<Env> {
       const gap = reviewScopeGap(item, this.reviewsFor(id));
       const scopeNote = gap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, gap)}` : "";
       const text = [...sections.map((f) => findingsSection(f)), scopeNote, criteria, prose].filter(Boolean).join("\n\n");
-      // The builder has now read the criteria as they stand, so a submit may
-      // follow; a revision after this mark must be fetched again.
-      if (this.criteriaParallel()) this.log(id, ORCHESTRATOR, "item.criteria_delivered", { rev: this.criteriaRevision(id), revised: criteria.includes("## Revised acceptance criteria") }, new Date().toISOString());
       // Past findings on the files in scope (t14), beside the text: the
       // runner alone can tell which of those files exist at the commit its
       // build starts from, so it filters and renders them. A field an older
@@ -9414,7 +9352,6 @@ export class Ledger extends DurableObject<Env> {
   private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = [], standingDecision?: string): ReviewAsked {
     const item = this.reviewItem(id);
     if (!wanted && item.state !== "merged") this.assertParallelCriteriaReviewed(id);
-    if (item.state !== "merged") this.assertBuiltOnCurrentCriteria(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
     // A named reviewer is judged even when a request already stands, so a
@@ -9989,7 +9926,7 @@ export class Ledger extends DurableObject<Env> {
     const required = !!this.project().policy.requireCriteriaReview;
     const skipped = required && this.mode().mode === "fast";
     const deadlock = required && !skipped ? this.criteriaDeadlock(id, status) : null;
-    return { required, ...(this.project().policy.criteriaReview || this.criteriaParallel() ? { timing: this.criteriaParallel() ? "parallel" as const : this.project().policy.criteriaReview } : {}), ...(skipped ? { skipped: true, skippedReason: CRITERIA_SKIPPED_FAST } : {}), ...(deadlock ? { deadlock } : {}), status, authors: authorsOf(revisions), revisions, reviews, resolutions: this.criteriaResolutionsFor(id), checks: postDeployChecks(reviews, status.rev), ...this.buildWaitOf(id) };
+    return { required, ...(this.project().policy.criteriaReview ? { timing: this.project().policy.criteriaReview } : {}), ...(skipped ? { skipped: true, skippedReason: CRITERIA_SKIPPED_FAST } : {}), ...(deadlock ? { deadlock } : {}), status, authors: authorsOf(revisions), revisions, reviews, resolutions: this.criteriaResolutionsFor(id), checks: postDeployChecks(reviews, status.rev) };
   }
 
   // The deadlock that holds a build for good (t179): a review is wanted and
@@ -10016,7 +9953,7 @@ export class Ledger extends DurableObject<Env> {
 
   // Sequence order also catches revisions made in the claim's millisecond.
   private revisedCriteriaSection(id: string): string {
-    if (!this.criteriaParallel() || !this.criteriaReviewStatus(id).approved) return "";
+    if (this.project().policy.criteriaReview !== "parallel" || !this.criteriaReviewStatus(id).approved) return "";
     const changed = this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.criteria_changed' AND seq > (SELECT MIN(seq) FROM events WHERE item_id = ? AND kind = 'item.claimed') LIMIT 1`, id, id).toArray().length;
     if (!changed) return "";
     const item = this.item(id);

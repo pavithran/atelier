@@ -296,7 +296,7 @@ test("every build the queue can offer fetches the server's brief context before 
     const { io, calls } = withContext();
     const state = await runTask({ ...assignment, item }, config, "home:studio", io);
     assert.equal(state.phase, "submitted", `${name}: ${state.reason}`);
-    assert.deepEqual(calls.filter((c) => c.jobBrief).map((c) => c.jobBrief), [["atelier", "t13", assignment.actor], ["atelier", "t13", assignment.actor]], `${name}: one fetch before the harness and one before the submit (t522)`);
+    assert.deepEqual(calls.filter((c) => c.jobBrief).map((c) => c.jobBrief), [["atelier", "t13", assignment.actor]], `${name}: one fetch`);
     const fetched = calls.findIndex((c) => c.jobBrief), written = calls.findIndex((c) => c.brief), ran = calls.findIndex((c) => c.harness);
     assert.ok(fetched < written && written < ran, `${name}: the context is fetched before the brief is written and the harness starts`);
     const brief = calls[written].brief;
@@ -312,7 +312,7 @@ test("every build the queue can offer fetches the server's brief context before 
   // harness, so it needs no context either.
   const resumed = withContext();
   assert.equal((await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", resumed.io)).phase, "submitted");
-  assert.ok(!resumed.calls.some((c) => c.harness || c.brief));   // the one fetch before the submit finds no revised criteria
+  assert.ok(!resumed.calls.some((c) => c.jobBrief || c.harness || c.brief));
   // A context that cannot be read is the server's failure, not the model's,
   // for a recovered build as for a fresh one: nothing starts, the claim is released.
   for (const item of [assignment.item, heldItem({ head: "before" })]) {
