@@ -110,6 +110,8 @@ execFileSync("git", ["commit", "-q", "-m", "build: the stub's change"], { cwd: w
   reviewerToken = (await api("POST", "/tokens", { actor: REVIEWER, projects: ["demo"] })).body.token;
   mkdirSync(join(config, "tokens"), { recursive: true });
   writeFileSync(join(config, "tokens", "reviewer"), reviewerToken, { mode: 0o600 });
+  // The project declares that no test covers the stub's change, so the approval the runner posts rests on no result (t523).
+  assert.equal((await api("PUT", "/projects/demo", { checks: ["true"], affectedTests: { check: "true", run: "true {tests}", map: [{ paths: ["**"], tests: [] }] } })).status, 200);
   // The stub reviewer: approves.
   const review = join(root, "stub-reviewer.mjs");
   writeFileSync(review, `import { writeFileSync } from "node:fs";

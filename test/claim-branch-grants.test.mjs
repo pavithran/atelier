@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-proof.ts";
 
 const OWNER = "atl_00112233445566778899aabbccddeeff";
 const BUILDER = "opencode/glm-5.3";

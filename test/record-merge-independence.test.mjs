@@ -15,7 +15,10 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { startServer } from "../src/runtime/server.mjs";
 import { criteriaOf } from "../src/criteria.ts";
+import { installDefaultProof } from "./support/proof.ts";
 import { acceptancePolicy, gate, mergeContext, mergePolicyDecision, overrideForbidden, PROTECTED_NEED, recordedMergeIndependence } from "../src/rules.ts";
+
+installDefaultProof();
 
 const OWNER = "atl_00112233445566778899aabbccddeeff";
 const BUILDER = "codex/gpt-6";
