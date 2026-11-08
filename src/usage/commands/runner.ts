@@ -32,7 +32,7 @@ const spec: CommandSpec = {
     flags: {
       "--name home:NAME": "this runner's name; home: and this machine's host name unless given",
       "--claude-status-file PATH": "with --usage, reads only rate_limits from a Claude status-line JSON capture no older than three hours",
-      "--claude-capture 'TEXT'": "with --usage, writes Claude's plan figures to claude-usage.txt in the config folder from 'FIVE WEEK FIVE_RESET WEEK_RESET' (percents and UTC times; - for an unknown field) and reports nothing",
+      "--claude-capture 'TEXT'": "with --usage, writes Claude's plan figures to claude-usage.txt in the config folder from 'FIVE WEEK FIVE_RESET WEEK_RESET' (percents and UTC times; a lone hyphen marks an unknown field) and reports nothing",
       "--once": "handles at most one task, then exits",
       "--config PATH": "the runner config file; runner.json in the config folder unless given",
       "--claude-token-file PATH": "with `runner setup`, the file holding a `claude setup-token` token, which the config then names as claudeTokenFile; only the path is written, and an existing config's path is kept when the flag is absent",
