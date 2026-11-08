@@ -50,6 +50,10 @@ import { readSecret } from "./credentials.mjs";
 import { clean, defaultPaths, probeEnv, readCodexSessions, sqliteReader } from "./discover.mjs";
 import { readConfig } from "./runner-config.mjs";
 import { execute } from "./runner.mjs";
+import { readAntigravity } from "./usage-readers/antigravity.mjs";
+import { writeClaudeCapture } from "./usage-readers/claude-capture.mjs";
+import { readClaudeCode } from "./usage-readers/claude-code.mjs";
+import { readZai } from "./usage-readers/zai.mjs";
 
 export const SPANS = ["5h", "24h", "7d"];
 const SPAN_MS = { "5h": 5 * 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000 };
@@ -59,7 +63,7 @@ const LOOKBACK_MS = SPAN_MS["7d"] + 60_000;
 // Rows read at most; a record longer than this is reported as cut.
 export const ROW_LIMIT = 50_000;
 const DEEPSEEK_KEY_ENV = "DEEPSEEK_API_KEY";
-const USAGE = "usage: atelier runner --usage [--name home:NAME] [--dry-run] [--config PATH] [--claude-status-file PATH]";
+const USAGE = "usage: atelier runner --usage [--name home:NAME] [--dry-run] [--config PATH] [--claude-status-file PATH] [--claude-capture 'FIVE WEEK FIVE_RESET WEEK_RESET']";
 
 const stamp = (ms) => new Date(ms).toISOString().slice(0, 16) + "Z";
 const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
@@ -308,8 +312,24 @@ export async function gatherUsage(io, config, scrub) {
       }
     } catch { skipped.push("claude plan percent: status-line capture could not be read"); }
   }
-  if (existsSync(io.paths.antigravity ?? "")) skipped.push(`antigravity: its records at ${io.paths.antigravity} are not read yet, so no figure`);
+  if (!io.paths.antigravityLog && existsSync(io.paths.antigravity ?? "")) skipped.push(`antigravity: its records at ${io.paths.antigravity} are not read yet, so no figure`);
   skipped.push("gemini spend: Google serves no balance, so no figure");
+
+  // The plan readers, one file each in usage-readers/, run side by side. A
+  // reader that throws or runs past its limit gives its tool no windows and a
+  // note naming it; the others are not held up.
+  const ctx = { now, env: io.env, paths: io.paths, zaiFetch: io.zaiFetch ?? fetch };
+  const readers = [];
+  if (!io.claudeStatusFile && io.paths.claudeUsage) readers.push(["claude-code", readClaudeCode]);
+  if (io.env?.ZAI_API_KEY) { scrub.add(io.env.ZAI_API_KEY); readers.push(["zai", readZai]); }
+  if (io.paths.antigravityLog) readers.push(["antigravity", readAntigravity]);
+  const results = await Promise.all(readers.map(([tool, read]) => runReader(tool, read, ctx, io)));
+  readers.forEach(([tool], n) => {
+    let report = reports.find((r) => r.tool === tool);
+    if (!report) { report = { tool, body: { windows: [], models: [], balances: [], notes: [] } }; reports.push(report); }
+    report.body.windows = results[n].windows;
+    report.body.notes.push(...results[n].notes);
+  });
 
   for (const [provider, entryName] of Object.entries(config?.balances ?? {})) {
     if (provider !== "deepseek") { skipped.push(`${provider}: no balance source; only DeepSeek's balance can be asked for`); continue; }
@@ -327,6 +347,23 @@ export async function gatherUsage(io, config, scrub) {
   }
   if (!config?.balances?.deepseek) skipped.push("deepseek: no Keychain entry named under balances.deepseek in the runner config, so its balance is not asked for");
   return { reports, skipped, via, claudeDay };
+}
+
+// How long one reader may take; the readers run side by side, so the whole
+// set ends within this too.
+export const READER_LIMIT_MS = 20_000;
+
+async function runReader(tool, read, ctx, io) {
+  let timer;
+  const sleep = io.sleep ?? ((ms) => new Promise((resolve) => { timer = setTimeout(resolve, ms); }));
+  const late = Symbol("late");
+  try {
+    const result = await Promise.race([read(ctx), sleep(READER_LIMIT_MS).then(() => late)]);
+    if (result === late) return { windows: [], notes: [`${tool} reader timed out after ${READER_LIMIT_MS / 1000} s, so usage is unknown`] };
+    return result;
+  } catch (error) {
+    return { windows: [], notes: [`${tool} reader failed: ${String(error?.message ?? error).slice(0, 150)}`] };
+  } finally { clearTimeout(timer); }
 }
 
 // ── what leaves the machine ────────────────────────────────────────────────
@@ -428,24 +465,41 @@ export function describeSpeed(view, safe) {
 // per tool, as before.
 const ACTING_REFUSAL = /a write with the developer token names the harness\/model acting/;
 
+// POST /api/model-slate/propose on the server named by ATELIER_SERVER, with the
+// token in ATELIER_TOKEN; any answer but 2xx, or none, is an error naming the server.
+async function proposeSlate(io, runner, as) {
+  const server = String(io.env.ATELIER_SERVER).replace(/\/+$/, "");
+  const acting = (as ?? io.env.ATELIER_ACTING)?.trim();
+  let res;
+  try {
+    res = await (io.http ?? fetch)(`${server}/api/model-slate/propose`, {
+      method: "POST", signal: AbortSignal.timeout(30_000),
+      headers: { authorization: `Bearer ${io.env.ATELIER_TOKEN ?? ""}`, "x-atelier-runner": runner, ...(acting ? { "x-atelier-acting": acting } : {}), "content-type": "application/json" },
+      body: "{}",
+    });
+  } catch { throw new Error(`could not reach the server ${server}`); }
+  if (!res.ok) throw new Error(`the server ${server} answered HTTP ${res.status} to the slate proposal`);
+}
+
 export function usageOptions(args, host = hostname()) {
-  if (args._.length !== 1 || Object.keys(args.multi).some((k) => !["usage", "name", "dry-run", "config", "claude-status-file", "as"].includes(k) || args.multi[k].length !== 1)) throw new Error(USAGE);
+  if (args._.length !== 1 || Object.keys(args.multi).some((k) => !["usage", "name", "dry-run", "config", "claude-status-file", "claude-capture", "as"].includes(k) || args.multi[k].length !== 1)) throw new Error(USAGE);
   for (const flag of ["usage", "dry-run"]) if (args[flag] !== undefined && args[flag] !== true) throw new Error(USAGE);
   if (args.config !== undefined && typeof args.config !== "string") throw new Error(USAGE);
   if (args["claude-status-file"] !== undefined && typeof args["claude-status-file"] !== "string") throw new Error(USAGE);
+  if (args["claude-capture"] !== undefined && typeof args["claude-capture"] !== "string") throw new Error(USAGE);
   // --as names the harness/model acting on the developer's token (G18), as
   // ATELIER_ACTING does for a session: the posts carry it as X-Atelier-Acting.
   if (args.as !== undefined && (typeof args.as !== "string" || !args.as.trim())) throw new Error(USAGE);
   let name = args.name;
   if (name === undefined) name = `home:${host.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64) || "runner"}`;
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
-  return { name: name.toLowerCase(), dryRun: args["dry-run"] === true, configPath: args.config, ...(args["claude-status-file"] ? { claudeStatusFile: args["claude-status-file"] } : {}) };
+  return { name: name.toLowerCase(), dryRun: args["dry-run"] === true, configPath: args.config, ...(args["claude-status-file"] ? { claudeStatusFile: args["claude-status-file"] } : {}), ...(args["claude-capture"] !== undefined ? { claudeCapture: args["claude-capture"] } : {}) };
 }
 
 function defaultIo() {
   let reader;
   return {
-    paths: { ...defaultPaths(), claude: join(homedir(), ".claude", "projects"), antigravity: join(homedir(), ".gemini", "antigravity") }, env: process.env, cwd: tmpdir(), now: () => Date.now(), signal: undefined,
+    paths: { ...defaultPaths(), claude: join(homedir(), ".claude", "projects"), antigravity: join(homedir(), ".gemini", "antigravity"), antigravityLog: join(homedir(), ".gemini", "antigravity-cli", "cli.log"), claudeUsage: join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "claude-usage.txt") }, env: process.env, cwd: tmpdir(), now: () => Date.now(), signal: undefined,
     run: execute, readSecret, readConfig, readCodex: readCodexSessions, readClaude: readClaudeSessions,
     reader: async () => (reader ??= await sqliteReader()),
     print: (text) => console.log(text),
@@ -460,6 +514,11 @@ function defaultIo() {
 export async function runUsage(args, given = {}) {
   const opts = usageOptions(args);
   const io = { ...defaultIo(), ...given, claudeStatusFile: opts.claudeStatusFile };
+  if (opts.claudeCapture !== undefined) {
+    writeClaudeCapture(opts.claudeCapture, io.paths.claudeUsage, io.rename);
+    io.print(`Claude's usage was written to ${io.paths.claudeUsage}.`);
+    return [];
+  }
   const secrets = new Set();
   const scrub = { add: (value) => { if (value) secrets.add(value); } };
   const withoutKeys = (text) => [...secrets].reduce((s, secret) => s.split(secret).join("[key removed]"), String(text ?? ""));
@@ -516,6 +575,13 @@ export async function runUsage(args, given = {}) {
       }
     }
   }
+  // Once the reports are in, the server is asked to propose the day's slate.
+  // Nothing is kept here: a rerun sends every report and the request again.
+  let proposeError = null;
+  const propose = io.propose ?? (io.env?.ATELIER_SERVER ? () => proposeSlate(io, opts.name, typeof args.as === "string" ? args.as : undefined) : null);
+  if (!opts.dryRun && propose && !failed.length && !noActing) {
+    try { await propose(); } catch (error) { proposeError = error; }
+  }
   out.push("", opts.dryRun ? "Dry run: nothing was reported to Atelier." : `Reported ${reported} usage summar${reported === 1 ? "y" : "ies"} to Atelier.`);
   if (alerts.length) out.push(`Alerts: ${alerts.join("; ")}.`);
   io.print(withoutKeys(out.join("\n")));
@@ -523,6 +589,7 @@ export async function runUsage(args, given = {}) {
     const held = reports.length - reported;
     throw new Error(`could not report ${held} usage summar${held === 1 ? "y" : "ies"}: a write with the developer token names the harness/model acting, and none was named; set ATELIER_ACTING (or pass --as H/M) naming the harness/model you are, such as claude-code/opus-5.5, and run the command again${failed.length ? `; ${failed.join("; ")}` : ""}`);
   }
+  if (proposeError) throw new Error(`the slate was not proposed: ${safe(proposeError.message, 300)}`);
   if (failed.length) throw new Error(`could not report ${failed.length} usage summar${failed.length === 1 ? "y" : "ies"}: ${failed.join("; ")}`);
   return reports;
 }
